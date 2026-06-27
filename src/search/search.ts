@@ -42,6 +42,27 @@ export interface SearchOpts {
 }
 
 /**
+ * Sanitize a free-form query string for safe use with the FTS5 `MATCH` operator.
+ *
+ * FTS5 treats several characters as operators (`-` negation, `*` wildcard,
+ * `"` phrase, `^` column, `AND`/`OR`/`NOT` connectives). Without sanitization,
+ * a query like `sqlite-vec` triggers `fts5: syntax error near "-"` because `-`
+ * is parsed as a negation prefix.
+ *
+ * Strategy: split on whitespace, wrap each token in double quotes (treating
+ * each as a literal phrase), and escape embedded `"` by doubling it per the
+ * FTS5 phrase-literal rule. Multi-token queries become implicit AND.
+ *
+ * Trade-off: explicit FTS5 operators (e.g., `cat OR dog`, `"exact phrase"`,
+ * `prefix*`) are NOT honored in v1 — every input is treated as a bag of
+ * literal phrases. This is the right default for an agent-driven search
+ * surface; an `advanced` flag can be added later if needed.
+ */
+function escapeFtsQuery(q: string): string {
+  return q.trim().split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+}
+
+/**
  * Deterministic fake vector for testing — 1024-dim seeded by text hash.
  * Exported so tests can call it directly without importing the EmbedProvider.
  */
@@ -69,15 +90,21 @@ export async function search(
   // 1. FTS5 BM25 — run only if query is non-empty
   const ftsHits: Array<{ id: string; bm25: number }> = [];
   if (query.trim()) {
-    const rows = db.prepare(`
-      SELECT m.id, bm25(memories_fts) AS bm25
-      FROM memories_fts
-      JOIN memories m ON m.rowid = memories_fts.rowid
-      WHERE memories_fts MATCH ?
-      ORDER BY bm25
-      LIMIT ?
-    `).all(query, vecK) as Array<{ id: string; bm25: number }>;
-    ftsHits.push(...rows);
+    const ftsQuery = escapeFtsQuery(query);
+    try {
+      const rows = db.prepare(`
+        SELECT m.id, bm25(memories_fts) AS bm25
+        FROM memories_fts
+        JOIN memories m ON m.rowid = memories_fts.rowid
+        WHERE memories_fts MATCH ?
+        ORDER BY bm25
+        LIMIT ?
+      `).all(ftsQuery, vecK) as Array<{ id: string; bm25: number }>;
+      ftsHits.push(...rows);
+    } catch {
+      // FTS5 rejected the query (rare with escapeFtsQuery sanitization).
+      // Fall through to vector-only path.
+    }
   }
 
   // 2. Vector search — always attempt; if embed fails, fall back to FTS-only
