@@ -59,8 +59,9 @@ export class JobRepo {
   }
 
   /**
-   * Transition a running job to failed, record the error, increment attempts.
-   * The caller is responsible for deciding whether to then call markPoison.
+   * Record a handler failure: increment attempts and record the error.
+   * The new state is 'failed'. The worker checks attempts after this call
+   * and either re-enqueues (back to 'pending') or calls markPoison.
    */
   fail(id: string, error: string): void {
     const now = Date.now();
@@ -69,6 +70,14 @@ export class JobRepo {
       SET state = 'failed', last_error = ?, attempts = attempts + 1, updated_at = ?
       WHERE id = ?
     `).run(error, now, id);
+  }
+
+  /**
+   * Move a failed job back to pending so the worker will retry it.
+   * Only call this when attempts < MAX_ATTEMPTS.
+   */
+  requeueForRetry(id: string): void {
+    this._transition(id, 'pending');
   }
 
   /** Transition a job to the poison state (permanently failed). */
