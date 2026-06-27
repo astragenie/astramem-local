@@ -3,6 +3,7 @@ import { serve } from './serve.js';
 import { cliSearch, cliRecall, cliRemember } from './search.js';
 import { serviceCommand } from './service.js';
 import { doctorCommand } from './doctor.js';
+import { budgetCommand } from './budget.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -67,6 +68,12 @@ async function main() {
       break;
     }
 
+    case 'budget': {
+      // astra-memory budget [--reset]
+      await budgetCommand(rest);
+      break;
+    }
+
     case 'init':
       console.log('init wizard lands in M5');
       break;
@@ -84,6 +91,7 @@ Commands:
   search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--limit N]
   recall "question" [--k N] [--type TYPE] [--repo REPO]
   remember "text" [--type TYPE] [--repo REPO]
+  budget [--reset]                       Show today + month LLM spend vs cap
   init                                   Interactive wizard (M5)
 
 Environment:

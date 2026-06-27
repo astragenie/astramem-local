@@ -3,6 +3,7 @@ import type { Config } from '../config/config.js';
 import type { HandlerCtx } from './handler.js';
 import type { HandlerRegistry } from './registry.js';
 import { JobRepo } from './job-repo.js';
+import { DistillBudgetPausedError } from './handlers/distill.js';
 
 const MAX_ATTEMPTS = 3;
 
@@ -89,6 +90,15 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
       await handler.handle(payload, ctx);
       repo.complete(job.id);
     } catch (err) {
+      // Budget exceeded → pause the job (not a failure, not retried)
+      if (DistillBudgetPausedError.is(err)) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        repo.fail(job.id, errMsg);
+        repo.pause(job.id);
+        scheduleNext();
+        return;
+      }
+
       const errMsg = err instanceof Error ? err.message : String(err);
       repo.fail(job.id, errMsg);
       // Re-fetch to get the updated attempts count

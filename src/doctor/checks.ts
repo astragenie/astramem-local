@@ -55,6 +55,8 @@ export interface DoctorCheckOpts {
   port?: number;
   /** Path to service unit file to check presence (optional) */
   serviceUnitPath?: string;
+  /** Daily budget cap in USD (default: 10) */
+  dailyBudgetUsd?: number;
 }
 
 // ─── Check 1: SQLite writable + WAL ──────────────────────────────────────────
@@ -260,11 +262,54 @@ function checkDatadirWritable(dataDir: string): Check {
   };
 }
 
+// ─── Check 8: Today's budget vs cap ──────────────────────────────────────────
+
+function checkBudget(dataDir: string, dailyBudgetUsd: number): Check {
+  return {
+    name: 'Daily budget vs cap',
+    async run(): Promise<CheckResult> {
+      try {
+        const dbPath = join(dataDir, 'memory.sqlite');
+        if (!existsSync(dbPath)) {
+          return { ok: true, message: 'budget check skipped (no DB yet)' };
+        }
+        const { default: Database } = await import('better-sqlite3');
+        const db = new Database(dbPath, { readonly: true });
+        const day = new Date().toISOString().slice(0, 10);
+        const row = db.prepare('SELECT usd_total, calls FROM budget_spend WHERE day = ?').get(day) as
+          | { usd_total: number; calls: number }
+          | undefined;
+        db.close();
+
+        const usd = row?.usd_total ?? 0;
+        const calls = row?.calls ?? 0;
+        const pct = dailyBudgetUsd > 0 ? ((usd / dailyBudgetUsd) * 100).toFixed(1) : '0.0';
+
+        if (usd >= dailyBudgetUsd && dailyBudgetUsd > 0) {
+          return {
+            ok: false,
+            message: `Budget cap reached: $${usd.toFixed(4)} / $${dailyBudgetUsd.toFixed(2)} (${calls} calls) — distillation paused`,
+            fix: 'astra-memory budget --reset  to override for today',
+          };
+        }
+
+        return {
+          ok: true,
+          message: `Budget: $${usd.toFixed(4)} / $${dailyBudgetUsd.toFixed(2)} (${pct}%, ${calls} calls today)`,
+        };
+      } catch (err) {
+        return { ok: false, message: `Budget check error: ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Core check list builder ──────────────────────────────────────────────────
 
 function coreChecks(opts: DoctorCheckOpts): Check[] {
   const port = opts.port ?? 7777;
   const dataDir = opts.dataDir ?? join(tmpdir(), 'astra-memory');
+  const dailyBudgetUsd = opts.dailyBudgetUsd ?? 10;
 
   return [
     checkDatadirWritable(dataDir),
@@ -274,5 +319,6 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkDaemonReachable(port),
     checkDiskFree(dataDir),
     checkServiceUnit(opts.serviceUnitPath),
+    checkBudget(dataDir, dailyBudgetUsd),
   ];
 }
