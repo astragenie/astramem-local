@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.3] - 2026-06-27
+
+### Added
+
+#### MCP HTTP server (Wave 5)
+- `POST /mcp` — MCP Streamable HTTP transport (JSON-RPC 2.0, stateless per-request).
+  Auth enforced by existing Bearer preHandler; no new auth code.
+- 4 MCP tools auto-discovered by Claude Code:
+  - `search_memory` — hybrid FTS + vector search with filters (type, repo, project, since).
+  - `recall_memory` — top-K semantic recall (alias of search_memory, default k=5).
+  - `remember` — direct memory insert, bypasses distillation pipeline.
+  - `get_health` — daemon health probe (`{ ok, version }`).
+- Zod-validated input schemas on all 4 tools; structured text/JSON output.
+- 7 integration tests in `tests/mcp/server.test.ts` covering tools/list, each tool/call, and auth gates.
+- Uses `@modelcontextprotocol/sdk@^1.29.0` (`McpServer` + `StreamableHTTPServerTransport`).
+
+### Changed
+
+- Version bumped from `0.0.1` to `0.1.3`.
+- `GET /health` now reports version `0.1.3`.
+
+---
+
 ## [0.1.0] - 2026-06-27
 
 First public release. Covers Milestones 1-5 of the v1 design spec: storage, pipeline,

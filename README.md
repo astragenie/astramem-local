@@ -107,6 +107,37 @@ See [docs/providers.md](docs/providers.md) for full setup instructions.
 
 ---
 
+## MCP tools (Claude Code auto-discovery)
+
+The daemon exposes a **Model Context Protocol** (Streamable HTTP) endpoint at `POST /mcp`.
+Claude Code discovers and calls the 4 tools below automatically when configured in `.mcp.json`.
+
+| Tool | Description | Maps to |
+|---|---|---|
+| `search_memory` | Hybrid FTS + vector search with optional type/repo/project/since filters | `GET /search` |
+| `recall_memory` | Top-K semantic recall (default k=5) | `POST /recall` |
+| `remember` | Direct memory insert, bypasses distillation | `POST /remember` |
+| `get_health` | Daemon health probe: `{ ok, version }` | `GET /health` |
+
+**Plugin `.mcp.json` wiring:**
+
+```json
+{
+  "mcpServers": {
+    "astramem": {
+      "type": "http",
+      "url": "${MEMORY_API_URL}/mcp",
+      "headers": { "Authorization": "Bearer ${MEMORY_BEARER}" }
+    }
+  }
+}
+```
+
+Set `MEMORY_API_URL=http://127.0.0.1:7777` and `MEMORY_BEARER` to your token
+(printed by `astra-memory token print`).
+
+---
+
 ## Budget cap
 
 The daily LLM spend cap (default: **$10 USD**) is enforced before each LLM call.
