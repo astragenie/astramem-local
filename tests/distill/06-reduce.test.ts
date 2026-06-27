@@ -43,7 +43,7 @@ describe('reduce stage', () => {
     const atoms = [atom('some decision was made', 0.7)];
     const result = reduce(atoms);
     expect(typeof result[0].contentHash).toBe('string');
-    expect(result[0].contentHash.length).toBe(16);
+    expect(result[0].contentHash.length).toBe(64);
   });
 
   it('deduplicates by whitespace-collapsed form', () => {

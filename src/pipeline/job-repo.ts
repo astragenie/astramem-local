@@ -90,6 +90,15 @@ export class JobRepo {
     this._transition(id, 'paused');
   }
 
+  /**
+   * Record a non-failure note on the job (e.g. budget pause reason) without
+   * touching `attempts`. Use for state transitions that are not handler errors.
+   */
+  setLastError(id: string, note: string): void {
+    const now = Date.now();
+    this.db.prepare('UPDATE jobs SET last_error = ?, updated_at = ? WHERE id = ?').run(note, now, id);
+  }
+
   /** Read a single job by id. Returns null if not found. */
   get(id: string): Job | null {
     const row = this.db.prepare('SELECT * FROM jobs WHERE id = ?').get(id) as Job | undefined;

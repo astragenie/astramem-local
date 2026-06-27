@@ -4,6 +4,8 @@ import { cliSearch, cliRecall, cliRemember } from './search.js';
 import { serviceCommand } from './service.js';
 import { doctorCommand } from './doctor.js';
 import { budgetCommand } from './budget.js';
+import { init } from './init.js';
+import { tokenCommand } from './token.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -75,7 +77,11 @@ async function main() {
     }
 
     case 'init':
-      console.log('init wizard lands in M5');
+      await init();
+      break;
+
+    case 'token':
+      await tokenCommand(rest);
       break;
 
     case undefined:
@@ -92,7 +98,8 @@ Commands:
   recall "question" [--k N] [--type TYPE] [--repo REPO]
   remember "text" [--type TYPE] [--repo REPO]
   budget [--reset]                       Show today + month LLM spend vs cap
-  init                                   Interactive wizard (M5)
+  init                                   Interactive setup wizard
+  token rotate                           Issue new local Bearer token
 
 Environment:
   ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)

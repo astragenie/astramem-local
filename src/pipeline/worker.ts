@@ -90,10 +90,13 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
       await handler.handle(payload, ctx);
       repo.complete(job.id);
     } catch (err) {
-      // Budget exceeded → pause the job (not a failure, not retried)
+      // Budget exceeded → pause the job (not a failure, not retried).
+      // Do NOT call fail() — that would increment attempts and eventually
+      // poison the job after repeated daily cap hits, preventing recovery
+      // when the user runs `astra-memory budget --reset`.
       if (DistillBudgetPausedError.is(err)) {
         const errMsg = err instanceof Error ? err.message : String(err);
-        repo.fail(job.id, errMsg);
+        repo.setLastError(job.id, errMsg);
         repo.pause(job.id);
         scheduleNext();
         return;

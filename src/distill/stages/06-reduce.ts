@@ -34,5 +34,8 @@ export function reduce(atoms: Atom[]): ReducedAtom[] {
 
 function contentHash(text: string): string {
   const normalized = text.trim().toLowerCase().replace(/\s+/g, ' ');
-  return createHash('sha256').update(normalized, 'utf8').digest('hex').slice(0, 16);
+  // Full 64-hex (256-bit) SHA-256 — the previous 16-hex (64-bit) slice had
+  // birthday-bound collision risk around 2^32 atoms which is too low for a
+  // long-running memory corpus.
+  return createHash('sha256').update(normalized, 'utf8').digest('hex');
 }

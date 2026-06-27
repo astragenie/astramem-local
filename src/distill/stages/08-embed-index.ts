@@ -54,8 +54,10 @@ export async function embedAndIndex(
     const vec = vectors[i];
 
     if (!vec || vec.length !== 1024) {
-      console.warn(`[embed-index] memory ${i} got dim=${vec?.length ?? 0}, expected 1024 — skipping`);
-      continue;
+      throw new Error(
+        `embed provider returned dim=${vec?.length ?? 0} for memory ${i}, expected 1024. ` +
+        `This is a provider invariant violation — check config.embedding.provider and model.`
+      );
     }
 
     // Check if this hash already exists
