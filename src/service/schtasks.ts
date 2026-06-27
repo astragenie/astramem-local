@@ -30,7 +30,12 @@ export class SchtasksAdapter implements ServiceAdapter {
   async install(execPath: string, port: number): Promise<void> {
     // Build the task run command: execPath is e.g. "node C:\...\dist\cli\index.js"
     const tr = quoteForSchtasks(`${execPath} serve --port ${port}`);
-    const cmd = `schtasks /create /sc onlogon /tn "${TASK_NAME}" /tr ${tr} /f`;
+    // /RU current user + /RL LIMITED: install without admin / no UAC.
+    // Without /RU, schtasks defaults the run-as account to SYSTEM for /sc onlogon
+    // which requires admin to register.
+    const user = process.env['USERNAME'] ?? '';
+    const ruFlag = user ? `/RU "${user}"` : '';
+    const cmd = `schtasks /create /sc onlogon /tn "${TASK_NAME}" /tr ${tr} ${ruFlag} /RL LIMITED /f`;
     await runCmd(cmd);
   }
 
@@ -62,7 +67,9 @@ export class SchtasksAdapter implements ServiceAdapter {
   async installBackupTimer(execPath: string, keep: number): Promise<void> {
     // schtasks daily at 03:00, runs: <node> <indexJs> backup --keep N
     const tr = quoteForSchtasks(`${execPath} backup --keep ${keep}`);
-    const cmd = `schtasks /create /sc DAILY /st 03:00 /tn "${BACKUP_TASK_NAME}" /tr ${tr} /f`;
+    const user = process.env['USERNAME'] ?? '';
+    const ruFlag = user ? `/RU "${user}"` : '';
+    const cmd = `schtasks /create /sc DAILY /st 03:00 /tn "${BACKUP_TASK_NAME}" /tr ${tr} ${ruFlag} /RL LIMITED /f`;
     await runCmd(cmd);
   }
 

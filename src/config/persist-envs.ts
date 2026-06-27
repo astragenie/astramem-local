@@ -41,10 +41,16 @@ export async function persistEnvVars(vars: Record<string, string>): Promise<Pers
 function persistWindows(vars: Record<string, string>): PersistResult {
   // Use [Environment]::SetEnvironmentVariable so values longer than 1024 chars
   // are accepted (setx truncates).
+  //
+  // PowerShell quoting strategy: build the script with SINGLE-quoted string
+  // literals so embedded double-quotes do not collide with the outer
+  // `powershell -Command "..."` shell quoting. Single-quoted PS strings do
+  // not expand $vars or backticks — values pass through literally. Escape
+  // embedded single quotes by doubling them (PS rule).
   const ps = Object.entries(vars)
     .map(([k, v]) => {
-      const esc = v.replace(/`/g, '``').replace(/"/g, '`"');
-      return `[Environment]::SetEnvironmentVariable("${k}", "${esc}", "User")`;
+      const esc = v.replace(/'/g, "''");
+      return `[Environment]::SetEnvironmentVariable('${k}', '${esc}', 'User')`;
     })
     .join('; ');
 
