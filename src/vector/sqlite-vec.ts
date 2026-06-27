@@ -9,7 +9,6 @@ export class SqliteVecStore implements VectorStore {
     if (vec.length !== 1024) throw new Error(`expected dim 1024, got ${vec.length}`);
     const memoriesRowid = this.allocateRowid(id);
     const buf = Buffer.from(vec.buffer);
-    // Check if a vec row already exists for this rowid
     const existing = this.db.prepare('SELECT rowid FROM memories_vec WHERE rowid = ?').get(BigInt(memoriesRowid)) as {rowid: number} | undefined;
     if (existing) {
       this.db.prepare('UPDATE memories_vec SET embedding = ? WHERE rowid = ?').run(buf, BigInt(memoriesRowid));
@@ -18,7 +17,10 @@ export class SqliteVecStore implements VectorStore {
     }
   }
 
-  async search(vec: Float32Array, k: number, _filter?: VecFilter): Promise<VecHit[]> {
+  async search(vec: Float32Array, k: number, filter?: VecFilter): Promise<VecHit[]> {
+    if (filter && (filter.type?.length || filter.repo || filter.project || filter.since !== undefined)) {
+      throw new Error('VecFilter not yet implemented in sqlite-vec adapter — apply filters in the search layer instead');
+    }
     const rows = this.db.prepare(`
       SELECT m.id, mv.distance
       FROM memories_vec mv
@@ -28,7 +30,7 @@ export class SqliteVecStore implements VectorStore {
     return rows.map(r => ({ id: r.id, score: 1 / (1 + r.distance) }));
   }
 
-  async rebuild(): Promise<void> {
+  async clear(): Promise<void> {
     this.db.exec('DELETE FROM memories_vec');
   }
 
