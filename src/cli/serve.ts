@@ -68,7 +68,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   });
 
   await app.listen({ port, host: '127.0.0.1' });
-  console.log(`astra-memory serving on 127.0.0.1:${port}`);
+  console.log(`astramem-local serving on 127.0.0.1:${port}`);
 
   const shutdown = async () => {
     try {

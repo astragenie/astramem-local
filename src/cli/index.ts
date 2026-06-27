@@ -23,7 +23,7 @@ async function main() {
     }
 
     case 'search': {
-      // astra-memory search "query" [--type TYPE] [--repo REPO] [--since 7d] [--limit N]
+      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--limit N]
       const query = rest.find(a => !a.startsWith('-')) ?? '';
       await cliSearch(query, {
         type: parseArg(rest, '--type'),
@@ -35,7 +35,7 @@ async function main() {
     }
 
     case 'recall': {
-      // astra-memory recall "question" [--k N] [--type TYPE] [--repo REPO]
+      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO]
       const question = rest.find(a => !a.startsWith('-')) ?? '';
       await cliRecall(question, {
         k: parseArg(rest, '--k'),
@@ -46,7 +46,7 @@ async function main() {
     }
 
     case 'remember': {
-      // astra-memory remember "text" [--type TYPE] [--repo REPO]
+      // astramem-local remember "text" [--type TYPE] [--repo REPO]
       const text = rest.find(a => !a.startsWith('-')) ?? '';
       if (!text) {
         console.error('remember: text argument is required');
@@ -60,19 +60,19 @@ async function main() {
     }
 
     case 'service': {
-      // astra-memory service install|uninstall|start|stop|status [--port N]
+      // astramem-local service install|uninstall|start|stop|status [--port N]
       await serviceCommand(rest);
       break;
     }
 
     case 'doctor': {
-      // astra-memory doctor [--json] [--port N]
+      // astramem-local doctor [--json] [--port N]
       await doctorCommand(rest);
       break;
     }
 
     case 'budget': {
-      // astra-memory budget [--reset]
+      // astramem-local budget [--reset]
       await budgetCommand(rest);
       break;
     }
@@ -86,7 +86,7 @@ async function main() {
       break;
 
     case 'backup': {
-      // astra-memory backup [--out PATH] [--keep N] [--json]
+      // astramem-local backup [--out PATH] [--keep N] [--json]
       await backupCommand(rest);
       break;
     }
@@ -100,7 +100,7 @@ async function main() {
     case undefined:
     case '--help':
     case '-h':
-      console.log(`astra-memory <command>
+      console.log(`astramem-local <command>
 
 Commands:
   serve [--port N]                       Start daemon (foreground)

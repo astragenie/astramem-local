@@ -1,5 +1,5 @@
 /**
- * `astra-memory budget [--reset]`
+ * `astramem-local budget [--reset]`
  *
  * Shows today's LLM spend and month total versus the configured cap.
  * --reset clears today's row (override, logged).
@@ -49,7 +49,7 @@ export async function budgetCommand(args: string[]): Promise<void> {
 
   if (today.usd_total >= cap) {
     console.log('  [!] Daily cap reached — distillation is paused until tomorrow.');
-    console.log('      Run: astra-memory budget --reset  to override.');
+    console.log('      Run: astramem-local budget --reset  to override.');
   } else if (cap > 0 && today.usd_total / cap >= 0.8) {
     console.log('  [!] 80% of daily cap used — approaching limit.');
   }

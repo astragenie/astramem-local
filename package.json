@@ -3,7 +3,7 @@
   "version": "0.0.1",
   "type": "module",
   "bin": {
-    "astra-memory": "./dist/cli/index.js"
+    "astramem-local": "./dist/cli/index.js"
   },
   "scripts": {
     "build": "tsc -p .",

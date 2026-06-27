@@ -1,5 +1,5 @@
 /**
- * init wizard — `astra-memory init`
+ * init wizard — `astramem-local init`
  *
  * Interactive setup using @inquirer/prompts.
  * Non-TTY / CI mode: set ASTRA_MEMORY_INIT_NONINTERACTIVE=1 and supply
@@ -379,7 +379,7 @@ export async function init(): Promise<void> {
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`  ⚠ service install failed: ${msg}`);
-      console.log(`    Retry manually: astra-memory service install && astra-memory service start`);
+      console.log(`    Retry manually: astramem-local service install && astramem-local service start`);
     }
   }
 
@@ -389,7 +389,7 @@ export async function init(): Promise<void> {
     if (up) {
       console.log(`  ✓ daemon healthy at ${apiUrl}`);
     } else {
-      console.log(`  ⚠ daemon did not respond to /health within 5s — check 'astra-memory service status'`);
+      console.log(`  ⚠ daemon did not respond to /health within 5s — check 'astramem-local service status'`);
     }
   }
 
@@ -401,17 +401,17 @@ export async function init(): Promise<void> {
     console.log('Start the daemon:');
     console.log('');
     if (answers.installService) {
-      console.log('  astra-memory service install && astra-memory service start');
+      console.log('  astramem-local service install && astramem-local service start');
     } else {
-      console.log('  astra-memory serve');
+      console.log('  astramem-local serve');
     }
     console.log('');
   }
   console.log('Open a new shell so env vars take effect, then verify:');
   console.log('');
-  console.log('  astra-memory doctor');
-  console.log('  astra-memory remember "test memory" --type fact');
-  console.log('  astra-memory search "test"');
+  console.log('  astramem-local doctor');
+  console.log('  astramem-local remember "test memory" --type fact');
+  console.log('  astramem-local search "test"');
   console.log('');
 }
 

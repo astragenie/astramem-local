@@ -1,8 +1,8 @@
 /**
- * backup.ts — `astra-memory backup` CLI command.
+ * backup.ts — `astramem-local backup` CLI command.
  *
  * Usage:
- *   astra-memory backup [--out PATH] [--keep N] [--json]
+ *   astramem-local backup [--out PATH] [--keep N] [--json]
  *
  * Exit codes:
  *   0 = success

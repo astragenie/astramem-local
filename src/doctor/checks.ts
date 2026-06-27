@@ -115,7 +115,7 @@ function checkSqliteWritable(dataDir: string): Check {
             return {
               ok: false,
               message: `journal_mode is '${row.journal_mode}', expected 'wal'`,
-              fix: 'Run: astra-memory serve (will apply WAL pragma on open)',
+              fix: 'Run: astramem-local serve (will apply WAL pragma on open)',
             };
           }
         }
@@ -198,7 +198,7 @@ function checkDaemonReachable(port: number): Check {
           return {
             ok: false,
             message: `daemon returned HTTP ${res.status} on :${port}`,
-            fix: `astra-memory serve --port ${port}`,
+            fix: `astramem-local serve --port ${port}`,
           };
         } finally {
           clearTimeout(timeout);
@@ -207,7 +207,7 @@ function checkDaemonReachable(port: number): Check {
         return {
           ok: false,
           message: `daemon not reachable on port ${port}`,
-          fix: `astra-memory serve --port ${port}`,
+          fix: `astramem-local serve --port ${port}`,
         };
       }
     },
@@ -257,7 +257,7 @@ function checkServiceUnit(serviceUnitPath: string | undefined): Check {
       return {
         ok: false,
         message: `service unit not found at ${serviceUnitPath}`,
-        fix: 'astra-memory service install',
+        fix: 'astramem-local service install',
       };
     },
   };
@@ -311,7 +311,7 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number): Check {
           return {
             ok: false,
             message: `Budget cap reached: $${usd.toFixed(4)} / $${dailyBudgetUsd.toFixed(2)} (${calls} calls) — distillation paused`,
-            fix: 'astra-memory budget --reset  to override for today',
+            fix: 'astramem-local budget --reset  to override for today',
           };
         }
 
@@ -373,7 +373,7 @@ function checkBackupRecency(backupsDir: string): Check {
         return {
           ok: false,
           message: `No backups directory found at ${backupsDir}`,
-          fix: 'astra-memory backup  to create the first snapshot',
+          fix: 'astramem-local backup  to create the first snapshot',
         };
       }
 
@@ -388,7 +388,7 @@ function checkBackupRecency(backupsDir: string): Check {
         return {
           ok: false,
           message: 'No backup snapshots found',
-          fix: 'astra-memory backup  to create the first snapshot',
+          fix: 'astramem-local backup  to create the first snapshot',
         };
       }
 
@@ -408,7 +408,7 @@ function checkBackupRecency(backupsDir: string): Check {
         return {
           ok: false,
           message: `Newest backup is ${ageH}h old (> 24h)`,
-          fix: 'astra-memory backup  or enable nightly timer: astra-memory service install --with-backup-timer',
+          fix: 'astramem-local backup  or enable nightly timer: astramem-local service install --with-backup-timer',
         };
       }
 
@@ -419,7 +419,7 @@ function checkBackupRecency(backupsDir: string): Check {
 
 function coreChecks(opts: DoctorCheckOpts): Check[] {
   const port = opts.port ?? 7777;
-  const dataDir = opts.dataDir ?? join(tmpdir(), 'astra-memory');
+  const dataDir = opts.dataDir ?? join(tmpdir(), 'astramem');
   const dailyBudgetUsd = opts.dailyBudgetUsd ?? 10;
 
   const checks: Check[] = [

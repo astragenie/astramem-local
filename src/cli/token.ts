@@ -1,5 +1,5 @@
 /**
- * token subcommand — `astra-memory token rotate`
+ * token subcommand — `astramem-local token rotate`
  *
  * Generates a fresh 32-byte (64 hex char) random Bearer token,
  * overwrites secrets.env (mode 0600 on Unix), and prints the
@@ -54,7 +54,7 @@ export function rotateToken(secretsPath?: string): string {
   return newToken;
 }
 
-/** CLI entry for `astra-memory token <subcommand>`. */
+/** CLI entry for `astramem-local token <subcommand>`. */
 export async function tokenCommand(args: string[]): Promise<void> {
   const sub = args[0];
   switch (sub) {
@@ -68,7 +68,7 @@ export async function tokenCommand(args: string[]): Promise<void> {
     }
     default:
       console.error(`token: unknown subcommand '${sub ?? ''}'`);
-      console.error('Usage: astra-memory token rotate');
+      console.error('Usage: astramem-local token rotate');
       process.exit(1);
   }
 }

@@ -36,7 +36,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
       const execPath = resolveCliExecPath();
       console.log(`Installing AstraMemory service for ${adapter.platform}...`);
       await adapter.install(execPath, port);
-      console.log('Service installed. Run `astra-memory service start` to start it.');
+      console.log('Service installed. Run `astramem-local service start` to start it.');
       if (withBackupTimer) {
         console.log('Installing nightly backup timer (03:00)...');
         await adapter.installBackupTimer(execPath, keep);
@@ -75,7 +75,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
         if (status.detail) console.log(`  Detail: ${status.detail}`);
       } else {
         console.log('Service: not installed');
-        console.log('  Run `astra-memory service install` to install.');
+        console.log('  Run `astramem-local service install` to install.');
       }
       break;
     }
@@ -83,7 +83,7 @@ export async function serviceCommand(args: string[]): Promise<void> {
     case undefined:
     case '--help':
     case '-h':
-      console.log(`astra-memory service <subcommand>
+      console.log(`astramem-local service <subcommand>
 
 Subcommands:
   install [--port N] [--with-backup-timer] [--keep N]
