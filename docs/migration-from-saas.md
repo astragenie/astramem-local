@@ -1,0 +1,176 @@
+# Migrating from AstraMemory SaaS to local daemon
+
+This guide walks you through redirecting the `memory-plugin` hooks from the hosted AstraMemory
+SaaS endpoint to an `astramemory-local` daemon running on your workstation. The plugin code does
+not change — only two environment variables are swapped.
+
+---
+
+## Before you start
+
+**Current state:** your plugin posts session transcripts to the remote SaaS endpoint via:
+
+```bash
+MEMORY_API_URL=https://saas.host        # or https://api.astramemory.com
+MEMORY_BEARER=<jwt minted by memory-login>
+```
+
+Hooks fire on PreCompact, SessionEnd, and SubagentStop and POST to
+`${MEMORY_API_URL}/ingest/transcript`. After migration they will POST to the same path on the
+local daemon instead.
+
+---
+
+## Step 1 — Install the local package
+
+```bash
+npm install -g @astragenie/astramemory-local
+```
+
+Verify the CLI is on your PATH:
+
+```bash
+astra-memory --version
+```
+
+---
+
+## Step 2 — Initialize the daemon
+
+```bash
+astra-memory init
+```
+
+The wizard asks:
+- **Vector store** — leave as `sqlite-vec` (recommended).
+- **Embedding provider** — pick `ollama` (free, local) or `azure-openai`.
+- **LLM provider** — pick `ollama` (qwen2.5-coder:7b) or `azure-openai`.
+- **Data directory** — accepts the default (`~/.local/share/astra-memory` on Linux/macOS,
+  `%LOCALAPPDATA%\AstraMemory` on Windows).
+- **Daemon port** — leave as `7777` unless that port is taken.
+- **Daily LLM budget cap** — default is `$10`. Set to `0` for Ollama (no cloud cost).
+- **Install as service?** — answer `Y` to auto-start on login.
+
+On completion the wizard writes:
+- `~/.config/astra-memory/config.yaml`
+- `~/.config/astra-memory/secrets.env` (mode 0600) containing `MEMORY_BEARER=<32-byte hex token>`
+- Runs database migrations.
+- Runs `astra-memory doctor` and prints any warnings.
+
+If you answered `Y` to service install, the daemon is already running. Skip to Step 4.
+
+---
+
+## Step 3 — Start the daemon (if not installed as service)
+
+```bash
+astra-memory service install   # registers with OS init system
+```
+
+Or run in the foreground for a quick test:
+
+```bash
+astra-memory serve --port 7777
+```
+
+---
+
+## Step 4 — Export the new environment variables
+
+In your shell rc (`~/.bashrc`, `~/.zshrc`, or Windows User environment variables):
+
+```bash
+export MEMORY_API_URL=http://127.0.0.1:7777
+export MEMORY_BEARER=$(cat ~/.config/astra-memory/secrets.env | grep BEARER | cut -d= -f2)
+```
+
+On Windows (PowerShell profile or System Variables dialog):
+
+```powershell
+$env:MEMORY_API_URL = "http://127.0.0.1:7777"
+$env:MEMORY_BEARER  = (Get-Content "$env:APPDATA\AstraMemory\secrets.env" |
+                        Where-Object { $_ -match '^MEMORY_BEARER=' }) -replace '^MEMORY_BEARER=',''
+```
+
+Or use the built-in print command:
+
+```bash
+export MEMORY_BEARER=$(astra-memory token print)
+```
+
+---
+
+## Step 5 — Restart Claude Code
+
+Close and reopen Claude Code (or reload the window). The plugin's `.mcp.json` and hook scripts
+pick up the new `MEMORY_API_URL` and `MEMORY_BEARER` values from the OS environment at launch.
+
+---
+
+## Step 6 — Verify
+
+Send a test session by opening a new conversation and letting it compact, or trigger manually:
+
+```bash
+curl -s -X POST http://127.0.0.1:7777/ingest/transcript \
+  -H "Authorization: Bearer $(astra-memory token print)" \
+  -H "Content-Type: application/json" \
+  -d '{"session_id":"verify-1","source":"PreCompact","content":"user: test\nassistant: ok"}'
+# expected: {"ok":true}
+```
+
+Then confirm a memory was queued and search works after distillation (~30s for Ollama):
+
+```bash
+astra-memory search "test"
+```
+
+Run the doctor to confirm everything is green:
+
+```bash
+astra-memory doctor
+```
+
+Expected output (all green):
+
+```
+  ok  SQLite writable (WAL mode)
+  ok  FTS5 + sqlite-vec loaded
+  ok  Daemon reachable on :7777
+  ok  LLM provider responds < 5s
+  ok  Embed provider returns 1024-dim vector
+  ok  Pipeline queue not stuck
+  ok  Disk free > 1GB
+  ok  Service unit present and active
+  ok  Budget within cap ($0.00 of $10.00 today)
+```
+
+---
+
+## Step 7 — Rollback (if needed)
+
+To revert to the SaaS endpoint, restore the original variables:
+
+```bash
+export MEMORY_API_URL=https://api.astramemory.com    # your original SaaS URL
+export MEMORY_BEARER="$(memory-refresh)"             # SaaS JWT refreshed by existing CLI
+```
+
+Restart Claude Code. The local daemon can keep running in the background — it does not interfere.
+
+---
+
+## Notes
+
+- **Memories are not migrated automatically.** Memories already stored in SaaS remain there; new
+  sessions after the swap are stored locally. To import SaaS memories, export them via the SaaS
+  API and use `astra-memory remember "<text>" --type <type>` for each entry, or write a batch
+  import script against `POST /remember`.
+- **The local token is not the same as the SaaS JWT.** They serve the same `MEMORY_BEARER` env
+  var but are different tokens. The local token is a 32-byte random hex string generated by
+  `astra-memory init`; the SaaS JWT is issued by Clerk via `memory-login`.
+- **Both can run simultaneously** if you want a fallback: the local daemon binds `127.0.0.1:7777`
+  and the SaaS URL is remote — they do not conflict.
+- **Distillation lag is expected.** Memories are not searchable immediately after ingest. The
+  worker distills asynchronously; typical lag with Ollama running locally is under 30 seconds.
+  Run `astra-memory queue` to see pending jobs.
