@@ -14,6 +14,7 @@ import { MemoryRepo } from '../../storage/memories.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import { search, type SearchFilters } from '../../search/search.js';
 import { defaultConfig } from '../../config/config.js';
+import { childLogger } from '../../log/logger.js';
 
 const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo']);
 
@@ -124,10 +125,11 @@ export function searchRoute(db: DB, embed: EmbedProvider) {
       try {
         const vecs = await embed.embed([text]);
         const vecStore = new SqliteVecStore(db);
+        if (!vecs[0]) throw new Error('embed provider returned empty result');
         await vecStore.upsert(id, vecs[0]);
       } catch (err) {
         // Non-fatal: FTS still works; vec will be populated on reembed
-        app.log.error({ err, id }, 'remember: embed/vec upsert failed');
+        childLogger({}).warn({ error_message: err instanceof Error ? err.message : String(err), id }, 'remember: embed/vec upsert failed');
       }
 
       return { id, ok: true };

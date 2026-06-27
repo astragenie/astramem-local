@@ -24,7 +24,8 @@ export function migrate(db: DB): void {
     .sort();
 
   for (const f of files) {
-    const version = parseInt(f.split('-')[0], 10);
+    const versionStr = f.split('-')[0];
+    const version = parseInt(versionStr ?? '', 10);
     if (Number.isNaN(version)) throw new Error(`bad migration name: ${f}`);
     if (applied.has(version)) continue;
     const sql = readFileSync(join(MIGRATIONS_DIR, f), 'utf8');

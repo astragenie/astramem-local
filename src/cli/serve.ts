@@ -71,9 +71,12 @@ export async function serve(opts: ServeOpts): Promise<void> {
   console.log(`astra-memory serving on 127.0.0.1:${port}`);
 
   const shutdown = async () => {
-    worker.stop();
-    await app.close();
-    db.close();
+    try {
+      await worker.stop();         // drain in-flight tick before closing DB
+      await app.close();
+    } finally {
+      db.close();
+    }
     process.exit(0);
   };
   process.on('SIGTERM', shutdown);

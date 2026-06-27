@@ -112,6 +112,7 @@ export async function search(
   try {
     const vecs = await embed.embed([query]);
     const queryVec = vecs[0];
+    if (!queryVec) throw new Error('embed provider returned empty result');
     const vecStore = new SqliteVecStore(db);
     // Pass empty filter to vec adapter — post-fusion filters applied below
     const raw = await vecStore.search(queryVec, vecK);

@@ -53,6 +53,7 @@ export async function embedAndIndex(
     const mem = memories[i];
     const vec = vectors[i];
 
+    if (!mem) continue;
     if (!vec || vec.length !== 1024) {
       throw new Error(
         `embed provider returned dim=${vec?.length ?? 0} for memory ${i}, expected 1024. ` +

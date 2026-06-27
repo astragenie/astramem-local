@@ -20,7 +20,12 @@ export interface WorkerOpts {
 }
 
 export interface WorkerHandle {
-  stop(): void;
+  /**
+   * Stop the worker. Resolves AFTER the currently in-flight tick completes
+   * (if any). Callers MUST await this before closing the DB — otherwise
+   * better-sqlite3 may throw SQLITE_MISUSE if a handler is still writing.
+   */
+  stop(): Promise<void>;
 }
 
 /**
@@ -42,6 +47,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
 
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
+  let inFlight: Promise<void> | null = null;
 
   async function tick(): Promise<void> {
     if (stopped) return;
@@ -51,7 +57,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
     if (!job) {
       // Nothing to do — schedule next poll
       if (!stopped) {
-        timer = setTimeout(() => { tick().catch(onUncaught); }, pollMs);
+        timer = setTimeout(() => { launchTick(); }, pollMs);
       }
       return;
     }
@@ -149,8 +155,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
 
   function scheduleNext(): void {
     if (!stopped) {
-      // Run next tick on next event loop turn (avoid deep call stacks)
-      timer = setTimeout(() => { tick().catch(onUncaught); }, 0);
+      timer = setTimeout(() => { launchTick(); }, 0);
     }
   }
 
@@ -159,19 +164,32 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
     const errMsg = err instanceof Error ? err.message : String(err);
     logger.error({ error_message: errMsg.slice(0, 200), error_kind: err instanceof Error ? err.name : 'Unknown' }, '[worker] uncaught error in tick');
     if (!stopped) {
-      timer = setTimeout(() => { tick().catch(onUncaught); }, pollMs);
+      timer = setTimeout(() => { launchTick(); }, pollMs);
     }
   }
 
+  /**
+   * Wraps tick() so the resulting promise is tracked in `inFlight`.
+   * stop() awaits this promise to ensure no handler is mid-DB-write when
+   * the caller subsequently closes the database.
+   */
+  function launchTick(): void {
+    inFlight = tick().catch(onUncaught).finally(() => { inFlight = null; });
+  }
+
   // Kick off the first tick
-  timer = setTimeout(() => { tick().catch(onUncaught); }, 0);
+  timer = setTimeout(() => { launchTick(); }, 0);
 
   return {
-    stop(): void {
+    async stop(): Promise<void> {
       stopped = true;
       if (timer !== null) {
         clearTimeout(timer);
         timer = null;
+      }
+      // Drain any in-flight tick before returning — handler may be mid-write.
+      if (inFlight) {
+        try { await inFlight; } catch { /* already logged via onUncaught */ }
       }
     }
   };

@@ -136,7 +136,9 @@ export class LaunchdAdapter implements ServiceAdapter {
     // execPath formatted by resolveCliExecPath() as: "<nodeBin>" "<indexJs>"
     // Parse double-quoted tokens so paths with spaces (e.g. /Users/Jane Smith/...)
     // survive intact. Unquoted execPath falls back to whitespace split.
-    const args = Array.from(execPath.matchAll(/"([^"]+)"|(\S+)/g)).map(m => m[1] ?? m[2]);
+    const args = Array.from(execPath.matchAll(/"([^"]+)"|(\S+)/g))
+      .map(m => m[1] ?? m[2] ?? '')
+      .filter(a => a.length > 0);
     writeFileSync(plistPath(), buildPlist(args, port), 'utf8');
     await launchctlLoad(plistPath());
   }
@@ -181,7 +183,9 @@ export class LaunchdAdapter implements ServiceAdapter {
 
   async installBackupTimer(execPath: string, keep: number): Promise<void> {
     mkdirSync(agentsDir(), { recursive: true });
-    const args = Array.from(execPath.matchAll(/"([^"]+)"|(\S+)/g)).map(m => m[1] ?? m[2]);
+    const args = Array.from(execPath.matchAll(/"([^"]+)"|(\S+)/g))
+      .map(m => m[1] ?? m[2] ?? '')
+      .filter(a => a.length > 0);
     writeFileSync(backupPlistPath(), buildBackupPlist(args, keep), 'utf8');
     await launchctlLoad(backupPlistPath());
   }

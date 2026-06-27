@@ -43,7 +43,7 @@ function deduplicateRepeatedLines(text: string): string {
   let i = 0;
 
   while (i < lines.length) {
-    const line = lines[i];
+    const line = lines[i] ?? '';
     if (line.trim() === '') {
       out.push(line);
       i++;

@@ -92,8 +92,8 @@ function makeDeterministicVec(text: string): Float32Array {
   const v = new Float32Array(1024);
   // Seed each float from hash bytes cycling
   for (let i = 0; i < 1024; i++) {
-    const b0 = hash[i % 32];
-    const b1 = hash[(i + 1) % 32];
+    const b0 = hash[i % 32] ?? 0;
+    const b1 = hash[(i + 1) % 32] ?? 0;
     // Normalize to [-1, 1]
     v[i] = ((b0 * 256 + b1) / 32767.5) - 1.0;
   }

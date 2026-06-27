@@ -91,6 +91,12 @@ async function main() {
       break;
     }
 
+    case 'queue':
+    case 'rebuild':
+    case 'providers':
+      console.error(`'${cmd}' command is documented but not yet implemented in v0.1.0. Tracked for v0.2.`);
+      process.exit(1);
+
     case undefined:
     case '--help':
     case '-h':
