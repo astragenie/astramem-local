@@ -1,9 +1,29 @@
 import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
 import { defaultConfig } from '../config/config.js';
+import { defaultConfigDir } from '../config/datadir.js';
+
+/**
+ * Read MEMORY_BEARER from the user's secrets.env file when no env var or
+ * --token CLI flag was provided. This lets the daemon auto-start (e.g. from
+ * a Startup-folder .cmd at logon) without the bearer leaking into shell rc
+ * or env-var registry as plain text.
+ */
+function readBearerFromSecrets(): string | null {
+  try {
+    const path = join(defaultConfigDir(), 'secrets.env');
+    if (!existsSync(path)) return null;
+    const text = readFileSync(path, 'utf8');
+    const match = text.split('\n').find(l => l.startsWith('MEMORY_BEARER='));
+    if (!match) return null;
+    return match.slice('MEMORY_BEARER='.length).trim() || null;
+  } catch {
+    return null;
+  }
+}
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
 import { distillHandler } from '../pipeline/handlers/distill.js';
@@ -24,7 +44,11 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const cfg = defaultConfig();
   const port = opts.port ?? cfg.port;
   const dataDir = opts.dataDir ?? process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
-  const token = opts.token ?? process.env.ASTRA_MEMORY_TOKEN ?? 'devtok';
+  const token =
+    opts.token ??
+    process.env.ASTRA_MEMORY_TOKEN ??
+    readBearerFromSecrets() ??
+    'devtok';
 
   const dbPath = dataDir === ':memory:' ? ':memory:' : join(dataDir, 'memory.sqlite');
   if (dataDir !== ':memory:') mkdirSync(dataDir, { recursive: true });
