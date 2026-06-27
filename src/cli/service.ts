@@ -28,18 +28,27 @@ export async function serviceCommand(args: string[]): Promise<void> {
   switch (subCmd) {
     case 'install': {
       const portArg = parseArg(rest, '--port');
+      const keepArg = parseArg(rest, '--keep');
+      const withBackupTimer = rest.includes('--with-backup-timer');
       const cfg = defaultConfig();
       const port = portArg ? Number(portArg) : cfg.port;
+      const keep = keepArg ? Number(keepArg) : 7;
       const execPath = resolveCliExecPath();
       console.log(`Installing AstraMemory service for ${adapter.platform}...`);
       await adapter.install(execPath, port);
       console.log('Service installed. Run `astra-memory service start` to start it.');
+      if (withBackupTimer) {
+        console.log('Installing nightly backup timer (03:00)...');
+        await adapter.installBackupTimer(execPath, keep);
+        console.log(`Backup timer installed (keep=${keep} snapshots).`);
+      }
       break;
     }
 
     case 'uninstall': {
       console.log('Uninstalling AstraMemory service...');
       await adapter.uninstall();
+      try { await adapter.uninstallBackupTimer(); } catch { /* timer may not be installed */ }
       console.log('Service uninstalled.');
       break;
     }
@@ -77,8 +86,11 @@ export async function serviceCommand(args: string[]): Promise<void> {
       console.log(`astra-memory service <subcommand>
 
 Subcommands:
-  install [--port N]   Install OS service (systemd/launchd/schtasks)
-  uninstall            Remove OS service
+  install [--port N] [--with-backup-timer] [--keep N]
+                       Install OS service (systemd/launchd/schtasks)
+                       --with-backup-timer  also install nightly 03:00 backup timer
+                       --keep N             retain N snapshots (default: 7)
+  uninstall            Remove OS service (also removes backup timer if present)
   start                Start service via OS init
   stop                 Stop service via OS init
   status               Show service status`);

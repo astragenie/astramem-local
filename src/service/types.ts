@@ -17,4 +17,17 @@ export interface ServiceAdapter {
   stop(): Promise<void>;
   /** Query current status. */
   status(): Promise<ServiceStatus>;
+  /**
+   * Install a nightly backup timer (optional — invoked by
+   * `service install --with-backup-timer`).
+   *
+   * @param execPath  Same exec path used for the main service.
+   * @param keep      Number of backups to retain (forwarded to --keep).
+   */
+  installBackupTimer(execPath: string, keep: number): Promise<void>;
+  /**
+   * Remove the nightly backup timer installed by installBackupTimer().
+   * No-op if the timer was never installed.
+   */
+  uninstallBackupTimer(): Promise<void>;
 }

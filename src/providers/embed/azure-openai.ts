@@ -1,5 +1,6 @@
 import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
+import { childLogger } from '../../log/logger.js';
 
 const EMBED_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 15_000;

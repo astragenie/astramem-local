@@ -1,5 +1,6 @@
 import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
+import { childLogger } from '../../log/logger.js';
 
 const EMBED_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 10_000;
@@ -57,9 +58,11 @@ export class OllamaEmbedProvider implements EmbedProvider {
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
+    const log = childLogger({ provider: this.name, model: this.model });
     const results: Float32Array[] = [];
 
     for (const text of texts) {
+      const t0 = Date.now();
       const res = await fetchWithRetry(
         `${this.baseUrl}/api/embeddings`,
         {
@@ -73,6 +76,8 @@ export class OllamaEmbedProvider implements EmbedProvider {
       if (!res.ok) {
         const raw = await res.text().catch(() => '');
         const snippet = raw.slice(0, 200);
+        const latency_ms = Date.now() - t0;
+        log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 || res.status === 429 ? 'TransientError' : 'DeterministicError' }, 'ollama embed failed');
         if (res.status >= 500) {
           throw new TransientError(`Ollama embed failed: HTTP ${res.status} — ${snippet}`);
         }
@@ -93,6 +98,8 @@ export class OllamaEmbedProvider implements EmbedProvider {
         );
       }
 
+      const latency_ms = Date.now() - t0;
+      log.info({ latency_ms, tokens_in: 0, tokens_out: EXPECTED_DIM }, 'ollama embed ok');
       results.push(new Float32Array(data.embedding));
     }
 

@@ -6,6 +6,8 @@ import type { ServiceAdapter, ServiceStatus } from './types.js';
 
 const SERVICE_NAME = 'astra-memoryd';
 const UNIT_FILENAME = `${SERVICE_NAME}.service`;
+const BACKUP_SERVICE_FILENAME = `${SERVICE_NAME}-backup.service`;
+const BACKUP_TIMER_FILENAME = `${SERVICE_NAME}-backup.timer`;
 
 function unitDir(): string {
   return join(homedir(), '.config', 'systemd', 'user');
@@ -13,6 +15,14 @@ function unitDir(): string {
 
 function unitPath(): string {
   return join(unitDir(), UNIT_FILENAME);
+}
+
+function backupServicePath(): string {
+  return join(unitDir(), BACKUP_SERVICE_FILENAME);
+}
+
+function backupTimerPath(): string {
+  return join(unitDir(), BACKUP_TIMER_FILENAME);
 }
 
 function buildUnit(execStart: string, port: number): string {
@@ -30,6 +40,33 @@ function buildUnit(execStart: string, port: number): string {
     '',
     '[Install]',
     'WantedBy=default.target',
+    '',
+  ].join('\n');
+}
+
+function buildBackupService(execCmd: string, keep: number): string {
+  return [
+    '[Unit]',
+    'Description=AstraMemory nightly backup',
+    '',
+    '[Service]',
+    'Type=oneshot',
+    `ExecStart=${execCmd} backup --keep ${keep}`,
+    '',
+  ].join('\n');
+}
+
+function buildBackupTimer(): string {
+  return [
+    '[Unit]',
+    'Description=AstraMemory nightly backup timer',
+    '',
+    '[Timer]',
+    'OnCalendar=03:00',
+    'Persistent=true',
+    '',
+    '[Install]',
+    'WantedBy=timers.target',
     '',
   ].join('\n');
 }
@@ -81,5 +118,28 @@ export class SystemdAdapter implements ServiceAdapter {
     } catch {
       return { installed, running: false, detail: 'inactive' };
     }
+  }
+
+  async installBackupTimer(execPath: string, keep: number): Promise<void> {
+    mkdirSync(unitDir(), { recursive: true });
+    const execCmd = execPath; // already formatted as `"node" "index.js"`
+    writeFileSync(backupServicePath(), buildBackupService(execCmd, keep), 'utf8');
+    writeFileSync(backupTimerPath(), buildBackupTimer(), 'utf8');
+    await runCmd(`systemctl --user daemon-reload`);
+    await runCmd(`systemctl --user enable --now ${SERVICE_NAME}-backup.timer`);
+  }
+
+  async uninstallBackupTimer(): Promise<void> {
+    const timerPath = backupTimerPath();
+    const svcPath = backupServicePath();
+    if (existsSync(timerPath)) {
+      try { await runCmd(`systemctl --user stop ${SERVICE_NAME}-backup.timer`); } catch { /* ignore */ }
+      try { await runCmd(`systemctl --user disable ${SERVICE_NAME}-backup.timer`); } catch { /* ignore */ }
+      unlinkSync(timerPath);
+    }
+    if (existsSync(svcPath)) {
+      unlinkSync(svcPath);
+    }
+    try { await runCmd(`systemctl --user daemon-reload`); } catch { /* ignore */ }
   }
 }

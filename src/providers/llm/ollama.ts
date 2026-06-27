@@ -1,5 +1,6 @@
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../contracts/llm.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
+import { childLogger } from '../../log/logger.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 10_000;
@@ -63,6 +64,8 @@ export class OllamaLLMProvider implements LLMProvider {
   }
 
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+    const log = childLogger({ provider: this.name, model: this.model });
+    const t0 = Date.now();
     const useJson = opts?.json ?? true;
     const body = {
       model: this.model,
@@ -84,8 +87,10 @@ export class OllamaLLMProvider implements LLMProvider {
     );
 
     if (!res.ok) {
-      const body = await res.text().catch(() => '');
-      const snippet = body.slice(0, 200);
+      const rawBody = await res.text().catch(() => '');
+      const snippet = rawBody.slice(0, 200);
+      const latency_ms = Date.now() - t0;
+      log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 ? 'TransientError' : 'DeterministicError' }, 'ollama chat failed');
       if (res.status >= 500) {
         throw new TransientError(`Ollama chat failed: HTTP ${res.status} — ${snippet}`);
       }
@@ -99,6 +104,9 @@ export class OllamaLLMProvider implements LLMProvider {
     const text = data.message?.content ?? '';
     const inTokens = data.prompt_eval_count ?? 0;
     const outTokens = data.eval_count ?? 0;
+    const latency_ms = Date.now() - t0;
+
+    log.info({ latency_ms, tokens_in: inTokens, tokens_out: outTokens, usd: 0 }, 'ollama chat ok');
 
     return {
       text,

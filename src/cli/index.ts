@@ -6,6 +6,7 @@ import { doctorCommand } from './doctor.js';
 import { budgetCommand } from './budget.js';
 import { init } from './init.js';
 import { tokenCommand } from './token.js';
+import { backupCommand } from './backup.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -84,6 +85,12 @@ async function main() {
       await tokenCommand(rest);
       break;
 
+    case 'backup': {
+      // astra-memory backup [--out PATH] [--keep N] [--json]
+      await backupCommand(rest);
+      break;
+    }
+
     case undefined:
     case '--help':
     case '-h':
@@ -98,6 +105,7 @@ Commands:
   recall "question" [--k N] [--type TYPE] [--repo REPO]
   remember "text" [--type TYPE] [--repo REPO]
   budget [--reset]                       Show today + month LLM spend vs cap
+  backup [--out PATH] [--keep N] [--json] Snapshot DB; prune old backups
   init                                   Interactive setup wizard
   token rotate                           Issue new local Bearer token
 

@@ -73,6 +73,12 @@ export interface DoctorCheckOpts {
   };
   /** Embed provider to real-embed-probe. */
   embedProvider?: EmbedProvider;
+  /**
+   * Path to the backups directory. When provided, doctor warns if the newest
+   * backup is older than 24h (or if no backups exist at all).
+   * Pass undefined (the default) to skip the backup-recency check.
+   */
+  backupsDir?: string;
 }
 
 // ─── Check 1: SQLite writable + WAL ──────────────────────────────────────────
@@ -355,6 +361,62 @@ function checkPluginCoexistence(port: number): Check {
   };
 }
 
+// ─── Check 12: Backup recency ─────────────────────────────────────────────────
+
+const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
+
+function checkBackupRecency(backupsDir: string): Check {
+  return {
+    name: 'Backup recency',
+    async run(): Promise<CheckResult> {
+      if (!existsSync(backupsDir)) {
+        return {
+          ok: false,
+          message: `No backups directory found at ${backupsDir}`,
+          fix: 'astra-memory backup  to create the first snapshot',
+        };
+      }
+
+      let entries: string[];
+      try {
+        entries = readdirSync(backupsDir).filter(n => /^memory-.*\.sqlite$/.test(n));
+      } catch {
+        return { ok: false, message: `Cannot read backups directory: ${backupsDir}` };
+      }
+
+      if (entries.length === 0) {
+        return {
+          ok: false,
+          message: 'No backup snapshots found',
+          fix: 'astra-memory backup  to create the first snapshot',
+        };
+      }
+
+      // Find the most-recently modified backup
+      let newestMtime = 0;
+      for (const name of entries) {
+        try {
+          const mtime = statSync(join(backupsDir, name)).mtimeMs;
+          if (mtime > newestMtime) newestMtime = mtime;
+        } catch { /* skip files that disappeared */ }
+      }
+
+      const ageMs = Date.now() - newestMtime;
+      const ageH = (ageMs / 3_600_000).toFixed(1);
+
+      if (ageMs > TWENTY_FOUR_HOURS_MS) {
+        return {
+          ok: false,
+          message: `Newest backup is ${ageH}h old (> 24h)`,
+          fix: 'astra-memory backup  or enable nightly timer: astra-memory service install --with-backup-timer',
+        };
+      }
+
+      return { ok: true, message: `Newest backup is ${ageH}h old (within 24h)` };
+    },
+  };
+}
+
 function coreChecks(opts: DoctorCheckOpts): Check[] {
   const port = opts.port ?? 7777;
   const dataDir = opts.dataDir ?? join(tmpdir(), 'astra-memory');
@@ -390,6 +452,11 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
 
   // Plugin coexistence — warn if MEMORY_API_URL or .mcp.json points elsewhere.
   checks.push(checkPluginCoexistence(port));
+
+  // Backup recency — optional; only added when caller supplies a backupsDir.
+  if (opts.backupsDir) {
+    checks.push(checkBackupRecency(opts.backupsDir));
+  }
 
   return checks;
 }

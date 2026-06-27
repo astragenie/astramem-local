@@ -1,6 +1,7 @@
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../contracts/llm.js';
 import { computeCostUsd } from './pricing.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
+import { childLogger } from '../../log/logger.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -72,6 +73,8 @@ export class AzureOpenAILLMProvider implements LLMProvider {
   }
 
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+    const log = childLogger({ provider: this.name, model: this.model });
+    const t0 = Date.now();
     const useJson = opts?.json ?? true;
     const body = {
       messages,
@@ -103,6 +106,8 @@ export class AzureOpenAILLMProvider implements LLMProvider {
         // leave as raw text
       }
       const snippet = detail.slice(0, 200);
+      const latency_ms = Date.now() - t0;
+      log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 || res.status === 429 ? 'TransientError' : 'DeterministicError' }, 'azure-openai chat failed');
       if (res.status >= 500) {
         throw new TransientError(`Azure OpenAI chat failed: HTTP ${res.status} — ${snippet}`);
       }
@@ -117,6 +122,9 @@ export class AzureOpenAILLMProvider implements LLMProvider {
     const promptTokens = data.usage?.prompt_tokens ?? 0;
     const completionTokens = data.usage?.completion_tokens ?? 0;
     const usd = computeCostUsd(this.model, promptTokens, completionTokens);
+    const latency_ms = Date.now() - t0;
+
+    log.info({ latency_ms, tokens_in: promptTokens, tokens_out: completionTokens, usd }, 'azure-openai chat ok');
 
     return {
       text,

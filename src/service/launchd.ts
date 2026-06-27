@@ -6,6 +6,8 @@ import type { ServiceAdapter, ServiceStatus } from './types.js';
 
 const LABEL = 'com.astragenie.astra-memoryd';
 const PLIST_FILENAME = `${LABEL}.plist`;
+const BACKUP_LABEL = 'com.astragenie.astra-memoryd-backup';
+const BACKUP_PLIST_FILENAME = `${BACKUP_LABEL}.plist`;
 
 function agentsDir(): string {
   return join(homedir(), 'Library', 'LaunchAgents');
@@ -15,6 +17,10 @@ function plistPath(): string {
   return join(agentsDir(), PLIST_FILENAME);
 }
 
+function backupPlistPath(): string {
+  return join(agentsDir(), BACKUP_PLIST_FILENAME);
+}
+
 function xmlEscape(s: string): string {
   return s
     .replace(/&/g, '&amp;')
@@ -22,6 +28,40 @@ function xmlEscape(s: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function buildBackupPlist(args: string[], keep: number): string {
+  const argItems = args.map(a => `    <string>${xmlEscape(a)}</string>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${BACKUP_LABEL}</string>
+
+  <key>ProgramArguments</key>
+  <array>
+${argItems}
+    <string>backup</string>
+    <string>--keep</string>
+    <string>${keep}</string>
+  </array>
+
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>3</integer>
+    <key>Minute</key>
+    <integer>0</integer>
+  </dict>
+
+  <key>StandardOutPath</key>
+  <string>${homedir()}/Library/Logs/astra-memoryd-backup.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>${homedir()}/Library/Logs/astra-memoryd-backup.err.log</string>
+</dict>
+</plist>
+`;
 }
 
 function buildPlist(args: string[], port: number): string {
@@ -136,6 +176,21 @@ export class LaunchdAdapter implements ServiceAdapter {
       return { installed, running, detail: out };
     } catch {
       return { installed, running: false, detail: 'not loaded' };
+    }
+  }
+
+  async installBackupTimer(execPath: string, keep: number): Promise<void> {
+    mkdirSync(agentsDir(), { recursive: true });
+    const args = Array.from(execPath.matchAll(/"([^"]+)"|(\S+)/g)).map(m => m[1] ?? m[2]);
+    writeFileSync(backupPlistPath(), buildBackupPlist(args, keep), 'utf8');
+    await launchctlLoad(backupPlistPath());
+  }
+
+  async uninstallBackupTimer(): Promise<void> {
+    const bp = backupPlistPath();
+    if (existsSync(bp)) {
+      try { await launchctlUnload(bp); } catch { /* ignore if not loaded */ }
+      unlinkSync(bp);
     }
   }
 }

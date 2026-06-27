@@ -2,6 +2,7 @@ import { exec } from 'node:child_process';
 import type { ServiceAdapter, ServiceStatus } from './types.js';
 
 const TASK_NAME = 'AstraMemoryD';
+const BACKUP_TASK_NAME = 'AstraMemoryDBackup';
 
 function runCmd(cmd: string): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -55,6 +56,21 @@ export class SchtasksAdapter implements ServiceAdapter {
     } catch (err) {
       // Task not found → not installed
       return { installed: false, running: false, detail: String(err) };
+    }
+  }
+
+  async installBackupTimer(execPath: string, keep: number): Promise<void> {
+    // schtasks daily at 03:00, runs: <node> <indexJs> backup --keep N
+    const tr = quoteForSchtasks(`${execPath} backup --keep ${keep}`);
+    const cmd = `schtasks /create /sc DAILY /st 03:00 /tn "${BACKUP_TASK_NAME}" /tr ${tr} /f`;
+    await runCmd(cmd);
+  }
+
+  async uninstallBackupTimer(): Promise<void> {
+    try {
+      await runCmd(`schtasks /delete /tn "${BACKUP_TASK_NAME}" /f`);
+    } catch {
+      // Task may not exist — ignore
     }
   }
 }
