@@ -1,15 +1,12 @@
 #!/usr/bin/env node
 import { serve } from './serve.js';
 import { cliSearch, cliRecall, cliRemember } from './search.js';
+import { serviceCommand } from './service.js';
+import { doctorCommand } from './doctor.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
-}
-
-/** Returns true if the flag is present (boolean flag with no value) */
-function hasFlag(args: string[], flag: string): boolean {
-  return args.includes(flag);
 }
 
 async function main() {
@@ -58,6 +55,18 @@ async function main() {
       break;
     }
 
+    case 'service': {
+      // astra-memory service install|uninstall|start|stop|status [--port N]
+      await serviceCommand(rest);
+      break;
+    }
+
+    case 'doctor': {
+      // astra-memory doctor [--json] [--port N]
+      await doctorCommand(rest);
+      break;
+    }
+
     case 'init':
       console.log('init wizard lands in M5');
       break;
@@ -69,14 +78,18 @@ async function main() {
 
 Commands:
   serve [--port N]                       Start daemon (foreground)
+  service install|uninstall|start|stop|status [--port N]
+                                         Manage OS service (systemd/launchd/schtasks)
+  doctor [--json] [--port N]             Run health checks
   search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--limit N]
   recall "question" [--k N] [--type TYPE] [--repo REPO]
   remember "text" [--type TYPE] [--repo REPO]
   init                                   Interactive wizard (M5)
 
 Environment:
-  ASTRA_MEMORY_URL    Daemon base URL (default: http://127.0.0.1:7777)
-  ASTRA_MEMORY_TOKEN  Bearer token (default: devtok)`);
+  ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)
+  ASTRA_MEMORY_TOKEN     Bearer token (default: devtok)
+  ASTRA_MEMORY_DATADIR   Data directory (overrides config)`);
       break;
 
     default:
