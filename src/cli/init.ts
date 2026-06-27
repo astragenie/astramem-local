@@ -26,6 +26,9 @@ import { migrate } from '../storage/migrate.js';
 import { getChecks } from '../doctor/checks.js';
 import { runChecks, formatTable } from '../doctor/runner.js';
 import { mkdirSync } from 'node:fs';
+import { persistEnvVars } from '../config/persist-envs.js';
+import { waitForHealth } from './wait-health.js';
+import { getServiceAdapter } from '../service/index.js';
 
 // ─── Non-interactive env var map ─────────────────────────────────────────────
 
@@ -343,21 +346,84 @@ export async function init(): Promise<void> {
     console.log('');
   }
 
-  // 9. Print next steps
+  // 9. Persist env vars so the plugin sees them in future shells
   const apiUrl = `http://127.0.0.1:${answers.port}`;
-  console.log('✓ AstraMemory Local initialized.');
-  console.log('');
-  console.log('Add to your shell rc (~/.bashrc / ~/.zshrc):');
+  if (!nonInteractive) {
+    const persistResult = await persistEnvVars({
+      MEMORY_BEARER: bearer,
+      MEMORY_API_URL: apiUrl,
+    });
+    if (persistResult.ok) {
+      console.log(`  ✓ env vars persisted (${persistResult.target})`);
+    } else {
+      console.log(`  ⚠ could not persist env vars: ${persistResult.message}`);
+    }
+  }
+  // Always echo the export lines so users (and CI tests) can pick them up.
   console.log('');
   console.log(`  export MEMORY_BEARER=${bearer}`);
   console.log(`  export MEMORY_API_URL=${apiUrl}`);
-  console.log('');
-  console.log('Then start the daemon:');
-  console.log('');
-  if (answers.installService) {
-    console.log('  astra-memory service install');
-  } else {
-    console.log('  astra-memory serve');
+
+  // 10. Install + start service if requested
+  let serviceStarted = false;
+  if (answers.installService && !nonInteractive) {
+    try {
+      const adapter = getServiceAdapter();
+      const execPath = resolveCliExecPathForService();
+      console.log(`  · installing OS service (${adapter.platform})...`);
+      await adapter.install(execPath, answers.port);
+      console.log(`  · starting service...`);
+      await adapter.start();
+      console.log(`  ✓ service installed and started`);
+      serviceStarted = true;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.log(`  ⚠ service install failed: ${msg}`);
+      console.log(`    Retry manually: astra-memory service install && astra-memory service start`);
+    }
   }
+
+  // 11. Verify daemon health if we started one
+  if (serviceStarted) {
+    const up = await waitForHealth(answers.port, 5_000);
+    if (up) {
+      console.log(`  ✓ daemon healthy at ${apiUrl}`);
+    } else {
+      console.log(`  ⚠ daemon did not respond to /health within 5s — check 'astra-memory service status'`);
+    }
+  }
+
+  // 12. Print final next steps
   console.log('');
+  console.log('✓ AstraMemory Local initialized.');
+  console.log('');
+  if (!serviceStarted && !nonInteractive) {
+    console.log('Start the daemon:');
+    console.log('');
+    if (answers.installService) {
+      console.log('  astra-memory service install && astra-memory service start');
+    } else {
+      console.log('  astra-memory serve');
+    }
+    console.log('');
+  }
+  console.log('Open a new shell so env vars take effect, then verify:');
+  console.log('');
+  console.log('  astra-memory doctor');
+  console.log('  astra-memory remember "test memory" --type fact');
+  console.log('  astra-memory search "test"');
+  console.log('');
+}
+
+/**
+ * Resolve absolute path to dist/cli/index.js for the service unit's exec command.
+ * Mirrors the helper in src/cli/service.ts but kept local to avoid circular imports
+ * from init.ts -> cli/service.ts -> service/index.ts.
+ */
+function resolveCliExecPathForService(): string {
+  const nodeBin = process.execPath;
+  const thisFile = new URL(import.meta.url).pathname;
+  const normalized = thisFile.replace(/^\/([A-Za-z]:)/, '$1');
+  const indexJs = normalized.replace(/init\.(js|ts)$/, 'index.js');
+  return `"${nodeBin}" "${indexJs}"`;
 }
