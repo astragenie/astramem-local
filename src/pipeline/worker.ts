@@ -12,6 +12,9 @@ export interface WorkerOpts {
   registry: HandlerRegistry;
   db: DB;
   config: Config;
+  /** Optional pre-built HandlerCtx (or ExtendedHandlerCtx) to pass to handlers.
+   *  When omitted, a minimal {db, config} context is constructed. */
+  ctx?: HandlerCtx;
 }
 
 export interface WorkerHandle {
@@ -33,7 +36,7 @@ export interface WorkerHandle {
 export function startWorker(opts: WorkerOpts): WorkerHandle {
   const { pollMs, registry, db, config } = opts;
   const repo = new JobRepo(db);
-  const ctx: HandlerCtx = { db, config };
+  const ctx: HandlerCtx = opts.ctx ?? { db, config };
 
   let stopped = false;
   let timer: ReturnType<typeof setTimeout> | null = null;

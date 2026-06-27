@@ -1,0 +1,5 @@
+user: We need to pick a vector store for v1. LanceDB vs sqlite-vec.
+assistant: sqlite-vec keeps everything in one SQLite file. LanceDB is a separate columnar store.
+For v1 with under 1M memories, sqlite-vec wins on simplicity and Windows install pain.
+user: OK let's go with sqlite-vec. Document it as the v1 default.
+assistant: Done. Decision: use sqlite-vec for v1, LanceDB-ready via VectorStore interface for later.
