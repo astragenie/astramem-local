@@ -1,0 +1,27 @@
+{
+  "name": "@astragenie/astramemory-local",
+  "version": "0.0.1",
+  "type": "module",
+  "bin": { "astra-memory": "./dist/cli/index.js" },
+  "scripts": {
+    "build": "tsc -p .",
+    "dev": "tsc -w -p .",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "sqlite-vec": "^0.1.0",
+    "fastify": "^4.28.0",
+    "zod": "^3.23.0",
+    "@inquirer/prompts": "^5.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0",
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/node": "^20.0.0"
+  },
+  "license": "MIT"
+}

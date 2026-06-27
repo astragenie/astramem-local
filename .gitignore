@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.sqlite*
+*.log
+.env
+secrets.env
+.vitest-cache/
