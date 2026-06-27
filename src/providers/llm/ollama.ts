@@ -1,4 +1,5 @@
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../contracts/llm.js';
+import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 10_000;
@@ -83,8 +84,15 @@ export class OllamaLLMProvider implements LLMProvider {
     );
 
     if (!res.ok) {
-      const text = await res.text().catch(() => '');
-      throw new Error(`Ollama chat failed: HTTP ${res.status} — ${text}`);
+      const body = await res.text().catch(() => '');
+      const snippet = body.slice(0, 200);
+      if (res.status >= 500) {
+        throw new TransientError(`Ollama chat failed: HTTP ${res.status} — ${snippet}`);
+      }
+      if (res.status === 429) {
+        throw new TransientError(`Ollama chat rate-limited (429): ${snippet}`);
+      }
+      throw new DeterministicError(`Ollama chat failed: HTTP ${res.status} — ${snippet}`);
     }
 
     const data = (await res.json()) as OllamaChatResponse;

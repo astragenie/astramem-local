@@ -5,6 +5,7 @@ import { JobRepo } from '../../src/pipeline/job-repo.js';
 import { HandlerRegistry } from '../../src/pipeline/registry.js';
 import { startWorker } from '../../src/pipeline/worker.js';
 import { defaultConfig } from '../../src/config/config.js';
+import { DeterministicError, TransientError } from '../../src/pipeline/errors.js';
 import type { DB } from '../../src/storage/db.js';
 import type { JobHandler } from '../../src/pipeline/handler.js';
 
@@ -137,6 +138,64 @@ describe('Worker', () => {
     };
     expect(job.state).toBe('poison');
     expect(job.attempts).toBe(3);
+  });
+
+  it('poisons immediately on DeterministicError — no further retries', async () => {
+    let callCount = 0;
+    const handler: JobHandler = {
+      kind: 'distill',
+      async handle(_payload, _ctx) {
+        callCount++;
+        throw new DeterministicError('Zod parse failed: invalid_type at atoms[0].type');
+      },
+    };
+    registry.register(handler);
+
+    const id = repo.enqueue('distill', { kind: 'distill', transcript_id: 't1', session_id: 's1' });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id) as { state: string } | undefined;
+      return job?.state === 'poison';
+    }, 3000);
+
+    const job = db.prepare('SELECT state, attempts FROM jobs WHERE id = ?').get(id) as {
+      state: string; attempts: number;
+    };
+    expect(job.state).toBe('poison');
+    // Exactly one attempt — no retry budget wasted
+    expect(job.attempts).toBe(1);
+    expect(callCount).toBe(1);
+  });
+
+  it('retries up to MAX_ATTEMPTS on TransientError then poisons', async () => {
+    let callCount = 0;
+    const handler: JobHandler = {
+      kind: 'reembed',
+      async handle(_payload, _ctx) {
+        callCount++;
+        throw new TransientError(`ECONNREFUSED attempt ${callCount}`);
+      },
+    };
+    registry.register(handler);
+
+    const id = repo.enqueue('reembed', { kind: 'reembed', memory_id: 'm1' });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id) as { state: string } | undefined;
+      return job?.state === 'poison';
+    }, 10_000);
+
+    const job = db.prepare('SELECT state, attempts FROM jobs WHERE id = ?').get(id) as {
+      state: string; attempts: number;
+    };
+    expect(job.state).toBe('poison');
+    // Exhausted 3 transient retries
+    expect(job.attempts).toBe(3);
+    expect(callCount).toBe(3);
   });
 
   it('stop() halts the poll loop', async () => {

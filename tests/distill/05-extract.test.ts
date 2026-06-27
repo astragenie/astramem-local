@@ -3,6 +3,7 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { extractChunk, extract, BudgetExceeded } from '../../src/distill/stages/05-extract.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
+import { DeterministicError } from '../../src/pipeline/errors.js';
 import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../../src/contracts/index.js';
 
 const VALID_EXTRACTION_JSON = JSON.stringify({
@@ -68,29 +69,30 @@ describe('extract stage', () => {
     expect(result.retried).toBe(false);
   });
 
-  it('retries on invalid JSON and succeeds on second attempt', async () => {
+  it('throws DeterministicError immediately on invalid JSON (no retry in stage)', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
-    const llm = makeMockLLM([INVALID_JSON, SECOND_ATTEMPT_VALID]);
+    // Only one response queued — stage must NOT issue a second LLM call
+    let callCount = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(_msgs: ChatMsg[], _opts?: ChatOpts): Promise<ChatResult> {
+        callCount++;
+        return { text: INVALID_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
 
-    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    await expect(
+      extractChunk(0, 'chunk text', llm, budget, 10.0),
+    ).rejects.toBeInstanceOf(DeterministicError);
 
-    expect(result.retried).toBe(true);
-    expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].type).toBe('lesson');
-  });
-
-  it('returns empty atoms and retried=true when both attempts fail', async () => {
-    const db = openDb(':memory:');
-    migrate(db);
-    const budget = new BudgetTracker(db);
-    const llm = makeMockLLM([INVALID_JSON, INVALID_JSON]);
-
-    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
-
-    expect(result.retried).toBe(true);
-    expect(result.atoms).toEqual([]);
+    // Exactly one LLM call — no inline retry budget waste
+    expect(callCount).toBe(1);
   });
 
   it('returns empty atoms without LLM call for empty chunk', async () => {

@@ -6,15 +6,22 @@
  * on parse failure. Throws BudgetExceeded if over cap.
  */
 
+import { z } from 'zod';
 import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import {
   AtomSchema,
-  ExtractionSchema,
   EXTRACTION_SYSTEM_PROMPT,
-  EXTRACTION_STRICT_PROMPT,
   type Atom,
 } from '../prompts/extract.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
+import { DeterministicError } from '../../pipeline/errors.js';
+
+/**
+ * Lenient wrapper: accepts any objects in the atoms array so that individual
+ * bad atoms (short text, unknown type, etc.) don't reject the whole response.
+ * Valid atoms are filtered with AtomSchema after JSON parsing.
+ */
+const LenientExtractionSchema = z.object({ atoms: z.array(z.unknown()) });
 
 export { BudgetExceeded };
 export type { Atom };
@@ -28,8 +35,11 @@ export interface ExtractResult {
 
 /**
  * Extract atoms from a single compacted chunk.
- * On JSON parse / Zod validation failure: retries once with stricter prompt.
- * If retry also fails: returns empty atoms (not a fatal error — log and continue).
+ *
+ * Parse / Zod validation failure → throws DeterministicError immediately.
+ * The worker catches this, poisons the job after a single attempt, and does not
+ * issue a second LLM call. This prevents burning budget on a malformed transcript
+ * that will never produce valid JSON regardless of how many times we retry.
  */
 export async function extractChunk(
   chunkIndex: number,
@@ -47,38 +57,18 @@ export async function extractChunk(
 
   budget.assertCanSpend(estimateUsd, capUsd);
 
-  // First attempt
-  const firstResult = await callExtract(text, EXTRACTION_SYSTEM_PROMPT, provider);
-  budget.record(firstResult.usageUsd);
+  const result = await callExtract(text, EXTRACTION_SYSTEM_PROMPT, provider);
+  budget.record(result.usageUsd);
 
-  const firstParsed = tryParseAtoms(firstResult.text);
-  if (firstParsed !== null) {
-    return { chunkIndex, atoms: firstParsed, usageUsd: firstResult.usageUsd, retried: false };
+  const parsed = tryParseAtoms(result.text);
+  if (parsed !== null) {
+    return { chunkIndex, atoms: parsed, usageUsd: result.usageUsd, retried: false };
   }
 
-  // Retry with stricter prompt
-  const retryEstimate = BudgetTracker.estimateUsd(
-    EXTRACTION_STRICT_PROMPT.length + text.length,
-    0.000002,
-    0.000002,
+  // Parse / schema failure — deterministic. Let the worker decide retry policy.
+  throw new DeterministicError(
+    `[extract] chunk ${chunkIndex}: Zod/JSON parse failed — raw: ${result.text.slice(0, 200)}`,
   );
-  budget.assertCanSpend(retryEstimate, capUsd);
-
-  const retryResult = await callExtract(text, EXTRACTION_STRICT_PROMPT, provider);
-  budget.record(retryResult.usageUsd);
-
-  const retryParsed = tryParseAtoms(retryResult.text);
-  const totalUsd = firstResult.usageUsd + retryResult.usageUsd;
-
-  if (retryParsed !== null) {
-    return { chunkIndex, atoms: retryParsed, usageUsd: totalUsd, retried: true };
-  }
-
-  // Both attempts failed — log and return empty (not fatal)
-  console.warn(
-    `[extract] chunk ${chunkIndex}: parse failed after retry — yielding 0 atoms. Raw: ${retryResult.text.slice(0, 200)}`,
-  );
-  return { chunkIndex, atoms: [], usageUsd: totalUsd, retried: true };
 }
 
 async function callExtract(
@@ -101,9 +91,15 @@ async function callExtract(
 }
 
 /**
- * Try to parse the LLM response as ExtractionSchema.
+ * Try to parse the LLM response into an Atom[].
  * Strips markdown fences if present.
- * Returns null on any parse failure.
+ *
+ * Returns an Atom[] (possibly empty) when the JSON is structurally valid and
+ * contains an `atoms` array — even if individual atoms are malformed (they
+ * are silently dropped via AtomSchema filtering).
+ *
+ * Returns null only when the raw text is not parseable JSON or is missing the
+ * top-level `atoms` key — this is the signal for a DeterministicError.
  */
 function tryParseAtoms(raw: string): Atom[] | null {
   try {
@@ -119,12 +115,14 @@ function tryParseAtoms(raw: string): Atom[] | null {
 
     const jsonStr = text.slice(start, end + 1);
     const parsed: unknown = JSON.parse(jsonStr);
-    const validated = ExtractionSchema.safeParse(parsed);
 
-    if (!validated.success) return null;
+    // Use the lenient schema — only requires `atoms` to be an array
+    const wrapper = LenientExtractionSchema.safeParse(parsed);
+    if (!wrapper.success) return null;
 
-    // Filter atoms that pass AtomSchema individually (belt-and-suspenders)
-    return validated.data.atoms.filter(a => AtomSchema.safeParse(a).success);
+    // Filter atoms individually: drop those that fail strict AtomSchema
+    // (short text, unknown type, out-of-range numbers, etc.)
+    return wrapper.data.atoms.filter((a) => AtomSchema.safeParse(a).success) as Atom[];
   } catch {
     return null;
   }

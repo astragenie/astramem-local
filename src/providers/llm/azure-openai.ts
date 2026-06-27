@@ -1,5 +1,6 @@
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../contracts/llm.js';
 import { computeCostUsd } from './pricing.js';
+import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -101,7 +102,14 @@ export class AzureOpenAILLMProvider implements LLMProvider {
       } catch {
         // leave as raw text
       }
-      throw new Error(`Azure OpenAI chat failed: HTTP ${res.status} — ${detail}`);
+      const snippet = detail.slice(0, 200);
+      if (res.status >= 500) {
+        throw new TransientError(`Azure OpenAI chat failed: HTTP ${res.status} — ${snippet}`);
+      }
+      if (res.status === 429) {
+        throw new TransientError(`Azure OpenAI chat rate-limited (429): ${snippet}`);
+      }
+      throw new DeterministicError(`Azure OpenAI chat failed: HTTP ${res.status} — ${snippet}`);
     }
 
     const data = (await res.json()) as AzureChatResponse;

@@ -1,4 +1,5 @@
 import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
+import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 
 const EMBED_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 10_000;
@@ -71,7 +72,14 @@ export class OllamaEmbedProvider implements EmbedProvider {
 
       if (!res.ok) {
         const raw = await res.text().catch(() => '');
-        throw new Error(`Ollama embed failed: HTTP ${res.status} — ${raw}`);
+        const snippet = raw.slice(0, 200);
+        if (res.status >= 500) {
+          throw new TransientError(`Ollama embed failed: HTTP ${res.status} — ${snippet}`);
+        }
+        if (res.status === 429) {
+          throw new TransientError(`Ollama embed rate-limited (429): ${snippet}`);
+        }
+        throw new DeterministicError(`Ollama embed failed: HTTP ${res.status} — ${snippet}`);
       }
 
       const data = (await res.json()) as OllamaEmbedResponse;

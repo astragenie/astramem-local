@@ -4,6 +4,8 @@ import type { HandlerCtx } from './handler.js';
 import type { HandlerRegistry } from './registry.js';
 import { JobRepo } from './job-repo.js';
 import { DistillBudgetPausedError } from './handlers/distill.js';
+import { classifyError } from './failure-classifier.js';
+import { logger, childLogger } from '../log/logger.js';
 
 const MAX_ATTEMPTS = 3;
 
@@ -54,6 +56,10 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
       return;
     }
 
+    // Build a per-job child logger; binds job_id + job_kind + attempt on every log line
+    const jobLog = childLogger({ job_id: job.id, job_kind: job.kind, attempt: job.attempts + 1 });
+    jobLog.info('job claimed');
+
     const handler = registry.get(job.kind);
 
     if (!handler) {
@@ -64,8 +70,10 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
       if (updated) {
         if (updated.attempts >= MAX_ATTEMPTS) {
           repo.markPoison(job.id);
+          jobLog.warn({ error_message: errMsg, error_kind: 'NoHandler' }, 'job poisoned — no handler');
         } else {
           repo.requeueForRetry(job.id);
+          jobLog.warn({ error_message: errMsg, error_kind: 'NoHandler' }, 'job requeued — no handler');
         }
       }
       scheduleNext();
@@ -76,13 +84,16 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
     try {
       payload = JSON.parse(job.payload_json);
     } catch (e) {
-      repo.fail(job.id, `Failed to parse payload_json: ${String(e)}`);
+      const errMsg = `Failed to parse payload_json: ${String(e)}`;
+      repo.fail(job.id, errMsg);
       const updated = repo.get(job.id);
       if (updated) {
         if (updated.attempts >= MAX_ATTEMPTS) {
           repo.markPoison(job.id);
+          jobLog.warn({ error_message: errMsg, error_kind: 'PayloadParseError' }, 'job poisoned — bad payload');
         } else {
           repo.requeueForRetry(job.id);
+          jobLog.warn({ error_message: errMsg, error_kind: 'PayloadParseError' }, 'job requeued — bad payload');
         }
       }
       scheduleNext();
@@ -92,6 +103,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
     try {
       await handler.handle(payload, ctx);
       repo.complete(job.id);
+      jobLog.info('job completed');
     } catch (err) {
       // Budget exceeded → pause the job (not a failure, not retried).
       // Do NOT call fail() — that would increment attempts and eventually
@@ -101,20 +113,33 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
         const errMsg = err instanceof Error ? err.message : String(err);
         repo.setLastError(job.id, errMsg);
         repo.pause(job.id);
+        jobLog.warn({ error_message: errMsg, error_kind: 'BudgetPaused' }, 'job paused — budget exceeded');
         scheduleNext();
         return;
       }
 
+      const kind = classifyError(err);
       const errMsg = err instanceof Error ? err.message : String(err);
-      repo.fail(job.id, errMsg);
-      // Re-fetch to get the updated attempts count
-      const updated = repo.get(job.id);
-      if (updated) {
-        if (updated.attempts >= MAX_ATTEMPTS) {
+
+      if (kind === 'deterministic') {
+        // Schema / parse failures will not self-heal with another LLM call.
+        // Poison immediately to avoid burning budget on retries.
+        repo.fail(job.id, errMsg);
+        repo.markPoison(job.id);
+        jobLog.warn({ error_message: errMsg.slice(0, 200), error_kind: 'DeterministicFailure' }, 'job poisoned — deterministic failure');
+      } else {
+        // Transient failure — retry with exponential backoff up to MAX_ATTEMPTS.
+        repo.fail(job.id, errMsg);
+        const updated = repo.get(job.id);
+        if (updated && updated.attempts >= MAX_ATTEMPTS) {
           repo.markPoison(job.id);
+          jobLog.warn({ error_message: errMsg.slice(0, 200), error_kind: 'TransientFailure', attempts: updated.attempts }, 'job poisoned — retries exhausted');
         } else {
-          // Put back in pending so the worker will retry
-          repo.requeueForRetry(job.id);
+          // Exponential backoff: 1s, 2s, 4s, … capped at 60s
+          const attemptsSoFar = updated?.attempts ?? 1;
+          const delay = Math.min(1000 * Math.pow(2, attemptsSoFar - 1), 60_000);
+          jobLog.info({ error_message: errMsg.slice(0, 200), delay_ms: delay }, 'job requeued for retry');
+          setTimeout(() => { repo.requeueForRetry(job.id); }, delay);
         }
       }
     }
@@ -131,7 +156,8 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
 
   function onUncaught(err: unknown): void {
     // Worker must not crash the process — log and keep polling
-    console.error('[worker] uncaught error in tick:', err);
+    const errMsg = err instanceof Error ? err.message : String(err);
+    logger.error({ error_message: errMsg.slice(0, 200), error_kind: err instanceof Error ? err.name : 'Unknown' }, '[worker] uncaught error in tick');
     if (!stopped) {
       timer = setTimeout(() => { tick().catch(onUncaught); }, pollMs);
     }
