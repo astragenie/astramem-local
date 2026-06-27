@@ -14,11 +14,16 @@
  *   register({ name: 'No stuck jobs', run: async () => { ... } });
  */
 
-import { statfsSync, existsSync, accessSync, constants, mkdirSync, writeFileSync, unlinkSync } from 'node:fs';
+import { statfsSync, existsSync, accessSync, constants, mkdirSync, writeFileSync, unlinkSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Check, CheckResult } from './types.js';
+import type { LLMProvider } from '../contracts/llm.js';
+import type { EmbedProvider } from '../contracts/embed.js';
+import { llmChatProbe } from './probes/llm-chat-probe.js';
+import { embedProbe } from './probes/embed-probe.js';
+import { pluginCoexistenceProbe } from './probes/plugin-coexistence.js';
 
 export type { Check, CheckResult };
 
@@ -57,6 +62,17 @@ export interface DoctorCheckOpts {
   serviceUnitPath?: string;
   /** Daily budget cap in USD (default: 10) */
   dailyBudgetUsd?: number;
+  /**
+   * LLM providers to real-chat-probe. If compaction + extraction are the same
+   * provider instance (same name+model), only one probe fires.
+   */
+  llmProviders?: {
+    compaction: LLMProvider;
+    /** Only probed when name+model differs from compaction */
+    extraction: LLMProvider;
+  };
+  /** Embed provider to real-embed-probe. */
+  embedProvider?: EmbedProvider;
 }
 
 // ─── Check 1: SQLite writable + WAL ──────────────────────────────────────────
@@ -306,12 +322,45 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number): Check {
 
 // ─── Core check list builder ──────────────────────────────────────────────────
 
+// ─── Check 9: LLM chat probe (real 1-token call) ─────────────────────────────
+
+function checkLLMChat(provider: LLMProvider, label: string): Check {
+  return {
+    name: `LLM chat probe (${label})`,
+    async run(): Promise<CheckResult> {
+      return llmChatProbe(provider);
+    },
+  };
+}
+
+// ─── Check 10: Embed probe (real embed call + dim assert) ─────────────────────
+
+function checkEmbed(provider: EmbedProvider): Check {
+  return {
+    name: 'Embed probe (1024-dim)',
+    async run(): Promise<CheckResult> {
+      return embedProbe(provider);
+    },
+  };
+}
+
+// ─── Check 11: Plugin coexistence ────────────────────────────────────────────
+
+function checkPluginCoexistence(port: number): Check {
+  return {
+    name: 'Plugin config coexistence',
+    async run(): Promise<CheckResult> {
+      return pluginCoexistenceProbe(port);
+    },
+  };
+}
+
 function coreChecks(opts: DoctorCheckOpts): Check[] {
   const port = opts.port ?? 7777;
   const dataDir = opts.dataDir ?? join(tmpdir(), 'astra-memory');
   const dailyBudgetUsd = opts.dailyBudgetUsd ?? 10;
 
-  return [
+  const checks: Check[] = [
     checkDatadirWritable(dataDir),
     checkSqliteWritable(dataDir),
     checkSqliteVec(),
@@ -321,4 +370,26 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkServiceUnit(opts.serviceUnitPath),
     checkBudget(dataDir, dailyBudgetUsd),
   ];
+
+  // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
+  // Run extraction separately only when it uses a different provider/model.
+  if (opts.llmProviders) {
+    const { compaction, extraction } = opts.llmProviders;
+    checks.push(checkLLMChat(compaction, 'compaction'));
+    const sameProvider =
+      compaction.name === extraction.name && compaction.model === extraction.model;
+    if (!sameProvider) {
+      checks.push(checkLLMChat(extraction, 'extraction'));
+    }
+  }
+
+  // Embed probe — real embed call + 1024-dim assertion.
+  if (opts.embedProvider) {
+    checks.push(checkEmbed(opts.embedProvider));
+  }
+
+  // Plugin coexistence — warn if MEMORY_API_URL or .mcp.json points elsewhere.
+  checks.push(checkPluginCoexistence(port));
+
+  return checks;
 }
