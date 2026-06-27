@@ -15,8 +15,17 @@ function plistPath(): string {
   return join(agentsDir(), PLIST_FILENAME);
 }
 
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 function buildPlist(args: string[], port: number): string {
-  const argItems = args.map(a => `    <string>${a}</string>`).join('\n');
+  const argItems = args.map(a => `    <string>${xmlEscape(a)}</string>`).join('\n');
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -84,8 +93,10 @@ export class LaunchdAdapter implements ServiceAdapter {
 
   async install(execPath: string, port: number): Promise<void> {
     mkdirSync(agentsDir(), { recursive: true });
-    // execPath may be "node /path/to/dist/cli/index.js" — split into args
-    const args = execPath.split(' ');
+    // execPath formatted by resolveCliExecPath() as: "<nodeBin>" "<indexJs>"
+    // Parse double-quoted tokens so paths with spaces (e.g. /Users/Jane Smith/...)
+    // survive intact. Unquoted execPath falls back to whitespace split.
+    const args = Array.from(execPath.matchAll(/"([^"]+)"|(\S+)/g)).map(m => m[1] ?? m[2]);
     writeFileSync(plistPath(), buildPlist(args, port), 'utf8');
     await launchctlLoad(plistPath());
   }
