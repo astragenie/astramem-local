@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.1.4] - 2026-06-28
+
+### Fixed
+
+#### Windows install hardening
+- **Startup-folder fallback** when `schtasks /sc onlogon` returns "Access is denied"
+  even with `/RU "%USERNAME%" /IT /RL LIMITED`. Adapter now drops a `.cmd` shim into
+  `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\` so the daemon launches
+  at next logon without admin privileges.
+- **Auto-read bearer from `secrets.env`** during `astramem-local install` so a
+  freshly seeded secrets file is picked up without manual env var export.
+
+### Changed
+- `GET /health` and MCP daemon-version constant bumped `0.1.3` → `0.1.4`.
+
+---
+
 ## [0.1.3] - 2026-06-27
 
 ### Added

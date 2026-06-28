@@ -23,7 +23,7 @@ import { defaultConfig } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
 
 /** Bump this in lock-step with package.json. */
-const DAEMON_VERSION = '0.1.3';
+const DAEMON_VERSION = '0.1.4';
 
 export interface McpServerDeps {
   db: DB;
