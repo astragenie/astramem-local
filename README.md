@@ -2,8 +2,45 @@
 
 Local-first memory daemon for AI coding agents — wire-compatible with `memory-plugin` (v0.2.0+).
 
-> **v0.1.x wire schema diverges from SaaS canonical**  
-> The daemon's current `/ingest/transcript` route accepts `{session_id, source, content}` flat shape — **incompatible** with the SaaS canonical envelope at `https://api.astramemory.com`. Daemon v0.2.0 migrates to SaaS-canonical schema with full support for `{event, session_id, turns[], scrub metadata, wire_version}`. See the [astramemory-plugin FEAT 4a spec](https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md) for the unified wire contract and migration timeline.
+> **v0.2.0 closes the schema gap**  
+> Daemon v0.2.0 now accepts the SaaS-canonical wire envelope: `{event, turns[], wire_version (required), scrub metadata, client_version, captured_at, project_id, cwd}` alongside backward-compatible `{session_id, source, content}`. The daemon and SaaS backend now share a wire contract. See the [astramemory-plugin FEAT 4a spec](https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md) for the unified wire contract and migration timeline.
+
+## Wire compatibility
+
+The daemon's ingest endpoint now speaks the same wire protocol as the SaaS backend. Both old and new clients work:
+
+**Legacy plugin (v0.1.x):**
+```json
+POST /ingest/transcript
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "session_id": "claude-20260630-abc123",
+  "source": "precompact",
+  "content": "[Assistant]: Distilled 3 facts..."
+}
+```
+
+**SaaS canonical (v0.2.0+):**
+```json
+POST /ingest/transcript
+Content-Type: application/json
+Authorization: Bearer <token>
+
+{
+  "event": "pre_compact",
+  "session_id": "claude-20260630-abc123",
+  "turns": [{"role": "user", "content": "..."}, ...],
+  "wire_version": "v1.0",
+  "captured_at": "2026-06-30T12:34:56Z",
+  "client_version": "0.5.0",
+  "project_id": "my-project",
+  "cwd": "/home/user/src"
+}
+```
+
+Both shapes are accepted — no migration needed. See [src/contracts/wire.ts](src/contracts/wire.ts) for the complete schema definition.
 
 ## Why it exists
 
@@ -111,6 +148,20 @@ See [docs/providers.md](docs/providers.md) for full setup instructions.
 
 ---
 
+## Public endpoints
+
+All endpoints require Bearer token authentication except `GET /version` and `GET /health`.
+
+| Endpoint | Auth | v0.2.0+ | Description |
+|---|---|---|---|
+| `GET /health` | — | ✓ | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` |
+| `GET /version` | — | ✓ | Version discovery: `{ name, version, wire_versions_supported, schema_version, ts }` |
+| `POST /ingest/transcript` | Bearer | ✓ | Accepts legacy + SaaS-canonical envelope; idempotency via `Idempotency-Key` header |
+| `GET /search` | Bearer | ✓ | Hybrid search with type/repo/project/since filters |
+| `POST /recall` | Bearer | ✓ | Top-K semantic recall (alias: `search` with k=5) |
+| `POST /remember` | Bearer | ✓ | Direct memory insert, bypasses distillation |
+| `POST /mcp` | Bearer | ✓ | Model Context Protocol endpoint (4 auto-discovered tools) |
+
 ## MCP tools (Claude Code auto-discovery)
 
 The daemon exposes a **Model Context Protocol** (Streamable HTTP) endpoint at `POST /mcp`.
@@ -121,7 +172,7 @@ Claude Code discovers and calls the 4 tools below automatically when configured 
 | `search_memory` | Hybrid FTS + vector search with optional type/repo/project/since filters | `GET /search` |
 | `recall_memory` | Top-K semantic recall (default k=5) | `POST /recall` |
 | `remember` | Direct memory insert, bypasses distillation | `POST /remember` |
-| `get_health` | Daemon health probe: `{ ok, version }` | `GET /health` |
+| `get_health` | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` | `GET /health` |
 
 **Plugin `.mcp.json` wiring:**
 

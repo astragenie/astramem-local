@@ -7,29 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased] — v0.2.0
-
-### Changed (BREAKING)
-
-- **Wire schema migration to SaaS canonical** — `/ingest/transcript` now accepts the unified SaaS envelope: `{event, session_id, turns[], project_id?, agent_type?, cwd?, captured_at?, client_scrub_*, client_version, wire_version}`. The old flat `{source, content}` shape is **no longer accepted** (no v0.1.x consumers verified in the wild; legacy fallback in distiller if needed).
-- **Response shape expanded** — `POST /ingest/transcript` now returns: `{summary_memory_id, extraction_job_id, extracted_count, failed_atom_count, scrub_hits: {client, server}, queued_extraction_types}`. Extraction fields are stubbed for v0.2.0 (extraction job queue populated in v0.3.0+).
+## [0.2.0] — 2026-06-30
 
 ### Added
 
-- **`GET /version` endpoint** — uniform version discovery matching SaaS: returns `{version, gitSha, builtAt, service}`.
-- **Idempotency support** — `ingest_idempotency` table (`idempotency_key` PRIMARY KEY, `request_hash`, `transcript_id`, `created_at`). Honors `Idempotency-Key` header on `/ingest/transcript`. Same request re-sent → returns 200 + original transcript_id (no duplicate ingest).
-- **New transcripts columns** (all nullable; existing v0.1.x rows backfilled to NULL):
-  - `event: TEXT` — e.g. 'pre_compact', 'session_end', 'subagent_stop'
-  - `captured_at: TIMESTAMP` — ISO-8601 capture time
-  - `client_scrub_version: TEXT` — scrubber version constant from client
-  - `client_scrub_hits_json: TEXT` — stringified `{label: count}` map from `client_scrub_hits_by_label`
-- **Turns storage optimization** — `turns[]` is serialized as newline-joined `role: text` lines into the existing `content` column. Chunker parsing unchanged; distiller dual-reads both old + new shapes during v0.2.0.
+#### Wire protocol alignment (SaaS-canonical envelope)
+- **`POST /ingest/transcript` accepts SaaS-canonical envelope** — new shape: `{event, session_id, turns[], wire_version (required, regex `^v\d+\.\d+$`), captured_at, client_version, client_scrub_version, client_scrub_hits_by_label, project_id?, cwd?, agent_type?}`. Legacy `{session_id, source, content}` shape still accepted — both parse and ingest correctly, backward-compatible distiller dual-reads.
+- **`GET /version` endpoint** — public endpoint (no Bearer required), returns `{name, version, wire_versions_supported: ['v0.0', 'v1.0'], schema_version: 2, ts: ISO-8601}`. Matches SaaS discovery contract.
+- **`GET /health` wire metadata** — extended response to include `wire_versions_supported` and `schema_version` (was `ok` + `version` only).
+- **Idempotency header support** — `Idempotency-Key` on `POST /ingest/transcript` deduplicates via SHA-256 body hash. New `ingest_idempotency` table (PK: `idempotency_key`, unique index: `(idempotency_key, request_hash)`). Same key + same body → 200 + original `transcript_id` (replay); same key + different body → 409 Conflict.
 
-### Migration
+#### Schema extension (migration 002)
+- **`transcripts` table gains 8 new nullable columns**:
+  - `event: TEXT` — event type ('pre_compact', 'session_end', 'subagent_stop')
+  - `turns: TEXT` — newline-joined `role: text` pairs from `turns[]` array
+  - `captured_at: TIMESTAMP` — ISO-8601 event timestamp
+  - `client_scrub_version: TEXT` — scrubber version from client
+  - `client_scrub_hits_json: TEXT` — stringified `{label: count}` map
+  - `client_version: TEXT` — client plugin version
+  - `project_id: TEXT` — SaaS project identifier
+  - `cwd: TEXT` — working directory context
+- **`wire_version` column on `transcripts`** — TEXT NOT NULL DEFAULT `'v0.0'`. Existing v0.1.x rows automatically backfilled; new rows adopt the sent `wire_version` (or default 'v0.0' if omitted in legacy envelope).
+- **`ingest_idempotency` table** — stores `(idempotency_key TEXT PRIMARY KEY, request_hash TEXT UNIQUE, transcript_id TEXT, created_at TIMESTAMP)`.
 
-- **Backward compatibility (read)** — Distiller dual-reads: tries new SaaS-canonical schema first, falls back to v0.1.x flat shape if parsing fails. Existing v0.1.x rows preserved in DB as-is; no backfill.
-- **Extraction fields stubbed** — `extraction_job_id: null`, `extracted_count: (from distill result)`, `failed_atom_count: 0`, `queued_extraction_types: []`. Future extraction job queue (v0.3.0+) will populate these fields.
-- **See also** — astramemory-plugin FEAT 4a spec for end-to-end three-repo convergence plan: https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md
+#### Testing
+- **9 new E2E integration tests** covering dual-envelope parsing, idempotency replay/conflict, `/version` endpoint, `/health` metadata, wire_version backfill. Full integration test suite: 429 passing.
+
+### Changed
+
+- **No breaking changes** — legacy `{session_id, source, content}` envelope preserved and fully supported. Daemon recognizes both shapes; distiller dual-reads with fallback.
+- **`POST /ingest/transcript` response shape** — now includes: `{summary_memory_id, extraction_job_id, extracted_count, failed_atom_count, scrub_hits: {client, server}, queued_extraction_types}`. Extraction fields stubbed (full job queue in v0.3.0+).
+- **Service metadata** — daemon reports `schema_version: 2` on health and version endpoints.
+
+### Commits
+
+- `2a6d517` — Migration 002: wire-v1 columns + ingest_idempotency table
+- `df4aef3` — Dual-envelope Zod schema (legacy + SaaS canonical)
+- `c45d762` — Canonical insert + idempotency wired
+- `70a0f2a` — /version endpoint + /health wire-support metadata
+- `4d945ac` — E2E integration tests (9 cases)
+
+### Related specification
+
+- [astramemory-plugin FEAT 4a](https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md) — end-to-end three-repo wire contract convergence (daemon, plugin, SaaS). Daemon v0.2.0 = Phase 2 implementation.
 
 ---
 
