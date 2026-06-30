@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
@@ -78,13 +78,116 @@ export function ingestRoute(db: DB) {
       const data = parsed.data;
 
       // ------------------------------------------------------------------
-      // Canonical path — Stage 3 will wire the insert; return stub for now
-      // so tests can assert that validation passes in isolation.
+      // Canonical path — real insert (FEAT-4a Phase 2 stage 3)
       // ------------------------------------------------------------------
       if (isCanonical(data)) {
         const log = childLogger({ request_id: requestId ?? 'unknown', session_id: data.session_id });
-        log.info({ wire_version: data.wire_version, event: data.event }, 'canonical envelope accepted (stage-3 insert pending)');
-        return reply.code(200).send({ ok: true, stage: 'schema-only-stub' });
+
+        // ---- Idempotency-key handling ----
+        // Header name is case-insensitive in HTTP; Fastify lowercases all headers.
+        const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? null;
+        const bodyHash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex');
+
+        if (idempotencyKey !== null) {
+          const existing = db.prepare(
+            'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?'
+          ).get(idempotencyKey) as { body_hash: string; summary_memory_id: string | null } | undefined;
+
+          if (existing) {
+            if (existing.body_hash !== bodyHash) {
+              log.warn({ idempotency_key: idempotencyKey }, 'idempotency key reused with different body');
+              return reply.code(409).send({
+                error: 'idempotency_conflict',
+                idempotency_key: idempotencyKey,
+                detail: 'key reused with different body',
+              });
+            }
+            // Replay — return cached result without a new insert
+            log.info({ idempotency_key: idempotencyKey }, 'idempotent replay');
+            return reply.code(200).send({
+              ok: true,
+              summary_memory_id: existing.summary_memory_id,
+              session_id: data.session_id,
+              idempotent: true,
+            });
+          }
+        }
+
+        // ---- Real insert transaction ----
+        const capturedAtMs =
+          typeof data.captured_at === 'string'
+            ? new Date(data.captured_at).getTime()
+            : (data.captured_at as number);
+        const now = Date.now();
+
+        let transcriptId!: string;
+        let jobId!: string;
+
+        const tx = db.transaction(() => {
+          // sessions upsert — project_id stored in `project` column; repo left null for canonical
+          db.prepare(`
+            INSERT INTO sessions (id, repo, project, branch, agent, started_at)
+            VALUES (?, NULL, ?, NULL, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+              project = COALESCE(excluded.project, project),
+              agent   = COALESCE(excluded.agent, agent)
+          `).run(data.session_id, data.project_id, data.agent_type ?? null, now);
+
+          // transcripts insert with all wire-v1 columns
+          transcriptId = randomUUID();
+          db.prepare(`
+            INSERT INTO transcripts (
+              id, session_id, source, content, ingested_at,
+              event, captured_at, client_scrub_applied, client_scrub_hits,
+              client_scrub_version, client_scrub_hits_by_label_json,
+              client_version, wire_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            transcriptId,
+            data.session_id,
+            `claude-code-${data.event}`,           // source mirrors SaaS convention
+            JSON.stringify(data.turns),             // structured turns; preserved for FTS/distillation
+            now,
+            data.event,
+            capturedAtMs,
+            data.client_scrub_applied ? 1 : 0,
+            data.client_scrub_hits ?? null,
+            data.client_scrub_version ?? null,
+            data.client_scrub_hits_by_label != null
+              ? JSON.stringify(data.client_scrub_hits_by_label)
+              : null,
+            data.client_version ?? null,
+            data.wire_version,
+          );
+
+          // distill job
+          jobId = randomUUID();
+          db.prepare(`
+            INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
+            VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
+          `).run(jobId, JSON.stringify({ transcript_id: transcriptId, session_id: data.session_id }), now, now);
+
+          // idempotency row (only when key present)
+          if (idempotencyKey !== null) {
+            db.prepare(`
+              INSERT INTO ingest_idempotency (key, body_hash, summary_memory_id, created_at)
+              VALUES (?, ?, ?, ?)
+            `).run(idempotencyKey, bodyHash, transcriptId, now);
+          }
+        });
+        tx();
+
+        log.info(
+          { job_id: jobId, transcript_id: transcriptId, wire_version: data.wire_version, event: data.event },
+          'canonical transcript ingested, distill job enqueued',
+        );
+
+        return reply.code(200).send({
+          ok: true,
+          summary_memory_id: transcriptId,
+          session_id: data.session_id,
+          idempotent: false,
+        });
       }
 
       // ------------------------------------------------------------------
