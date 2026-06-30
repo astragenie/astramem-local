@@ -3,6 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
 import { healthRoute } from './routes/health.js';
+import { versionRoute } from './routes/version.js';
 import { ingestRoute } from './routes/ingest.js';
 import { searchRoute } from './routes/search.js';
 import { memoryRoute } from './routes/memory.js';
@@ -63,7 +64,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
 
   // Auth check — scrub the Authorization header value from any error logs.
   app.addHook('preHandler', async (req, reply) => {
-    if (req.url === '/health') return;
+    if (req.url === '/health' || req.url === '/version') return;
     const auth = req.headers.authorization;
     if (auth !== `Bearer ${opts.token}`) {
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
@@ -76,6 +77,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   });
 
   await app.register(healthRoute);
+  await app.register(versionRoute);
   await app.register(ingestRoute(opts.db));
   await app.register(searchRoute(opts.db, embed));
   await app.register(memoryRoute(opts.db));
