@@ -47,6 +47,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `70a0f2a` — /version endpoint + /health wire-support metadata
 - `4d945ac` — E2E integration tests (9 cases)
 
+### Deferred (tracked for v0.3.0)
+
+- **D-DEF1 — Distill pipeline turn-flattening**: The distill pipeline currently consumes `transcripts.content` as a flat string. Canonical ingests write `JSON.stringify(turns)` into that column. Distillation quality silently degrades on canonical paths until the distill handler is updated to flatten turns to `role: text\n` pairs before pipeline entry. This is a Wave-3 inheritance risk; fix is scoped to v0.3.0.
+- **D-DEF2 — `summary_memory_id` semantic change**: The `summary_memory_id` returned by `POST /ingest/transcript` is currently the transcript row UUID. Wave-3 distillation will produce a real summary memory with a different UUID. Clients MUST treat the value as opaque until v0.3.0 — the semantic meaning will change when distillation is wired end-to-end.
+
 ### Related specification
 
 - [astramemory-plugin FEAT 4a](https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md) — end-to-end three-repo wire contract convergence (daemon, plugin, SaaS). Daemon v0.2.0 = Phase 2 implementation.

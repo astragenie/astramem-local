@@ -3,6 +3,7 @@ import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import { childLogger } from '../../log/logger.js';
+import { stableStringify } from '../lib/stable-stringify.js';
 
 // ---------------------------------------------------------------------------
 // Legacy envelope (v0.0) — original shape; discriminated by presence of `content`
@@ -39,7 +40,7 @@ export const CanonicalIngestSchema = z.object({
   project_id: z.string(),
   agent_type: z.string().optional(),
   cwd: z.string().optional(),
-  captured_at: z.string(), // ISO-8601
+  captured_at: z.string().datetime({ offset: true }), // ISO-8601 with UTC Z — guards NaN on getTime()
   turns: z.array(TranscriptTurnSchema).min(1),
   /** @deprecated use client_scrub_version + client_scrub_hits_by_label */
   client_scrub_applied: z.boolean(),
@@ -64,7 +65,81 @@ function isCanonical(data: ParsedIngest): data is z.infer<typeof CanonicalIngest
   return 'turns' in data;
 }
 
+// ---------------------------------------------------------------------------
+// Route factory — prepared statements hoisted to factory scope (D-B6)
+// All db.prepare() calls happen ONCE per server start, not per request.
+// ---------------------------------------------------------------------------
+
 export function ingestRoute(db: DB) {
+  // ---- Canonical path statements ----
+  const stmtSelectIdempotency = db.prepare<[string], { body_hash: string; summary_memory_id: string | null }>(
+    'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
+  );
+
+  const stmtUpsertSession = db.prepare<[string, string | null, string | null, number]>(`
+    INSERT INTO sessions (id, repo, project, branch, agent, started_at)
+    VALUES (?, NULL, ?, NULL, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      project = COALESCE(excluded.project, project),
+      agent   = COALESCE(excluded.agent, agent)
+  `);
+
+  const stmtInsertTranscript = db.prepare<[
+    string, string, string, string, number,
+    string, number, number, number,
+    string | null, string | null,
+    string | null, string,
+  ]>(`
+    INSERT INTO transcripts (
+      id, session_id, source, content, ingested_at,
+      event, captured_at, client_scrub_applied, client_scrub_hits,
+      client_scrub_version, client_scrub_hits_by_label_json,
+      client_version, wire_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const stmtInsertJob = db.prepare<[string, string, number, number]>(`
+    INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
+    VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
+  `);
+
+  const stmtInsertIdempotency = db.prepare<[string, string, string, number]>(`
+    INSERT INTO ingest_idempotency (key, body_hash, summary_memory_id, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(key) DO NOTHING
+  `);
+
+  // Used for D-B3 dangling-row check on replay
+  const stmtCheckTranscriptExists = db.prepare<[string], { id: string } | undefined>(
+    'SELECT id FROM transcripts WHERE id = ?',
+  );
+
+  // Used for D-B3 invalidation of dangling idempotency row
+  const stmtDeleteIdempotency = db.prepare<[string]>(
+    'DELETE FROM ingest_idempotency WHERE key = ?',
+  );
+
+  // ---- Legacy path statements ----
+  const stmtUpsertSessionLegacy = db.prepare<[string, string | null, string | null, string | null, string | null, number]>(`
+    INSERT INTO sessions (id, repo, project, branch, agent, started_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      repo = COALESCE(excluded.repo, repo),
+      project = COALESCE(excluded.project, project),
+      branch = COALESCE(excluded.branch, branch),
+      agent = COALESCE(excluded.agent, agent)
+  `);
+
+  const stmtInsertTranscriptLegacy = db.prepare<[string, string, string, string, number]>(`
+    INSERT INTO transcripts (id, session_id, source, content, ingested_at)
+    VALUES (?, ?, ?, ?, ?)
+  `);
+
+  const stmtInsertJobLegacy = db.prepare<[string, string, number, number]>(`
+    INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
+    VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
+  `);
+
   return async (app: FastifyInstance) => {
     app.post('/ingest/transcript', async (req, reply) => {
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
@@ -84,98 +159,139 @@ export function ingestRoute(db: DB) {
         const log = childLogger({ request_id: requestId ?? 'unknown', session_id: data.session_id });
 
         // ---- Idempotency-key handling ----
-        // Header name is case-insensitive in HTTP; Fastify lowercases all headers.
+        // D-B1: use stableStringify on the Zod-parsed object so key order
+        //        differences between clients don't produce different hashes.
         const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? null;
-        const bodyHash = createHash('sha256').update(JSON.stringify(req.body)).digest('hex');
+        const bodyHash = createHash('sha256').update(stableStringify(data)).digest('hex');
 
-        if (idempotencyKey !== null) {
-          const existing = db.prepare(
-            'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?'
-          ).get(idempotencyKey) as { body_hash: string; summary_memory_id: string | null } | undefined;
-
-          if (existing) {
-            if (existing.body_hash !== bodyHash) {
-              log.warn({ idempotency_key: idempotencyKey }, 'idempotency key reused with different body');
-              return reply.code(409).send({
-                error: 'idempotency_conflict',
-                idempotency_key: idempotencyKey,
-                detail: 'key reused with different body',
-              });
-            }
-            // Replay — return cached result without a new insert
-            log.info({ idempotency_key: idempotencyKey }, 'idempotent replay');
-            return reply.code(200).send({
-              ok: true,
-              summary_memory_id: existing.summary_memory_id,
-              session_id: data.session_id,
-              idempotent: true,
-            });
-          }
-        }
-
-        // ---- Real insert transaction ----
-        const capturedAtMs =
-          typeof data.captured_at === 'string'
-            ? new Date(data.captured_at).getTime()
-            : (data.captured_at as number);
         const now = Date.now();
+        const capturedAtMs = new Date(data.captured_at).getTime();
 
         let transcriptId!: string;
         let jobId!: string;
 
-        const tx = db.transaction(() => {
-          // sessions upsert — project_id stored in `project` column; repo left null for canonical
-          db.prepare(`
-            INSERT INTO sessions (id, repo, project, branch, agent, started_at)
-            VALUES (?, NULL, ?, NULL, ?, ?)
-            ON CONFLICT(id) DO UPDATE SET
-              project = COALESCE(excluded.project, project),
-              agent   = COALESCE(excluded.agent, agent)
-          `).run(data.session_id, data.project_id, data.agent_type ?? null, now);
+        // D-B2: move idempotency SELECT inside the transaction and use
+        //        INSERT … ON CONFLICT DO NOTHING to make concurrent posts safe.
+        //        The UNIQUE constraint can no longer leak a 500 to the caller.
+        try {
+          const tx = db.transaction(() => {
+            // --- Idempotency check (inside transaction — race-safe) ---
+            if (idempotencyKey !== null) {
+              // Attempt to claim the idempotency slot atomically.
+              // stmtInsertIdempotency uses ON CONFLICT DO NOTHING, so concurrent
+              // posts with the same key will silently no-op; we then read back
+              // the winner row and either replay or conflict.
+              stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
 
-          // transcripts insert with all wire-v1 columns
-          transcriptId = randomUUID();
-          db.prepare(`
-            INSERT INTO transcripts (
-              id, session_id, source, content, ingested_at,
-              event, captured_at, client_scrub_applied, client_scrub_hits,
-              client_scrub_version, client_scrub_hits_by_label_json,
-              client_version, wire_version
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-          `).run(
-            transcriptId,
-            data.session_id,
-            `claude-code-${data.event}`,           // source mirrors SaaS convention
-            JSON.stringify(data.turns),             // structured turns; preserved for FTS/distillation
-            now,
-            data.event,
-            capturedAtMs,
-            data.client_scrub_applied ? 1 : 0,
-            data.client_scrub_hits ?? null,
-            data.client_scrub_version ?? null,
-            data.client_scrub_hits_by_label != null
-              ? JSON.stringify(data.client_scrub_hits_by_label)
-              : null,
-            data.client_version ?? null,
-            data.wire_version,
-          );
+              // Read the winner row (may have been written by a concurrent request)
+              const existing = stmtSelectIdempotency.get(idempotencyKey);
 
-          // distill job
-          jobId = randomUUID();
-          db.prepare(`
-            INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
-            VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
-          `).run(jobId, JSON.stringify({ transcript_id: transcriptId, session_id: data.session_id }), now, now);
+              if (existing && existing.summary_memory_id !== '__pending__') {
+                // Another request already completed this key
+                if (existing.body_hash !== bodyHash) {
+                  // Different body — conflict (throw so tx rolls back the DO NOTHING insert)
+                  throw Object.assign(new Error('idempotency_conflict'), { _isIdempotencyConflict: true });
+                }
 
-          // idempotency row (only when key present)
-          if (idempotencyKey !== null) {
-            db.prepare(`
-              INSERT INTO ingest_idempotency (key, body_hash, summary_memory_id, created_at)
-              VALUES (?, ?, ?, ?)
-            `).run(idempotencyKey, bodyHash, transcriptId, now);
+                // D-B3: guard against dangling transcript row
+                const transcriptExists = existing.summary_memory_id != null
+                  ? stmtCheckTranscriptExists.get(existing.summary_memory_id)
+                  : undefined;
+                if (!transcriptExists) {
+                  // Dangling row — invalidate and fall through to fresh insert
+                  stmtDeleteIdempotency.run(idempotencyKey);
+                  // Re-insert placeholder so the fresh insert below can update it
+                  stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
+                } else {
+                  // Valid replay — signal via special throw to exit tx and return early
+                  throw Object.assign(new Error('idempotent_replay'), {
+                    _isReplay: true,
+                    _replayId: existing.summary_memory_id,
+                  });
+                }
+              }
+            }
+
+            // --- Real insert ---
+            stmtUpsertSession.run(data.session_id, data.project_id, data.agent_type ?? null, now);
+
+            transcriptId = randomUUID();
+            stmtInsertTranscript.run(
+              transcriptId,
+              data.session_id,
+              `claude-code-${data.event}`,
+              JSON.stringify(data.turns),
+              now,
+              data.event,
+              capturedAtMs,
+              data.client_scrub_applied ? 1 : 0,
+              data.client_scrub_hits ?? 0,
+              data.client_scrub_version ?? null,
+              data.client_scrub_hits_by_label != null
+                ? JSON.stringify(data.client_scrub_hits_by_label)
+                : null,
+              data.client_version ?? null,
+              data.wire_version,
+            );
+
+            jobId = randomUUID();
+            stmtInsertJob.run(
+              jobId,
+              JSON.stringify({ transcript_id: transcriptId, session_id: data.session_id }),
+              now,
+              now,
+            );
+
+            // Update the idempotency placeholder with the real transcript id
+            if (idempotencyKey !== null) {
+              stmtDeleteIdempotency.run(idempotencyKey);
+              stmtInsertIdempotency.run(idempotencyKey, bodyHash, transcriptId, now);
+            }
+          });
+
+          tx();
+        } catch (err) {
+          // Belt-and-suspenders: catch SQLite UNIQUE constraint errors that
+          // weren't handled by ON CONFLICT DO NOTHING (shouldn't happen, but
+          // guard just in case).
+          const e = err as Record<string, unknown>;
+
+          if (e['_isReplay'] === true) {
+            log.info({ idempotency_key: idempotencyKey }, 'idempotent replay');
+            return reply.code(200).send({
+              ok: true,
+              summary_memory_id: e['_replayId'],
+              session_id: data.session_id,
+              idempotent: true,
+            });
           }
-        });
-        tx();
+
+          if (e['_isIdempotencyConflict'] === true) {
+            log.warn({ idempotency_key: idempotencyKey }, 'idempotency key reused with different body');
+            return reply.code(409).send({
+              error: 'idempotency_conflict',
+              idempotency_key: idempotencyKey,
+              detail: 'key reused with different body',
+            });
+          }
+
+          // SQLite UNIQUE constraint (belt+suspenders)
+          if (
+            typeof e['code'] === 'string' &&
+            (e['code'] === 'SQLITE_CONSTRAINT_PRIMARYKEY' || e['code'] === 'SQLITE_CONSTRAINT_UNIQUE')
+          ) {
+            log.warn({ idempotency_key: idempotencyKey, err: String(err) }, 'sqlite constraint on idempotency insert — treating as replay');
+            const existing = stmtSelectIdempotency.get(idempotencyKey ?? '');
+            return reply.code(200).send({
+              ok: true,
+              summary_memory_id: existing?.summary_memory_id ?? null,
+              session_id: data.session_id,
+              idempotent: true,
+            });
+          }
+
+          throw err;
+        }
 
         log.info(
           { job_id: jobId, transcript_id: transcriptId, wire_version: data.wire_version, event: data.event },
@@ -200,27 +316,18 @@ export function ingestRoute(db: DB) {
       let jobId!: string;
 
       const tx = db.transaction(() => {
-        db.prepare(`
-          INSERT INTO sessions (id, repo, project, branch, agent, started_at)
-          VALUES (?, ?, ?, ?, ?, ?)
-          ON CONFLICT(id) DO UPDATE SET
-            repo = COALESCE(excluded.repo, repo),
-            project = COALESCE(excluded.project, project),
-            branch = COALESCE(excluded.branch, branch),
-            agent = COALESCE(excluded.agent, agent)
-        `).run(session_id, repo ?? null, project ?? null, branch ?? null, agent ?? null, now);
+        stmtUpsertSessionLegacy.run(session_id, repo ?? null, project ?? null, branch ?? null, agent ?? null, now);
 
         transcriptId = randomUUID();
-        db.prepare(`
-          INSERT INTO transcripts (id, session_id, source, content, ingested_at)
-          VALUES (?, ?, ?, ?, ?)
-        `).run(transcriptId, session_id, source, content, now);
+        stmtInsertTranscriptLegacy.run(transcriptId, session_id, source, content, now);
 
         jobId = randomUUID();
-        db.prepare(`
-          INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
-          VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
-        `).run(jobId, JSON.stringify({ transcript_id: transcriptId, session_id }), now, now);
+        stmtInsertJobLegacy.run(
+          jobId,
+          JSON.stringify({ transcript_id: transcriptId, session_id }),
+          now,
+          now,
+        );
       });
       tx();
 

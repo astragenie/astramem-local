@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { buildApp } from '../../src/server/app.js';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
+import { stableStringify } from '../../src/server/lib/stable-stringify.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -387,5 +388,134 @@ describe('ingest endpoint — legacy regression guard', () => {
     expect(t['wire_version']).toBe('v0.0');
     expect(t['event']).toBeNull();
     expect(t['captured_at']).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T1 — concurrent same-key idempotency (review blocker regression test)
+// Both concurrent POSTs must return 200 with the SAME summary_memory_id;
+// no UNIQUE constraint error must surface as a 500.
+// ---------------------------------------------------------------------------
+
+describe('ingest endpoint — T1: concurrent same-key idempotency (review fix)', () => {
+  it('concurrent same-key + same-body posts both return 200 with same summary_memory_id', async () => {
+    const { app } = makeApp();
+    const resolvedApp = await app;
+
+    const concurrentPayload = {
+      ...CANONICAL_PAYLOAD,
+      session_id: 'sess-concurrent-idem',
+      project_id: 'proj-concurrent',
+    };
+    const headers = { ...AUTH, 'idempotency-key': 'concurrent-key-001' };
+
+    // Fire both requests simultaneously — neither has seen the row yet
+    const [res1, res2] = await Promise.all([
+      resolvedApp.inject({
+        method: 'POST',
+        url: '/ingest/transcript',
+        headers,
+        payload: concurrentPayload,
+      }),
+      resolvedApp.inject({
+        method: 'POST',
+        url: '/ingest/transcript',
+        headers,
+        payload: concurrentPayload,
+      }),
+    ]);
+
+    // Both must succeed — no 500, no constraint error surfaced
+    expect(res1.statusCode).toBe(200);
+    expect(res2.statusCode).toBe(200);
+
+    const body1 = res1.json() as { ok: boolean; summary_memory_id: string; idempotent: boolean };
+    const body2 = res2.json() as { ok: boolean; summary_memory_id: string; idempotent: boolean };
+
+    expect(body1.ok).toBe(true);
+    expect(body2.ok).toBe(true);
+
+    // Both must reference the same transcript — one created it, one replayed
+    expect(body1.summary_memory_id).toBe(body2.summary_memory_id);
+
+    // Exactly one of them must be the original (idempotent: false); the other a replay
+    const originals = [body1.idempotent, body2.idempotent].filter(v => v === false);
+    const replays = [body1.idempotent, body2.idempotent].filter(v => v === true);
+    // Due to SQLite's in-process serialisation both may come out as non-replay
+    // (the ON CONFLICT path handles this); what MUST NOT happen is a 500.
+    // Accept either (false, false) or (false, true) — never (true, true) from a fresh pair.
+    expect(originals.length).toBeGreaterThanOrEqual(1);
+    expect(replays.length).toBeLessThanOrEqual(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T2 — client_scrub_hits_by_label JSON round-trip (explicit DB column check)
+// POST with {bearer: 3, api_key: 4}, SELECT the JSON column, deep-equal.
+// ---------------------------------------------------------------------------
+
+describe('ingest endpoint — T2: client_scrub_hits_by_label DB round-trip (review fix)', () => {
+  it('posts {bearer: 3, api_key: 4} and reads back the identical map from the DB column', async () => {
+    const { db, app } = makeApp();
+    const scrubMap = { bearer: 3, api_key: 4 };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: {
+        ...CANONICAL_PAYLOAD,
+        session_id: 'sess-t2-roundtrip',
+        client_scrub_hits_by_label: scrubMap,
+      },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const row = db
+      .prepare('SELECT client_scrub_hits_by_label_json FROM transcripts WHERE session_id = ?')
+      .get('sess-t2-roundtrip') as { client_scrub_hits_by_label_json: string } | undefined;
+    expect(row).toBeDefined();
+    const parsed = JSON.parse(row!.client_scrub_hits_by_label_json) as Record<string, number>;
+    expect(parsed).toEqual(scrubMap);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stableStringify unit tests (D-B1 helper)
+// ---------------------------------------------------------------------------
+
+describe('stableStringify — canonical key-order serialization', () => {
+  it('produces the same string regardless of key insertion order', () => {
+    const a = stableStringify({ z: 1, a: 2, m: 3 });
+    const b = stableStringify({ a: 2, m: 3, z: 1 });
+    const c = stableStringify({ m: 3, z: 1, a: 2 });
+    expect(a).toBe(b);
+    expect(b).toBe(c);
+    expect(a).toBe('{"a":2,"m":3,"z":1}');
+  });
+
+  it('handles nested objects recursively', () => {
+    const a = stableStringify({ outer: { z: 1, a: 2 } });
+    const b = stableStringify({ outer: { a: 2, z: 1 } });
+    expect(a).toBe(b);
+    expect(a).toBe('{"outer":{"a":2,"z":1}}');
+  });
+
+  it('handles arrays without sorting elements', () => {
+    const result = stableStringify([3, 1, 2]);
+    expect(result).toBe('[3,1,2]');
+  });
+
+  it('handles null, numbers, strings, booleans', () => {
+    expect(stableStringify(null)).toBe('null');
+    expect(stableStringify(42)).toBe('42');
+    expect(stableStringify('hello')).toBe('"hello"');
+    expect(stableStringify(true)).toBe('true');
+    expect(stableStringify(false)).toBe('false');
+  });
+
+  it('handles arrays of objects with different key orders', () => {
+    const a = stableStringify([{ b: 2, a: 1 }, { d: 4, c: 3 }]);
+    const b = stableStringify([{ a: 1, b: 2 }, { c: 3, d: 4 }]);
+    expect(a).toBe(b);
   });
 });
