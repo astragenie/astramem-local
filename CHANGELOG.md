@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased] — v0.2.0
+
+### Changed (BREAKING)
+
+- **Wire schema migration to SaaS canonical** — `/ingest/transcript` now accepts the unified SaaS envelope: `{event, session_id, turns[], project_id?, agent_type?, cwd?, captured_at?, client_scrub_*, client_version, wire_version}`. The old flat `{source, content}` shape is **no longer accepted** (no v0.1.x consumers verified in the wild; legacy fallback in distiller if needed).
+- **Response shape expanded** — `POST /ingest/transcript` now returns: `{summary_memory_id, extraction_job_id, extracted_count, failed_atom_count, scrub_hits: {client, server}, queued_extraction_types}`. Extraction fields are stubbed for v0.2.0 (extraction job queue populated in v0.3.0+).
+
+### Added
+
+- **`GET /version` endpoint** — uniform version discovery matching SaaS: returns `{version, gitSha, builtAt, service}`.
+- **Idempotency support** — `ingest_idempotency` table (`idempotency_key` PRIMARY KEY, `request_hash`, `transcript_id`, `created_at`). Honors `Idempotency-Key` header on `/ingest/transcript`. Same request re-sent → returns 200 + original transcript_id (no duplicate ingest).
+- **New transcripts columns** (all nullable; existing v0.1.x rows backfilled to NULL):
+  - `event: TEXT` — e.g. 'pre_compact', 'session_end', 'subagent_stop'
+  - `captured_at: TIMESTAMP` — ISO-8601 capture time
+  - `client_scrub_version: TEXT` — scrubber version constant from client
+  - `client_scrub_hits_json: TEXT` — stringified `{label: count}` map from `client_scrub_hits_by_label`
+- **Turns storage optimization** — `turns[]` is serialized as newline-joined `role: text` lines into the existing `content` column. Chunker parsing unchanged; distiller dual-reads both old + new shapes during v0.2.0.
+
+### Migration
+
+- **Backward compatibility (read)** — Distiller dual-reads: tries new SaaS-canonical schema first, falls back to v0.1.x flat shape if parsing fails. Existing v0.1.x rows preserved in DB as-is; no backfill.
+- **Extraction fields stubbed** — `extraction_job_id: null`, `extracted_count: (from distill result)`, `failed_atom_count: 0`, `queued_extraction_types: []`. Future extraction job queue (v0.3.0+) will populate these fields.
+- **See also** — astramemory-plugin FEAT 4a spec for end-to-end three-repo convergence plan: https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md
+
+---
+
 ## [0.1.4] - 2026-06-28
 
 ### Fixed

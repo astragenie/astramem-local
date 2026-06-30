@@ -1,6 +1,9 @@
 # AstraMemory Local
 
-Local-first memory daemon for AI coding agents — wire-compatible with `memory-plugin`.
+Local-first memory daemon for AI coding agents — wire-compatible with `memory-plugin` (v0.2.0+).
+
+> **v0.1.x wire schema diverges from SaaS canonical**  
+> The daemon's current `/ingest/transcript` route accepts `{session_id, source, content}` flat shape — **incompatible** with the SaaS canonical envelope at `https://api.astramemory.com`. Daemon v0.2.0 migrates to SaaS-canonical schema with full support for `{event, session_id, turns[], scrub metadata, wire_version}`. See the [astramemory-plugin FEAT 4a spec](https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md) for the unified wire contract and migration timeline.
 
 ## Why it exists
 
@@ -31,16 +34,17 @@ local daemon. No other plugin changes needed.
 ## Architecture
 
 ```
- memory-plugin hooks (unchanged)
+ memory-plugin hooks
     |
-    |  POST /ingest/transcript
+    |  POST /ingest/transcript (v0.2.0+ — SaaS-canonical envelope)
     |  Authorization: Bearer <token>
     v
 +------------------+      SQLite (memory.sqlite)
 |  HTTP daemon     | ---> +-------------------+
 |  Fastify         |      | sessions          |
 |  127.0.0.1:7777  |      | messages          |
-+------------------+      | transcripts       |
+|  (v0.2.0+)       |      | transcripts       |
++------------------+      | ingest_idempotency|
                           | jobs (queue)      |
                           | memories          |
                           | memories_fts (FTS5)|
