@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.2.0] — 2026-06-30
+
+### Added
+
+#### Wire protocol alignment (SaaS-canonical envelope)
+- **`POST /ingest/transcript` accepts SaaS-canonical envelope** — new shape: `{event, session_id, turns[], wire_version (required, regex `^v\d+\.\d+$`), captured_at, client_version, client_scrub_version, client_scrub_hits_by_label, project_id?, cwd?, agent_type?}`. Legacy `{session_id, source, content}` shape still accepted — both parse and ingest correctly, backward-compatible distiller dual-reads.
+- **`GET /version` endpoint** — public endpoint (no Bearer required), returns `{name, version, wire_versions_supported: ['v0.0', 'v1.0'], schema_version: 2, ts: ISO-8601}`. Matches SaaS discovery contract.
+- **`GET /health` wire metadata** — extended response to include `wire_versions_supported` and `schema_version` (was `ok` + `version` only).
+- **Idempotency header support** — `Idempotency-Key` on `POST /ingest/transcript` deduplicates via SHA-256 body hash. New `ingest_idempotency` table (PK: `idempotency_key`, unique index: `(idempotency_key, request_hash)`). Same key + same body → 200 + original `transcript_id` (replay); same key + different body → 409 Conflict.
+
+#### Schema extension (migration 002)
+- **`transcripts` table gains 8 new nullable columns**:
+  - `event: TEXT` — event type ('pre_compact', 'session_end', 'subagent_stop')
+  - `turns: TEXT` — newline-joined `role: text` pairs from `turns[]` array
+  - `captured_at: TIMESTAMP` — ISO-8601 event timestamp
+  - `client_scrub_version: TEXT` — scrubber version from client
+  - `client_scrub_hits_json: TEXT` — stringified `{label: count}` map
+  - `client_version: TEXT` — client plugin version
+  - `project_id: TEXT` — SaaS project identifier
+  - `cwd: TEXT` — working directory context
+- **`wire_version` column on `transcripts`** — TEXT NOT NULL DEFAULT `'v0.0'`. Existing v0.1.x rows automatically backfilled; new rows adopt the sent `wire_version` (or default 'v0.0' if omitted in legacy envelope).
+- **`ingest_idempotency` table** — stores `(idempotency_key TEXT PRIMARY KEY, request_hash TEXT UNIQUE, transcript_id TEXT, created_at TIMESTAMP)`.
+
+#### Testing
+- **9 new E2E integration tests** covering dual-envelope parsing, idempotency replay/conflict, `/version` endpoint, `/health` metadata, wire_version backfill. Full integration test suite: 429 passing.
+
+### Changed
+
+- **No breaking changes** — legacy `{session_id, source, content}` envelope preserved and fully supported. Daemon recognizes both shapes; distiller dual-reads with fallback.
+- **`POST /ingest/transcript` response shape** — now includes: `{summary_memory_id, extraction_job_id, extracted_count, failed_atom_count, scrub_hits: {client, server}, queued_extraction_types}`. Extraction fields stubbed (full job queue in v0.3.0+).
+- **Service metadata** — daemon reports `schema_version: 2` on health and version endpoints.
+
+### Commits
+
+- `2a6d517` — Migration 002: wire-v1 columns + ingest_idempotency table
+- `df4aef3` — Dual-envelope Zod schema (legacy + SaaS canonical)
+- `c45d762` — Canonical insert + idempotency wired
+- `70a0f2a` — /version endpoint + /health wire-support metadata
+- `4d945ac` — E2E integration tests (9 cases)
+
+### Known issues
+
+- **KNOWN ISSUE: D-DEF1 — Distill pipeline turn-flattening**: The distill pipeline currently consumes `transcripts.content` as a flat string. Canonical ingests write `JSON.stringify(turns)` into that column. Distillation quality silently degrades on canonical paths until the distill handler is updated to flatten turns to `role: text\n` pairs before pipeline entry. This is a Wave-3 inheritance risk; fix is scoped to v0.3.0.
+- **KNOWN ISSUE: D-DEF2 — `summary_memory_id` semantic change**: The `summary_memory_id` returned by `POST /ingest/transcript` is currently the transcript row UUID. Wave-3 distillation will produce a real summary memory with a different UUID. Clients MUST treat the value as opaque until v0.3.0 — the semantic meaning will change when distillation is wired end-to-end.
+
+### Related specification
+
+- [astramemory-plugin FEAT 4a](https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md) — end-to-end three-repo wire contract convergence (daemon, plugin, SaaS). Daemon v0.2.0 = Phase 2 implementation.
+
+---
+
 ## [0.1.4] - 2026-06-28
 
 ### Fixed
