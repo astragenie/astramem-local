@@ -29,9 +29,8 @@ export const WIRE_VERSIONS_SUPPORTED = ['v0.0', 'v1.0'] as const satisfies reado
 
 // ---------------------------------------------------------------------------
 // Schema version — single authoritative literal
-// Boot-time assertion (in migrate.ts or server entry) should verify that
-// MAX(version) FROM schema_version equals this constant. If drift is detected
-// the server should refuse to start. Drift guard is a v0.3.0 FEAT (D-DEF2).
+// migrate() asserts that MAX(version) FROM schema_version equals this constant
+// at startup. Bump this whenever a new migration file is added.
 // ---------------------------------------------------------------------------
 
 export const SCHEMA_VERSION = 2 as const;

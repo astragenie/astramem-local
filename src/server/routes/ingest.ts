@@ -42,9 +42,9 @@ export const CanonicalIngestSchema = z.object({
   cwd: z.string().optional(),
   captured_at: z.string().datetime({ offset: true }), // ISO-8601 with UTC Z — guards NaN on getTime()
   turns: z.array(TranscriptTurnSchema).min(1),
-  /** @deprecated use client_scrub_version + client_scrub_hits_by_label */
+  /** Aggregate scrub flag — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label for per-label breakdown but not deprecated. */
   client_scrub_applied: z.boolean(),
-  /** @deprecated use client_scrub_hits_by_label sum */
+  /** Aggregate scrub hit count — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label sum for per-label breakdown but not deprecated. */
   client_scrub_hits: z.number().int().nonnegative(),
   client_version: z.string(),
   client_scrub_version: z.string(),

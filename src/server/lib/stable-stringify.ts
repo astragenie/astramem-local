@@ -1,9 +1,11 @@
 /**
- * Stable (canonical) JSON serialization — keys sorted recursively so that
- * the same logical object always produces the same byte sequence regardless
- * of the insertion order used by the serialising client.
+ * Canonical JSON stringification with sorted object keys.
+ * INPUT CONTRACT: caller must pass Zod-validated plain-JSON values only.
+ * Supported: null, boolean, number (finite), string, array (order preserved), plain object.
+ * UNSUPPORTED (throws or produces lossy output): Date, BigInt, Symbol, undefined,
+ * cyclic references, class instances. Feeding any of these is a programming error.
  *
- * Used to compute idempotency body hashes that are independent of key order.
+ * Used by ingest route to hash request bodies for idempotency replay.
  */
 
 export function stableStringify(value: unknown): string {

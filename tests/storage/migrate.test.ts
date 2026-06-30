@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 
@@ -143,5 +143,42 @@ describe('migration 002-wire-v1', () => {
         "INSERT INTO ingest_idempotency (key, body_hash, created_at) VALUES ('k1', 'def456', 1)"
       ).run()
     ).toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Schema-version drift guard (D-R2)
+// migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
+// ---------------------------------------------------------------------------
+
+describe('migrate — schema-version drift guard', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('passes when DB max version matches SCHEMA_VERSION constant', () => {
+    const db = openDb(':memory:');
+    // Normal path: all migrations applied, constant matches DB
+    expect(() => migrate(db)).not.toThrow();
+  });
+
+  it('throws a clear error when SCHEMA_VERSION constant is ahead of DB', async () => {
+    // Simulate constant drift: mock wire-meta to report a higher version than what migrations apply
+    vi.doMock('../../src/server/lib/wire-meta.js', () => ({
+      SCHEMA_VERSION: 999,
+      WIRE_VERSIONS_SUPPORTED: ['v0.0', 'v1.0'],
+      PKG_VERSION: '0.2.0',
+    }));
+
+    const { migrate: migrateMocked } = await import('../../src/storage/migrate.js');
+    const db = openDb(':memory:');
+
+    expect(() => migrateMocked(db)).toThrow(
+      /Schema-version constant drift: wire-meta says 999, DB says 2/,
+    );
   });
 });
