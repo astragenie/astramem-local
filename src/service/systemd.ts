@@ -2,7 +2,7 @@ import { exec } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { ServiceAdapter, ServiceStatus } from './types.js';
+import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
 const SERVICE_NAME = 'astra-memoryd';
 const UNIT_FILENAME = `${SERVICE_NAME}.service`;
@@ -83,11 +83,12 @@ function runCmd(cmd: string): Promise<string> {
 export class SystemdAdapter implements ServiceAdapter {
   readonly platform = 'linux' as const;
 
-  async install(execPath: string, port: number): Promise<void> {
+  async install(execPath: string, port: number): Promise<InstallResult> {
     mkdirSync(unitDir(), { recursive: true });
     writeFileSync(unitPath(), buildUnit(execPath, port), 'utf8');
     await runCmd(`systemctl --user daemon-reload`);
     await runCmd(`systemctl --user enable ${SERVICE_NAME}`);
+    return { kind: 'task' };
   }
 
   async uninstall(): Promise<void> {

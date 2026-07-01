@@ -2,7 +2,7 @@ import { exec } from 'node:child_process';
 import { mkdirSync, writeFileSync, existsSync, unlinkSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
-import type { ServiceAdapter, ServiceStatus } from './types.js';
+import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
 const LABEL = 'com.astragenie.astra-memoryd';
 const PLIST_FILENAME = `${LABEL}.plist`;
@@ -131,7 +131,7 @@ async function launchctlUnload(path: string): Promise<void> {
 export class LaunchdAdapter implements ServiceAdapter {
   readonly platform = 'darwin' as const;
 
-  async install(execPath: string, port: number): Promise<void> {
+  async install(execPath: string, port: number): Promise<InstallResult> {
     mkdirSync(agentsDir(), { recursive: true });
     // execPath formatted by resolveCliExecPath() as: "<nodeBin>" "<indexJs>"
     // Parse double-quoted tokens so paths with spaces (e.g. /Users/Jane Smith/...)
@@ -141,6 +141,7 @@ export class LaunchdAdapter implements ServiceAdapter {
       .filter(a => a.length > 0);
     writeFileSync(plistPath(), buildPlist(args, port), 'utf8');
     await launchctlLoad(plistPath());
+    return { kind: 'task' };
   }
 
   async uninstall(): Promise<void> {

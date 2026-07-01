@@ -35,8 +35,19 @@ export async function serviceCommand(args: string[]): Promise<void> {
       const keep = keepArg ? Number(keepArg) : 7;
       const execPath = resolveCliExecPath();
       console.log(`Installing AstraMemory service for ${adapter.platform}...`);
-      await adapter.install(execPath, port);
-      console.log('Service installed. Run `astramem-local service start` to start it.');
+      const result = await adapter.install(execPath, port);
+      if (result.kind === 'task') {
+        console.log("Service installed. Run 'astramem-local service start' to start it.");
+      } else {
+        // Startup-shortcut fallback — be honest about limitations.
+        console.log(`Startup shortcut installed at ${result.path}.`);
+        console.log('It will run the daemon at next logon.');
+        console.log(`To start now: astramem-local serve --port ${port}`);
+        console.log(
+          "NOTE: 'astramem-local service start' will NOT work — no scheduled task exists.\n" +
+          "      Re-run 'astramem-local service install' from an elevated shell to install a proper task.",
+        );
+      }
       if (withBackupTimer) {
         console.log('Installing nightly backup timer (03:00)...');
         await adapter.installBackupTimer(execPath, keep);
@@ -55,15 +66,25 @@ export async function serviceCommand(args: string[]): Promise<void> {
 
     case 'start': {
       console.log('Starting AstraMemory service...');
-      await adapter.start();
-      console.log('Service started.');
+      try {
+        await adapter.start();
+        console.log('Service started.');
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(1);
+      }
       break;
     }
 
     case 'stop': {
       console.log('Stopping AstraMemory service...');
-      await adapter.stop();
-      console.log('Service stopped.');
+      try {
+        await adapter.stop();
+        console.log('Service stopped.');
+      } catch (err) {
+        console.error((err as Error).message);
+        process.exit(1);
+      }
       break;
     }
 
@@ -75,7 +96,8 @@ export async function serviceCommand(args: string[]): Promise<void> {
         if (status.detail) console.log(`  Detail: ${status.detail}`);
       } else {
         console.log('Service: not installed');
-        console.log('  Run `astramem-local service install` to install.');
+        if (status.detail) console.log(`  ${status.detail}`);
+        console.log("  Run 'astramem-local service install' to install.");
       }
       break;
     }

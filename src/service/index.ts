@@ -4,7 +4,7 @@ import { LaunchdAdapter } from './launchd.js';
 import { SchtasksAdapter } from './schtasks.js';
 import type { ServiceAdapter } from './types.js';
 
-export { type ServiceAdapter, type ServiceStatus } from './types.js';
+export { type ServiceAdapter, type ServiceStatus, type InstallResult } from './types.js';
 export { SystemdAdapter } from './systemd.js';
 export { LaunchdAdapter } from './launchd.js';
 export { SchtasksAdapter } from './schtasks.js';
