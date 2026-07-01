@@ -55,7 +55,7 @@ the local daemon instead of the SaaS endpoint through a single environment varia
 ## Quick start (5 commands)
 
 ```bash
-npm install -g @astragenie/astramemory-local
+bun add -g @astragenie/astramemory-local
 astra-memory init
 # follow the wizard — picks Ollama or Azure, writes config.yaml + secrets.env
 astra-memory service install
@@ -126,7 +126,7 @@ Everything derived (vectors, FTS rows, compactions) can be rebuilt by replaying 
 | `decision` | Architectural or design choice made during a session   | "Use sqlite-vec for v1 vector storage"       |
 | `fact`     | Objective project fact, configuration detail           | "Port 7777 is the default daemon port"       |
 | `lesson`   | Something that went wrong and how it was resolved      | "sqlite-vec rowid must match memories rowid" |
-| `command`  | CLI command or script worth remembering                | "npm run build && npm test -- migrate"       |
+| `command`  | CLI command or script worth remembering                | "bun run build && bun run test -- migrate"   |
 | `todo`     | Outstanding work item surfaced in conversation         | "Add reembed job when provider changes"      |
 
 ---
@@ -242,6 +242,28 @@ The daily LLM spend cap (default: **$10 USD**) is enforced before each LLM call.
 - [docs/troubleshooting.md](docs/troubleshooting.md) — common issues and fixes
 - [docs/contracts.md](docs/contracts.md) — frozen type interfaces (for contributors)
 - [CHANGELOG.md](CHANGELOG.md) — release history
+
+---
+
+## Development
+
+This project uses [Bun](https://bun.sh/) as the package manager and script runner.
+
+```bash
+bun install          # install dependencies
+bun run build        # compile TypeScript → dist/
+bun run test         # run the vitest suite
+```
+
+**Publishing** (maintainers only):
+
+```bash
+bun publish          # publishes to GitHub Packages via .npmrc (same token as npm publish)
+```
+
+> **Why Bun?** Faster installs, a single binary, and `bun publish` works natively with the existing
+> `.npmrc` / GH Packages setup. Tests still run through vitest (`bun run test`) because the vitest
+> suite uses `better-sqlite3` native bindings which are not yet compatible with Bun's own test runner.
 
 ---
 

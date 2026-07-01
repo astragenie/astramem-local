@@ -23,7 +23,7 @@ jobs:
       - name: Read package.json version
         id: pkg
         run: |
-          PKG_VERSION=$(node -p "require('./package.json').version")
+          PKG_VERSION=$(jq -r '.version' package.json)
           echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Resolve git tag
