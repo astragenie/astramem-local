@@ -54,7 +54,7 @@ export class OllamaEmbedProvider implements EmbedProvider {
 
   constructor(config: OllamaEmbedConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
-    this.model = config.model ?? 'nomic-embed-text-v2-moe';
+    this.model = config.model ?? 'mxbai-embed-large';
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {

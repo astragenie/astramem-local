@@ -1,0 +1,48 @@
+# version-tag-parity.yml
+#
+# Enforces that the Git tag and package.json version match on every tag push.
+# Fails if a release tag is created without bumping package.json to the same
+# version — preventing /health and /version from reporting a stale version.
+#
+# Trigger: only on push of a version tag (v*) so it does not run on PR commits.
+
+name: version-tag parity
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  check-version-parity:
+    name: package.json version matches git tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read package.json version
+        id: pkg
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          echo "pkg_version=$PKG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve git tag
+        id: tag
+        run: |
+          # GITHUB_REF is refs/tags/v1.2.3 — strip the refs/tags/ prefix
+          TAG="${GITHUB_REF#refs/tags/}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Assert parity
+        run: |
+          TAG="${{ steps.tag.outputs.tag }}"
+          PKG="v${{ steps.pkg.outputs.pkg_version }}"
+          echo "Git tag    : $TAG"
+          echo "package.json: $PKG"
+          if [ "$TAG" != "$PKG" ]; then
+            echo ""
+            echo "ERROR: git tag '$TAG' does not match package.json version '$PKG'."
+            echo "Bump package.json version to match the tag before pushing."
+            exit 1
+          fi
+          echo "OK: tag and package.json version are in sync."

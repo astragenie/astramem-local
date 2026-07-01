@@ -27,7 +27,7 @@ export function defaultConfig(): Config {
       compaction: { provider: 'ollama', model: 'qwen2.5-coder:7b' },
       extraction: { provider: 'ollama', model: 'qwen2.5-coder:7b' }
     },
-    embedding: { provider: 'ollama', model: 'nomic-embed-text-v2-moe', dim: 1024 },
+    embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: 1024 },
     vector: { store: 'sqlite-vec' },
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },

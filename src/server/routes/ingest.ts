@@ -49,8 +49,9 @@ export const CanonicalIngestSchema = z.object({
   client_version: z.string(),
   client_scrub_version: z.string(),
   client_scrub_hits_by_label: z.record(z.string(), z.number().int().nonnegative()).optional(),
-  /** Wire protocol version — must match ^v\d+\.\d+$ (e.g. "v1.0"). */
-  wire_version: z.string().regex(/^v\d+\.\d+$/, 'wire_version must match ^v\\d+\\.\\d+$ (e.g. "v1.0")'),
+  // Regex mirrors SaaS IngestTranscriptRequest.cs:65 per FEAT-4a Phase 3 alignment.
+  /** Wire protocol version — must match ^v(?:0|[1-9][0-9]*)\.[0-9]+$ (e.g. "v1.0"). */
+  wire_version: z.string().regex(/^v(?:0|[1-9][0-9]*)\.[0-9]+$/, 'wire_version must match ^v(?:0|[1-9][0-9]*)\\.[0-9]+$ (e.g. "v1.0")'),
 });
 
 // ---------------------------------------------------------------------------

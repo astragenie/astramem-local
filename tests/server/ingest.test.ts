@@ -256,6 +256,49 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
     expect(res.json().error).toBe('invalid');
   });
 
+  // ---- wire_version regex tighten (FEAT-4a / v0.2.1 hotfix Finding 3) ----
+  // Regex: /^v(?:0|[1-9][0-9]*)\.[0-9]+$/ — mirrors plugin wire.ts:106 and SaaS DTO.
+  // Leading-zero major, negative major, and Unicode digits all must be rejected.
+
+  it('canonical wire_version "v01.0" (leading zero on major) returns 400', async () => {
+    const { app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, wire_version: 'v01.0' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('invalid');
+  });
+
+  it('canonical wire_version "v-1.0" (negative major) returns 400', async () => {
+    const { app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, wire_version: 'v-1.0' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('invalid');
+  });
+
+  it('canonical wire_version with Unicode digits (v١.٠) returns 400', async () => {
+    // JS regex \d matches only ASCII digits [0-9] in ECMAScript without the
+    // Unicode flag, so [0-9] is explicit here — but we confirm the runtime
+    // rejects Arabic-Indic digit codepoints regardless.
+    const { app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, wire_version: 'v١.٠' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('invalid');
+  });
+
   // ---- Canonical envelope: empty turns ----
 
   it('canonical with turns: [] (empty) returns 400', async () => {
