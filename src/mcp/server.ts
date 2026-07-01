@@ -54,7 +54,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         query: z.string().min(1).describe('Search query text'),
         limit: z.number().int().positive().max(100).default(10).describe('Max results'),
         type: z
-          .array(z.enum(['decision', 'fact', 'lesson', 'command', 'todo']))
+          .array(z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']))
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
@@ -99,7 +99,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         query: z.string().min(1).describe('Query text for semantic recall'),
         k: z.number().int().positive().max(100).default(5).describe('Number of results'),
         type: z
-          .array(z.enum(['decision', 'fact', 'lesson', 'command', 'todo']))
+          .array(z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']))
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
@@ -143,7 +143,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       inputSchema: z.object({
         text: z.string().min(1).describe('Memory text to store'),
         type: z
-          .enum(['decision', 'fact', 'lesson', 'command', 'todo'])
+          .enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event'])
           .describe('Memory type'),
         metadata: z
           .object({
