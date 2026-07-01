@@ -1,15 +1,23 @@
 {
   "name": "@astragenie/astramemory-local",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "type": "module",
   "bin": {
     "astramem-local": "./dist/cli/index.js"
   },
+  "files": [
+    "dist",
+    "migrations",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
   "scripts": {
     "build": "tsc -p .",
     "dev": "tsc -w -p .",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "prepublishOnly": "bun run build"
   },
   "engines": {
     "node": ">=20"
