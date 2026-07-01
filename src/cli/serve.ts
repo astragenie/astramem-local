@@ -4,25 +4,39 @@ import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
 import { defaultConfig } from '../config/config.js';
-import { defaultConfigDir } from '../config/datadir.js';
+import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
+import { migrateLegacyDirsIfPresent } from '../config/migrate-dirs.js';
 
 /**
  * Read MEMORY_BEARER from the user's secrets.env file when no env var or
  * --token CLI flag was provided. This lets the daemon auto-start (e.g. from
  * a Startup-folder .cmd at logon) without the bearer leaking into shell rc
  * or env-var registry as plain text.
+ *
+ * Fallback: if the canonical secrets.env is absent or has no bearer, also
+ * checks the legacy dir (%APPDATA%\AstraMemory on Windows). This protects
+ * users whose daemon boots before migration has had a chance to run.
  */
 function readBearerFromSecrets(): string | null {
-  try {
-    const path = join(defaultConfigDir(), 'secrets.env');
-    if (!existsSync(path)) return null;
-    const text = readFileSync(path, 'utf8');
-    const match = text.split('\n').find(l => l.startsWith('MEMORY_BEARER='));
-    if (!match) return null;
-    return match.slice('MEMORY_BEARER='.length).trim() || null;
-  } catch {
-    return null;
+  const dirs = [defaultConfigDir(), legacyConfigDir()].filter(
+    (d, i, arr) => arr.indexOf(d) === i, // deduplicate (non-Windows: same path)
+  );
+
+  for (const dir of dirs) {
+    try {
+      const path = join(dir, 'secrets.env');
+      if (!existsSync(path)) continue;
+      const text = readFileSync(path, 'utf8');
+      const match = text.split('\n').find(l => l.startsWith('MEMORY_BEARER='));
+      if (!match) continue;
+      const bearer = match.slice('MEMORY_BEARER='.length).trim();
+      if (bearer) return bearer;
+    } catch {
+      // continue to next candidate
+    }
   }
+
+  return null;
 }
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
@@ -41,6 +55,10 @@ export interface ServeOpts {
 }
 
 export async function serve(opts: ServeOpts): Promise<void> {
+  // Migrate legacy Windows config/data dirs (AstraMemory → Astramem) before
+  // any config load. Idempotent: no-op on non-Windows and after first run.
+  migrateLegacyDirsIfPresent();
+
   const cfg = defaultConfig();
   const port = opts.port ?? cfg.port;
   const dataDir = opts.dataDir ?? process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
