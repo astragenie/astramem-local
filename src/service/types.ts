@@ -5,10 +5,23 @@ export interface ServiceStatus {
   detail?: string;
 }
 
+/**
+ * Discriminated union returned by ServiceAdapter.install().
+ *
+ * - `task`    — a scheduled task (schtasks) / systemd unit / launchd plist was
+ *               created. `service start/stop/status` will work normally.
+ * - `startup` — OS-level task creation failed; a Startup-folder shortcut was
+ *               installed as fallback. `service start/stop` will NOT work.
+ *               `path` is the absolute path to the shortcut file.
+ */
+export type InstallResult =
+  | { kind: 'task' }
+  | { kind: 'startup'; path: string };
+
 export interface ServiceAdapter {
   readonly platform: 'linux' | 'darwin' | 'win32';
   /** Write unit file / plist / task. Does NOT start or enable. */
-  install(execPath: string, port: number): Promise<void>;
+  install(execPath: string, port: number): Promise<InstallResult>;
   /** Remove unit file / plist / task. */
   uninstall(): Promise<void>;
   /** Start the service via the OS init system. */
