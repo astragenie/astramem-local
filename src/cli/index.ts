@@ -1,4 +1,7 @@
 #!/usr/bin/env node
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import { serve } from './serve.js';
 import { cliSearch, cliRecall, cliRemember } from './search.js';
 import { serviceCommand } from './service.js';
@@ -7,6 +10,17 @@ import { budgetCommand } from './budget.js';
 import { init } from './init.js';
 import { tokenCommand } from './token.js';
 import { backupCommand } from './backup.js';
+
+const PKG_VERSION: string = (() => {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'package.json');
+    const raw = readFileSync(pkgPath, 'utf-8');
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === 'string' ? parsed.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -96,6 +110,11 @@ async function main() {
     case 'providers':
       console.error(`'${cmd}' command is documented but not yet implemented in v0.1.0. Tracked for v0.2.`);
       process.exit(1);
+
+    case '--version':
+    case '-v':
+      console.log(PKG_VERSION);
+      break;
 
     case undefined:
     case '--help':
