@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 export const AtomSchema = z.object({
-  type: z.enum(['decision', 'fact', 'lesson', 'command', 'todo']),
+  type: z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']),
   text: z.string().min(5).max(500),
   importance: z.number().min(0).max(1),
   confidence: z.number().min(0).max(1),
@@ -21,7 +21,7 @@ Output STRICT JSON matching:
 {
   "atoms": [
     {
-      "type": "decision" | "fact" | "lesson" | "command" | "todo",
+      "type": "decision" | "fact" | "lesson" | "command" | "todo" | "note" | "event",
       "text": "<5-500 chars, canonical phrasing>",
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
@@ -36,6 +36,8 @@ Types:
 - lesson: learning from failure or surprise (Bun does not support better-sqlite3 on Windows)
 - command: useful shell incantation (npm test -- --reporter=verbose)
 - todo: pending work item explicitly raised
+- note: freeform observation or annotation not fitting other types
+- event: something that happened at a point in time (deployment, incident, decision meeting)
 
 Skip noise: greetings, repeated thinking, false starts, generic AI fluff.
 Skip secrets: tokens, API keys, passwords.

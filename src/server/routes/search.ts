@@ -16,7 +16,7 @@ import { search, type SearchFilters } from '../../search/search.js';
 import { defaultConfig } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
 
-const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo']);
+const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
 
 const RecallBodySchema = z.object({
   query: z.string().min(1),

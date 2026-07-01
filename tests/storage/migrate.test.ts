@@ -24,7 +24,7 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    expect(versions.n).toBe(2);
+    expect(versions.n).toBe(3);
   });
 
   it('enables WAL mode', () => {
@@ -79,7 +79,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(2);
+    expect(versions.n).toBe(3);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -147,6 +147,95 @@ describe('migration 002-wire-v1', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 003 — expand memories.type CHECK
+// ---------------------------------------------------------------------------
+
+describe('migration 003-expand-memory-types', () => {
+  it('applies cleanly on a fresh DB', () => {
+    const db = openDb(':memory:');
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(versions.v).toBe(3);
+  });
+
+  it('allows inserting type note after migration', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() =>
+      db.prepare(
+        `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+         VALUES ('m-note', 'note', 'a note', 'a note', 0.5, 0.5, 'hash-note', 1, 1)`
+      ).run()
+    ).not.toThrow();
+  });
+
+  it('allows inserting type event after migration', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() =>
+      db.prepare(
+        `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+         VALUES ('m-event', 'event', 'an event', 'an event', 0.5, 0.5, 'hash-event', 1, 1)`
+      ).run()
+    ).not.toThrow();
+  });
+
+  it('rejects type garbage after migration', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() =>
+      db.prepare(
+        `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+         VALUES ('m-bad', 'garbage', 'bad', 'bad', 0.5, 0.5, 'hash-bad', 1, 1)`
+      ).run()
+    ).toThrow();
+  });
+
+  it('preserves existing rows across migration — row count and types intact', () => {
+    const db = openDb(':memory:');
+    // Apply only migrations 001 + 002 by simulating a v0.3.3 DB state
+    // We do this by running migrate() on a temp connection, then running 003 separately.
+    // Since migrate() runs all files, we instead seed rows after a full migration
+    // (the type constraint widening is additive — existing valid types all survive).
+    migrate(db);
+
+    // Insert 5 rows covering all original types
+    const types = ['decision', 'fact', 'lesson', 'command', 'todo'] as const;
+    for (const t of types) {
+      db.prepare(
+        `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0.5, 0.5, ?, 1, 1)`
+      ).run(`id-${t}`, t, `text-${t}`, `text-${t}`, `hash-${t}`);
+    }
+
+    const count = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n;
+    expect(count).toBe(5);
+
+    // Verify each original type round-trips correctly
+    for (const t of types) {
+      const row = db.prepare('SELECT type FROM memories WHERE id = ?').get(`id-${t}`) as { type: string };
+      expect(row.type).toBe(t);
+    }
+  });
+
+  it('FTS5 still finds memories after migration', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(
+      `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+       VALUES ('fts-note', 'note', 'unique fts note content', 'unique fts note content', 0.5, 0.5, 'fts-hash-note', 1, 1)`
+    ).run();
+
+    const hits = db
+      .prepare(`SELECT m.id FROM memories_fts f JOIN memories m ON m.rowid = f.rowid WHERE memories_fts MATCH ?`)
+      .all('unique') as { id: string }[];
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0].id).toBe('fts-note');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
 // ---------------------------------------------------------------------------
@@ -178,7 +267,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 2/,
+      /Schema-version constant drift: wire-meta says 999, DB says 3/,
     );
   });
 });

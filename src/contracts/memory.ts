@@ -1,4 +1,4 @@
-export type MemoryType = 'decision' | 'fact' | 'lesson' | 'command' | 'todo';
+export type MemoryType = 'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event';
 
 export interface Memory {
   id: string;
