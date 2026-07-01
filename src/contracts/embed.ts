@@ -14,7 +14,7 @@ export interface EmbedHealth {
  * Doctor enforces the configured-vs-stored model match at startup.
  *
  * The 1024 literal is intentional and locked for v1 to match both
- * `nomic-embed-text-v2-moe` (Ollama, native 1024) and
+ * `mxbai-embed-large` (Ollama default, native 1024) and
  * `text-embedding-3-*` (Azure, configured via `dimensions: 1024`).
  */
 export interface EmbedProvider {

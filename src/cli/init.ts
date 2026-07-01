@@ -248,7 +248,7 @@ function buildConfig(answers: WizardAnswers): Config {
   const base = defaultConfig();
 
   const llmModel = answers.llmProvider === 'azure-openai' ? 'gpt-4.1' : 'qwen2.5-coder:7b';
-  const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'nomic-embed-text-v2-moe';
+  const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'mxbai-embed-large';
 
   return {
     ...base,
@@ -290,7 +290,7 @@ export async function init(): Promise<void> {
   // 3. Provider checks
   if (answers.llmProvider === 'ollama' || answers.embedProvider === 'ollama') {
     const llmModel = answers.llmProvider === 'azure-openai' ? 'gpt-4.1' : 'qwen2.5-coder:7b';
-    const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'nomic-embed-text-v2-moe';
+    const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'mxbai-embed-large';
     await checkOllama(llmModel, embedModel, nonInteractive);
   }
 

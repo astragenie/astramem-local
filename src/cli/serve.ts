@@ -65,6 +65,21 @@ export async function serve(opts: ServeOpts): Promise<void> {
     // Real providers from config — only imported when not in mock mode
     const { getProviders } = await import('../providers/index.js');
     providers = getProviders(cfg);
+
+    // Boot-time embed preflight — fail fast before accepting traffic.
+    // Calls the same embedProbe used by `astramem-local doctor` to avoid
+    // duplicating the dim-assertion logic (doctor/checks.ts checkEmbed).
+    const { embedProbe } = await import('../doctor/probes/embed-probe.js');
+    const preflightResult = await embedProbe(providers.embed);
+    if (!preflightResult.ok) {
+      const model = providers.embed.model;
+      console.error(`[astramem-local] embed preflight FAILED: ${preflightResult.message}`);
+      console.error(`  Model    : ${model}`);
+      console.error(`  Fix      : ${preflightResult.fix ?? 'Check embed provider config'}`);
+      console.error(`  Install  : ollama pull ${model}`);
+      console.error(`  Docs     : https://ollama.com/library/mxbai-embed-large`);
+      process.exit(1);
+    }
   }
 
   const app = await buildApp({ db, token, embed: providers.embed });
