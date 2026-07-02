@@ -85,7 +85,9 @@ deal-blocker for org rollout (strategy Pass 4, T0 items #1–#2).
     skip UUIDs, skip file paths.
   - **Custom patterns** from config (SEC-9) for org-specific formats.
 - Each event → `{ type, hash8, offset }`; counts persisted to `redaction_log`
-  (new table, migration `003-security.sql`), values discarded (SEC-5/6).
+  (new table, migration `005-security.sql` — 003 is taken by expand-memory-types and 004 by
+  provenance/evidence; migration ledger lives in
+  `docs/superpowers/specs/2026-07-02-wave1-2-amendments-killer-features-design.md`), values discarded (SEC-5/6).
 
 ### 4.3 Surfaces
 

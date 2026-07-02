@@ -19,14 +19,17 @@ export interface FuseInput {
 
 /**
  * Normalize an array of raw scores to [0,1] range.
- * If all values are equal (range = 0) returns all zeros.
+ * If all values are equal (range = 0) returns all ones.
  */
 export function normalizeScores(scores: number[]): number[] {
   if (scores.length === 0) return [];
   const min = Math.min(...scores);
   const max = Math.max(...scores);
   const range = max - min;
-  if (range === 0) return scores.map(() => 0);
+  // All-equal (including single-hit): every score is equally the best match
+  // within this component. Returning 0 would erase the component's signal
+  // entirely (a lone FTS hit would lose its whole BM25 contribution).
+  if (range === 0) return scores.map(() => 1);
   return scores.map(s => (s - min) / range);
 }
 
