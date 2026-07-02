@@ -1,6 +1,6 @@
 # Spike Outcome — `better-sqlite3-multiple-ciphers` × `sqlite-vec` (Wave 1 task 1a)
 
-**Date:** 2026-07-02 · **Status:** local spike PASS on win32 — CI 3-OS confirmation pending
+**Date:** 2026-07-02 · **Status:** **GO — CI PASS on ubuntu/macos/windows** (run 28585867468; required `trustedDependencies` for the driver's install script under Bun). 1b proceeds with the driver swap.
 **Decides:** ADR-002 `docs/adr/ADR-002-local-storage-engine.md`, risk register #1 (cipher driver ×
 sqlite-vec extension-load compatibility)
 
