@@ -181,3 +181,30 @@ export function readBearer(): string | null {
     return null;
   }
 }
+
+const SYNC_TOKEN_ACCOUNT = 'sync-device-token';
+
+/** Store the cloud sync device token (ADR-003 auth) in the credential store. */
+export function storeSyncToken(token: string): BearerStoreResult {
+  try {
+    const entry = new EntryCtor(SERVICE, SYNC_TOKEN_ACCOUNT);
+    entry.setPassword(token);
+    return { stored: true, source: 'credential-store' };
+  } catch (err) {
+    console.warn(
+      `[astramem-local] WARNING: OS credential store unavailable (${errMessage(err)}); ` +
+      `sync device token was NOT stored. Set ASTRA_SYNC_TOKEN in the environment instead.`,
+    );
+    return { stored: false, source: 'secrets-env-fallback' };
+  }
+}
+
+/** Read the cloud sync device token; null when absent/unavailable. */
+export function readSyncToken(): string | null {
+  try {
+    const entry = new EntryCtor(SERVICE, SYNC_TOKEN_ACCOUNT);
+    return entry.getPassword();
+  } catch {
+    return null;
+  }
+}
