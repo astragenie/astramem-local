@@ -12,8 +12,10 @@ import { join } from 'node:path';
 import { createSnapshot } from '../backup/snapshot.js';
 import { pruneOldBackups } from '../backup/retention.js';
 import { defaultConfig } from '../config/config.js';
+import { defaultConfigDir } from '../config/datadir.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
+import { getOrCreateKey } from '../storage/keystore.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -58,7 +60,10 @@ export async function backupCommand(args: string[]): Promise<void> {
   const dbPath = join(dataDir, 'memory.sqlite');
   let db: ReturnType<typeof openDb> | undefined;
   try {
-    db = openDb(dbPath);
+    // SEC-8: an encrypted DB requires the key to open at all (even for a
+    // backup/VACUUM INTO copy) — fetch it the same way serve.ts does.
+    const key = cfg.security.encryption.enabled ? getOrCreateKey(defaultConfigDir()).key : undefined;
+    db = openDb(dbPath, { key });
     migrate(db);
   } catch (err) {
     console.error(`backup: failed to open database at ${dbPath}: ${err}`);

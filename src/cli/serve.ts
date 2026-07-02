@@ -3,6 +3,8 @@ import { mkdirSync, readFileSync, existsSync } from 'node:fs';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
+import { getOrCreateKey } from '../storage/keystore.js';
+import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
 import { defaultConfig } from '../config/config.js';
 import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
 import { migrateLegacyDirsIfPresent } from '../config/migrate-dirs.js';
@@ -71,7 +73,25 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const dbPath = dataDir === ':memory:' ? ':memory:' : join(dataDir, 'memory.sqlite');
   if (dataDir !== ':memory:') mkdirSync(dataDir, { recursive: true });
 
-  const db = openDb(dbPath);
+  // SEC-1/2/7/9: in-memory databases can never be encrypted (SQLCipher
+  // rejects PRAGMA key on :memory:, confirmed by the 1a spike) — the
+  // ASTRA_MEMORY_DATADIR=':memory:' test/dev path always stays plaintext
+  // and never touches the keystore.
+  let db: ReturnType<typeof openDb>;
+  if (dataDir === ':memory:') {
+    db = openDb(dbPath);
+  } else if (cfg.security.encryption.enabled) {
+    const key = getOrCreateKey(defaultConfigDir()).key;
+    encryptIfPlaintext(dbPath, key);
+    db = openDb(dbPath, { key });
+  } else {
+    // SEC-9: disabling encryption is a deliberate trust trade-off — make it loud.
+    console.warn(
+      '[astramem-local] WARNING: encryption at rest is DISABLED (security.encryption.enabled=false). ' +
+      `memory.sqlite at ${dbPath} will be stored in PLAINTEXT.`,
+    );
+    db = openDb(dbPath);
+  }
   migrate(db);
 
   // SEC-9: disabling redaction is a deliberate trust trade-off — make it loud.

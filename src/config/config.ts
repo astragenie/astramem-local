@@ -26,8 +26,11 @@ export interface Config {
       /** Org-specific regex sources applied as detector type 'custom'. */
       customPatterns: string[];
     };
-    // encryption: added by SEC-1/2 (task 1b) — structure left open here so
-    // that slice adds a sibling key without reshaping this object.
+    /** Encryption at rest (SEC-1/2/7/9). Disabling is a deliberate trust
+     * trade-off — the daemon logs a prominent WARN at startup (AC-6). */
+    encryption: {
+      enabled: boolean;
+    };
   };
 }
 
@@ -47,7 +50,8 @@ export function defaultConfig(): Config {
     search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 },
     recallPack: { enabled: false, budgetTokens: 1500 },
     security: {
-      redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] }
+      redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
+      encryption: { enabled: true }
     }
   };
 }
