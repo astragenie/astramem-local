@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astramem.dev/contracts/retrieval-result.v1.schema.json",
+  "title": "astramem-retrieval@1 result envelope",
+  "description": "Result envelope for the shared retrieval contract (ADR-005). Every hit carries a ScoreExplanation — per ADR-005 this is the debugging/trust surface and is never optional, regardless of the query's `explain` flag. The signal map is open (additionalProperties) so cloud's 6-signal fusion and local's 4-signal fusion (bm25, cosine, importance, freshness — see src/search/fuse.ts) both validate without the schema hardcoding either engine's signal set.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "astramem-retrieval-result@1"
+    },
+    "query": {
+      "type": "object",
+      "description": "Echo of the originating query, for trace correlation.",
+      "additionalProperties": false,
+      "properties": {
+        "text": { "type": "string" },
+        "mode": { "type": "string", "enum": ["keyword", "semantic", "hybrid"] }
+      }
+    },
+    "hits": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["id", "type", "text", "score", "explanation"],
+        "properties": {
+          "id": { "type": "string", "format": "uuid" },
+          "type": {
+            "type": "string",
+            "enum": ["decision", "fact", "lesson", "command", "todo", "note", "event"]
+          },
+          "text": { "type": "string" },
+          "score": {
+            "type": "number",
+            "description": "Final fused score."
+          },
+          "scope": {
+            "type": "string",
+            "enum": ["personal", "team", "org"]
+          },
+          "explanation": {
+            "type": "object",
+            "description": "ScoreExplanation (ADR-005): per-signal raw score, weight, and contribution to the final score.",
+            "additionalProperties": false,
+            "required": ["final", "signals"],
+            "properties": {
+              "final": {
+                "type": "number",
+                "description": "Sum of all signal contributions; matches the hit's top-level `score`."
+              },
+              "signals": {
+                "type": "object",
+                "description": "Open map keyed by signal name (e.g. bm25, cosine, importance, freshness locally; local's 4 signals or cloud's 6, including RRF/cross-encoder signals, both validate here).",
+                "additionalProperties": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["raw", "weight", "final"],
+                  "properties": {
+                    "raw": { "type": "number" },
+                    "weight": { "type": "number" },
+                    "final": { "type": "number" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "total": {
+      "type": "integer",
+      "minimum": 0
+    }
+  },
+  "required": ["schema", "hits"]
+}

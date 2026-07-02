@@ -1,0 +1,25 @@
+{
+  "schema": "astramem/atom@1",
+  "id": "00000000-0000-4000-8000-000000000001",
+  "type": "decision",
+  "text": "Adopt PostgreSQL as the canonical cloud store, pluggable graph/vector layers behind an interface.",
+  "evidence": "ADR-001 §Decision: PostgreSQL first — graph/vector optional + behind interface.",
+  "confidence": 0.9,
+  "importance": 0.8,
+  "provenance": {
+    "tool": "claude-code",
+    "session_id": "sess-adr-001",
+    "repo": "astramem-local",
+    "project": "astramem",
+    "extractor": "astramem-local@0.5.0"
+  },
+  "valid_from": "2026-06-01T00:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "team",
+  "content_hash": "a3f5c1e9b2d4e6f8017b3c5d7e9f1a3b5c7d9e1f3a5b7c9d1e3f5a7b9c1d3e5f",
+  "entities": ["PostgreSQL"],
+  "created_at": "2026-06-01T00:00:00.000Z",
+  "updated_at": "2026-06-01T00:00:00.000Z"
+}

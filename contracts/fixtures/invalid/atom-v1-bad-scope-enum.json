@@ -1,0 +1,19 @@
+{
+  "schema": "astramem/atom@1",
+  "id": "00000000-0000-4000-8000-000000000008",
+  "type": "todo",
+  "text": "'global' is not a valid ADR-009 scope (personal|team|org).",
+  "evidence": "n/a",
+  "confidence": 0.5,
+  "importance": 0.5,
+  "provenance": { "tool": "claude-code", "session_id": null, "repo": null, "project": null, "extractor": null },
+  "valid_from": "2026-06-01T00:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "global",
+  "content_hash": "f8e0b6d4a7c91b52e6a8c0d3f5a7c9e1b3d5f7a9c1e3f5a7c9e1f3a5c7e9f1a3",
+  "entities": [],
+  "created_at": "2026-06-01T00:00:00.000Z",
+  "updated_at": "2026-06-01T00:00:00.000Z"
+}

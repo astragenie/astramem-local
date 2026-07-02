@@ -1,0 +1,12 @@
+{
+  "event": "session_end",
+  "session_id": "sess-events-missing",
+  "project_id": "proj-events",
+  "captured_at": "2026-07-02T10:00:00.000Z",
+  "kind": "events",
+  "client_scrub_applied": false,
+  "client_scrub_hits": 0,
+  "client_version": "0.1.0",
+  "client_scrub_version": "n/a",
+  "wire_version": "v1.0"
+}

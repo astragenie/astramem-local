@@ -1,0 +1,25 @@
+{
+  "schema": "astramem-retrieval-result@1",
+  "query": { "text": "why did we adopt PostgreSQL", "mode": "hybrid" },
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "type": "decision",
+      "text": "Adopt PostgreSQL as the canonical cloud store, pluggable graph/vector layers behind an interface.",
+      "score": 0.91,
+      "scope": "team",
+      "explanation": {
+        "final": 0.91,
+        "signals": {
+          "bm25": { "raw": 3.2, "weight": 0.2, "final": 0.18 },
+          "cosine": { "raw": 0.88, "weight": 0.25, "final": 0.22 },
+          "rrf": { "raw": 0.033, "weight": 0.15, "final": 0.14 },
+          "cross_encoder": { "raw": 0.95, "weight": 0.2, "final": 0.19 },
+          "importance": { "raw": 0.8, "weight": 0.1, "final": 0.08 },
+          "freshness": { "raw": 0.9, "weight": 0.1, "final": 0.09 }
+        }
+      }
+    }
+  ],
+  "total": 1
+}

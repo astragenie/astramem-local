@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astramem.dev/contracts/capture-envelope.v1.schema.json",
+  "title": "astramem-capture@1 envelope",
+  "description": "Formalizes docs/capture-protocol.md (ADR-008). POST /ingest/transcript accepts one astramem-capture@1 envelope per session boundary, in one of two kinds: 'transcript' (raw turns, runs the full 8-stage pipeline) or 'events' (pre-typed atom candidates, skips stages 1-5). kind defaults to 'transcript' when omitted.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": ["pre_compact", "session_end", "subagent_stop"]
+    },
+    "session_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "project_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "agent_type": {
+      "type": "string"
+    },
+    "cwd": {
+      "type": "string"
+    },
+    "captured_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["transcript", "events"],
+      "default": "transcript"
+    },
+    "tool": {
+      "type": "string",
+      "description": "Provenance — no default, record what the adapter sends."
+    },
+    "client_scrub_applied": {
+      "type": "boolean"
+    },
+    "client_scrub_hits": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "client_version": {
+      "type": "string"
+    },
+    "client_scrub_version": {
+      "type": "string"
+    },
+    "wire_version": {
+      "type": "string",
+      "pattern": "^v(?:0|[1-9][0-9]*)\\.[0-9]+$"
+    },
+    "turns": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["role", "text"],
+        "properties": {
+          "role": { "type": "string", "enum": ["user", "assistant"] },
+          "text": { "type": "string" },
+          "ts": { "type": "string", "format": "date-time" }
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 500,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["type", "text"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": ["decision", "fact", "lesson", "command", "todo", "note", "event"]
+          },
+          "text": { "type": "string", "minLength": 1 },
+          "importance": { "type": "number", "minimum": 0, "maximum": 1 },
+          "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
+          "evidence": { "type": "string" },
+          "occurred_at": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Epoch ms — when the event happened, vs. captured_at (when it was captured)."
+          }
+        }
+      }
+    }
+  },
+  "required": [
+    "event",
+    "session_id",
+    "project_id",
+    "captured_at",
+    "client_scrub_applied",
+    "client_scrub_hits",
+    "client_version",
+    "client_scrub_version",
+    "wire_version"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "kind": { "const": "events" } },
+        "required": ["kind"]
+      },
+      "then": {
+        "required": ["events"]
+      }
+    },
+    {
+      "if": {
+        "not": {
+          "properties": { "kind": { "const": "events" } },
+          "required": ["kind"]
+        }
+      },
+      "then": {
+        "required": ["turns"]
+      }
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "event": "pre_compact",
+  "session_id": "sess-bad-wire-version",
+  "project_id": "proj-abc",
+  "captured_at": "2025-06-30T10:00:00.000Z",
+  "turns": [
+    { "role": "user", "text": "hello" }
+  ],
+  "client_scrub_applied": true,
+  "client_scrub_hits": 0,
+  "client_version": "0.6.0",
+  "client_scrub_version": "1.2.0",
+  "wire_version": "1.0"
+}
