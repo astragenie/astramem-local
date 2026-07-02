@@ -21,6 +21,7 @@ import { defaultConfigDir, defaultDataDir } from '../config/datadir.js';
 import { writeConfig } from '../config/writer.js';
 import { writeSecrets } from '../config/secrets.js';
 import { generateToken } from './token.js';
+import { storeBearer } from '../storage/keystore.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
 import { getChecks } from '../doctor/checks.js';
@@ -349,19 +350,27 @@ export async function init(): Promise<void> {
   writeConfig(cfg, configPath);
   if (!nonInteractive) console.log(`\n  ✓ config.yaml written to ${configPath}`);
 
-  // 6. Generate + write secrets.env
+  // 6. Generate bearer + store it (SEC-10: credential store first, secrets.env
+  //    ONLY as fallback when the store is unavailable — mirrors keystore.ts).
   const secretsPath = join(configDir, 'secrets.env');
   const bearer = generateToken();
+  const { stored } = storeBearer(bearer);
   writeSecrets(
     {
-      bearer,
+      bearer: stored ? undefined : bearer,
       azureKey: answers.azureApiKey,
       azureEndpoint: answers.azureEndpoint,
       azureDeployment: answers.azureDeployment,
     },
     secretsPath
   );
-  if (!nonInteractive) console.log(`  ✓ secrets.env written to ${secretsPath} (mode 0600)`);
+  if (!nonInteractive) {
+    console.log(
+      stored
+        ? `  ✓ bearer token stored in OS credential store`
+        : `  ✓ secrets.env written to ${secretsPath} (mode 0600, bearer fallback — OS credential store unavailable)`
+    );
+  }
 
   // 7. Run migrations
   const dbPath = join(answers.dataDir, 'memory.sqlite');

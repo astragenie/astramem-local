@@ -10,8 +10,13 @@ import { dirname } from 'node:path';
 import { platform } from 'node:os';
 
 export interface SecretsPayload {
-  /** 64-character hex Bearer token (32 random bytes). */
-  bearer: string;
+  /**
+   * 64-character hex Bearer token (32 random bytes). Optional as of SEC-10:
+   * callers omit this when the bearer was already stored in the OS
+   * credential store — secrets.env is a fallback persistence layer, not the
+   * bearer's primary home. See storage/keystore.ts storeBearer().
+   */
+  bearer?: string;
   /** Azure OpenAI API key, if azure provider selected. */
   azureKey?: string;
   /** Azure endpoint URL, if azure provider selected. */
@@ -29,7 +34,8 @@ export interface SecretsPayload {
 export function writeSecrets(payload: SecretsPayload, path: string): void {
   mkdirSync(dirname(path), { recursive: true });
 
-  const lines: string[] = [`MEMORY_BEARER=${payload.bearer}`];
+  const lines: string[] = [];
+  if (payload.bearer) lines.push(`MEMORY_BEARER=${payload.bearer}`);
   if (payload.azureKey) lines.push(`AZURE_OPENAI_API_KEY=${payload.azureKey}`);
   if (payload.azureEndpoint) lines.push(`AZURE_OPENAI_ENDPOINT=${payload.azureEndpoint}`);
   if (payload.azureDeployment) lines.push(`AZURE_OPENAI_DEPLOYMENT=${payload.azureDeployment}`);

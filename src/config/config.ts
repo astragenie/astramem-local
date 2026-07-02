@@ -18,6 +18,20 @@ export interface Config {
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
   search: { alpha: number; beta: number; gamma: number; delta: number };
   recallPack: { enabled: boolean; budgetTokens: number };
+  security: {
+    redaction: {
+      enabled: boolean;
+      /** Shannon-entropy threshold in bits/char for the fallback secret detector. */
+      entropyThreshold: number;
+      /** Org-specific regex sources applied as detector type 'custom'. */
+      customPatterns: string[];
+    };
+    /** Encryption at rest (SEC-1/2/7/9). Disabling is a deliberate trust
+     * trade-off — the daemon logs a prominent WARN at startup (AC-6). */
+    encryption: {
+      enabled: boolean;
+    };
+  };
 }
 
 export function defaultConfig(): Config {
@@ -34,7 +48,11 @@ export function defaultConfig(): Config {
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
     search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 },
-    recallPack: { enabled: false, budgetTokens: 1500 }
+    recallPack: { enabled: false, budgetTokens: 1500 },
+    security: {
+      redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
+      encryption: { enabled: true }
+    }
   };
 }
 

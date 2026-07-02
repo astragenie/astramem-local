@@ -10,6 +10,9 @@ import { budgetCommand } from './budget.js';
 import { init } from './init.js';
 import { tokenCommand } from './token.js';
 import { backupCommand } from './backup.js';
+import { queueCommand } from './queue.js';
+import { rebuildCommand } from './rebuild.js';
+import { providersCommand } from './providers.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -105,11 +108,23 @@ async function main() {
       break;
     }
 
-    case 'queue':
-    case 'rebuild':
-    case 'providers':
-      console.error(`'${cmd}' command is documented but not yet implemented in v0.1.0. Tracked for v0.2.`);
-      process.exit(1);
+    case 'queue': {
+      // astramem-local queue [--json] [--limit N]
+      await queueCommand(rest);
+      break;
+    }
+
+    case 'rebuild': {
+      // astramem-local rebuild [--repo REPO] [--project PROJECT] [--limit N] [--dry-run] [--json]
+      await rebuildCommand(rest);
+      break;
+    }
+
+    case 'providers': {
+      // astramem-local providers [--json]
+      await providersCommand(rest);
+      break;
+    }
 
     case '--version':
     case '-v':
@@ -133,6 +148,10 @@ Commands:
   backup [--out PATH] [--keep N] [--json] Snapshot DB; prune old backups
   init                                   Interactive setup wizard
   token rotate                           Issue new local Bearer token
+  queue [--json] [--limit N]             Show job-queue state counts + recent failures
+  rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
+                                         Queue reembed jobs for existing memories
+  providers [--json]                     Show configured providers + live health probes
 
 Environment:
   ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)

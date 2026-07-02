@@ -17,6 +17,7 @@ describe('migrate', () => {
     expect(names).toContain('artifacts');
     expect(names).toContain('provider_state');
     expect(names).toContain('budget_spend');
+    expect(names).toContain('redaction_log');
   });
 
   it('is idempotent — second run does nothing', () => {
@@ -24,7 +25,7 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    expect(versions.n).toBe(4);
+    expect(versions.n).toBe(5);
   });
 
   it('enables WAL mode', () => {
@@ -79,7 +80,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(4);
+    expect(versions.n).toBe(5);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -155,7 +156,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(4);
+    expect(versions.v).toBe(5);
   });
 
   it('allows inserting type note after migration', () => {
@@ -236,6 +237,47 @@ describe('migration 003-expand-memory-types', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 005 — redaction_log (SEC-6)
+// ---------------------------------------------------------------------------
+
+describe('migration 005-security', () => {
+  it('creates redaction_log with expected columns', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+    expect(tables.map(t => t.name)).toContain('redaction_log');
+
+    const cols = db.prepare('PRAGMA table_info(redaction_log)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toContain('id');
+    expect(colNames).toContain('type');
+    expect(colNames).toContain('count');
+    expect(colNames).toContain('session_id');
+    expect(colNames).toContain('created_at');
+  });
+
+  it('stores counts + type only — no value-shaped column exists', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const cols = db.prepare('PRAGMA table_info(redaction_log)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).not.toContain('value');
+    expect(colNames).not.toContain('secret');
+  });
+
+  it('accepts a row with session_id NULL', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() =>
+      db.prepare(
+        'INSERT INTO redaction_log (type, count, session_id, created_at) VALUES (?, ?, ?, ?)',
+      ).run('github_token', 2, null, Date.now())
+    ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
 // ---------------------------------------------------------------------------
@@ -267,7 +309,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 4/,
+      /Schema-version constant drift: wire-meta says 999, DB says 5/,
     );
   });
 });

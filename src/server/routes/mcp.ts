@@ -13,13 +13,14 @@ import type { FastifyInstance } from 'fastify';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import type { DB } from '../../storage/db.js';
 import type { EmbedProvider } from '../../contracts/index.js';
+import { type Config, defaultConfig } from '../../config/config.js';
 import { buildMcpServer } from '../../mcp/server.js';
 
-export function mcpRoute(db: DB, embed: EmbedProvider) {
+export function mcpRoute(db: DB, embed: EmbedProvider, config: Config = defaultConfig()) {
   return async (app: FastifyInstance) => {
     app.post('/mcp', async (req, reply) => {
       // One McpServer + transport per request (stateless mode).
-      const mcpServer = buildMcpServer({ db, embed });
+      const mcpServer = buildMcpServer({ db, embed, config });
 
       const transport = new StreamableHTTPServerTransport({
         // Stateless: no session ID

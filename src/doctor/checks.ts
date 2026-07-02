@@ -25,6 +25,9 @@ import { llmChatProbe } from './probes/llm-chat-probe.js';
 import { embedProbe } from './probes/embed-probe.js';
 import { pluginCoexistenceProbe } from './probes/plugin-coexistence.js';
 import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
+import { getOrCreateKey, readBearer } from '../storage/keystore.js';
+import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
+import type { DB } from '../storage/db.js';
 
 export type { Check, CheckResult };
 
@@ -63,6 +66,10 @@ export interface DoctorCheckOpts {
   serviceUnitPath?: string;
   /** Daily budget cap in USD (default: 10) */
   dailyBudgetUsd?: number;
+  /** Whether secret redaction is enabled (default: true) — SEC-6/8. */
+  redactionEnabled?: boolean;
+  /** Whether encryption at rest is enabled (default: true) — SEC-1/2/8. */
+  encryptionEnabled?: boolean;
   /**
    * LLM providers to real-chat-probe. If compaction + extraction are the same
    * provider instance (same name+model), only one probe fires.
@@ -82,9 +89,34 @@ export interface DoctorCheckOpts {
   backupsDir?: string;
 }
 
+// ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
+
+/**
+ * Opens `dbPath` read-only using the production cipher driver
+ * (better-sqlite3-multiple-ciphers). When `encryptionEnabled` is true,
+ * fetches the key from the keystore (credential store, or key-file fallback)
+ * and applies `PRAGMA key` before returning — otherwise a plain
+ * better-sqlite3 probe against an encrypted file would fail with
+ * "file is not a database", turning every doctor read-check into a false
+ * failure on encrypted installs (SEC-8/AC-5).
+ *
+ * getOrCreateKey() is idempotent — if the DB is genuinely encrypted the key
+ * already exists (created at first `serve`), so this call reads it back
+ * rather than minting a new one.
+ */
+async function openProductionDbReadonly(dbPath: string, encryptionEnabled: boolean): Promise<DB> {
+  const { default: Database } = await import('better-sqlite3-multiple-ciphers');
+  const db = new Database(dbPath, { readonly: true }) as DB;
+  if (encryptionEnabled) {
+    const { key } = getOrCreateKey(defaultConfigDir());
+    db.pragma(`key='${key.replace(/'/g, "''")}'`);
+  }
+  return db;
+}
+
 // ─── Check 1: SQLite writable + WAL ──────────────────────────────────────────
 
-function checkSqliteWritable(dataDir: string): Check {
+function checkSqliteWritable(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'SQLite writable + WAL',
     async run(): Promise<CheckResult> {
@@ -102,14 +134,13 @@ function checkSqliteWritable(dataDir: string): Check {
         };
       }
 
-      // Check WAL by opening a test DB — we do this without importing better-sqlite3
-      // at module load time (doctor may run before DB is ready).
+      // Check WAL by opening a test DB — key-aware so this doesn't false-fail
+      // on an encrypted production DB (SEC-8).
       try {
-        const { default: Database } = await import('better-sqlite3');
         const dbPath = join(dataDir, 'memory.sqlite');
         // DB may not exist yet — only check WAL if it does
         if (existsSync(dbPath)) {
-          const db = new Database(dbPath, { readonly: true });
+          const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
           const row = db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
           db.close();
           if (row.journal_mode !== 'wal') {
@@ -135,7 +166,7 @@ function checkSqliteVec(): Check {
     name: 'sqlite-vec extension loadable',
     async run(): Promise<CheckResult> {
       try {
-        const { default: Database } = await import('better-sqlite3');
+        const { default: Database } = await import('better-sqlite3-multiple-ciphers');
         const { load } = await import('sqlite-vec');
         const db = new Database(':memory:');
         load(db);
@@ -161,7 +192,7 @@ function checkFts5(): Check {
     name: 'FTS5 available',
     async run(): Promise<CheckResult> {
       try {
-        const { default: Database } = await import('better-sqlite3');
+        const { default: Database } = await import('better-sqlite3-multiple-ciphers');
         const db = new Database(':memory:');
         db.exec(`CREATE VIRTUAL TABLE _fts5_probe USING fts5(content)`);
         db.exec(`DROP TABLE _fts5_probe`);
@@ -171,7 +202,7 @@ function checkFts5(): Check {
         return {
           ok: false,
           message: `FTS5 not available: ${err}`,
-          fix: 'Ensure better-sqlite3 was compiled with FTS5 (default in prebuilt binaries)',
+          fix: 'Ensure better-sqlite3-multiple-ciphers was compiled with FTS5 (default in prebuilt binaries)',
         };
       }
     },
@@ -287,7 +318,7 @@ function checkDatadirWritable(dataDir: string): Check {
 
 // ─── Check 8: Today's budget vs cap ──────────────────────────────────────────
 
-function checkBudget(dataDir: string, dailyBudgetUsd: number): Check {
+function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled: boolean): Check {
   return {
     name: 'Daily budget vs cap',
     async run(): Promise<CheckResult> {
@@ -296,8 +327,7 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number): Check {
         if (!existsSync(dbPath)) {
           return { ok: true, message: 'budget check skipped (no DB yet)' };
         }
-        const { default: Database } = await import('better-sqlite3');
-        const db = new Database(dbPath, { readonly: true });
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const day = new Date().toISOString().slice(0, 10);
         const row = db.prepare('SELECT usd_total, calls FROM budget_spend WHERE day = ?').get(day) as
           | { usd_total: number; calls: number }
@@ -322,6 +352,113 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number): Check {
         };
       } catch (err) {
         return { ok: false, message: `Budget check error: ${err}` };
+      }
+    },
+  };
+}
+
+// ─── Check: Secret redaction (SEC-6/8) ────────────────────────────────────────
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: boolean): Check {
+  return {
+    name: 'Secret redaction',
+    async run(): Promise<CheckResult> {
+      if (!enabled) {
+        return {
+          ok: false,
+          message: 'redaction: OFF — secrets are NOT scrubbed before persistence (security.redaction.enabled=false)',
+          fix: 'Set security.redaction.enabled=true (default) unless you have a deliberate reason to disable it.',
+        };
+      }
+
+      try {
+        const dbPath = join(dataDir, 'memory.sqlite');
+        if (!existsSync(dbPath)) {
+          return { ok: true, message: 'redaction: on (no DB yet — 0 secrets redacted)' };
+        }
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const since = Date.now() - SEVEN_DAYS_MS;
+        const rows = db
+          .prepare('SELECT type, SUM(count) AS n FROM redaction_log WHERE created_at >= ? GROUP BY type ORDER BY n DESC')
+          .all(since) as { type: string; n: number }[];
+        db.close();
+
+        const total = rows.reduce((sum, r) => sum + r.n, 0);
+        if (total === 0) {
+          return { ok: true, message: 'redaction: on — 0 secrets redacted in last 7d' };
+        }
+        const breakdown = rows.map(r => `${r.n} ${r.type}`).join(', ');
+        return { ok: true, message: `redaction: on — ${total} secrets redacted (${breakdown}) in last 7d` };
+      } catch (err) {
+        return { ok: false, message: `Redaction check error: ${err}` };
+      }
+    },
+  };
+}
+
+// ─── Check: Encryption at rest (SEC-1/2/8) ────────────────────────────────────
+
+function checkEncryption(dataDir: string, enabled: boolean): Check {
+  return {
+    name: 'Encryption at rest',
+    async run(): Promise<CheckResult> {
+      if (!enabled) {
+        return {
+          ok: false,
+          message: 'encryption: OFF — memory.sqlite is stored in PLAINTEXT (security.encryption.enabled=false)',
+          fix: 'Set security.encryption.enabled=true (default) unless you have a deliberate reason to disable it.',
+        };
+      }
+
+      try {
+        const { source } = getOrCreateKey(defaultConfigDir());
+        const label = source === 'credential-store' ? 'keychain' : 'key-file';
+
+        const dbPath = join(dataDir, 'memory.sqlite');
+        if (existsSync(dbPath)) {
+          const header = readFileSync(dbPath).subarray(0, 16).toString('latin1');
+          if (header.startsWith('SQLite format 3')) {
+            return {
+              ok: false,
+              message: `encryption: on (${label}) but memory.sqlite header is still PLAINTEXT — auto-migration has not run yet`,
+              fix: 'astramem-local serve  (auto-migrates a plaintext DB to encrypted form on next start)',
+            };
+          }
+        }
+        return { ok: true, message: `encryption: on (${label})` };
+      } catch (err) {
+        return { ok: false, message: `Encryption check error: ${err}` };
+      }
+    },
+  };
+}
+
+// ─── Check: Bearer token location (SEC-10) ────────────────────────────────────
+
+function checkBearerLocation(): Check {
+  return {
+    name: 'Bearer token location',
+    async run(): Promise<CheckResult> {
+      try {
+        if (readBearer()) {
+          return { ok: true, message: 'bearer: OS credential store' };
+        }
+        if (readBearerFromSecretsFile()) {
+          return {
+            ok: false,
+            message: 'bearer: secrets.env (plaintext fallback) — OS credential store unavailable or not yet migrated',
+            fix: 'Run "astramem-local token rotate" to migrate the bearer into the OS credential store.',
+          };
+        }
+        return {
+          ok: false,
+          message: 'bearer: missing — no MEMORY_BEARER in credential store or secrets.env',
+          fix: 'Run "astramem-local init" or "astramem-local token rotate" to generate one.',
+        };
+      } catch (err) {
+        return { ok: false, message: `Bearer location check error: ${err}` };
       }
     },
   };
@@ -512,16 +649,21 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
   const dataDir = opts.dataDir ?? join(tmpdir(), 'astramem');
   const dailyBudgetUsd = opts.dailyBudgetUsd ?? 10;
 
+  const encryptionEnabled = opts.encryptionEnabled ?? true;
+
   const checks: Check[] = [
     checkDatadirWritable(dataDir),
-    checkSqliteWritable(dataDir),
+    checkSqliteWritable(dataDir, encryptionEnabled),
     checkSqliteVec(),
     checkFts5(),
     checkDaemonReachable(port),
     checkDiskFree(dataDir),
     checkServiceUnit(opts.serviceUnitPath),
-    checkBudget(dataDir, dailyBudgetUsd),
+    checkBudget(dataDir, dailyBudgetUsd, encryptionEnabled),
     checkConfigDirDivergence(),
+    checkRedaction(dataDir, opts.redactionEnabled ?? true, encryptionEnabled),
+    checkEncryption(dataDir, encryptionEnabled),
+    checkBearerLocation(),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

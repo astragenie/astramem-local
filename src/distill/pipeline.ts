@@ -46,6 +46,8 @@ export interface PipelineResult {
   memoriesDeduped: number;
   atomsExtracted: number;
   chunksProcessed: number;
+  /** IDs of every memory this run touched (both newly-created and deduped-existing), in stage-8 order. */
+  memoryIds: string[];
 }
 
 /**
@@ -147,5 +149,6 @@ export async function runPipeline(
     memoriesDeduped: deduped,
     atomsExtracted: allAtoms.length,
     chunksProcessed: chunks.length,
+    memoryIds: indexResults.map(r => r.memoryId),
   };
 }

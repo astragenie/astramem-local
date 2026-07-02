@@ -10,6 +10,8 @@ import { z } from 'zod';
 import type { JobHandler } from '../handler.js';
 import { isExtendedCtx } from '../handler-ctx-ext.js';
 import { runPipeline, BudgetExceeded } from '../../distill/pipeline.js';
+import { flattenTranscriptContent } from '../../distill/flatten-turns.js';
+import { backfillSummaryMemoryId } from '../../storage/ingest-idempotency.js';
 import { JobRepo } from '../job-repo.js';
 
 /**
@@ -63,6 +65,12 @@ export const distillHandler: JobHandler = {
       .prepare('SELECT id, repo, project, branch, agent FROM sessions WHERE id = ?')
       .get(session_id) as SessionRow | undefined;
 
+    // D-DEF1: canonical transcripts store JSON.stringify(turns) in `content`
+    // (structured [{role, text, ts}]). Flatten to "role: text" lines — the
+    // format stages 1-3 (cleanup/normalize/chunk) actually parse — before it
+    // enters the pipeline. Legacy plain-text content passes through as-is.
+    const transcriptText = flattenTranscriptContent(transcript.content);
+
     // Derive source hash for idempotency
     const { createHash } = await import('node:crypto');
     const sourceHash = createHash('sha256')
@@ -95,11 +103,18 @@ export const distillHandler: JobHandler = {
     };
 
     try {
-      const result = await runPipeline(transcript.content, pipelineCtx);
+      const result = await runPipeline(transcriptText, pipelineCtx);
       console.log(
         `[distill] transcript=${transcript_id} chunks=${result.chunksProcessed} atoms=${result.atomsExtracted} ` +
           `created=${result.memoriesCreated} deduped=${result.memoriesDeduped}`,
       );
+
+      // D-DEF2: backfill ingest_idempotency.summary_memory_id (currently the
+      // transcript-id placeholder written at ingest time) with the real
+      // memory id this run produced, so idempotent replays return it.
+      if (result.memoryIds.length > 0) {
+        backfillSummaryMemoryId(ctx.db, transcript_id, result.memoryIds[0]!);
+      }
     } catch (err) {
       if (err instanceof BudgetExceeded) {
         // Budget exceeded — move job to paused. The worker will not retry.

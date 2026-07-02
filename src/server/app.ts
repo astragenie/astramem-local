@@ -86,15 +86,15 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
     }
   });
 
-  await app.register(healthRoute);
+  await app.register(healthRoute(config));
   await app.register(versionRoute);
-  await app.register(ingestRoute(opts.db));
-  await app.register(searchRoute(opts.db, embed));
+  await app.register(ingestRoute(opts.db, config));
+  await app.register(searchRoute(opts.db, embed, config));
   await app.register(memoryRoute(opts.db));
   await app.register(whyRoute(opts.db));
   await app.register(digestRoute(opts.db));
   await app.register(recallRoute(opts.db));
-  await app.register(mcpRoute(opts.db, embed));
+  await app.register(mcpRoute(opts.db, embed, config));
   await app.register(dashboardRoute(opts.db, config, opts.token));
 
   return app;

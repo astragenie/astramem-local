@@ -13,7 +13,7 @@ import { mkdirSync, existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import Database from 'better-sqlite3';
+import Database from 'better-sqlite3-multiple-ciphers';
 import { createSnapshot } from '../../src/backup/snapshot.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { openDb } from '../../src/storage/db.js';
