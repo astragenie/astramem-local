@@ -151,21 +151,33 @@ See [docs/providers.md](docs/providers.md) for full setup instructions.
 ## Public endpoints
 
 All endpoints require Bearer token authentication except `GET /version` and `GET /health`.
+`GET /dashboard` additionally accepts an `HttpOnly` session cookie, bootstrapped via a one-time
+`?token=` visit (see [Dashboard](#dashboard) below).
 
-| Endpoint | Auth | v0.2.0+ | Description |
-|---|---|---|---|
-| `GET /health` | — | ✓ | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` |
-| `GET /version` | — | ✓ | Version discovery: `{ name, version, wire_versions_supported, schema_version, ts }` |
-| `POST /ingest/transcript` | Bearer | ✓ | Accepts legacy + SaaS-canonical envelope; idempotency via `Idempotency-Key` header |
-| `GET /search` | Bearer | ✓ | Hybrid search with type/repo/project/since filters |
-| `POST /recall` | Bearer | ✓ | Top-K semantic recall (alias: `search` with k=5) |
-| `POST /remember` | Bearer | ✓ | Direct memory insert, bypasses distillation |
-| `POST /mcp` | Bearer | ✓ | Model Context Protocol endpoint (4 auto-discovered tools) |
+| Endpoint | Auth | Description |
+|---|---|---|
+| `GET /health` | — | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` |
+| `GET /version` | — | Version discovery: `{ name, version, wire_versions_supported, schema_version, ts }` |
+| `POST /ingest/transcript` | Bearer | Capture protocol endpoint — accepts `transcript` and `events` kinds; idempotency via `Idempotency-Key` header. See [docs/capture-protocol.md](docs/capture-protocol.md). |
+| `GET /search` | Bearer | Hybrid search with type/repo/project/since filters |
+| `POST /recall` | Bearer | Top-K semantic recall (alias: `search` with k=5) |
+| `POST /recall/pack` | Bearer | Token-budgeted memory pack for a repo/project/branch — powers the SessionStart hook |
+| `POST /remember` | Bearer | Direct memory insert, bypasses distillation |
+| `GET /memory/:id` | Bearer | Single memory lookup |
+| `GET /memory/:id/why` | Bearer | Provenance receipt — extraction evidence + confidence for a memory |
+| `GET /memory/:id/history` | Bearer | Full `memory_events` log for a memory (invalidate/supersede/promote chain) |
+| `POST /memory/:id/invalidate` | Bearer | Soft-delete a memory (lifecycle op) |
+| `POST /memory/:id/supersede` | Bearer | Replace a memory with a newer one, linked via `memory_events` |
+| `POST /memory/:id/promote` | Bearer | Promote a memory's scope: personal → team → org |
+| `POST /memory/:id/used` | Bearer | Record an explicit recall-usefulness signal for a memory |
+| `GET /sessions/:id/digest` | Bearer | Session summary digest |
+| `GET /dashboard` | Bearer, cookie, or one-time `?token=` bootstrap | Read-only HTML metrics dashboard, auto-refreshing every 5s |
+| `POST /mcp` | Bearer | Model Context Protocol endpoint (auto-discovered tools, see below) |
 
 ## MCP tools (Claude Code auto-discovery)
 
 The daemon exposes a **Model Context Protocol** (Streamable HTTP) endpoint at `POST /mcp`.
-Claude Code discovers and calls the 4 tools below automatically when configured in `.mcp.json`.
+Claude Code discovers and calls the tools below automatically when configured in `.mcp.json`.
 
 | Tool | Description | Maps to |
 |---|---|---|
@@ -173,6 +185,13 @@ Claude Code discovers and calls the 4 tools below automatically when configured 
 | `recall_memory` | Top-K semantic recall (default k=5) | `POST /recall` |
 | `remember` | Direct memory insert, bypasses distillation | `POST /remember` |
 | `get_health` | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` | `GET /health` |
+| `why_memory` | Provenance receipt — extraction evidence + confidence for a memory | `GET /memory/:id/why` |
+| `session_digest` | Session summary digest | `GET /sessions/:id/digest` |
+| `invalidate_memory` | Soft-delete a memory (lifecycle op) | `POST /memory/:id/invalidate` |
+| `supersede_memory` | Replace an old memory with a new one, linked via `memory_events` | `POST /memory/:id/supersede` |
+| `promote_memory` | Promote a memory's scope: personal → team → org | `POST /memory/:id/promote` |
+| `memory_history` | Full `memory_events` log for a memory | `GET /memory/:id/history` |
+| `mark_memory_used` | Explicit recall-usefulness signal — "this memory mattered" | `POST /memory/:id/used` |
 
 **Plugin `.mcp.json` wiring:**
 
@@ -205,11 +224,130 @@ The daily LLM spend cap (default: **$10 USD**) is enforced before each LLM call.
 
 ---
 
+## Security
+
+### Encryption at rest
+
+`memory.sqlite` is encrypted by default using `better-sqlite3-multiple-ciphers` (SQLCipher-compatible
+cipher driver). The 32-byte key is resolved through a provider chain:
+
+1. **OS credential store** — Windows Credential Manager / macOS Keychain / Linux libsecret, via
+   `@napi-rs/keyring`.
+2. **Key-file fallback** — `<configDir>/db.key` (mode `0600`) with a WARN log, used only when the
+   credential store throws (e.g. headless Linux with no secret-service session).
+
+A pre-existing plaintext `memory.sqlite` (from a version predating encryption) is **auto-migrated**
+transparently on daemon startup: the file is checkpointed, re-keyed via `PRAGMA rekey`, and
+verified (row-count match) before the encrypted copy replaces the original. The pre-migration
+plaintext file is preserved at `memory.sqlite.pre-encryption.bak` — nothing is deleted. Migration
+is idempotent; an already-encrypted file is a no-op.
+
+Disabling encryption (`security.encryption.enabled: false`) is a deliberate trust trade-off — the
+daemon logs a prominent WARN at startup, and `astra-memory doctor` reports
+`encryption: OFF — memory.sqlite is stored in PLAINTEXT`.
+
+### Stage-0 secret redaction
+
+Every transcript turn and manual `/remember` write passes through a redaction choke point *before*
+it is persisted — downstream pipeline stages only ever see already-redacted text. Detection runs in
+three passes:
+
+1. **PEM private-key blocks** (multiline, whole block).
+2. **Vendor/pattern detectors** — AWS access keys, GitHub tokens, Azure storage keys/SAS tokens, GCP
+   API keys, Slack tokens, JWTs, generic `key=value` credentials, connection-string userinfo — plus
+   any org-specific regexes from `security.redaction.customPatterns`.
+3. **Shannon-entropy fallback** — flags high-entropy strings (default threshold 4.0 bits/char) that
+   pattern detectors missed.
+
+Matches are replaced with a placeholder — `[REDACTED:<type>:<hash8>]`, where `hash8` is the first 8
+hex chars of `SHA-256(secret value)` — so the same secret always redacts to the same placeholder
+(dedup-safe) while the raw value is **never stored or logged**. Only counts are persisted, in the
+`redaction_log` table (`type`, `count`, `session_id`, `created_at`) — `astra-memory doctor` surfaces
+a 7-day breakdown, e.g. `redaction: on — 12 secrets redacted (3 aws_access_key, 9 generic_credential) in last 7d`.
+Toggle with `security.redaction.enabled` (default `true`).
+
+### Bearer token storage
+
+The daemon's Bearer token is stored the same way as the DB encryption key: OS credential store
+first, `secrets.env` (mode `0600`) only as a fallback when the credential store is unavailable. A
+token found only in `secrets.env` is opportunistically promoted into the credential store the next
+time the daemon resolves it — `secrets.env` itself is never rewritten or deleted as part of that
+promotion.
+
+---
+
+## Capture protocol
+
+`astramem-local` accepts session capture from any tool that can speak one small HTTP contract —
+`POST /ingest/transcript` with an `astramem-capture@1` envelope. Two kinds are supported:
+
+- **`transcript`** (default) — raw turns, run through the full 8-stage distillation pipeline.
+- **`events`** — pre-typed atom candidates (decision/fact/lesson/command/todo/note/event) that skip
+  the raw-text/LLM stages and enter directly at the reduce stage. Built for sources that already
+  know their own semantics (e.g. `runner-plugin` slice grades and lessons).
+
+Both kinds pass through the same stage-0 redaction choke point described above. Writing a new tool
+integration is a small translator — capture at the tool surface, shape into one envelope per session
+boundary, POST it. See [docs/capture-protocol.md](docs/capture-protocol.md) for the full contract,
+field reference, and a curl example.
+
+---
+
+## Memory lifecycle
+
+Every memory has an append-only history in the `memory_events` log. Lifecycle operations never
+delete a row — they append an event and update derived state:
+
+| Operation | Effect |
+|---|---|
+| **Invalidate** | Soft-deletes a memory (optionally with a reason) — it stops surfacing in search/recall. |
+| **Supersede** | Replaces an old memory with a new one; the two are linked via the event log. |
+| **Promote** | Widens a memory's scope: `personal` → `team` → `org` (downward/same-scope transitions are rejected). |
+
+`GET /memory/:id/history` (and the `memory_history` MCP tool) return the full event chain for a
+memory — the complete invalidate/supersede/promote provenance trail.
+
+**`why_memory` receipts** (`GET /memory/:id/why`, MCP `why_memory`) answer "why does the daemon
+believe this?" — they return the extraction evidence and confidence that produced the memory, so a
+recalled fact or decision can be traced back to its source.
+
+---
+
+## Usefulness metric
+
+The daemon tracks a **recall-usefulness rate**: of the memories served by a search/recall/pack call,
+how many were later marked as actually used (`POST /memory/:id/used`, MCP `mark_memory_used`, or the
+REST twin). The rate is `distinct atoms used / distinct atoms served` in a given time window,
+computed per memory type and per surface (`mcp` / `rest` / `cli`).
+
+This is a **v1 measure-only signal** — it does not yet feed ranking (see ADR-010). Query text is
+never stored; only a truncated SHA-256 digest of the query is kept alongside the served/used events,
+themselves appended to the same `memory_events` log lifecycle operations use.
+
+---
+
+## Dashboard
+
+`GET /dashboard` serves a single-file, auto-refreshing (every 5s) HTML metrics page — no
+JavaScript, no CDN, no external assets, dark mode by default. It shows memory counts by type,
+recent captures, job-queue state, distill throughput, provider health, today/MTD budget spend vs
+cap, and the pending-capture queue depth.
+
+Auth accepts either the usual `Authorization: Bearer <token>` header, or an `HttpOnly` session
+cookie. To open the dashboard directly in a browser (which can't set an `Authorization` header),
+visit it once with `?token=<bearer>` — the daemon exchanges that for the cookie via a 302 redirect
+to the clean URL, so the bearer never persists in browser history or gets re-sent by the
+`<meta refresh>` poll. A missing or wrong credential returns a plain-text 401, never HTML, and the
+query string is stripped from the log line so a wrong `?token=` guess doesn't persist a candidate
+secret.
+
+---
+
 ## Commands reference
 
 | Command                                    | What it does                                       |
 |--------------------------------------------|----------------------------------------------------|
-| `astra-memory init`                        | Interactive wizard — writes config + secrets, runs migrations, installs service |
+| `astra-memory init [--no-hook]`            | Interactive wizard — writes config + secrets, runs migrations, installs service, offers the SessionStart memory-pack hook |
 | `astra-memory serve [--port N]`            | Start daemon in foreground (dev/debug)             |
 | `astra-memory service install`             | Register daemon as a user-scope OS service         |
 | `astra-memory service status`              | Show service state                                 |
@@ -239,6 +377,8 @@ The daily LLM spend cap (default: **$10 USD**) is enforced before each LLM call.
 - [docs/migration-from-saas.md](docs/migration-from-saas.md) — switch the plugin from remote SaaS to local daemon
 - [docs/configuration.md](docs/configuration.md) — full config.yaml reference
 - [docs/providers.md](docs/providers.md) — Ollama and Azure OpenAI setup
+- [docs/capture-protocol.md](docs/capture-protocol.md) — `astramem-capture@1` wire contract (`transcript` + `events` kinds)
+- [docs/hooks/memory-pack.md](docs/hooks/memory-pack.md) — SessionStart memory-pack hook (auto-installed by `init`)
 - [docs/troubleshooting.md](docs/troubleshooting.md) — common issues and fixes
 - [docs/contracts.md](docs/contracts.md) — frozen type interfaces (for contributors)
 - [CHANGELOG.md](CHANGELOG.md) — release history

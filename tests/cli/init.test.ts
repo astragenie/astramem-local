@@ -371,3 +371,89 @@ describe('checkOllama — auto-install missing models', () => {
     warnSpy.mockRestore();
   });
 });
+
+// ─── init() — SessionStart memory-pack hook offer (2f, KF-B follow-up) ────────
+
+describe('init — SessionStart memory-pack hook offer', () => {
+  it('non-TTY without ASTRA_MEMORY_INIT_INSTALL_HOOK defaults to skip (no settings.json written)', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+    const settingsDir = makeTmpDir();
+    const settingsPath = join(settingsDir, 'settings.json');
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17781',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+      ASTRA_MEMORY_INIT_SETTINGS_PATH: settingsPath,
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    await withEnv(envPatch, async () => { await init(); });
+
+    expect(existsSync(settingsPath)).toBe(false);
+  });
+
+  it('non-TTY with ASTRA_MEMORY_INIT_INSTALL_HOOK=true installs the hook into the injected settingsPath', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+    const settingsDir = makeTmpDir();
+    const settingsPath = join(settingsDir, 'settings.json');
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17783',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+      ASTRA_MEMORY_INIT_INSTALL_HOOK: 'true',
+      ASTRA_MEMORY_INIT_SETTINGS_PATH: settingsPath,
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    await withEnv(envPatch, async () => { await init(); });
+
+    expect(existsSync(settingsPath)).toBe(true);
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    expect(parsed.hooks.SessionStart).toHaveLength(1);
+    expect(parsed.hooks.SessionStart[0].hooks[0].command).toContain('17783');
+  });
+
+  it('re-running init() a second time with the hook enabled is idempotent (no duplicate block)', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+    const settingsDir = makeTmpDir();
+    const settingsPath = join(settingsDir, 'settings.json');
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17784',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+      ASTRA_MEMORY_INIT_INSTALL_HOOK: 'true',
+      ASTRA_MEMORY_INIT_SETTINGS_PATH: settingsPath,
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    await withEnv(envPatch, async () => { await init(); });
+    await withEnv(envPatch, async () => { await init(); });
+
+    const parsed = JSON.parse(readFileSync(settingsPath, 'utf8'));
+    expect(parsed.hooks.SessionStart).toHaveLength(1);
+  });
+});
