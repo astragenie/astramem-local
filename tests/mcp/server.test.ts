@@ -261,6 +261,88 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   });
 
   // -------------------------------------------------------------------------
+  // session_digest
+  // -------------------------------------------------------------------------
+
+  it('tools/call session_digest with explicit session_id returns digest JSON', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-digest-1', 'astramem-local', null, 'main', 'claude-code', 1000);
+    const repo = new MemoryRepo(db);
+    repo.insert({
+      type: 'decision', text: 'Use SQLite', normalized_text: 'use SQLite',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-digest-1', hash: 'h-mcp-digest-1', source_hash: null,
+    });
+    repo.insert({
+      type: 'lesson', text: 'Bun lacks better-sqlite3 on Windows', normalized_text: 'bun lacks',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-digest-1', hash: 'h-mcp-digest-2', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'session_digest', arguments: { session_id: 's-digest-1' } },
+      id: 32,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as {
+      session_id: string;
+      status: string;
+      counts: Record<string, number>;
+      memories: Array<{ id: string; type: string; text: string }>;
+    };
+    expect(payload.session_id).toBe('s-digest-1');
+    expect(payload.status).toBe('ready');
+    expect(payload.counts).toEqual({ decision: 1, lesson: 1 });
+    expect(payload.memories).toHaveLength(2);
+  });
+
+  it('tools/call session_digest with no sessions recorded returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'session_digest', arguments: {} },
+      id: 33,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'no sessions recorded' });
+  });
+
+  it('tools/call session_digest with omitted session_id resolves to the most recent session', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-digest-older', 'astramem-local', null, 'main', 'claude-code', 1000);
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-digest-newest', 'astramem-local', null, 'main', 'claude-code', 2000);
+    new MemoryRepo(db).insert({
+      type: 'fact', text: 'Latest session fact', normalized_text: 'latest session fact',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-digest-newest', hash: 'h-mcp-digest-3', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'session_digest', arguments: {} },
+      id: 34,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as { session_id: string; counts: Record<string, number> };
+    expect(payload.session_id).toBe('s-digest-newest');
+    expect(payload.counts).toEqual({ fact: 1 });
+  });
+
+  // -------------------------------------------------------------------------
   // Auth
   // -------------------------------------------------------------------------
 
