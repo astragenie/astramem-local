@@ -19,4 +19,5 @@ export interface Memory {
   created_at: number;
   updated_at: number;
   source_hash: string | null;
+  evidence: string | null;
 }
