@@ -10,13 +10,26 @@
  * output without relying on defaultConfigDir's path resolution.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { platform } from 'node:os';
+
+// ─── child_process mock (must be declared before other imports so vitest
+// can hoist vi.mock above the module graph — mirrors tests/service/launchd.test.ts) ───
+
+const { execSyncMock, execFileSyncMock } = vi.hoisted(() => ({
+  execSyncMock: vi.fn(() => Buffer.from('')),
+  execFileSyncMock: vi.fn(() => Buffer.from('')),
+}));
+
+vi.mock('node:child_process', () => ({
+  execSync: execSyncMock,
+  execFileSync: execFileSyncMock,
+}));
 
 // ─── Utility ─────────────────────────────────────────────────────────────────
 
@@ -88,7 +101,7 @@ function withEnv(patch: Record<string, string>, fn: () => Promise<unknown>): Pro
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 // Import init once — vitest handles ESM correctly at module level.
-import { init } from '../../src/cli/init.js';
+import { init, checkOllama } from '../../src/cli/init.js';
 import { writeConfig, configToYaml } from '../../src/config/writer.js';
 import { writeSecrets } from '../../src/config/secrets.js';
 import { defaultConfig } from '../../src/config/config.js';
@@ -235,5 +248,103 @@ describe('init wizard — non-TTY mode', () => {
     expect(names).toContain('memories');
     expect(names).toContain('sessions');
     expect(names).toContain('jobs');
+  });
+});
+
+// ─── checkOllama — auto-pull missing models (interactive path) ───────────────
+
+function mockTagsResponse(names: string[]): Response {
+  return {
+    ok: true,
+    json: async () => ({ models: names.map((name) => ({ name })) }),
+  } as Response;
+}
+
+describe('checkOllama — auto-install missing models', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // `ollama --version` succeeds by default (binary present).
+    execSyncMock.mockImplementation(() => Buffer.from(''));
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('missing model: pulls via execFileSync and re-validates present', async () => {
+    const fetchMock = vi
+      .fn()
+      // Initial check: model absent.
+      .mockResolvedValueOnce(mockTagsResponse([]))
+      // Re-validation after pull: model present.
+      .mockResolvedValueOnce(mockTagsResponse(['qwen2.5-coder:7b']));
+    vi.stubGlobal('fetch', fetchMock);
+    execFileSyncMock.mockImplementation(() => Buffer.from(''));
+
+    await expect(
+      checkOllama('qwen2.5-coder:7b', 'qwen2.5-coder:7b', false)
+    ).resolves.toBeUndefined();
+
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'ollama',
+      ['pull', 'qwen2.5-coder:7b'],
+      expect.objectContaining({ stdio: 'inherit' })
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('pull failure: init aborts with an actionable error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockTagsResponse([])); // never present
+    vi.stubGlobal('fetch', fetchMock);
+    execFileSyncMock.mockImplementation(() => {
+      throw new Error('network unreachable');
+    });
+
+    await expect(
+      checkOllama('qwen2.5-coder:7b', 'mxbai-embed-large', false)
+    ).rejects.toThrow(/Failed to pull Ollama model 'qwen2\.5-coder:7b'.*ollama pull qwen2\.5-coder:7b/s);
+
+    expect(execFileSyncMock).toHaveBeenCalledWith(
+      'ollama',
+      ['pull', 'qwen2.5-coder:7b'],
+      expect.objectContaining({ stdio: 'inherit' })
+    );
+  });
+
+  it('pull succeeds but re-validation still fails: aborts with manual-fix error', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockTagsResponse([])); // always absent
+    vi.stubGlobal('fetch', fetchMock);
+    execFileSyncMock.mockImplementation(() => Buffer.from(''));
+
+    await expect(
+      checkOllama('qwen2.5-coder:7b', 'qwen2.5-coder:7b', false)
+    ).rejects.toThrow(/still not found after pull.*ollama pull qwen2\.5-coder:7b/s);
+  });
+
+  it('nonInteractive mode never touches execSync/fetch (unchanged early-exit)', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await checkOllama('qwen2.5-coder:7b', 'mxbai-embed-large', true);
+
+    expect(execSyncMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('ollama binary missing: warns and returns without attempting a pull', async () => {
+    execSyncMock.mockImplementation(() => {
+      throw new Error('command not found: ollama');
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await checkOllama('qwen2.5-coder:7b', 'mxbai-embed-large', false);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('binary not found'))).toBe(true);
+    warnSpy.mockRestore();
   });
 });
