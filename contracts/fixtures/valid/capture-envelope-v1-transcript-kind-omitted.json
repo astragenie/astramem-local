@@ -1,0 +1,15 @@
+{
+  "event": "session_end",
+  "session_id": "sess-transcript-default-kind",
+  "project_id": "proj-abc",
+  "captured_at": "2025-06-30T10:05:00.000Z",
+  "turns": [
+    { "role": "user", "text": "Hello" },
+    { "role": "assistant", "text": "Hi there" }
+  ],
+  "client_scrub_applied": true,
+  "client_scrub_hits": 0,
+  "client_version": "0.6.0",
+  "client_scrub_version": "1.2.0",
+  "wire_version": "v1.0"
+}

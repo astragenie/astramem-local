@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astramem.dev/contracts/sync-envelope.v1.schema.json",
+  "title": "astramem-sync@1 envelope",
+  "description": "One-way, append-only, idempotent log-shipping envelope (ADR-003). local -> cloud POST /sync/events. Event shape mirrors the memory_events table (migration 007-memory-events.sql) verbatim, with payload_json unwrapped to a plain object on the wire (the DB column stores it as a TEXT-serialized string; the wire form parses it once at the boundary).",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol": {
+      "const": "astramem-sync@1"
+    },
+    "device_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cursor": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Per-device monotonic seq — the last seq the client believes is acked. Resume = send from last ack."
+    },
+    "events": {
+      "type": "array",
+      "description": "Batch of memory_events rows in seq order. May be empty (e.g. a capabilities/cursor heartbeat with nothing new to ship).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["seq", "event_type", "atom_id", "created_at"],
+        "properties": {
+          "seq": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "memory_events.seq — per-device monotonic, AUTOINCREMENT locally."
+          },
+          "event_type": {
+            "type": "string",
+            "enum": ["create", "invalidate", "supersede", "promote_scope", "erase_request", "usefulness"]
+          },
+          "atom_id": {
+            "type": "string",
+            "format": "uuid"
+          },
+          "payload_json": {
+            "description": "Event-specific payload, parsed to a plain object (or null when the row has none).",
+            "type": ["object", "null"]
+          },
+          "content_hash": {
+            "type": ["string", "null"],
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Idempotency key — cloud dedups on (workspace_id, content_hash). null only for legacy rows predating hash backfill."
+          },
+          "created_at": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Epoch ms — mirrors memory_events.created_at (INTEGER column), not ISO string, to keep the sync wire shape a 1:1 mirror of the source-of-truth log row."
+          }
+        }
+      }
+    }
+  },
+  "required": ["protocol", "device_id", "workspace_id", "cursor", "events"]
+}

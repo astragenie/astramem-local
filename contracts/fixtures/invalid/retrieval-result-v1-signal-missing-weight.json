@@ -1,0 +1,17 @@
+{
+  "schema": "astramem-retrieval-result@1",
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "type": "fact",
+      "text": "bm25 signal is missing its weight field.",
+      "score": 0.5,
+      "explanation": {
+        "final": 0.5,
+        "signals": {
+          "bm25": { "raw": 4.1, "final": 0.4 }
+        }
+      }
+    }
+  ]
+}

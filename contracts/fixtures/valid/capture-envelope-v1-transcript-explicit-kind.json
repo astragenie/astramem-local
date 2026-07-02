@@ -1,0 +1,16 @@
+{
+  "event": "pre_compact",
+  "session_id": "sess-transcript-regression",
+  "project_id": "proj-abc",
+  "captured_at": "2025-06-30T10:00:00.000Z",
+  "kind": "transcript",
+  "turns": [
+    { "role": "user", "text": "what vector store should we use?" },
+    { "role": "assistant", "text": "sqlite-vec — no network dependency." }
+  ],
+  "client_scrub_applied": true,
+  "client_scrub_hits": 0,
+  "client_version": "0.6.0",
+  "client_scrub_version": "1.2.0",
+  "wire_version": "v1.0"
+}

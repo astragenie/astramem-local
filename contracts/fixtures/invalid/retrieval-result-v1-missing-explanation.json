@@ -1,0 +1,11 @@
+{
+  "schema": "astramem-retrieval-result@1",
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "type": "fact",
+      "text": "explanation omitted — violates ADR-005 'not optional' rule.",
+      "score": 0.5
+    }
+  ]
+}

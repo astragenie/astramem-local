@@ -5,6 +5,7 @@
  *   POST /memory/:id/promote    { scope }   -> 200 { ok: true } | 400 | 404
  *   GET  /memory/:id/history                -> { id, history: MemoryEvent[] }
  *   POST /memory/:id/used                   -> 200 { ok: true } | 404
+ *   DELETE /memory/:id                      -> 200 { ok: true } | 404   (erasure v1, ADR-006 W5)
  *
  * `history` also backs the Wave 2c MCP `memory_history` tool.
  * `used` is the ADR-010 (2e) explicit recall-used signal — REST twin of the
@@ -43,6 +44,21 @@ export function lifecycleRoutes(db: DB) {
       } catch (err) {
         if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
         if (err instanceof MemoryConflictError) return reply.code(409).send({ error: err.message, id });
+        throw err;
+      }
+    });
+
+    // Erasure v1 (ADR-006 W5): hard-delete + tombstone event. The row and
+    // its FTS/vec entries are gone; the erase_request event (with content
+    // hash) is the tombstone that powers the replay filter and cloud sync.
+    app.delete('/memory/:id', async (req, reply) => {
+      const { id } = req.params as { id: string };
+      const body = (req.body ?? {}) as { reason?: string };
+      try {
+        events.erase(id, typeof body.reason === 'string' ? body.reason : undefined);
+        return { ok: true };
+      } catch (err) {
+        if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
         throw err;
       }
     });

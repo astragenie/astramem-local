@@ -1,0 +1,28 @@
+{
+  "schema": "astramem/atom@1",
+  "id": "00000000-0000-4000-8000-000000000002",
+  "type": "fact",
+  "text": "sqlite-vec ships prebuilt binaries for linux-x64, darwin-arm64, darwin-x64, win32-x64.",
+  "evidence": [
+    { "transcript_id": "transcript-e2e-ci-001", "span": [120, 240] },
+    { "transcript_id": "transcript-e2e-ci-002", "span": [0, 58] }
+  ],
+  "confidence": 0.95,
+  "importance": 0.6,
+  "provenance": {
+    "tool": "claude-code",
+    "session_id": "sess-ci-investigation",
+    "repo": "astramem-local",
+    "project": "astramem",
+    "extractor": "astramem-local@0.5.0"
+  },
+  "valid_from": "2026-06-05T12:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "personal",
+  "content_hash": "b4a6d2f0c3e5f7a9128c4d6e8f0a2b4c6d8e0f2a4b6c8d0e2f4a6b8c0d2e4f6a",
+  "entities": ["sqlite-vec", "linux-x64", "darwin-arm64", "darwin-x64", "win32-x64"],
+  "created_at": "2026-06-05T12:00:00.000Z",
+  "updated_at": "2026-06-05T12:00:00.000Z"
+}

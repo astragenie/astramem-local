@@ -1,0 +1,82 @@
+{
+  "schema": "astramem-retrieval-eval-queries@1",
+  "description": "ADR-005 seed query set — graded relevance (0 = not relevant .. 3 = highly relevant) against contracts/fixtures/eval/corpus.json. q6 is the temporal as_of case exercising bitemporal time-travel: at as_of, atom-002 (the supersession) does not exist yet, so only atom-001 (still valid at that instant) is relevant.",
+  "queries": [
+    {
+      "id": "q1",
+      "text": "what does astramem-local's stack look like",
+      "mode": "hybrid",
+      "filters": {},
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000009", "grade": 3 }
+      ]
+    },
+    {
+      "id": "q2",
+      "text": "PostgreSQL canonical store decision",
+      "mode": "semantic",
+      "filters": { "type": ["decision"] },
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000002", "grade": 3 },
+        { "atom_id": "10000000-0000-4000-8000-000000000001", "grade": 1 }
+      ]
+    },
+    {
+      "id": "q3",
+      "text": "Windows CI sqlite native binding failure",
+      "mode": "keyword",
+      "filters": {},
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000004", "grade": 3 },
+        { "atom_id": "10000000-0000-4000-8000-000000000003", "grade": 1 }
+      ]
+    },
+    {
+      "id": "q4",
+      "text": "cross-encoder rerank staged rollout",
+      "mode": "semantic",
+      "filters": {},
+      "graded_relevant": [
+        { "atom_id": "1000000a-0000-4000-8000-00000000000a", "grade": 3 }
+      ]
+    },
+    {
+      "id": "q5",
+      "text": "FTS5 negation escaping hyphenated query",
+      "mode": "keyword",
+      "filters": {},
+      "graded_relevant": [
+        { "atom_id": "1000000b-0000-4000-8000-00000000000b", "grade": 3 }
+      ]
+    },
+    {
+      "id": "q6",
+      "text": "PostgreSQL canonical store decision",
+      "mode": "hybrid",
+      "filters": { "as_of": "2026-06-10T00:00:00.000Z" },
+      "notes": "Temporal case: as_of predates atom-002's valid_from (2026-06-15), so atom-001 (valid 2026-06-01..2026-06-15) is the only correct hit at this instant, not its successor.",
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000001", "grade": 3 },
+        { "atom_id": "10000000-0000-4000-8000-000000000002", "grade": 0 }
+      ]
+    },
+    {
+      "id": "q7",
+      "text": "test command timeout",
+      "mode": "keyword",
+      "filters": { "type": ["command"] },
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000005", "grade": 3 }
+      ]
+    },
+    {
+      "id": "q8",
+      "text": "SLICE-2d grade result",
+      "mode": "keyword",
+      "filters": { "type": ["event"] },
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000008", "grade": 3 }
+      ]
+    }
+  ]
+}

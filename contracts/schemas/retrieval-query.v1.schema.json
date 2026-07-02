@@ -1,0 +1,60 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astramem.dev/contracts/retrieval-query.v1.schema.json",
+  "title": "astramem-retrieval@1 query envelope",
+  "description": "Query envelope for the shared retrieval contract (ADR-005). Both engines accept this envelope; they may differ internally in how they satisfy it.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "text": {
+      "type": "string",
+      "description": "Free-form query text. May be empty for filter-only browsing."
+    },
+    "mode": {
+      "type": "string",
+      "enum": ["keyword", "semantic", "hybrid"]
+    },
+    "filters": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["decision", "fact", "lesson", "command", "todo", "note", "event"]
+          }
+        },
+        "scope": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["personal", "team", "org"]
+          }
+        },
+        "repo": { "type": "string" },
+        "project": { "type": "string" },
+        "since": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Lower bound on created_at."
+        },
+        "as_of": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Bitemporal time-travel: return the atom state as it was valid at this instant (ADR-001/ADR-005)."
+        }
+      }
+    },
+    "limit": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 500
+    },
+    "explain": {
+      "type": "boolean",
+      "description": "Explanations are not optional per ADR-005 result contract, but the caller can still choose whether to request the extra payload weight."
+    }
+  },
+  "required": ["text", "mode"]
+}

@@ -3,8 +3,9 @@ import { mkdirSync } from 'node:fs';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
-import { getOrCreateKey } from '../storage/keystore.js';
+import { getOrCreateKey, readSyncToken } from '../storage/keystore.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
+import { startShipper, getOrCreateDeviceId, type ShipperHandle } from '../sync/shipper.js';
 import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
 import { defaultConfig } from '../config/config.js';
 import { defaultConfigDir } from '../config/datadir.js';
@@ -125,11 +126,36 @@ export async function serve(opts: ServeOpts): Promise<void> {
     ctx: extCtx,
   });
 
+  // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
+  // Requires explicit opt-in + url + workspace + device token; personal
+  // atoms never ship regardless (scope filter inside the shipper).
+  let shipper: ShipperHandle | null = null;
+  if (cfg.sync.enabled && dataDir !== ':memory:') {
+    const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
+    if (!cfg.sync.url || !cfg.sync.workspaceId || !syncToken) {
+      console.warn(
+        '[astramem-local] sync.enabled=true but url/workspaceId/device-token incomplete — shipper NOT started.',
+      );
+    } else {
+      shipper = startShipper({
+        db,
+        url: cfg.sync.url,
+        workspaceId: cfg.sync.workspaceId,
+        deviceId: getOrCreateDeviceId(defaultConfigDir()),
+        token: syncToken,
+        batchSize: cfg.sync.batchSize,
+        intervalMs: cfg.sync.intervalMs,
+      });
+      console.log(`astramem-local sync shipper active -> ${cfg.sync.url}`);
+    }
+  }
+
   await app.listen({ port, host: '127.0.0.1' });
   console.log(`astramem-local serving on 127.0.0.1:${port}`);
 
   const shutdown = async () => {
     try {
+      if (shipper) await shipper.stop();
       await worker.stop();         // drain in-flight tick before closing DB
       await app.close();
     } finally {

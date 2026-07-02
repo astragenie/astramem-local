@@ -18,6 +18,16 @@ export interface Config {
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
   search: { alpha: number; beta: number; gamma: number; delta: number };
   recallPack: { enabled: boolean; budgetTokens: number };
+  /** One-way log shipping to the cloud ledger (ADR-003). Off by default;
+   * requires url + workspaceId + a device token in the keystore
+   * (or ASTRA_SYNC_TOKEN). personal-scoped atoms never ship (ADR-009). */
+  sync: {
+    enabled: boolean;
+    url: string;
+    workspaceId: string | null;
+    batchSize: number;
+    intervalMs: number;
+  };
   security: {
     redaction: {
       enabled: boolean;
@@ -49,6 +59,7 @@ export function defaultConfig(): Config {
     azure: { apiVersion: '2024-10-21' },
     search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 },
     recallPack: { enabled: false, budgetTokens: 1500 },
+    sync: { enabled: false, url: '', workspaceId: null, batchSize: 200, intervalMs: 30_000 },
     security: {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
       encryption: { enabled: true }

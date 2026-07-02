@@ -1,0 +1,335 @@
+{
+  "schema": "astramem-retrieval-eval-corpus@1",
+  "description": "ADR-005 seed corpus — v1 = seed size, thresholds (recall@10, NDCG@10) come later once both engines run this harness in CI. 12 atoms covering all 7 v1 types, one superseded pair (atom-001 -> atom-002), and one entity-heavy fact (atom-009). Every atom below conforms to atom.v1.schema.json (see tests/contracts/conformance.test.ts).",
+  "atoms": [
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000001",
+      "type": "decision",
+      "text": "Adopt PostgreSQL as the canonical cloud store.",
+      "evidence": "ADR-001 draft, options considered §1.",
+      "confidence": 0.8,
+      "importance": 0.8,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-cloud",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-01T00:00:00.000Z",
+      "valid_to": "2026-06-15T00:00:00.000Z",
+      "superseded_by": "10000000-0000-4000-8000-000000000002",
+      "derived_from": null,
+      "scope": "team",
+      "content_hash": "4993a817ca0ae5bb03af7ca7602009eafd0a855005d75a541100833452bc6e33",
+      "entities": [
+        "PostgreSQL"
+      ],
+      "created_at": "2026-06-01T00:00:00.000Z",
+      "updated_at": "2026-06-15T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000002",
+      "type": "decision",
+      "text": "Adopt PostgreSQL first with pluggable graph/vector layers behind an interface — refines the earlier all-in decision with the optional-layer clause.",
+      "evidence": "ADR-001 accepted 2026-07-02.",
+      "confidence": 0.95,
+      "importance": 0.9,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-cloud",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-15T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": [
+        "10000000-0000-4000-8000-000000000001"
+      ],
+      "scope": "team",
+      "content_hash": "1579f706e61305eb622ad125156089bd9d4505501ba4d10e4c4387d882316e78",
+      "entities": [
+        "PostgreSQL"
+      ],
+      "created_at": "2026-06-15T00:00:00.000Z",
+      "updated_at": "2026-06-15T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000003",
+      "type": "fact",
+      "text": "sqlite-vec ships prebuilt binaries for linux-x64, darwin-arm64, darwin-x64, win32-x64.",
+      "evidence": "CI matrix run, .github/workflows/test.yml.",
+      "confidence": 0.9,
+      "importance": 0.5,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-05T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "5093e31e914553bad51e4bb88283fca27c561bfefe2aa5ca9c31515af9cdabcb",
+      "entities": [
+        "sqlite-vec"
+      ],
+      "created_at": "2026-06-05T00:00:00.000Z",
+      "updated_at": "2026-06-05T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000004",
+      "type": "lesson",
+      "text": "Bun does not support better-sqlite3 native bindings on Windows in CI without a prebuilt binary.",
+      "evidence": "npm test failed: better_sqlite3.node is not a valid Win32 application",
+      "confidence": 0.95,
+      "importance": 0.7,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-06T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "36dceda389b5e17c7ddbaa14f499c1e5028e7a3147de1176ba703c13041a8631",
+      "entities": [
+        "Bun",
+        "Windows",
+        "better-sqlite3"
+      ],
+      "created_at": "2026-06-06T00:00:00.000Z",
+      "updated_at": "2026-06-06T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000005",
+      "type": "command",
+      "text": "bun run test -- --testTimeout=60000",
+      "evidence": ".github/workflows/test.yml",
+      "confidence": 0.9,
+      "importance": 0.4,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-06T01:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "dd32e1e22247fb709b7288e54e04b9825fcd723cfec2512bf158e39fc84758a1",
+      "entities": [],
+      "created_at": "2026-06-06T01:00:00.000Z",
+      "updated_at": "2026-06-06T01:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000006",
+      "type": "todo",
+      "text": "Wire POST /sync/events dedup + ledger materialization on cloud.",
+      "evidence": "ADR-003 consequences & migration.",
+      "confidence": 0.7,
+      "importance": 0.6,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-cloud",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-10T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "team",
+      "content_hash": "2dede017054bb692e6f295847ef4f282cb5defb916fd722fc01545f9434c89d1",
+      "entities": [],
+      "created_at": "2026-06-10T00:00:00.000Z",
+      "updated_at": "2026-06-10T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000007",
+      "type": "note",
+      "text": "ADR-005 (retrieval contract) accepted 2026-07-02.",
+      "evidence": "docs/adr/ADR-005-retrieval-contract.md",
+      "confidence": 0.9,
+      "importance": 0.3,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-07-02T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "c42132cec89d57b9126353a7fdd1569c9c2792cda75839dc5402a516b3d20846",
+      "entities": [],
+      "created_at": "2026-07-02T00:00:00.000Z",
+      "updated_at": "2026-07-02T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000008",
+      "type": "event",
+      "text": "SLICE-2d graded PASS — events capture kind, 0 schema migrations.",
+      "evidence": "runner-plugin grade artifact.",
+      "confidence": 0.85,
+      "importance": 0.5,
+      "provenance": {
+        "tool": "runner-plugin",
+        "session_id": "runner-slice-2d-001",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "runner-plugin@0.1.0"
+      },
+      "valid_from": "2026-06-20T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "65c904c0e64104a68bc052f270170fbe1ccce7abeeedc4fdbd309b2e27206080",
+      "entities": [
+        "SLICE-2d"
+      ],
+      "created_at": "2026-06-20T00:00:00.000Z",
+      "updated_at": "2026-06-20T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "10000000-0000-4000-8000-000000000009",
+      "type": "fact",
+      "text": "astramem-local's stack is Bun, TypeScript, SQLite, sqlite-vec, Fastify, and better-sqlite3-multiple-ciphers.",
+      "evidence": "package.json dependencies.",
+      "confidence": 0.95,
+      "importance": 0.6,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-07T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "4a4792f0b57a6136f430cb3faaeb8ee944a4a4154ca6a9b60516730852fb61ff",
+      "entities": [
+        "Bun",
+        "TypeScript",
+        "SQLite",
+        "sqlite-vec",
+        "Fastify",
+        "better-sqlite3-multiple-ciphers"
+      ],
+      "created_at": "2026-06-07T00:00:00.000Z",
+      "updated_at": "2026-06-07T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "1000000a-0000-4000-8000-00000000000a",
+      "type": "decision",
+      "text": "Cloud turns the cross-encoder rerank ON (staged rollout, publish NDCG delta) before adding any new fusion signal.",
+      "evidence": "ADR-005 engine-specific rulings.",
+      "confidence": 0.85,
+      "importance": 0.7,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-cloud",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-07-02T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "org",
+      "content_hash": "5b444ee05bb6719053f8f5141c633382c91d788d5cd8958e7cced78b0180b955",
+      "entities": [
+        "cross-encoder",
+        "NDCG"
+      ],
+      "created_at": "2026-07-02T00:00:00.000Z",
+      "updated_at": "2026-07-02T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "1000000b-0000-4000-8000-00000000000b",
+      "type": "lesson",
+      "text": "FTS5 treats '-' as negation; escape query tokens as literal quoted phrases before calling MATCH.",
+      "evidence": "src/search/search.ts escapeFtsQuery doc comment.",
+      "confidence": 0.9,
+      "importance": 0.5,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-06-08T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "fdb475f5cb546defb1207ac90d15ae60f08fb14a5acdd4e43624fc0633615727",
+      "entities": [
+        "FTS5"
+      ],
+      "created_at": "2026-06-08T00:00:00.000Z",
+      "updated_at": "2026-06-08T00:00:00.000Z"
+    },
+    {
+      "schema": "astramem/atom@1",
+      "id": "1000000c-0000-4000-8000-00000000000c",
+      "type": "todo",
+      "text": "Add ajv + ajv-formats as root devDependencies for contracts:validate.",
+      "evidence": "contracts/README.md build notes.",
+      "confidence": 0.7,
+      "importance": 0.4,
+      "provenance": {
+        "tool": "claude-code",
+        "session_id": "sess-eval-seed",
+        "repo": "astramem-local",
+        "project": "astramem",
+        "extractor": "astramem-local@0.5.0"
+      },
+      "valid_from": "2026-07-02T00:00:00.000Z",
+      "valid_to": null,
+      "superseded_by": null,
+      "derived_from": null,
+      "scope": "personal",
+      "content_hash": "9eb6fbbaae46957c535cc2bb9df631337258585f55547f16bc749da837218e3e",
+      "entities": [
+        "ajv",
+        "ajv-formats"
+      ],
+      "created_at": "2026-07-02T00:00:00.000Z",
+      "updated_at": "2026-07-02T00:00:00.000Z"
+    }
+  ]
+}

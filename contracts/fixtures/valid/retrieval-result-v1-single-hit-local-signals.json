@@ -1,0 +1,23 @@
+{
+  "schema": "astramem-retrieval-result@1",
+  "query": { "text": "sqlite-vec windows binary", "mode": "hybrid" },
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "type": "fact",
+      "text": "sqlite-vec ships prebuilt binaries for linux-x64, darwin-arm64, darwin-x64, win32-x64.",
+      "score": 0.82,
+      "scope": "personal",
+      "explanation": {
+        "final": 0.82,
+        "signals": {
+          "bm25": { "raw": 4.1, "weight": 0.4, "final": 0.4 },
+          "cosine": { "raw": 0.71, "weight": 0.4, "final": 0.284 },
+          "importance": { "raw": 0.6, "weight": 0.1, "final": 0.06 },
+          "freshness": { "raw": 0.76, "weight": 0.1, "final": 0.076 }
+        }
+      }
+    }
+  ],
+  "total": 1
+}

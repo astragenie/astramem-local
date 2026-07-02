@@ -32,3 +32,9 @@ jobs:
       # this job catches type regressions quickly on a single fast runner.
       - name: Type-check (tsc --noEmit)
         run: bunx tsc --noEmit
+
+      # contracts/ is the cross-repo technical constitution (ADR-001/003/005)
+      # — cheap, fast, no build step. Cloud repo CI runs the same
+      # `node contracts/validate.mjs` invocation against these same files.
+      - name: Validate contracts (JSON Schema + golden fixtures)
+        run: node contracts/validate.mjs

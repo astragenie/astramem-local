@@ -1,0 +1,17 @@
+{
+  "name": "@astragenie/astramem-contracts",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Canonical JSON Schemas + golden fixtures for the AstraMem cross-repo wire contracts (atom@1, retrieval@1, sync@1, capture@1). Consumed in-repo today; publishable standalone once the cloud repo needs an out-of-tree dependency.",
+  "type": "module",
+  "exports": {
+    "./schemas/*": "./schemas/*",
+    "./fixtures/*": "./fixtures/*"
+  },
+  "files": [
+    "schemas",
+    "fixtures",
+    "validate.mjs",
+    "README.md"
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "event": "session_end",
+  "session_id": "sess-events-1",
+  "project_id": "proj-events",
+  "captured_at": "2026-07-02T10:00:00.000Z",
+  "kind": "events",
+  "tool": "runner-plugin",
+  "client_scrub_applied": false,
+  "client_scrub_hits": 0,
+  "client_version": "0.1.0",
+  "client_scrub_version": "n/a",
+  "wire_version": "v1.0",
+  "events": [
+    {
+      "type": "lesson",
+      "text": "Bun does not support better-sqlite3 native bindings on Windows in CI.",
+      "importance": 0.8,
+      "confidence": 0.95,
+      "evidence": "npm test failed: better_sqlite3.node is not a valid Win32 application"
+    },
+    {
+      "type": "decision",
+      "text": "SLICE-2d graded PASS — events capture kind ships stages 6-8 only, no schema change.",
+      "importance": 0.6
+    }
+  ]
+}

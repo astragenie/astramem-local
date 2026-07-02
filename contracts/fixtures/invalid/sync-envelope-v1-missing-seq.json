@@ -1,0 +1,15 @@
+{
+  "protocol": "astramem-sync@1",
+  "device_id": "device-laptop-01",
+  "workspace_id": "ws-astragenie",
+  "cursor": 0,
+  "events": [
+    {
+      "event_type": "create",
+      "atom_id": "00000000-0000-4000-8000-000000000001",
+      "payload_json": null,
+      "content_hash": null,
+      "created_at": 1780358400000
+    }
+  ]
+}

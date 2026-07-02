@@ -1,0 +1,32 @@
+{
+  "protocol": "astramem-sync@1",
+  "device_id": "device-laptop-01",
+  "workspace_id": "ws-astragenie",
+  "cursor": 1,
+  "events": [
+    {
+      "seq": 2,
+      "event_type": "supersede",
+      "atom_id": "00000000-0000-4000-8000-000000000003",
+      "payload_json": { "superseded_by": "00000000-0000-4000-8000-000000000004" },
+      "content_hash": "c5b7e3a1d4f6082b3d5e7f9a1c3e5f7092b4d6e8f0a2c4e6f8092b4d6e8f0a2c",
+      "created_at": 1781740800000
+    },
+    {
+      "seq": 3,
+      "event_type": "promote_scope",
+      "atom_id": "00000000-0000-4000-8000-000000000001",
+      "payload_json": { "from": "personal", "to": "team" },
+      "content_hash": null,
+      "created_at": 1781827200000
+    },
+    {
+      "seq": 4,
+      "event_type": "usefulness",
+      "atom_id": "00000000-0000-4000-8000-000000000002",
+      "payload_json": { "signal": "recalled", "delta": 0.05 },
+      "content_hash": null,
+      "created_at": 1781913600000
+    }
+  ]
+}
