@@ -30,6 +30,7 @@ import { mkdirSync } from 'node:fs';
 import { persistEnvVars } from '../config/persist-envs.js';
 import { waitForHealth } from './wait-health.js';
 import { getServiceAdapter } from '../service/index.js';
+import { installMemoryPackHook } from './hook-install.js';
 
 // ─── Non-interactive env var map ─────────────────────────────────────────────
 
@@ -41,7 +42,11 @@ const NON_INTERACTIVE_ENV = {
   port: 'ASTRA_MEMORY_INIT_PORT',
   budget: 'ASTRA_MEMORY_INIT_BUDGET',
   installService: 'ASTRA_MEMORY_INIT_INSTALL_SERVICE',
+  installHook: 'ASTRA_MEMORY_INIT_INSTALL_HOOK',
 } as const;
+
+/** Test-only injection point for the hook install target (see hook-install.ts). */
+const SETTINGS_PATH_ENV = 'ASTRA_MEMORY_INIT_SETTINGS_PATH';
 
 function isNonInteractive(): boolean {
   return process.env['ASTRA_MEMORY_INIT_NONINTERACTIVE'] === '1';
@@ -311,10 +316,34 @@ function buildConfig(answers: WizardAnswers): Config {
   };
 }
 
+// ─── SessionStart memory-pack hook offer ──────────────────────────────────────
+
+/**
+ * Decide whether to install the SessionStart memory-pack hook (KF-B
+ * follow-up, docs/hooks/memory-pack.md). Offered after the token/provider
+ * setup steps so the daemon port + bearer are already settled.
+ *
+ * - `--no-hook` on the CLI, or non-interactive mode without the
+ *   `ASTRA_MEMORY_INIT_INSTALL_HOOK=true` override → skip silently (no
+ *   prompt, no console output).
+ * - Interactive TTY → confirm prompt, default NO.
+ */
+async function promptHookInstall(nonInteractive: boolean, noHookFlag: boolean): Promise<boolean> {
+  if (nonInteractive) {
+    return process.env[NON_INTERACTIVE_ENV.installHook] === 'true';
+  }
+  if (noHookFlag) return false;
+  return promptConfirm(
+    'Install the SessionStart memory-pack hook? (auto-injects a repo-scoped memory pack into new Claude Code sessions)',
+    false
+  );
+}
+
 // ─── Main wizard flow ─────────────────────────────────────────────────────────
 
-export async function init(): Promise<void> {
+export async function init(argv: string[] = []): Promise<void> {
   const nonInteractive = isNonInteractive();
+  const noHookFlag = argv.includes('--no-hook');
 
   // 1. Gather answers
   const answers = nonInteractive ? gatherNonInteractive() : await gatherInteractive();
@@ -370,6 +399,27 @@ export async function init(): Promise<void> {
         ? `  ✓ bearer token stored in OS credential store`
         : `  ✓ secrets.env written to ${secretsPath} (mode 0600, bearer fallback — OS credential store unavailable)`
     );
+  }
+
+  // 6b. Offer to install the SessionStart memory-pack hook (KF-B follow-up).
+  const installHook = await promptHookInstall(nonInteractive, noHookFlag);
+  if (installHook) {
+    const hookResult = installMemoryPackHook({
+      port: answers.port,
+      settingsPath: process.env[SETTINGS_PATH_ENV],
+    });
+    cfg.recallPack.enabled = true;
+    if (!nonInteractive) {
+      if (hookResult.outcome === 'installed') {
+        console.log(`  ✓ SessionStart memory-pack hook installed → ${hookResult.settingsPath}`);
+      } else {
+        console.log(`  · SessionStart memory-pack hook already installed → ${hookResult.settingsPath} (skipped)`);
+      }
+      console.log(
+        `    recallPack.enabled=true (meaning: /recall/pack already serves regardless of this flag; ` +
+        `config.yaml does not yet persist recallPack settings, so this is a reporting-only note, not a file change).`
+      );
+    }
   }
 
   // 7. Run migrations

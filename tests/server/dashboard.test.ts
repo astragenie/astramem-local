@@ -91,6 +91,7 @@ describe('GET /dashboard', () => {
     'job queue',
     'distill throughput',
     'provider state',
+    'usefulness',
     'budget',
     'pending queue',
   ])('HTML body contains "%s" section header', async section => {

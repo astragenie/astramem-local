@@ -62,3 +62,5 @@ whichever has the cleaner session-export surface at build time) to make neutrali
 - runner-plugin work: emit `events` at slice-complete/grade ceremonies (its artifacts already
   contain everything; this is serialization, not new logic).
 - Docs: "write an adapter" page = the ecosystem invitation. The protocol doc is public by design.
+  See [docs/capture-protocol.md](../capture-protocol.md) for the envelope reference, both kinds,
+  and a runner-plugin `events` curl example.

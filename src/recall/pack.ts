@@ -53,10 +53,12 @@ export function selectPack(db: DB, opts: PackOptions): PackMemory[] {
   const budget = opts.budgetTokens ?? DEFAULT_BUDGET_TOKENS;
   const weights = opts.typeWeights ?? DEFAULT_TYPE_WEIGHTS;
 
+  // Atom v3 (ADR-001): invalidated memories (valid_to set) are excluded from
+  // the injected pack — a superseded/dead memory must not surface in recall.
   const rows = db.prepare(`
     SELECT id, type, text, importance, created_at
     FROM memories
-    WHERE repo = ?
+    WHERE repo = ? AND valid_to IS NULL
     ORDER BY created_at DESC
     LIMIT ?
   `).all(opts.repo, CANDIDATE_LIMIT) as Row[];

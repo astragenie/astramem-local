@@ -148,7 +148,8 @@ Three documents claimed overlapping migration numbers. This table governs; the o
 | 003 | `003-expand-memory-types.sql` | +note/+event types | shipped |
 | **004** | `004-provenance.sql` | `memories.evidence` | **AM-1, this design, Wave 1** |
 | **005** | `005-security.sql` | `redaction_log` | encryption spec SEC-3..6, Wave 1b/1c |
-| **006** | `006-memory-events.sql` | `memory_events` + backfill | ADR-002, Wave 2b |
+| **006** | `006-atom-v3.sql` | `memories` bitemporal validity + scope + lineage | ADR-001, Wave 2a |
+| **007** | `007-memory-events.sql` | `memory_events` + backfill | ADR-002, Wave 2b |
 
 Every migration lands with a matching `SCHEMA_VERSION` bump in `src/server/lib/wire-meta.ts`
 (boot-time drift guard). New REST endpoints follow the existing unversioned-path convention;

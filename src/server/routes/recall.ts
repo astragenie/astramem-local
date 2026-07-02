@@ -8,6 +8,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { DB } from '../../storage/db.js';
 import { selectPack, renderPack } from '../../recall/pack.js';
+import { recordRecallServed } from '../../storage/usefulness.js';
 import { defaultConfig } from '../../config/config.js';
 
 const PackRequestSchema = z.object({
@@ -30,6 +31,15 @@ export function recallRoute(db: DB) {
         project: parsed.data.project,
         branch: parsed.data.branch,
         budgetTokens: parsed.data.budget_tokens ?? cfg.recallPack.budgetTokens,
+      });
+      // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
+      // No free-text query here; hash the structural selector instead.
+      recordRecallServed(db, {
+        query: `${parsed.data.repo}|${parsed.data.project ?? ''}|${parsed.data.branch ?? ''}`,
+        atomIds: memories.map(m => m.id),
+        scores: memories.map(m => m.score),
+        surface: 'rest',
+        mode: 'pack',
       });
       return { pack: renderPack(memories), memories };
     });

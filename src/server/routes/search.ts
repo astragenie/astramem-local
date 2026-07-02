@@ -11,6 +11,8 @@ import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import type { EmbedProvider } from '../../contracts/index.js';
 import { MemoryRepo } from '../../storage/memories.js';
+import { MemoryEventRepo } from '../../storage/memory-events.js';
+import { recordRecallServed } from '../../storage/usefulness.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import { search, type SearchFilters } from '../../search/search.js';
 import { defaultConfig, type Config } from '../../config/config.js';
@@ -73,6 +75,14 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
 
       const hits = await search(q, filters, limit, { db, embed, weights });
+      // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
+      recordRecallServed(db, {
+        query: q,
+        atomIds: hits.map(h => h.id),
+        scores: hits.map(h => h.score),
+        surface: 'rest',
+        mode: 'search',
+      });
       return { hits };
     });
 
@@ -90,6 +100,14 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (rawFilters?.since !== undefined) filters.since = rawFilters.since;
 
       const hits = await search(query, filters, k, { db, embed, weights });
+      // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
+      recordRecallServed(db, {
+        query,
+        atomIds: hits.map(h => h.id),
+        scores: hits.map(h => h.score),
+        surface: 'rest',
+        mode: 'recall',
+      });
       return { hits };
     });
 
@@ -111,7 +129,8 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
 
       const repo = new MemoryRepo(db);
-      const id = repo.insert({
+      const events = new MemoryEventRepo(db);
+      const { id } = repo.insertWithCreateEvent({
         type,
         text,
         normalized_text: text.toLowerCase(),
@@ -127,7 +146,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         embedding_provider: embed.name,
         embedding_model: embed.model,
         embedding_dim: embed.dim
-      });
+      }, events);
 
       // Embed + upsert into vec store
       try {

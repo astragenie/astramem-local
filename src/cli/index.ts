@@ -95,7 +95,8 @@ async function main() {
     }
 
     case 'init':
-      await init();
+      // astramem-local init [--no-hook]
+      await init(rest);
       break;
 
     case 'token':
@@ -146,7 +147,8 @@ Commands:
   remember "text" [--type TYPE] [--repo REPO]
   budget [--reset]                       Show today + month LLM spend vs cap
   backup [--out PATH] [--keep N] [--json] Snapshot DB; prune old backups
-  init                                   Interactive setup wizard
+  init [--no-hook]                       Interactive setup wizard (--no-hook skips the
+                                         SessionStart memory-pack hook offer)
   token rotate                           Issue new local Bearer token
   queue [--json] [--limit N]             Show job-queue state counts + recent failures
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]

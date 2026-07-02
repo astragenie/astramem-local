@@ -13,6 +13,7 @@ import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { PKG_VERSION } from '../../src/server/lib/wire-meta.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { FastifyInstance } from 'fastify';
@@ -84,7 +85,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 6 tools', async () => {
+  it('initialize + tools/list returns 11 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -97,9 +98,21 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(6);
+    expect(tools.length).toBe(11);
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual(['get_health', 'recall_memory', 'remember', 'search_memory', 'session_digest', 'why_memory']);
+    expect(names).toEqual([
+      'get_health',
+      'invalidate_memory',
+      'mark_memory_used',
+      'memory_history',
+      'promote_memory',
+      'recall_memory',
+      'remember',
+      'search_memory',
+      'session_digest',
+      'supersede_memory',
+      'why_memory',
+    ]);
   });
 
   // -------------------------------------------------------------------------
@@ -342,6 +355,287 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const payload = JSON.parse(text) as { session_id: string; counts: Record<string, number> };
     expect(payload.session_id).toBe('s-digest-newest');
     expect(payload.counts).toEqual({ fact: 1 });
+  });
+
+  // -------------------------------------------------------------------------
+  // invalidate_memory
+  // -------------------------------------------------------------------------
+
+  it('tools/call invalidate_memory marks a memory invalid', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'to be invalidated', normalized_text: 'to be invalidated',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-invalidate-1', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'invalidate_memory', arguments: { id, reason: 'stale' } },
+      id: 40,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ ok: true, id });
+
+    const row = db.prepare('SELECT valid_to FROM memories WHERE id = ?').get(id) as { valid_to: number | null };
+    expect(row.valid_to).not.toBeNull();
+  });
+
+  it('tools/call invalidate_memory with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'invalidate_memory', arguments: { id: 'nope' } },
+      id: 41,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
+  });
+
+  it('tools/call invalidate_memory on an already-invalid memory returns isError', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'already invalid', normalized_text: 'already invalid',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-invalidate-2', source_hash: null,
+    });
+    new MemoryEventRepo(db).invalidate(id);
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'invalidate_memory', arguments: { id } },
+      id: 42,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'already invalid', id });
+  });
+
+  // -------------------------------------------------------------------------
+  // supersede_memory
+  // -------------------------------------------------------------------------
+
+  it('tools/call supersede_memory links old_id to new_id', async () => {
+    const repo = new MemoryRepo(db);
+    const oldId = repo.insert({
+      type: 'fact', text: 'old fact', normalized_text: 'old fact',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-supersede-old', source_hash: null,
+    });
+    const newId = repo.insert({
+      type: 'fact', text: 'new fact', normalized_text: 'new fact',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-supersede-new', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'supersede_memory', arguments: { old_id: oldId, new_id: newId } },
+      id: 43,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ ok: true, old_id: oldId, new_id: newId });
+
+    const row = db.prepare('SELECT superseded_by FROM memories WHERE id = ?').get(oldId) as { superseded_by: string | null };
+    expect(row.superseded_by).toBe(newId);
+  });
+
+  it('tools/call supersede_memory with unknown old_id returns isError', async () => {
+    const newId = new MemoryRepo(db).insert({
+      type: 'fact', text: 'new fact', normalized_text: 'new fact',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-supersede-new-2', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'supersede_memory', arguments: { old_id: 'nope', new_id: newId } },
+      id: 44,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
+  });
+
+  it('tools/call supersede_memory with an invalid new_id returns isError', async () => {
+    const repo = new MemoryRepo(db);
+    const events = new MemoryEventRepo(db);
+    const oldId = repo.insert({
+      type: 'fact', text: 'old fact 2', normalized_text: 'old fact 2',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-supersede-old-2', source_hash: null,
+    });
+    const newId = repo.insert({
+      type: 'fact', text: 'invalid new fact', normalized_text: 'invalid new fact',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-supersede-new-3', source_hash: null,
+    });
+    events.invalidate(newId);
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'supersede_memory', arguments: { old_id: oldId, new_id: newId } },
+      id: 45,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'invalid new_id', new_id: newId });
+  });
+
+  // -------------------------------------------------------------------------
+  // promote_memory
+  // -------------------------------------------------------------------------
+
+  it('tools/call promote_memory promotes scope upward', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'promote me', normalized_text: 'promote me',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-promote-1', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'promote_memory', arguments: { id, scope: 'team' } },
+      id: 46,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ ok: true, id, scope: 'team' });
+
+    const row = db.prepare('SELECT scope FROM memories WHERE id = ?').get(id) as { scope: string };
+    expect(row.scope).toBe('team');
+  });
+
+  it('tools/call promote_memory with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'promote_memory', arguments: { id: 'nope', scope: 'team' } },
+      id: 47,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
+  });
+
+  it('tools/call promote_memory with a downward/same-scope request returns isError', async () => {
+    const repo = new MemoryRepo(db);
+    const events = new MemoryEventRepo(db);
+    const id = repo.insert({
+      type: 'fact', text: 'already org scope', normalized_text: 'already org scope',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-promote-2', source_hash: null,
+    });
+    events.promoteScope(id, 'team');
+    events.promoteScope(id, 'org');
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'promote_memory', arguments: { id, scope: 'team' } },
+      id: 48,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as { error: string; id: string };
+    expect(payload.id).toBe(id);
+    expect(payload.error).toMatch(/only upward promotions allowed/);
+  });
+
+  // -------------------------------------------------------------------------
+  // memory_history
+  // -------------------------------------------------------------------------
+
+  it('tools/call memory_history reflects an invalidate event', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'history target', normalized_text: 'history target',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-history-1', source_hash: null,
+    });
+    new MemoryEventRepo(db).invalidate(id, 'no longer accurate');
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'memory_history', arguments: { id } },
+      id: 49,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as { id: string; events: Array<{ event_type: string; atom_id: string }> };
+    expect(payload.id).toBe(id);
+    // invalidate() also appends a 'usefulness' memory_corrected event (ADR-010) in the same tx.
+    expect(payload.events).toHaveLength(2);
+    expect(payload.events[0]).toMatchObject({ event_type: 'invalidate', atom_id: id });
+    expect(payload.events[1]).toMatchObject({ event_type: 'usefulness', atom_id: id });
+  });
+
+  it('tools/call memory_history with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'memory_history', arguments: { id: 'nope' } },
+      id: 50,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
+  });
+
+  // -------------------------------------------------------------------------
+  // mark_memory_used (ADR-010, 2e)
+  // -------------------------------------------------------------------------
+
+  it('tools/call mark_memory_used records a recall_used usefulness event', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'served then used', normalized_text: 'served then used',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-used-1', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'mark_memory_used', arguments: { id, note: 'this helped' } },
+      id: 51,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ ok: true, id });
+
+    const events = new MemoryEventRepo(db).listForAtom(id).filter(e => e.event_type === 'usefulness');
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0]?.payload_json ?? '{}');
+    expect(payload).toEqual({ family: 'recall_used', surface: 'mcp', signal: 'explicit' });
+  });
+
+  it('tools/call mark_memory_used with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'mark_memory_used', arguments: { id: 'nope' } },
+      id: 52,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
   });
 
   // -------------------------------------------------------------------------

@@ -1,12 +1,14 @@
 /**
  * Provenance receipt route (KF-A):
  *   GET /memory/:id/why — memory + evidence + source session + transcript ref.
- * `history` is reserved for the Wave 2a supersession chain; always [] in v1.
+ * `history` is the memory_events lifecycle log for this atom (ADR-002,
+ * Wave 2b) — empty for atoms that predate any lifecycle events.
  */
 
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import { MemoryRepo } from '../../storage/memories.js';
+import { MemoryEventRepo } from '../../storage/memory-events.js';
 
 interface SessionBlock {
   id: string;
@@ -42,7 +44,7 @@ export function whyRoute(db: DB) {
         session,
         transcript_ref: memory.source_hash,
         created_at: memory.created_at,
-        history: [] as never[],
+        history: new MemoryEventRepo(db).listForAtom(id),
       };
     });
   };

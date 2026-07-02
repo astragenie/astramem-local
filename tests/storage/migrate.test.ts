@@ -25,7 +25,7 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    expect(versions.n).toBe(5);
+    expect(versions.n).toBe(7);
   });
 
   it('enables WAL mode', () => {
@@ -80,7 +80,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(5);
+    expect(versions.n).toBe(7);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -156,7 +156,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(5);
+    expect(versions.v).toBe(7);
   });
 
   it('allows inserting type note after migration', () => {
@@ -278,6 +278,53 @@ describe('migration 005-security', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 007 — memory_events (ADR-002 decision point 1)
+// ---------------------------------------------------------------------------
+
+describe('migration 007-memory-events', () => {
+  it('creates memory_events with expected columns', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+    expect(tables.map(t => t.name)).toContain('memory_events');
+
+    const cols = db.prepare('PRAGMA table_info(memory_events)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).toContain('seq');
+    expect(colNames).toContain('event_type');
+    expect(colNames).toContain('atom_id');
+    expect(colNames).toContain('payload_json');
+    expect(colNames).toContain('content_hash');
+    expect(colNames).toContain('created_at');
+    expect(colNames).toContain('synced_at');
+  });
+
+  it('rejects an event_type outside the CHECK enum', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() =>
+      db.prepare(
+        `INSERT INTO memory_events (event_type, atom_id, created_at) VALUES ('garbage', 'm1', 1)`
+      ).run()
+    ).toThrow();
+  });
+
+  it('accepts every documented event_type', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const types = ['create', 'invalidate', 'supersede', 'promote_scope', 'erase_request', 'usefulness'];
+    for (const t of types) {
+      expect(() =>
+        db.prepare(
+          `INSERT INTO memory_events (event_type, atom_id, created_at) VALUES (?, 'm1', 1)`
+        ).run(t)
+      ).not.toThrow();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
 // ---------------------------------------------------------------------------
@@ -309,7 +356,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 5/,
+      /Schema-version constant drift: wire-meta says 999, DB says 7/,
     );
   });
 });

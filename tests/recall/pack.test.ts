@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { selectPack, renderPack, estimateTokens } from '../../src/recall/pack.js';
 import { buildApp } from '../../src/server/app.js';
 
@@ -100,5 +101,29 @@ describe('POST /recall/pack (KF-B endpoint)', () => {
       payload: {},
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  // ADR-010 (2e): every memory returned in the pack gets a recall_served usefulness event.
+  it('records a recall_served usefulness event per packed memory', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    seed(db, 'decision', 'Use SQLite for the pack test', 0.9);
+    const app = await buildApp({ db, token: 't' });
+
+    const res = await app.inject({
+      method: 'POST', url: '/recall/pack',
+      headers: { authorization: 'Bearer t' },
+      payload: { repo: 'r1' },
+    });
+    const memories = res.json().memories as Array<{ id: string }>;
+    expect(memories.length).toBeGreaterThan(0);
+
+    const events = new MemoryEventRepo(db);
+    for (const m of memories) {
+      const served = events.listForAtom(m.id).filter(e => e.event_type === 'usefulness');
+      expect(served.length).toBeGreaterThanOrEqual(1);
+      const payload = JSON.parse(served[0]?.payload_json ?? '{}');
+      expect(payload).toMatchObject({ family: 'recall_served', surface: 'rest', mode: 'pack' });
+    }
   });
 });

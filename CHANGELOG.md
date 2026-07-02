@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.5.0] — 2026-07-02
+
+Waves 1 + 2 of the target-architecture migration map: the trust floor and the contract + flywheel.
+
+### Added — Wave 1: trust floor (SEC-1..10)
+
+- **Encryption at rest** (SEC-1/2/7/8): production driver is now `better-sqlite3-multiple-ciphers`; `memory.sqlite` is encrypted by default (`security.encryption.enabled`, default `true`). Key lives in the OS credential store (Windows Credential Manager / macOS Keychain / libsecret via `@napi-rs/keyring`) with a `0600` `db.key` file fallback. Pre-existing plaintext DBs auto-migrate on startup (`PRAGMA rekey` on a verified copy) keeping a `.pre-encryption.bak`; backups of encrypted DBs stay encrypted (`VACUUM INTO` fallback).
+- **Stage-0 secret redaction** (SEC-3..6): pattern + entropy detectors (AWS/GitHub/Azure/GCP/Slack keys, generic credentials, JWTs, PEM blocks, connection strings, config custom patterns) run at the ingest choke point and on `/remember` before anything is persisted. Placeholders `[REDACTED:<type>:<hash8>]`; counts-only `redaction_log` (migration 005); surfaced via `doctor` and `/health`.
+- **Bearer token → OS credential store** (SEC-10): `secrets.env` kept as read-only fallback; file-only bearers are promoted one-way into the store.
+- **D-DEF1 fixed**: canonical JSON turns are flattened to `role: text` lines at pipeline entry — role attribution reaches extraction.
+- **D-DEF2 fixed**: `ingest_idempotency.summary_memory_id` is backfilled with the first real memory id after distillation.
+- **CLI un-stubbed**: `queue` (job state counts + recent failures), `rebuild` (enqueues reembed jobs), `providers` (config + live chat/embed probes).
+- **Dashboard auth hardening**: bearer no longer lives in the URL — `?token=` is a one-time bootstrap exchanged for an HttpOnly SameSite=Strict cookie via 302; `Authorization` header also accepted; 401 logs strip the query string.
+
+### Added — Wave 2: contract + flywheel
+
+- **Atom v3** (ADR-001, migration 006): `memories` gains bitemporal validity (`valid_from`/`valid_to`), `superseded_by`, `derived_from` lineage, and `scope` (`personal`/`team`/`org`, default `personal`). Search and `/recall/pack` exclude invalidated memories; receipts (`why_memory`) still see them.
+- **`memory_events` append-only log** (ADR-002, migration 007): `create`/`invalidate`/`supersede`/`promote_scope`/`erase_request`/`usefulness` events with synthetic hash-stable `create` backfill; state change + event append in one transaction. Lifecycle REST: `POST /memory/:id/{invalidate,supersede,promote}`, `GET /memory/:id/history`.
+- **MCP lifecycle tools** (ADR-007): `invalidate_memory`, `supersede_memory`, `promote_memory`, `memory_history`; `why_memory` now returns the populated `history` chain. MCP server exposes 11 tools.
+- **`events` capture kind** (ADR-008): `POST /ingest/transcript` accepts `kind: "events"` — pre-typed atom candidates (runner-plugin grades/lessons/verdicts) that are redacted, stored, and enter the pipeline at stage 6 (reduce → normalize → embed+index) via the new `distill-events` job. Public protocol doc: `docs/capture-protocol.md`.
+- **Recall-usefulness metric** (ADR-010 v1): `recall_served` / `recall_used` / `memory_corrected` event families captured from day 1 (query text never stored — sha256/16 hash only). Explicit feedback via MCP `mark_memory_used` + `REST POST /memory/:id/used`. Rate surfaced on `/health`, `doctor`, and a dashboard section. Measure-only in v1.
+- **init: memory-pack hook auto-install**: `astramem-local init` offers to install the KF-B SessionStart hook into `~/.claude/settings.json` (idempotent, platform-appropriate command, `--no-hook` to skip); flips `recallPack.enabled`.
+
+### Changed
+
+- `SCHEMA_VERSION` 4 → 7 (migrations 005 security, 006 atom v3, 007 memory events).
+- `/health` gains `security: { encryption, redaction }` and `usefulness: { served_7d, used_7d, rate_7d }`.
+
+---
+
 ## [0.4.0] — 2026-07-01
 
 ### Added
@@ -76,8 +106,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Known issues
 
-- **KNOWN ISSUE: D-DEF1 — Distill pipeline turn-flattening**: The distill pipeline currently consumes `transcripts.content` as a flat string. Canonical ingests write `JSON.stringify(turns)` into that column. Distillation quality silently degrades on canonical paths until the distill handler is updated to flatten turns to `role: text\n` pairs before pipeline entry. This is a Wave-3 inheritance risk; fix is scoped to v0.3.0.
-- **KNOWN ISSUE: D-DEF2 — `summary_memory_id` semantic change**: The `summary_memory_id` returned by `POST /ingest/transcript` is currently the transcript row UUID. Wave-3 distillation will produce a real summary memory with a different UUID. Clients MUST treat the value as opaque until v0.3.0 — the semantic meaning will change when distillation is wired end-to-end.
+- **KNOWN ISSUE: D-DEF1 — Distill pipeline turn-flattening** *(FIXED in 0.5.0)*: The distill pipeline currently consumes `transcripts.content` as a flat string. Canonical ingests write `JSON.stringify(turns)` into that column. Distillation quality silently degrades on canonical paths until the distill handler is updated to flatten turns to `role: text\n` pairs before pipeline entry.
+- **KNOWN ISSUE: D-DEF2 — `summary_memory_id` semantic change** *(FIXED in 0.5.0)*: The `summary_memory_id` returned by `POST /ingest/transcript` is currently the transcript row UUID. Wave-3 distillation will produce a real summary memory with a different UUID. Clients MUST treat the value as opaque — in 0.5.0 the idempotency row is backfilled with the real memory id once distillation completes.
 
 ### Related specification
 

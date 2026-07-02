@@ -12,6 +12,7 @@ import { migrateLegacyDirsIfPresent } from '../config/migrate-dirs.js';
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
 import { distillHandler } from '../pipeline/handlers/distill.js';
+import { distillEventsHandler } from '../pipeline/handlers/distill-events.js';
 import { cleanupHandler } from '../pipeline/handlers/cleanup.js';
 import { makeMockProviders, type MockProviderSet } from '../pipeline/mock-providers.js';
 import type { ProviderSet } from '../providers/index.js';
@@ -104,6 +105,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // Wire up the worker with extended context so distillation runs
   const registry = new HandlerRegistry();
   registry.register(distillHandler);
+  registry.register(distillEventsHandler);
   registry.register(cleanupHandler);
 
   const extCtx: ExtendedHandlerCtx = {
