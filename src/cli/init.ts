@@ -409,16 +409,14 @@ export async function init(argv: string[] = []): Promise<void> {
       settingsPath: process.env[SETTINGS_PATH_ENV],
     });
     cfg.recallPack.enabled = true;
+    writeConfig(cfg, configPath); // persist the flag flip — config.yaml now round-trips recallPack
     if (!nonInteractive) {
       if (hookResult.outcome === 'installed') {
         console.log(`  ✓ SessionStart memory-pack hook installed → ${hookResult.settingsPath}`);
       } else {
         console.log(`  · SessionStart memory-pack hook already installed → ${hookResult.settingsPath} (skipped)`);
       }
-      console.log(
-        `    recallPack.enabled=true (meaning: /recall/pack already serves regardless of this flag; ` +
-        `config.yaml does not yet persist recallPack settings, so this is a reporting-only note, not a file change).`
-      );
+      console.log(`    recallPack.enabled=true persisted to config.yaml`);
     }
   }
 
