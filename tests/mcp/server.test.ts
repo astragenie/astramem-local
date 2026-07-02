@@ -13,6 +13,7 @@ import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { PKG_VERSION } from '../../src/server/lib/wire-meta.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../src/storage/db.js';
@@ -117,7 +118,8 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const text = resp.result?.content?.[0]?.text ?? '';
     const payload = JSON.parse(text) as { ok: boolean; version: string };
     expect(payload.ok).toBe(true);
-    expect(typeof payload.version).toBe('string');
+    // Behavioral drift guard: must be the real package version, not a stale literal
+    expect(payload.version).toBe(PKG_VERSION);
   });
 
   // -------------------------------------------------------------------------
