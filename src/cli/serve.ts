@@ -15,6 +15,7 @@ import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
 import { distillHandler } from '../pipeline/handlers/distill.js';
 import { distillEventsHandler } from '../pipeline/handlers/distill-events.js';
 import { cleanupHandler } from '../pipeline/handlers/cleanup.js';
+import { consolidateHandler } from '../pipeline/handlers/consolidate.js';
 import { makeMockProviders, type MockProviderSet } from '../pipeline/mock-providers.js';
 import type { ProviderSet } from '../providers/index.js';
 import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
@@ -108,6 +109,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   registry.register(distillHandler);
   registry.register(distillEventsHandler);
   registry.register(cleanupHandler);
+  registry.register(consolidateHandler);
 
   const extCtx: ExtendedHandlerCtx = {
     db,

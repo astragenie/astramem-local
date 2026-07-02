@@ -14,6 +14,7 @@ import { recallRoute } from './routes/recall.js';
 import { mcpRoute } from './routes/mcp.js';
 import { dashboardRoute } from './routes/dashboard.js';
 import { memoryToolRoute } from './routes/memory-tool.js';
+import { consolidationRoutes } from './routes/consolidation.js';
 import { makeFakeVec } from '../search/search.js';
 import { childLogger } from '../log/logger.js';
 import { newRequestId, runWithRequestId } from '../log/correlation.js';
@@ -100,6 +101,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(mcpRoute(opts.db, embed, config));
   await app.register(dashboardRoute(opts.db, config, opts.token));
   await app.register(memoryToolRoute(opts.db, config));
+  await app.register(consolidationRoutes(opts.db));
 
   return app;
 }
