@@ -17,7 +17,18 @@ export interface Config {
   ollama: { baseUrl: string };
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
   search: { alpha: number; beta: number; gamma: number; delta: number };
-  recallPack: { enabled: boolean; budgetTokens: number };
+  recallPack: {
+    enabled: boolean;
+    budgetTokens: number;
+    /** Injection-policy v1 (ADR-005 when-to-recall, Wave 4d). */
+    policy: {
+      enabled: boolean;
+      /** Minimum selection score a memory needs to be injected. */
+      minScore: number;
+      /** Prompts shorter than this get no injection (unless they reference memory). */
+      minPromptChars: number;
+    };
+  };
   /** One-way log shipping to the cloud ledger (ADR-003). Off by default;
    * requires url + workspaceId + a device token in the keystore
    * (or ASTRA_SYNC_TOKEN). personal-scoped atoms never ship (ADR-009). */
@@ -58,7 +69,11 @@ export function defaultConfig(): Config {
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
     search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 },
-    recallPack: { enabled: false, budgetTokens: 1500 },
+    recallPack: {
+      enabled: false,
+      budgetTokens: 1500,
+      policy: { enabled: true, minScore: 0.15, minPromptChars: 12 },
+    },
     sync: { enabled: false, url: '', workspaceId: null, batchSize: 200, intervalMs: 30_000 },
     security: {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },

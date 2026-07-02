@@ -95,7 +95,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(lifecycleRoutes(opts.db));
   await app.register(whyRoute(opts.db));
   await app.register(digestRoute(opts.db));
-  await app.register(recallRoute(opts.db));
+  await app.register(recallRoute(opts.db, config));
   await app.register(mcpRoute(opts.db, embed, config));
   await app.register(dashboardRoute(opts.db, config, opts.token));
 
