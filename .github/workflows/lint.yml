@@ -14,7 +14,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Repo is bun-locked (bun.lock, no package-lock.json) — setup-node's npm
       # cache and `npm ci` both fail without an npm lockfile. Mirror test.yml.
