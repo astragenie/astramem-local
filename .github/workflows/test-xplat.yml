@@ -1,4 +1,4 @@
-name: Test
+name: test-xplat
 
 on:
   push:
@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [self-hosted]  # linux on dedicated runner; win/mac weekly in test-xplat.yml
+        os: [windows-latest]  # macOS disabled entirely — 10x billing, no mac-specific code paths
         bun: ['1.3']
     runs-on: ${{ matrix.os }}
 
