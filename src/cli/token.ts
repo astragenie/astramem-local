@@ -1,9 +1,11 @@
 /**
  * token subcommand — `astramem-local token rotate`
  *
- * Generates a fresh 32-byte (64 hex char) random Bearer token,
- * overwrites secrets.env (mode 0600 on Unix), and prints the
- * `export MEMORY_BEARER=...` line so the user can paste it.
+ * Generates a fresh 32-byte (64 hex char) random Bearer token, stores it in
+ * the OS credential store (SEC-10), and prints the `export MEMORY_BEARER=...`
+ * line so the user can paste it. secrets.env is written ONLY as a fallback
+ * when the credential store is unavailable (mode 0600 on Unix) — mirrors the
+ * db-key degradation pattern in storage/keystore.ts.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -11,6 +13,7 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { writeSecrets } from '../config/secrets.js';
 import { defaultConfigDir } from '../config/datadir.js';
+import { storeBearer } from '../storage/keystore.js';
 
 /** Generate a cryptographically secure 32-byte hex token (64 chars). */
 export function generateToken(): string {
@@ -50,7 +53,14 @@ export function rotateToken(secretsPath?: string): string {
     }
   }
 
-  writeSecrets({ bearer: newToken, azureKey, azureEndpoint, azureDeployment }, path);
+  // SEC-10: try the OS credential store first; only fall back to writing the
+  // bearer into secrets.env when the store is unavailable. Azure keys (if
+  // any) are unaffected — they still live in secrets.env regardless.
+  const { stored } = storeBearer(newToken);
+  writeSecrets(
+    { bearer: stored ? undefined : newToken, azureKey, azureEndpoint, azureDeployment },
+    path,
+  );
   return newToken;
 }
 

@@ -25,7 +25,8 @@ import { llmChatProbe } from './probes/llm-chat-probe.js';
 import { embedProbe } from './probes/embed-probe.js';
 import { pluginCoexistenceProbe } from './probes/plugin-coexistence.js';
 import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
-import { getOrCreateKey } from '../storage/keystore.js';
+import { getOrCreateKey, readBearer } from '../storage/keystore.js';
+import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
 import type { DB } from '../storage/db.js';
 
 export type { Check, CheckResult };
@@ -434,6 +435,35 @@ function checkEncryption(dataDir: string, enabled: boolean): Check {
   };
 }
 
+// ─── Check: Bearer token location (SEC-10) ────────────────────────────────────
+
+function checkBearerLocation(): Check {
+  return {
+    name: 'Bearer token location',
+    async run(): Promise<CheckResult> {
+      try {
+        if (readBearer()) {
+          return { ok: true, message: 'bearer: OS credential store' };
+        }
+        if (readBearerFromSecretsFile()) {
+          return {
+            ok: false,
+            message: 'bearer: secrets.env (plaintext fallback) — OS credential store unavailable or not yet migrated',
+            fix: 'Run "astramem-local token rotate" to migrate the bearer into the OS credential store.',
+          };
+        }
+        return {
+          ok: false,
+          message: 'bearer: missing — no MEMORY_BEARER in credential store or secrets.env',
+          fix: 'Run "astramem-local init" or "astramem-local token rotate" to generate one.',
+        };
+      } catch (err) {
+        return { ok: false, message: `Bearer location check error: ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Core check list builder ──────────────────────────────────────────────────
 
 // ─── Check 9: LLM chat probe (real 1-token call) ─────────────────────────────
@@ -633,6 +663,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkConfigDirDivergence(),
     checkRedaction(dataDir, opts.redactionEnabled ?? true, encryptionEnabled),
     checkEncryption(dataDir, encryptionEnabled),
+    checkBearerLocation(),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

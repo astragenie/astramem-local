@@ -28,6 +28,7 @@ import { join } from 'node:path';
 
 const SERVICE = 'astramem-local';
 const ACCOUNT = 'db-key';
+const BEARER_ACCOUNT = 'bearer';
 
 export type KeySource = 'credential-store' | 'key-file';
 
@@ -129,4 +130,54 @@ function getOrCreateKeyFile(configDir: string): KeyResult {
 
 export function keyFilePath(configDir: string): string {
   return join(configDir, 'db.key');
+}
+
+// ─── Bearer token (SEC-10, Wave 1 task 1d) ────────────────────────────────
+//
+// Same service ('astramem-local'), a distinct account ('bearer'), and the
+// same EntryCtor test seam as the db-key above — one stub controls both.
+// Unlike the db-key, the bearer has no "always needs a value" contract: the
+// caller (token.ts/init.ts) generates the token, then asks the store to hold
+// it; the resolution side (bearer-keystore.ts) reads it back. secrets.env
+// remains the fallback persistence layer, exactly mirroring getOrCreateKey's
+// credential-store -> key-file degradation.
+
+export interface BearerStoreResult {
+  stored: boolean;
+  source: 'credential-store' | 'secrets-env-fallback';
+}
+
+/**
+ * Store `token` in the OS credential store. On failure (no credential store
+ * / no secret-service session), WARNs and returns a fallback marker so the
+ * caller persists the bearer into secrets.env instead (SEC-10).
+ */
+export function storeBearer(token: string): BearerStoreResult {
+  try {
+    const entry = new EntryCtor(SERVICE, BEARER_ACCOUNT);
+    entry.setPassword(token);
+    return { stored: true, source: 'credential-store' };
+  } catch (err) {
+    console.warn(
+      `[astramem-local] WARNING: OS credential store unavailable (${errMessage(err)}); ` +
+      `falling back to writing the bearer token into secrets.env. This is a weaker guarantee ` +
+      `than an OS credential store — see docs/specs/2026-07-02-encryption-and-secret-redaction.md SEC-10.`,
+    );
+    return { stored: false, source: 'secrets-env-fallback' };
+  }
+}
+
+/**
+ * Read the bearer token from the OS credential store, if present.
+ * Returns null on any error (store unavailable, or no entry yet) — same
+ * "throw and getPassword()->null are both just 'no key yet'" tolerance as
+ * getOrCreateCredentialStoreKey above. Callers fall back to secrets.env.
+ */
+export function readBearer(): string | null {
+  try {
+    const entry = new EntryCtor(SERVICE, BEARER_ACCOUNT);
+    return entry.getPassword();
+  } catch {
+    return null;
+  }
 }

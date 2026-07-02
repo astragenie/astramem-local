@@ -106,6 +106,29 @@ import { writeConfig, configToYaml } from '../../src/config/writer.js';
 import { writeSecrets } from '../../src/config/secrets.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { openDb } from '../../src/storage/db.js';
+import { Entry } from '@napi-rs/keyring';
+import { __setEntryCtorForTests } from '../../src/storage/keystore.js';
+
+// init() now stores the generated bearer via the OS credential store first
+// (SEC-10). Stub Entry with an in-memory map for every test in this file so
+// runs are deterministic and never touch the real OS credential store.
+beforeEach(() => {
+  const store = new Map<string, string>();
+  __setEntryCtorForTests(class {
+    private key: string;
+    constructor(service: string, account: string) {
+      this.key = `${service}:${account}`;
+    }
+    getPassword(): string | null { return store.get(this.key) ?? null; }
+    setPassword(p: string): void { store.set(this.key, p); }
+    deleteCredential(): boolean { return store.delete(this.key); }
+    deletePassword(): boolean { return store.delete(this.key); }
+  } as unknown as typeof Entry);
+});
+
+afterEach(() => {
+  __setEntryCtorForTests(undefined);
+});
 
 // ─── Unit: writer ─────────────────────────────────────────────────────────────
 
