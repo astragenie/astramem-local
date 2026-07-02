@@ -8,6 +8,7 @@ import { ingestRoute } from './routes/ingest.js';
 import { searchRoute } from './routes/search.js';
 import { memoryRoute } from './routes/memory.js';
 import { whyRoute } from './routes/why.js';
+import { digestRoute } from './routes/digest.js';
 import { mcpRoute } from './routes/mcp.js';
 import { makeFakeVec } from '../search/search.js';
 import { childLogger } from '../log/logger.js';
@@ -83,6 +84,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(searchRoute(opts.db, embed));
   await app.register(memoryRoute(opts.db));
   await app.register(whyRoute(opts.db));
+  await app.register(digestRoute(opts.db));
   await app.register(mcpRoute(opts.db, embed));
 
   return app;

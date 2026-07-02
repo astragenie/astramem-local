@@ -1,12 +1,13 @@
 /**
  * MCP server instance for astramemory-local.
  *
- * Exposes 5 tools over the Streamable HTTP transport (POST /mcp):
- *   - search_memory  — hybrid FTS + vector search
- *   - recall_memory  — top-K semantic recall (alias of search with k default 5)
- *   - remember       — direct memory insert
- *   - get_health     — daemon health probe
- *   - why_memory     — provenance receipt (evidence, session, transcript ref)
+ * Exposes 6 tools over the Streamable HTTP transport (POST /mcp):
+ *   - search_memory   — hybrid FTS + vector search
+ *   - recall_memory   — top-K semantic recall (alias of search with k default 5)
+ *   - remember        — direct memory insert
+ *   - get_health      — daemon health probe
+ *   - why_memory      — provenance receipt (evidence, session, transcript ref)
+ *   - session_digest  — per-session "what I learned" summary (derived at read time)
  *
  * No HTTP self-calls: all tools call the internal service layer directly.
  * Auth is enforced at the Fastify route level via the existing preHandler.
@@ -260,6 +261,51 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         history: [],
       };
       return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
+    }
+  );
+
+  // ---- session_digest ------------------------------------------------------
+  server.registerTool(
+    'session_digest',
+    {
+      description:
+        'What I learned this session: per-type counts + texts of memories formed. Defaults to the latest session.',
+      inputSchema: z.object({
+        session_id: z.string().optional().describe('Session id; defaults to most recent session'),
+      }),
+    },
+    async (args) => {
+      let sessionId = args.session_id;
+      if (!sessionId) {
+        const latest = db
+          .prepare('SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1')
+          .get() as { id: string } | undefined;
+        if (!latest) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no sessions recorded' }) }],
+            isError: true,
+          };
+        }
+        sessionId = latest.id;
+      }
+      const activeJob = db.prepare(`
+        SELECT id FROM jobs
+        WHERE kind = 'distill' AND state IN ('pending', 'running')
+          AND json_extract(payload_json, '$.session_id') = ?
+        LIMIT 1
+      `).get(sessionId);
+      const rows = db.prepare(
+        'SELECT id, type, text FROM memories WHERE session_id = ? ORDER BY created_at ASC'
+      ).all(sessionId) as Array<{ id: string; type: string; text: string }>;
+      const counts: Record<string, number> = {};
+      for (const r of rows) counts[r.type] = (counts[r.type] ?? 0) + 1;
+      const digest = {
+        session_id: sessionId,
+        status: activeJob ? 'pending' : 'ready',
+        counts,
+        memories: rows,
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };
     }
   );
 
