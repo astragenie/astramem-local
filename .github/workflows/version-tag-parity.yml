@@ -16,7 +16,7 @@ on:
 jobs:
   check-version-parity:
     name: package.json version matches git tag
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, astragenie, aws]
     steps:
       - uses: actions/checkout@v4
 
