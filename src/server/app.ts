@@ -8,9 +8,11 @@ import { ingestRoute } from './routes/ingest.js';
 import { searchRoute } from './routes/search.js';
 import { memoryRoute } from './routes/memory.js';
 import { mcpRoute } from './routes/mcp.js';
+import { dashboardRoute } from './routes/dashboard.js';
 import { makeFakeVec } from '../search/search.js';
 import { childLogger } from '../log/logger.js';
 import { newRequestId, runWithRequestId } from '../log/correlation.js';
+import { type Config, defaultConfig } from '../config/config.js';
 
 /** Default no-op embed provider used when no real provider is injected. */
 function makeNoopEmbed(): EmbedProvider {
@@ -28,6 +30,8 @@ export interface AppOpts {
   token: string;
   /** Embed provider injected for search + remember routes. Defaults to fake/noop. */
   embed?: EmbedProvider;
+  /** Server config — used by dashboard route for budget cap display. Defaults to defaultConfig(). */
+  config?: Config;
 }
 
 export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
@@ -37,6 +41,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   // between FastifyBaseLogger and FastifyInstance<never logger>.
   const app = Fastify({ logger: false });
   const embed = opts.embed ?? makeNoopEmbed();
+  const config = opts.config ?? defaultConfig();
 
   // Assign a request_id to every incoming request and expose it on the reply header.
   app.addHook('onRequest', async (req, reply) => {
@@ -63,8 +68,10 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   });
 
   // Auth check — scrub the Authorization header value from any error logs.
+  // /health and /version are public. /dashboard validates its own token via ?token= query param.
   app.addHook('preHandler', async (req, reply) => {
-    if (req.url === '/health' || req.url === '/version') return;
+    const path = req.url.split('?')[0];
+    if (path === '/health' || path === '/version' || path === '/dashboard') return;
     const auth = req.headers.authorization;
     if (auth !== `Bearer ${opts.token}`) {
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
@@ -82,6 +89,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(searchRoute(opts.db, embed));
   await app.register(memoryRoute(opts.db));
   await app.register(mcpRoute(opts.db, embed));
+  await app.register(dashboardRoute(opts.db, config, opts.token));
 
   return app;
 }
