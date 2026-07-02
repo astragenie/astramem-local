@@ -34,6 +34,13 @@ export interface ResolveBearerOpts {
   cliToken?: string;
   /** Value of `ASTRA_MEMORY_TOKEN`, if set. */
   envToken?: string;
+  /**
+   * Config dirs to probe for secrets.env, in priority order. Defaults to
+   * [defaultConfigDir(), legacyConfigDir()]. Injectable so tests can isolate
+   * the filesystem probe without env-var games — on darwin the real dirs
+   * ignore XDG_CONFIG_HOME entirely, so env stubbing does NOT isolate there.
+   */
+  secretsDirs?: string[];
 }
 
 const DEFAULT_TOKEN = 'devtok';
@@ -43,8 +50,8 @@ const DEFAULT_TOKEN = 'devtok';
  * legacy dir (%APPDATA%\AstraMemory on Windows). Read-only; never mutates
  * either file. Mirrors the pre-SEC-10 `readBearerFromSecrets` in serve.ts.
  */
-export function readBearerFromSecretsFile(): string | null {
-  const dirs = [defaultConfigDir(), legacyConfigDir()].filter(
+export function readBearerFromSecretsFile(secretsDirs?: string[]): string | null {
+  const dirs = (secretsDirs ?? [defaultConfigDir(), legacyConfigDir()]).filter(
     (d, i, arr) => arr.indexOf(d) === i, // deduplicate (non-Windows: same path)
   );
 
@@ -81,7 +88,7 @@ export function resolveBearerToken(opts: ResolveBearerOpts = {}): ResolvedBearer
   const stored = readBearer();
   if (stored) return { token: stored, source: 'credential-store' };
 
-  const fileToken = readBearerFromSecretsFile();
+  const fileToken = readBearerFromSecretsFile(opts.secretsDirs);
   if (fileToken) {
     storeBearer(fileToken); // opportunistic one-way promotion; best-effort
     return { token: fileToken, source: 'secrets-env' };

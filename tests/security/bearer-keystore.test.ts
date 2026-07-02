@@ -20,7 +20,6 @@ import {
   resolveBearerToken,
   readBearerFromSecretsFile,
 } from '../../src/storage/bearer-keystore.js';
-import { defaultConfigDir } from '../../src/config/datadir.js';
 
 let tmpDirs: string[] = [];
 
@@ -67,27 +66,10 @@ function stubUnavailableCredentialStore(): void {
   } as unknown as typeof Entry);
 }
 
-/**
- * Points defaultConfigDir() at an isolated tmp dir for the duration of `fn`,
- * so readBearerFromSecretsFile()/resolveBearerToken() only ever see
- * test-controlled files. `fn` receives the *resolved* config dir (e.g.
- * `<base>/Astramem` on Windows, not `<base>` itself) so callers can write
- * secrets.env to the exact path the production code will read.
- */
-function withIsolatedConfigDir<T>(baseDir: string, fn: (resolvedConfigDir: string) => T): T {
-  const savedAppData = process.env.APPDATA;
-  const savedXdg = process.env.XDG_CONFIG_HOME;
-  try {
-    if (process.platform === 'win32') process.env.APPDATA = baseDir;
-    else process.env.XDG_CONFIG_HOME = baseDir;
-    return fn(defaultConfigDir());
-  } finally {
-    if (savedAppData === undefined) delete process.env.APPDATA;
-    else process.env.APPDATA = savedAppData;
-    if (savedXdg === undefined) delete process.env.XDG_CONFIG_HOME;
-    else process.env.XDG_CONFIG_HOME = savedXdg;
-  }
-}
+// Isolation strategy: resolveBearerToken/readBearerFromSecretsFile accept an
+// explicit `secretsDirs` list, so tests point them at a tmp dir directly.
+// (Env-var stubbing does NOT isolate on darwin — defaultConfigDir() ignores
+// XDG_CONFIG_HOME there and the tests would read/write the REAL config dir.)
 
 function writeSecretsEnvBearer(resolvedConfigDir: string, bearer: string): void {
   mkdirSync(resolvedConfigDir, { recursive: true });
@@ -165,17 +147,15 @@ describe('resolveBearerToken: precedence', () => {
     store.set('astramem-local:bearer', 'store-token');
 
     const baseDir = mkTmpDir('astramem-bearer-precedence-');
-    const result = withIsolatedConfigDir(baseDir, (resolvedDir) => {
-      writeSecretsEnvBearer(resolvedDir, 'file-token');
-      return resolveBearerToken();
-    });
+    writeSecretsEnvBearer(baseDir, 'file-token');
+    const result = resolveBearerToken({ secretsDirs: [baseDir] });
     expect(result).toEqual({ token: 'store-token', source: 'credential-store' });
   });
 
   it("falls back to the 'devtok' default when nothing is configured anywhere", () => {
     stubWorkingCredentialStore(); // empty store, no throw
     const baseDir = mkTmpDir('astramem-bearer-empty-');
-    const result = withIsolatedConfigDir(baseDir, () => resolveBearerToken());
+    const result = resolveBearerToken({ secretsDirs: [baseDir] });
     expect(result).toEqual({ token: 'devtok', source: 'default' });
   });
 });
@@ -189,10 +169,8 @@ describe('resolveBearerToken: one-way promotion from secrets.env', () => {
     const store = stubWorkingCredentialStore();
     const baseDir = mkTmpDir('astramem-bearer-promote-');
 
-    const result = withIsolatedConfigDir(baseDir, (resolvedDir) => {
-      writeSecretsEnvBearer(resolvedDir, 'file-only-token');
-      return resolveBearerToken();
-    });
+    writeSecretsEnvBearer(baseDir, 'file-only-token');
+    const result = resolveBearerToken({ secretsDirs: [baseDir] });
 
     expect(result).toEqual({ token: 'file-only-token', source: 'secrets-env' });
 
@@ -201,21 +179,18 @@ describe('resolveBearerToken: one-way promotion from secrets.env', () => {
     expect(readBearer()).toBe('file-only-token');
 
     // secrets.env itself is untouched (still readable, same content).
-    const fileTokenAfter = withIsolatedConfigDir(baseDir, () => readBearerFromSecretsFile());
-    expect(fileTokenAfter).toBe('file-only-token');
+    expect(readBearerFromSecretsFile([baseDir])).toBe('file-only-token');
   });
 
   it('a second resolveBearerToken call now hits the credential-store branch (promotion took effect)', () => {
     stubWorkingCredentialStore();
     const baseDir = mkTmpDir('astramem-bearer-promote-twice-');
 
-    const first = withIsolatedConfigDir(baseDir, (resolvedDir) => {
-      writeSecretsEnvBearer(resolvedDir, 'promote-me');
-      return resolveBearerToken();
-    });
+    writeSecretsEnvBearer(baseDir, 'promote-me');
+    const first = resolveBearerToken({ secretsDirs: [baseDir] });
     expect(first.source).toBe('secrets-env');
 
-    const second = withIsolatedConfigDir(baseDir, () => resolveBearerToken());
+    const second = resolveBearerToken({ secretsDirs: [baseDir] });
     expect(second).toEqual({ token: 'promote-me', source: 'credential-store' });
   });
 
@@ -223,10 +198,8 @@ describe('resolveBearerToken: one-way promotion from secrets.env', () => {
     stubUnavailableCredentialStore();
     const baseDir = mkTmpDir('astramem-bearer-promote-fail-');
 
-    const result = withIsolatedConfigDir(baseDir, (resolvedDir) => {
-      writeSecretsEnvBearer(resolvedDir, 'file-only-token-2');
-      return resolveBearerToken();
-    });
+    writeSecretsEnvBearer(baseDir, 'file-only-token-2');
+    const result = resolveBearerToken({ secretsDirs: [baseDir] });
     expect(result).toEqual({ token: 'file-only-token-2', source: 'secrets-env' });
   });
 });
