@@ -113,9 +113,16 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
     ON CONFLICT(key) DO NOTHING
   `);
 
-  // Used for D-B3 dangling-row check on replay
+  // Used for D-B3 dangling-row check on replay. `summary_memory_id` starts
+  // out as the transcript id (placeholder, written at ingest time) and may
+  // later be backfilled to a real `memories.id` once distillation completes
+  // (D-DEF2, see storage/ingest-idempotency.ts) — so "does this id still
+  // resolve to something" has to check both tables.
   const stmtCheckTranscriptExists = db.prepare<[string], { id: string } | undefined>(
     'SELECT id FROM transcripts WHERE id = ?',
+  );
+  const stmtCheckMemoryExists = db.prepare<[string], { id: string } | undefined>(
+    'SELECT id FROM memories WHERE id = ?',
   );
 
   // Used for D-B3 invalidation of dangling idempotency row
@@ -206,9 +213,12 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
                   throw Object.assign(new Error('idempotency_conflict'), { _isIdempotencyConflict: true });
                 }
 
-                // D-B3: guard against dangling transcript row
+                // D-B3: guard against a dangling row. summary_memory_id may
+                // point at either a transcript (pre-distillation) or a
+                // memory (post-D-DEF2-backfill) — check both.
                 const transcriptExists = existing.summary_memory_id != null
-                  ? stmtCheckTranscriptExists.get(existing.summary_memory_id)
+                  ? (stmtCheckTranscriptExists.get(existing.summary_memory_id)
+                      ?? stmtCheckMemoryExists.get(existing.summary_memory_id))
                   : undefined;
                 if (!transcriptExists) {
                   // Dangling row — invalidate and fall through to fresh insert
