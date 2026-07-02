@@ -8,9 +8,18 @@ describe('astra-memory serve', () => {
       env: { ...process.env, ASTRA_MEMORY_DATADIR: ':memory:', ASTRA_MEMORY_TOKEN: 'devtok' },
       stdio: 'pipe'
     });
-    await sleep(1500);
-    const res = await fetch('http://127.0.0.1:17777/health');
-    expect(res.status).toBe(200);
+    // Poll instead of a fixed sleep — cold start can exceed 1.5s on Windows
+    let res: Response | undefined;
+    const deadline = Date.now() + 8000;
+    while (Date.now() < deadline) {
+      try {
+        res = await fetch('http://127.0.0.1:17777/health');
+        break;
+      } catch {
+        await sleep(200);
+      }
+    }
+    expect(res?.status).toBe(200);
     proc.kill('SIGTERM');
     await new Promise(r => proc.on('exit', r));
   }, 10000);
