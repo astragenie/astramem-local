@@ -16,7 +16,11 @@ export interface Config {
   budget: { daily_usd: number };
   ollama: { baseUrl: string };
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
-  search: { alpha: number; beta: number; gamma: number; delta: number };
+  /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
+   * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed
+   * ranking; atoms with no signal score a neutral 0.5, so ε never reshuffles
+   * an unsignaled corpus). */
+  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number };
   recallPack: {
     enabled: boolean;
     budgetTokens: number;
@@ -68,7 +72,7 @@ export function defaultConfig(): Config {
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
-    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 },
+    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1 },
     recallPack: {
       enabled: false,
       budgetTokens: 1500,
