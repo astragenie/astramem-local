@@ -33,4 +33,4 @@ export const WIRE_VERSIONS_SUPPORTED = ['v0.0', 'v1.0'] as const satisfies reado
 // at startup. Bump this whenever a new migration file is added.
 // ---------------------------------------------------------------------------
 
-export const SCHEMA_VERSION = 6 as const;
+export const SCHEMA_VERSION = 7 as const;

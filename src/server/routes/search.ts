@@ -11,6 +11,7 @@ import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import type { EmbedProvider } from '../../contracts/index.js';
 import { MemoryRepo } from '../../storage/memories.js';
+import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import { search, type SearchFilters } from '../../search/search.js';
 import { defaultConfig, type Config } from '../../config/config.js';
@@ -111,7 +112,8 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
 
       const repo = new MemoryRepo(db);
-      const id = repo.insert({
+      const events = new MemoryEventRepo(db);
+      const { id } = repo.insertWithCreateEvent({
         type,
         text,
         normalized_text: text.toLowerCase(),
@@ -127,7 +129,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         embedding_provider: embed.name,
         embedding_model: embed.model,
         embedding_dim: embed.dim
-      });
+      }, events);
 
       // Embed + upsert into vec store
       try {

@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DB } from './db.js';
 import type { Memory, MemoryScope, MemoryType } from '../contracts/index.js';
+import type { MemoryEventRepo } from './memory-events.js';
 
 export interface InsertInput {
   type: MemoryType;
@@ -39,7 +40,29 @@ export class MemoryRepo {
   insert(input: InsertInput): string {
     const existing = this.db.prepare('SELECT id FROM memories WHERE hash = ?').get(input.hash) as {id: string} | undefined;
     if (existing) return existing.id;
+    return this.insertRow(input);
+  }
 
+  /**
+   * Insert + append a 'create' memory_event (ADR-002) in the SAME
+   * transaction. Dedup-aware like insert(): if a memory with this hash
+   * already exists, no row is inserted and no event is appended — matches
+   * insert()'s existing dedup semantics, so a re-ingest never fabricates a
+   * duplicate create event for an atom that already has one.
+   */
+  insertWithCreateEvent(input: InsertInput, events: MemoryEventRepo): { id: string; created: boolean } {
+    const tx = this.db.transaction((): { id: string; created: boolean } => {
+      const existing = this.db.prepare('SELECT id FROM memories WHERE hash = ?').get(input.hash) as {id: string} | undefined;
+      if (existing) return { id: existing.id, created: false };
+      const id = this.insertRow(input);
+      events.append({ event_type: 'create', atom_id: id, content_hash: input.hash });
+      return { id, created: true };
+    });
+    return tx();
+  }
+
+  /** Raw insert — no dedup check (caller has already decided to insert). */
+  private insertRow(input: InsertInput): string {
     const id = randomUUID();
     const now = Date.now();
     this.db.prepare(`

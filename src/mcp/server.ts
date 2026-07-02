@@ -19,6 +19,7 @@ import { createHash } from 'node:crypto';
 import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
 import { MemoryRepo } from '../storage/memories.js';
+import { MemoryEventRepo } from '../storage/memory-events.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { search, type SearchFilters } from '../search/search.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -172,7 +173,8 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
 
       const repo = new MemoryRepo(db);
-      const id = repo.insert({
+      const events = new MemoryEventRepo(db);
+      const { id } = repo.insertWithCreateEvent({
         type,
         text,
         normalized_text: text.toLowerCase(),
@@ -188,7 +190,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         embedding_provider: embed.name,
         embedding_model: embed.model,
         embedding_dim: embed.dim,
-      });
+      }, events);
 
       // Embed + upsert into vec store (non-fatal on failure)
       try {
@@ -267,7 +269,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         importance: memory.importance, confidence: memory.confidence,
         evidence: memory.evidence, session,
         transcript_ref: memory.source_hash, created_at: memory.created_at,
-        history: [],
+        history: new MemoryEventRepo(db).listForAtom(args.id),
       };
       return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
     }

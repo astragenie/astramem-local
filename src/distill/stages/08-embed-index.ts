@@ -11,6 +11,7 @@
 import type { EmbedProvider } from '../../contracts/index.js';
 import type { NormalizedMemory } from './07-memory-normalize.js';
 import { MemoryRepo } from '../../storage/memories.js';
+import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import type { DB } from '../../storage/db.js';
 
@@ -41,6 +42,7 @@ export async function embedAndIndex(
   if (memories.length === 0) return [];
 
   const memRepo = new MemoryRepo(ctx.db);
+  const eventsRepo = new MemoryEventRepo(ctx.db);
   const vecStore = new SqliteVecStore(ctx.db);
 
   // Batch embed all texts at once for efficiency
@@ -61,12 +63,9 @@ export async function embedAndIndex(
       );
     }
 
-    // Check if this hash already exists
-    const existingRow = ctx.db
-      .prepare('SELECT id FROM memories WHERE hash = ?')
-      .get(mem.finalHash) as { id: string } | undefined;
-
-    const memoryId = memRepo.insert({
+    // Insert + append a 'create' memory_event (ADR-002) in one transaction.
+    // Dedup-aware: `created` is false when this hash already existed.
+    const { id: memoryId, created } = memRepo.insertWithCreateEvent({
       type: mem.type,
       text: mem.text,
       normalized_text: mem.normalizedText,
@@ -84,9 +83,7 @@ export async function embedAndIndex(
       embedding_dim: ctx.embed.dim,
       evidence: mem.evidence ?? null,
       scope: 'personal',
-    });
-
-    const created = !existingRow;
+    }, eventsRepo);
 
     // Always upsert vec (may update if the memory already existed but had no vec)
     await vecStore.upsert(memoryId, vec);
