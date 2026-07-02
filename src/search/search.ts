@@ -161,8 +161,10 @@ export async function search(
   // Fetch full memory records in one query using IN clause
   const fusedIds = fused.map(h => h.id);
   const idPlaceholders = fusedIds.map(() => '?').join(',');
+  // Atom v3 (ADR-001): invalidated memories (valid_to set) must never surface
+  // in recall — why_memory can still fetch them by id directly.
   const whereFilter = filterClauses.length > 0 ? ` AND ${filterClauses.join(' AND ')}` : '';
-  const sql = `SELECT id, type, text FROM memories WHERE id IN (${idPlaceholders})${whereFilter}`;
+  const sql = `SELECT id, type, text FROM memories WHERE id IN (${idPlaceholders}) AND valid_to IS NULL${whereFilter}`;
   const memRows = db.prepare(sql).all(...fusedIds, ...filterParams) as Array<{ id: string; type: MemoryType; text: string }>;
 
   const memMap = new Map(memRows.map(r => [r.id, r]));
