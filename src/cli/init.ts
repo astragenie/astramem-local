@@ -15,7 +15,7 @@
 
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { defaultConfig, type Config } from '../config/config.js';
 import { defaultConfigDir, defaultDataDir } from '../config/datadir.js';
 import { writeConfig } from '../config/writer.js';
@@ -167,7 +167,26 @@ function gatherNonInteractive(): WizardAnswers {
 
 // ─── Conditional provider checks ─────────────────────────────────────────────
 
-async function checkOllama(llmModel: string, embedModel: string, nonInteractive: boolean): Promise<void> {
+/**
+ * Query the local Ollama daemon and report whether `model` is present.
+ * Shared by the initial detection pass and the post-pull re-validation
+ * so there is a single source of truth for "is this model here".
+ */
+async function isOllamaModelPresent(model: string): Promise<boolean> {
+  const controller = new AbortController();
+  const tid = setTimeout(() => controller.abort(), 5_000);
+  try {
+    const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: controller.signal });
+    if (!res.ok) return false;
+    const body = await res.json() as { models?: { name: string }[] };
+    const names = (body.models ?? []).map((m: { name: string }) => m.name);
+    return names.some((n: string) => n === model || n.startsWith(model + ':'));
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+export async function checkOllama(llmModel: string, embedModel: string, nonInteractive: boolean): Promise<void> {
   if (nonInteractive) return; // skip live HTTP in test mode
 
   // Check ollama binary
@@ -182,28 +201,46 @@ async function checkOllama(llmModel: string, embedModel: string, nonInteractive:
 
   if (!ollamaFound) return;
 
-  // Check models present
+  // Check models present — auto-pull anything missing so the daemon
+  // doesn't fail later at embed/LLM preflight with a 404 "model not found".
   const modelsToCheck = [...new Set([llmModel, embedModel])];
   for (const model of modelsToCheck) {
+    let found: boolean;
     try {
-      const controller = new AbortController();
-      const tid = setTimeout(() => controller.abort(), 5_000);
-      const res = await fetch('http://127.0.0.1:11434/api/tags', { signal: controller.signal });
-      clearTimeout(tid);
-      if (res.ok) {
-        const body = await res.json() as { models?: { name: string }[] };
-        const names = (body.models ?? []).map((m: { name: string }) => m.name);
-        const found = names.some((n: string) => n === model || n.startsWith(model + ':'));
-        if (!found) {
-          console.log(`\n  Model '${model}' not found locally.`);
-          console.log(`  Run: ollama pull ${model}\n`);
-        } else {
-          console.log(`  ✓ Ollama model '${model}' present`);
-        }
-      }
+      found = await isOllamaModelPresent(model);
     } catch {
       console.warn(`\n  Warning: Could not reach Ollama at :11434. Is it running?\n`);
+      continue;
     }
+
+    if (found) {
+      console.log(`  ✓ Ollama model '${model}' present`);
+      continue;
+    }
+
+    console.log(`\n  Model '${model}' not found locally.`);
+    console.log(`  Pulling ${model} (required)...`);
+    try {
+      execFileSync('ollama', ['pull', model], { stdio: 'inherit' });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `Failed to pull Ollama model '${model}': ${msg}\n  Run manually: ollama pull ${model}`
+      );
+    }
+
+    let pulled: boolean;
+    try {
+      pulled = await isOllamaModelPresent(model);
+    } catch {
+      pulled = false;
+    }
+    if (!pulled) {
+      throw new Error(
+        `Ollama model '${model}' still not found after pull.\n  Run manually: ollama pull ${model}`
+      );
+    }
+    console.log(`  ✓ Ollama model '${model}' pulled successfully`);
   }
 }
 
