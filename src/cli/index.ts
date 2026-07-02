@@ -14,6 +14,7 @@ import { queueCommand } from './queue.js';
 import { rebuildCommand } from './rebuild.js';
 import { providersCommand } from './providers.js';
 import { captureCommand } from './capture.js';
+import { pairCommand } from './pair.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -134,6 +135,12 @@ async function main() {
       break;
     }
 
+    case 'pair': {
+      // astramem-local pair <claim-code> --url <cloud-url>
+      await pairCommand(rest);
+      break;
+    }
+
     case '--version':
     case '-v':
       console.log(PKG_VERSION);
@@ -163,6 +170,8 @@ Commands:
   providers [--json]                     Show configured providers + live health probes
   capture codex [--sessions-dir D] [--dry-run] [--json]
                                          Ingest new Codex CLI sessions (ADR-008)
+  pair <claim-code> --url <cloud-url>    Pair with AstraMemory cloud (claim code
+                                         from dashboard); enables sync shipper
 
 Environment:
   ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)

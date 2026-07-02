@@ -9,6 +9,7 @@ import { startShipper, getOrCreateDeviceId, type ShipperHandle } from '../sync/s
 import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
 import { defaultConfig } from '../config/config.js';
 import { defaultConfigDir } from '../config/datadir.js';
+import { readSyncSettings } from '../config/sync-settings.js';
 import { migrateLegacyDirsIfPresent } from '../config/migrate-dirs.js';
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
@@ -34,6 +35,12 @@ export async function serve(opts: ServeOpts): Promise<void> {
   migrateLegacyDirsIfPresent();
 
   const cfg = defaultConfig();
+  // Wave 3e: `astramem-local pair` persists sync settings to sync.json —
+  // merge them over the defaults so pairing survives restarts.
+  const pairedSync = readSyncSettings(defaultConfigDir());
+  if (pairedSync) {
+    cfg.sync = { ...cfg.sync, enabled: pairedSync.enabled, url: pairedSync.url, workspaceId: pairedSync.workspaceId };
+  }
   const port = opts.port ?? cfg.port;
   const dataDir = opts.dataDir ?? process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
   // SEC-10: CLI flag > env var > OS credential store > secrets.env
