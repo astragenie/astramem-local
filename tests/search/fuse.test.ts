@@ -9,9 +9,13 @@ describe('normalizeScores', () => {
     expect(out[2]).toBeCloseTo(1);
   });
 
-  it('all-same → all 0', () => {
+  it('all-same non-empty → all 1.0 (equal scores are equally best; signal preserved)', () => {
     const out = normalizeScores([3, 3, 3]);
-    expect(out).toEqual([0, 0, 0]);
+    expect(out).toEqual([1, 1, 1]);
+  });
+
+  it('single hit → 1.0 (a lone FTS/vec hit must not lose its component signal)', () => {
+    expect(normalizeScores([7])).toEqual([1]);
   });
 
   it('empty array → empty', () => {

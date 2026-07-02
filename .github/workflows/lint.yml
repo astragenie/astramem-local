@@ -16,18 +16,19 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Node 22
-        uses: actions/setup-node@v4
+      # Repo is bun-locked (bun.lock, no package-lock.json) — setup-node's npm
+      # cache and `npm ci` both fail without an npm lockfile. Mirror test.yml.
+      - name: Setup Bun 1.3
+        uses: oven-sh/setup-bun@v2
         with:
-          node-version: 22
-          cache: 'npm'
+          bun-version: '1.3'
 
       - name: Install dependencies
-        run: npm ci
+        run: bun install --frozen-lockfile
 
       # TypeScript IS the lint in this repo.
       # tsc --noEmit catches type errors without emitting output files.
       # A full build (npm run build) is also run in test.yml on each matrix cell;
       # this job catches type regressions quickly on a single fast runner.
       - name: Type-check (tsc --noEmit)
-        run: npx tsc --noEmit
+        run: bunx tsc --noEmit

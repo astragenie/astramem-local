@@ -41,8 +41,10 @@ transcripts retained (redacted, ADR-004) to preserve re-distillation ability.
 
 ## Consequences & migration
 
-- Migration 004: add `memory_events`, backfill `create` events for existing atoms (synthetic,
-  hash-stable) so first sync has a complete log.
+- Migration 006: add `memory_events`, backfill `create` events for existing atoms (synthetic,
+  hash-stable) so first sync has a complete log. (Was drafted as 004; renumbered — 004 =
+  provenance/evidence, 005 = security/redaction_log. Migration ledger:
+  `docs/superpowers/specs/2026-07-02-wave1-2-amendments-killer-features-design.md`.)
 - Backup (existing online-safe backup) now captures state + log atomically — recovery story
   unchanged.
 - Disk growth bounded by compaction policy + transcript retention setting (default 90d,

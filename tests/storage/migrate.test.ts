@@ -24,7 +24,7 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    expect(versions.n).toBe(3);
+    expect(versions.n).toBe(4);
   });
 
   it('enables WAL mode', () => {
@@ -79,7 +79,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(3);
+    expect(versions.n).toBe(4);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -155,7 +155,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(3);
+    expect(versions.v).toBe(4);
   });
 
   it('allows inserting type note after migration', () => {
@@ -267,7 +267,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 3/,
+      /Schema-version constant drift: wire-meta says 999, DB says 4/,
     );
   });
 });

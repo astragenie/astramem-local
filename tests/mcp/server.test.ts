@@ -12,6 +12,8 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
+import { MemoryRepo } from '../../src/storage/memories.js';
+import { PKG_VERSION } from '../../src/server/lib/wire-meta.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../src/storage/db.js';
@@ -82,7 +84,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 4 tools', async () => {
+  it('initialize + tools/list returns 6 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -95,9 +97,9 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(4);
+    expect(tools.length).toBe(6);
     const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual(['get_health', 'recall_memory', 'remember', 'search_memory']);
+    expect(names).toEqual(['get_health', 'recall_memory', 'remember', 'search_memory', 'session_digest', 'why_memory']);
   });
 
   // -------------------------------------------------------------------------
@@ -116,7 +118,8 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const text = resp.result?.content?.[0]?.text ?? '';
     const payload = JSON.parse(text) as { ok: boolean; version: string };
     expect(payload.ok).toBe(true);
-    expect(typeof payload.version).toBe('string');
+    // Behavioral drift guard: must be the real package version, not a stale literal
+    expect(payload.version).toBe(PKG_VERSION);
   });
 
   // -------------------------------------------------------------------------
@@ -209,6 +212,136 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const payload = JSON.parse(text) as { hits: unknown[] };
     expect(Array.isArray(payload.hits)).toBe(true);
     expect(payload.hits.length).toBeGreaterThan(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // why_memory
+  // -------------------------------------------------------------------------
+
+  it('tools/call why_memory returns a receipt with evidence + session block', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s1', 'astramem-local', null, 'main', 'claude-code', 1000);
+    const id = new MemoryRepo(db).insert({
+      type: 'decision', text: 'Use SQLite', normalized_text: 'use SQLite',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's1', hash: 'h-mcp-why-1', source_hash: 'src-abc',
+      evidence: 'zero-config local file decided in review',
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'why_memory', arguments: { id } },
+      id: 30,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as {
+      evidence: string;
+      session: { id: string; repo: string } | null;
+      transcript_ref: string;
+      history: unknown[];
+    };
+    expect(payload.evidence).toBe('zero-config local file decided in review');
+    expect(payload.session).toMatchObject({ id: 's1', repo: 'astramem-local' });
+    expect(payload.transcript_ref).toBe('src-abc');
+    expect(payload.history).toEqual([]);
+  });
+
+  it('tools/call why_memory with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'why_memory', arguments: { id: 'nope' } },
+      id: 31,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    expect(resp.result?.isError).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // session_digest
+  // -------------------------------------------------------------------------
+
+  it('tools/call session_digest with explicit session_id returns digest JSON', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-digest-1', 'astramem-local', null, 'main', 'claude-code', 1000);
+    const repo = new MemoryRepo(db);
+    repo.insert({
+      type: 'decision', text: 'Use SQLite', normalized_text: 'use SQLite',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-digest-1', hash: 'h-mcp-digest-1', source_hash: null,
+    });
+    repo.insert({
+      type: 'lesson', text: 'Bun lacks better-sqlite3 on Windows', normalized_text: 'bun lacks',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-digest-1', hash: 'h-mcp-digest-2', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'session_digest', arguments: { session_id: 's-digest-1' } },
+      id: 32,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as {
+      session_id: string;
+      status: string;
+      counts: Record<string, number>;
+      memories: Array<{ id: string; type: string; text: string }>;
+    };
+    expect(payload.session_id).toBe('s-digest-1');
+    expect(payload.status).toBe('ready');
+    expect(payload.counts).toEqual({ decision: 1, lesson: 1 });
+    expect(payload.memories).toHaveLength(2);
+  });
+
+  it('tools/call session_digest with no sessions recorded returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'session_digest', arguments: {} },
+      id: 33,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'no sessions recorded' });
+  });
+
+  it('tools/call session_digest with omitted session_id resolves to the most recent session', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-digest-older', 'astramem-local', null, 'main', 'claude-code', 1000);
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-digest-newest', 'astramem-local', null, 'main', 'claude-code', 2000);
+    new MemoryRepo(db).insert({
+      type: 'fact', text: 'Latest session fact', normalized_text: 'latest session fact',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-digest-newest', hash: 'h-mcp-digest-3', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'session_digest', arguments: {} },
+      id: 34,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as { session_id: string; counts: Record<string, number> };
+    expect(payload.session_id).toBe('s-digest-newest');
+    expect(payload.counts).toEqual({ fact: 1 });
   });
 
   // -------------------------------------------------------------------------

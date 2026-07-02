@@ -17,6 +17,7 @@ export interface Config {
   ollama: { baseUrl: string };
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
   search: { alpha: number; beta: number; gamma: number; delta: number };
+  recallPack: { enabled: boolean; budgetTokens: number };
 }
 
 export function defaultConfig(): Config {
@@ -32,7 +33,8 @@ export function defaultConfig(): Config {
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
-    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 }
+    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 },
+    recallPack: { enabled: false, budgetTokens: 1500 }
   };
 }
 

@@ -18,6 +18,7 @@ export interface InsertInput {
   embedding_provider?: string | null;
   embedding_model?: string | null;
   embedding_dim?: number | null;
+  evidence?: string | null;
 }
 
 export interface FtsHit {
@@ -40,14 +41,14 @@ export class MemoryRepo {
       INSERT INTO memories
         (id, type, text, normalized_text, repo, project, branch, agent, session_id,
          importance, confidence, hash, embedding_provider, embedding_model, embedding_dim,
-         created_at, updated_at, source_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         created_at, updated_at, source_hash, evidence)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.type, input.text, input.normalized_text,
       input.repo, input.project, input.branch, input.agent, input.session_id,
       input.importance ?? 0.5, input.confidence ?? 0.5, input.hash,
       input.embedding_provider ?? null, input.embedding_model ?? null, input.embedding_dim ?? null,
-      now, now, input.source_hash
+      now, now, input.source_hash, input.evidence ?? null
     );
     return id;
   }

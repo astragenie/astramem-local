@@ -82,6 +82,7 @@ export async function embedAndIndex(
       embedding_provider: ctx.embed.name,
       embedding_model: ctx.embed.model,
       embedding_dim: ctx.embed.dim,
+      evidence: mem.evidence ?? null,
     });
 
     const created = !existingRow;

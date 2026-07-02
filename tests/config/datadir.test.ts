@@ -6,6 +6,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { join } from 'node:path';
+
+// The source joins with the HOST path module (mocking os.platform does not
+// change path separators), so expected values must be built with join() too —
+// on POSIX runners the final separator is '/'.
 
 describe('defaultDataDir / defaultConfigDir — canonical paths', () => {
   beforeEach(() => {
@@ -23,7 +28,7 @@ describe('defaultDataDir / defaultConfigDir — canonical paths', () => {
       return { ...actual, platform: () => 'win32' };
     });
     const { defaultDataDir } = await import('../../src/config/datadir.js');
-    expect(defaultDataDir()).toBe('C:\\Users\\test\\AppData\\Local\\Astramem');
+    expect(defaultDataDir()).toBe(join('C:\\Users\\test\\AppData\\Local', 'Astramem'));
   });
 
   it('returns Astramem subdir on Windows (canonical config dir)', async () => {
@@ -33,7 +38,7 @@ describe('defaultDataDir / defaultConfigDir — canonical paths', () => {
       return { ...actual, platform: () => 'win32' };
     });
     const { defaultConfigDir } = await import('../../src/config/datadir.js');
-    expect(defaultConfigDir()).toBe('C:\\Users\\test\\AppData\\Roaming\\Astramem');
+    expect(defaultConfigDir()).toBe(join('C:\\Users\\test\\AppData\\Roaming', 'Astramem'));
   });
 
   it('returns AstraMemory subdir for legacy config dir on Windows', async () => {
@@ -43,7 +48,7 @@ describe('defaultDataDir / defaultConfigDir — canonical paths', () => {
       return { ...actual, platform: () => 'win32' };
     });
     const { legacyConfigDir } = await import('../../src/config/datadir.js');
-    expect(legacyConfigDir()).toBe('C:\\Users\\test\\AppData\\Roaming\\AstraMemory');
+    expect(legacyConfigDir()).toBe(join('C:\\Users\\test\\AppData\\Roaming', 'AstraMemory'));
   });
 
   it('returns AstraMemory subdir for legacy data dir on Windows', async () => {
@@ -53,7 +58,7 @@ describe('defaultDataDir / defaultConfigDir — canonical paths', () => {
       return { ...actual, platform: () => 'win32' };
     });
     const { legacyDataDir } = await import('../../src/config/datadir.js');
-    expect(legacyDataDir()).toBe('C:\\Users\\test\\AppData\\Local\\AstraMemory');
+    expect(legacyDataDir()).toBe(join('C:\\Users\\test\\AppData\\Local', 'AstraMemory'));
   });
 
   it('canonical and legacy differ on Windows (Astramem vs AstraMemory)', async () => {

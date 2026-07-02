@@ -74,6 +74,16 @@ describe('SchtasksAdapter', () => {
   });
 
   describe('install — Tier B (/RU /IT fallback)', () => {
+    beforeEach(() => {
+      // Tier B only emits /RU when USERNAME is set — true on real Windows,
+      // absent on Linux/macOS CI runners (they use USER). Pin it.
+      vi.stubEnv('USERNAME', 'testuser');
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
     it('returns { kind: "task" } when Tier A fails but Tier B succeeds', async () => {
       let callCount = 0;
       execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
