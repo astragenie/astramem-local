@@ -27,6 +27,7 @@ import { pluginCoexistenceProbe } from './probes/plugin-coexistence.js';
 import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
 import { getOrCreateKey, readBearer } from '../storage/keystore.js';
 import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
+import { usefulnessRate, usefulnessByType } from '../storage/usefulness.js';
 import type { DB } from '../storage/db.js';
 
 export type { Check, CheckResult };
@@ -398,6 +399,39 @@ function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: bo
   };
 }
 
+// ─── Check: Recall usefulness (ADR-010) ───────────────────────────────────────
+
+function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
+  return {
+    name: 'Recall usefulness',
+    async run(): Promise<CheckResult> {
+      try {
+        const dbPath = join(dataDir, 'memory.sqlite');
+        if (!existsSync(dbPath)) {
+          return { ok: true, message: 'recall usefulness: no DB yet (0 served, 0 used)' };
+        }
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const since = Date.now() - SEVEN_DAYS_MS;
+        const overall = usefulnessRate(db, { sinceMs: since });
+        const byType = usefulnessByType(db, { sinceMs: since });
+        db.close();
+
+        const rateStr = overall.rate === null ? 'n/a' : `${(overall.rate * 100).toFixed(1)}%`;
+        const breakdown = byType.length > 0
+          ? ' — ' + byType.map(t => `${t.type}: ${t.rate === null ? 'n/a' : `${(t.rate * 100).toFixed(1)}%`} (${t.used}/${t.served})`).join(', ')
+          : '';
+        return {
+          ok: true,
+          message: `recall usefulness (7d): ${rateStr} (${overall.used}/${overall.served} atoms used/served)${breakdown}`,
+        };
+      } catch (err) {
+        // Informational check — never fail doctor over a metric query error.
+        return { ok: true, message: `Recall usefulness check error (non-fatal): ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Check: Encryption at rest (SEC-1/2/8) ────────────────────────────────────
 
 function checkEncryption(dataDir: string, enabled: boolean): Check {
@@ -664,6 +698,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkRedaction(dataDir, opts.redactionEnabled ?? true, encryptionEnabled),
     checkEncryption(dataDir, encryptionEnabled),
     checkBearerLocation(),
+    checkUsefulness(dataDir, encryptionEnabled),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

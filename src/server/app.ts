@@ -87,7 +87,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
     }
   });
 
-  await app.register(healthRoute(config));
+  await app.register(healthRoute(config, opts.db));
   await app.register(versionRoute);
   await app.register(ingestRoute(opts.db, config));
   await app.register(searchRoute(opts.db, embed, config));

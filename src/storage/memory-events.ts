@@ -113,6 +113,14 @@ export class MemoryEventRepo {
       const now = Date.now();
       this.db.prepare('UPDATE memories SET valid_to = ?, updated_at = ? WHERE id = ?').run(now, now, atomId);
       this.append({ event_type: 'invalidate', atom_id: atomId, payload: { reason: reason ?? null }, created_at: now });
+      // ADR-010: negative usefulness signal — same tx as the state change.
+      // Payload shape documented in src/storage/usefulness.ts (memory_corrected family).
+      this.append({
+        event_type: 'usefulness',
+        atom_id: atomId,
+        payload: { family: 'memory_corrected', action: 'invalidated' },
+        created_at: now,
+      });
     });
     tx();
   }
@@ -147,6 +155,14 @@ export class MemoryEventRepo {
         .prepare('UPDATE memories SET valid_to = ?, superseded_by = ?, updated_at = ? WHERE id = ?')
         .run(now, newId, now, oldId);
       this.append({ event_type: 'supersede', atom_id: oldId, payload: { superseded_by: newId }, created_at: now });
+      // ADR-010: negative usefulness signal — same tx as the state change.
+      // Payload shape documented in src/storage/usefulness.ts (memory_corrected family).
+      this.append({
+        event_type: 'usefulness',
+        atom_id: oldId,
+        payload: { family: 'memory_corrected', action: 'superseded' },
+        created_at: now,
+      });
     });
     tx();
   }

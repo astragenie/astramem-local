@@ -4,6 +4,7 @@
  */
 
 import type { DB } from '../../storage/db.js';
+import { usefulnessRate, usefulnessByType, type UsefulnessRate, type UsefulnessByType } from '../../storage/usefulness.js';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -58,6 +59,8 @@ export interface DashboardData {
   mtdSpend: number;
   mtdCalls: number;
   pendingDir: { count: number; oldestAgeMs: number | null };
+  usefulness: UsefulnessRate;
+  usefulnessByType: UsefulnessByType[];
 }
 
 // ---------------------------------------------------------------------------
@@ -161,6 +164,17 @@ export async function queryPendingDir(): Promise<{ count: number; oldestAgeMs: n
   }
 }
 
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** ADR-010 recall-usefulness rate + per-type breakdown, last 7 days. */
+export function queryUsefulness(db: DB): { overall: UsefulnessRate; byType: UsefulnessByType[] } {
+  const since = Date.now() - SEVEN_DAYS_MS;
+  return {
+    overall: usefulnessRate(db, { sinceMs: since }),
+    byType: usefulnessByType(db, { sinceMs: since }),
+  };
+}
+
 /** Run all dashboard queries in a single synchronous pass (except pendingDir which is async). */
 export async function queryDashboard(db: DB): Promise<DashboardData> {
   const memoryCounts = queryMemoryCounts(db);
@@ -170,6 +184,7 @@ export async function queryDashboard(db: DB): Promise<DashboardData> {
   const providers = queryProviders(db);
   const budget = queryBudget(db);
   const pendingDir = await queryPendingDir();
+  const usefulness = queryUsefulness(db);
 
   return {
     memoryCounts,
@@ -181,5 +196,7 @@ export async function queryDashboard(db: DB): Promise<DashboardData> {
     mtdSpend: budget.mtdUsd,
     mtdCalls: budget.mtdCalls,
     pendingDir,
+    usefulness: usefulness.overall,
+    usefulnessByType: usefulness.byType,
   };
 }

@@ -85,7 +85,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 10 tools', async () => {
+  it('initialize + tools/list returns 11 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -98,11 +98,12 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(10);
+    expect(tools.length).toBe(11);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'get_health',
       'invalidate_memory',
+      'mark_memory_used',
       'memory_history',
       'promote_memory',
       'recall_memory',
@@ -577,8 +578,10 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const text = resp.result?.content?.[0]?.text ?? '';
     const payload = JSON.parse(text) as { id: string; events: Array<{ event_type: string; atom_id: string }> };
     expect(payload.id).toBe(id);
-    expect(payload.events).toHaveLength(1);
+    // invalidate() also appends a 'usefulness' memory_corrected event (ADR-010) in the same tx.
+    expect(payload.events).toHaveLength(2);
     expect(payload.events[0]).toMatchObject({ event_type: 'invalidate', atom_id: id });
+    expect(payload.events[1]).toMatchObject({ event_type: 'usefulness', atom_id: id });
   });
 
   it('tools/call memory_history with unknown id returns isError', async () => {
@@ -587,6 +590,47 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
       method: 'tools/call',
       params: { name: 'memory_history', arguments: { id: 'nope' } },
       id: 50,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
+  });
+
+  // -------------------------------------------------------------------------
+  // mark_memory_used (ADR-010, 2e)
+  // -------------------------------------------------------------------------
+
+  it('tools/call mark_memory_used records a recall_used usefulness event', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'served then used', normalized_text: 'served then used',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-used-1', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'mark_memory_used', arguments: { id, note: 'this helped' } },
+      id: 51,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ ok: true, id });
+
+    const events = new MemoryEventRepo(db).listForAtom(id).filter(e => e.event_type === 'usefulness');
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0]?.payload_json ?? '{}');
+    expect(payload).toEqual({ family: 'recall_used', surface: 'mcp', signal: 'explicit' });
+  });
+
+  it('tools/call mark_memory_used with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'mark_memory_used', arguments: { id: 'nope' } },
+      id: 52,
     }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
 
     expect(resp.result?.isError).toBe(true);

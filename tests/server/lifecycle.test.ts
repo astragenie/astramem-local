@@ -238,7 +238,8 @@ describe('GET /memory/:id/history', () => {
     expect(res.statusCode).toBe(200);
     const body = res.json() as { id: string; history: Array<{ event_type: string }> };
     expect(body.id).toBe(id);
-    expect(body.history.map(e => e.event_type)).toEqual(['promote_scope', 'invalidate']);
+    // invalidate() also appends a 'usefulness' memory_corrected event (ADR-010) in the same tx.
+    expect(body.history.map(e => e.event_type)).toEqual(['promote_scope', 'invalidate', 'usefulness']);
   });
 
   it('memory with no lifecycle events returns an empty history array', async () => {

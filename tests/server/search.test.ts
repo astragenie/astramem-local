@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
@@ -128,6 +129,28 @@ describe('GET /search', () => {
       headers: { authorization: 'Bearer tok' }
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  // ADR-010 (2e): every served hit gets a recall_served usefulness event.
+  it('records a recall_served usefulness event per returned hit', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=sqlite',
+      headers: { authorization: 'Bearer tok' }
+    });
+    const hits = res.json().hits as Array<{ id: string }>;
+    expect(hits.length).toBeGreaterThan(0);
+
+    const events = new MemoryEventRepo(db);
+    for (const hit of hits) {
+      const served = events.listForAtom(hit.id).filter(e => e.event_type === 'usefulness');
+      expect(served.length).toBeGreaterThanOrEqual(1);
+      const payload = JSON.parse(served[0]?.payload_json ?? '{}');
+      expect(payload).toMatchObject({ family: 'recall_served', surface: 'rest', mode: 'search' });
+      expect(typeof payload.query_hash).toBe('string');
+      // Privacy: raw query text must never be persisted in the event payload.
+      expect(JSON.stringify(payload)).not.toContain('sqlite');
+    }
   });
 });
 
