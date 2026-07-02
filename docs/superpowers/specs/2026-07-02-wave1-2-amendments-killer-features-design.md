@@ -136,3 +136,20 @@ Unit: fuse edge cases (AM-2), pack selection/budget (KF-B), digest artifact (KF-
 Integration: pipeline e2e with evidence → why_memory receipt (AM-1 + KF-A).
 Contract: MCP tool schemas for `why_memory`, `session_digest` snapshot-tested.
 All existing 52 test files must stay green — amendments are additive.
+
+## 9. Migration ledger (authoritative — ruled 2026-07-02 after architect review)
+
+Three documents claimed overlapping migration numbers. This table governs; the others cross-reference it.
+
+| # | File | Contents | Owner / wave |
+|---|---|---|---|
+| 001 | `001-init.sql` | initial schema | shipped |
+| 002 | `002-wire-v1.sql` | wire v1 | shipped |
+| 003 | `003-expand-memory-types.sql` | +note/+event types | shipped |
+| **004** | `004-provenance.sql` | `memories.evidence` | **AM-1, this design, Wave 1** |
+| **005** | `005-security.sql` | `redaction_log` | encryption spec SEC-3..6, Wave 1b/1c |
+| **006** | `006-memory-events.sql` | `memory_events` + backfill | ADR-002, Wave 2b |
+
+Every migration lands with a matching `SCHEMA_VERSION` bump in `src/server/lib/wire-meta.ts`
+(boot-time drift guard). New REST endpoints follow the existing unversioned-path convention;
+protocol evolution is handled by `WIRE_VERSIONS_SUPPORTED` in wire-meta, not URL prefixes.

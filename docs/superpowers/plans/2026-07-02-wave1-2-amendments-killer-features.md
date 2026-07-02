@@ -174,6 +174,7 @@ import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { embedAndIndex } from '../../src/distill/stages/08-embed-index.js';
+import { reduce } from '../../src/distill/stages/06-reduce.js';
 import { makeFakeVec } from '../../src/search/search.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 
@@ -240,6 +241,15 @@ describe('evidence persistence (AM-1)', () => {
     expect(results).toHaveLength(1);
     const stored = new MemoryRepo(db).get(results[0]!.memoryId);
     expect(stored?.evidence).toBe('install failed with node-gyp error in session log');
+  });
+
+  it('stage 6 (reduce) preserves the winning atom evidence (architect finding #3)', () => {
+    const out = reduce([
+      { type: 'decision', text: 'Use SQLite', importance: 0.5, confidence: 0.8, evidence: 'low-importance evidence' },
+      { type: 'decision', text: 'use sqlite', importance: 0.9, confidence: 0.9, evidence: 'winning evidence' },
+    ]);
+    expect(out).toHaveLength(1);   // same content hash after normalization
+    expect(out[0]?.evidence).toBe('winning evidence');
   });
 });
 ```
@@ -671,13 +681,14 @@ export function digestRoute(db: DB) {
       }
 
       // A distill job for this session still queued or running → pending.
-      // payload_json is small ({transcript_id, session_id}); LIKE match is safe here.
+      // json_extract (SQLite JSON1, bundled with better-sqlite3) — exact match,
+      // immune to LIKE-wildcard injection and payload key reordering.
       const activeJob = db.prepare(`
         SELECT id FROM jobs
         WHERE kind = 'distill' AND state IN ('pending', 'running')
-          AND payload_json LIKE ?
+          AND json_extract(payload_json, '$.session_id') = ?
         LIMIT 1
-      `).get(`%"session_id":"${id}"%`);
+      `).get(id);
 
       const rows = db.prepare(
         'SELECT id, type, text FROM memories WHERE session_id = ? ORDER BY created_at ASC'
@@ -744,9 +755,9 @@ In `src/mcp/server.ts` add after `why_memory` (session_id optional — defaults 
       const activeJob = db.prepare(`
         SELECT id FROM jobs
         WHERE kind = 'distill' AND state IN ('pending', 'running')
-          AND payload_json LIKE ?
+          AND json_extract(payload_json, '$.session_id') = ?
         LIMIT 1
-      `).get(`%"session_id":"${sessionId}"%`);
+      `).get(sessionId);
       const rows = db.prepare(
         'SELECT id, type, text FROM memories WHERE session_id = ? ORDER BY created_at ASC'
       ).all(sessionId) as Array<{ id: string; type: string; text: string }>;
@@ -929,7 +940,11 @@ export const DEFAULT_BUDGET_TOKENS = 1500;
 const RECENCY_HALF_LIFE_DAYS = 30;
 const CANDIDATE_LIMIT = 500;
 
-/** Rough token estimate: ~4 chars per token. */
+/**
+ * Rough token estimate: ~4 chars per token. Real tokenizers vary ±20% —
+ * callers needing exact budgets should leave ~10% headroom. The default
+ * 1500-token budget is deliberately conservative for this reason.
+ */
 export function estimateTokens(text: string): number {
   return Math.ceil(text.length / 4);
 }
@@ -995,7 +1010,8 @@ export function renderPack(memories: PackMemory[]): string {
   const sections: string[] = ['# Repo memory pack'];
   for (const [type, list] of byType) {
     sections.push(`\n## ${TYPE_HEADINGS[type] ?? type}`);
-    for (const m of list) sections.push(`- ${m.text} \`(${m.id})\``);
+    // Collapse internal newlines — a multi-line text would break the Markdown list item
+    for (const m of list) sections.push(`- ${m.text.replace(/\s+/g, ' ')} \`(${m.id})\``);
   }
   return sections.join('\n');
 }
