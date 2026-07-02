@@ -12,6 +12,7 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
+import { MemoryRepo } from '../../src/storage/memories.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../src/storage/db.js';
@@ -209,6 +210,54 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const payload = JSON.parse(text) as { hits: unknown[] };
     expect(Array.isArray(payload.hits)).toBe(true);
     expect(payload.hits.length).toBeGreaterThan(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // why_memory
+  // -------------------------------------------------------------------------
+
+  it('tools/call why_memory returns a receipt with evidence + session block', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s1', 'astramem-local', null, 'main', 'claude-code', 1000);
+    const id = new MemoryRepo(db).insert({
+      type: 'decision', text: 'Use SQLite', normalized_text: 'use SQLite',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's1', hash: 'h-mcp-why-1', source_hash: 'src-abc',
+      evidence: 'zero-config local file decided in review',
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'why_memory', arguments: { id } },
+      id: 30,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as {
+      evidence: string;
+      session: { id: string; repo: string } | null;
+      transcript_ref: string;
+      history: unknown[];
+    };
+    expect(payload.evidence).toBe('zero-config local file decided in review');
+    expect(payload.session).toMatchObject({ id: 's1', repo: 'astramem-local' });
+    expect(payload.transcript_ref).toBe('src-abc');
+    expect(payload.history).toEqual([]);
+  });
+
+  it('tools/call why_memory with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'why_memory', arguments: { id: 'nope' } },
+      id: 31,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    expect(resp.result?.isError).toBe(true);
   });
 
   // -------------------------------------------------------------------------
