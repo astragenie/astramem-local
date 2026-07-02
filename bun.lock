@@ -22,6 +22,10 @@
       },
     },
   },
+  "trustedDependencies": [
+    "better-sqlite3-multiple-ciphers",
+    "better-sqlite3",
+  ],
   "packages": {
     "@emnapi/core": ["@emnapi/core@1.11.1", "", { "dependencies": { "@emnapi/wasi-threads": "1.2.2", "tslib": "^2.4.0" } }, "sha512-RSvbQmHzdKzNsLYa/wHrbc3KN4sYLKAdPZxqiM2HATqv/SBk2/ENSHpvXGaLOMcsAyz0poEGqkmmKYG3OWiJEQ=="],
 

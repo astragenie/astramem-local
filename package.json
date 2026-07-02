@@ -22,6 +22,10 @@
   "engines": {
     "node": ">=20"
   },
+  "trustedDependencies": [
+    "better-sqlite3",
+    "better-sqlite3-multiple-ciphers"
+  ],
   "dependencies": {
     "@inquirer/prompts": "^8.5.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
