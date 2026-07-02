@@ -7,7 +7,14 @@ describe('astra-memory serve', () => {
     // Spawn 'node' explicitly, NOT process.execPath: under `bun run test`
     // execPath is the Bun binary, which cannot boot the better-sqlite3 daemon.
     const proc = spawn('node', ['dist/cli/index.js', 'serve', '--port', '17777'], {
-      env: { ...process.env, ASTRA_MEMORY_DATADIR: ':memory:', ASTRA_MEMORY_TOKEN: 'devtok' },
+      // MOCK_PROVIDERS skips the boot-time Ollama embed preflight — CI runners
+      // have no Ollama and the daemon exits 1 without it.
+      env: {
+        ...process.env,
+        ASTRA_MEMORY_DATADIR: ':memory:',
+        ASTRA_MEMORY_TOKEN: 'devtok',
+        ASTRA_MEMORY_MOCK_PROVIDERS: '1',
+      },
       stdio: 'pipe'
     });
     let stderr = '';
