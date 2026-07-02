@@ -13,6 +13,7 @@ import { backupCommand } from './backup.js';
 import { queueCommand } from './queue.js';
 import { rebuildCommand } from './rebuild.js';
 import { providersCommand } from './providers.js';
+import { captureCommand } from './capture.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -127,6 +128,12 @@ async function main() {
       break;
     }
 
+    case 'capture': {
+      // astramem-local capture codex [--sessions-dir D] [--dry-run] [--json]
+      await captureCommand(rest);
+      break;
+    }
+
     case '--version':
     case '-v':
       console.log(PKG_VERSION);
@@ -154,6 +161,8 @@ Commands:
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
                                          Queue reembed jobs for existing memories
   providers [--json]                     Show configured providers + live health probes
+  capture codex [--sessions-dir D] [--dry-run] [--json]
+                                         Ingest new Codex CLI sessions (ADR-008)
 
 Environment:
   ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)
