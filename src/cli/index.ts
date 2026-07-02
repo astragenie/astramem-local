@@ -130,7 +130,7 @@ async function main() {
     }
 
     case 'capture': {
-      // astramem-local capture codex [--sessions-dir D] [--dry-run] [--json]
+      // astramem-local capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
       await captureCommand(rest);
       break;
     }
@@ -168,8 +168,9 @@ Commands:
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
                                          Queue reembed jobs for existing memories
   providers [--json]                     Show configured providers + live health probes
-  capture codex [--sessions-dir D] [--dry-run] [--json]
-                                         Ingest new Codex CLI sessions (ADR-008)
+  capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
+                                         Ingest new Codex CLI sessions (ADR-008);
+                                         --watch polls (default 60s)
   pair <claim-code> --url <cloud-url>    Pair with AstraMemory cloud (claim code
                                          from dashboard); enables sync shipper
 

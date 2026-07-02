@@ -7,7 +7,7 @@ import { getOrCreateKey, readSyncToken } from '../storage/keystore.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
 import { startShipper, getOrCreateDeviceId, type ShipperHandle } from '../sync/shipper.js';
 import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
-import { defaultConfig } from '../config/config.js';
+import { loadConfigFromDisk } from '../config/loader.js';
 import { defaultConfigDir } from '../config/datadir.js';
 import { readSyncSettings } from '../config/sync-settings.js';
 import { migrateLegacyDirsIfPresent } from '../config/migrate-dirs.js';
@@ -17,6 +17,7 @@ import { distillHandler } from '../pipeline/handlers/distill.js';
 import { distillEventsHandler } from '../pipeline/handlers/distill-events.js';
 import { cleanupHandler } from '../pipeline/handlers/cleanup.js';
 import { consolidateHandler } from '../pipeline/handlers/consolidate.js';
+import { reembedHandler } from '../pipeline/handlers/reembed.js';
 import { makeMockProviders, type MockProviderSet } from '../pipeline/mock-providers.js';
 import type { ProviderSet } from '../providers/index.js';
 import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
@@ -34,7 +35,8 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // any config load. Idempotent: no-op on non-Windows and after first run.
   migrateLegacyDirsIfPresent();
 
-  const cfg = defaultConfig();
+  // config.yaml (written by init, user-editable) merged over defaults.
+  const cfg = loadConfigFromDisk(defaultConfigDir());
   // Wave 3e: `astramem-local pair` persists sync settings to sync.json —
   // merge them over the defaults so pairing survives restarts.
   const pairedSync = readSyncSettings(defaultConfigDir());
@@ -117,6 +119,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   registry.register(distillEventsHandler);
   registry.register(cleanupHandler);
   registry.register(consolidateHandler);
+  registry.register(reembedHandler);
 
   const extCtx: ExtendedHandlerCtx = {
     db,

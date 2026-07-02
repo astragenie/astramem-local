@@ -82,6 +82,24 @@ export function configToYaml(cfg: Config): string {
     line(1, 'beta', cfg.search.beta),
     line(1, 'gamma', cfg.search.gamma),
     line(1, 'delta', cfg.search.delta),
+    line(1, 'epsilon', cfg.search.epsilon),
+    '',
+    line(0, 'recallPack'),
+    line(1, 'enabled', cfg.recallPack.enabled),
+    line(1, 'budgetTokens', cfg.recallPack.budgetTokens),
+    line(1, 'policy'),
+    line(2, 'enabled', cfg.recallPack.policy.enabled),
+    line(2, 'minScore', cfg.recallPack.policy.minScore),
+    line(2, 'minPromptChars', cfg.recallPack.policy.minPromptChars),
+    '',
+    // sync is deliberately NOT emitted here — `astramem-local pair` owns it
+    // via sync.json (single source of truth, merged at serve boot).
+    line(0, 'security'),
+    line(1, 'redaction'),
+    line(2, 'enabled', cfg.security.redaction.enabled),
+    line(2, 'entropyThreshold', cfg.security.redaction.entropyThreshold),
+    line(1, 'encryption'),
+    line(2, 'enabled', cfg.security.encryption.enabled),
     '',
   ];
   return lines.join('\n');

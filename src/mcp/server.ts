@@ -1,7 +1,7 @@
 /**
  * MCP server instance for astramemory-local.
  *
- * Exposes 11 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 14 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert
@@ -13,6 +13,8 @@
  *   - promote_memory     — lifecycle: upward-only scope promotion (ADR-009)
  *   - memory_history     — lifecycle: full event log for a memory (supersession chain)
  *   - mark_memory_used   — ADR-010 explicit recall-used signal for a served memory
+ *   - erase_memory       — erasure v1 (ADR-006): hard-delete + tombstone
+ *   - list_consolidation_proposals / resolve_consolidation_proposal — stage-9 propose-only queue (ADR-004)
  *
  * No HTTP self-calls: all tools call the internal service layer directly.
  * Auth is enforced at the Fastify route level via the existing preHandler.
@@ -38,6 +40,11 @@ import { childLogger } from '../log/logger.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
+import {
+  ProposalRepo,
+  ProposalNotFoundError,
+  ProposalAlreadyResolvedError,
+} from '../consolidate/proposals.js';
 
 export interface McpServerDeps {
   db: DB;
@@ -531,6 +538,70 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         if (err instanceof MemoryNotFoundError) {
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+    }
+  );
+
+  // ---- list_consolidation_proposals ----------------------------------------
+  server.registerTool(
+    'list_consolidation_proposals',
+    {
+      description:
+        'Pending (or resolved) consolidation proposals from the stage-9 pass (ADR-004): borderline ' +
+        'near-duplicate pairs awaiting an explicit merge/keep decision. Nothing is changed until a ' +
+        'proposal is resolved via resolve_consolidation_proposal.',
+      inputSchema: z.object({
+        status: z.enum(['pending', 'accepted', 'rejected']).default('pending').describe('Filter by status'),
+      }),
+    },
+    async (args) => {
+      const proposals = new ProposalRepo(db).list(args.status);
+      const memRepo = new MemoryRepo(db);
+      const enriched = proposals.map(p => ({
+        ...p,
+        winner_text: memRepo.get(p.winner_id)?.text ?? null,
+        loser_text: memRepo.get(p.loser_id)?.text ?? null,
+      }));
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ proposals: enriched }) }] };
+    }
+  );
+
+  // ---- resolve_consolidation_proposal ---------------------------------------
+  server.registerTool(
+    'resolve_consolidation_proposal',
+    {
+      description:
+        'Accept or reject a pending consolidation proposal. Accept executes the non-destructive ' +
+        'merge-as-supersede (loser kept as superseded, winner gains derived_from lineage); reject ' +
+        'keeps both memories untouched.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('Proposal id'),
+        action: z.enum(['accept', 'reject']).describe('Resolution'),
+      }),
+    },
+    async (args) => {
+      const repo = new ProposalRepo(db);
+      try {
+        const resolved = args.action === 'accept' ? repo.accept(args.id) : repo.reject(args.id);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, proposal: resolved }) }] };
+      } catch (err) {
+        if (err instanceof ProposalNotFoundError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
+            isError: true,
+          };
+        }
+        if (
+          err instanceof ProposalAlreadyResolvedError ||
+          err instanceof MemoryNotFoundError ||
+          err instanceof MemoryConflictError
+        ) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message, id: args.id }) }],
             isError: true,
           };
         }

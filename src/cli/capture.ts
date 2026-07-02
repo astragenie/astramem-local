@@ -44,6 +44,24 @@ export async function captureCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // --watch [seconds]: poll for new sessions on an interval (Codex has no
+  // session-end hook to latch onto). One-shot semantics per tick; ctrl-c to stop.
+  if (args.includes('--watch')) {
+    const idx = args.indexOf('--watch');
+    const next = args[idx + 1];
+    const intervalSec = next && /^\d+$/.test(next) ? Math.max(10, Number(next)) : 60;
+    const tickArgs = args.filter((a, i) => a !== '--watch' && !(i === idx + 1 && /^\d+$/.test(a)));
+    console.log(`capture codex: watching every ${intervalSec}s (ctrl-c to stop)`);
+    for (;;) {
+      await runCaptureOnce(tickArgs);
+      await new Promise(r => setTimeout(r, intervalSec * 1000));
+    }
+  }
+
+  await runCaptureOnce(args);
+}
+
+async function runCaptureOnce(args: string[]): Promise<void> {
   const sessionsDir = parseArg(args, '--sessions-dir') ?? defaultCodexSessionsDir();
   const dryRun = args.includes('--dry-run');
   const asJson = args.includes('--json');
