@@ -21,9 +21,7 @@ import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { search, type SearchFilters } from '../search/search.js';
 import { defaultConfig } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
-
-/** Bump this in lock-step with package.json. */
-const DAEMON_VERSION = '0.1.4';
+import { PKG_VERSION } from '../server/lib/wire-meta.js';
 
 export interface McpServerDeps {
   db: DB;
@@ -40,7 +38,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
   const weights = cfg.search;
 
   const server = new McpServer(
-    { name: 'astramemory-local', version: DAEMON_VERSION },
+    { name: 'astramemory-local', version: PKG_VERSION },
     { capabilities: { tools: {} } }
   );
 
@@ -221,7 +219,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ ok: true, version: DAEMON_VERSION }),
+            text: JSON.stringify({ ok: true, version: PKG_VERSION }),
           },
         ],
       };
