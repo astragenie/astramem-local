@@ -1,17 +1,11 @@
 /**
  * `astramem-local rebuild [--repo REPO] [--project PROJECT] [--limit N] [--dry-run] [--json]`
  *
- * Re-embed/reindex flow. The `reembed` job kind + handler already exist
- * (src/contracts/job.ts JobKind, src/pipeline/handlers/reembed.ts) — the
- * handler itself is still a Wave-3/Track-D stub (accepts the job, logs, and
- * completes without recomputing an embedding). This command wires the
- * missing piece: it enumerates existing memories and enqueues one `reembed`
- * job per memory via the same JobRepo used by ingest — the daemon's worker
- * loop (500ms poll, src/pipeline/worker.ts) picks them up like any other job.
- *
- * Honesty note: until the reembed handler itself is implemented, queued jobs
- * complete as no-ops (see reembed.ts). This command is honest about that in
- * its output rather than claiming memories were actually re-embedded.
+ * Re-embed/reindex flow: enumerates existing memories and enqueues one
+ * `reembed` job per memory via the same JobRepo used by ingest — the
+ * daemon's worker (500ms poll, src/pipeline/worker.ts) recomputes each
+ * embedding with the configured provider and upserts the vector row
+ * (src/pipeline/handlers/reembed.ts). Requires a running daemon.
  */
 
 import { join } from 'node:path';
@@ -86,8 +80,7 @@ export async function rebuildCommand(args: string[]): Promise<void> {
     console.log('  --dry-run: no jobs were queued.');
   } else {
     console.log(`  Reembed jobs queued: ${queuedIds.length}`);
-    console.log('  NOTE: the reembed job handler is still a stub (Wave 3 / Track D) —');
-    console.log('        queued jobs will complete without recomputing embeddings until it lands.');
+    console.log('  The running daemon will recompute embeddings with the configured provider.');
   }
   console.log('');
 }
