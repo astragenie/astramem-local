@@ -8,7 +8,7 @@ export type JobState =
   | 'poison'
   | 'paused';
 
-export type JobKind = 'distill' | 'reembed' | 'cleanup' | 'distill-events';
+export type JobKind = 'distill' | 'reembed' | 'cleanup' | 'distill-events' | 'consolidate';
 
 export const DistillPayloadSchema = z.object({
   kind: z.literal('distill'),
