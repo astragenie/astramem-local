@@ -63,6 +63,10 @@ export async function embedAndIndex(
       );
     }
 
+    // Erasure replay filter (ADR-006 W5): an erased content hash must never
+    // be resurrected by re-distillation — erasure wins over replay.
+    if (eventsRepo.isErasedHash(mem.finalHash)) continue;
+
     // Insert + append a 'create' memory_event (ADR-002) in one transaction.
     // Dedup-aware: `created` is false when this hash already existed.
     const { id: memoryId, created } = memRepo.insertWithCreateEvent({

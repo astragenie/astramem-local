@@ -197,4 +197,48 @@ export class MemoryEventRepo {
     });
     tx();
   }
+
+  /**
+   * Erase a memory (erasure v1, ADR-006 W5): HARD-deletes the memories row
+   * (FTS cleans up via the AFTER DELETE trigger) and its vector index row,
+   * and appends an 'erase_request' event — the event IS the tombstone:
+   *   - payload.scope lets the sync shipper (ADR-009) ship the tombstone to
+   *     the cloud even though the memories row is gone,
+   *   - content_hash = the memory's hash powers the replay filter (stage 8
+   *     refuses to resurrect an erased memory on re-distillation).
+   * Erasure always wins over retention/replay — the text is unrecoverable
+   * locally after this call.
+   */
+  erase(atomId: string, reason?: string): void {
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT id, rowid, scope, hash FROM memories WHERE id = ?')
+        .get(atomId) as { id: string; rowid: number; scope: MemoryScope; hash: string } | undefined;
+      if (!row) throw new MemoryNotFoundError(atomId);
+
+      const now = Date.now();
+      // Tombstone first (same tx): the event survives the row.
+      this.append({
+        event_type: 'erase_request',
+        atom_id: atomId,
+        payload: { scope: row.scope, reason: reason ?? null },
+        content_hash: row.hash,
+        created_at: now,
+      });
+      this.db.prepare('DELETE FROM memories_vec WHERE rowid = ?').run(BigInt(row.rowid));
+      this.db.prepare('DELETE FROM memories WHERE id = ?').run(atomId); // FTS trigger fires
+    });
+    tx();
+  }
+
+  /**
+   * Replay filter (erasure v1): true when a memory with this content hash
+   * has been erased — re-distillation must not resurrect it.
+   */
+  isErasedHash(contentHash: string): boolean {
+    const row = this.db
+      .prepare(`SELECT 1 AS x FROM memory_events WHERE event_type = 'erase_request' AND content_hash = ? LIMIT 1`)
+      .get(contentHash);
+    return row !== undefined;
+  }
 }

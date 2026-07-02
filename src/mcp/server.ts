@@ -509,5 +509,35 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     }
   );
 
+  // ---- erase_memory ---------------------------------------------------------
+  server.registerTool(
+    'erase_memory',
+    {
+      description:
+        'Erasure v1 (ADR-006): PERMANENTLY hard-delete a memory (text unrecoverable) leaving only a ' +
+        'tombstone event. The tombstone blocks re-distillation from resurrecting it and ships to the ' +
+        'cloud ledger for team/org-scoped memories. Prefer invalidate_memory unless deletion is required.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('Memory id to erase'),
+        reason: z.string().optional().describe('Why (recorded in the tombstone payload, counts only)'),
+      }),
+    },
+    async (args) => {
+      const eventsRepo = new MemoryEventRepo(db);
+      try {
+        eventsRepo.erase(args.id, args.reason);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, id: args.id }) }] };
+      } catch (err) {
+        if (err instanceof MemoryNotFoundError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+    }
+  );
+
   return server;
 }
