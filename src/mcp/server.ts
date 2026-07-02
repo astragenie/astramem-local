@@ -1,11 +1,12 @@
 /**
  * MCP server instance for astramemory-local.
  *
- * Exposes 4 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 5 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory  — hybrid FTS + vector search
  *   - recall_memory  — top-K semantic recall (alias of search with k default 5)
  *   - remember       — direct memory insert
  *   - get_health     — daemon health probe
+ *   - why_memory     — provenance receipt (evidence, session, transcript ref)
  *
  * No HTTP self-calls: all tools call the internal service layer directly.
  * Auth is enforced at the Fastify route level via the existing preHandler.
@@ -223,6 +224,42 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           },
         ],
       };
+    }
+  );
+
+  // ---- why_memory ----------------------------------------------------------
+  server.registerTool(
+    'why_memory',
+    {
+      description:
+        'Provenance receipt for a memory: evidence excerpt, source session, transcript ref. Answers: why do I remember this?',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('Memory id'),
+      }),
+    },
+    async (args) => {
+      const memRepo = new MemoryRepo(db);
+      const memory = memRepo.get(args.id);
+      if (!memory) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
+          isError: true,
+        };
+      }
+      let session: unknown = null;
+      if (memory.session_id) {
+        session = db
+          .prepare('SELECT id, repo, branch, agent, started_at FROM sessions WHERE id = ?')
+          .get(memory.session_id) ?? null;
+      }
+      const receipt = {
+        id: memory.id, type: memory.type, text: memory.text,
+        importance: memory.importance, confidence: memory.confidence,
+        evidence: memory.evidence, session,
+        transcript_ref: memory.source_hash, created_at: memory.created_at,
+        history: [],
+      };
+      return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
     }
   );
 
