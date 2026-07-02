@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.4.0] — 2026-07-01
+
+### Added
+
+#### Read-only HTML dashboard at `GET /dashboard`
+- **`GET /dashboard?token=<bearer>`** — single-file HTML metrics page auto-refreshing every 5 seconds via `<meta http-equiv="refresh" content="5">`. No JS, no CDN, no external assets. Dark mode by default (`#1a1a1a` bg, `#e0e0e0` text).
+- **Metrics rendered** (one SQLite pass):
+  - Memory counts by type — CSS bar chart driven by `SELECT type, COUNT(*) FROM memories GROUP BY type`.
+  - Recent captures — last 25 memories with truncated text (120 chars), `HH:MM:SS` timestamp, type badge, importance, confidence, session prefix.
+  - Job queue state — colored badges: `poison` red, `pending` yellow if >3, `completed` green, `running` blue.
+  - Distill throughput last 24h — text-bar histogram by hour.
+  - Provider state — table with health status and last-check timestamp.
+  - Budget — today spend + MTD spend vs daily cap from config; delta color (green <50%, yellow 50-80%, red >80%).
+  - Pending queue — file count + oldest age from `%APPDATA%\Astramem\pending\`; shows "0 pending" if dir absent or empty; wrapped in try/catch.
+- **Auth**: same Bearer token as all other authenticated routes, supplied as `?token=`. Missing/wrong token → 401 plain text (not HTML). Dashboard is excluded from the `Authorization` header preHandler check; it enforces its own query-param auth.
+- **New files**:
+  - `src/server/routes/dashboard.ts` — Fastify route factory.
+  - `src/server/routes/dashboard-html.ts` — `renderDashboard(data, config): string` server-side HTML renderer.
+  - `src/server/queries/dashboard.ts` — extracted read queries (testable without route layer).
+  - `tests/server/dashboard.test.ts` — 16 inject tests covering 401/200, content-type, all section headers, meta-refresh, no-script, cache-control, public-route preservation.
+- **`AppOpts`** gains optional `config?: Config` field (defaults to `defaultConfig()`); used by dashboard for budget cap display.
+
+### Changed
+- `src/server/app.ts` preHandler skip-list extended to include `/dashboard` (dashboard handles own auth via `?token=`).
+
+---
+
 ## [0.2.0] — 2026-06-30
 
 ### Added
