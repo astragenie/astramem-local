@@ -19,7 +19,7 @@ export async function doctorCommand(args: string[]): Promise<void> {
   const port = portArg ? Number(portArg) : cfg.port;
   const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
 
-  const checks = getChecks({ port, dataDir });
+  const checks = getChecks({ port, dataDir, redactionEnabled: cfg.security.redaction.enabled });
   const results = await runChecks(checks);
 
   if (jsonMode) {

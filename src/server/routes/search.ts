@@ -13,8 +13,10 @@ import type { EmbedProvider } from '../../contracts/index.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import { search, type SearchFilters } from '../../search/search.js';
-import { defaultConfig } from '../../config/config.js';
+import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
+import { redactIfEnabled } from '../../redact/index.js';
+import { recordRedactionEvents } from '../../storage/redaction-log.js';
 
 const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
 
@@ -42,7 +44,7 @@ const RememberBodySchema = z.object({
   }).optional()
 });
 
-export function searchRoute(db: DB, embed: EmbedProvider) {
+export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defaultConfig()) {
   const cfg = defaultConfig();
   const weights = cfg.search;
 
@@ -97,7 +99,13 @@ export function searchRoute(db: DB, embed: EmbedProvider) {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
       }
-      const { text, type, metadata } = parsed.data;
+      const { type, metadata } = parsed.data;
+
+      // Stage-0 secret redaction (SEC-3/5, OQ-2) — same choke point as ingest,
+      // applied before persistence AND before the embed call (SEC-4: no
+      // un-redacted content reaches a cloud embed provider).
+      const { text, events: redactionEvents } = redactIfEnabled(parsed.data.text, config);
+      recordRedactionEvents(db, redactionEvents, null);
 
       // Compute hash for dedup
       const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);

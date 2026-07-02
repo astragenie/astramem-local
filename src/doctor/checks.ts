@@ -63,6 +63,8 @@ export interface DoctorCheckOpts {
   serviceUnitPath?: string;
   /** Daily budget cap in USD (default: 10) */
   dailyBudgetUsd?: number;
+  /** Whether secret redaction is enabled (default: true) — SEC-6/8. */
+  redactionEnabled?: boolean;
   /**
    * LLM providers to real-chat-probe. If compaction + extraction are the same
    * provider instance (same name+model), only one probe fires.
@@ -327,6 +329,48 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number): Check {
   };
 }
 
+// ─── Check: Secret redaction (SEC-6/8) ────────────────────────────────────────
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+function checkRedaction(dataDir: string, enabled: boolean): Check {
+  return {
+    name: 'Secret redaction',
+    async run(): Promise<CheckResult> {
+      if (!enabled) {
+        return {
+          ok: false,
+          message: 'redaction: OFF — secrets are NOT scrubbed before persistence (security.redaction.enabled=false)',
+          fix: 'Set security.redaction.enabled=true (default) unless you have a deliberate reason to disable it.',
+        };
+      }
+
+      try {
+        const dbPath = join(dataDir, 'memory.sqlite');
+        if (!existsSync(dbPath)) {
+          return { ok: true, message: 'redaction: on (no DB yet — 0 secrets redacted)' };
+        }
+        const { default: Database } = await import('better-sqlite3');
+        const db = new Database(dbPath, { readonly: true });
+        const since = Date.now() - SEVEN_DAYS_MS;
+        const rows = db
+          .prepare('SELECT type, SUM(count) AS n FROM redaction_log WHERE created_at >= ? GROUP BY type ORDER BY n DESC')
+          .all(since) as { type: string; n: number }[];
+        db.close();
+
+        const total = rows.reduce((sum, r) => sum + r.n, 0);
+        if (total === 0) {
+          return { ok: true, message: 'redaction: on — 0 secrets redacted in last 7d' };
+        }
+        const breakdown = rows.map(r => `${r.n} ${r.type}`).join(', ');
+        return { ok: true, message: `redaction: on — ${total} secrets redacted (${breakdown}) in last 7d` };
+      } catch (err) {
+        return { ok: false, message: `Redaction check error: ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Core check list builder ──────────────────────────────────────────────────
 
 // ─── Check 9: LLM chat probe (real 1-token call) ─────────────────────────────
@@ -522,6 +566,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkServiceUnit(opts.serviceUnitPath),
     checkBudget(dataDir, dailyBudgetUsd),
     checkConfigDirDivergence(),
+    checkRedaction(dataDir, opts.redactionEnabled ?? true),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

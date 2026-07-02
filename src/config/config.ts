@@ -18,6 +18,17 @@ export interface Config {
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
   search: { alpha: number; beta: number; gamma: number; delta: number };
   recallPack: { enabled: boolean; budgetTokens: number };
+  security: {
+    redaction: {
+      enabled: boolean;
+      /** Shannon-entropy threshold in bits/char for the fallback secret detector. */
+      entropyThreshold: number;
+      /** Org-specific regex sources applied as detector type 'custom'. */
+      customPatterns: string[];
+    };
+    // encryption: added by SEC-1/2 (task 1b) — structure left open here so
+    // that slice adds a sibling key without reshaping this object.
+  };
 }
 
 export function defaultConfig(): Config {
@@ -34,7 +45,10 @@ export function defaultConfig(): Config {
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
     search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 },
-    recallPack: { enabled: false, budgetTokens: 1500 }
+    recallPack: { enabled: false, budgetTokens: 1500 },
+    security: {
+      redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] }
+    }
   };
 }
 

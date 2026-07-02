@@ -4,6 +4,9 @@ import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import { childLogger } from '../../log/logger.js';
 import { stableStringify } from '../lib/stable-stringify.js';
+import { type Config, defaultConfig } from '../../config/config.js';
+import { redactIfEnabled, type RedactionEvent } from '../../redact/index.js';
+import { recordRedactionEvents } from '../../storage/redaction-log.js';
 
 // ---------------------------------------------------------------------------
 // Legacy envelope (v0.0) — original shape; discriminated by presence of `content`
@@ -71,7 +74,7 @@ function isCanonical(data: ParsedIngest): data is z.infer<typeof CanonicalIngest
 // All db.prepare() calls happen ONCE per server start, not per request.
 // ---------------------------------------------------------------------------
 
-export function ingestRoute(db: DB) {
+export function ingestRoute(db: DB, config: Config = defaultConfig()) {
   // ---- Canonical path statements ----
   const stmtSelectIdempotency = db.prepare<[string], { body_hash: string; summary_memory_id: string | null }>(
     'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
@@ -159,6 +162,15 @@ export function ingestRoute(db: DB) {
       if (isCanonical(data)) {
         const log = childLogger({ request_id: requestId ?? 'unknown', session_id: data.session_id });
 
+        // ---- Stage-0 secret redaction (SEC-3/5) — BEFORE the transcripts INSERT.
+        //      Downstream pipeline stages inherit the redacted turns.
+        const redactionEvents: RedactionEvent[] = [];
+        const redactedTurns = data.turns.map(turn => {
+          const { text, events } = redactIfEnabled(turn.text, config);
+          redactionEvents.push(...events);
+          return { ...turn, text };
+        });
+
         // ---- Idempotency-key handling ----
         // D-B1: use stableStringify on the Zod-parsed object so key order
         //        differences between clients don't produce different hashes.
@@ -221,7 +233,7 @@ export function ingestRoute(db: DB) {
               transcriptId,
               data.session_id,
               `claude-code-${data.event}`,
-              JSON.stringify(data.turns),
+              JSON.stringify(redactedTurns),
               now,
               data.event,
               capturedAtMs,
@@ -234,6 +246,9 @@ export function ingestRoute(db: DB) {
               data.client_version ?? null,
               data.wire_version,
             );
+
+            // SEC-6: one redaction_log row per distinct type found in this ingest.
+            recordRedactionEvents(db, redactionEvents, data.session_id);
 
             jobId = randomUUID();
             stmtInsertJob.run(
@@ -308,10 +323,12 @@ export function ingestRoute(db: DB) {
       }
 
       // ------------------------------------------------------------------
-      // Legacy path — unchanged insert logic
+      // Legacy path — unchanged insert logic, plus stage-0 redaction (SEC-3/5)
       // ------------------------------------------------------------------
       const { session_id, source, content, repo, project, branch, agent } = data;
       const now = Date.now();
+
+      const { text: redactedContent, events: redactionEventsLegacy } = redactIfEnabled(content, config);
 
       let transcriptId!: string;
       let jobId!: string;
@@ -320,7 +337,10 @@ export function ingestRoute(db: DB) {
         stmtUpsertSessionLegacy.run(session_id, repo ?? null, project ?? null, branch ?? null, agent ?? null, now);
 
         transcriptId = randomUUID();
-        stmtInsertTranscriptLegacy.run(transcriptId, session_id, source, content, now);
+        stmtInsertTranscriptLegacy.run(transcriptId, session_id, source, redactedContent, now);
+
+        // SEC-6: one redaction_log row per distinct type found in this ingest.
+        recordRedactionEvents(db, redactionEventsLegacy, session_id);
 
         jobId = randomUUID();
         stmtInsertJobLegacy.run(

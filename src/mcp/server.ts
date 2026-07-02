@@ -21,13 +21,16 @@ import type { EmbedProvider } from '../contracts/index.js';
 import { MemoryRepo } from '../storage/memories.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { search, type SearchFilters } from '../search/search.js';
-import { defaultConfig } from '../config/config.js';
+import { defaultConfig, type Config } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
+import { redactIfEnabled } from '../redact/index.js';
+import { recordRedactionEvents } from '../storage/redaction-log.js';
 
 export interface McpServerDeps {
   db: DB;
   embed: EmbedProvider;
+  config?: Config;
 }
 
 /**
@@ -36,7 +39,7 @@ export interface McpServerDeps {
  */
 export function buildMcpServer(deps: McpServerDeps): McpServer {
   const { db, embed } = deps;
-  const cfg = defaultConfig();
+  const cfg = deps.config ?? defaultConfig();
   const weights = cfg.search;
 
   const server = new McpServer(
@@ -159,7 +162,13 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       }),
     },
     async (args) => {
-      const { text, type, metadata } = args;
+      const { type, metadata } = args;
+
+      // Stage-0 secret redaction (SEC-3/5, OQ-2) — same choke point as
+      // POST /remember, applied before persistence AND before the embed call.
+      const { text, events: redactionEvents } = redactIfEnabled(args.text, cfg);
+      recordRedactionEvents(db, redactionEvents, null);
+
       const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
 
       const repo = new MemoryRepo(db);

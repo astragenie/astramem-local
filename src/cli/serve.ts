@@ -74,6 +74,14 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const db = openDb(dbPath);
   migrate(db);
 
+  // SEC-9: disabling redaction is a deliberate trust trade-off — make it loud.
+  if (!cfg.security.redaction.enabled) {
+    console.warn(
+      '[astramem-local] WARNING: secret redaction is DISABLED (security.redaction.enabled=false). ' +
+      'Transcripts and memories will be persisted WITHOUT stage-0 secret scrubbing.',
+    );
+  }
+
   // Resolve providers: mock mode (CI/test) or real providers
   let providers: ProviderSet | MockProviderSet;
   const useMock = process.env.ASTRA_MEMORY_MOCK_PROVIDERS === '1';
@@ -100,7 +108,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     }
   }
 
-  const app = await buildApp({ db, token, embed: providers.embed });
+  const app = await buildApp({ db, token, embed: providers.embed, config: cfg });
 
   // Wire up the worker with extended context so distillation runs
   const registry = new HandlerRegistry();
