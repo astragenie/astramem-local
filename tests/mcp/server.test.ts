@@ -81,11 +81,20 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     await app.close();
   });
 
+  /** tools/call helper — returns the parsed JSON payload of the first text content. */
+  async function toolCall(name: string, args: object): Promise<{ payload: unknown; isError: boolean }> {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0', method: 'tools/call', params: { name, arguments: args }, id: 99,
+    }) as { result?: { content?: Array<{ type: string; text: string }>; isError?: boolean } };
+    const text = resp.result?.content?.[0]?.text ?? '{}';
+    return { payload: JSON.parse(text), isError: resp.result?.isError === true };
+  }
+
   // -------------------------------------------------------------------------
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 12 tools', async () => {
+  it('initialize + tools/list returns 14 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -98,17 +107,19 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(12);
+    expect(tools.length).toBe(14);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'erase_memory',
       'get_health',
       'invalidate_memory',
+      'list_consolidation_proposals',
       'mark_memory_used',
       'memory_history',
       'promote_memory',
       'recall_memory',
       'remember',
+      'resolve_consolidation_proposal',
       'search_memory',
       'session_digest',
       'supersede_memory',
@@ -666,5 +677,47 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
       body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/list', id: 99 }),
     });
     expect(res.status).toBe(401);
+  });
+
+  // -------------------------------------------------------------------------
+  // consolidation proposal tools (Wave 4b surfacing)
+  // -------------------------------------------------------------------------
+
+  it('list + resolve consolidation proposals roundtrip over MCP', async () => {
+    // Seed a borderline near-duplicate pair (cos ≈ 0.90) and run stage 9.
+    const { runConsolidation } = await import('../../src/consolidate/consolidate.js');
+    const { SqliteVecStore } = await import('../../src/vector/sqlite-vec.js');
+    const repo = new MemoryRepo(db);
+    const vecStore = new SqliteVecStore(db);
+    const mk = (tilt: number): Float32Array => {
+      const v = new Float32Array(1024); v[0] = 1; v[1] = tilt; return v;
+    };
+    const a = repo.insert({
+      type: 'fact', text: 'deploys run at midnight', normalized_text: 'deploys run at midnight',
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: 'h-mcp-c1', source_hash: null,
+    });
+    const b = repo.insert({
+      type: 'fact', text: 'deploys run nightly', normalized_text: 'deploys run nightly',
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: 'h-mcp-c2', source_hash: null,
+    });
+    await vecStore.upsert(a, mk(0));
+    await vecStore.upsert(b, mk(0.45));
+    runConsolidation(db);
+
+    const list = await toolCall('list_consolidation_proposals', {});
+    const { proposals } = list.payload as { proposals: Array<{ id: string; winner_text: string; loser_text: string; status: string }> };
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]!.status).toBe('pending');
+    expect(proposals[0]!.winner_text).toContain('deploys');
+
+    const resolve = await toolCall('resolve_consolidation_proposal', { id: proposals[0]!.id, action: 'accept' });
+    expect(resolve.isError).toBe(false);
+    expect((resolve.payload as { proposal: { status: string } }).proposal.status).toBe('accepted');
+
+    // Double-resolve and unknown id are structured errors, not throws.
+    const again = await toolCall('resolve_consolidation_proposal', { id: proposals[0]!.id, action: 'reject' });
+    expect(again.isError).toBe(true);
+    const missing = await toolCall('resolve_consolidation_proposal', { id: 'nope', action: 'accept' });
+    expect(missing.isError).toBe(true);
   });
 });
