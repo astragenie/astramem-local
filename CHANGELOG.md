@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.6.0] — 2026-07-02
+
+Waves 3 + 4 of the migration map: the cloud bridge and the moat. The full local→cloud loop now works end to end: pair → capture → distill → ship → cloud ledger.
+
+### Added — Wave 3: cloud bridge
+
+- **Contracts package** (`contracts/`): versioned JSON Schemas for `atom@1`, `retrieval-query/result@1`, `sync-envelope@1`, `capture-envelope@1` with valid/invalid fixtures, an eval corpus + graded query set (ADR-005), and `contracts:validate` wired into lint CI.
+- **Sync shipper** (ADR-003): one-way log shipping of team/org-scoped `memory_events` to the cloud ledger (`astramem-sync@1` envelopes, `acked_seq` cursor, exponential backoff). Personal-scoped atoms never ship (ADR-009). Off by default; requires pairing.
+- **Erasure v1** (ADR-006): `DELETE /memory/:id` + MCP `erase_memory` — hard-delete with an `erase_request` tombstone event that ships to the cloud and blocks re-distillation from resurrecting the memory (stage-8 replay filter).
+- **Device pairing**: `astramem-local pair <claim-code> --url <cloud-url>` redeems a FEAT-278 claim code; the device ApiKey goes to the OS credential store, `sync.json` persists url/workspace, and the daemon starts the shipper on next boot.
+- Cloud side (astragenie/memory): `POST /sync/events` with dual dedup fences, ledger materialization (create/invalidate/supersede/erase), and per-device cursors.
+
+### Added — Wave 4: the moat
+
+- **Retrieval eval harness** (ADR-005): the shared corpus + query set runs in CI as a quality gate — mean recall@10 ≥ 0.90 / NDCG@10 ≥ 0.70 (deterministic baseline 0.929 / 0.748). `as_of` time-travel reported as a known engine gap, not silently dropped.
+- **Usefulness feeds ranking** (ADR-010 v1.x): fusion gains an ε component (`search.epsilon`, default 0.1) over a Laplace-smoothed per-atom score — `recall_used` lifts, `memory_corrected` demotes, no signal stays neutral (0.5), so unsignaled corpora rank identically.
+- **Consolidation stage 9** (ADR-004, migration 008): deterministic offline pass per `(repo, type)` group — cosine ≥ 0.95 auto-merges as supersede (originals kept, `derived_from` lineage), 0.85–0.95 lands in a propose-only queue requiring user confirm. REST `POST /consolidation/run`, proposal accept/reject; `consolidate` job kind.
+- **Anthropic memory-tool adapter** (ADR-007): `POST /memory-tool` maps `view`/`create`/`str_replace`/`delete` onto memories — writes are redacted, edits supersede, deletes erase with tombstones.
+- **Injection policy** (ADR-005 when-to-recall): `/recall` with a `prompt` gains a decide-before-inject gate (smalltalk/short-prompt suppression, memory-reference override, min-score filter, budget shrink for long prompts).
+- **Codex CLI capture connector** (ADR-008): `astramem-local capture codex` ingests Codex sessions (open JSONL) through the normal redaction + distill path; content-stable idempotency keys make re-runs safe. Cursor postponed — proprietary chat store; Cursor users connect via MCP recall.
+
+### Changed
+
+- `SCHEMA_VERSION` 7 → 8 (migration 008 consolidation proposals).
+- MCP server exposes 12 tools (+ `erase_memory`).
+- Cloud embeddings default to self-hosted HuggingFace TEI (BGE-large, 1024-d); local embeddings remain Ollama `mxbai-embed-large` (1024-d).
+
+---
+
 ## [0.5.0] — 2026-07-02
 
 Waves 1 + 2 of the target-architecture migration map: the trust floor and the contract + flywheel.
