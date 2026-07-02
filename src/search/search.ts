@@ -17,6 +17,7 @@ import type { EmbedProvider } from '../contracts/index.js';
 import type { Memory, MemoryType } from '../contracts/index.js';
 import { fuseHits, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
+import { usefulnessScores } from '../storage/usefulness.js';
 
 export interface SearchFilters {
   type?: string[];
@@ -36,7 +37,7 @@ export interface SearchHit {
 export interface SearchOpts {
   db: DB;
   embed: EmbedProvider;
-  weights: { alpha: number; beta: number; gamma: number; delta: number };
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number };
   /** Multiplier used by vector search (cap to limit vector scan) */
   vecK?: number;
 }
@@ -132,8 +133,9 @@ export async function search(
 
   const metaMap = new Map(metaRows.map(r => [r.id, { importance: r.importance, created_at: r.created_at }]));
 
-  // 4. Fuse
-  const fused = fuseHits(ftsHits, vecHits, metaMap, weights, Date.now());
+  // 4. Fuse — usefulness (ADR-010 v1.x) joins as the ε component
+  const usefulness = usefulnessScores(db, Array.from(allIds));
+  const fused = fuseHits(ftsHits, vecHits, metaMap, weights, Date.now(), undefined, usefulness);
 
   // 5. Apply post-fusion SQL filters then join full memory records
   //    Build filter clauses dynamically

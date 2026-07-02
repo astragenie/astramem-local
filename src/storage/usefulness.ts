@@ -115,6 +115,33 @@ export function recordMemoryCorrected(db: DB, input: RecordMemoryCorrectedInput)
   });
 }
 
+/**
+ * Per-atom usefulness score for ranking (ADR-010 v1.x). Laplace-smoothed:
+ * (used + 1) / (used + corrected + 2) — an atom with no signal scores a
+ * neutral 0.5, one explicit recall_used lifts it to 0.67, one correction
+ * drops it to 0.33. Every requested id gets an entry so callers never have
+ * to special-case missing atoms.
+ */
+export function usefulnessScores(db: DB, atomIds: string[]): Map<string, number> {
+  const scores = new Map<string, number>(atomIds.map(id => [id, 0.5]));
+  if (atomIds.length === 0) return scores;
+
+  const ph = atomIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT atom_id,
+      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'recall_used' THEN 1 ELSE 0 END) AS used,
+      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND atom_id IN (${ph})
+    GROUP BY atom_id
+  `).all(...atomIds) as Array<{ atom_id: string; used: number; corrected: number }>;
+
+  for (const r of rows) {
+    scores.set(r.atom_id, (r.used + 1) / (r.used + r.corrected + 2));
+  }
+  return scores;
+}
+
 export interface UsefulnessRateOpts {
   /** Epoch-ms lower bound on created_at. Defaults to 0 (no lower bound). */
   sinceMs?: number;
