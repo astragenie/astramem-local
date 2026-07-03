@@ -1,6 +1,6 @@
 ---
 id: FEAT-402
-status: pending
+status: done
 priority: null
 category: null
 target_release: null
