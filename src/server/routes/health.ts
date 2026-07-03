@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { PKG_VERSION, WIRE_VERSIONS_SUPPORTED, SCHEMA_VERSION } from '../lib/wire-meta.js';
 import { type Config, defaultConfig } from '../../config/config.js';
 import type { DB } from '../../storage/db.js';
+import type { HealthState } from '../health-state.js';
 import { usefulnessRate } from '../../storage/usefulness.js';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -10,8 +11,12 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
  * db is optional so /health keeps working for any caller that doesn't wire a
  * DB (defensive default) — the usefulness block degrades to zeros rather
  * than 500ing.
+ *
+ * Wire compat: every pre-existing field is preserved and `ok` stays true
+ * whenever the daemon is reachable ("reachable and serving"). The additive
+ * `status` field carries the degraded-start signal (starting|ok|degraded).
  */
-export function healthRoute(config: Config = defaultConfig(), db?: DB) {
+export function healthRoute(config: Config = defaultConfig(), db?: DB, healthState?: HealthState) {
   return async (app: FastifyInstance) => {
     app.get('/health', async () => {
       const rate = db ? usefulnessRate(db, { sinceMs: Date.now() - SEVEN_DAYS_MS }) : { served: 0, used: 0, rate: null };
@@ -30,6 +35,19 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB) {
           used_7d: rate.used,
           rate_7d: rate.rate,
         },
+        // Degraded-start (D3) — additive fields only.
+        ...(healthState
+          ? {
+              status: healthState.status(),
+              uptime_s: healthState.uptimeSeconds(),
+              embed: {
+                ok: healthState.embed.ok,
+                last_ok_at: healthState.embed.lastOkAt,
+                last_error: healthState.embed.lastError,
+                attempts: healthState.embed.attempts,
+              },
+            }
+          : {}),
       };
     });
   };

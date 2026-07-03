@@ -11,6 +11,8 @@ import { defaultConfigDir } from '../config/datadir.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { acquireInstanceLock, AlreadyRunningError, type InstanceLock } from '../service/instance-lock.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
+import { createHealthState, type HealthState } from '../server/health-state.js';
+import type { EmbedProvider } from '../contracts/embed.js';
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
 import { distillHandler } from '../pipeline/handlers/distill.js';
@@ -28,6 +30,9 @@ export interface ServeOpts {
   port?: number;
   dataDir?: string;
   token?: string;
+  /** Restore the legacy fail-fast embed preflight (probe once, exit 1 on
+   *  failure, before binding the port). Default is degraded-start. */
+  strictPreflight?: boolean;
 }
 
 export async function serve(opts: ServeOpts): Promise<void> {
@@ -108,32 +113,42 @@ export async function serve(opts: ServeOpts): Promise<void> {
   }
 
   // Resolve providers: mock mode (CI/test) or real providers
+  const healthState = createHealthState();
   let providers: ProviderSet | MockProviderSet;
   const useMock = process.env.ASTRA_MEMORY_MOCK_PROVIDERS === '1';
   if (useMock) {
     providers = makeMockProviders();
+    healthState.embed.ok = true; // mock embed is always available
+    healthState.embed.lastOkAt = Date.now();
   } else {
     // Real providers from config — only imported when not in mock mode
     const { getProviders } = await import('../providers/index.js');
     providers = getProviders(cfg);
 
-    // Boot-time embed preflight — fail fast before accepting traffic.
-    // Calls the same embedProbe used by `astramem-local doctor` to avoid
-    // duplicating the dim-assertion logic (doctor/checks.ts checkEmbed).
-    const { embedProbe } = await import('../doctor/probes/embed-probe.js');
-    const preflightResult = await embedProbe(providers.embed);
-    if (!preflightResult.ok) {
-      const model = providers.embed.model;
-      console.error(`[astramem-local] embed preflight FAILED: ${preflightResult.message}`);
-      console.error(`  Model    : ${model}`);
-      console.error(`  Fix      : ${preflightResult.fix ?? 'Check embed provider config'}`);
-      console.error(`  Install  : ollama pull ${model}`);
-      console.error(`  Docs     : https://ollama.com/library/mxbai-embed-large`);
-      process.exit(1);
+    if (opts.strictPreflight) {
+      // Legacy fail-fast behavior (CI / scripted checks): probe once with the
+      // historical 5s timeout and exit 1 before accepting traffic.
+      const { embedProbe } = await import('../doctor/probes/embed-probe.js');
+      const preflightResult = await embedProbe(providers.embed);
+      if (!preflightResult.ok) {
+        const model = providers.embed.model;
+        console.error(`[astramem-local] embed preflight FAILED: ${preflightResult.message}`);
+        console.error(`  Model    : ${model}`);
+        console.error(`  Fix      : ${preflightResult.fix ?? 'Check embed provider config'}`);
+        console.error(`  Install  : ollama pull ${model}`);
+        console.error(`  Docs     : https://ollama.com/library/mxbai-embed-large`);
+        process.exit(1);
+      }
+      healthState.embed.ok = true;
+      healthState.embed.lastOkAt = Date.now();
     }
+    // Degraded-start (D3): the non-strict preflight runs in the BACKGROUND
+    // after app.listen — see startEmbedPreflight below. A daemon that can
+    // serve recall-from-cache and queue ingest beats a dead one; cold Ollama
+    // model loads at logon no longer kill the boot.
   }
 
-  const app = await buildApp({ db, token, embed: providers.embed, config: cfg });
+  const app = await buildApp({ db, token, embed: providers.embed, config: cfg, healthState });
 
   // Wire up the worker with extended context so distillation runs
   const registry = new HandlerRegistry();
@@ -187,8 +202,16 @@ export async function serve(opts: ServeOpts): Promise<void> {
   await app.listen({ port, host: '127.0.0.1' });
   console.log(`astramem-local serving on 127.0.0.1:${port}`);
 
+  // Degraded-start (D3): probe the embed provider in the background with
+  // backoff. /health reports status starting -> ok | degraded meanwhile.
+  let stopPreflight: (() => void) | null = null;
+  if (!useMock && !opts.strictPreflight) {
+    stopPreflight = startEmbedPreflight(providers.embed as EmbedProvider, healthState);
+  }
+
   const shutdown = async () => {
     try {
+      stopPreflight?.();
       if (shipper) await shipper.stop();
       await worker.stop();         // drain in-flight tick before closing DB
       await app.close();
@@ -200,4 +223,50 @@ export async function serve(opts: ServeOpts): Promise<void> {
   };
   process.on('SIGTERM', shutdown);
   process.on('SIGINT', shutdown);
+}
+
+/**
+ * Background embed preflight with backoff (5s → 10s → 30s → 60s cap) and a
+ * 30s per-probe timeout (cold Ollama model loads routinely exceed the old 5s
+ * limit). Never hard-exits: persistent failure shows up as status=degraded
+ * in /health and doctor, and embedding jobs retry through the queue anyway.
+ * Returns a canceller; the retry timer is unref'd so it never holds the
+ * process open during shutdown.
+ */
+function startEmbedPreflight(embed: EmbedProvider, healthState: HealthState): () => void {
+  const BACKOFF_MS = [5_000, 10_000, 30_000, 60_000];
+  const PROBE_TIMEOUT_MS = 30_000;
+  let cancelled = false;
+  let timer: NodeJS.Timeout | null = null;
+
+  const attempt = async (): Promise<void> => {
+    if (cancelled) return;
+    const { embedProbe } = await import('../doctor/probes/embed-probe.js');
+    const result = await embedProbe(embed, PROBE_TIMEOUT_MS);
+    if (cancelled) return;
+    healthState.embed.attempts++;
+    if (result.ok) {
+      healthState.embed.ok = true;
+      healthState.embed.lastOkAt = Date.now();
+      healthState.embed.lastError = null;
+      console.log(`[astramem-local] embed preflight ok (attempt ${healthState.embed.attempts}): ${result.message}`);
+      return;
+    }
+    healthState.embed.ok = false;
+    healthState.embed.lastError = result.message;
+    if (healthState.embed.attempts === 1) {
+      console.warn(`[astramem-local] embed preflight failing — serving DEGRADED while retrying: ${result.message}`);
+      console.warn(`  Fix      : ${result.fix ?? 'Check embed provider config'}`);
+      console.warn(`  Install  : ollama pull ${embed.model}`);
+    }
+    const delay = BACKOFF_MS[Math.min(healthState.embed.attempts - 1, BACKOFF_MS.length - 1)];
+    timer = setTimeout(() => { void attempt(); }, delay);
+    timer.unref();
+  };
+
+  void attempt();
+  return () => {
+    cancelled = true;
+    if (timer) clearTimeout(timer);
+  };
 }

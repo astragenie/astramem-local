@@ -19,6 +19,7 @@ import { makeFakeVec } from '../search/search.js';
 import { childLogger } from '../log/logger.js';
 import { newRequestId, runWithRequestId } from '../log/correlation.js';
 import { type Config, defaultConfig } from '../config/config.js';
+import type { HealthState } from './health-state.js';
 
 /** Default no-op embed provider used when no real provider is injected. */
 function makeNoopEmbed(): EmbedProvider {
@@ -38,6 +39,9 @@ export interface AppOpts {
   embed?: EmbedProvider;
   /** Server config — used by dashboard route for budget cap display. Defaults to defaultConfig(). */
   config?: Config;
+  /** Live daemon health snapshot (degraded-start, D3). Optional — /health
+   *  omits the status/embed fields when absent (e.g. bare test apps). */
+  healthState?: HealthState;
 }
 
 export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
@@ -89,7 +93,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
     }
   });
 
-  await app.register(healthRoute(config, opts.db));
+  await app.register(healthRoute(config, opts.db, opts.healthState));
   await app.register(versionRoute);
   await app.register(ingestRoute(opts.db, config));
   await app.register(searchRoute(opts.db, embed, config));

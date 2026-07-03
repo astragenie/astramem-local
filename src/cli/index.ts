@@ -38,7 +38,10 @@ async function main() {
   switch (cmd) {
     case 'serve': {
       const port = parseArg(rest, '--port');
-      await serve({ port: port ? Number(port) : undefined });
+      await serve({
+        port: port ? Number(port) : undefined,
+        strictPreflight: rest.includes('--strict-preflight'),
+      });
       break;
     }
 
@@ -159,7 +162,11 @@ async function main() {
       console.log(`astramem-local <command>
 
 Commands:
-  serve [--port N]                       Start daemon (foreground)
+  serve [--port N] [--strict-preflight]  Start daemon (foreground). Default boot is
+                                         degraded-start: the port binds immediately and
+                                         the embed probe retries in the background
+                                         (/health reports starting|ok|degraded);
+                                         --strict-preflight restores fail-fast exit 1.
   service install|uninstall|start|stop|status|repair [--port N]
                                          Manage OS service (systemd/launchd/schtasks)
   reinstall [--json]                     Idempotent service repair: stop -> install
