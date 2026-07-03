@@ -40,6 +40,6 @@ export function openRuntimeDb(): RuntimeDb {
     !isPlaintextSqlite(dbPath);
   const key = wantKey ? getOrCreateKey(defaultConfigDir()).key : undefined;
   const db = openDb(dbPath, key ? { key } : {});
-  migrate(db);
+  migrate(db, cfg.embedding.dim);
   return { db, cfg, dataDir };
 }

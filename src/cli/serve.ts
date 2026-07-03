@@ -103,7 +103,10 @@ export async function serve(opts: ServeOpts): Promise<void> {
     db = openDb(dbPath);
   }
   dbForCrash = db;
-  migrate(db);
+  // FEAT-409: dim only matters for a genuinely fresh DB — migrate() skips
+  // already-applied migrations regardless, so this stays correct across
+  // upgrades and restarts of an existing (already at some dim) DB.
+  migrate(db, cfg.embedding.dim);
 
   // Boot job recovery (P1.1): requeue jobs orphaned by a non-graceful death
   // ('running' from a mid-handle kill; 'failed' whose in-memory retry timer
@@ -142,7 +145,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   let providers: ProviderSet | MockProviderSet;
   const useMock = process.env.ASTRA_MEMORY_MOCK_PROVIDERS === '1';
   if (useMock) {
-    providers = makeMockProviders();
+    providers = makeMockProviders(cfg.embedding.dim);
     healthState.embed.ok = true; // mock embed is always available
     healthState.embed.lastOkAt = Date.now();
   } else {
@@ -188,7 +191,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     config: cfg,
     providers,
     memoryRepo: new MemoryRepo(db),
-    vecStore: new SqliteVecStore(db),
+    vecStore: new SqliteVecStore(db, cfg.embedding.dim),
   };
 
   // startWorker takes HandlerCtx but we pass ExtendedHandlerCtx (structural subtype)

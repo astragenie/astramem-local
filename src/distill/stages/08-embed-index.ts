@@ -43,7 +43,7 @@ export async function embedAndIndex(
 
   const memRepo = new MemoryRepo(ctx.db);
   const eventsRepo = new MemoryEventRepo(ctx.db);
-  const vecStore = new SqliteVecStore(ctx.db);
+  const vecStore = new SqliteVecStore(ctx.db, ctx.embed.dim);
 
   // Batch embed all texts at once for efficiency
   const texts = memories.map(m => m.normalizedText);
@@ -56,9 +56,9 @@ export async function embedAndIndex(
     const vec = vectors[i];
 
     if (!mem) continue;
-    if (!vec || vec.length !== 1024) {
+    if (!vec || vec.length !== ctx.embed.dim) {
       throw new Error(
-        `embed provider returned dim=${vec?.length ?? 0} for memory ${i}, expected 1024. ` +
+        `embed provider returned dim=${vec?.length ?? 0} for memory ${i}, expected ${ctx.embed.dim}. ` +
         `This is a provider invariant violation — check config.embedding.provider and model.`
       );
     }
