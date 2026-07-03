@@ -19,6 +19,10 @@ export function openDb(path: string, opts: OpenDbOpts = {}): DB {
   if (path !== ':memory:' && opts.key) {
     db.pragma(`key='${opts.key.replace(/'/g, "''")}'`);
   }
+  // Block-and-retry for up to 5s on a locked database instead of throwing
+  // SQLITE_BUSY immediately — covers concurrent writers (backup CLI's second
+  // connection, doctor probes) against the live daemon.
+  db.pragma('busy_timeout = 5000');
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
   db.pragma('synchronous = NORMAL');

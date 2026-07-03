@@ -30,6 +30,20 @@ export function runCmd(cmd: string): Promise<string> {
 }
 
 /**
+ * Best-effort elevation probe. `net session` succeeds only in an elevated
+ * shell; exit code 2 (access denied) means non-elevated. Used for DIAGNOSTICS
+ * only — never as a gate: schtasks is always attempted regardless.
+ */
+export async function isElevated(): Promise<boolean> {
+  try {
+    await runCmd('net session');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Properly quote a Windows command for schtasks /tr.
  * schtasks requires the /tr value to be a single quoted string when it
  * contains spaces. We wrap in double-quotes and escape internal double-quotes.
@@ -64,7 +78,9 @@ export class SchtasksAdapter implements ServiceAdapter {
       await runCmd(cmdA);
       return { kind: 'task' };
     } catch (errA) {
-      errors.push(`Tier A: ${(errA as Error).message.split('\n')[0]}`);
+      // Keep the FULL message — the actionable stderr (e.g. "ERROR: Access is
+      // denied.") is on line 2 and truncating it hides the root cause.
+      errors.push(`Tier A: ${(errA as Error).message}`);
     }
 
     // Tier B — retry with /RU <user> /IT (current legacy behaviour). Some
@@ -76,7 +92,7 @@ export class SchtasksAdapter implements ServiceAdapter {
       await runCmd(cmdB);
       return { kind: 'task' };
     } catch (errB) {
-      errors.push(`Tier B: ${(errB as Error).message.split('\n')[0]}`);
+      errors.push(`Tier B: ${(errB as Error).message}`);
     }
 
     // Tier C — Startup-folder shortcut. No admin required. Runs at next logon.
@@ -88,8 +104,12 @@ export class SchtasksAdapter implements ServiceAdapter {
     const scriptPath = startupScriptPath();
     writeFileSync(scriptPath, script, 'utf8');
 
+    const elevated = await isElevated();
     console.log('  · schtasks unavailable — tried two forms, both failed:');
-    for (const msg of errors) console.log(`      ${msg}`);
+    for (const msg of errors) {
+      for (const line of msg.split('\n')) console.log(`      ${line}`);
+    }
+    console.log(`  · running elevated: ${elevated ? 'yes' : 'no'}${elevated ? '' : ' — schtasks /create may require an Administrator shell on this system'}`);
     console.log(`  · installed Startup shortcut at:\n    ${scriptPath}`);
 
     return { kind: 'startup', path: scriptPath };
