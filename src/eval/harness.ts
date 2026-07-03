@@ -80,7 +80,7 @@ export async function seedEvalCorpus(
   corpus: EvalCorpus,
 ): Promise<Map<string, string>> {
   const repo = new MemoryRepo(db);
-  const vecStore = new SqliteVecStore(db);
+  const vecStore = new SqliteVecStore(db, embed.dim);
   const memToAtom = new Map<string, string>();
 
   for (const atom of corpus.atoms) {

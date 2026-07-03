@@ -67,7 +67,7 @@ export async function backupCommand(args: string[]): Promise<void> {
     // backup/VACUUM INTO copy) — fetch it the same way serve.ts does.
     const key = cfg.security.encryption.enabled ? getOrCreateKey(defaultConfigDir()).key : undefined;
     db = openDb(dbPath, { key });
-    migrate(db);
+    migrate(db, cfg.embedding.dim);
   } catch (err) {
     console.error(`backup: failed to open database at ${dbPath}: ${err}`);
     process.exit(1);

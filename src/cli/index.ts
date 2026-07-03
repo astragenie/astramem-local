@@ -18,6 +18,7 @@ import { captureCommand } from './capture.js';
 import { pairCommand } from './pair.js';
 import { syncCommand } from './sync.js';
 import { reinstallCommand } from './reinstall.js';
+import { reembedDimCommand } from './reembed-dim.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -132,6 +133,12 @@ async function main() {
       break;
     }
 
+    case 'reembed-dim': {
+      // astramem-local reembed-dim --dim N [--yes] [--batch-size N] [--json]
+      await reembedDimCommand(rest);
+      break;
+    }
+
     case 'retag': {
       // astramem-local retag [--dry-run] [--limit N] [--tier2] [--no-tier2] [--confidence N] [--json]
       await retagCommand(rest);
@@ -224,6 +231,12 @@ Commands:
                                          auto-scheduled: boot + every 6h)
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
                                          Queue reembed jobs for existing memories
+                                         (same dim, model/provider swap)
+  reembed-dim --dim N [--yes] [--batch-size N] [--json]
+                                         Resumable dim-change migration (FEAT-409):
+                                         recreates memories_vec at dim N + re-embeds
+                                         all memories. Back up first — see
+                                         docs/embed-dim-migration.md
   retag [--dry-run] [--limit N] [--tier2|--no-tier2] [--confidence N] [--json]
                                          Backfill repo/project tags on untagged
                                          memories (tier-1 session metadata,

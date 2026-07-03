@@ -1,12 +1,17 @@
 import type { DB } from '../storage/db.js';
 import type { VectorStore, VecFilter, VecHit } from '../contracts/index.js';
+import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 
 export class SqliteVecStore implements VectorStore {
   readonly name = 'sqlite-vec' as const;
-  constructor(private db: DB) {}
+  /** FEAT-409: dim defaults to DEFAULT_EMBED_DIM (1024) for backward
+   * compat — callers with a config/provider in scope should pass
+   * embed.dim (or cfg.embedding.dim) explicitly so this matches the
+   * memories_vec schema the DB was actually created with. */
+  constructor(private db: DB, private dim: number = DEFAULT_EMBED_DIM) {}
 
   async upsert(id: string, vec: Float32Array): Promise<void> {
-    if (vec.length !== 1024) throw new Error(`expected dim 1024, got ${vec.length}`);
+    if (vec.length !== this.dim) throw new Error(`expected dim ${this.dim}, got ${vec.length}`);
     const memoriesRowid = this.allocateRowid(id);
     const buf = Buffer.from(vec.buffer);
     const existing = this.db.prepare('SELECT rowid FROM memories_vec WHERE rowid = ?').get(BigInt(memoriesRowid)) as {rowid: number} | undefined;

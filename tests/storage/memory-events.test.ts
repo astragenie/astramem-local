@@ -30,7 +30,8 @@ function migrateUpTo(db: DB, beforeVersion: number): void {
   for (const f of files) {
     const version = parseInt(f.split('-')[0] ?? '', 10);
     if (version >= beforeVersion) continue;
-    db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8'));
+    // Substitute the FEAT-409 embed-dim placeholder (real migrate() does this too).
+    db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8').split('__EMBED_DIM__').join('1024'));
     db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(version, Date.now());
   }
 }

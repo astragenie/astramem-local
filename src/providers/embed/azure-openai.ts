@@ -1,10 +1,10 @@
 import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
+import { DEFAULT_EMBED_DIM } from '../../contracts/embed.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
 
 const EMBED_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 15_000;
-const EXPECTED_DIM = 1024;
 const DEFAULT_MODEL = 'text-embedding-3-small';
 
 export interface AzureOpenAIEmbedConfig {
@@ -13,6 +13,10 @@ export interface AzureOpenAIEmbedConfig {
   apiKey: string;
   apiVersion?: string;
   model?: string;
+  /** FEAT-409: expected/requested output dim — defaults to
+   * DEFAULT_EMBED_DIM (1024). Set from config.embedding.dim by
+   * providers/index.ts. Sent as the Azure `dimensions` request param. */
+  dim?: number;
 }
 
 interface AzureEmbedResponse {
@@ -49,7 +53,7 @@ async function fetchWithRetry(
 export class AzureOpenAIEmbedProvider implements EmbedProvider {
   readonly name = 'azure-openai' as const;
   readonly model: string;
-  readonly dim = EXPECTED_DIM as 1024;
+  readonly dim: number;
   private readonly endpoint: string;
   private readonly deployment: string;
   private readonly apiKey: string;
@@ -61,6 +65,7 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
     this.apiKey = config.apiKey;
     this.apiVersion = config.apiVersion ?? '2024-10-21';
     this.model = config.model ?? DEFAULT_MODEL;
+    this.dim = config.dim ?? DEFAULT_EMBED_DIM;
   }
 
   private get embedUrl(): string {
@@ -70,7 +75,7 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
   async embed(texts: string[]): Promise<Float32Array[]> {
     const body = {
       input: texts,
-      dimensions: EXPECTED_DIM,
+      dimensions: this.dim,
     };
 
     const res = await fetchWithRetry(
@@ -119,10 +124,10 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
       if (!embedding) {
         throw new Error(`Azure embed response item missing 'embedding' field`);
       }
-      if (embedding.length !== EXPECTED_DIM) {
+      if (embedding.length !== this.dim) {
         throw new Error(
-          `Azure embed dimension mismatch: expected ${EXPECTED_DIM}, got ${embedding.length}. ` +
-            `Model: ${this.model}. Check that 'dimensions: ${EXPECTED_DIM}' is supported.`,
+          `Azure embed dimension mismatch: expected ${this.dim}, got ${embedding.length}. ` +
+            `Model: ${this.model}. Check that 'dimensions: ${this.dim}' is supported.`,
         );
       }
       results.push(new Float32Array(embedding));
@@ -141,7 +146,7 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
     // Ping with a 1-item embed request
     const body = {
       input: ['ping'],
-      dimensions: EXPECTED_DIM,
+      dimensions: this.dim,
     };
     try {
       const t0 = Date.now();
@@ -158,14 +163,14 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
       return {
         ok: res.ok,
         model: this.model,
-        dim: EXPECTED_DIM,
+        dim: this.dim,
         ...(res.ok ? {} : { error: `HTTP ${res.status}` }),
       };
     } catch (err) {
       return {
         ok: false,
         model: this.model,
-        dim: EXPECTED_DIM,
+        dim: this.dim,
         error: err instanceof Error ? err.message : String(err),
       };
     }

@@ -24,7 +24,7 @@ function migrateUpTo(db: DB, beforeVersion: number): void {
   for (const f of files) {
     const version = parseInt(f.split('-')[0] ?? '', 10);
     if (version >= beforeVersion) continue;
-    db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8'));
+    db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8').split('__EMBED_DIM__').join('1024'));
     db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(version, Date.now());
   }
 }
@@ -59,10 +59,10 @@ describe('Atom v3 migration (006-atom-v3, ADR-001)', () => {
     expect(colNames).toContain('scope');
   });
 
-  it('DB max schema version is 10 after migration', () => {
+  it('DB max schema version is 11 after migration', () => {
     migrate(db);
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(10);
+    expect(row.v).toBe(11);
   });
 
   it('a new row inserted via the repo gets valid_from = created_at, scope personal, valid_to null', () => {

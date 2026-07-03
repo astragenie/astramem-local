@@ -15,6 +15,7 @@
 import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
 import type { Memory, MemoryType } from '../contracts/index.js';
+import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { fuseHits, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
@@ -108,16 +109,18 @@ export function parseAsOf(value: string | undefined): number | undefined {
 }
 
 /**
- * Deterministic fake vector for testing — 1024-dim seeded by text hash.
- * Exported so tests can call it directly without importing the EmbedProvider.
+ * Deterministic fake vector for testing — seeded by text hash, dim
+ * defaults to DEFAULT_EMBED_DIM (1024). Exported so tests can call it
+ * directly without importing the EmbedProvider. Pass `dim` to generate a
+ * fixture vector matching a non-default schema (FEAT-409 AC-2).
  */
-export function makeFakeVec(text: string): Float32Array {
-  const v = new Float32Array(1024);
+export function makeFakeVec(text: string, dim: number = DEFAULT_EMBED_DIM): Float32Array {
+  const v = new Float32Array(dim);
   let hash = 0;
   for (let i = 0; i < text.length; i++) {
     hash = (hash * 31 + text.charCodeAt(i)) & 0xffffffff;
   }
-  for (let i = 0; i < 1024; i++) {
+  for (let i = 0; i < dim; i++) {
     v[i] = Math.sin(hash * 0.001 + i * 0.01);
   }
   return v;
@@ -158,7 +161,7 @@ export async function search(
     const vecs = await embed.embed([query]);
     const queryVec = vecs[0];
     if (!queryVec) throw new Error('embed provider returned empty result');
-    const vecStore = new SqliteVecStore(db);
+    const vecStore = new SqliteVecStore(db, embed.dim);
     // Pass empty filter to vec adapter — post-fusion filters applied below
     const raw = await vecStore.search(queryVec, vecK);
     vecHits.push(...raw.map(h => ({ id: h.id, cosine: h.score })));

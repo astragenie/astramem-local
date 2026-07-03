@@ -130,7 +130,7 @@ export async function restoreCommand(args: string[]): Promise<void> {
   // 5. Migrations — an older snapshot may predate the current schema.
   try {
     const db = openDb(dbPath, key ? { key } : {});
-    migrate(db);
+    migrate(db, cfg.embedding.dim);
     db.close();
     console.log('  · schema migrations applied');
   } catch (err) {

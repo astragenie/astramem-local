@@ -1,4 +1,5 @@
 import { defaultDataDir } from './datadir.js';
+import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 
 export interface Config {
   port: number;
@@ -17,7 +18,12 @@ export interface Config {
   embedding: {
     provider: 'ollama' | 'azure-openai';
     model: string;
-    dim: 1024;
+    /** FEAT-409: parameterized — single source of truth is
+     * DEFAULT_EMBED_DIM (src/contracts/embed.ts). Changing this for a
+     * fresh DB is a plain config edit; changing it against an existing DB
+     * with live data requires `astramem-local reembed-dim`
+     * (docs/embed-dim-migration.md). */
+    dim: number;
   };
   vector: { store: 'sqlite-vec' | 'lancedb' };
   budget: { daily_usd: number };
@@ -85,7 +91,7 @@ export function defaultConfig(): Config {
       compaction: { provider: 'ollama', model: 'qwen2.5-coder:7b' },
       extraction: { provider: 'ollama', model: 'qwen2.5-coder:7b' }
     },
-    embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: 1024 },
+    embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
     vector: { store: 'sqlite-vec' },
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },

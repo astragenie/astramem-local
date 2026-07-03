@@ -41,11 +41,14 @@ llm:
     model: qwen2.5-coder:7b
 
 # Embedding provider — system-wide.
-# Changing provider or model requires: astra-memory rebuild --reembed
+# Changing provider or model at the SAME dim requires: astra-memory rebuild
+# Changing dim against an EXISTING database requires the resumable
+# `reembed-dim` procedure — see docs/embed-dim-migration.md. A fresh
+# install can just set `dim` before the first `init`/`serve` run.
 embedding:
   provider: ollama              # ollama | azure-openai
-  model: nomic-embed-text-v2-moe  # must produce 1024-dim vectors
-  dim: 1024                    # pinned; do not change without --reembed
+  model: nomic-embed-text-v2-moe  # must produce `dim`-dimensional vectors
+  dim: 1024                    # default; see docs/embed-dim-migration.md to change
 
 # Vector store backend.
 vector:
@@ -151,12 +154,16 @@ Recommended models:
 
 ### `embedding`
 
-Type: `{ provider, model, dim: 1024 }`.
+Type: `{ provider, model, dim: number }`.
 
-System-wide embedding configuration. `dim` is pinned at 1024 — the sqlite-vec index is created
-with `FLOAT[1024]`. Changing `provider` or `model` without running `astra-memory rebuild --reembed`
-will cause a mismatch between stored embeddings and new embeddings. The doctor will detect this
-mismatch and block the distillation worker until reindex completes.
+System-wide embedding configuration. `dim` defaults to 1024 (matching `mxbai-embed-large` /
+Azure `text-embedding-3-*`) but is a plain config value, not a fixed literal (FEAT-409) — the
+sqlite-vec index is created as `FLOAT[dim]` from whatever value was configured at DB-creation
+time. Changing `provider` or `model` at the same dim without running `astra-memory rebuild`
+will cause a mismatch between stored embeddings and new embeddings; the doctor will detect this
+mismatch and block the distillation worker until reindex completes. Changing `dim` against an
+EXISTING database (not a fresh install) requires the resumable `astra-memory reembed-dim`
+procedure — see docs/embed-dim-migration.md.
 
 ### `budget.daily_usd`
 

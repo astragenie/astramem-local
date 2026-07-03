@@ -22,14 +22,17 @@ import { type Config, defaultConfig } from '../config/config.js';
 import type { HealthState } from './health-state.js';
 import { isLoopbackHost } from './lib/network.js';
 
-/** Default no-op embed provider used when no real provider is injected. */
-function makeNoopEmbed(): EmbedProvider {
+/** Default no-op embed provider used when no real provider is injected.
+ * FEAT-409: dim derived from config.embedding.dim (defaults to
+ * DEFAULT_EMBED_DIM via defaultConfig()) rather than a literal, so the
+ * noop provider's fake vectors always match whatever schema dim is live. */
+function makeNoopEmbed(dim: number): EmbedProvider {
   return {
     name: 'ollama' as const,
     model: 'noop',
-    dim: 1024 as const,
-    embed: async (texts: string[]) => texts.map(t => makeFakeVec(t)),
-    health: async () => ({ ok: false, model: 'noop', dim: 1024 as const, error: 'no provider configured' })
+    dim,
+    embed: async (texts: string[]) => texts.map(t => makeFakeVec(t, dim)),
+    health: async () => ({ ok: false, model: 'noop', dim, error: 'no provider configured' })
   };
 }
 
@@ -59,8 +62,8 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
     // embed can be slow, but 60s is the ceiling — matches the LLM timeout).
     requestTimeout: 60_000,
   });
-  const embed = opts.embed ?? makeNoopEmbed();
   const config = opts.config ?? defaultConfig();
+  const embed = opts.embed ?? makeNoopEmbed(config.embedding.dim);
 
   // Assign a request_id to every incoming request and expose it on the reply header.
   app.addHook('onRequest', async (req, reply) => {

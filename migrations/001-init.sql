@@ -67,13 +67,19 @@ CREATE TRIGGER memories_au AFTER UPDATE ON memories BEGIN
   INSERT INTO memories_fts(rowid, text, normalized_text) VALUES (new.rowid, new.text, new.normalized_text);
 END;
 
--- Vector index dim is pinned at 1024 for v1 (see src/contracts/embed.ts).
--- Both Ollama nomic-embed-text-v2-moe (native 1024) and Azure
--- text-embedding-3-* (via `dimensions: 1024`) match this. Changing the
--- embedding provider requires a re-embed pass within the same dim, not a
--- schema change. A future provider with different native dim would require
--- a new migration creating a parallel vec table.
-CREATE VIRTUAL TABLE memories_vec USING vec0(embedding FLOAT[1024]);
+-- Vector index dim is parameterized (FEAT-409, src/contracts/embed.ts
+-- DEFAULT_EMBED_DIM). __EMBED_DIM__ is substituted by storage/migrate.ts
+-- with config.embedding.dim at migration time — defaults to 1024, matching
+-- both Ollama mxbai-embed-large (native 1024) and Azure text-embedding-3-*
+-- (via `dimensions: 1024`). This substitution only affects a FRESH
+-- database (this file only runs once, the first time schema_version has no
+-- row for version 1); an EXISTING database's dim is immutable short of the
+-- resumable re-embed procedure (migration 011, `astramem-local
+-- reembed-dim`) since sqlite-vec's vec0 table fixes its dim at CREATE
+-- TABLE time. Changing the embedding provider (even at the same dim)
+-- still requires a re-embed pass — different models are different
+-- geometric spaces.
+CREATE VIRTUAL TABLE memories_vec USING vec0(embedding FLOAT[__EMBED_DIM__]);
 
 CREATE TABLE jobs (
   id TEXT PRIMARY KEY,
