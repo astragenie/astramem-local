@@ -1,5 +1,6 @@
 import { CleanupPayloadSchema } from '../../contracts/index.js';
 import type { JobHandler, HandlerCtx } from '../handler.js';
+import { runArchivalPass } from '../../storage/archival.js';
 
 /**
  * Cleanup handler — IMPLEMENTED.
@@ -7,6 +8,11 @@ import type { JobHandler, HandlerCtx } from '../handler.js';
  * Prunes jobs in the 'completed' state whose updated_at is older than
  * `older_than_days` (default 30). Other states (pending, running, failed,
  * poison, paused) are never touched so the operator can inspect them.
+ *
+ * Also runs the memory TTL/archival policy pass (FEAT-404) on the same
+ * cadence — config.archival.enabled === false (the default) makes it a
+ * no-op, so existing cleanup-job behavior is unchanged unless an operator
+ * opts in.
  */
 export const cleanupHandler: JobHandler = {
   kind: 'cleanup',
@@ -40,5 +46,13 @@ export const cleanupHandler: JobHandler = {
       `[cleanup] pruned ${result.changes} completed job(s) older than ${older_than_days} day(s), ` +
       `${poisonResult.changes} poison job(s) older than ${POISON_RETENTION_DAYS} day(s)`,
     );
+
+    const archival = runArchivalPass(ctx.db, ctx.config);
+    if (archival.candidates > 0) {
+      console.log(
+        `[cleanup] archival pass: ${archival.archived}/${archival.candidates} stale low-usefulness ` +
+        `memories archived`,
+      );
+    }
   }
 };

@@ -39,4 +39,11 @@ export interface Memory {
   derived_from: string[] | null;
   /** ADR-009 scope. Defaults to 'personal'. */
   scope: MemoryScope;
+  /** TTL/archival tiers (FEAT-404). true once the archival policy (or a
+   *  direct MemoryEventRepo.archive() call) has archived this atom — set in
+   *  the same transaction as valid_to, non-destructively (row survives,
+   *  restorable via MemoryEventRepo.restore()). */
+  archived: boolean;
+  /** Epoch ms the archive transition happened; null while archived=false. */
+  archived_at: number | null;
 }

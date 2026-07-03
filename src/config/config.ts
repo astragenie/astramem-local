@@ -83,6 +83,23 @@ export interface Config {
      * this the memory is left untagged rather than risk a mis-tag (AC-4). */
     tier2ConfidenceThreshold: number;
   };
+  /** Memory TTL / archival tiers (FEAT-404, W4.4). Both conditions are
+   * required to archive an atom: older than ageThresholdDays AND its
+   * trailing-7-day usefulness rate at/below usefulnessFloor. Off by default
+   * — the PM pre-mortem risk is silently archiving a rarely-used-but-
+   * critical memory, so enabling is a deliberate opt-in. Runs on the
+   * cleanup job's cadence (src/pipeline/handlers/cleanup.ts). */
+  archival: {
+    enabled: boolean;
+    /** Age is measured from created_at (how old the atom itself is), not
+     * valid_from (which supersede() can advance). Default 183 days (~6
+     * months), per the FEAT-404 AC-6 proposal. */
+    ageThresholdDays: number;
+    /** rate_7d <= this floor makes an atom archival-eligible (combined
+     * with the age check). Default 0.0 — no explicit recall_used signal
+     * in the trailing 7 days. */
+    usefulnessFloor: number;
+  };
 }
 
 export function defaultConfig(): Config {
@@ -110,7 +127,8 @@ export function defaultConfig(): Config {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
       encryption: { enabled: true }
     },
-    tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 }
+    tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
+    archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 }
   };
 }
 
