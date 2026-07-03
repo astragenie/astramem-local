@@ -32,6 +32,16 @@ export interface WireSyncEvent {
   payload_json: Record<string, unknown> | null;
   content_hash: string | null;
   created_at: number;
+  /**
+   * Globally-unique event identity (ADR-011, migration 010). Additive field
+   * — no astramem-sync@1 version bump (ADR-001's additive-field evolution
+   * rule): older push clients that omit it are still valid envelopes; this
+   * daemon always populates it (migration 010 backfills every pre-existing
+   * row, and MemoryEventRepo.append() always assigns one going forward).
+   * It is the pull-side dedup key (FEAT-407 AC-2) and the ADR-011 conflict
+   * tie-break key (created_at, event_id).
+   */
+  event_id: string;
 }
 
 export interface SyncEnvelope {
@@ -83,6 +93,7 @@ export function getOrCreateDeviceId(configDir: string): string {
 
 interface UnsyncedRow {
   seq: number;
+  event_id: string;
   event_type: string;
   atom_id: string;
   payload_json: string | null;
@@ -98,7 +109,7 @@ interface UnsyncedRow {
 export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
   return db
     .prepare(`
-      SELECT e.seq, e.event_type, e.atom_id, e.payload_json, e.content_hash, e.created_at
+      SELECT e.seq, e.event_id, e.event_type, e.atom_id, e.payload_json, e.content_hash, e.created_at
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
@@ -136,6 +147,7 @@ export function buildEnvelope(
     cursor,
     events: rows.map(r => ({
       seq: r.seq,
+      event_id: r.event_id,
       event_type: r.event_type,
       atom_id: r.atom_id,
       payload_json: r.payload_json !== null ? (JSON.parse(r.payload_json) as Record<string, unknown>) : null,

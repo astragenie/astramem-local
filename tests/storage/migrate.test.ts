@@ -25,7 +25,8 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    expect(versions.n).toBe(9);
+    // 10 migration files after merge (001-010: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull).
+    expect(versions.n).toBe(10);
   });
 
   it('enables WAL mode', () => {
@@ -80,7 +81,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(9);
+    expect(versions.n).toBe(10);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -156,7 +157,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(9);
+    expect(versions.v).toBe(10);
   });
 
   it('allows inserting type note after migration', () => {
@@ -356,7 +357,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 9/,
+      /Schema-version constant drift: wire-meta says 999, DB says 10/,
     );
   });
 });

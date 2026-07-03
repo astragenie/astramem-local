@@ -113,6 +113,23 @@ describe('buildEnvelope — wire conformance', () => {
     expect(envelope.protocol).toBe(SYNC_PROTOCOL);
     expect(envelope.events[0]!.payload_json).toEqual({ scope: 'team' });
   });
+
+  // FEAT-407 AC-6: WireSyncEvent gains event_id as an ADDITIVE field
+  // (ADR-011, migration 010) — every event this daemon ships now carries
+  // one, and the schema still validates envelopes that omit it (see the
+  // sync-envelope-v1-single-create-event.json fixture, which has no
+  // event_id and still passes contracts/validate.mjs), so older push
+  // clients are unaffected.
+  it('every shipped event carries a UUID event_id (ADR-011 dedup/tie-break key)', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const events = new MemoryEventRepo(db);
+    const team = seedMemory(db, 'team', 'h-wire-eid');
+    events.append({ event_type: 'create', atom_id: team, content_hash: 'b'.repeat(64) });
+
+    const envelope = buildEnvelope('device-1', 'ws-1', 0, listUnsynced(db, 100));
+    expect(envelope.events[0]!.event_id).toMatch(/^[0-9a-f-]{36}$/);
+  });
 });
 
 describe('shipOnce — ack cursor semantics', () => {
