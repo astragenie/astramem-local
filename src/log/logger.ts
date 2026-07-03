@@ -58,13 +58,27 @@ function serializeError(err: unknown): Record<string, unknown> {
   return { error_message: String(err), error_kind: 'Unknown' };
 }
 
-let prettyTransport: pino.TransportSingleOptions | undefined;
+let transport: pino.TransportSingleOptions | undefined;
 
-// pino-pretty transport: activated via LOG_PRETTY=1 (foreground dev mode).
-// We use a dynamic require pattern so missing pino-pretty doesn't crash service mode.
-if (process.env['LOG_PRETTY'] === '1') {
+// Service mode (ASTRA_LOG_DIR set by the shim launcher): rotate JSON logs to
+// <ASTRA_LOG_DIR>/daemon.log, 10MB per file, 5 files retained. Without this,
+// a scheduler-supervised daemon's stdout either vanishes or grows unbounded
+// under redirection. Foreground runs keep stdout.
+const logDir = process.env['ASTRA_LOG_DIR'];
+if (logDir) {
+  transport = {
+    target: 'pino-roll',
+    options: {
+      file: `${logDir.replace(/[\\/]+$/, '')}/daemon.log`,
+      size: '10m',
+      limit: { count: 5 },
+      mkdir: true,
+    },
+  };
+} else if (process.env['LOG_PRETTY'] === '1') {
+  // pino-pretty transport: activated via LOG_PRETTY=1 (foreground dev mode).
   try {
-    prettyTransport = {
+    transport = {
       target: 'pino-pretty',
       options: {
         colorize: true,
@@ -92,8 +106,8 @@ const pinoOpts: pino.LoggerOptions = {
 /**
  * Root logger instance. Long-lived singleton shared across the process.
  */
-export const logger: pino.Logger = prettyTransport
-  ? pino(pinoOpts, pino.transport(prettyTransport))
+export const logger: pino.Logger = transport
+  ? pino(pinoOpts, pino.transport(transport))
   : pino(pinoOpts);
 
 /**

@@ -105,7 +105,7 @@ export interface DoctorCheckOpts {
  * already exists (created at first `serve`), so this call reads it back
  * rather than minting a new one.
  */
-async function openProductionDbReadonly(dbPath: string, encryptionEnabled: boolean): Promise<DB> {
+export async function openProductionDbReadonly(dbPath: string, encryptionEnabled: boolean): Promise<DB> {
   const { default: Database } = await import('better-sqlite3-multiple-ciphers');
   const db = new Database(dbPath, { readonly: true }) as DB;
   if (encryptionEnabled) {

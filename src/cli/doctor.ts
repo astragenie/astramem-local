@@ -1,5 +1,7 @@
+import { join } from 'node:path';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
-import { getChecks } from '../doctor/checks.js';
+import { getChecks, openProductionDbReadonly } from '../doctor/checks.js';
+import { getHardeningChecks } from '../doctor/hardening-checks.js';
 import { runChecks, formatTable, formatJson } from '../doctor/runner.js';
 
 function parseFlag(args: string[], flag: string): boolean {
@@ -23,12 +25,23 @@ export async function doctorCommand(args: string[]): Promise<void> {
     port: portArg ? Number(portArg) : undefined,
   });
 
-  const checks = getChecks({
-    port,
-    dataDir,
-    redactionEnabled: cfg.security.redaction.enabled,
-    encryptionEnabled: cfg.security.encryption.enabled,
-  });
+  const checks = [
+    ...getChecks({
+      port,
+      dataDir,
+      redactionEnabled: cfg.security.redaction.enabled,
+      encryptionEnabled: cfg.security.encryption.enabled,
+    }),
+    // W1.3: parity with `reinstall`'s assertions — stranded legacy DB,
+    // plaintext pre-encryption backup, served-vs-build version, zombie
+    // instance lock, poison-job accumulation.
+    ...getHardeningChecks({
+      dataDir,
+      port,
+      openDbReadonly: () =>
+        openProductionDbReadonly(join(dataDir, 'memory.sqlite'), cfg.security.encryption.enabled),
+    }),
+  ];
   const results = await runChecks(checks);
 
   if (jsonMode) {

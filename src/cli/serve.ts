@@ -235,11 +235,32 @@ export async function serve(opts: ServeOpts): Promise<void> {
     stopPreflight = startEmbedPreflight(providers.embed as EmbedProvider, healthState);
   }
 
+  // WAL discipline (W1.5): with synchronous=NORMAL a hard crash loses the
+  // un-checkpointed WAL tail. Truncate hourly so the at-risk window stays
+  // small, and once more on graceful shutdown. Timer unref'd — never holds
+  // the process open.
+  let walTimer: NodeJS.Timeout | null = null;
+  if (dataDir !== ':memory:') {
+    const WAL_CHECKPOINT_MS = 60 * 60 * 1000;
+    walTimer = setInterval(() => {
+      try {
+        db.pragma('wal_checkpoint(TRUNCATE)');
+      } catch (err) {
+        console.warn(`[astramem-local] periodic WAL checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }, WAL_CHECKPOINT_MS);
+    walTimer.unref();
+  }
+
   const shutdown = async () => {
     try {
       stopPreflight?.();
+      if (walTimer) clearInterval(walTimer);
       if (shipper) await shipper.stop();
       await worker.stop();         // drain in-flight tick before closing DB
+      try {
+        if (dataDir !== ':memory:') db.pragma('wal_checkpoint(TRUNCATE)');
+      } catch { /* close() below still checkpoints on last connection */ }
       await app.close();
     } finally {
       db.close();
