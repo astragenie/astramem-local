@@ -117,9 +117,13 @@ describe('fuseScores', () => {
 });
 
 describe('fuseHits — AC-6 zeta ranking safety', () => {
+  // Fixed clock so freshness decay is deterministic — the two snapshot runs
+  // below must share the same nowMs, otherwise a sub-ms delta between two
+  // Date.now() calls perturbs freshness and flakes the exact-score assertion.
+  const NOW = 1_700_000_000_000;
   const metas = new Map([
-    ['a', { importance: 0.5, created_at: Date.now() }],
-    ['b', { importance: 0.5, created_at: Date.now() }],
+    ['a', { importance: 0.5, created_at: NOW }],
+    ['b', { importance: 0.5, created_at: NOW }],
   ]);
   // Identical bm25/cosine for both candidates so, absent zeta, they tie —
   // any reshuffle at zeta>0 is attributable ONLY to the entity bonus term.
@@ -128,9 +132,9 @@ describe('fuseHits — AC-6 zeta ranking safety', () => {
   const weights = { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1 };
 
   it('zeta=0 (default) → order identical whether or not an entityBonus map is supplied', () => {
-    const withoutBonusMap = fuseHits(ftsHits, vecHits, metas, { ...weights, zeta: 0 }, Date.now());
+    const withoutBonusMap = fuseHits(ftsHits, vecHits, metas, { ...weights, zeta: 0 }, NOW);
     const withBonusMapButZetaZero = fuseHits(
-      ftsHits, vecHits, metas, { ...weights, zeta: 0 }, Date.now(), undefined, undefined,
+      ftsHits, vecHits, metas, { ...weights, zeta: 0 }, NOW, undefined, undefined,
       new Map([['b', 1]]),
     );
     expect(withBonusMapButZetaZero.map(h => h.id)).toEqual(withoutBonusMap.map(h => h.id));
@@ -138,12 +142,12 @@ describe('fuseHits — AC-6 zeta ranking safety', () => {
   });
 
   it('zeta>0 with a non-uniform entityBonus map changes ranking order', () => {
-    const baseline = fuseHits(ftsHits, vecHits, metas, weights, Date.now());
+    const baseline = fuseHits(ftsHits, vecHits, metas, weights, NOW);
     // Tied candidates — baseline order is a tie; entityBonus must promote 'b'.
     expect(baseline.map(h => h.score)[0]).toBeCloseTo(baseline.map(h => h.score)[1] as number);
 
     const boosted = fuseHits(
-      ftsHits, vecHits, metas, { ...weights, zeta: 0.5 }, Date.now(), undefined, undefined,
+      ftsHits, vecHits, metas, { ...weights, zeta: 0.5 }, NOW, undefined, undefined,
       new Map([['b', 1]]),
     );
     expect(boosted[0]?.id).toBe('b');
