@@ -6,6 +6,8 @@
  * Token:    ASTRA_MEMORY_TOKEN env (default 'devtok')
  */
 
+import { MEMORY_TYPES } from '../contracts/memory.js';
+
 function getBaseUrl(): string {
   return process.env.ASTRA_MEMORY_URL ?? 'http://127.0.0.1:7777';
 }
@@ -110,9 +112,10 @@ export interface RememberCliOpts {
 
 export async function cliRemember(text: string, opts: RememberCliOpts): Promise<void> {
   const type = opts.type ?? 'fact';
-  const validTypes = ['decision', 'fact', 'lesson', 'command', 'todo'];
-  if (!validTypes.includes(type)) {
-    console.error(`Invalid type "${type}". Valid types: ${validTypes.join(', ')}`);
+  // Authoritative list from the contract — a hand-copied array here once
+  // drifted to 5 types and silently rejected note/event.
+  if (!(MEMORY_TYPES as readonly string[]).includes(type)) {
+    console.error(`Invalid type "${type}". Valid types: ${MEMORY_TYPES.join(', ')}`);
     process.exit(1);
   }
 
