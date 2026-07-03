@@ -20,6 +20,7 @@ import { childLogger } from '../log/logger.js';
 import { newRequestId, runWithRequestId } from '../log/correlation.js';
 import { type Config, defaultConfig } from '../config/config.js';
 import type { HealthState } from './health-state.js';
+import { isLoopbackHost } from './lib/network.js';
 
 /** Default no-op embed provider used when no real provider is injected. */
 function makeNoopEmbed(): EmbedProvider {
@@ -86,10 +87,17 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   });
 
   // Auth check — scrub the Authorization header value from any error logs.
-  // /health and /version are public. /dashboard validates its own token via ?token= query param.
+  // /dashboard validates its own token via ?token= query param — always exempt.
+  // /health and /version are public ONLY while the daemon is bound to loopback
+  // (default). FEAT-406: opting into a non-local bind (config.network.host set
+  // to anything but 127.0.0.1/localhost/::1) requires Bearer auth on BOTH
+  // routes together — isLoopbackHost is the one predicate that decides this,
+  // so the bind and the auth boundary can never drift apart.
+  const isLocalBind = isLoopbackHost(config.network.host);
   app.addHook('preHandler', async (req, reply) => {
     const path = req.url.split('?')[0];
-    if (path === '/health' || path === '/version' || path === '/dashboard') return;
+    if (path === '/dashboard') return;
+    if (isLocalBind && (path === '/health' || path === '/version')) return;
     const auth = req.headers.authorization;
     if (auth !== `Bearer ${opts.token}`) {
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;

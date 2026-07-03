@@ -50,6 +50,12 @@ export function configToYaml(cfg: Config): string {
     line(0, 'port', cfg.port),
     line(0, 'dataDir', cfg.dataDir),
     '',
+    // FEAT-406: leave at 127.0.0.1 unless you intend remote /health scraping.
+    // Any other value requires Bearer auth on /health + /version too — see
+    // docs/security/remote-health-threat-model.md before changing this.
+    line(0, 'network'),
+    line(1, 'host', cfg.network.host),
+    '',
     line(0, 'llm'),
     line(1, 'compaction'),
     line(2, 'provider', cfg.llm.compaction.provider),

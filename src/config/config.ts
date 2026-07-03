@@ -3,6 +3,13 @@ import { defaultDataDir } from './datadir.js';
 export interface Config {
   port: number;
   dataDir: string;
+  /** FEAT-406: HTTP bind + the derived auth boundary for /health + /version.
+   * Default host is loopback-only — changing it is a deliberate opt-in, not
+   * a two-flag combination that can drift out of sync (see
+   * `isLoopbackHost` in server/lib/network.ts, the single predicate that
+   * decides both bind exposure and whether /health + /version require a
+   * Bearer token). */
+  network: { host: string };
   llm: {
     compaction: { provider: 'ollama' | 'azure-openai'; model: string };
     extraction: { provider: 'ollama' | 'azure-openai'; model: string };
@@ -63,6 +70,7 @@ export function defaultConfig(): Config {
   return {
     port: 7777,
     dataDir: defaultDataDir(),
+    network: { host: '127.0.0.1' },
     llm: {
       compaction: { provider: 'ollama', model: 'qwen2.5-coder:7b' },
       extraction: { provider: 'ollama', model: 'qwen2.5-coder:7b' }
