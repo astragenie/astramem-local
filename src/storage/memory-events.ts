@@ -6,6 +6,7 @@
  * sourcing — no view rebuilding, no projection framework).
  */
 
+import { randomUUID } from 'node:crypto';
 import type { DB } from './db.js';
 import type { MemoryScope } from '../contracts/index.js';
 
@@ -19,6 +20,7 @@ export type MemoryEventType =
 
 export interface MemoryEvent {
   seq: number;
+  event_id: string;
   event_type: MemoryEventType;
   atom_id: string;
   payload_json: string | null;
@@ -34,6 +36,15 @@ export interface AppendEventInput {
   payload?: unknown;
   content_hash?: string | null;
   created_at?: number;
+  /**
+   * Globally-unique event identity (ADR-011). Local single-device writers
+   * never pass this — it is always freshly generated (node:crypto
+   * randomUUID()). Only the pull-ingest path (src/sync/puller.ts) writes
+   * remote-originated events with their OWN pre-existing event_id, and it
+   * does so via a raw dedup-insert, not through this method — append() is
+   * exclusively the local-origin path.
+   */
+  event_id?: string;
 }
 
 /** Memory not found for the requested lifecycle op — maps to HTTP 404. */
@@ -80,12 +91,13 @@ export class MemoryEventRepo {
   append(event: AppendEventInput): number {
     const createdAt = event.created_at ?? Date.now();
     const payloadJson = event.payload !== undefined ? JSON.stringify(event.payload) : null;
+    const eventId = event.event_id ?? randomUUID();
     const result = this.db
       .prepare(`
-        INSERT INTO memory_events (event_type, atom_id, payload_json, content_hash, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO memory_events (event_id, event_type, atom_id, payload_json, content_hash, created_at)
+        VALUES (?, ?, ?, ?, ?, ?)
       `)
-      .run(event.event_type, event.atom_id, payloadJson, event.content_hash ?? null, createdAt);
+      .run(eventId, event.event_type, event.atom_id, payloadJson, event.content_hash ?? null, createdAt);
     return Number(result.lastInsertRowid);
   }
 

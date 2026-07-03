@@ -15,6 +15,7 @@ import { rebuildCommand } from './rebuild.js';
 import { providersCommand } from './providers.js';
 import { captureCommand } from './capture.js';
 import { pairCommand } from './pair.js';
+import { syncCommand } from './sync.js';
 import { reinstallCommand } from './reinstall.js';
 
 const PKG_VERSION: string = (() => {
@@ -145,6 +146,12 @@ async function main() {
       break;
     }
 
+    case 'sync': {
+      // astramem-local sync pull|watermark [--json]
+      await syncCommand(rest);
+      break;
+    }
+
     case 'reinstall': {
       // astramem-local reinstall [--json] — idempotent stop→install→start→verify
       await reinstallCommand(rest);
@@ -211,6 +218,10 @@ Commands:
                                          --watch polls (default 60s)
   pair <claim-code> --url <cloud-url>    Pair with AstraMemory cloud (claim code
                                          from dashboard); enables sync shipper
+  sync pull [--json]                     Pull + merge events from the cloud since
+                                         the last watermark (ADR-011 conflict
+                                         resolve on touched atoms)
+  sync watermark [--json]                Show the current persisted pull cursor
 
 Environment:
   ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)
