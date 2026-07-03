@@ -111,7 +111,10 @@ export async function seedEvalCorpus(
 export async function runRetrievalEval(
   db: DB,
   embed: EmbedProvider,
-  weights: { alpha: number; beta: number; gamma: number; delta: number },
+  // epsilon (ADR-010 usefulness component) is part of the fused score — the
+  // eval must exercise the same weight set production search uses, not a
+  // narrower structural subset that only works by accident.
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number },
   corpus: EvalCorpus,
   querySet: EvalQuerySet,
   k = 10,
