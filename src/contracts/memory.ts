@@ -27,7 +27,9 @@ export interface Memory {
   updated_at: number;
   source_hash: string | null;
   evidence: string | null;
-  /** Bitemporal valid-time start (ADR-001). Mirrors created_at at insert time. */
+  /** Bitemporal valid-time start (ADR-001). Set to created_at at insert time;
+   *  advanced to the supersession instant when this atom becomes a successor
+   *  (supersede() co-issues new.valid_from = old.valid_to — FEAT-401). */
   valid_from: number;
   /** Bitemporal valid-time end. NULL = currently valid. */
   valid_to: number | null;
