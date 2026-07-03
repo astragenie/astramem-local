@@ -179,6 +179,8 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
 
     const sessions = db.prepare('SELECT * FROM sessions WHERE id = ?').all('sess-optional-fields') as Record<string, unknown>[];
     expect(sessions[0]!['agent']).toBe('claude-code');
+    // FEAT-403: cwd is persisted so the tag-hygiene backfill can derive repo from it.
+    expect(sessions[0]!['cwd']).toBe('/home/user/project');
   });
 
   it('client_scrub_hits_by_label round-trips through client_scrub_hits_by_label_json column', async () => {

@@ -12,6 +12,7 @@ import { tokenCommand } from './token.js';
 import { backupCommand } from './backup.js';
 import { queueCommand } from './queue.js';
 import { rebuildCommand } from './rebuild.js';
+import { retagCommand } from './retag.js';
 import { providersCommand } from './providers.js';
 import { captureCommand } from './capture.js';
 import { pairCommand } from './pair.js';
@@ -127,6 +128,12 @@ async function main() {
       break;
     }
 
+    case 'retag': {
+      // astramem-local retag [--dry-run] [--limit N] [--tier2] [--no-tier2] [--confidence N] [--json]
+      await retagCommand(rest);
+      break;
+    }
+
     case 'providers': {
       // astramem-local providers [--json]
       await providersCommand(rest);
@@ -205,6 +212,11 @@ Commands:
                                          auto-scheduled: boot + every 6h)
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
                                          Queue reembed jobs for existing memories
+  retag [--dry-run] [--limit N] [--tier2|--no-tier2] [--confidence N] [--json]
+                                         Backfill repo/project tags on untagged
+                                         memories (tier-1 session metadata,
+                                         tier-2 opt-in prompt-assisted,
+                                         confidence-gated at 0.7 by default)
   providers [--json]                     Show configured providers + live health probes
   capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
                                          Ingest new Codex CLI sessions (ADR-008);

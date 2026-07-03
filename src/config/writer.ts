@@ -101,6 +101,10 @@ export function configToYaml(cfg: Config): string {
     line(1, 'encryption'),
     line(2, 'enabled', cfg.security.encryption.enabled),
     '',
+    line(0, 'tagHygiene'),
+    line(1, 'tier2Enabled', cfg.tagHygiene.tier2Enabled),
+    line(1, 'tier2ConfidenceThreshold', cfg.tagHygiene.tier2ConfidenceThreshold),
+    '',
   ];
   return lines.join('\n');
 }
