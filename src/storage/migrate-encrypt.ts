@@ -35,7 +35,9 @@ const PLAINTEXT_MAGIC = 'SQLite format 3\0';
 
 export type EncryptMigrationResult = 'migrated' | 'already-encrypted' | 'missing';
 
-function isPlaintextSqlite(dbPath: string): boolean {
+/** Exported for key-aware CLI opens (open-runtime-db.ts): a plaintext file
+ *  must be opened WITHOUT a key — PRAGMA key on plaintext reads as garbage. */
+export function isPlaintextSqlite(dbPath: string): boolean {
   const header = readFileSync(dbPath).subarray(0, 16).toString('latin1');
   return header === PLAINTEXT_MAGIC;
 }
