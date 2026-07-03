@@ -73,10 +73,15 @@ describe('ADR-005 retrieval eval gate', () => {
     console.log(`  mean recall@10=${report.meanRecall.toFixed(3)} mean ndcg@10=${report.meanNdcg.toFixed(3)}`);
   });
 
-  it('evaluates every query except the known as_of gap (q6)', () => {
+  // FEAT-401: as_of is now supported end-to-end — q6 (the temporal case) runs
+  // like every other query instead of being reported as a skipped gap.
+  it('evaluates every query, including the as_of temporal case (q6)', () => {
     expect(report.perQuery).toHaveLength(querySet.queries.length);
-    expect(report.skipped).toBe(1);
-    expect(report.perQuery.find(r => r.id === 'q6')?.skipped).toContain('as_of');
+    expect(report.skipped).toBe(0);
+    const q6 = report.perQuery.find(r => r.id === 'q6');
+    expect(q6?.skipped).toBeNull();
+    // q6 asserts atom-001 (valid at as_of) outranks atom-002 (not yet valid).
+    expect(q6?.recall).toBe(1);
   });
 
   // Baseline measured 2026-07-02 with the fake embedder: mean recall@10 =

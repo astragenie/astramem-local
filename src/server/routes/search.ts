@@ -1,7 +1,7 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&since=&limit=
- *   POST /recall  { query, k, filters? }
+ *   GET  /search?q=&type=&repo=&project=&since=&as_of=&limit=
+ *   POST /recall  { query, k, filters? }  filters.as_of: ISO-8601 date-time
  *   POST /remember { text, type, metadata? }
  */
 
@@ -14,7 +14,7 @@ import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { recordRecallServed } from '../../storage/usefulness.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
-import { search, type SearchFilters } from '../../search/search.js';
+import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
 import { redactIfEnabled } from '../../redact/index.js';
@@ -29,7 +29,9 @@ const RecallBodySchema = z.object({
     type: z.array(z.string()).optional(),
     repo: z.string().optional(),
     project: z.string().optional(),
-    since: z.number().optional()
+    since: z.number().optional(),
+    /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
+    as_of: z.string().optional()
   }).optional()
 });
 
@@ -73,6 +75,13 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
           filters.since = sinceNum;
         }
       }
+      if (params.as_of) {
+        try {
+          filters.as_of = parseAsOf(params.as_of);
+        } catch (err) {
+          return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
+        }
+      }
 
       const hits = await search(q, filters, limit, { db, embed, weights });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
@@ -98,6 +107,13 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (rawFilters?.repo) filters.repo = rawFilters.repo;
       if (rawFilters?.project) filters.project = rawFilters.project;
       if (rawFilters?.since !== undefined) filters.since = rawFilters.since;
+      if (rawFilters?.as_of !== undefined) {
+        try {
+          filters.as_of = parseAsOf(rawFilters.as_of);
+        } catch (err) {
+          return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
+        }
+      }
 
       const hits = await search(query, filters, k, { db, embed, weights });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).

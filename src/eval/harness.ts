@@ -6,18 +6,22 @@
  * and scores recall@k / NDCG@k against the graded relevance judgments.
  *
  * Known v1 engine gaps, handled explicitly rather than silently:
- *  - `as_of` (bitemporal time-travel) is not supported by search() — queries
- *    carrying an as_of filter are reported as skipped with a reason.
  *  - per-query `mode` (keyword|semantic|hybrid) is advisory only; the local
  *    engine always runs its hybrid FTS+vector path. The mode is echoed in
  *    the per-query report so a future mode-routing engine can be compared.
+ *
+ * FEAT-401: `as_of` (bitemporal time-travel) is now supported end-to-end —
+ * seedEvalCorpus backfills each atom's declared valid_from (in addition to
+ * valid_to) so corpus atoms carry their fixture-declared validity windows
+ * rather than the insert-time "now", and runRetrievalEval forwards
+ * `filters.as_of` straight into search() instead of skipping the query.
  */
 
 import type { DB } from '../storage/db.js';
 import type { EmbedProvider, MemoryType } from '../contracts/index.js';
 import { MemoryRepo } from '../storage/memories.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
-import { search } from '../search/search.js';
+import { search, parseAsOf } from '../search/search.js';
 import { recallAtK, ndcgAtK, type GradedRelevance } from './metrics.js';
 
 export interface EvalAtom {
@@ -28,6 +32,8 @@ export interface EvalAtom {
   confidence: number;
   importance: number;
   provenance: { session_id: string; repo: string; project: string };
+  /** Bitemporal valid-time start (ADR-001). Optional for pre-FEAT-401 fixtures. */
+  valid_from?: string;
   valid_to: string | null;
   scope: string;
   content_hash: string;
@@ -95,6 +101,15 @@ export async function seedEvalCorpus(
       evidence: Array.isArray(atom.evidence) ? atom.evidence.join('; ') : atom.evidence,
       scope: atom.scope as 'personal' | 'team' | 'org',
     });
+    // FEAT-401: backfill the fixture-declared valid_from/valid_to so corpus
+    // atoms carry their real bitemporal windows instead of insert-time "now"
+    // — required for as_of queries (q6) to resolve against the right
+    // generation. valid_from mirrors created_at on a fresh insert, so only
+    // rewrite it when the fixture declares a different instant.
+    if (atom.valid_from !== undefined) {
+      db.prepare('UPDATE memories SET valid_from = ? WHERE id = ?')
+        .run(Date.parse(atom.valid_from), memId);
+    }
     if (atom.valid_to !== null) {
       db.prepare('UPDATE memories SET valid_to = ? WHERE id = ?')
         .run(Date.parse(atom.valid_to), memId);
@@ -123,16 +138,8 @@ export async function runRetrievalEval(
 
   const perQuery: QueryResult[] = [];
   for (const q of querySet.queries) {
-    if (q.filters.as_of !== undefined) {
-      perQuery.push({
-        id: q.id, mode: q.mode,
-        skipped: 'as_of (bitemporal time-travel) not supported by local engine v1',
-        recall: null, ndcg: null, rankedAtomIds: [],
-      });
-      continue;
-    }
-
-    const hits = await search(q.text, { type: q.filters.type }, k, { db, embed, weights });
+    const as_of = q.filters.as_of !== undefined ? parseAsOf(q.filters.as_of) : undefined;
+    const hits = await search(q.text, { type: q.filters.type, as_of }, k, { db, embed, weights });
     const rankedAtomIds = hits
       .map(h => memToAtom.get(h.id))
       .filter((id): id is string => id !== undefined);

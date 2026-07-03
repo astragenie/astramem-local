@@ -37,6 +37,10 @@ export interface SearchCliOpts {
   repo?: string;
   since?: string;
   limit?: string;
+  /** FEAT-401: ISO-8601 date-time. Forwarded verbatim to the API's `as_of`
+   *  query param — the CLI does no local filtering, so this is the same
+   *  code path as the API (GET /search -> search() -> validityFilterClause). */
+  asOf?: string;
 }
 
 export async function cliSearch(query: string, opts: SearchCliOpts): Promise<void> {
@@ -45,6 +49,7 @@ export async function cliSearch(query: string, opts: SearchCliOpts): Promise<voi
   if (opts.repo) params.set('repo', opts.repo);
   if (opts.since) params.set('since', opts.since);
   if (opts.limit) params.set('limit', opts.limit);
+  if (opts.asOf) params.set('as_of', opts.asOf);
 
   const base = getBaseUrl();
   const result = await fetchJson(`${base}/search?${params.toString()}`) as { hits: unknown[] };
@@ -72,6 +77,8 @@ export interface RecallCliOpts {
   k?: string;
   type?: string;
   repo?: string;
+  /** FEAT-401: ISO-8601 date-time, forwarded to POST /recall filters.as_of. */
+  asOf?: string;
 }
 
 export async function cliRecall(question: string, opts: RecallCliOpts): Promise<void> {
@@ -79,6 +86,7 @@ export async function cliRecall(question: string, opts: RecallCliOpts): Promise<
   const filters: Record<string, unknown> = {};
   if (opts.type) filters.type = [opts.type];
   if (opts.repo) filters.repo = opts.repo;
+  if (opts.asOf) filters.as_of = opts.asOf;
 
   const base = getBaseUrl();
   const result = await fetchJson(`${base}/recall`, {
