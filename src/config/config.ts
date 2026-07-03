@@ -64,6 +64,16 @@ export interface Config {
       enabled: boolean;
     };
   };
+  /** Repo/project tag-hygiene backfill (FEAT-403, W4.3). */
+  tagHygiene: {
+    /** Tier-2 prompt-assisted inference is opt-in — a data-mutating heuristic
+     * pass over legacy rows carries real mis-tag risk (PM pre-mortem), so it
+     * never runs silently. Enable via config or the CLI's `--tier2` flag. */
+    tier2Enabled: boolean;
+    /** Minimum tier-2 confidence required to apply an inferred tag; below
+     * this the memory is left untagged rather than risk a mis-tag (AC-4). */
+    tier2ConfidenceThreshold: number;
+  };
 }
 
 export function defaultConfig(): Config {
@@ -90,7 +100,8 @@ export function defaultConfig(): Config {
     security: {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
       encryption: { enabled: true }
-    }
+    },
+    tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 }
   };
 }
 
