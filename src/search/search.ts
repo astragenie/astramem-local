@@ -24,6 +24,12 @@ export interface SearchFilters {
   repo?: string;
   project?: string;
   since?: number;  // epoch ms lower bound on created_at
+  /**
+   * Bitemporal time-travel (FEAT-401, ADR-001/ADR-005): return memories as
+   * they stood at this instant (epoch ms) rather than the current snapshot.
+   * Absent = current behavior (only currently-valid rows).
+   */
+  as_of?: number;
 }
 
 export interface SearchHit {
@@ -61,6 +67,44 @@ export interface SearchOpts {
  */
 function escapeFtsQuery(q: string): string {
   return q.trim().split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+}
+
+/**
+ * Bitemporal validity SQL clause (FEAT-401) — the ONE shared filter used by
+ * every caller of search() (GET /search, POST /recall, the eval harness).
+ * There is deliberately no second implementation anywhere else: the CLI
+ * `--as-of` flag and the API `as_of` filter both terminate here because the
+ * CLI is a thin HTTP client of the same routes that call search().
+ *
+ *  - No as_of (undefined): current snapshot — only rows with valid_to IS
+ *    NULL surface, byte-identical to pre-FEAT-401 behavior (AC-2).
+ *  - as_of = T: the row valid AT INSTANT T — valid_from <= T AND (valid_to
+ *    IS NULL OR valid_to > T). Half-open interval [valid_from, valid_to):
+ *    at the exact instant a supersede/invalidate event lands, the new
+ *    generation is already the one considered valid (AC-5).
+ */
+export function validityFilterClause(asOf?: number): { clause: string; params: number[] } {
+  if (asOf === undefined) {
+    return { clause: 'valid_to IS NULL', params: [] };
+  }
+  return { clause: 'valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)', params: [asOf, asOf] };
+}
+
+/**
+ * Parse an `as_of` wire value (ISO-8601 date-time string) into epoch ms.
+ * Shared by every route that accepts the filter (GET /search query param,
+ * POST /recall body) so a malformed value is rejected identically everywhere
+ * — one parsing path, not a per-route reimplementation. Returns undefined
+ * for an absent/empty value; throws for a present-but-unparseable value so
+ * callers can turn it into a 400.
+ */
+export function parseAsOf(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    throw new Error(`invalid as_of value: ${value} (expected ISO-8601 date-time)`);
+  }
+  return ms;
 }
 
 /**
@@ -164,10 +208,14 @@ export async function search(
   const fusedIds = fused.map(h => h.id);
   const idPlaceholders = fusedIds.map(() => '?').join(',');
   // Atom v3 (ADR-001): invalidated memories (valid_to set) must never surface
-  // in recall — why_memory can still fetch them by id directly.
+  // in a current-snapshot recall — why_memory can still fetch them by id
+  // directly. FEAT-401: when as_of is set, the snapshot rule is replaced by
+  // the bitemporal validity window so a past-valid (now superseded) memory
+  // can surface again for a point-in-time query.
+  const { clause: validityClause, params: validityParams } = validityFilterClause(filters.as_of);
   const whereFilter = filterClauses.length > 0 ? ` AND ${filterClauses.join(' AND ')}` : '';
-  const sql = `SELECT id, type, text FROM memories WHERE id IN (${idPlaceholders}) AND valid_to IS NULL${whereFilter}`;
-  const memRows = db.prepare(sql).all(...fusedIds, ...filterParams) as Array<{ id: string; type: MemoryType; text: string }>;
+  const sql = `SELECT id, type, text FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
+  const memRows = db.prepare(sql).all(...fusedIds, ...validityParams, ...filterParams) as Array<{ id: string; type: MemoryType; text: string }>;
 
   const memMap = new Map(memRows.map(r => [r.id, r]));
 

@@ -47,24 +47,26 @@ async function main() {
     }
 
     case 'search': {
-      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--limit N]
+      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--as-of DATE] [--limit N]
       const query = rest.find(a => !a.startsWith('-')) ?? '';
       await cliSearch(query, {
         type: parseArg(rest, '--type'),
         repo: parseArg(rest, '--repo'),
         since: parseArg(rest, '--since'),
-        limit: parseArg(rest, '--limit')
+        limit: parseArg(rest, '--limit'),
+        asOf: parseArg(rest, '--as-of')
       });
       break;
     }
 
     case 'recall': {
-      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO]
+      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE]
       const question = rest.find(a => !a.startsWith('-')) ?? '';
       await cliRecall(question, {
         k: parseArg(rest, '--k'),
         type: parseArg(rest, '--type'),
-        repo: parseArg(rest, '--repo')
+        repo: parseArg(rest, '--repo'),
+        asOf: parseArg(rest, '--as-of')
       });
       break;
     }
@@ -195,8 +197,10 @@ Commands:
                                          (stable shim + task) -> start -> verify
                                          health + version. Run after every upgrade.
   doctor [--json] [--port N]             Run health checks
-  search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--limit N]
-  recall "question" [--k N] [--type TYPE] [--repo REPO]
+  search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--as-of DATE] [--limit N]
+  recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE]
+                                         --as-of: ISO-8601 date-time — point-in-time
+                                         (bitemporal) recall, FEAT-401
   remember "text" [--type TYPE] [--repo REPO]
   budget [--reset]                       Show today + month LLM spend vs cap
   backup [--out PATH] [--keep N] [--json] [--no-verify]
