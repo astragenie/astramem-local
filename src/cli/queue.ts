@@ -1,12 +1,17 @@
 /**
  * `astramem-local queue [--json] [--limit N]`
+ * `astramem-local queue purge --poison [--json] [--dump-dir PATH]`
  *
  * Shows job-table state counts (pending/running/completed/failed/poison/paused)
  * plus the most recent failures (state IN ('failed','poison')) with their
  * last_error, so an operator can see what's stuck without opening the DB.
+ *
+ * The `purge --poison` subcommand (FEAT-405) removes poison-marked jobs on
+ * demand, ahead of the 30-day auto-purge — see ./queue-purge.ts.
  */
 
 import { openRuntimeDb } from './open-runtime-db.js';
+import { queuePurgeCommand } from './queue-purge.js';
 import type { JobState } from '../contracts/index.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -33,6 +38,11 @@ export interface QueueSummary {
 }
 
 export async function queueCommand(args: string[]): Promise<void> {
+  if (args[0] === 'purge') {
+    await queuePurgeCommand(args.slice(1));
+    return;
+  }
+
   const jsonMode = args.includes('--json');
   const limitArg = parseArg(args, '--limit');
   const limit = limitArg ? Math.max(1, Number(limitArg)) : 10;

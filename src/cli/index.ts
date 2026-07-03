@@ -117,6 +117,7 @@ async function main() {
 
     case 'queue': {
       // astramem-local queue [--json] [--limit N]
+      // astramem-local queue purge --poison [--json] [--dump-dir PATH]
       await queueCommand(rest);
       break;
     }
