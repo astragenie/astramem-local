@@ -15,6 +15,7 @@ import { rebuildCommand } from './rebuild.js';
 import { providersCommand } from './providers.js';
 import { captureCommand } from './capture.js';
 import { pairCommand } from './pair.js';
+import { reinstallCommand } from './reinstall.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -141,6 +142,12 @@ async function main() {
       break;
     }
 
+    case 'reinstall': {
+      // astramem-local reinstall [--json] — idempotent stop→install→start→verify
+      await reinstallCommand(rest);
+      break;
+    }
+
     case '--version':
     case '-v':
       console.log(PKG_VERSION);
@@ -153,8 +160,11 @@ async function main() {
 
 Commands:
   serve [--port N]                       Start daemon (foreground)
-  service install|uninstall|start|stop|status [--port N]
+  service install|uninstall|start|stop|status|repair [--port N]
                                          Manage OS service (systemd/launchd/schtasks)
+  reinstall [--json]                     Idempotent service repair: stop -> install
+                                         (stable shim + task) -> start -> verify
+                                         health + version. Run after every upgrade.
   doctor [--json] [--port N]             Run health checks
   search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--limit N]
   recall "question" [--k N] [--type TYPE] [--repo REPO]

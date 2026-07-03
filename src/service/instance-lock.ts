@@ -80,6 +80,11 @@ function writeLock(path: string, info: LockInfo, exclusive: boolean): void {
   }
 }
 
+/** Read the current lock holder for a data dir (null when absent/corrupt). */
+export function readLockInfo(dataDir: string): LockInfo | null {
+  return readLock(lockPath(dataDir));
+}
+
 function readLock(path: string): LockInfo | null {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<LockInfo>;
