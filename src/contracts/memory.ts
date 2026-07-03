@@ -1,4 +1,8 @@
-export type MemoryType = 'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event';
+/** Single runtime source of truth for memory types — CLI validation and any
+ *  future enum checks must use this array, not a hand-copied list (the CLI
+ *  once drifted to a stale 5-type copy and silently rejected note/event). */
+export const MEMORY_TYPES = ['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event'] as const;
+export type MemoryType = (typeof MEMORY_TYPES)[number];
 
 /** ADR-009 memory scope — personal is the default for all local-agent writes. */
 export type MemoryScope = 'personal' | 'team' | 'org';
