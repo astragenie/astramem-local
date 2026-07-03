@@ -1,7 +1,12 @@
 # astramem-local — Hardening Roadmap (post-PR #29)
 
-Status: proposed 2026-07-03. Wave 0 (install fragility + runtime survival) shipped as PR #29.
+Status 2026-07-03: Wave 0 shipped (PR #29) · **Wave 1 shipped (PR #30)** · **Wave 2 shipped (PR #31)** ·
+**Wave 3 investigated — 3.1/3.2/3.3/3.4 were already implemented** (D-DEF1 flatten `55ac082`,
+ADR-005 eval gate `c0a0571`, D-DEF2 summary-id backfill `55ac082`, ADR-010 ε-fusion `f8dbc5d`);
+remaining Wave-3 delta was a harness type fix + docs truth-up. Wave 4 = backlog, unscheduled.
 Each wave = one PR, independently shippable, zero wire breaks unless flagged.
+
+Operational note: W2.3 publish workflow needs the `NPM_TOKEN` repo secret set before the next release tag.
 
 ## Wave 1 — "Close the audit" (security + observability debt)
 
