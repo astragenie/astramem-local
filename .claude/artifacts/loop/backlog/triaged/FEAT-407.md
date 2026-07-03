@@ -6,7 +6,7 @@ category: null
 target_release: null
 created: 2026-07-03
 updated: 2026-07-03
-depends_on: [FEAT-408]
+depends_on: []  # cleared 2026-07-03: FEAT-408 ADR-011 merged (122a58c); merge slice shape derived
 slices: []
 derived_from: null
 github_issue: null
