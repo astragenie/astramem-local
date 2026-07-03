@@ -105,6 +105,63 @@ export class JobRepo {
     return row ?? null;
   }
 
+  /**
+   * Boot-time crash recovery. Call once at daemon start, before the worker.
+   *
+   * - 'running' jobs are orphans: the previous process died mid-handle (on
+   *   Windows, schtasks /end and Task Manager kills bypass the SIGTERM
+   *   handler entirely). Requeue them.
+   * - 'failed' jobs with attempts < maxAttempts were waiting on an IN-MEMORY
+   *   retry timer (worker.ts setTimeout) that died with the process — without
+   *   this they are stranded in 'failed' forever. Requeue them too.
+   *
+   * `attempts` is preserved in both cases so poison thresholds still apply.
+   * Handlers must tolerate re-execution of partially-applied work (distill/
+   * reembed write via idempotent upserts; a rare duplicate memory from a
+   * mid-write crash is deduped downstream by consolidation).
+   */
+  recoverOrphans(maxAttempts = 3): { requeuedRunning: number; requeuedFailed: number } {
+    const now = Date.now();
+    const requeuedRunning = this.db.prepare(`
+      UPDATE jobs SET state = 'pending', updated_at = ?
+      WHERE state = 'running'
+    `).run(now).changes;
+    const requeuedFailed = this.db.prepare(`
+      UPDATE jobs SET state = 'pending', updated_at = ?
+      WHERE state = 'failed' AND attempts < ?
+    `).run(now, maxAttempts).changes;
+    return { requeuedRunning, requeuedFailed };
+  }
+
+  /**
+   * Retention purge: completed jobs are transient bookkeeping (7d), poison
+   * jobs are kept longer (30d) for `queue` command forensics. Other states
+   * are never touched.
+   */
+  purgeOld(opts: { completedDays?: number; poisonDays?: number } = {}): { completed: number; poison: number } {
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+    const completedCutoff = now - (opts.completedDays ?? 7) * dayMs;
+    const poisonCutoff = now - (opts.poisonDays ?? 30) * dayMs;
+    const completed = this.db.prepare(
+      `DELETE FROM jobs WHERE state = 'completed' AND updated_at < ?`,
+    ).run(completedCutoff).changes;
+    const poison = this.db.prepare(
+      `DELETE FROM jobs WHERE state = 'poison' AND updated_at < ?`,
+    ).run(poisonCutoff).changes;
+    return { completed, poison };
+  }
+
+  /** State → count map for /health queue reporting. */
+  stateCounts(): Record<string, number> {
+    const rows = this.db.prepare(
+      `SELECT state, COUNT(*) AS n FROM jobs GROUP BY state`,
+    ).all() as Array<{ state: string; n: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.state] = r.n;
+    return out;
+  }
+
   private _transition(id: string, state: JobState): void {
     const now = Date.now();
     this.db.prepare('UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?').run(state, now, id);

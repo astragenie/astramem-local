@@ -17,7 +17,8 @@
  * (no migration needed) and this function returns immediately.
  */
 
-import { existsSync, renameSync } from 'node:fs';
+import { existsSync, renameSync, copyFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { platform } from 'node:os';
 import { defaultConfigDir, defaultDataDir, legacyConfigDir, legacyDataDir } from './datadir.js';
 
@@ -81,12 +82,52 @@ export function migrateLegacyDirsIfPresent(): MigrationResult {
     }
 
     if (canonicalExists) {
-      // Both exist: user has data in both locations. Emit a warning and leave
-      // both untouched — overwriting canonical risks destroying a valid bearer.
-      const warning =
-        `Two ${label} dirs detected: "${legacy}" and "${canonical}". ` +
-        `Using canonical. Legacy dir left untouched; delete manually after ` +
-        `verifying secrets/DB have been migrated.`;
+      // Both exist. Reconcile per-file: copy (never move, never overwrite)
+      // any file the canonical dir LACKS that the legacy dir has. This
+      // rescues the stranded-data case — e.g. a fresh canonical dir created
+      // next to a legacy dir that still holds the real memory.sqlite —
+      // while never clobbering a valid canonical bearer or database.
+      const candidates =
+        label === 'config'
+          ? ['secrets.env', 'config.yaml']
+          : ['memory.sqlite', 'memory.sqlite-wal', 'memory.sqlite-shm'];
+      // Data pair: the DB and its WAL/SHM are one consistency unit — only
+      // copy when the canonical dir has NONE of them (a mismatched WAL
+      // corrupts the database). Config pair: copy per-file.
+      let copyable: string[];
+      if (label === 'data') {
+        const canonicalHasAny = candidates.some(f => existsSync(join(canonical, f)));
+        copyable = canonicalHasAny ? [] : candidates.filter(f => existsSync(join(legacy, f)));
+      } else {
+        copyable = candidates.filter(f => existsSync(join(legacy, f)) && !existsSync(join(canonical, f)));
+      }
+      let copied = 0;
+      for (const f of copyable) {
+        try {
+          // tmp + rename so a crash mid-copy never leaves a torn file at the
+          // canonical path (same pattern as migrate-encrypt.ts).
+          const tmp = join(canonical, `${f}.migrating-tmp`);
+          copyFileSync(join(legacy, f), tmp);
+          renameSync(tmp, join(canonical, f));
+          copied++;
+          console.log(`[astramem-local] reconciled ${label} file from legacy dir: ${f}`);
+        } catch (err) {
+          result.warnings.push(`Failed to copy legacy ${label} file "${f}": ${err}`);
+        }
+      }
+      if (copied > 0) result[migratedKey] = true;
+
+      const bothHaveDb =
+        label === 'data' &&
+        existsSync(join(legacy, 'memory.sqlite')) &&
+        existsSync(join(canonical, 'memory.sqlite'));
+      const warning = bothHaveDb
+        ? `Two ${label} dirs BOTH contain memory.sqlite: "${legacy}" and "${canonical}". ` +
+          `Using canonical — verify it holds your real data (run 'astramem-local doctor'); ` +
+          `the legacy copy was left untouched.`
+        : `Two ${label} dirs detected: "${legacy}" and "${canonical}". Using canonical` +
+          (copied > 0 ? ` (${copied} missing file(s) copied from legacy).` : '.') +
+          ` Legacy dir left untouched; delete manually after verifying.`;
       result.warnings.push(warning);
       console.warn(`[astramem-local] WARN: ${warning}`);
       continue;

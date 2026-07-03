@@ -49,7 +49,15 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   // manually via the onResponse hook below, using our pino instance + the
   // request_id we generate in onRequest. This sidesteps a type incompatibility
   // between FastifyBaseLogger and FastifyInstance<never logger>.
-  const app = Fastify({ logger: false });
+  const app = Fastify({
+    logger: false,
+    // Long Codex/Claude sessions routinely exceed Fastify's 1MiB default —
+    // an oversized transcript should not 413 (wire: POST /ingest/transcript).
+    bodyLimit: 10 * 1024 * 1024,
+    // A stuck handler must not hold a connection forever (recall with a cold
+    // embed can be slow, but 60s is the ceiling — matches the LLM timeout).
+    requestTimeout: 60_000,
+  });
   const embed = opts.embed ?? makeNoopEmbed();
   const config = opts.config ?? defaultConfig();
 
@@ -91,6 +99,24 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
       );
       return reply.code(401).send({ error: 'unauthorized' });
     }
+  });
+
+  // Unhandled route errors: log the full error server-side, return a
+  // sanitized body (no stack, no internals) with the original status when a
+  // route set one (e.g. Fastify's own 413/400), else 500. Existing 4xx
+  // paths return their own bodies and never reach this handler.
+  app.setErrorHandler((rawErr, req, reply) => {
+    const err = rawErr as Error & { statusCode?: number; code?: string };
+    const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
+    const status = typeof err.statusCode === 'number' && err.statusCode >= 400 ? err.statusCode : 500;
+    childLogger({ request_id: requestId ?? 'unknown' }).error(
+      { method: req.method, path: req.url, status, error_message: err.message, error_kind: err.name },
+      'request failed',
+    );
+    void reply.code(status).send({
+      ok: false,
+      error: { code: status === 500 ? 'internal' : String(err.code ?? status), message: status === 500 ? 'internal error' : err.message },
+    });
   });
 
   await app.register(healthRoute(config, opts.db, opts.healthState));

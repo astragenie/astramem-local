@@ -4,6 +4,7 @@ import { type Config, defaultConfig } from '../../config/config.js';
 import type { DB } from '../../storage/db.js';
 import type { HealthState } from '../health-state.js';
 import { usefulnessRate } from '../../storage/usefulness.js';
+import { statfsSync } from 'node:fs';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -35,7 +36,7 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
           used_7d: rate.used,
           rate_7d: rate.rate,
         },
-        // Degraded-start (D3) — additive fields only.
+        // Degraded-start (D3) + real health checks (P1.3) — additive only.
         ...(healthState
           ? {
               status: healthState.status(),
@@ -46,9 +47,50 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
                 last_error: healthState.embed.lastError,
                 attempts: healthState.embed.attempts,
               },
+              worker: workerBlock(healthState),
+              ...(db ? { queue: queueCounts(db) } : {}),
+              ...(healthState.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
             }
           : {}),
       };
     });
   };
+}
+
+/**
+ * Generous liveness window: the worker stamps lastTickAt at tick START, so a
+ * single long-running job (LLM distill can take up to the 60s chat timeout)
+ * must not read as "worker dead". 90s covers the worst handler + margin.
+ */
+const WORKER_ALIVE_WINDOW_MS = 90_000;
+
+function workerBlock(hs: HealthState) {
+  const last = hs.worker.lastTickAt;
+  return {
+    alive: last !== null && Date.now() - last < WORKER_ALIVE_WINDOW_MS,
+    last_tick_at: last,
+    last_tick_ago_ms: last === null ? null : Date.now() - last,
+  };
+}
+
+function queueCounts(db: DB): Record<string, number> {
+  try {
+    const rows = db.prepare(
+      `SELECT state, COUNT(*) AS n FROM jobs GROUP BY state`,
+    ).all() as Array<{ state: string; n: number }>;
+    const out: Record<string, number> = {};
+    for (const r of rows) out[r.state] = r.n;
+    return out;
+  } catch {
+    return {}; // jobs table absent (bare test DB) — degrade, never 500.
+  }
+}
+
+function diskFree(dataDir: string): number | null {
+  try {
+    const s = statfsSync(dataDir);
+    return s.bavail * s.bsize;
+  } catch {
+    return null;
+  }
 }

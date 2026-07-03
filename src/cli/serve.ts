@@ -1,5 +1,5 @@
 import { join } from 'node:path';
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
@@ -15,6 +15,7 @@ import { createHealthState, type HealthState } from '../server/health-state.js';
 import type { EmbedProvider } from '../contracts/embed.js';
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
+import { JobRepo } from '../pipeline/job-repo.js';
 import { distillHandler } from '../pipeline/handlers/distill.js';
 import { distillEventsHandler } from '../pipeline/handlers/distill-events.js';
 import { cleanupHandler } from '../pipeline/handlers/cleanup.js';
@@ -104,6 +105,29 @@ export async function serve(opts: ServeOpts): Promise<void> {
   dbForCrash = db;
   migrate(db);
 
+  // Boot job recovery (P1.1): requeue jobs orphaned by a non-graceful death
+  // ('running' from a mid-handle kill; 'failed' whose in-memory retry timer
+  // died with the process). Purge old completed/poison bookkeeping (P1.2).
+  const bootRepo = new JobRepo(db);
+  const recovered = bootRepo.recoverOrphans();
+  if (recovered.requeuedRunning + recovered.requeuedFailed > 0) {
+    console.log(
+      `[astramem-local] job recovery: requeued ${recovered.requeuedRunning} orphaned running, ` +
+      `${recovered.requeuedFailed} interrupted retries`,
+    );
+  }
+  const purged = bootRepo.purgeOld();
+  if (purged.completed + purged.poison > 0) {
+    console.log(`[astramem-local] job retention: purged ${purged.completed} completed, ${purged.poison} poison`);
+  }
+
+  // Encryption-migration backup cleanup (P1.5): once the encrypted DB has
+  // been opening successfully for 7+ days, the plaintext copy is pure
+  // data-at-rest exposure — delete it. Doctor surfaces it during the window.
+  if (dataDir !== ':memory:' && cfg.security.encryption.enabled) {
+    cleanupPreEncryptionBak(dbPath);
+  }
+
   // SEC-9: disabling redaction is a deliberate trust trade-off — make it loud.
   if (!cfg.security.redaction.enabled) {
     console.warn(
@@ -114,6 +138,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
 
   // Resolve providers: mock mode (CI/test) or real providers
   const healthState = createHealthState();
+  if (dataDir !== ':memory:') healthState.dataDir = dataDir;
   let providers: ProviderSet | MockProviderSet;
   const useMock = process.env.ASTRA_MEMORY_MOCK_PROVIDERS === '1';
   if (useMock) {
@@ -173,6 +198,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     db,
     config: cfg,
     ctx: extCtx,
+    healthState,
   });
 
   // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
@@ -233,6 +259,32 @@ export async function serve(opts: ServeOpts): Promise<void> {
  * Returns a canceller; the retry timer is unref'd so it never holds the
  * process open during shutdown.
  */
+/**
+ * Delete the plaintext `.pre-encryption.bak` left by the one-shot encryption
+ * migration once it is older than 7 days — by then the encrypted DB has
+ * proven itself across restarts, and a lingering plaintext copy of the whole
+ * database is pure data-at-rest exposure. Doctor reports it during the
+ * grace window so the user knows it exists.
+ */
+function cleanupPreEncryptionBak(dbPath: string): void {
+  const bakPath = `${dbPath}.pre-encryption.bak`;
+  try {
+    const st = statSync(bakPath);
+    const ageDays = (Date.now() - st.mtimeMs) / (24 * 60 * 60 * 1000);
+    if (ageDays > 7) {
+      unlinkSync(bakPath);
+      console.log(`[astramem-local] removed plaintext pre-encryption backup (${Math.floor(ageDays)}d old): ${bakPath}`);
+    } else {
+      console.warn(
+        `[astramem-local] plaintext pre-encryption backup still present (${ageDays.toFixed(1)}d old, ` +
+        `auto-removed after 7d): ${bakPath}`,
+      );
+    }
+  } catch {
+    /* absent — nothing to do */
+  }
+}
+
 function startEmbedPreflight(embed: EmbedProvider, healthState: HealthState): () => void {
   const BACKOFF_MS = [5_000, 10_000, 30_000, 60_000];
   const PROBE_TIMEOUT_MS = 30_000;

@@ -25,6 +25,8 @@ export interface HealthState {
   readonly startedAt: number;
   embed: EmbedHealth;
   worker: WorkerHealth;
+  /** Resolved data directory — lets /health report disk_free_bytes. */
+  dataDir?: string;
   status(): DaemonStatus;
   uptimeSeconds(): number;
 }
