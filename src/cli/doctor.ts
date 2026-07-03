@@ -1,4 +1,4 @@
-import { defaultConfig } from '../config/config.js';
+import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { getChecks } from '../doctor/checks.js';
 import { runChecks, formatTable, formatJson } from '../doctor/runner.js';
 
@@ -15,9 +15,13 @@ export async function doctorCommand(args: string[]): Promise<void> {
   const jsonMode = parseFlag(args, '--json');
   const portArg = parseArg(args, '--port');
 
-  const cfg = defaultConfig();
-  const port = portArg ? Number(portArg) : cfg.port;
-  const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
+  // Shared resolver — doctor must probe the SAME dataDir the daemon serves
+  // from (config.yaml included), not the compile-time default. Previously a
+  // non-default config.yaml dataDir made doctor probe the wrong directory,
+  // producing false "file is not a database" failures.
+  const { cfg, port, dataDir } = resolveRuntimeConfig({
+    port: portArg ? Number(portArg) : undefined,
+  });
 
   const checks = getChecks({
     port,

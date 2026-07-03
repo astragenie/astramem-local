@@ -171,6 +171,9 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
       authorization: `Bearer ${opts.token}`,
     },
     body: JSON.stringify(envelope),
+    // A hung cloud socket must not stall shipping rounds indefinitely — abort
+    // and let the caller's backoff handle it.
+    signal: AbortSignal.timeout(10_000),
   });
   if (!res.ok) {
     throw new Error(`sync ship failed: HTTP ${res.status}`);

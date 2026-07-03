@@ -1,6 +1,8 @@
 import { exec } from 'node:child_process';
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { buildTaskXml } from './task-xml.js';
 import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
 const TASK_NAME = 'AstraMemoryD';
@@ -30,6 +32,20 @@ export function runCmd(cmd: string): Promise<string> {
 }
 
 /**
+ * Best-effort elevation probe. `net session` succeeds only in an elevated
+ * shell; exit code 2 (access denied) means non-elevated. Used for DIAGNOSTICS
+ * only — never as a gate: schtasks is always attempted regardless.
+ */
+export async function isElevated(): Promise<boolean> {
+  try {
+    await runCmd('net session');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Properly quote a Windows command for schtasks /tr.
  * schtasks requires the /tr value to be a single quoted string when it
  * contains spaces. We wrap in double-quotes and escape internal double-quotes.
@@ -38,6 +54,31 @@ function quoteForSchtasks(cmd: string): string {
   // Escape backslashes then double-quotes
   const escaped = cmd.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
   return `"${escaped}"`;
+}
+
+/**
+ * Split a possibly-quoted command line into executable + argument string.
+ * `"C:\Program Files\nodejs\node.exe" "C:\x\index.js"` →
+ *   { command: 'C:\Program Files\nodejs\node.exe', args: '"C:\x\index.js"' }
+ */
+export function splitCommand(execPath: string): { command: string; args: string } {
+  const trimmed = execPath.trim();
+  if (trimmed.startsWith('"')) {
+    const end = trimmed.indexOf('"', 1);
+    if (end > 0) return { command: trimmed.slice(1, end), args: trimmed.slice(end + 1).trim() };
+  }
+  const sp = trimmed.indexOf(' ');
+  if (sp === -1) return { command: trimmed, args: '' };
+  return { command: trimmed.slice(0, sp), args: trimmed.slice(sp + 1).trim() };
+}
+
+/** Current user's task-principal id: DOMAIN\user from whoami, else USERNAME. */
+async function resolveUserId(): Promise<string> {
+  try {
+    const out = await runCmd('whoami');
+    if (out) return out;
+  } catch { /* fall through */ }
+  return process.env['USERNAME'] ?? '';
 }
 
 /** Return true when the named scheduled task exists (regardless of state). */
@@ -57,14 +98,46 @@ export class SchtasksAdapter implements ServiceAdapter {
     const tr = quoteForSchtasks(`${execPath} serve --port ${port}`);
     const errors: string[] = [];
 
-    // Tier A — simplest form: no /RU, no /IT. Task runs in the invoker's
-    // security context at logon. Works on Win 10/11 non-admin sessions.
+    // Tier 0 — XML registration. The ONLY form that can express:
+    //   ExecutionTimeLimit=PT0S  (CLI-created tasks default to 72h — Task
+    //   Scheduler silently kills the daemon after 3 days),
+    //   logon trigger WITH a PT5M repetition (no-admin watchdog: re-run is a
+    //   <100ms no-op while healthy thanks to the instance lock, and a dead
+    //   daemon restarts within 5 minutes),
+    //   MultipleInstancesPolicy=IgnoreNew, StartWhenAvailable.
+    try {
+      const userId = await resolveUserId();
+      const { command, args } = splitCommand(execPath);
+      const xml = buildTaskXml({
+        command,
+        args: [args, `serve --port ${port}`].filter(Boolean).join(' '),
+        userId,
+      });
+      const xmlPath = join(tmpdir(), 'AstraMemoryD.xml');
+      // Task Scheduler XML declares UTF-16 — write utf16le with an explicit
+      // BOM (FF FE) so schtasks parses the file as declared.
+      const bom = Buffer.from([0xff, 0xfe]);
+      writeFileSync(xmlPath, Buffer.concat([bom, Buffer.from(xml, 'utf16le')]));
+      await runCmd(`schtasks /create /tn "${TASK_NAME}" /xml "${xmlPath}" /f`);
+      return { kind: 'task' };
+    } catch (err0) {
+      // Keep the FULL message — the actionable stderr (e.g. "ERROR: Access is
+      // denied.") is on line 2 and truncating it hides the root cause.
+      errors.push(`Tier 0 (XML): ${(err0 as Error).message}`);
+    }
+
+    // Tier A — simplest CLI form: no /RU, no /IT. Task runs in the invoker's
+    // security context at logon. NOTE: carries the default 72h
+    // ExecutionTimeLimit — the keepalive that XML provides is absent, so this
+    // is strictly a fallback.
     const cmdA = `schtasks /create /sc onlogon /tn "${TASK_NAME}" /tr ${tr} /RL LIMITED /f`;
     try {
       await runCmd(cmdA);
+      console.log('  · NOTE: task registered via CLI fallback — Task Scheduler applies a default');
+      console.log('    72-hour execution limit and no keepalive. Prefer fixing the XML-tier error above.');
       return { kind: 'task' };
     } catch (errA) {
-      errors.push(`Tier A: ${(errA as Error).message.split('\n')[0]}`);
+      errors.push(`Tier A: ${(errA as Error).message}`);
     }
 
     // Tier B — retry with /RU <user> /IT (current legacy behaviour). Some
@@ -76,7 +149,7 @@ export class SchtasksAdapter implements ServiceAdapter {
       await runCmd(cmdB);
       return { kind: 'task' };
     } catch (errB) {
-      errors.push(`Tier B: ${(errB as Error).message.split('\n')[0]}`);
+      errors.push(`Tier B: ${(errB as Error).message}`);
     }
 
     // Tier C — Startup-folder shortcut. No admin required. Runs at next logon.
@@ -88,8 +161,12 @@ export class SchtasksAdapter implements ServiceAdapter {
     const scriptPath = startupScriptPath();
     writeFileSync(scriptPath, script, 'utf8');
 
+    const elevated = await isElevated();
     console.log('  · schtasks unavailable — tried two forms, both failed:');
-    for (const msg of errors) console.log(`      ${msg}`);
+    for (const msg of errors) {
+      for (const line of msg.split('\n')) console.log(`      ${line}`);
+    }
+    console.log(`  · running elevated: ${elevated ? 'yes' : 'no'}${elevated ? '' : ' — schtasks /create may require an Administrator shell on this system'}`);
     console.log(`  · installed Startup shortcut at:\n    ${scriptPath}`);
 
     return { kind: 'startup', path: scriptPath };

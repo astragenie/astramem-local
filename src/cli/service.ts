@@ -1,24 +1,11 @@
 import { getServiceAdapter } from '../service/index.js';
-import { defaultConfig } from '../config/config.js';
+import { installServiceFlow } from '../service/install-flow.js';
+import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
+import { reinstallCommand } from './reinstall.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
-}
-
-/**
- * Resolve the absolute path to the CLI entry point for the daemon.
- * Uses the resolved location of this file to find dist/cli/index.js.
- */
-function resolveCliExecPath(): string {
-  const nodeBin = process.execPath;
-  // __filename is not available in ESM — use import.meta.url
-  const thisFile = new URL(import.meta.url).pathname;
-  // Strip leading slash on Windows: /C:/path → C:/path
-  const normalized = thisFile.replace(/^\/([A-Za-z]:)/, '$1');
-  // dist/cli/service.js → dist/cli/index.js
-  const indexJs = normalized.replace(/service\.(js|ts)$/, 'index.js');
-  return `"${nodeBin}" "${indexJs}"`;
 }
 
 export async function serviceCommand(args: string[]): Promise<void> {
@@ -30,12 +17,15 @@ export async function serviceCommand(args: string[]): Promise<void> {
       const portArg = parseArg(rest, '--port');
       const keepArg = parseArg(rest, '--keep');
       const withBackupTimer = rest.includes('--with-backup-timer');
-      const cfg = defaultConfig();
-      const port = portArg ? Number(portArg) : cfg.port;
+      const { port: cfgPort } = resolveRuntimeConfig({
+        port: portArg ? Number(portArg) : undefined,
+      });
+      const port = cfgPort;
       const keep = keepArg ? Number(keepArg) : 7;
-      const execPath = resolveCliExecPath();
       console.log(`Installing AstraMemory service for ${adapter.platform}...`);
-      const result = await adapter.install(execPath, port);
+      // Single shared install path (shim + XML task on Windows) — same code
+      // that `init` and `reinstall` use.
+      const { result, build } = await installServiceFlow(port);
       if (result.kind === 'task') {
         console.log("Service installed. Run 'astramem-local service start' to start it.");
       } else {
@@ -50,9 +40,17 @@ export async function serviceCommand(args: string[]): Promise<void> {
       }
       if (withBackupTimer) {
         console.log('Installing nightly backup timer (03:00)...');
-        await adapter.installBackupTimer(execPath, keep);
+        // The backup timer runs `backup --keep N` — it needs the direct
+        // node+entry command, NOT the daemon shim.
+        await adapter.installBackupTimer(build.rawExecPath, keep);
         console.log(`Backup timer installed (keep=${keep} snapshots).`);
       }
+      break;
+    }
+
+    case 'repair': {
+      // Alias for the full reinstall ceremony.
+      await reinstallCommand(rest);
       break;
     }
 

@@ -26,6 +26,19 @@ export const cleanupHandler: JobHandler = {
         AND updated_at < ?
     `).run(cutoffMs);
 
-    console.log(`[cleanup] pruned ${result.changes} completed job(s) older than ${older_than_days} day(s)`);
+    // Poison jobs are kept 30 days for `queue` forensics, then purged —
+    // without this they accumulate forever (nothing else ever re-reads them).
+    const POISON_RETENTION_DAYS = 30;
+    const poisonCutoffMs = Date.now() - POISON_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    const poisonResult = ctx.db.prepare(`
+      DELETE FROM jobs
+      WHERE state = 'poison'
+        AND updated_at < ?
+    `).run(poisonCutoffMs);
+
+    console.log(
+      `[cleanup] pruned ${result.changes} completed job(s) older than ${older_than_days} day(s), ` +
+      `${poisonResult.changes} poison job(s) older than ${POISON_RETENTION_DAYS} day(s)`,
+    );
   }
 };

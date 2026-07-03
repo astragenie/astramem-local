@@ -42,34 +42,70 @@ describe('SchtasksAdapter', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // install() — three-tier ladder
+  // install() — four-tier ladder: XML → CLI (no /RU) → CLI (/RU /IT) → shortcut
   // ---------------------------------------------------------------------------
 
-  describe('install — Tier A (no /RU)', () => {
-    it('returns { kind: "task" } when Tier A succeeds', async () => {
+  /** Fail every exec whose command matches `pattern`; succeed the rest. */
+  function failMatching(pattern: RegExp) {
+    execMock.mockImplementation((cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      if (pattern.test(cmd)) cb(new Error('Access denied'), '', 'ERROR: Access is denied.');
+      else cb(null, '', '');
+    });
+  }
+
+  describe('install — Tier 0 (XML registration)', () => {
+    it('returns { kind: "task" } and registers via /xml', async () => {
       const result = await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
       expect(result).toEqual({ kind: 'task' });
-    });
-
-    it('Tier A command has /sc onlogon, task name, port, /RL LIMITED, /f — but no /RU', async () => {
-      await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
       const cmds = execMock.mock.calls.map(c => c[0] as string);
       const createCall = cmds.find(
         c => c.toLowerCase().includes('schtasks') && c.toLowerCase().includes('/create'),
       );
       expect(createCall).toBeTruthy();
-      expect(createCall).toMatch(/\/sc\s+onlogon/i);
+      expect(createCall).toMatch(/\/xml/i);
       expect(createCall).toContain(TASK_NAME);
-      expect(createCall).toContain('7777');
-      expect(createCall).toMatch(/\/RL\s+LIMITED/i);
       expect(createCall).toMatch(/\/f/i);
-      // Tier A must NOT include /RU
-      expect(createCall?.toUpperCase()).not.toContain('/RU');
     });
 
-    it('does not fall through to Startup shortcut on Tier A success', async () => {
+    it('writes task XML with no execution limit + 5-minute keepalive repetition', async () => {
       await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
-      expect(fsMock.writeFileSync).not.toHaveBeenCalled();
+      const xmlWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/AstraMemoryD\.xml$/i),
+      );
+      expect(xmlWrite).toBeTruthy();
+      // Content is a UTF-16LE Buffer with BOM — decode to inspect.
+      const buf = xmlWrite![1] as Buffer;
+      const xml = buf.subarray(2).toString('utf16le');
+      expect(xml).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
+      expect(xml).toContain('<Interval>PT5M</Interval>');
+      expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
+      expect(xml).toContain('serve --port 7777');
+    });
+
+    it('does not write a Startup shortcut on XML success', async () => {
+      await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
+      const cmdWrites = fsMock.writeFileSync.mock.calls.filter(
+        ([p]) => String(p).match(/\.cmd$/i),
+      );
+      expect(cmdWrites).toHaveLength(0);
+    });
+  });
+
+  describe('install — Tier A (CLI fallback, no /RU)', () => {
+    it('falls back to /sc onlogon CLI form when the XML tier fails', async () => {
+      failMatching(/\/xml/i);
+      const result = await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
+      expect(result).toEqual({ kind: 'task' });
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      const tierACall = cmds.find(
+        c => c.toLowerCase().includes('/create') && !c.toLowerCase().includes('/xml'),
+      );
+      expect(tierACall).toBeTruthy();
+      expect(tierACall).toMatch(/\/sc\s+onlogon/i);
+      expect(tierACall).toContain(TASK_NAME);
+      expect(tierACall).toContain('7777');
+      expect(tierACall).toMatch(/\/RL\s+LIMITED/i);
+      expect(tierACall?.toUpperCase()).not.toContain('/RU');
     });
   });
 
@@ -84,76 +120,49 @@ describe('SchtasksAdapter', () => {
       vi.unstubAllEnvs();
     });
 
-    it('returns { kind: "task" } when Tier A fails but Tier B succeeds', async () => {
-      let callCount = 0;
-      execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
-        callCount++;
-        if (callCount === 1) {
-          // Tier A: query check or create — fail the first /create
-          cb(new Error('Access denied'), '', 'Access denied');
-        } else {
-          cb(null, '', '');
-        }
+    it('returns { kind: "task" } when XML + Tier A fail but Tier B succeeds', async () => {
+      // Fail /xml creates and no-/RU CLI creates; succeed the /RU form.
+      execMock.mockImplementation((cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+        const isCreate = cmd.toLowerCase().includes('/create');
+        const isRu = cmd.toUpperCase().includes('/RU');
+        if (isCreate && !isRu) cb(new Error('Access denied'), '', 'ERROR: Access is denied.');
+        else cb(null, '', '');
       });
 
       const result = await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
       expect(result).toEqual({ kind: 'task' });
-    });
-
-    it('Tier B command includes /RU and /IT', async () => {
-      // Make Tier A fail so we fall to Tier B
-      let tierAFailed = false;
-      execMock.mockImplementation((cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
-        if (!tierAFailed && cmd.toLowerCase().includes('/create') && !cmd.toUpperCase().includes('/RU')) {
-          tierAFailed = true;
-          cb(new Error('Access denied'), '', 'Access denied');
-        } else {
-          cb(null, '', '');
-        }
-      });
-
-      await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
 
       const cmds = execMock.mock.calls.map(c => c[0] as string);
       const tierBCall = cmds.find(
-        c =>
-          c.toLowerCase().includes('schtasks') &&
-          c.toLowerCase().includes('/create') &&
-          c.toUpperCase().includes('/RU'),
+        c => c.toLowerCase().includes('/create') && c.toUpperCase().includes('/RU'),
       );
       expect(tierBCall).toBeTruthy();
       expect(tierBCall).toMatch(/\/IT/i);
     });
 
-    it('does not write Startup shortcut when Tier B succeeds', async () => {
-      let tierAFailed = false;
+    it('does not write a Startup shortcut when Tier B succeeds', async () => {
       execMock.mockImplementation((cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
-        if (!tierAFailed && cmd.toLowerCase().includes('/create') && !cmd.toUpperCase().includes('/RU')) {
-          tierAFailed = true;
-          cb(new Error('Access denied'), '', 'Access denied');
-        } else {
-          cb(null, '', '');
-        }
+        const isCreate = cmd.toLowerCase().includes('/create');
+        const isRu = cmd.toUpperCase().includes('/RU');
+        if (isCreate && !isRu) cb(new Error('Access denied'), '', 'ERROR: Access is denied.');
+        else cb(null, '', '');
       });
 
       await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
-      expect(fsMock.writeFileSync).not.toHaveBeenCalled();
+      const cmdWrites = fsMock.writeFileSync.mock.calls.filter(
+        ([p]) => String(p).match(/\.cmd$/i),
+      );
+      expect(cmdWrites).toHaveLength(0);
     });
   });
 
   describe('install — Tier C (Startup shortcut fallback)', () => {
     beforeEach(() => {
-      // Both Tier A and Tier B schtasks /create calls fail
-      execMock.mockImplementation((cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
-        if (cmd.toLowerCase().includes('/create')) {
-          cb(new Error('Access denied'), '', 'Access denied');
-        } else {
-          cb(null, '', '');
-        }
-      });
+      // Every schtasks /create form fails (XML and both CLI tiers).
+      failMatching(/\/create/i);
     });
 
-    it('returns { kind: "startup", path: <string> } when both tiers fail', async () => {
+    it('returns { kind: "startup", path: <string> } when all tiers fail', async () => {
       const result = await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
       expect(result.kind).toBe('startup');
       if (result.kind === 'startup') {
@@ -163,9 +172,11 @@ describe('SchtasksAdapter', () => {
 
     it('writes a .cmd Startup shortcut containing the exec path and port', async () => {
       await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
-      expect(fsMock.writeFileSync).toHaveBeenCalledOnce();
-      const [writePath, content] = fsMock.writeFileSync.mock.calls[0] as [string, string];
-      expect(writePath).toMatch(/AstraMemoryD\.cmd$/i);
+      const cmdWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/AstraMemoryD\.cmd$/i),
+      );
+      expect(cmdWrite).toBeTruthy();
+      const content = cmdWrite![1] as string;
       expect(content).toContain('7777');
       expect(content).toContain('C:\\app\\dist\\cli\\index.js');
     });

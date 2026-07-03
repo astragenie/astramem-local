@@ -29,7 +29,7 @@ import { runChecks, formatTable } from '../doctor/runner.js';
 import { mkdirSync } from 'node:fs';
 import { persistEnvVars } from '../config/persist-envs.js';
 import { waitForHealth } from './wait-health.js';
-import { getServiceAdapter } from '../service/index.js';
+import { installServiceFlow } from '../service/install-flow.js';
 import { installMemoryPackHook } from './hook-install.js';
 
 // ─── Non-interactive env var map ─────────────────────────────────────────────
@@ -458,22 +458,29 @@ export async function init(argv: string[] = []): Promise<void> {
   console.log(`  export MEMORY_BEARER=${bearer}`);
   console.log(`  export MEMORY_API_URL=${apiUrl}`);
 
-  // 10. Install + start service if requested
+  // 10. Install + start service if requested. Works in non-interactive mode
+  // too (ASTRA_MEMORY_INIT_INSTALL_SERVICE=true) — previously the block was
+  // gated on interactivity, so there was no scriptable install path at all.
   let serviceStarted = false;
-  if (answers.installService && !nonInteractive) {
+  if (answers.installService) {
     try {
-      const adapter = getServiceAdapter();
-      const execPath = resolveCliExecPathForService();
+      // Single shared install path (shim + XML task on Windows) — same code
+      // that `service install` and `reinstall` use.
+      const { result, adapter } = await installServiceFlow(answers.port);
       console.log(`  · installing OS service (${adapter.platform})...`);
-      await adapter.install(execPath, answers.port);
-      console.log(`  · starting service...`);
-      await adapter.start();
-      console.log(`  ✓ service installed and started`);
-      serviceStarted = true;
+      if (result.kind === 'task') {
+        console.log(`  · starting service...`);
+        await adapter.start();
+        console.log(`  ✓ service installed and started`);
+        serviceStarted = true;
+      } else {
+        console.log(`  ⚠ scheduler registration failed — Startup shortcut installed at ${result.path}`);
+        console.log(`    The daemon will start at next logon; 'service start/stop' will not work.`);
+      }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       console.log(`  ⚠ service install failed: ${msg}`);
-      console.log(`    Retry manually: astramem-local service install && astramem-local service start`);
+      console.log(`    Retry manually: astramem-local reinstall`);
     }
   }
 
@@ -509,15 +516,3 @@ export async function init(argv: string[] = []): Promise<void> {
   console.log('');
 }
 
-/**
- * Resolve absolute path to dist/cli/index.js for the service unit's exec command.
- * Mirrors the helper in src/cli/service.ts but kept local to avoid circular imports
- * from init.ts -> cli/service.ts -> service/index.ts.
- */
-function resolveCliExecPathForService(): string {
-  const nodeBin = process.execPath;
-  const thisFile = new URL(import.meta.url).pathname;
-  const normalized = thisFile.replace(/^\/([A-Za-z]:)/, '$1');
-  const indexJs = normalized.replace(/init\.(js|ts)$/, 'index.js');
-  return `"${nodeBin}" "${indexJs}"`;
-}

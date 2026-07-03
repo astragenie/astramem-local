@@ -17,6 +17,9 @@ export interface WorkerOpts {
   /** Optional pre-built HandlerCtx (or ExtendedHandlerCtx) to pass to handlers.
    *  When omitted, a minimal {db, config} context is constructed. */
   ctx?: HandlerCtx;
+  /** Optional liveness sink — the worker stamps lastTickAt each tick so
+   *  /health can report worker.alive. */
+  healthState?: { worker: { lastTickAt: number | null } };
 }
 
 export interface WorkerHandle {
@@ -51,6 +54,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
 
   async function tick(): Promise<void> {
     if (stopped) return;
+    if (opts.healthState) opts.healthState.worker.lastTickAt = Date.now();
 
     const job = repo.claimPending();
 
