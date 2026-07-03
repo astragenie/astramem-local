@@ -7,10 +7,8 @@ import { getOrCreateKey, readSyncToken } from '../storage/keystore.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
 import { startShipper, getOrCreateDeviceId, type ShipperHandle } from '../sync/shipper.js';
 import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
-import { loadConfigFromDisk } from '../config/loader.js';
 import { defaultConfigDir } from '../config/datadir.js';
-import { readSyncSettings } from '../config/sync-settings.js';
-import { migrateLegacyDirsIfPresent } from '../config/migrate-dirs.js';
+import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
 import { distillHandler } from '../pipeline/handlers/distill.js';
@@ -31,20 +29,11 @@ export interface ServeOpts {
 }
 
 export async function serve(opts: ServeOpts): Promise<void> {
-  // Migrate legacy Windows config/data dirs (AstraMemory → Astramem) before
-  // any config load. Idempotent: no-op on non-Windows and after first run.
-  migrateLegacyDirsIfPresent();
-
-  // config.yaml (written by init, user-editable) merged over defaults.
-  const cfg = loadConfigFromDisk(defaultConfigDir());
-  // Wave 3e: `astramem-local pair` persists sync settings to sync.json —
-  // merge them over the defaults so pairing survives restarts.
-  const pairedSync = readSyncSettings(defaultConfigDir());
-  if (pairedSync) {
-    cfg.sync = { ...cfg.sync, enabled: pairedSync.enabled, url: pairedSync.url, workspaceId: pairedSync.workspaceId };
-  }
-  const port = opts.port ?? cfg.port;
-  const dataDir = opts.dataDir ?? process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
+  // Shared resolver: migrate-dirs + config.yaml + sync.json merge + the
+  // canonical precedence (CLI > ASTRA_MEMORY_DATADIR > config.yaml > default).
+  // doctor/backup/reinstall use the same resolver so diagnostics always look
+  // at the same files as the daemon.
+  const { cfg, port, dataDir } = resolveRuntimeConfig({ port: opts.port, dataDir: opts.dataDir });
   // SEC-10: CLI flag > env var > OS credential store > secrets.env
   // (canonical dir, then legacy dir) > 'devtok' default. A secrets.env-only
   // bearer is opportunistically promoted into the credential store.

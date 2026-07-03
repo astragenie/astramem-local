@@ -11,7 +11,7 @@
 import { join } from 'node:path';
 import { createSnapshot } from '../backup/snapshot.js';
 import { pruneOldBackups } from '../backup/retention.js';
-import { defaultConfig } from '../config/config.js';
+import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { defaultConfigDir } from '../config/datadir.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
@@ -49,8 +49,10 @@ export async function backupCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const cfg = defaultConfig();
-  const dataDir = cfg.dataDir;
+  // Shared resolver — backup must snapshot the SAME dataDir the daemon
+  // serves from (config.yaml + ASTRA_MEMORY_DATADIR included), not the
+  // compile-time default.
+  const { cfg, dataDir } = resolveRuntimeConfig();
   const backupDir = join(dataDir, 'backups');
 
   const outPath = outArg ?? join(backupDir, defaultFilename());
