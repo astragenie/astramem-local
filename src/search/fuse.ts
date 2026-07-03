@@ -2,12 +2,20 @@
  * Score fusion for hybrid BM25 + cosine + importance + freshness ranking.
  *
  * Formula: score = α·norm(bm25) + β·norm(cosine) + γ·importance + δ·freshness
- *                  + ε·usefulness
+ *                  + ε·usefulness + ζ·entityBonus
  *
- * Defaults: α=β=0.4, γ=δ=ε=0.1. Pulled from config.search. The usefulness
- * component (ADR-010 v1.x) is Laplace-smoothed to a neutral 0.5 for atoms
- * with no recall_used/memory_corrected signal, so ε only reshuffles atoms
- * that have actually accumulated evidence.
+ * Defaults: α=β=0.4, γ=δ=ε=0.1, ζ=0. Pulled from config.search. The
+ * usefulness component (ADR-010 v1.x) is Laplace-smoothed to a neutral 0.5
+ * for atoms with no recall_used/memory_corrected signal, so ε only
+ * reshuffles atoms that have actually accumulated evidence.
+ *
+ * ζ (zeta, FEAT-402 slice 2 AC-6) is a distinct entity-relevance bonus: 1
+ * when a candidate is entity-linked to an entity mentioned in the query
+ * text, 0 otherwise — no-signal default is 0 (not usefulness's neutral 0.5),
+ * so with the default `zeta=0` weight the term contributes exactly 0 to
+ * every candidate and ranking order is byte-identical to pre-AC-6 behavior
+ * (see tests/search/fuse.test.ts zeta=0 no-op case and the eval harness
+ * zeta=0 snapshot test).
  */
 
 export interface FuseInput {
@@ -17,12 +25,16 @@ export interface FuseInput {
   freshness: number;   // caller computes from created_at, [0,1]
   /** ADR-010 usefulness score [0,1]; 0.5 = no signal. */
   usefulness?: number;
+  /** FEAT-402 AC-6 entity-relevance bonus, 0 or 1; 0 = no signal (unlike usefulness). */
+  entityBonus?: number;
   alpha: number;       // bm25 weight
   beta: number;        // cosine weight
   gamma: number;       // importance weight
   delta: number;       // freshness weight
   /** usefulness weight; omitted = 0 (usefulness ignored) */
   epsilon?: number;
+  /** entity-bonus weight; omitted or 0 = OFF (AC-6 default, ranking unchanged) */
+  zeta?: number;
 }
 
 /**
@@ -50,7 +62,8 @@ export function fuseScores(input: FuseInput): number {
     input.beta  * input.normCosine +
     input.gamma * input.importance +
     input.delta * input.freshness +
-    (input.epsilon ?? 0) * (input.usefulness ?? 0.5)
+    (input.epsilon ?? 0) * (input.usefulness ?? 0.5) +
+    (input.zeta ?? 0) * (input.entityBonus ?? 0)
   );
 }
 
@@ -78,15 +91,17 @@ export interface FusedHit {
  * @param nowMs      Current epoch ms for freshness computation
  * @param freshnessDecayDays  Half-life of freshness decay in days (default 30)
  * @param usefulness Optional id → usefulness score [0,1] (ADR-010); missing ids default to 0.5
+ * @param entityBonus Optional id → entity-relevance bonus (FEAT-402 AC-6); missing ids default to 0
  */
 export function fuseHits(
   ftsHits: Array<{ id: string; bm25: number }>,
   vecHits: Array<{ id: string; cosine: number }>,
   metas: Map<string, { importance: number; created_at: number }>,
-  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number },
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number },
   nowMs: number,
   freshnessDecayDays = 30,
-  usefulness?: Map<string, number>
+  usefulness?: Map<string, number>,
+  entityBonus?: Map<string, number>
 ): FusedHit[] {
   // Build per-id raw maps
   const ftsMap = new Map(ftsHits.map(h => [h.id, h.bm25]));
@@ -127,6 +142,7 @@ export function fuseHits(
       importance,
       freshness,
       usefulness: usefulness?.get(id),
+      entityBonus: entityBonus?.get(id),
       ...weights
     });
 

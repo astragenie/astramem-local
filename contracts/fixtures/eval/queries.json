@@ -1,6 +1,6 @@
 {
   "schema": "astramem-retrieval-eval-queries@1",
-  "description": "ADR-005 seed query set — graded relevance (0 = not relevant .. 3 = highly relevant) against contracts/fixtures/eval/corpus.json. q6 is the temporal as_of case exercising bitemporal time-travel: at as_of, atom-002 (the supersession) does not exist yet, so only atom-001 (still valid at that instant) is relevant.",
+  "description": "ADR-005 seed query set — graded relevance (0 = not relevant .. 3 = highly relevant) against contracts/fixtures/eval/corpus.json. q6 is the temporal as_of case exercising bitemporal time-travel: at as_of, atom-002 (the supersession) does not exist yet, so only atom-001 (still valid at that instant) is relevant. q9-q11 (FEAT-402 slice 2 AC-8) exercise the entity `filters.entity` pre-fusion intersection: q9/q10 use entities shared by exactly two corpus atoms so recall/NDCG floors hold trivially; q11 exercises the AC-4 exact-then-LIKE resolution ('postgres' substring-matches the 'postgresql' entity) plus the current-snapshot validity filter (atom-001 is invalidated/superseded, so only atom-002 survives).",
   "queries": [
     {
       "id": "q1",
@@ -76,6 +76,38 @@
       "filters": { "type": ["event"] },
       "graded_relevant": [
         { "atom_id": "10000000-0000-4000-8000-000000000008", "grade": 3 }
+      ]
+    },
+    {
+      "id": "q9",
+      "text": "everything about sqlite-vec",
+      "mode": "hybrid",
+      "filters": { "entity": "sqlite-vec" },
+      "notes": "FEAT-402 AC-4: entity=sqlite-vec pre-fusion-intersects the candidate set down to exactly the two atoms linked to the sqlite-vec entity (atom-003, atom-009) — 'all-and-only entity-linked members'.",
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000003", "grade": 3 },
+        { "atom_id": "10000000-0000-4000-8000-000000000009", "grade": 3 }
+      ]
+    },
+    {
+      "id": "q10",
+      "text": "everything about Bun",
+      "mode": "hybrid",
+      "filters": { "entity": "bun" },
+      "notes": "FEAT-402 AC-4: entity=bun matches atom-004 and atom-009 (both entity-linked to 'Bun'); atom-005 ('bun run test command') is lexically related but carries no entities and MUST be excluded — proves the filter is a real intersection, not a lexical boost.",
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000004", "grade": 3 },
+        { "atom_id": "10000000-0000-4000-8000-000000000009", "grade": 3 }
+      ]
+    },
+    {
+      "id": "q11",
+      "text": "postgres canonical store decision",
+      "mode": "hybrid",
+      "filters": { "entity": "postgres" },
+      "notes": "FEAT-402 AC-4/AC-9: 'postgres' has no exact entities.name match (the stored, normalized name is 'postgresql') so resolveIds falls back to a LIKE substring match. Both atom-001 and atom-002 are entity-linked, but atom-001 is invalidated (superseded) so the current-snapshot validity filter leaves only atom-002.",
+      "graded_relevant": [
+        { "atom_id": "10000000-0000-4000-8000-000000000002", "grade": 3 }
       ]
     }
   ]

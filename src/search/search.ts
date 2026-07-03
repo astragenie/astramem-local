@@ -19,6 +19,7 @@ import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { fuseHits, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
+import { EntityRepo } from '../storage/entities.js';
 
 export interface SearchFilters {
   type?: string[];
@@ -31,6 +32,16 @@ export interface SearchFilters {
    * Absent = current behavior (only currently-valid rows).
    */
   as_of?: number;
+  /**
+   * Entity filter (FEAT-402 slice 2 AC-4). Resolved through
+   * EntityRepo.resolveIds (AC-9 normalize seam: exact match, then LIKE
+   * substring fallback) to one or more entities.id, then intersected with
+   * the FTS+vec candidate set BEFORE fusion — the result is all-and-only
+   * entity-linked members of that candidate set, not a post-fusion filter.
+   * An unresolvable entity name yields zero results (not an unfiltered
+   * search).
+   */
+  entity?: string;
 }
 
 export interface SearchHit {
@@ -44,7 +55,7 @@ export interface SearchHit {
 export interface SearchOpts {
   db: DB;
   embed: EmbedProvider;
-  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number };
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number };
   /** Multiplier used by vector search (cap to limit vector scan) */
   vecK?: number;
 }
@@ -126,6 +137,34 @@ export function makeFakeVec(text: string, dim: number = DEFAULT_EMBED_DIM): Floa
   return v;
 }
 
+/**
+ * Compute the ζ entity-relevance bonus map (FEAT-402 slice 2 AC-6): for
+ * every known entity whose normalized name appears as a substring of the
+ * (lowercased) query text, any candidate id linked to that entity gets a
+ * bonus of 1. Only called when `search.zeta > 0` — with the default
+ * zeta=0 this function never runs, which is what makes the AC-6 snapshot
+ * guarantee (identical ranking at zeta=0) hold structurally, not just
+ * numerically.
+ */
+function entityBonusForQuery(db: DB, query: string, candidateIds: Set<string>): Map<string, number> {
+  const q = query.trim().toLowerCase();
+  if (!q || candidateIds.size === 0) return new Map();
+
+  const entityRows = db.prepare('SELECT id, name FROM entities').all() as Array<{ id: string; name: string }>;
+  const matchedEntityIds = entityRows.filter(r => r.name && q.includes(r.name)).map(r => r.id);
+  if (matchedEntityIds.length === 0) return new Map();
+
+  const idPh = Array.from(candidateIds).map(() => '?').join(',');
+  const entPh = matchedEntityIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT DISTINCT memory_id FROM memory_entities WHERE memory_id IN (${idPh}) AND entity_id IN (${entPh})`
+  ).all(...candidateIds, ...matchedEntityIds) as Array<{ memory_id: string }>;
+
+  const bonus = new Map<string, number>();
+  for (const row of rows) bonus.set(row.memory_id, 1);
+  return bonus;
+}
+
 export async function search(
   query: string,
   filters: SearchFilters,
@@ -169,8 +208,23 @@ export async function search(
     // Vector search unavailable (no rows, no provider) — FTS-only mode
   }
 
+  // 2b. Entity filter (FEAT-402 slice 2 AC-4) — resolve `entity` to entity
+  // ids (AC-9 normalize seam) and intersect the FTS+vec candidate set BEFORE
+  // fusion, so the result is all-and-only entity-linked members of that
+  // candidate set. An entity name that resolves to zero entities filters the
+  // candidate set to empty (not "unfiltered") — search() returns [] below.
+  let filteredFtsHits = ftsHits;
+  let filteredVecHits = vecHits;
+  if (filters.entity !== undefined) {
+    const entityRepo = new EntityRepo(db);
+    const entityIds = entityRepo.resolveIds(filters.entity);
+    const linkedIds = entityRepo.memoryIdsForEntities(entityIds);
+    filteredFtsHits = ftsHits.filter(h => linkedIds.has(h.id));
+    filteredVecHits = vecHits.filter(h => linkedIds.has(h.id));
+  }
+
   // 3. Load meta for all candidate ids (importance + created_at for freshness)
-  const allIds = new Set([...ftsHits.map(h => h.id), ...vecHits.map(h => h.id)]);
+  const allIds = new Set([...filteredFtsHits.map(h => h.id), ...filteredVecHits.map(h => h.id)]);
   if (allIds.size === 0) return [];
 
   const placeholders = Array.from(allIds).map(() => '?').join(',');
@@ -180,9 +234,14 @@ export async function search(
 
   const metaMap = new Map(metaRows.map(r => [r.id, { importance: r.importance, created_at: r.created_at }]));
 
-  // 4. Fuse — usefulness (ADR-010 v1.x) joins as the ε component
+  // 4. Fuse — usefulness (ADR-010 v1.x) joins as the ε component. ζ
+  // (FEAT-402 AC-6) joins as an entity-relevance bonus: DEFAULT 0 (config
+  // search.zeta) means the term is skipped entirely — no query, no DB scan,
+  // no change to ranking order versus pre-AC-6 behavior.
   const usefulness = usefulnessScores(db, Array.from(allIds));
-  const fused = fuseHits(ftsHits, vecHits, metaMap, weights, Date.now(), undefined, usefulness);
+  const zeta = weights.zeta ?? 0;
+  const entityBonus = zeta > 0 ? entityBonusForQuery(db, query, allIds) : undefined;
+  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, Date.now(), undefined, usefulness, entityBonus);
 
   // 5. Apply post-fusion SQL filters then join full memory records
   //    Build filter clauses dynamically

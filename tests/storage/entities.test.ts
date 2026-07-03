@@ -118,3 +118,117 @@ describe('EntityRepo (AC-9 normalize seam)', () => {
     expect(entityRepo.exists('rust')).toBe(false);
   });
 });
+
+// FEAT-402 slice 2 — query surface primitives (AC-4, AC-5).
+describe('EntityRepo query surface (slice 2)', () => {
+  let db: DB;
+  let memRepo: MemoryRepo;
+  let entityRepo: EntityRepo;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    memRepo = new MemoryRepo(db);
+    entityRepo = new EntityRepo(db);
+  });
+
+  function makeMemory(id: string): string {
+    return memRepo.insert({
+      type: 'fact', text: `about ${id}`, normalized_text: `about ${id}`,
+      repo: null, project: null, branch: null, agent: null, session_id: null,
+      hash: `hash-${id}`, source_hash: null,
+    });
+  }
+
+  describe('getById', () => {
+    it('returns the entity row for a known id', () => {
+      const id = entityRepo.upsert('Postgres', 'tech');
+      expect(entityRepo.getById(id)).toEqual({ id, name: 'postgres', kind: 'tech' });
+    });
+
+    it('returns undefined for an unknown id', () => {
+      expect(entityRepo.getById('does-not-exist')).toBeUndefined();
+    });
+  });
+
+  describe('search (AC-5 autocomplete)', () => {
+    it('substring-matches the normalized name, case/whitespace-insensitive query', () => {
+      entityRepo.upsert('PostgreSQL', 'tech');
+      entityRepo.upsert('TypeScript', 'tech');
+      const results = entityRepo.search('  POST  ');
+      expect(results.map(e => e.name)).toEqual(['postgresql']);
+    });
+
+    it('empty query returns entities alphabetically up to limit', () => {
+      entityRepo.upsert('zeta-lib', 'tech');
+      entityRepo.upsert('alpha-lib', 'tech');
+      const results = entityRepo.search('', 10);
+      expect(results.map(e => e.name)).toEqual(['alpha-lib', 'zeta-lib']);
+    });
+
+    it('respects the limit parameter', () => {
+      entityRepo.upsert('lib-a', 'tech');
+      entityRepo.upsert('lib-b', 'tech');
+      entityRepo.upsert('lib-c', 'tech');
+      expect(entityRepo.search('lib-', 2)).toHaveLength(2);
+    });
+
+    it('unmatched query returns []', () => {
+      entityRepo.upsert('postgres', 'tech');
+      expect(entityRepo.search('nonexistent-entity')).toEqual([]);
+    });
+
+    it('% and _ in the query are treated as literal characters, not LIKE wildcards', () => {
+      entityRepo.upsert('postgres', 'tech');
+      entityRepo.upsert('typescript', 'tech');
+      // '%' unescaped would match everything; it must match nothing here.
+      expect(entityRepo.search('post%res')).toEqual([]);
+    });
+  });
+
+  describe('resolveIds (AC-4/AC-9: exact then LIKE)', () => {
+    it('resolves an exact normalized match to exactly that entity id', () => {
+      const pgId = entityRepo.upsert('PostgreSQL', 'tech');
+      entityRepo.upsert('postgresql-fdw', 'tech'); // would also LIKE-match "postgresql"
+      expect(entityRepo.resolveIds('PostgreSQL')).toEqual([pgId]);
+      expect(entityRepo.resolveIds('  postgresql  ')).toEqual([pgId]);
+    });
+
+    it('falls back to a LIKE substring match when no exact row exists', () => {
+      const pgId = entityRepo.upsert('postgresql', 'tech');
+      expect(entityRepo.resolveIds('postgres')).toEqual([pgId]);
+    });
+
+    it('LIKE fallback can resolve to multiple entity ids', () => {
+      const a = entityRepo.upsert('libfoo-core', 'tech');
+      const b = entityRepo.upsert('libfoo-cli', 'tech');
+      expect(entityRepo.resolveIds('libfoo').sort()).toEqual([a, b].sort());
+    });
+
+    it('returns [] for an unresolvable name — never falls back to "everything"', () => {
+      entityRepo.upsert('postgres', 'tech');
+      expect(entityRepo.resolveIds('nonexistent')).toEqual([]);
+    });
+  });
+
+  describe('memoryIdsForEntities (AC-4 pre-fusion intersection primitive)', () => {
+    it('returns the distinct set of memory ids linked to any of the given entity ids', () => {
+      const pgId = entityRepo.upsert('postgres', 'tech');
+      const tsId = entityRepo.upsert('typescript', 'tech');
+      const m1 = makeMemory('m1');
+      const m2 = makeMemory('m2');
+      const m3 = makeMemory('m3');
+      entityRepo.link(m1, pgId);
+      entityRepo.link(m2, pgId);
+      entityRepo.link(m2, tsId); // m2 linked to both — must appear once
+      entityRepo.link(m3, tsId);
+
+      expect(entityRepo.memoryIdsForEntities([pgId])).toEqual(new Set([m1, m2]));
+      expect(entityRepo.memoryIdsForEntities([pgId, tsId])).toEqual(new Set([m1, m2, m3]));
+    });
+
+    it('returns an empty set for an empty entityIds list (never "no filter")', () => {
+      expect(entityRepo.memoryIdsForEntities([])).toEqual(new Set());
+    });
+  });
+});

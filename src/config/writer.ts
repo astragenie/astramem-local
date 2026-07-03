@@ -89,6 +89,7 @@ export function configToYaml(cfg: Config): string {
     line(1, 'gamma', cfg.search.gamma),
     line(1, 'delta', cfg.search.delta),
     line(1, 'epsilon', cfg.search.epsilon),
+    line(1, 'zeta', cfg.search.zeta),
     '',
     line(0, 'recallPack'),
     line(1, 'enabled', cfg.recallPack.enabled),
