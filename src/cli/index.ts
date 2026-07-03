@@ -19,6 +19,7 @@ import { pairCommand } from './pair.js';
 import { syncCommand } from './sync.js';
 import { reinstallCommand } from './reinstall.js';
 import { reembedDimCommand } from './reembed-dim.js';
+import { entityBackfillCommand } from './entity-backfill.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -145,6 +146,12 @@ async function main() {
       break;
     }
 
+    case 'entity-backfill': {
+      // astramem-local entity-backfill [--dry-run] [--limit N] [--json]
+      await entityBackfillCommand(rest);
+      break;
+    }
+
     case 'providers': {
       // astramem-local providers [--json]
       await providersCommand(rest);
@@ -242,6 +249,10 @@ Commands:
                                          memories (tier-1 session metadata,
                                          tier-2 opt-in prompt-assisted,
                                          confidence-gated at 0.7 by default)
+  entity-backfill [--dry-run] [--limit N] [--json]
+                                         Extract + link entities (FEAT-402) for
+                                         memories that predate distill-time entity
+                                         extraction; never re-distills memory text
   providers [--json]                     Show configured providers + live health probes
   capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
                                          Ingest new Codex CLI sessions (ADR-008);

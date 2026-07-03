@@ -154,6 +154,13 @@ export class MemoryEventRepo {
    * model as_of resolution assumes (ADR-001, FEAT-401 AC-1/AC-5): the
    * successor becomes "the believed value" exactly as of the supersede
    * instant, not as of whenever it happened to be inserted.
+   *
+   * FEAT-402 AC-3: also deletes oldId's memory_entities links in the same
+   * transaction. The memories row itself is NOT deleted (bitemporal history
+   * is kept for as_of queries), so this can't rely on the erase() path's
+   * ON DELETE CASCADE — it's explicit here instead. A superseded memory's
+   * facts should stop counting as current evidence for an entity even
+   * though the row survives for audit.
    */
   supersede(oldId: string, newId: string): void {
     const tx = this.db.transaction(() => {
@@ -181,6 +188,9 @@ export class MemoryEventRepo {
       this.db
         .prepare('UPDATE memories SET valid_from = ?, updated_at = ? WHERE id = ?')
         .run(now, now, newId);
+      // FEAT-402 AC-3: zero orphan links — the superseded memory no longer
+      // contributes to "everything about entity X".
+      this.db.prepare('DELETE FROM memory_entities WHERE memory_id = ?').run(oldId);
       this.append({ event_type: 'supersede', atom_id: oldId, payload: { superseded_by: newId }, created_at: now });
       // ADR-010: negative usefulness signal — same tx as the state change.
       // Payload shape documented in src/storage/usefulness.ts (memory_corrected family).

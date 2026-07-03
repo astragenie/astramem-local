@@ -5,6 +5,7 @@ import { embedAndIndex } from '../../src/distill/stages/08-embed-index.js';
 import type { NormalizedMemory } from '../../src/distill/stages/07-memory-normalize.js';
 import type { EmbedProvider, EmbedHealth } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
+import { EntityRepo } from '../../src/storage/entities.js';
 
 function makeVec(seed: number): Float32Array {
   const v = new Float32Array(1024);
@@ -26,7 +27,12 @@ function makeMockEmbed(dim: number = 1024): EmbedProvider {
   };
 }
 
-function normalizedMem(text: string, hash: string, importance = 0.7): NormalizedMemory {
+function normalizedMem(
+  text: string,
+  hash: string,
+  importance = 0.7,
+  entities?: NormalizedMemory['entities'],
+): NormalizedMemory {
   return {
     type: 'decision',
     text,
@@ -36,6 +42,7 @@ function normalizedMem(text: string, hash: string, importance = 0.7): Normalized
     contentHash: hash.slice(0, 16),
     finalHash: hash,
     evidence: undefined,
+    entities,
   };
 }
 
@@ -133,5 +140,45 @@ describe('embedAndIndex stage', () => {
     expect(row.session_id).toBe('sess-1');
     expect(row.repo).toBe('my-repo');
     expect(row.agent).toBe('claude-code');
+  });
+
+  // FEAT-402 AC-1 — entities emitted alongside an atom are linked at index time.
+  it('links entities emitted on the atom to the inserted memory', async () => {
+    const embed = makeMockEmbed();
+    const mems = [
+      normalizedMem('use Postgres for the analytics store', 'g'.repeat(64), 0.7, [
+        { name: 'Postgres', kind: 'tech' },
+      ]),
+    ];
+
+    const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+    const linked = new EntityRepo(db).listForMemory(results[0].memoryId);
+    expect(linked).toHaveLength(1);
+    expect(linked[0].name).toBe('postgres'); // AC-9 normalized
+    expect(linked[0].kind).toBe('tech');
+  });
+
+  it('a memory with no entities creates no memory_entities rows', async () => {
+    const embed = makeMockEmbed();
+    const mems = [normalizedMem('a fact with no named entity', 'h'.repeat(64))];
+
+    const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+    const linked = new EntityRepo(db).listForMemory(results[0].memoryId);
+    expect(linked).toEqual([]);
+  });
+
+  it('a re-ingest of a case-variant entity name resolves to the same entities.id', async () => {
+    const embed = makeMockEmbed();
+    const mems = [
+      normalizedMem('use postgres for storage', 'i'.repeat(64), 0.7, [{ name: 'postgres', kind: 'tech' }]),
+      normalizedMem('another Postgres decision', 'j'.repeat(64), 0.7, [{ name: 'Postgres', kind: 'tech' }]),
+    ];
+
+    await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+    const count = (db.prepare('SELECT COUNT(*) AS n FROM entities').get() as any).n;
+    expect(count).toBe(1);
   });
 });
