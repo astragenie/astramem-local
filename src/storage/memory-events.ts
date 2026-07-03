@@ -130,6 +130,18 @@ export class MemoryEventRepo {
    * old.superseded_by = newId, appends a 'supersede' event on oldId — all in
    * one transaction. Validates both ids exist; oldId must currently be valid
    * (not already invalidated/superseded); newId must be valid (valid_to null).
+   *
+   * FEAT-401 fix: also co-issues newId.valid_from = the SAME `now` used for
+   * old.valid_to. Without this, newId keeps the valid_from it was stamped
+   * with at insert() time (which normally predates the supersede() call by
+   * however long the caller took to decide to supersede), producing an
+   * overlap window [newId.valid_from, oldId.valid_to) where an as_of query
+   * would match BOTH generations — a bitemporal-window leak. Co-issuing the
+   * boundary keeps the two windows contiguous and non-overlapping
+   * (old.valid_to === new.valid_from), matching the half-open-interval
+   * model as_of resolution assumes (ADR-001, FEAT-401 AC-1/AC-5): the
+   * successor becomes "the believed value" exactly as of the supersede
+   * instant, not as of whenever it happened to be inserted.
    */
   supersede(oldId: string, newId: string): void {
     const tx = this.db.transaction(() => {
@@ -154,6 +166,9 @@ export class MemoryEventRepo {
       this.db
         .prepare('UPDATE memories SET valid_to = ?, superseded_by = ?, updated_at = ? WHERE id = ?')
         .run(now, newId, now, oldId);
+      this.db
+        .prepare('UPDATE memories SET valid_from = ?, updated_at = ? WHERE id = ?')
+        .run(now, now, newId);
       this.append({ event_type: 'supersede', atom_id: oldId, payload: { superseded_by: newId }, created_at: now });
       // ADR-010: negative usefulness signal — same tx as the state change.
       // Payload shape documented in src/storage/usefulness.ts (memory_corrected family).

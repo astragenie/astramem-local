@@ -7,8 +7,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { search, makeFakeVec, validityFilterClause, parseAsOf } from '../../src/search/search.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
+
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms));
 
 function buildMockEmbed(): EmbedProvider {
   return {
@@ -175,5 +178,146 @@ describe('FEAT-401: as_of temporal search', () => {
     const atT2Exact = await search('rerank strategy cross-encoder', { as_of: t2 }, 10, opts);
     expect(atT2Exact.map(h => h.id)).toContain(g3);
     expect(atT2Exact.map(h => h.id)).not.toContain(g2);
+  });
+});
+
+// Inspector BLOCKER repro (post-first-pass review): every test above seeds
+// idealized CONTIGUOUS windows via setValidity() (old.valid_to ==
+// new.valid_from by construction). The real production path never produces
+// that automatically — MemoryRepo.insert() stamps new.valid_from = insert
+// time, and MemoryEventRepo.supersede() (called later, e.g. by the
+// supersede_memory MCP tool) only stamped old.valid_to = supersede time. Any
+// gap between "new memory created" and "supersede() called on the old one"
+// left an overlap window where both generations satisfied the as_of filter
+// simultaneously — violating AC-1/AC-5 ("exactly one generation"). Fixed in
+// src/storage/memory-events.ts supersede() by co-issuing
+// new.valid_from = the same `now` as old.valid_to, in the same transaction.
+// These tests exercise the REAL repo.insert() + events.supersede() path with
+// real wall-clock gaps — no setValidity()/manual UPDATE — so they fail
+// against the pre-fix code and pass against the fix.
+describe('FEAT-401 (real path): as_of through actual MemoryEventRepo.supersede()', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let events: MemoryEventRepo;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    events = new MemoryEventRepo(db);
+  });
+
+  function insertFact(text: string, hash: string): string {
+    return repo.insert({
+      type: 'decision', text, normalized_text: text.toLowerCase(),
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+      hash, source_hash: null, importance: 0.8,
+    });
+  }
+
+  it('supersede() co-issues new.valid_from with old.valid_to — closes the insert-to-supersede overlap window', async () => {
+    const oldId = insertFact('rerank strategy real-path old', 'real-sup-old');
+    await sleep(30); // real gap: old insert -> new insert
+    const newId = insertFact('rerank strategy real-path new', 'real-sup-new');
+    // Captured BEFORE supersede() runs — this is what new.valid_from would
+    // stay at if supersede() only touched the old row (the pre-fix bug).
+    const newInsertValidFrom = repo.get(newId)!.valid_from;
+    await sleep(30); // real gap: new insert -> supersede() call
+
+    events.supersede(oldId, newId);
+
+    const oldMem = repo.get(oldId);
+    const newMem = repo.get(newId);
+    expect(oldMem?.valid_to).not.toBeNull();
+    // The fix: the boundary is co-issued, so the windows are contiguous.
+    expect(newMem?.valid_from).toBe(oldMem?.valid_to);
+    // And it genuinely moved forward off the insert-time stamp — otherwise
+    // the assertion above would be vacuously true.
+    expect(newMem!.valid_from).toBeGreaterThan(newInsertValidFrom);
+
+    const opts = { db, embed: buildMockEmbed(), weights: SEARCH_WEIGHTS };
+
+    // The would-be overlap window (pre-fix): [newInsertValidFrom, old.valid_to).
+    // An as_of landing here must resolve to EXACTLY the old generation —
+    // this is the assertion that fails without the co-issue fix (both rows
+    // used to satisfy validityFilterClause at this instant).
+    const asOfInFormerOverlap = Math.floor((newInsertValidFrom + oldMem!.valid_to!) / 2);
+    const hits = await search('rerank strategy real-path', { as_of: asOfInFormerOverlap }, 10, opts);
+    const ids = hits.map(h => h.id);
+    expect(ids).toContain(oldId);
+    expect(ids).not.toContain(newId);
+
+    // Just after the supersede instant: exactly the new generation.
+    const afterHits = await search('rerank strategy real-path', { as_of: oldMem!.valid_to! + 1 }, 10, opts);
+    const afterIds = afterHits.map(h => h.id);
+    expect(afterIds).toContain(newId);
+    expect(afterIds).not.toContain(oldId);
+  });
+
+  it('AC-2 real path: live (no as_of) search is unaffected by the valid_from co-issue', async () => {
+    const oldId = insertFact('rerank strategy real-path snapshot old', 'real-snap-old');
+    await sleep(30);
+    const newId = insertFact('rerank strategy real-path snapshot new', 'real-snap-new');
+    await sleep(30);
+    events.supersede(oldId, newId);
+
+    const hits = await search('rerank strategy real-path snapshot', {}, 10, {
+      db, embed: buildMockEmbed(), weights: SEARCH_WEIGHTS,
+    });
+    const ids = hits.map(h => h.id);
+    expect(ids).toContain(newId);
+    expect(ids).not.toContain(oldId);
+  });
+
+  it('existing supersede() contract is preserved: old invalidated + superseded_by set, new stays valid', async () => {
+    const oldId = insertFact('supersede contract check old', 'real-contract-old');
+    await sleep(20);
+    const newId = insertFact('supersede contract check new', 'real-contract-new');
+    await sleep(20);
+
+    events.supersede(oldId, newId);
+
+    const oldMem = repo.get(oldId);
+    const newMem = repo.get(newId);
+    expect(oldMem?.valid_to).not.toBeNull();
+    expect(oldMem?.superseded_by).toBe(newId);
+    expect(newMem?.valid_to).toBeNull();
+  });
+
+  it('AC-5 real path: 3+ real supersede() generations — as_of resolves exactly one generation chain-wide', async () => {
+    const g1 = insertFact('rerank real chain generation one', 'real-chain-g1');
+    await sleep(25);
+    const g2 = insertFact('rerank real chain generation two', 'real-chain-g2');
+    await sleep(25);
+    events.supersede(g1, g2);
+    await sleep(25);
+    const g3 = insertFact('rerank real chain generation three', 'real-chain-g3');
+    await sleep(25);
+    events.supersede(g2, g3);
+
+    const g1Mem = repo.get(g1);
+    const g2Mem = repo.get(g2);
+    const g3Mem = repo.get(g3);
+
+    // Contiguous boundaries end-to-end — no gap, no overlap.
+    expect(g2Mem?.valid_from).toBe(g1Mem?.valid_to);
+    expect(g3Mem?.valid_from).toBe(g2Mem?.valid_to);
+
+    const opts = { db, embed: buildMockEmbed(), weights: SEARCH_WEIGHTS };
+    const midG1 = Math.floor((g1Mem!.valid_from + g1Mem!.valid_to!) / 2);
+    const midG2 = Math.floor((g2Mem!.valid_from + g2Mem!.valid_to!) / 2);
+    const afterG3 = g3Mem!.valid_from + 1;
+
+    const cases: Array<[number, string, string[]]> = [
+      [midG1, g1, [g2, g3]],
+      [midG2, g2, [g1, g3]],
+      [afterG3, g3, [g1, g2]],
+    ];
+    for (const [asOf, expectedId, otherIds] of cases) {
+      const hits = await search('rerank real chain generation', { as_of: asOf }, 10, opts);
+      const ids = hits.map(h => h.id);
+      expect(ids).toContain(expectedId);
+      for (const other of otherIds) expect(ids).not.toContain(other);
+    }
   });
 });
