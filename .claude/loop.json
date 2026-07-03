@@ -1,0 +1,58 @@
+{
+  "preset": "typescript-plugin-dev",
+  "loop": {
+    "aiLoopRoot": ".claude/artifacts/loop/ai-loop",
+    "backlogPath": ".claude/artifacts/loop/ai-loop/backlog",
+    "slicesRoot": ".claude/artifacts/loop/ai-loop/slices",
+    "backlogRoot": ".claude/artifacts/loop/backlog",
+    "specsRoot": ".claude/artifacts/loop/specs",
+    "gradesRoot": ".claude/artifacts/loop/grades",
+    "decisionsRoot": ".claude/artifacts/loop/decisions",
+    "phaseGateArtifactDir": ".claude/artifacts/crew/validations",
+    "maxIterations": 25,
+    "marathonMode": true
+  },
+  "stack": {
+    "build": [
+      {
+        "cmd": "bun",
+        "args": [
+          "run",
+          "build"
+        ]
+      }
+    ],
+    "test": [
+      {
+        "cmd": "bun",
+        "args": [
+          "run",
+          "test"
+        ]
+      },
+      {
+        "cmd": "node",
+        "args": [
+          "contracts/validate.mjs"
+        ]
+      }
+    ],
+    "frontendBuild": null,
+    "infraPlan": null,
+    "aspireBoot": null,
+    "healthchecks": []
+  },
+  "reviewers": {
+    "ladder": [
+      "A",
+      "B"
+    ]
+  },
+  "mandatoryDocs": [
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "productName": "@astragenie/astramemory-local",
+  "productDescription": "Local-first memory daemon for AI coding agents. TypeScript + Node 20 + Fastify + better-sqlite3 (SQLCipher) + sqlite-vec. Wire-compatible with astramem-plugin and the memory SaaS backend.",
+  "stackDescription": "- TypeScript source under `src/`, compiled to `dist/` via `tsc -p .` (ES2022, gitignored build output)\n- Node 20+ ESM runtime; Fastify HTTP daemon (`node dist/cli/index.js serve`)\n- Storage: better-sqlite3 with SQLCipher cipher + sqlite-vec (1024-dim `mxbai-embed-large` embeddings)\n- Tests: `vitest run` (includes ADR-005 retrieval eval gate: recall@10 ≥ 0.9, NDCG@10 ≥ 0.7)\n- Contract validation: `node contracts/validate.mjs` (wire-envelope schema parity with SaaS + plugin)\n- Release: npm publish on `v*` tag push (provenance); package.json.version must equal tag (version-tag-parity.yml)"
+}

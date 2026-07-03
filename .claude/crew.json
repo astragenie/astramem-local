@@ -1,0 +1,19 @@
+{
+  "features": {
+    "cost-hygiene": {
+      "enabled": true
+    },
+    "redundant-read-stop": {
+      "enabled": true
+    },
+    "shell-preflight": {
+      "enabled": true
+    },
+    "subagent-inline-warn": {
+      "enabled": true
+    },
+    "push-verify": {
+      "enabled": false
+    }
+  }
+}
