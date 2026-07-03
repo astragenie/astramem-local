@@ -5,20 +5,13 @@
  * --reset clears today's row (override, logged).
  */
 
-import { join } from 'node:path';
-import { openDb } from '../storage/db.js';
-import { migrate } from '../storage/migrate.js';
 import { BudgetTracker } from '../budget/tracker.js';
-import { defaultConfig } from '../config/config.js';
+import { openRuntimeDb } from './open-runtime-db.js';
 
 export async function budgetCommand(args: string[]): Promise<void> {
   const doReset = args.includes('--reset');
-  const cfg = defaultConfig();
-  const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
-
-  const dbPath = dataDir === ':memory:' ? ':memory:' : join(dataDir, 'memory.sqlite');
-  const db = openDb(dbPath);
-  migrate(db);
+  // Key-aware + config.yaml-aware open (same resolution as serve/doctor).
+  const { db, cfg } = openRuntimeDb();
 
   const tracker = new BudgetTracker(db);
 

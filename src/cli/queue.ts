@@ -6,10 +6,7 @@
  * last_error, so an operator can see what's stuck without opening the DB.
  */
 
-import { join } from 'node:path';
-import { openDb } from '../storage/db.js';
-import { migrate } from '../storage/migrate.js';
-import { defaultConfig } from '../config/config.js';
+import { openRuntimeDb } from './open-runtime-db.js';
 import type { JobState } from '../contracts/index.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -40,12 +37,8 @@ export async function queueCommand(args: string[]): Promise<void> {
   const limitArg = parseArg(args, '--limit');
   const limit = limitArg ? Math.max(1, Number(limitArg)) : 10;
 
-  const cfg = defaultConfig();
-  const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? cfg.dataDir;
-  const dbPath = dataDir === ':memory:' ? ':memory:' : join(dataDir, 'memory.sqlite');
-
-  const db = openDb(dbPath);
-  migrate(db);
+  // Key-aware + config.yaml-aware open (same resolution as serve/doctor).
+  const { db } = openRuntimeDb();
 
   const counts = db
     .prepare('SELECT state, COUNT(*) AS n FROM jobs GROUP BY state ORDER BY state')
