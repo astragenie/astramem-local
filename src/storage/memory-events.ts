@@ -16,7 +16,9 @@ export type MemoryEventType =
   | 'supersede'
   | 'promote_scope'
   | 'erase_request'
-  | 'usefulness';
+  | 'usefulness'
+  | 'archive'
+  | 'restore';
 
 export interface MemoryEvent {
   seq: number;
@@ -82,6 +84,12 @@ interface MemoryValidityRow {
 interface MemoryScopeRow {
   id: string;
   scope: MemoryScope;
+}
+
+interface MemoryArchivalRow {
+  id: string;
+  valid_to: number | null;
+  archived: number;
 }
 
 export class MemoryEventRepo {
@@ -200,6 +208,71 @@ export class MemoryEventRepo {
         payload: { family: 'memory_corrected', action: 'superseded' },
         created_at: now,
       });
+    });
+    tx();
+  }
+
+  /**
+   * Archive a memory (FEAT-404 TTL/archival tiers): sets valid_to = now +
+   * archived = 1 + archived_at = now, appends an 'archive' event — all in
+   * one transaction. Reuses the exact non-destructive valid_to bookkeeping
+   * invalidate()/supersede() already use (row survives, restorable via
+   * restore()) — the only difference is *why* the row stopped being
+   * current, which is why this is a distinct event type rather than a
+   * relabeled invalidate().
+   *
+   * Deliberately does NOT append a 'memory_corrected' usefulness signal the
+   * way invalidate()/supersede() do: staleness-triggered archival is
+   * routine housekeeping driven by low usefulness, not a correction of a
+   * wrong/superseded fact — appending one would create a feedback loop
+   * that further penalizes an atom the policy might restore later.
+   *
+   * Throws MemoryConflictError if the memory is already invalid (including
+   * already archived) rather than silently double-archiving.
+   */
+  archive(atomId: string, reason?: string): void {
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT id, valid_to, archived FROM memories WHERE id = ?')
+        .get(atomId) as MemoryArchivalRow | undefined;
+      if (!row) throw new MemoryNotFoundError(atomId);
+      if (row.valid_to !== null) {
+        throw new MemoryConflictError(`memory ${atomId} is already invalid — cannot archive`);
+      }
+      const now = Date.now();
+      this.db
+        .prepare('UPDATE memories SET valid_to = ?, archived = 1, archived_at = ?, updated_at = ? WHERE id = ?')
+        .run(now, now, now, atomId);
+      this.append({ event_type: 'archive', atom_id: atomId, payload: { reason: reason ?? null }, created_at: now });
+    });
+    tx();
+  }
+
+  /**
+   * Restore a previously-archived memory (FEAT-404 AC-4): clears valid_to
+   * and archived/archived_at, appends a 'restore' event — all in one
+   * transaction. The memory immediately re-qualifies for every
+   * `valid_to IS NULL` candidate filter (search.ts, recall/pack.ts), so it
+   * reappears in search with no further wiring needed.
+   *
+   * Throws MemoryNotFoundError if the id doesn't exist, MemoryConflictError
+   * if it isn't currently archived (e.g. it was invalidated/superseded
+   * through a different path, or was never archived).
+   */
+  restore(atomId: string): void {
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT id, valid_to, archived FROM memories WHERE id = ?')
+        .get(atomId) as MemoryArchivalRow | undefined;
+      if (!row) throw new MemoryNotFoundError(atomId);
+      if (row.archived !== 1) {
+        throw new MemoryConflictError(`memory ${atomId} is not archived`);
+      }
+      const now = Date.now();
+      this.db
+        .prepare('UPDATE memories SET valid_to = NULL, archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?')
+        .run(now, atomId);
+      this.append({ event_type: 'restore', atom_id: atomId, created_at: now });
     });
     tx();
   }

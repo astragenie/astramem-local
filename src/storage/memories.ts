@@ -24,8 +24,10 @@ export interface InsertInput {
   scope?: MemoryScope;
 }
 
-/** Raw DB row shape — derived_from is stored as a JSON string, hydrated to string[] | null in get(). */
-type MemoryRow = Omit<Memory, 'derived_from'> & { derived_from: string | null };
+/** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
+ *  string[] | null in get()); archived is stored as SQLite INTEGER 0/1
+ *  (hydrated to boolean). */
+type MemoryRow = Omit<Memory, 'derived_from' | 'archived'> & { derived_from: string | null; archived: number };
 
 export interface FtsHit {
   id: string;
@@ -91,6 +93,7 @@ export class MemoryRepo {
     return {
       ...row,
       derived_from: row.derived_from ? (JSON.parse(row.derived_from) as string[]) : null,
+      archived: row.archived === 1,
     };
   }
 

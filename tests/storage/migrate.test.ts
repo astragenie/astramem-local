@@ -27,9 +27,9 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    // 12 migration files (001-012: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
-    // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities).
-    expect(versions.n).toBe(12);
+    // 13 migration files (001-013: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
+    // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities, 013 = FEAT-404 archival).
+    expect(versions.n).toBe(13);
   });
 
   it('enables WAL mode', () => {
@@ -84,7 +84,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(12);
+    expect(versions.n).toBe(13);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -160,7 +160,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(12);
+    expect(versions.v).toBe(13);
   });
 
   it('allows inserting type note after migration', () => {
@@ -317,7 +317,7 @@ describe('migration 007-memory-events', () => {
   it('accepts every documented event_type', () => {
     const db = openDb(':memory:');
     migrate(db);
-    const types = ['create', 'invalidate', 'supersede', 'promote_scope', 'erase_request', 'usefulness'];
+    const types = ['create', 'invalidate', 'supersede', 'promote_scope', 'erase_request', 'usefulness', 'archive', 'restore'];
     for (const t of types) {
       expect(() =>
         db.prepare(
@@ -360,7 +360,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 12/,
+      /Schema-version constant drift: wire-meta says 999, DB says 13/,
     );
   });
 });

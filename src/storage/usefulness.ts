@@ -190,6 +190,38 @@ export function usefulnessRate(db: DB, opts: UsefulnessRateOpts = {}): Usefulnes
   return { served, used, rate: served > 0 ? used / served : null };
 }
 
+/**
+ * Per-atom usefulness rate over a trailing window, for archival eligibility
+ * (FEAT-404 AC-2/AC-3 — "rate_7d"). Deliberately distinct from
+ * usefulnessRate() above: that DB-wide health-dashboard metric returns
+ * `rate: null` when served === 0 to avoid a misleading 0% on the /health
+ * surface. Archival eligibility instead needs one comparable number per
+ * atom, and "zero recall_served events in the window" is itself evidence
+ * the atom isn't earning its keep — so it maps to rate 0 here, not null,
+ * making an unsignaled atom exactly as archival-eligible as one with 0%
+ * explicit usage. Every requested id gets an entry (default 0) so callers
+ * never special-case a missing atom.
+ */
+export function perAtomUsefulnessRate7d(db: DB, atomIds: string[], sinceMs: number): Map<string, number> {
+  const rates = new Map<string, number>(atomIds.map(id => [id, 0]));
+  if (atomIds.length === 0) return rates;
+
+  const ph = atomIds.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT atom_id,
+      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'recall_served' THEN 1 ELSE 0 END) AS served,
+      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'recall_used' THEN 1 ELSE 0 END) AS used
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND atom_id IN (${ph}) AND created_at >= ?
+    GROUP BY atom_id
+  `).all(...atomIds, sinceMs) as Array<{ atom_id: string; served: number; used: number }>;
+
+  for (const r of rows) {
+    rates.set(r.atom_id, r.served > 0 ? r.used / r.served : 0);
+  }
+  return rates;
+}
+
 export interface UsefulnessByType {
   type: string;
   served: number;
