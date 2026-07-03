@@ -9,6 +9,8 @@ import { startShipper, getOrCreateDeviceId, type ShipperHandle } from '../sync/s
 import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
 import { defaultConfigDir } from '../config/datadir.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
+import { acquireInstanceLock, AlreadyRunningError, type InstanceLock } from '../service/instance-lock.js';
+import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { HandlerRegistry } from '../pipeline/registry.js';
 import { startWorker, type WorkerHandle } from '../pipeline/worker.js';
 import { distillHandler } from '../pipeline/handlers/distill.js';
@@ -45,6 +47,36 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const dbPath = dataDir === ':memory:' ? ':memory:' : join(dataDir, 'memory.sqlite');
   if (dataDir !== ':memory:') mkdirSync(dataDir, { recursive: true });
 
+  // Single-instance lock (D2): protects the data dir, not just the port —
+  // a second daemon on a different port would still race the job queue.
+  // A healthy holder → exit 0 so schtasks keepalive re-runs are cheap no-ops.
+  let lock: InstanceLock | null = null;
+  if (dataDir !== ':memory:') {
+    try {
+      lock = await acquireInstanceLock(dataDir, port, PKG_VERSION);
+    } catch (err) {
+      if (err instanceof AlreadyRunningError) {
+        console.log(`[astramem-local] ${err.message} — exiting (single-instance).`);
+        process.exit(0);
+      }
+      throw err;
+    }
+  }
+
+  // Global crash handlers (serve path only): a stray rejection must not kill
+  // the process silently — log, release the lock, close the DB, exit 1 so
+  // the abnormal exit is visible in task history. Restart comes from the
+  // scheduler's repetition trigger, not from exit-code semantics.
+  const crashExit = (kind: string) => (err: unknown) => {
+    console.error(`[astramem-local] FATAL ${kind}:`, err);
+    try { lock?.release(); } catch { /* best-effort */ }
+    try { dbForCrash?.close(); } catch { /* best-effort */ }
+    process.exit(1);
+  };
+  let dbForCrash: ReturnType<typeof openDb> | null = null;
+  process.on('uncaughtException', crashExit('uncaughtException'));
+  process.on('unhandledRejection', crashExit('unhandledRejection'));
+
   // SEC-1/2/7/9: in-memory databases can never be encrypted (SQLCipher
   // rejects PRAGMA key on :memory:, confirmed by the 1a spike) — the
   // ASTRA_MEMORY_DATADIR=':memory:' test/dev path always stays plaintext
@@ -64,6 +96,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     );
     db = openDb(dbPath);
   }
+  dbForCrash = db;
   migrate(db);
 
   // SEC-9: disabling redaction is a deliberate trust trade-off — make it loud.
@@ -161,6 +194,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       await app.close();
     } finally {
       db.close();
+      lock?.release();
     }
     process.exit(0);
   };
