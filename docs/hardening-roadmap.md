@@ -48,9 +48,54 @@ Goal: recall quality — the reason the daemon exists.
 
 Effort: ~1.5 slices. Risk: 3.4 needs eval gate from 3.2 first — sequence within wave.
 
-## Wave 4 — "Scale + fleet" (when multi-machine matters)
+## Wave 4 — backlog, numbered (est. hours = focused implementation incl. tests + live acceptance)
 
-Backlog, not scheduled: sync shipper bidirectional pull; multi-device conflict policy; memory TTL/archival tiers (SQLite file growth unbounded today); `queue purge --poison` CLI; remote /health scrape endpoint for fleet dashboards; sqlite-vec → parameterized dim (the six-file coordinated change noted in CLAUDE.md).
+| # | Feature | What it does | Complexity | Est. |
+|---|---------|--------------|------------|------|
+| W4.1 | `as_of` temporal search | Point-in-time recall ("what did we believe on date T"). Schema already bitemporal (valid_from/valid_to + event log) — adds `as_of` param to search/recall SQL filter + CLI flag; unskips eval q6. | Low — filter clause + plumbing, no migration | 3–5h |
+| W4.2 | Entity-based search | "Everything about <entity> X" across wordings. Distill-time entity extraction, entities+memory_entities tables, entity filter on search/recall, autocomplete + CLI, backfill for existing corpus. Design below. | High — migration 009, distill prompt change, new query path, eval fixtures | 16–24h (2 slices) |
+| W4.3 | Repo/project tag hygiene | `rebuild --retag`-style pass: backfill repo/project onto untagged legacy memories (heuristic: session meta, else prompt-assisted); makes scoping + entity search trustworthy. | Low-med — one-shot job + heuristics | 4–6h |
+| W4.4 | Memory TTL / archival tiers | Unbounded SQLite growth today. Policy: stale low-usefulness atoms auto-archive (valid_to + archive flag) after N months; archived excluded from vec/FTS candidates but restorable. | Med — policy design is the hard part, mechanics reuse supersede | 6–10h |
+| W4.5 | `queue purge --poison` CLI | Manual poison purge ahead of the 30d auto-purge; forensics dump before delete. | Trivial | 1–2h |
+| W4.6 | Remote /health scrape | Optional bind beyond 127.0.0.1 (or push-gateway) + auth for fleet dashboards. Security-sensitive: bearer on /health when non-local. | Med — small code, careful threat model | 4–6h |
+| W4.7 | Sync bidirectional pull | Shipper today is one-way append-only push. Pull = cloud→local merge with conflict policy (W4.8 prereq). | High — protocol + idempotency + conflict semantics | 20h+ |
+| W4.8 | Multi-device conflict policy | Same memory edited on two devices: LWW vs CRDT-ish event merge. Design doc first. | High — mostly design | 8h design + impl TBD |
+| W4.9 | Parameterized embedding dim | Kill the hardcoded 1024: schema (memories_vec FLOAT[N]), config, providers, contracts, eval — the six-file coordinated change. Enables model swaps without manual surgery. | Med-high — touchy, needs re-embed migration path | 8–12h |
+
+Suggested order if Wave 4 activates: W4.5 → W4.1 → W4.3 → W4.2 → W4.4 → W4.9 → W4.6 → W4.8 → W4.7
+(cheap wins first; entity search after tag hygiene; sync last — depends on conflict design).
+
+### W4.x Entity-based search (added 2026-07-03)
+
+Motivation (observed): recall for "sql" returns lexically/semantically similar hits across ALL
+projects — a Postgres project gets another project's "SQLite over Postgres" decisions. repo/project
+filters help when tags exist, but nothing understands that "Postgres", "postgres flexible", and
+"pg" are the same THING, or lets you ask "everything we know about <entity> X".
+
+Design sketch:
+1. **Extraction (distill-time)**: new pipeline stage after atom extraction — LLM (same
+   qwen2.5-coder call budget) emits `entities: [{name, kind}]` per atom;
+   kind ∈ product | tech | person | org | repo | concept. Normalize names (lowercase, alias
+   table seedable later). Runs only on new distills; `rebuild`-style backfill command for the
+   existing corpus.
+2. **Schema (one migration, 009)**: `entities(id, name UNIQUE, kind)` +
+   `memory_entities(memory_id, entity_id, PRIMARY KEY(memory_id, entity_id))`; index on
+   entity_id. Supersede/erase cascades follow the memory row (no orphan links).
+3. **Query surface (additive, wire-safe)**:
+   - `search`/`recall` gain optional `entity: string` filter → resolves via entities.name
+     (exact, then LIKE) → joins memory_entities → intersects with the existing FTS+vec candidate
+     set before fusion.
+   - `GET /entities?q=` autocomplete; `GET /entities/:id/memories` for "everything about X".
+   - CLI: `search --entity postgres`, `entities list|show`.
+4. **Ranking**: entity match adds a fusion bonus term (config `search.zeta`, default 0 = off
+   until the retrieval eval gains entity golden queries — same never-tune-blind rule as 3.4).
+5. **Eval**: extend ADR-005 corpus with entity-tagged fixtures + entity queries; regression
+   floors before zeta ever moves off 0.
+
+Effort: ~2 slices (extraction+schema+backfill; query+CLI+eval). Needs one schema migration —
+the first since v0.6.0 — and a distill prompt change; wire contract stays additive.
+Prereq: none hard, but repo/project tag hygiene (untagged legacy memories) makes entity scoping
+more useful — consider a `rebuild --retag` pass first.
 
 ## Sequencing rationale
 
