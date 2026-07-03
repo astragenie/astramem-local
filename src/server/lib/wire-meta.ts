@@ -33,5 +33,6 @@ export const WIRE_VERSIONS_SUPPORTED = ['v0.0', 'v1.0'] as const satisfies reado
 // at startup. Bump this whenever a new migration file is added.
 // ---------------------------------------------------------------------------
 
-// Migrations 001-011 (009 = tag hygiene FEAT-403; 010 = sync-pull event_id FEAT-407; 011 = embed-dim FEAT-409).
-export const SCHEMA_VERSION = 11 as const;
+// Migrations 001-012 (009 = tag hygiene FEAT-403; 010 = sync-pull event_id FEAT-407;
+// 011 = embed-dim FEAT-409; 012 = entities/memory_entities FEAT-402 slice 1).
+export const SCHEMA_VERSION = 12 as const;

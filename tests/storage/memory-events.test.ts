@@ -259,6 +259,41 @@ describe('MemoryEventRepo.supersede', () => {
     events.invalidate(oldId);
     expect(() => events.supersede(oldId, newId)).toThrow(MemoryConflictError);
   });
+
+  // FEAT-402 AC-3 — supersede removes the old memory's memory_entities links
+  // (the memories row itself survives for bitemporal history, but its
+  // entity links do not — a superseded fact stops counting as current
+  // evidence for "everything about entity X").
+  it('supersede deletes oldId memory_entities links — zero orphan links remain', async () => {
+    const { EntityRepo } = await import('../../src/storage/entities.js');
+    const entityRepo = new EntityRepo(db);
+    const oldId = insertMem('sup-old-entities');
+    const newId = insertMem('sup-new-entities');
+    entityRepo.linkEntitiesForMemory(oldId, [{ name: 'Postgres', kind: 'tech' }]);
+    expect(entityRepo.listForMemory(oldId)).toHaveLength(1);
+
+    events.supersede(oldId, newId);
+
+    expect(entityRepo.listForMemory(oldId)).toEqual([]);
+    const orphans = db.prepare(`
+      SELECT COUNT(*) AS n FROM memory_entities me
+      LEFT JOIN memories m ON m.id = me.memory_id
+      WHERE m.id IS NULL
+    `).get() as { n: number };
+    expect(orphans.n).toBe(0);
+  });
+
+  it('supersede does not touch newId memory_entities links', async () => {
+    const { EntityRepo } = await import('../../src/storage/entities.js');
+    const entityRepo = new EntityRepo(db);
+    const oldId = insertMem('sup-old-entities-2');
+    const newId = insertMem('sup-new-entities-2');
+    entityRepo.linkEntitiesForMemory(newId, [{ name: 'TypeScript', kind: 'tech' }]);
+
+    events.supersede(oldId, newId);
+
+    expect(entityRepo.listForMemory(newId)).toHaveLength(1);
+  });
 });
 
 describe('MemoryEventRepo.promoteScope', () => {

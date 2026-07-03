@@ -177,4 +177,61 @@ describe('extract stage', () => {
     const result = await extractChunk(0, 'content', llm, budget, 10.0);
     expect(result.atoms).toEqual([]);
   });
+
+  // FEAT-402 AC-1 — entities are emitted in the SAME extraction call as the
+  // atom, no separate LLM round trip.
+  it('parses entities emitted alongside an atom in the same response', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const withEntities = JSON.stringify({
+      atoms: [
+        {
+          type: 'decision',
+          text: 'use Postgres for the analytics store',
+          importance: 0.8,
+          confidence: 0.9,
+          entities: [{ name: 'Postgres', kind: 'tech' }],
+        },
+      ],
+    });
+    const llm = makeMockLLM([withEntities]);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+  });
+
+  it('atom with no named entity omits/empties entities without failing validation', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeMockLLM([VALID_EXTRACTION_JSON]); // no entities field on either atom
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    expect(result.atoms.length).toBe(2);
+    expect(result.atoms[0].entities).toBeUndefined();
+  });
+
+  it('drops an atom whose entities entry has an invalid kind, keeps the atom without it', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const badKind = JSON.stringify({
+      atoms: [
+        {
+          type: 'fact',
+          text: 'some fact about a thing',
+          importance: 0.5,
+          confidence: 0.5,
+          entities: [{ name: 'Whatever', kind: 'not-a-real-kind' }],
+        },
+      ],
+    });
+    const llm = makeMockLLM([badKind]);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    // AtomSchema validates the whole atom — an invalid nested entities[] kind
+    // fails the atom, matching the existing "drop malformed atoms silently" behavior.
+    expect(result.atoms).toEqual([]);
+  });
 });
