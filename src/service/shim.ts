@@ -22,6 +22,9 @@ export interface ShimPointer {
   nodeBin: string;
   entryJs: string;
   port: number;
+  /** When set, the launcher exports ASTRA_LOG_DIR so the daemon rotates its
+   *  JSON logs there (service mode) instead of writing to a discarded stdout. */
+  logDir?: string;
 }
 
 export interface ShimPaths {
@@ -71,8 +74,10 @@ if (!ptr.nodeBin || !ptr.entryJs) {
   console.error('[astramemd-shim] current.json missing nodeBin/entryJs — run: astramem-local reinstall');
   process.exit(1);
 }
+const env = { ...process.env };
+if (ptr.logDir) env.ASTRA_LOG_DIR = ptr.logDir; // service mode: rotated file logs
 const args = [ptr.entryJs, 'serve', '--port', String(ptr.port || 7777)];
-const res = spawnSync(ptr.nodeBin, args, { stdio: 'inherit' });
+const res = spawnSync(ptr.nodeBin, args, { stdio: 'inherit', env });
 process.exit(res.status === null ? 1 : res.status);
 `;
 

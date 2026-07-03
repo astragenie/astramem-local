@@ -51,8 +51,12 @@ export function resolveRuntimeConfig(overrides: RuntimeOverrides = {}): RuntimeC
     cfg.sync = { ...cfg.sync, enabled: pairedSync.enabled, url: pairedSync.url, workspaceId: pairedSync.workspaceId };
   }
 
-  const port = overrides.port ?? cfg.port;
-  const portSource: ValueSource = overrides.port !== undefined ? 'cli' : 'config.yaml';
+  // ASTRA_MEMORY_PORT sits between the CLI flag and config.yaml — the
+  // systemd unit has always set it (it was a dead env until W1.4).
+  const envPort = process.env.ASTRA_MEMORY_PORT ? Number(process.env.ASTRA_MEMORY_PORT) : undefined;
+  const port = overrides.port ?? (Number.isInteger(envPort) ? (envPort as number) : undefined) ?? cfg.port;
+  const portSource: ValueSource =
+    overrides.port !== undefined ? 'cli' : Number.isInteger(envPort) ? 'env' : 'config.yaml';
 
   let dataDir: string;
   let dataDirSource: ValueSource;

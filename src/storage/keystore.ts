@@ -25,6 +25,7 @@ import { Entry } from '@napi-rs/keyring';
 import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 
 const SERVICE = 'astramem-local';
 const ACCOUNT = 'db-key';
@@ -111,6 +112,7 @@ function getOrCreateKeyFile(configDir: string): KeyResult {
 
   if (existsSync(keyPath)) {
     const key = readFileSync(keyPath, 'utf8').trim();
+    restrictKeyFileAcl(keyPath); // heal ACLs on files created by older builds
     return { key, source: 'key-file' };
   }
 
@@ -118,14 +120,41 @@ function getOrCreateKeyFile(configDir: string): KeyResult {
   writeFileSync(keyPath, key, { mode: 0o600 });
   try {
     // Belt-and-braces: writeFileSync's mode option is honored on creation on
-    // POSIX; chmodSync is a no-op-ish best-effort on Windows (no real ACL
-    // restriction there) but must never throw and block key issuance.
+    // POSIX; chmodSync is a no-op on Windows (no POSIX bits) — Windows gets a
+    // real ACL below via icacls instead.
     chmodSync(keyPath, 0o600);
   } catch {
     /* best-effort on platforms without POSIX permission bits */
   }
+  restrictKeyFileAcl(keyPath);
 
   return { key, source: 'key-file' };
+}
+
+/**
+ * Windows: apply a real ACL to the key file — strip inheritance, grant only
+ * the current user. Without this, chmod is a no-op and the DB encryption key
+ * sits world-readable next to the database it protects (SEC OQ-1).
+ * Best-effort but LOUD on failure: a key file without an ACL is a real
+ * security downgrade the user must know about.
+ */
+function restrictKeyFileAcl(keyPath: string): void {
+  if (process.platform !== 'win32') return;
+  const user = process.env['USERNAME'];
+  if (!user) return;
+  try {
+    execFileSync(
+      'icacls',
+      [keyPath, '/inheritance:r', '/grant:r', `${user}:F`],
+      { stdio: 'pipe', timeout: 10_000 },
+    );
+  } catch (err) {
+    console.warn(
+      `[astramem-local] WARNING: could not restrict ACL on key file ${keyPath} ` +
+      `(icacls failed: ${errMessage(err)}). The DB encryption key is readable by other ` +
+      `local accounts — fix manually: icacls "${keyPath}" /inheritance:r /grant:r ${user}:F`,
+    );
+  }
 }
 
 export function keyFilePath(configDir: string): string {

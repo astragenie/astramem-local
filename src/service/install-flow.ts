@@ -9,8 +9,10 @@
  * build directly — upgrades only rewrite the shim pointer (see shim.ts).
  */
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { getServiceAdapter } from './index.js';
 import { writeShim, shimPaths } from './shim.js';
+import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import type { InstallResult, ServiceAdapter } from './types.js';
 
 export interface ResolvedBuild {
@@ -51,7 +53,10 @@ export async function installServiceFlow(port: number): Promise<InstallFlowOutco
 
   let taskExecPath: string;
   if (adapter.platform === 'win32') {
-    const paths = writeShim({ nodeBin: build.nodeBin, entryJs: build.entryJs, port }, shimPaths());
+    // Service logs rotate under the data dir (see logger.ts ASTRA_LOG_DIR).
+    const { dataDir } = resolveRuntimeConfig({ port });
+    const logDir = join(dataDir, 'logs');
+    const paths = writeShim({ nodeBin: build.nodeBin, entryJs: build.entryJs, port, logDir }, shimPaths());
     console.log(`  · shim written: ${paths.cmdPath}`);
     console.log(`  · pointer     : ${paths.pointerPath} → ${build.entryJs}`);
     taskExecPath = `"${paths.cmdPath}"`;
