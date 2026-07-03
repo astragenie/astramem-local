@@ -225,8 +225,12 @@ export async function serve(opts: ServeOpts): Promise<void> {
     }
   }
 
-  await app.listen({ port, host: '127.0.0.1' });
-  console.log(`astramem-local serving on 127.0.0.1:${port}`);
+  // FEAT-406: host is config-driven (default '127.0.0.1'). buildApp derives
+  // the /health + /version auth boundary from the SAME cfg.network.host, so
+  // a non-local bind here always implies Bearer-gated health/version there.
+  const host = cfg.network.host;
+  await app.listen({ port, host });
+  console.log(`astramem-local serving on ${host}:${port}`);
 
   // Degraded-start (D3): probe the embed provider in the background with
   // backoff. /health reports status starting -> ok | degraded meanwhile.
