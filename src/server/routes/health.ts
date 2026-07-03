@@ -48,7 +48,7 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
                 attempts: healthState.embed.attempts,
               },
               worker: workerBlock(healthState),
-              ...(db ? { queue: queueCounts(db) } : {}),
+              ...(db ? { queue: queueCounts(db), pending_proposals: pendingProposals(db) } : {}),
               ...(healthState.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
             }
           : {}),
@@ -83,6 +83,16 @@ function queueCounts(db: DB): Record<string, number> {
     return out;
   } catch {
     return {}; // jobs table absent (bare test DB) — degrade, never 500.
+  }
+}
+
+function pendingProposals(db: DB): number {
+  try {
+    return (db.prepare(
+      `SELECT COUNT(*) AS n FROM consolidation_proposals WHERE status = 'pending'`,
+    ).get() as { n: number }).n;
+  } catch {
+    return 0; // table absent (pre-008 schema in bare test DBs)
   }
 }
 

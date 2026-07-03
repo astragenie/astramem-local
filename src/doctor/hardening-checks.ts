@@ -28,7 +28,35 @@ export function getHardeningChecks(opts: HardeningCheckOpts): Check[] {
     checkServedVersion(opts.port),
     checkZombieLock(opts.dataDir),
     checkPoisonJobs(opts.openDbReadonly),
+    checkPendingProposals(opts.openDbReadonly),
   ];
+}
+
+/** Consolidation proposals waiting for review — silent pile-up is the failure
+ *  mode of a scheduled consolidation cadence with no reviewer. */
+function checkPendingProposals(openDbReadonly: () => Promise<DB>): Check {
+  return {
+    name: 'Consolidation proposals reviewed',
+    async run(): Promise<CheckResult> {
+      let db: DB | null = null;
+      try {
+        db = await openDbReadonly();
+        const row = db.prepare(
+          `SELECT COUNT(*) AS n FROM consolidation_proposals WHERE status = 'pending'`,
+        ).get() as { n: number };
+        if (row.n === 0) return { ok: true, message: 'no pending consolidation proposals' };
+        return {
+          ok: false,
+          message: `${row.n} consolidation proposal(s) awaiting review (borderline near-duplicates, 0.94-0.97 similarity)`,
+          fix: "Review with 'astramem-local consolidate proposals' then accept/reject",
+        };
+      } catch (err) {
+        return { ok: true, message: `proposal check skipped: ${err instanceof Error ? err.message : String(err)}` };
+      } finally {
+        try { db?.close(); } catch { /* ignore */ }
+      }
+    },
+  };
 }
 
 /** Legacy data dir still holds a database that is NOT the one being served. */
