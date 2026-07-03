@@ -235,6 +235,27 @@ export async function serve(opts: ServeOpts): Promise<void> {
     stopPreflight = startEmbedPreflight(providers.embed as EmbedProvider, healthState);
   }
 
+  // Consolidation cadence: the `consolidate` handler existed since Wave 4b
+  // but nothing ever enqueued it — near-duplicate memories accumulated until
+  // someone called POST /consolidation/run by hand. The pass is deterministic
+  // and ~60ms at a few hundred memories, so run it at boot and every 6h.
+  // Enqueued through the jobs table (not called inline) so it serializes with
+  // distills and shows up in `queue` forensics like every other stage.
+  let consolidateTimer: NodeJS.Timeout | null = null;
+  if (dataDir !== ':memory:') {
+    const CONSOLIDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
+    const enqueueConsolidate = () => {
+      try {
+        bootRepo.enqueue('consolidate', {});
+      } catch (err) {
+        console.warn(`[astramem-local] consolidate enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    enqueueConsolidate(); // boot pass — catches anything a downtime window skipped
+    consolidateTimer = setInterval(enqueueConsolidate, CONSOLIDATE_INTERVAL_MS);
+    consolidateTimer.unref();
+  }
+
   // WAL discipline (W1.5): with synchronous=NORMAL a hard crash loses the
   // un-checkpointed WAL tail. Truncate hourly so the at-risk window stays
   // small, and once more on graceful shutdown. Timer unref'd — never holds
@@ -256,6 +277,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     try {
       stopPreflight?.();
       if (walTimer) clearInterval(walTimer);
+      if (consolidateTimer) clearInterval(consolidateTimer);
       if (shipper) await shipper.stop();
       await worker.stop();         // drain in-flight tick before closing DB
       try {

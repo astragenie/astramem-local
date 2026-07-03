@@ -158,6 +158,13 @@ async function main() {
       break;
     }
 
+    case 'consolidate': {
+      // astramem-local consolidate run|proposals|accept|reject
+      const { consolidateCommand } = await import('./consolidate.js');
+      await consolidateCommand(rest);
+      break;
+    }
+
     case '--version':
     case '-v':
       console.log(PKG_VERSION);
@@ -193,6 +200,9 @@ Commands:
                                          SessionStart memory-pack hook offer)
   token rotate                           Issue new local Bearer token
   queue [--json] [--limit N]             Show job-queue state counts + recent failures
+  consolidate run|proposals|accept|reject
+                                         Near-duplicate memory consolidation (also
+                                         auto-scheduled: boot + every 6h)
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
                                          Queue reembed jobs for existing memories
   providers [--json]                     Show configured providers + live health probes
