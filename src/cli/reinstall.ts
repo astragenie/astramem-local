@@ -96,11 +96,24 @@ export async function reinstallCommand(args: string[]): Promise<void> {
   // 4. Install (shared flow: shim + scheduler registration).
   let startFn: (() => Promise<void>) | null = null;
   try {
-    const { result, adapter } = await installServiceFlow(port);
+    const { result, adapter, build } = await installServiceFlow(port);
     if (result.kind === 'task') {
       steps.push({ step: 'install-service', ok: true, detail: 'registered (task)' });
       log('  · service registered (task)');
       startFn = () => adapter.start();
+      // W2.4: nightly verified backup by default — a memory daemon without
+      // backups is one disk hiccup away from losing everything.
+      if (!hasFlag(args, '--no-backup-timer')) {
+        try {
+          await adapter.installBackupTimer(build.rawExecPath, 7);
+          steps.push({ step: 'install-backup-timer', ok: true, detail: 'nightly 03:00, keep 7, verified' });
+          log('  · backup timer registered (nightly 03:00, keep 7)');
+        } catch (err) {
+          // Soft-fail: daemon service matters more than the timer.
+          steps.push({ step: 'install-backup-timer', ok: false, detail: (err as Error).message });
+          log(`  ⚠ backup timer failed: ${(err as Error).message}`);
+        }
+      }
     } else {
       // Startup-shortcut fallback: works at next logon but no start/stop
       // control. Count it as a soft failure so the exit code says "not fully

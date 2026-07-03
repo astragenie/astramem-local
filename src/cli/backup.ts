@@ -10,6 +10,7 @@
  */
 import { join } from 'node:path';
 import { createSnapshot } from '../backup/snapshot.js';
+import { verifySnapshot } from '../backup/verify.js';
 import { pruneOldBackups } from '../backup/retention.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { defaultConfigDir } from '../config/datadir.js';
@@ -81,6 +82,21 @@ export async function backupCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
+  // W2.1: prove the snapshot restores — integrity_check + row-count compare.
+  // Default ON; --no-verify skips (e.g. huge DBs on a tight timer window).
+  let verified: boolean | undefined;
+  if (!hasFlag(args, '--no-verify')) {
+    const key = cfg.security.encryption.enabled ? getOrCreateKey(defaultConfigDir()).key : undefined;
+    const v = verifySnapshot(db, snapshotResult.path, key);
+    verified = v.ok;
+    if (!v.ok) {
+      console.error(`backup: snapshot VERIFICATION FAILED: ${v.error}`);
+      console.error(`  snapshot left at ${snapshotResult.path} for inspection — do NOT rely on it`);
+      db.close();
+      process.exit(1);
+    }
+  }
+
   db.close();
 
   // Apply retention policy
@@ -92,6 +108,7 @@ export async function backupCommand(args: string[]): Promise<void> {
         path: snapshotResult.path,
         size_bytes: snapshotResult.size_bytes,
         duration_ms: snapshotResult.duration_ms,
+        verified: verified ?? null,
         kept: retention.kept.length,
         deleted: retention.deleted.length,
       })
@@ -101,6 +118,7 @@ export async function backupCommand(args: string[]): Promise<void> {
     console.log(`Backup created: ${snapshotResult.path}`);
     console.log(`  Size:     ${kb} KB`);
     console.log(`  Duration: ${snapshotResult.duration_ms}ms`);
+    console.log(`  Verified: ${verified === undefined ? 'skipped (--no-verify)' : 'yes (integrity + counts)'}`);
     console.log(
       `  Retention: kept ${retention.kept.length}, deleted ${retention.deleted.length}`
     );

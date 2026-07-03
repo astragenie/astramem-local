@@ -151,6 +151,13 @@ async function main() {
       break;
     }
 
+    case 'restore': {
+      // astramem-local restore <snapshot> [--no-restart]
+      const { restoreCommand } = await import('./restore.js');
+      await restoreCommand(rest);
+      break;
+    }
+
     case '--version':
     case '-v':
       console.log(PKG_VERSION);
@@ -177,7 +184,11 @@ Commands:
   recall "question" [--k N] [--type TYPE] [--repo REPO]
   remember "text" [--type TYPE] [--repo REPO]
   budget [--reset]                       Show today + month LLM spend vs cap
-  backup [--out PATH] [--keep N] [--json] Snapshot DB; prune old backups
+  backup [--out PATH] [--keep N] [--json] [--no-verify]
+                                         Snapshot DB (verified by default); prune old
+  restore <snapshot> [--no-restart]      Verified restore: stop daemon, swap DB in
+                                         (previous DB kept as .pre-restore.bak),
+                                         migrate, restart service
   init [--no-hook]                       Interactive setup wizard (--no-hook skips the
                                          SessionStart memory-pack hook offer)
   token rotate                           Issue new local Bearer token

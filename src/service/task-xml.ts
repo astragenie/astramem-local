@@ -34,6 +34,26 @@ function xmlEscape(s: string): string {
     .replace(/'/g, '&apos;');
 }
 
+/**
+ * Daily-trigger variant (backup timer): CalendarTrigger at `startTime`
+ * every day. Same Settings block reasons as the daemon task — most
+ * importantly registered via XML so it installs without elevation on the
+ * same boxes where the CLI form gets "Access is denied".
+ */
+export function buildDailyTaskXml(opts: TaskXmlOpts & { startTime?: string; description?: string }): string {
+  const startTime = opts.startTime ?? '03:00:00';
+  const base = buildTaskXml(opts);
+  // Swap the logon trigger for a daily calendar trigger; keep everything else.
+  const trigger = `    <CalendarTrigger>
+      <StartBoundary>2026-01-01T${startTime}</StartBoundary>
+      <Enabled>true</Enabled>
+      <ScheduleByDay>
+        <DaysInterval>1</DaysInterval>
+      </ScheduleByDay>
+    </CalendarTrigger>`;
+  return base.replace(/    <LogonTrigger>[\s\S]*?<\/LogonTrigger>/, trigger);
+}
+
 export function buildTaskXml(opts: TaskXmlOpts): string {
   const description = opts.description ?? 'AstraMemory local memory daemon (astramem-local). Managed by astramem-local service install / reinstall.';
   return `<?xml version="1.0" encoding="UTF-16"?>

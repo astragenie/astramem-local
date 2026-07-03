@@ -1,0 +1,58 @@
+# publish.yml — npm publish on version-tag push (W2.3, hardening-roadmap Wave 2).
+#
+# WHY: the registry froze at 0.4.0 while the repo moved to 0.6.x. Users who
+# `bun install -g` got a build without the SQLCipher driver, which dies with
+# SQLITE_NOTADB against an encrypted database (the stale-global-install trap).
+# Publishing every release tag keeps the registry current so that trap class
+# cannot recur.
+#
+# REQUIRES: repo secret NPM_TOKEN (npm automation token with publish rights
+# on @astragenie). Without it the publish step fails loudly — by design.
+#
+# Runs on GitHub-hosted ubuntu (not self-hosted) for provenance attestation.
+
+name: publish
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # npm --provenance
+
+jobs:
+  publish:
+    name: npm publish (provenance)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches package.json (same gate as version-tag-parity)
+        run: |
+          PKG_VERSION=$(jq -r '.version' package.json)
+          TAG="${GITHUB_REF_NAME#v}"
+          if [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::package.json ($PKG_VERSION) != tag ($TAG) — bump package.json in the release PR"
+            exit 1
+          fi
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install + build
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Publish
+        run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

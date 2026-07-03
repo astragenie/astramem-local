@@ -2,7 +2,7 @@ import { exec } from 'node:child_process';
 import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { buildTaskXml } from './task-xml.js';
+import { buildTaskXml, buildDailyTaskXml } from './task-xml.js';
 import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
 const TASK_NAME = 'AstraMemoryD';
@@ -249,7 +249,25 @@ export class SchtasksAdapter implements ServiceAdapter {
   }
 
   async installBackupTimer(execPath: string, keep: number): Promise<void> {
-    // schtasks daily at 03:00, runs: <node> <indexJs> backup --keep N
+    // XML-first, same reason as the daemon task: the CLI /create form needs
+    // elevation on some boxes; a current-user XML registration does not.
+    try {
+      const userId = await resolveUserId();
+      const { command, args } = splitCommand(execPath);
+      const xml = buildDailyTaskXml({
+        command,
+        args: [args, `backup --keep ${keep}`].filter(Boolean).join(' '),
+        userId,
+        description: 'AstraMemory nightly verified backup. Managed by astramem-local reinstall / service install.',
+      });
+      const xmlPath = join(tmpdir(), 'AstraMemoryDBackup.xml');
+      const bom = Buffer.from([0xff, 0xfe]);
+      writeFileSync(xmlPath, Buffer.concat([bom, Buffer.from(xml, 'utf16le')]));
+      await runCmd(`schtasks /create /tn "${BACKUP_TASK_NAME}" /xml "${xmlPath}" /f`);
+      return;
+    } catch {
+      // fall through to legacy CLI form
+    }
     const tr = quoteForSchtasks(`${execPath} backup --keep ${keep}`);
     const user = process.env['USERNAME'] ?? '';
     const ruFlag = user ? `/RU "${user}" /IT` : '';
