@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
-import { migrate } from '../../src/storage/migrate.js';
+import { migrate, getVecSchemaDim } from '../../src/storage/migrate.js';
+import { embedProbe } from '../../src/doctor/probes/embed-probe.js';
+import type { EmbedProvider, EmbedHealth } from '../../src/contracts/embed.js';
 
 describe('migrate', () => {
   it('creates schema_version table and applies 001-init', () => {
@@ -358,5 +360,80 @@ describe('migrate — schema-version drift guard', () => {
     expect(() => migrateMocked(db)).toThrow(
       /Schema-version constant drift: wire-meta says 999, DB says 11/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEAT-409 AC-3 (HIGH fix) — getVecSchemaDim + boot preflight against the
+// PERSISTED schema dim, not just provider self-consistency.
+// ---------------------------------------------------------------------------
+
+function makeEmbedProvider(dim: number): EmbedProvider {
+  return {
+    name: 'ollama',
+    model: 'test-model',
+    dim,
+    async embed(texts: string[]): Promise<Float32Array[]> {
+      return texts.map(() => new Float32Array(dim).fill(0.1));
+    },
+    async health(): Promise<EmbedHealth> {
+      return { ok: true, model: 'test-model', dim };
+    },
+  };
+}
+
+describe('getVecSchemaDim', () => {
+  it('returns null before migrate() creates memories_vec', () => {
+    const db = openDb(':memory:');
+    expect(getVecSchemaDim(db)).toBeNull();
+  });
+
+  it('reads the dim baked into memories_vec at creation time', () => {
+    const db = openDb(':memory:');
+    migrate(db, 1024);
+    expect(getVecSchemaDim(db)).toBe(1024);
+  });
+
+  it('reflects a non-default dim if the DB was created with one', () => {
+    const db = openDb(':memory:');
+    migrate(db, 768);
+    expect(getVecSchemaDim(db)).toBe(768);
+  });
+
+  it('keeps reporting the ORIGINAL dim after a no-op re-migrate with a different dim argument (migrate() is a no-op for already-applied migrations)', () => {
+    const db = openDb(':memory:');
+    migrate(db, 1024);
+    migrate(db, 768); // no-op — schema_version already has these migrations
+    expect(getVecSchemaDim(db)).toBe(1024);
+  });
+});
+
+describe('boot preflight against the persisted schema dim (AC-3)', () => {
+  it('an existing FLOAT[1024] DB + a provider self-consistently configured for dim=768 fails loud with a clear dim-mismatch message — not a raw sqlite-vec error later', async () => {
+    const db = openDb(':memory:');
+    migrate(db, 1024); // simulates an existing DB that was never re-embedded
+
+    // Provider is internally self-consistent (claims 768, returns 768) —
+    // the OLD preflight (expectedDim defaulting to provider.dim) would pass
+    // this. Only checking against the real schema dim catches the drift.
+    const provider = makeEmbedProvider(768);
+    const schemaDim = getVecSchemaDim(db);
+    expect(schemaDim).toBe(1024);
+
+    const result = await embedProbe(provider, 5000, schemaDim ?? provider.dim);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('dim 768');
+    expect(result.message).toContain('expected 1024');
+  });
+
+  it('an existing FLOAT[1024] DB + a provider configured for dim=1024 (matching schema) still passes', async () => {
+    const db = openDb(':memory:');
+    migrate(db, 1024);
+
+    const provider = makeEmbedProvider(1024);
+    const schemaDim = getVecSchemaDim(db);
+
+    const result = await embedProbe(provider, 5000, schemaDim ?? provider.dim);
+    expect(result.ok).toBe(true);
   });
 });

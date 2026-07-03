@@ -116,6 +116,28 @@ describe('FEAT-409 AC-4 — runReembedDim resumable procedure', () => {
     expect(progress.n).toBe(3); // all three eventually checkpointed
   });
 
+  it('updates memories.embedding_provider/model/dim to the NEW values after a re-embed (blocker fix — these must not keep reporting the OLD provider/model/dim)', async () => {
+    const db = openDb(':memory:');
+    migrate(db, OLD_DIM);
+    seedMemory(db, 'm1', 'first memory');
+    db.prepare(
+      "UPDATE memories SET embedding_provider = 'ollama', embedding_model = 'old-model', embedding_dim = ? WHERE id = 'm1'",
+    ).run(OLD_DIM);
+
+    const { provider: embed } = makeEmbedProvider(NEW_DIM);
+    (embed as { name: string }).name = 'azure-openai';
+    (embed as { model: string }).model = 'new-model';
+    const result = await runReembedDim(db, NEW_DIM, embed, 20);
+    expect(result.reembedded).toBe(1);
+
+    const row = db
+      .prepare('SELECT embedding_provider, embedding_model, embedding_dim FROM memories WHERE id = ?')
+      .get('m1') as { embedding_provider: string; embedding_model: string; embedding_dim: number };
+    expect(row.embedding_provider).toBe('azure-openai');
+    expect(row.embedding_model).toBe('new-model');
+    expect(row.embedding_dim).toBe(NEW_DIM);
+  });
+
   it('rejects a vector whose length does not match targetDim (provider misconfiguration surfaces as a per-memory failure)', async () => {
     const db = openDb(':memory:');
     migrate(db, OLD_DIM);

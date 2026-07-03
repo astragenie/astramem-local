@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
-import { migrate } from '../storage/migrate.js';
+import { migrate, getVecSchemaDim } from '../storage/migrate.js';
 import { getOrCreateKey, readSyncToken } from '../storage/keystore.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
 import { startShipper, getOrCreateDeviceId, type ShipperHandle } from '../sync/shipper.js';
@@ -108,6 +108,16 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // upgrades and restarts of an existing (already at some dim) DB.
   migrate(db, cfg.embedding.dim);
 
+  // FEAT-409 AC-3: the dim the embed preflight checks against is the
+  // PERSISTED schema dim (what memories_vec was actually created with),
+  // not just cfg.embedding.dim — a config/provider dim that drifted from
+  // the real schema (edited config.yaml without running `reembed-dim`)
+  // must fail loud here, not deep inside the first ingest's sqlite-vec
+  // dimension mismatch. Falls back to cfg.embedding.dim on a genuinely
+  // fresh DB (memories_vec doesn't exist yet — migrate() just created it
+  // at that dim, so they agree by construction).
+  const schemaDim = getVecSchemaDim(db) ?? cfg.embedding.dim;
+
   // Boot job recovery (P1.1): requeue jobs orphaned by a non-graceful death
   // ('running' from a mid-handle kill; 'failed' whose in-memory retry timer
   // died with the process). Purge old completed/poison bookkeeping (P1.2).
@@ -157,7 +167,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       // Legacy fail-fast behavior (CI / scripted checks): probe once with the
       // historical 5s timeout and exit 1 before accepting traffic.
       const { embedProbe } = await import('../doctor/probes/embed-probe.js');
-      const preflightResult = await embedProbe(providers.embed);
+      const preflightResult = await embedProbe(providers.embed, 5000, schemaDim);
       if (!preflightResult.ok) {
         const model = providers.embed.model;
         console.error(`[astramem-local] embed preflight FAILED: ${preflightResult.message}`);
@@ -239,7 +249,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // backoff. /health reports status starting -> ok | degraded meanwhile.
   let stopPreflight: (() => void) | null = null;
   if (!useMock && !opts.strictPreflight) {
-    stopPreflight = startEmbedPreflight(providers.embed as EmbedProvider, healthState);
+    stopPreflight = startEmbedPreflight(providers.embed as EmbedProvider, healthState, schemaDim);
   }
 
   // Consolidation cadence: the `consolidate` handler existed since Wave 4b
@@ -335,7 +345,11 @@ function cleanupPreEncryptionBak(dbPath: string): void {
   }
 }
 
-function startEmbedPreflight(embed: EmbedProvider, healthState: HealthState): () => void {
+function startEmbedPreflight(
+  embed: EmbedProvider,
+  healthState: HealthState,
+  expectedDim: number = embed.dim,
+): () => void {
   const BACKOFF_MS = [5_000, 10_000, 30_000, 60_000];
   const PROBE_TIMEOUT_MS = 30_000;
   let cancelled = false;
@@ -344,7 +358,7 @@ function startEmbedPreflight(embed: EmbedProvider, healthState: HealthState): ()
   const attempt = async (): Promise<void> => {
     if (cancelled) return;
     const { embedProbe } = await import('../doctor/probes/embed-probe.js');
-    const result = await embedProbe(embed, PROBE_TIMEOUT_MS);
+    const result = await embedProbe(embed, PROBE_TIMEOUT_MS, expectedDim);
     if (cancelled) return;
     healthState.embed.attempts++;
     if (result.ok) {

@@ -47,11 +47,11 @@ describe('FEAT-409 AC-6 — default dim is byte-identical to pre-change 1024', (
     expect(embed.dim).toBe(1024);
   });
 
-  it('SqliteVecStore with no dim override rejects anything but 1024', () => {
+  it('SqliteVecStore with no dim override rejects anything but 1024', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const store = new SqliteVecStore(db);
-    expect(() => store.upsert('missing-id', new Float32Array(768))).rejects.toThrow(/expected dim 1024, got 768/);
+    await expect(store.upsert('missing-id', new Float32Array(768))).rejects.toThrow(/expected dim 1024, got 768/);
   });
 
   it('makeFakeVec with no dim override produces a 1024-length vector', () => {

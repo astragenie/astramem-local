@@ -76,3 +76,25 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
     );
   }
 }
+
+/**
+ * Read the dim actually baked into `memories_vec` at CREATE TABLE time
+ * (FEAT-409 AC-3) by parsing its persisted DDL out of sqlite_master —
+ * the source of truth for what the schema really is, independent of
+ * whatever config.embedding.dim currently says. Boot preflight compares
+ * the PROVIDER's dim against this (not just provider self-consistency),
+ * so a config/provider dim that drifted from the schema (e.g. someone
+ * edited config.yaml without running `reembed-dim`) fails loud at boot
+ * instead of surfacing as a raw sqlite-vec dimension error deep in the
+ * first ingest. Returns null when the table doesn't exist yet (fresh DB
+ * about to be created by migrate()) or its DDL doesn't match the
+ * expected `FLOAT[N]` shape.
+ */
+export function getVecSchemaDim(db: DB): number | null {
+  const row = db
+    .prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'memories_vec'`)
+    .get() as { sql: string } | undefined;
+  if (!row?.sql) return null;
+  const match = row.sql.match(/FLOAT\[(\d+)\]/);
+  return match ? Number(match[1]) : null;
+}

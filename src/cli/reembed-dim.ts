@@ -107,11 +107,18 @@ export async function runReembedDim(
         if (vec.length !== targetDim) {
           throw new Error(`provider returned dim=${vec.length}, expected ${targetDim}`);
         }
-        // upsert() then the checkpoint INSERT — each is individually atomic
-        // (single-statement better-sqlite3 writes). If the process dies
-        // between them, resume just re-embeds this one memory again on the
-        // next run: embed+upsert is idempotent, so at-least-once is safe.
+        // upsert(), the memories row update, then the checkpoint INSERT —
+        // each is individually atomic (single-statement better-sqlite3
+        // writes). If the process dies between them, resume just re-embeds
+        // this one memory again on the next run: embed+upsert+update is
+        // idempotent, so at-least-once is safe.
         await vecStore.upsert(mem.id, vec);
+        // Mirror pipeline/handlers/reembed.ts: memories.embedding_* must
+        // track what's actually in memories_vec, or API/MCP callers get a
+        // silent lie about which provider/model/dim produced the vector.
+        db.prepare(
+          'UPDATE memories SET embedding_provider = ?, embedding_model = ?, embedding_dim = ?, updated_at = ? WHERE id = ?',
+        ).run(embed.name, embed.model, targetDim, Date.now(), mem.id);
         db.prepare(
           'INSERT INTO dim_migration_progress (memory_id, target_dim, completed_at) VALUES (?, ?, ?)',
         ).run(mem.id, targetDim, Date.now());
