@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { serve } from './serve.js';
-import { cliSearch, cliRecall, cliRemember } from './search.js';
+import { cliSearch, cliRecall, cliRemember, cliEntitiesList, cliEntitiesShow } from './search.js';
 import { serviceCommand } from './service.js';
 import { doctorCommand } from './doctor.js';
 import { budgetCommand } from './budget.js';
@@ -50,27 +50,45 @@ async function main() {
     }
 
     case 'search': {
-      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--as-of DATE] [--limit N]
+      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--as-of DATE] [--entity NAME] [--limit N]
       const query = rest.find(a => !a.startsWith('-')) ?? '';
       await cliSearch(query, {
         type: parseArg(rest, '--type'),
         repo: parseArg(rest, '--repo'),
         since: parseArg(rest, '--since'),
         limit: parseArg(rest, '--limit'),
-        asOf: parseArg(rest, '--as-of')
+        asOf: parseArg(rest, '--as-of'),
+        entity: parseArg(rest, '--entity')
       });
       break;
     }
 
     case 'recall': {
-      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE]
+      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE] [--entity NAME]
       const question = rest.find(a => !a.startsWith('-')) ?? '';
       await cliRecall(question, {
         k: parseArg(rest, '--k'),
         type: parseArg(rest, '--type'),
         repo: parseArg(rest, '--repo'),
-        asOf: parseArg(rest, '--as-of')
+        asOf: parseArg(rest, '--as-of'),
+        entity: parseArg(rest, '--entity')
       });
+      break;
+    }
+
+    case 'entities': {
+      // astramem-local entities list [query] [--limit N]
+      // astramem-local entities show <id>
+      const [sub, ...subRest] = rest;
+      if (sub === 'show') {
+        const id = subRest.find(a => !a.startsWith('-')) ?? '';
+        await cliEntitiesShow(id);
+      } else {
+        // Default to `list` when the sub-command is omitted or explicitly "list".
+        const listRest = sub === 'list' ? subRest : rest;
+        const query = listRest.find(a => !a.startsWith('-')) ?? '';
+        await cliEntitiesList(query, { limit: parseArg(listRest, '--limit') });
+      }
       break;
     }
 
@@ -218,11 +236,17 @@ Commands:
                                          (stable shim + task) -> start -> verify
                                          health + version. Run after every upgrade.
   doctor [--json] [--port N]             Run health checks
-  search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--as-of DATE] [--limit N]
-  recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE]
+  search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--as-of DATE]
+                 [--entity NAME] [--limit N]
+  recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE] [--entity NAME]
                                          --as-of: ISO-8601 date-time — point-in-time
                                          (bitemporal) recall, FEAT-401
+                                         --entity: filter to memories linked to
+                                         this entity (FEAT-402, exact then
+                                         substring match on the normalized name)
   remember "text" [--type TYPE] [--repo REPO]
+  entities list [query] [--limit N]      Autocomplete known entities (FEAT-402)
+  entities show <id>                     List every memory linked to entity <id>
   budget [--reset]                       Show today + month LLM spend vs cap
   backup [--out PATH] [--keep N] [--json] [--no-verify]
                                          Snapshot DB (verified by default); prune old

@@ -124,13 +124,17 @@ describe('contracts/fixtures/eval — seed corpus conforms to atom.v1', () => {
     }
   });
 
-  it('queries.json has 6-10 queries including a temporal as_of case', () => {
+  // Upper bound raised 10 -> 15 for FEAT-402 slice 2 (AC-8): q9-q11 add
+  // dedicated entity `filters.entity` coverage alongside the original as_of
+  // temporal case — both are load-bearing regression gates, not bloat.
+  it('queries.json has 6-15 queries including a temporal as_of case and an entity filter case', () => {
     const queries = readJson(join(CONTRACTS_ROOT, 'fixtures', 'eval', 'queries.json')) as {
-      queries: Array<{ filters?: { as_of?: string } }>;
+      queries: Array<{ filters?: { as_of?: string; entity?: string } }>;
     };
     expect(queries.queries.length).toBeGreaterThanOrEqual(6);
-    expect(queries.queries.length).toBeLessThanOrEqual(10);
+    expect(queries.queries.length).toBeLessThanOrEqual(15);
     expect(queries.queries.some(q => q.filters?.as_of !== undefined)).toBe(true);
+    expect(queries.queries.some(q => q.filters?.entity !== undefined)).toBe(true);
   });
 });
 

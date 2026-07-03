@@ -89,4 +89,72 @@ export class EntityRepo {
     const row = this.db.prepare('SELECT 1 AS x FROM entities WHERE name = ?').get(normalized);
     return row !== undefined;
   }
+
+  /** Single entity by id — GET /entities/:id/memories 404s when this returns undefined. */
+  getById(id: string): EntityRow | undefined {
+    return this.db.prepare('SELECT id, name, kind FROM entities WHERE id = ?').get(id) as EntityRow | undefined;
+  }
+
+  /**
+   * Autocomplete (FEAT-402 slice 2 AC-5, `GET /entities?q=`) — substring
+   * match on the normalized name, case/whitespace-insensitive via the same
+   * AC-9 seam every other lookup goes through. Empty/whitespace `query`
+   * returns the first `limit` entities alphabetically rather than nothing,
+   * so an empty-q autocomplete call still has sane behavior.
+   */
+  search(query: string, limit = 20): EntityRow[] {
+    const normalized = normalizeEntityName(query);
+    if (!normalized) {
+      return this.db
+        .prepare('SELECT id, name, kind FROM entities ORDER BY name ASC LIMIT ?')
+        .all(limit) as EntityRow[];
+    }
+    const escaped = escapeLike(normalized);
+    return this.db
+      .prepare(`SELECT id, name, kind FROM entities WHERE name LIKE ? ESCAPE '\\' ORDER BY name ASC LIMIT ?`)
+      .all(`%${escaped}%`, limit) as EntityRow[];
+  }
+
+  /**
+   * Resolve a free-form entity query (e.g. the search `entity=` filter,
+   * FEAT-402 slice 2 AC-4) to entity ids via the AC-9 normalize seam: exact
+   * match on the normalized name first, falling back to a LIKE substring
+   * match only when no exact row exists. Returns [] when nothing matches —
+   * callers MUST treat that as "no entity-linked candidates" rather than
+   * falling back to an unfiltered search.
+   */
+  resolveIds(query: string): string[] {
+    const normalized = normalizeEntityName(query);
+    if (!normalized) return [];
+    const exact = this.db.prepare('SELECT id FROM entities WHERE name = ?').get(normalized) as
+      | { id: string }
+      | undefined;
+    if (exact) return [exact.id];
+    const escaped = escapeLike(normalized);
+    const rows = this.db
+      .prepare(`SELECT id FROM entities WHERE name LIKE ? ESCAPE '\\'`)
+      .all(`%${escaped}%`) as { id: string }[];
+    return rows.map(r => r.id);
+  }
+
+  /**
+   * All distinct memory ids linked to any of `entityIds` — the join behind
+   * both the search `entity=` pre-fusion intersection (AC-4) and
+   * `GET /entities/:id/memories` (AC-5). Empty input returns an empty set
+   * rather than every memory (an empty entityIds list is never "no filter").
+   */
+  memoryIdsForEntities(entityIds: string[]): Set<string> {
+    if (entityIds.length === 0) return new Set();
+    const placeholders = entityIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`SELECT DISTINCT memory_id FROM memory_entities WHERE entity_id IN (${placeholders})`)
+      .all(...entityIds) as { memory_id: string }[];
+    return new Set(rows.map(r => r.memory_id));
+  }
+}
+
+/** Escape SQL LIKE wildcards (`%`, `_`) in a substring pattern the caller
+ * did not intend as wildcard syntax — used with `ESCAPE '\\'` above. */
+function escapeLike(value: string): string {
+  return value.replace(/[\\%_]/g, ch => `\\${ch}`);
 }

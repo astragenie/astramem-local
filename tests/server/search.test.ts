@@ -391,3 +391,75 @@ describe('POST /remember', () => {
     expect(res.statusCode).toBe(400);
   });
 });
+
+// FEAT-402 slice 2 AC-4: entity= filter on GET /search and POST /recall.
+describe('entity filter — GET /search and POST /recall (AC-4)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    app = await buildApp({ db, token: 'tok', embed: buildMockEmbed() });
+  });
+
+  async function linkEntity(memId: string, name: string): Promise<string> {
+    const { EntityRepo } = await import('../../src/storage/entities.js');
+    const entities = new EntityRepo(db);
+    const id = entities.upsert(name, 'tech');
+    entities.link(memId, id);
+    return id;
+  }
+
+  it('GET /search?entity= returns all-and-only entity-linked members', async () => {
+    const linked = seedMemory(repo, 'adopt postgres as the canonical store decision', 'decision');
+    const unlinked = seedMemory(repo, 'postgres canonical store rejected alternative decision', 'decision');
+    await linkEntity(linked, 'postgres');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres+canonical+store&entity=postgres',
+      headers: { authorization: 'Bearer tok' }
+    });
+    expect(res.statusCode).toBe(200);
+    const ids = (res.json().hits as Array<{ id: string }>).map(h => h.id);
+    expect(ids).toContain(linked);
+    expect(ids).not.toContain(unlinked);
+  });
+
+  it('POST /recall filters.entity resolves to the identical hit set as GET /search entity= for the same query', async () => {
+    const linked = seedMemory(repo, 'adopt postgres as the canonical store decision', 'decision');
+    seedMemory(repo, 'postgres canonical store rejected alternative decision', 'decision');
+    await linkEntity(linked, 'postgres');
+
+    const getRes = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres+canonical+store&entity=postgres',
+      headers: { authorization: 'Bearer tok' }
+    });
+    const postRes = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { query: 'postgres canonical store', k: 10, filters: { entity: 'postgres' } }
+    });
+    const getIds = (getRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    const postIds = (postRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    expect(postIds).toEqual(getIds);
+    expect(getIds).toEqual([linked]);
+  });
+
+  it('an unresolvable entity name returns zero hits, not an unfiltered search', async () => {
+    seedMemory(repo, 'postgres canonical store decision', 'decision');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres+canonical+store&entity=nonexistent-entity',
+      headers: { authorization: 'Bearer tok' }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().hits).toEqual([]);
+  });
+});

@@ -32,8 +32,11 @@ export interface Config {
   /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
    * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed
    * ranking; atoms with no signal score a neutral 0.5, so ε never reshuffles
-   * an unsignaled corpus). */
-  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number };
+   * an unsignaled corpus), ζ entity-relevance bonus (FEAT-402 AC-6: DEFAULT
+   * 0 = OFF; a candidate entity-linked to an entity mentioned in the query
+   * text gets +ζ. At zeta=0 ranking is byte-identical to no-entity ranking —
+   * see the AC-6 snapshot test in tests/eval/retrieval-eval.test.ts). */
+  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number };
   recallPack: {
     enabled: boolean;
     budgetTokens: number;
@@ -96,7 +99,7 @@ export function defaultConfig(): Config {
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
-    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1 },
+    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0 },
     recallPack: {
       enabled: false,
       budgetTokens: 1500,

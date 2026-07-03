@@ -1,7 +1,8 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&since=&as_of=&limit=
- *   POST /recall  { query, k, filters? }  filters.as_of: ISO-8601 date-time
+ *   GET  /search?q=&type=&repo=&project=&since=&as_of=&entity=&limit=
+ *   POST /recall  { query, k, filters? }  filters.as_of: ISO-8601 date-time,
+ *                                          filters.entity: FEAT-402 AC-4
  *   POST /remember { text, type, metadata? }
  */
 
@@ -31,7 +32,9 @@ const RecallBodySchema = z.object({
     project: z.string().optional(),
     since: z.number().optional(),
     /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
-    as_of: z.string().optional()
+    as_of: z.string().optional(),
+    /** FEAT-402 slice 2 AC-4: entity name — resolved via the AC-9 normalize seam. */
+    entity: z.string().optional()
   }).optional()
 });
 
@@ -82,6 +85,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
           return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
         }
       }
+      if (params.entity) filters.entity = params.entity;
 
       const hits = await search(q, filters, limit, { db, embed, weights });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
@@ -114,6 +118,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
           return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
         }
       }
+      if (rawFilters?.entity !== undefined) filters.entity = rawFilters.entity;
 
       const hits = await search(query, filters, k, { db, embed, weights });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
