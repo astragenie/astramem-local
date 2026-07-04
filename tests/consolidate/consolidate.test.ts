@@ -267,3 +267,40 @@ describe('containment auto-merge (FEAT-410 follow-up)', () => {
     expect(second.merged[0]).toMatchObject({ winner: longLoser, loser: shortWinner, reason: 'contained' });
   });
 });
+
+describe('stale-proposal sweep (FEAT-410 follow-up)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('marks a pending proposal accepted when the pair was already merged by the pair-scan, and rejected when unactionable', async () => {
+    // Queue two proposals with containment off.
+    const w1 = await seedEmbedded(db, 'port 7777 is the default for API endpoints', 'h-st-1', vecAt(0));
+    const l1 = await seedEmbedded(db, 'Port 7777 is the default', 'h-st-2', vecAt(0, 0.45));
+    recordRecallUsed(db, { atomId: w1, surface: 'rest', signal: 'explicit' });
+    const w2 = await seedEmbedded(db, 'deploys run at midnight', 'h-st-3', vecAt(2));
+    const l2 = await seedEmbedded(db, 'deploys run nightly', 'h-st-4', vecAt(2, 0.45));
+    recordRecallUsed(db, { atomId: w2, surface: 'rest', signal: 'explicit' });
+    const first = runConsolidation(db, { autoMergeContained: false });
+    expect(first.proposed).toHaveLength(2);
+
+    // Pair 1's work happens out-of-band (same as the scheduled consolidate
+    // job's pair-scan): loser superseded by winner directly.
+    mergeAsSupersede(db, w1, l1);
+    // Pair 2's loser becomes unactionable for a different reason: superseded
+    // by an unrelated atom.
+    const other = await seedEmbedded(db, 'unrelated survivor', 'h-st-5', vecAt(7));
+    mergeAsSupersede(db, other, l2);
+
+    const second = runConsolidation(db);
+    expect(second.autoAcceptedProposals).toHaveLength(1);   // pair 1: already done
+    expect(second.staleRejectedProposals).toHaveLength(1);  // pair 2: unactionable
+    const repo = new ProposalRepo(db);
+    expect(repo.list('pending')).toHaveLength(0);
+    // No double-merge attempted: w1 lineage contains l1 exactly once.
+    expect(new MemoryRepo(db).get(l1)!.superseded_by).toBe(w1);
+  });
+});
