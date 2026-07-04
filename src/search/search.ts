@@ -354,13 +354,21 @@ export async function search(
     // default). Kept identical here so freshness — and thus `score` — stays
     // reproducible from the documented weights (AC-3).
     const freshnessDecayDays = 30;
+    // fuseScores() divides the raw weighted sum by the sum of active weights
+    // to keep scores in [0,1] (wire contract). Report weightSum-normalized
+    // weights here so `score` stays exactly reproducible as
+    // Σ weights.* × component from this object alone.
+    const rawWeightSum =
+      weights.alpha + weights.beta + weights.gamma + weights.delta +
+      (weights.epsilon ?? 0) + zeta;
+    const weightSum = rawWeightSum === 0 ? 1 : rawWeightSum;
     const effectiveWeights = {
-      alpha: weights.alpha,
-      beta: weights.beta,
-      gamma: weights.gamma,
-      delta: weights.delta,
-      epsilon: weights.epsilon ?? 0,
-      zeta,
+      alpha: weights.alpha / weightSum,
+      beta: weights.beta / weightSum,
+      gamma: weights.gamma / weightSum,
+      delta: weights.delta / weightSum,
+      epsilon: (weights.epsilon ?? 0) / weightSum,
+      zeta: zeta / weightSum,
     };
 
     const debugResults: SearchDebugHit[] = [];

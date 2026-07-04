@@ -81,7 +81,20 @@ describe('search() debug:true (SLICE-410-3)', () => {
     expect(typeof hit.importance).toBe('number');
     expect(typeof hit.freshness).toBe('number');
     expect(typeof hit.score).toBe('number');
-    expect(hit.weights).toEqual(defaultConfig().search);
+    // Weights are reported weightSum-normalized (effective values) so the
+    // documented reconstruction formula matches fuseScores()' [0,1] wire
+    // contract exactly (fix(search) cedc8a9 + FEAT-410 follow-up).
+    const cfg = defaultConfig().search;
+    const cfgZeta = (cfg as { zeta?: number }).zeta ?? 0;
+    const wSum = cfg.alpha + cfg.beta + cfg.gamma + cfg.delta + (cfg.epsilon ?? 0) + cfgZeta;
+    expect(hit.weights).toEqual({
+      alpha: cfg.alpha / wSum,
+      beta: cfg.beta / wSum,
+      gamma: cfg.gamma / wSum,
+      delta: cfg.delta / wSum,
+      epsilon: (cfg.epsilon ?? 0) / wSum,
+      zeta: cfgZeta / wSum,
+    });
     // Not a SearchHit — no `type`/`text` collapse fields.
     expect(hit).not.toHaveProperty('type');
     expect(hit).not.toHaveProperty('text');
