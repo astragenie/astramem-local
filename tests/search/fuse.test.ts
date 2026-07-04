@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { fuseScores, normalizeScores, fuseHits } from '../../src/search/fuse.js';
+import { defaultConfig } from '../../src/config/config.js';
 
 describe('normalizeScores', () => {
   it('scales values into [0,1]', () => {
@@ -102,17 +103,91 @@ describe('fuseScores', () => {
       expect(zetaZero).toBe(noZeta);
     });
 
-    it('zeta>0 with entityBonus=1 adds exactly zeta to the score', () => {
+    // Post-normalization (fuseScores divides by the sum of active weights,
+    // see fuse.ts doc comment / wire-contract fix): turning zeta on changes
+    // the active-weight sum for every candidate in the call, so the effect
+    // of the entity bonus is no longer a flat "+zeta" — it's the bonus's
+    // share of the new (larger) denominator. Values below are computed
+    // explicitly rather than pinned as "plain + zeta" to make that visible.
+    it('zeta>0 with entityBonus=1 raises the score by the bonus share of the active weight sum', () => {
+      // base raw = 0.4*0.5 + 0.4*0.5 + 0.1*0.5 + 0.1*0.5 = 0.5, weightSum(no zeta) = 1.0 -> plain = 0.5
       const plain = fuseScores(base);
+      expect(plain).toBeCloseTo(0.5);
+      // boosted raw = 0.5 + 0.2*1 = 0.7, weightSum = 0.4+0.4+0.1+0.1+0.2 = 1.2 -> 0.7/1.2
       const boosted = fuseScores({ ...base, zeta: 0.2, entityBonus: 1 });
-      expect(boosted).toBeCloseTo(plain + 0.2);
+      expect(boosted).toBeCloseTo(0.7 / 1.2);
+      expect(boosted).toBeGreaterThan(plain);
     });
 
-    it('zeta>0 with entityBonus=0 (or absent) contributes nothing', () => {
+    it('zeta>0 with entityBonus=0 (or absent) dilutes the other components via the larger weight sum', () => {
+      // Turning zeta on (even with no bonus firing) grows the active weight
+      // sum from 1.0 to 1.2, so the score is NOT unchanged — it's diluted:
+      // raw stays 0.5, but weightSum grows to 1.2 -> 0.5/1.2 < 0.5.
       const plain = fuseScores(base);
-      expect(fuseScores({ ...base, zeta: 0.2, entityBonus: 0 })).toBeCloseTo(plain);
-      expect(fuseScores({ ...base, zeta: 0.2 })).toBeCloseTo(plain);
+      const diluted = fuseScores({ ...base, zeta: 0.2, entityBonus: 0 });
+      expect(diluted).toBeCloseTo(0.5 / 1.2);
+      expect(diluted).toBeLessThan(plain);
+      expect(fuseScores({ ...base, zeta: 0.2 })).toBeCloseTo(0.5 / 1.2);
     });
+  });
+});
+
+// Wire-contract regression (memory-plugin#8): the daemon's default weights
+// (alpha=beta=0.4, gamma=delta=epsilon=0.1, zeta=0) sum to 1.1, not 1. Before
+// the fix, fuseScores returned the raw weighted sum unnormalized, so a
+// perfect-match, fresh, important, "used" memory scored ~1.04 — outside the
+// plugin's Zod [0,1] range, causing recall to fail with exit 3. fuseScores
+// must now normalize by the active weight sum so every score is <= 1.
+describe('fuseScores wire-contract invariant (memory-plugin#8)', () => {
+  it('perfect-storm input (all components maxed, default weights) stays within [0,1]', () => {
+    const weights = defaultConfig().search; // alpha .4 beta .4 gamma .1 delta .1 epsilon .1 zeta 0 (sums to 1.1)
+    const score = fuseScores({
+      normBm25: 1,
+      normCosine: 1,
+      importance: 0.9,
+      freshness: 1,
+      usefulness: 1,
+      entityBonus: 1,
+      ...weights,
+    });
+    expect(score).toBeLessThanOrEqual(1);
+    expect(score).toBeGreaterThan(0);
+    // raw = 0.4+0.4+0.09+0.1+0.1+0 = 1.09, weightSum = 1.1 -> 1.09/1.1
+    expect(score).toBeCloseTo(1.09 / 1.1);
+  });
+
+  it('degenerate all-zero weights returns 0 rather than dividing by zero', () => {
+    const score = fuseScores({
+      normBm25: 1, normCosine: 1, importance: 1, freshness: 1,
+      alpha: 0, beta: 0, gamma: 0, delta: 0, epsilon: 0, zeta: 0,
+    });
+    expect(score).toBe(0);
+  });
+
+  it('future created_at (SaaS-sync clock skew) cannot push a score past 1', () => {
+    const NOW = 1_700_000_000_000;
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+    // created_at 30 days in the future: unclamped freshness would be e^1 ≈ 2.72
+    const metas = new Map([['skewed', { importance: 1, created_at: NOW + THIRTY_DAYS }]]);
+    const hits = fuseHits(
+      [{ id: 'skewed', bm25: -1 }],
+      [{ id: 'skewed', cosine: 1 }],
+      metas,
+      { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1 },
+      NOW,
+    );
+    expect(hits).toHaveLength(1);
+    expect(hits[0].score).toBeLessThanOrEqual(1);
+    expect(hits[0].score).toBeGreaterThan(0);
+  });
+
+  it('fuseScores output is hard-capped at 1 even if a component regresses past its bound', () => {
+    // Defense-in-depth: feed a deliberately out-of-contract freshness (2.72).
+    const score = fuseScores({
+      normBm25: 1, normCosine: 1, importance: 1, freshness: 2.72,
+      alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1,
+    });
+    expect(score).toBeLessThanOrEqual(1);
   });
 });
 

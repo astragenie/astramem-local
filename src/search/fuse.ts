@@ -1,8 +1,19 @@
 /**
  * Score fusion for hybrid BM25 + cosine + importance + freshness ranking.
  *
- * Formula: score = α·norm(bm25) + β·norm(cosine) + γ·importance + δ·freshness
+ * Formula: raw   = α·norm(bm25) + β·norm(cosine) + γ·importance + δ·freshness
  *                  + ε·usefulness + ζ·entityBonus
+ *          score = raw / (α + β + γ + δ + ε + ζ)   ["active weight sum"]
+ *
+ * Wire-contract invariant: score MUST land in [0,1] (plugin Zod schema,
+ * memory-plugin#8) so the daemon response validates. Every component input
+ * is already bounded to [0,1] (normBm25/normCosine via normalizeScores,
+ * importance/freshness/usefulness by construction, entityBonus ∈ {0,1} —
+ * see entityBonusForQuery), so any convex-combination weight config keeps
+ * `raw` in [0, weightSum]; dividing by weightSum restores [0,1] even when
+ * the configured weights don't sum to 1 (default config sums to 1.1 — see
+ * config.ts search defaults — which without this normalization pushed
+ * perfect-match scores to ~1.04 and broke the wire contract).
  *
  * Defaults: α=β=0.4, γ=δ=ε=0.1, ζ=0. Pulled from config.search. The
  * usefulness component (ADR-010 v1.x) is Laplace-smoothed to a neutral 0.5
@@ -16,6 +27,11 @@
  * every candidate and ranking order is byte-identical to pre-AC-6 behavior
  * (see tests/search/fuse.test.ts zeta=0 no-op case and the eval harness
  * zeta=0 snapshot test).
+ *
+ * Normalizing by the active weight sum is a per-call constant scalar (the
+ * weights config doesn't vary across hits in the same search), so it never
+ * changes relative ranking order for a fixed weight config — it is a
+ * monotone rescaling, applied uniformly to every candidate.
  */
 
 export interface FuseInput {
@@ -55,16 +71,30 @@ export function normalizeScores(scores: number[]): number[] {
 
 /**
  * Compute fused score for a single hit whose components are already normalized.
+ *
+ * Returns a value in [0,1]: the weighted sum is divided by the sum of the
+ * active weights so the result stays in-range even when the configured
+ * weights don't sum to 1 (see module doc comment). Guards the degenerate
+ * all-zero-weights case by returning 0 rather than dividing by zero.
  */
 export function fuseScores(input: FuseInput): number {
-  return (
+  const raw =
     input.alpha * input.normBm25 +
     input.beta  * input.normCosine +
     input.gamma * input.importance +
     input.delta * input.freshness +
     (input.epsilon ?? 0) * (input.usefulness ?? 0.5) +
-    (input.zeta ?? 0) * (input.entityBonus ?? 0)
-  );
+    (input.zeta ?? 0) * (input.entityBonus ?? 0);
+
+  const weightSum =
+    input.alpha + input.beta + input.gamma + input.delta +
+    (input.epsilon ?? 0) + (input.zeta ?? 0);
+
+  if (weightSum === 0) return 0;
+  // Defense-in-depth: components are bounded to [0,1] at their sources, but a
+  // future regression there must degrade to a capped score, not a wire-contract
+  // violation that makes plugin clients reject the whole response.
+  return Math.min(1, raw / weightSum);
 }
 
 export interface RawHit {
@@ -131,7 +161,10 @@ export function fuseHits(
     const importance = meta?.importance ?? 0.5;
     const createdAt = meta?.created_at ?? nowMs;
     const ageDays = (nowMs - createdAt) / (24 * 60 * 60 * 1000);
-    const freshness = Math.exp(-ageDays / (decayMs / (24 * 60 * 60 * 1000)));
+    // Clamp to 1: a future created_at (SaaS-sync clock skew — puller.ts stores
+    // remote-minted timestamps verbatim) makes ageDays negative and exp() > 1,
+    // which would push the fused score past the [0,1] wire contract.
+    const freshness = Math.min(1, Math.exp(-ageDays / (decayMs / (24 * 60 * 60 * 1000))));
 
     const normBm25 = normBm25Map.get(id) ?? 0;
     const normCosine = normCosineMap.get(id) ?? 0;
