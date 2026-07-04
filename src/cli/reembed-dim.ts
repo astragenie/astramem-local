@@ -80,6 +80,16 @@ export async function runReembedDim(
   embed: EmbedProvider,
   batchSize = 20,
 ): Promise<ReembedDimResult> {
+  // Same guard migrate() applies (src/storage/migrate.ts) — this is the
+  // exported core function, callable directly by anything that imports it
+  // (not just the CLI wrapper below, which already validates --dim), so it
+  // must be self-guarding rather than trusting the caller to have checked.
+  // Fails fast, before maybeRecreateVecSchema ever interpolates targetDim
+  // into DROP/CREATE VIRTUAL TABLE DDL.
+  if (!Number.isInteger(targetDim) || targetDim <= 0) {
+    throw new Error(`invalid embedding dim: ${targetDim} (must be a positive integer)`);
+  }
+
   const schemaRecreated = maybeRecreateVecSchema(db, targetDim);
   const vecStore = new SqliteVecStore(db, targetDim);
 

@@ -38,9 +38,14 @@ export function entitiesRoute(db: DB) {
 
       const memRepo = new MemoryRepo(db);
       const memoryIds = entityRepo.memoryIdsForEntities([id]);
+      // Currently-valid only (valid_to IS NULL — same semantics as
+      // validityFilterClause(undefined) in src/search/search.ts): a
+      // superseded/invalidated/archived memory is retired, not "currently
+      // linked" to the entity, even though the memory_entities row itself
+      // still points at it.
       const memories = Array.from(memoryIds)
         .map(mid => memRepo.get(mid))
-        .filter((m): m is NonNullable<typeof m> => m !== null);
+        .filter((m): m is NonNullable<typeof m> => m !== null && m.valid_to === null);
 
       return { entity, memories };
     });

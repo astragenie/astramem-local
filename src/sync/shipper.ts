@@ -105,6 +105,14 @@ interface UnsyncedRow {
  * Unsynced, ship-eligible events in seq order (ADR-009 scope filter).
  * LEFT JOIN: an erase_request may outlive its memories row — it ships when
  * its payload records a team/org scope.
+ *
+ * `archive`/`restore` (FEAT-404) are excluded unconditionally, regardless of
+ * scope: archival is a per-device retention/storage-hygiene decision (one
+ * device's local SQLite-growth mitigation), not a semantic memory change,
+ * so it must never leave the machine. The sync wire schema
+ * (contracts/schemas/sync-envelope.v1.schema.json) also never lists these
+ * two types in its event_type enum — shipping one would fail schema
+ * validation on the wire, on top of being the wrong policy.
  */
 export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
   return db
@@ -113,6 +121,7 @@ export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
+        AND e.event_type NOT IN ('archive', 'restore')
         AND (
           m.scope IN ('team', 'org')
           OR (

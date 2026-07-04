@@ -5,6 +5,7 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { EntityRepo } from '../../src/storage/entities.js';
+import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { buildApp } from '../../src/server/app.js';
 import type { DB } from '../../src/storage/db.js';
 
@@ -84,6 +85,31 @@ describe('GET /entities/:id/memories', () => {
     const body = res.json() as { entity: { id: string; name: string }; memories: Array<{ id: string }> };
     expect(body.entity).toEqual({ id: pgId, name: 'postgres', kind: 'tech' });
     expect(body.memories.map(m => m.id).sort()).toEqual([m1, m2].sort());
+  });
+
+  it('excludes superseded and archived memories — only the currently-valid link surfaces (review fix HIGH)', async () => {
+    const memRepo = new MemoryRepo(db);
+    const events = new MemoryEventRepo(db);
+    const entities = new EntityRepo(db);
+    const superseded = seedMemory(memRepo, 'postgres old fact', 'h-ev-1');
+    const successor = seedMemory(memRepo, 'postgres new fact', 'h-ev-2'); // supersede target, not entity-linked
+    const archived = seedMemory(memRepo, 'postgres archived fact', 'h-ev-3');
+    const live = seedMemory(memRepo, 'postgres live fact', 'h-ev-4');
+    const pgId = entities.upsert('postgres', 'tech');
+    entities.link(superseded, pgId);
+    entities.link(archived, pgId);
+    entities.link(live, pgId);
+
+    events.supersede(superseded, successor); // FEAT-402 AC-3 also unlinks superseded's memory_entities row
+    events.archive(archived); // archive keeps the memory_entities row, but sets valid_to
+
+    const res = await app.inject({
+      method: 'GET', url: `/entities/${pgId}/memories`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as { memories: Array<{ id: string }> };
+    expect(body.memories.map(m => m.id)).toEqual([live]);
   });
 
   it('returns 404 for an unknown entity id', async () => {
