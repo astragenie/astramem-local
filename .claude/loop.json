@@ -10,7 +10,8 @@
     "decisionsRoot": ".claude/artifacts/loop/decisions",
     "phaseGateArtifactDir": ".claude/artifacts/crew/validations",
     "maxIterations": 25,
-    "marathonMode": true
+    "marathonMode": true,
+    "worktreeRoot": "../astramemory-local-worktrees"
   },
   "stack": {
     "build": [

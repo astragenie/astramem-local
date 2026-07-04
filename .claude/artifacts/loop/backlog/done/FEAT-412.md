@@ -1,6 +1,7 @@
 ---
 id: FEAT-412
-status: triaged
+status: done
+completed: 2026-07-04
 priority: P0
 created: 2026-07-04
 updated: 2026-07-04
@@ -36,3 +37,8 @@ reasoning: "Cheapest, safest, highest-leverage item in the batch: mechanical pat
 
 ## Evidence
 Run artifact 2026-07-04 incident log + architecture review finding 4 [MED-HIGH], debt rank 1.
+
+## Resolution (2026-07-04)
+- AC1: runner dispatcher 0.58.0 already provisions sibling dirs (dispatch evidence: `worktreePath: C:\work\mega\astramemory-local-SLICE-410-N-0` in .claude/artifacts/loop/dispatch/2026-07-04*/inventory.jsonl). Now pinned explicitly: `.claude/loop.json` -> `loop.worktreeRoot: "../astramemory-local-worktrees"`.
+- AC2/AC3/AC4: `.claude/loop/rules.md` Worktree Parallelism section extended — nested `.claude/worktrees/` prohibited, harness `Agent isolation: worktree` flagged (still nests; do not use for daemon/test slices), vitest exclusion + .gitignore entry demoted to belt-and-suspenders.
+- AC5 RESIDUAL: `/crew:parallel` legacy provisioning (`.claude/worktrees/<slug>/`, no auto-cleanup) lives in the crew plugin source (dev-team repo), not editable here. Follow-up filed for dev-team: switch crew:parallel to sibling-dir provisioning + cleanup, ride the staged 0.48.0 release.
