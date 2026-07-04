@@ -5,7 +5,7 @@
  * three serialization sites it is wired into: GET /search, POST /recall, and
  * POST /recall/pack.
  */
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const { warnMock, mockLog } = vi.hoisted(() => {
   const warnMock = vi.fn();
@@ -276,5 +276,73 @@ describe('POST /recall/pack — a real non-fuseScores scoring path (selectPack) 
       expect(m.score).toBeLessThanOrEqual(1);
     }
     expect(warnMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('MCP tool serialization boundary (search_memory / recall_memory)', () => {
+  // Reviewer follow-up (SLICE-411 review, MEDIUM): src/mcp/server.ts
+  // serializes the same SearchHit[] via JSON.stringify({hits}) — a second
+  // wire boundary with the identical failure mode. The MCP route calls
+  // reply.hijack(), so Fastify.inject() cannot be used; listen on a random
+  // port and POST real JSON-RPC like tests/mcp/server.test.ts does.
+  let db: DB;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  let baseUrl: string;
+
+  beforeEach(async () => {
+    warnMock.mockClear();
+    db = openDb(':memory:');
+    migrate(db);
+    app = await buildApp({ db, token: 'tok', embed: buildMockEmbed() });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const addr = app.server.address();
+    if (!addr || typeof addr === 'string') throw new Error('unexpected server address');
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  async function mcpToolCall(name: string, args: object): Promise<{ hits: Array<{ id: string; score: number }> }> {
+    const res = await fetch(`${baseUrl}/mcp`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: 'Bearer tok',
+      },
+      body: JSON.stringify({ jsonrpc: '2.0', method: 'tools/call', params: { name, arguments: args }, id: 1 }),
+    });
+    expect(res.status).toBe(200);
+    const text = await res.text();
+    for (const line of text.split('\n').map(l => l.trim()).filter(Boolean)) {
+      const src = line.startsWith('data: ') ? line.slice(6) : line;
+      try {
+        const parsed = JSON.parse(src) as { result?: { content?: Array<{ text: string }> } };
+        return JSON.parse(parsed.result?.content?.[0]?.text ?? '{}') as { hits: Array<{ id: string; score: number }> };
+      } catch { /* skip non-JSON lines */ }
+    }
+    throw new Error(`No parseable JSON in MCP response:\n${text}`);
+  }
+
+  it('AC-2 (MCP): out-of-contract scores are clamped in search_memory responses, warning logged', async () => {
+    fakeHits.value = [
+      { id: 'mcp-1', type: 'decision', text: 'x', score: 1.9, source: 'fts' },
+      { id: 'mcp-2', type: 'fact', text: 'y', score: -0.4, source: 'vec' },
+    ] as SearchHit[];
+    const payload = await mcpToolCall('search_memory', { query: 'anything', limit: 5 });
+    expect(payload.hits.map(h => h.score)).toEqual([1, 0]);
+    expect(warnMock).toHaveBeenCalledTimes(2);
+  });
+
+  it('AC-3/AC-4 (MCP): NaN clamps to 0 in recall_memory while in-contract scores pass through bit-identical', async () => {
+    fakeHits.value = [
+      { id: 'mcp-3', type: 'decision', text: 'x', score: NaN, source: 'both' },
+      { id: 'mcp-4', type: 'fact', text: 'y', score: 0.7331, source: 'fts' },
+    ] as SearchHit[];
+    const payload = await mcpToolCall('recall_memory', { query: 'anything', k: 5 });
+    expect(payload.hits.map(h => h.score)).toEqual([0, 0.7331]);
+    expect(warnMock).toHaveBeenCalledTimes(1);
   });
 });
