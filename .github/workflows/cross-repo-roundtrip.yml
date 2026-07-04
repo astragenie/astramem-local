@@ -1,0 +1,70 @@
+# FEAT-411 — cross-repo plugin<->daemon wire-contract gate.
+#
+# astramem-local is PRIVATE and astramem-plugin is PUBLIC, so this direction
+# (daemon repo checking out the public plugin repo) needs no token and is the
+# PRIMARY enforcement point: it blocks merge on this repo when a daemon change
+# breaks the real plugin's capture -> ingest -> distill -> recall path.
+#
+# The mirror image (plugin repo checking out this PRIVATE daemon repo) lives in
+# astramem-plugin's own .github/workflows/cross-repo-roundtrip.yml and is
+# secret-gated (skips cleanly without a PAT) since it can't rely on this repo
+# being public from the other side.
+#
+# Job name is intentionally stable ("cross-repo-roundtrip") so it can be added
+# as a required status check in this repo's branch protection settings.
+
+name: Cross-Repo Roundtrip
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  cross-repo-roundtrip:
+    name: cross-repo-roundtrip
+    # Matches every other workflow in this private repo (audit/lint/parity/test
+    # all target the org's self-hosted linux pool; keeps hosted-runner minutes
+    # at zero and native-module prebuilts on a known-good OS).
+    runs-on: [self-hosted, astragenie, aws]
+    timeout-minutes: 15
+    steps:
+      - name: Checkout daemon (this repo)
+        uses: actions/checkout@v4
+        with:
+          path: daemon
+
+      - name: Checkout plugin (public, no token needed)
+        uses: actions/checkout@v4
+        with:
+          repository: astragenie/astramem-plugin
+          path: plugin
+
+      - name: Setup Bun 1.3
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3'
+
+      - name: Install + build daemon
+        working-directory: daemon
+        run: |
+          bun install --frozen-lockfile
+          bun run build
+
+      - name: Install plugin dependencies
+        working-directory: plugin
+        run: bun install --frozen-lockfile
+
+      # AC-1/AC-2: ASTRAMEM_LOCAL_DIST_PATH must be the daemon REPO ROOT
+      # (containing dist/cli/index.js after build), not the dist/ dir itself —
+      # see tests/e2e/plugin-daemon-roundtrip.test.ts gating comment in the
+      # plugin repo. `test:smoke` runs vitest, which exits non-zero on any
+      # assertion failure (e.g. a fused score > 1 wire violation) — this job
+      # goes red and blocks merge, it does not swallow failures.
+      - name: Run plugin<->daemon roundtrip test
+        working-directory: plugin
+        env:
+          ASTRAMEM_LOCAL_DIST_PATH: ${{ github.workspace }}/daemon
+        run: bun run test:smoke
