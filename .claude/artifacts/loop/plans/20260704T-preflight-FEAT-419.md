@@ -64,3 +64,13 @@ slice shape: ONE slice (test + fix together, per pm_scope_notes)
 ## Estimate
 
 5 pts. One builder dispatch, review + validation gates as usual.
+
+## POST-BUILD ADDENDUM (2026-07-04, SLICE-413 result)
+
+The await-window hypothesis DOES NOT HOLD: the full claim -> transcript
+insert -> job insert -> finalize sequence executes inside one synchronous
+db.transaction() with zero awaits (ingest.ts:412-492 transcript path;
+:296-332 events path). better-sqlite3 + Node run-to-completion make the
+critical section atomic across real sockets. Worker drains jobs serially.
+NO production fix was needed; tests-only shipped (39674ce), 3x flake-check
+clean. Do not re-investigate this race hypothesis on this code shape.
