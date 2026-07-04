@@ -124,7 +124,13 @@ export function recomputeProjection(db: DB, atomId: string): void {
     const invalidates = events.filter(e => e.event_type === 'invalidate');
 
     if (supersedes.length === 0 && invalidates.length === 0) {
-      return; // only create/promote_scope/usefulness events — no reconciliation needed
+      // Only create/promote_scope/usefulness events, or archive/restore —
+      // none need reconciliation here. archive/restore are intentionally
+      // NOT synced (shipper.ts listUnsynced excludes them: archival is a
+      // per-device retention decision, not a semantic memory change), so
+      // recomputeProjection — which only ever runs on atoms that received a
+      // NEW REMOTE event during a pull round — never sees them.
+      return;
     }
 
     const now = Date.now();

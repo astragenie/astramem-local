@@ -88,6 +88,26 @@ describe('listUnsynced — ADR-009 scope filter', () => {
     db.prepare('UPDATE memory_events SET synced_at = ? WHERE seq = ?').run(Date.now(), seq);
     expect(listUnsynced(db, 100)).toHaveLength(0);
   });
+
+  it('archive/restore never ship, even for team/org scope (local-only retention decision, review fix HIGH); a supersede on the same scope still ships', () => {
+    const events = new MemoryEventRepo(db);
+    // Same scope (team) on both atoms — proves the exclusion is type-specific,
+    // not an accidental scope-filter regression.
+    const archivedAtom = seedMemory(db, 'team', 'h-archive-1');
+    const supersededAtom = seedMemory(db, 'team', 'h-archive-2');
+    const successor = seedMemory(db, 'team', 'h-archive-3');
+    events.append({ event_type: 'create', atom_id: archivedAtom });
+    events.append({ event_type: 'create', atom_id: supersededAtom });
+
+    events.archive(archivedAtom);
+    events.append({ event_type: 'restore', atom_id: archivedAtom }); // direct append — exercises the type filter without needing the archived state cleared first
+    events.supersede(supersededAtom, successor);
+
+    const eventTypes = listUnsynced(db, 100).map(r => r.event_type);
+    expect(eventTypes).not.toContain('archive');
+    expect(eventTypes).not.toContain('restore');
+    expect(eventTypes).toContain('supersede');
+  });
 });
 
 describe('buildEnvelope — wire conformance', () => {

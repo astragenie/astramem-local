@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { runReembedDim } from '../../src/cli/reembed-dim.js';
+import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import type { EmbedProvider, EmbedHealth } from '../../src/contracts/embed.js';
 
 const OLD_DIM = 1024;
@@ -160,5 +161,23 @@ describe('FEAT-409 AC-4 — runReembedDim resumable procedure', () => {
     expect(result.reembedded).toBe(0);
     expect(result.failed).toHaveLength(1);
     expect(result.failed[0]?.error).toMatch(/provider returned dim=1024, expected 768/);
+  });
+
+  it('rejects a non-integer or non-positive targetDim before touching DDL (review fix LOW — self-guarding, not just the CLI wrapper)', async () => {
+    const db = openDb(':memory:');
+    migrate(db, OLD_DIM);
+    seedMemory(db, 'm1', 'first memory');
+    const { provider: embed, calls } = makeEmbedProvider(768);
+
+    for (const badDim of [768.5, -768, 0, NaN]) {
+      await expect(runReembedDim(db, badDim, embed, 20)).rejects.toThrow(/invalid embedding dim/);
+    }
+
+    // Schema untouched: memories_vec is still at OLD_DIM (the guard fired
+    // before maybeRecreateVecSchema's DROP/CREATE, and embed() never ran) —
+    // proven by successfully upserting an OLD_DIM-length vector.
+    expect(calls).toEqual([]);
+    const vecStore = new SqliteVecStore(db, OLD_DIM);
+    await expect(vecStore.upsert('m1', new Float32Array(OLD_DIM))).resolves.toBeUndefined();
   });
 });
