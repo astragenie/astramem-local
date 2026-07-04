@@ -17,8 +17,9 @@ export interface OpenDbOpts {
 
 /**
  * Thrown by `openDb` when the file on disk cannot be trusted as an intact
- * datadir (FEAT-420 AC-3). Distinct from a raw `SqliteError` so callers and
- * operators get an actionable message instead of a low-level driver string.
+ * datadir (FEAT-420 AC-3), and NO encryption key was in play. Distinct from
+ * a raw `SqliteError` so callers and operators get an actionable message
+ * instead of a low-level driver string.
  */
 export class CorruptDatadirError extends Error {
   constructor(path: string, reason: string) {
@@ -29,6 +30,34 @@ export class CorruptDatadirError extends Error {
       `data to lose, delete the file (and any -wal/-shm siblings) and restart to create a fresh one.`,
     );
     this.name = 'CorruptDatadirError';
+  }
+}
+
+/**
+ * Thrown by `openDb` when a key WAS supplied but the file could not be read
+ * with it (FEAT-420 AC-3 review fix). SQLCipher cannot distinguish
+ * "wrong/missing key" from "corrupted file" at the driver level — both
+ * surface as the exact same `SqliteError: file is not a database`
+ * (SQLITE_NOTADB), which is also the documented stale-v0.3.4-global-install
+ * symptom (CLAUDE.md "Do NOT use bare astramem-local"). Reusing
+ * CorruptDatadirError's corruption-and-delete advice here would actively
+ * steer an operator with a recoverable key/config problem toward destroying
+ * a healthy encrypted database — so this is a distinct class with distinct,
+ * non-destructive advice and NO deletion suggestion.
+ */
+export class EncryptionKeyError extends Error {
+  constructor(path: string, reason: string) {
+    super(
+      `Refusing to open ${path}: ${reason}. A key was supplied but could not decrypt this file — ` +
+      `this is the classic wrong-or-missing-encryption-key symptom, not necessarily corruption ` +
+      `(SQLCipher cannot tell the two apart at this layer). Before assuming data loss, check: ` +
+      `(1) the key material in secrets.env matches what encrypted this file; ` +
+      `(2) you are running the repo build ('node dist/cli/index.js ...'), not a stale globally-` +
+      `installed 'astramem-local' shadowing it with a different cipher driver; ` +
+      `(3) the key hasn't rotated without re-encrypting this file. Leave this file untouched until ` +
+      `one of those is resolved — it may still hold your data intact.`,
+    );
+    this.name = 'EncryptionKeyError';
   }
 }
 
@@ -65,7 +94,15 @@ export function openDb(path: string, opts: OpenDbOpts = {}): DB {
     sqliteVec.load(db);
     return db;
   } catch (err) {
-    if (path !== ':memory:' && err instanceof Error && !(err instanceof CorruptDatadirError)) {
+    const alreadyTyped = err instanceof CorruptDatadirError || err instanceof EncryptionKeyError;
+    if (path !== ':memory:' && err instanceof Error && !alreadyTyped) {
+      // A key was supplied (opts.key) -> the same raw driver error is the
+      // wrong/missing-key symptom, not necessarily corruption — see
+      // EncryptionKeyError's doc comment. Only diagnose corruption when no
+      // key was ever in play.
+      if (opts.key) {
+        throw new EncryptionKeyError(path, err.message);
+      }
       throw new CorruptDatadirError(path, err.message);
     }
     throw err;

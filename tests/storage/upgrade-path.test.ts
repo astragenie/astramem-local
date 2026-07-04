@@ -11,7 +11,7 @@ import { mkdtempSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { openDb, CorruptDatadirError } from '../../src/storage/db.js';
+import { openDb, CorruptDatadirError, EncryptionKeyError } from '../../src/storage/db.js';
 import { migrate, getVecSchemaDim } from '../../src/storage/migrate.js';
 import { search, makeFakeVec } from '../../src/search/search.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
@@ -134,6 +134,27 @@ describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
 
       const db3 = openDb(dbPath);
       expect(() => migrate(db3)).toThrow(/half-migrated|corrupted datadir/i);
+    });
+
+    it('a wrong/missing encryption key on an otherwise-valid file throws EncryptionKeyError, not CorruptDatadirError — and never suggests deletion', () => {
+      // The committed fixture is plaintext. PRAGMA key against a plaintext
+      // file makes every subsequent read fail with the exact same
+      // "file is not a database" symptom as real corruption (documented in
+      // migrate-encrypt.ts) — this is the cheapest reproduction of the
+      // wrong/missing-key case the review flagged: openDb must NOT conflate
+      // it with corruption just because the driver error looks identical.
+      const dbPath = copyFixtureToTemp();
+      let caught: unknown;
+      try {
+        openDb(dbPath, { key: 'totally-wrong-key-does-not-decrypt-this' });
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(EncryptionKeyError);
+      expect(caught).not.toBeInstanceOf(CorruptDatadirError);
+      const message = (caught as Error).message.toLowerCase();
+      expect(message).toContain('key');
+      expect(message).not.toContain('delete');
     });
   });
 
