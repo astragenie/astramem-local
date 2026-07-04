@@ -94,7 +94,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 14 tools', async () => {
+  it('initialize + tools/list returns 15 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -107,7 +107,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(14);
+    expect(tools.length).toBe(15);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'erase_memory',
@@ -120,6 +120,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
       'recall_memory',
       'remember',
       'resolve_consolidation_proposal',
+      'restore_memory',
       'search_memory',
       'session_digest',
       'supersede_memory',
@@ -566,6 +567,67 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const payload = JSON.parse(text) as { error: string; id: string };
     expect(payload.id).toBe(id);
     expect(payload.error).toMatch(/only upward promotions allowed/);
+  });
+
+  // -------------------------------------------------------------------------
+  // restore_memory (FEAT-416)
+  // -------------------------------------------------------------------------
+
+  it('tools/call restore_memory un-archives a memory', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'to be restored', normalized_text: 'to be restored',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-restore-1', source_hash: null,
+    });
+    new MemoryEventRepo(db).archive(id, 'ttl-policy');
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'restore_memory', arguments: { id } },
+      id: 49,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ ok: true, id });
+
+    const row = db.prepare('SELECT valid_to, archived FROM memories WHERE id = ?').get(id) as
+      { valid_to: number | null; archived: number };
+    expect(row.valid_to).toBeNull();
+    expect(row.archived).toBe(0);
+  });
+
+  it('tools/call restore_memory with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'restore_memory', arguments: { id: 'nope' } },
+      id: 50,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
+  });
+
+  it('tools/call restore_memory on a never-archived memory returns isError', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'never archived', normalized_text: 'never archived',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-restore-2', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'restore_memory', arguments: { id } },
+      id: 51,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not archived', id });
   });
 
   // -------------------------------------------------------------------------

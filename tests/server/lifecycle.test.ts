@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { buildApp } from '../../src/server/app.js';
 
 function insertMem(repo: MemoryRepo, hash: string, extra: Partial<Parameters<MemoryRepo['insert']>[0]> = {}): string {
@@ -149,6 +150,103 @@ describe('POST /memory/:id/supersede', () => {
       payload: {},
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+describe('POST /memory/:id/restore', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let events: MemoryEventRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    events = new MemoryEventRepo(db);
+    app = await buildApp({ db, token: 'tok' });
+  });
+
+  it('happy path — 200 { ok: true }, archived memory becomes current again', async () => {
+    const id = insertMem(repo, 'lc-res-1');
+    events.archive(id, 'ttl-policy');
+
+    const res = await app.inject({
+      method: 'POST', url: `/memory/${id}/restore`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+
+    const mem = repo.get(id);
+    expect(mem?.valid_to).toBeNull();
+    expect(mem?.archived).toBe(false);
+  });
+
+  it('unknown id -> 404', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/memory/nope/restore',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('never-archived memory -> 409 (mirrors invalidate\'s already-invalid 409)', async () => {
+    const id = insertMem(repo, 'lc-res-2');
+    const res = await app.inject({
+      method: 'POST', url: `/memory/${id}/restore`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('requires bearer auth', async () => {
+    const id = insertMem(repo, 'lc-res-3');
+    events.archive(id, 'ttl-policy');
+    const res = await app.inject({ method: 'POST', url: `/memory/${id}/restore` });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('restore event is recorded in memory_events, visible via GET /memory/:id/history', async () => {
+    const id = insertMem(repo, 'lc-res-4');
+    events.archive(id, 'ttl-policy');
+    await app.inject({
+      method: 'POST', url: `/memory/${id}/restore`,
+      headers: { authorization: 'Bearer tok' },
+    });
+
+    const res = await app.inject({
+      method: 'GET', url: `/memory/${id}/history`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    const body = res.json() as { history: Array<{ event_type: string }> };
+    expect(body.history.map(e => e.event_type)).toEqual(['archive', 'restore']);
+  });
+
+  it('reappears in current-snapshot search after restore', async () => {
+    const id = insertMem(repo, 'lc-res-5', {
+      text: 'a uniquely findable restore-route phrase',
+      normalized_text: 'a uniquely findable restore-route phrase',
+    });
+    events.archive(id, 'ttl-policy');
+
+    const before = await app.inject({
+      method: 'GET', url: '/search?q=uniquely+findable+restore-route+phrase',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect((before.json() as { hits: Array<{ id: string }> }).hits.map(h => h.id)).not.toContain(id);
+
+    const restoreRes = await app.inject({
+      method: 'POST', url: `/memory/${id}/restore`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(restoreRes.statusCode).toBe(200);
+
+    const after = await app.inject({
+      method: 'GET', url: '/search?q=uniquely+findable+restore-route+phrase',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect((after.json() as { hits: Array<{ id: string }> }).hits.map(h => h.id)).toContain(id);
   });
 });
 
