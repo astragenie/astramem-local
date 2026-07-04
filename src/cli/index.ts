@@ -20,6 +20,7 @@ import { syncCommand } from './sync.js';
 import { reinstallCommand } from './reinstall.js';
 import { reembedDimCommand } from './reembed-dim.js';
 import { entityBackfillCommand } from './entity-backfill.js';
+import { cliMemoryRestore } from './memory.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -207,6 +208,19 @@ async function main() {
       break;
     }
 
+    case 'memory': {
+      // astramem-local memory restore <id> — un-archive a memory (FEAT-416)
+      const [sub, ...subRest] = rest;
+      if (sub === 'restore') {
+        const id = subRest.find(a => !a.startsWith('-')) ?? '';
+        await cliMemoryRestore(id);
+      } else {
+        console.error(`memory: unknown subcommand "${sub ?? ''}" (expected: restore <id>)`);
+        process.exit(1);
+      }
+      break;
+    }
+
     case 'consolidate': {
       // astramem-local consolidate run|proposals|accept|reject
       const { consolidateCommand } = await import('./consolidate.js');
@@ -253,6 +267,8 @@ Commands:
   restore <snapshot> [--no-restart]      Verified restore: stop daemon, swap DB in
                                          (previous DB kept as .pre-restore.bak),
                                          migrate, restart service
+  memory restore <id>                    Un-archive a memory previously archived
+                                         by the W4.4 TTL policy (FEAT-416)
   init [--no-hook]                       Interactive setup wizard (--no-hook skips the
                                          SessionStart memory-pack hook offer)
   token rotate                           Issue new local Bearer token

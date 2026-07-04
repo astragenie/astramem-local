@@ -1,7 +1,7 @@
 /**
  * MCP server instance for astramemory-local.
  *
- * Exposes 14 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 15 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert
@@ -11,6 +11,7 @@
  *   - invalidate_memory  — lifecycle: mark a memory invalid (ADR-002 memory_events log)
  *   - supersede_memory   — lifecycle: replace one memory with another
  *   - promote_memory     — lifecycle: upward-only scope promotion (ADR-009)
+ *   - restore_memory     — lifecycle: un-archive a memory archived by the W4.4 TTL policy (FEAT-416)
  *   - memory_history     — lifecycle: full event log for a memory (supersession chain)
  *   - mark_memory_used   — ADR-010 explicit recall-used signal for a served memory
  *   - erase_memory       — erasure v1 (ADR-006): hard-delete + tombstone
@@ -457,6 +458,38 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         if (err instanceof InvalidScopeTransitionError) {
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message, id: args.id }) }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+    }
+  );
+
+  // ---- restore_memory ---------------------------------------------------------
+  server.registerTool(
+    'restore_memory',
+    {
+      description: 'Un-archive a memory previously archived by the W4.4 TTL policy or a manual archive event. Appends a restore event to the memory_events log.',
+      inputSchema: z.object({
+        id: z.string().min(1).describe('Memory id to restore'),
+      }),
+    },
+    async (args) => {
+      const events = new MemoryEventRepo(db);
+      try {
+        events.restore(args.id);
+        return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, id: args.id }) }] };
+      } catch (err) {
+        if (err instanceof MemoryNotFoundError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
+            isError: true,
+          };
+        }
+        if (err instanceof MemoryConflictError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not archived', id: args.id }) }],
             isError: true,
           };
         }
