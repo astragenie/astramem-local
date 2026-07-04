@@ -19,6 +19,7 @@ import type { Config } from '../../config/config.js';
 import { queryDashboard } from '../queries/dashboard.js';
 import { renderDashboard } from './dashboard-html.js';
 import { childLogger } from '../../log/logger.js';
+import type { HealthState } from '../health-state.js';
 
 const COOKIE_NAME = 'astramem_dash';
 
@@ -33,7 +34,7 @@ function readCookie(req: FastifyRequest, name: string): string | undefined {
   return undefined;
 }
 
-export function dashboardRoute(db: DB, config: Config, token: string) {
+export function dashboardRoute(db: DB, config: Config, token: string, healthState?: HealthState) {
   return async (app: FastifyInstance) => {
     app.get('/dashboard', async (req, reply) => {
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
@@ -65,7 +66,7 @@ export function dashboardRoute(db: DB, config: Config, token: string) {
           .send('401 Unauthorized - supply Authorization: Bearer <token> or bootstrap once with ?token=<bearer>');
       }
 
-      const data = await queryDashboard(db);
+      const data = await queryDashboard(db, healthState);
       const html = renderDashboard(data, config);
 
       return reply

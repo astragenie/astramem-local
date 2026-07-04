@@ -4,6 +4,7 @@ import { type Config, defaultConfig } from '../../config/config.js';
 import type { DB } from '../../storage/db.js';
 import type { HealthState } from '../health-state.js';
 import { usefulnessRate } from '../../storage/usefulness.js';
+import { queryJobStates } from '../queries/dashboard.js';
 import { statfsSync } from 'node:fs';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -73,13 +74,13 @@ function workerBlock(hs: HealthState) {
   };
 }
 
+/** FEAT-410 AC-2: delegates to the shared queryJobStates (queries/dashboard.ts)
+ *  so /health and /dashboard compute job-state counts from one function. */
 function queueCounts(db: DB): Record<string, number> {
   try {
-    const rows = db.prepare(
-      `SELECT state, COUNT(*) AS n FROM jobs GROUP BY state`,
-    ).all() as Array<{ state: string; n: number }>;
+    const rows = queryJobStates(db);
     const out: Record<string, number> = {};
-    for (const r of rows) out[r.state] = r.n;
+    for (const r of rows) out[r.state] = r.count;
     return out;
   } catch {
     return {}; // jobs table absent (bare test DB) — degrade, never 500.

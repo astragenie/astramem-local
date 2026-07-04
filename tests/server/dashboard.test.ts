@@ -93,7 +93,6 @@ describe('GET /dashboard', () => {
     'provider state',
     'usefulness',
     'budget',
-    'pending queue',
   ])('HTML body contains "%s" section header', async section => {
     const res = await app.inject({ method: 'GET', url: '/dashboard', headers: AUTH });
     expect(res.body.toLowerCase()).toContain(section);

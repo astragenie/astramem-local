@@ -80,6 +80,27 @@ describe('/health hardening fields (P1.3) — additive, wire-safe', () => {
     expect(body.worker.alive).toBe(false);
     expect(body.worker.last_tick_ago_ms).toBeGreaterThan(9 * 60_000);
   });
+
+  // FEAT-410 AC-2: /health's queue counts must come from the same shared
+  // function as /dashboard's (queryJobStates in queries/dashboard.ts) — not
+  // a second, independently-computed query.
+  it('queue counts match queryJobStates(db) exactly (single source of truth)', async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    const hs = createHealthState();
+    const repo = new JobRepo(db);
+    repo.enqueue('distill', {});
+    repo.enqueue('distill', {});
+    repo.enqueue('reembed', {});
+    app = await buildApp({ db, token: TOKEN, healthState: hs });
+
+    const { queryJobStates } = await import('../../src/server/queries/dashboard.js');
+    const expected: Record<string, number> = {};
+    for (const row of queryJobStates(db)) expected[row.state] = row.count;
+
+    const body = (await app.inject({ method: 'GET', url: '/health' })).json();
+    expect(body.queue).toEqual(expected);
+  });
 });
 
 describe('Fastify hardening (P1.6)', () => {
