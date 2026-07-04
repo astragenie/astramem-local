@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { serve } from './serve.js';
-import { cliSearch, cliRecall, cliRemember } from './search.js';
+import { cliSearch, cliRecall, cliRemember, cliEntitiesList, cliEntitiesShow } from './search.js';
 import { serviceCommand } from './service.js';
 import { doctorCommand } from './doctor.js';
 import { budgetCommand } from './budget.js';
@@ -12,10 +12,14 @@ import { tokenCommand } from './token.js';
 import { backupCommand } from './backup.js';
 import { queueCommand } from './queue.js';
 import { rebuildCommand } from './rebuild.js';
+import { retagCommand } from './retag.js';
 import { providersCommand } from './providers.js';
 import { captureCommand } from './capture.js';
 import { pairCommand } from './pair.js';
+import { syncCommand } from './sync.js';
 import { reinstallCommand } from './reinstall.js';
+import { reembedDimCommand } from './reembed-dim.js';
+import { entityBackfillCommand } from './entity-backfill.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -46,25 +50,45 @@ async function main() {
     }
 
     case 'search': {
-      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--limit N]
+      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--as-of DATE] [--entity NAME] [--limit N]
       const query = rest.find(a => !a.startsWith('-')) ?? '';
       await cliSearch(query, {
         type: parseArg(rest, '--type'),
         repo: parseArg(rest, '--repo'),
         since: parseArg(rest, '--since'),
-        limit: parseArg(rest, '--limit')
+        limit: parseArg(rest, '--limit'),
+        asOf: parseArg(rest, '--as-of'),
+        entity: parseArg(rest, '--entity')
       });
       break;
     }
 
     case 'recall': {
-      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO]
+      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE] [--entity NAME]
       const question = rest.find(a => !a.startsWith('-')) ?? '';
       await cliRecall(question, {
         k: parseArg(rest, '--k'),
         type: parseArg(rest, '--type'),
-        repo: parseArg(rest, '--repo')
+        repo: parseArg(rest, '--repo'),
+        asOf: parseArg(rest, '--as-of'),
+        entity: parseArg(rest, '--entity')
       });
+      break;
+    }
+
+    case 'entities': {
+      // astramem-local entities list [query] [--limit N]
+      // astramem-local entities show <id>
+      const [sub, ...subRest] = rest;
+      if (sub === 'show') {
+        const id = subRest.find(a => !a.startsWith('-')) ?? '';
+        await cliEntitiesShow(id);
+      } else {
+        // Default to `list` when the sub-command is omitted or explicitly "list".
+        const listRest = sub === 'list' ? subRest : rest;
+        const query = listRest.find(a => !a.startsWith('-')) ?? '';
+        await cliEntitiesList(query, { limit: parseArg(listRest, '--limit') });
+      }
       break;
     }
 
@@ -117,6 +141,7 @@ async function main() {
 
     case 'queue': {
       // astramem-local queue [--json] [--limit N]
+      // astramem-local queue purge --poison [--json] [--dump-dir PATH]
       await queueCommand(rest);
       break;
     }
@@ -124,6 +149,24 @@ async function main() {
     case 'rebuild': {
       // astramem-local rebuild [--repo REPO] [--project PROJECT] [--limit N] [--dry-run] [--json]
       await rebuildCommand(rest);
+      break;
+    }
+
+    case 'reembed-dim': {
+      // astramem-local reembed-dim --dim N [--yes] [--batch-size N] [--json]
+      await reembedDimCommand(rest);
+      break;
+    }
+
+    case 'retag': {
+      // astramem-local retag [--dry-run] [--limit N] [--tier2] [--no-tier2] [--confidence N] [--json]
+      await retagCommand(rest);
+      break;
+    }
+
+    case 'entity-backfill': {
+      // astramem-local entity-backfill [--dry-run] [--limit N] [--json]
+      await entityBackfillCommand(rest);
       break;
     }
 
@@ -142,6 +185,12 @@ async function main() {
     case 'pair': {
       // astramem-local pair <claim-code> --url <cloud-url>
       await pairCommand(rest);
+      break;
+    }
+
+    case 'sync': {
+      // astramem-local sync pull|watermark [--json]
+      await syncCommand(rest);
       break;
     }
 
@@ -187,9 +236,17 @@ Commands:
                                          (stable shim + task) -> start -> verify
                                          health + version. Run after every upgrade.
   doctor [--json] [--port N]             Run health checks
-  search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--limit N]
-  recall "question" [--k N] [--type TYPE] [--repo REPO]
+  search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--as-of DATE]
+                 [--entity NAME] [--limit N]
+  recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE] [--entity NAME]
+                                         --as-of: ISO-8601 date-time — point-in-time
+                                         (bitemporal) recall, FEAT-401
+                                         --entity: filter to memories linked to
+                                         this entity (FEAT-402, exact then
+                                         substring match on the normalized name)
   remember "text" [--type TYPE] [--repo REPO]
+  entities list [query] [--limit N]      Autocomplete known entities (FEAT-402)
+  entities show <id>                     List every memory linked to entity <id>
   budget [--reset]                       Show today + month LLM spend vs cap
   backup [--out PATH] [--keep N] [--json] [--no-verify]
                                          Snapshot DB (verified by default); prune old
@@ -205,12 +262,31 @@ Commands:
                                          auto-scheduled: boot + every 6h)
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
                                          Queue reembed jobs for existing memories
+                                         (same dim, model/provider swap)
+  reembed-dim --dim N [--yes] [--batch-size N] [--json]
+                                         Resumable dim-change migration (FEAT-409):
+                                         recreates memories_vec at dim N + re-embeds
+                                         all memories. Back up first — see
+                                         docs/embed-dim-migration.md
+  retag [--dry-run] [--limit N] [--tier2|--no-tier2] [--confidence N] [--json]
+                                         Backfill repo/project tags on untagged
+                                         memories (tier-1 session metadata,
+                                         tier-2 opt-in prompt-assisted,
+                                         confidence-gated at 0.7 by default)
+  entity-backfill [--dry-run] [--limit N] [--json]
+                                         Extract + link entities (FEAT-402) for
+                                         memories that predate distill-time entity
+                                         extraction; never re-distills memory text
   providers [--json]                     Show configured providers + live health probes
   capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
                                          Ingest new Codex CLI sessions (ADR-008);
                                          --watch polls (default 60s)
   pair <claim-code> --url <cloud-url>    Pair with AstraMemory cloud (claim code
                                          from dashboard); enables sync shipper
+  sync pull [--json]                     Pull + merge events from the cloud since
+                                         the last watermark (ADR-011 conflict
+                                         resolve on touched atoms)
+  sync watermark [--json]                Show the current persisted pull cursor
 
 Environment:
   ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)

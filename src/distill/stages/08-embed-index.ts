@@ -12,6 +12,7 @@ import type { EmbedProvider } from '../../contracts/index.js';
 import type { NormalizedMemory } from './07-memory-normalize.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
+import { EntityRepo } from '../../storage/entities.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import type { DB } from '../../storage/db.js';
 
@@ -43,7 +44,8 @@ export async function embedAndIndex(
 
   const memRepo = new MemoryRepo(ctx.db);
   const eventsRepo = new MemoryEventRepo(ctx.db);
-  const vecStore = new SqliteVecStore(ctx.db);
+  const entityRepo = new EntityRepo(ctx.db);
+  const vecStore = new SqliteVecStore(ctx.db, ctx.embed.dim);
 
   // Batch embed all texts at once for efficiency
   const texts = memories.map(m => m.normalizedText);
@@ -56,9 +58,9 @@ export async function embedAndIndex(
     const vec = vectors[i];
 
     if (!mem) continue;
-    if (!vec || vec.length !== 1024) {
+    if (!vec || vec.length !== ctx.embed.dim) {
       throw new Error(
-        `embed provider returned dim=${vec?.length ?? 0} for memory ${i}, expected 1024. ` +
+        `embed provider returned dim=${vec?.length ?? 0} for memory ${i}, expected ${ctx.embed.dim}. ` +
         `This is a provider invariant violation — check config.embedding.provider and model.`
       );
     }
@@ -88,6 +90,12 @@ export async function embedAndIndex(
       evidence: mem.evidence ?? null,
       scope: 'personal',
     }, eventsRepo);
+
+    // FEAT-402 AC-1: link entities emitted in the same extraction call.
+    // Idempotent (INSERT OR IGNORE on the memory_id/entity_id PK) so this is
+    // safe to run on a deduped hit too — backfills entities for a memory
+    // that pre-existed before this feature shipped, on its next re-ingest.
+    entityRepo.linkEntitiesForMemory(memoryId, mem.entities);
 
     // Always upsert vec (may update if the memory already existed but had no vec)
     await vecStore.upsert(memoryId, vec);

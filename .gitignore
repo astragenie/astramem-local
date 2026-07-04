@@ -6,3 +6,14 @@ dist/
 secrets.env
 .vitest-cache/
 .superpowers/
+
+# crew:start
+# Crew framework local state. Generated; do not edit between markers.
+.claude/logs/
+.claude/state/crew/history.jsonl
+.claude/state/crew/approvals.jsonl
+.claude.backup.*
+# crew:end
+
+# crew/runner agent worktrees (ephemeral)
+.claude/worktrees/

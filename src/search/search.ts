@@ -15,15 +15,33 @@
 import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
 import type { Memory, MemoryType } from '../contracts/index.js';
+import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { fuseHits, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
+import { EntityRepo } from '../storage/entities.js';
 
 export interface SearchFilters {
   type?: string[];
   repo?: string;
   project?: string;
   since?: number;  // epoch ms lower bound on created_at
+  /**
+   * Bitemporal time-travel (FEAT-401, ADR-001/ADR-005): return memories as
+   * they stood at this instant (epoch ms) rather than the current snapshot.
+   * Absent = current behavior (only currently-valid rows).
+   */
+  as_of?: number;
+  /**
+   * Entity filter (FEAT-402 slice 2 AC-4). Resolved through
+   * EntityRepo.resolveIds (AC-9 normalize seam: exact match, then LIKE
+   * substring fallback) to one or more entities.id, then intersected with
+   * the FTS+vec candidate set BEFORE fusion — the result is all-and-only
+   * entity-linked members of that candidate set, not a post-fusion filter.
+   * An unresolvable entity name yields zero results (not an unfiltered
+   * search).
+   */
+  entity?: string;
 }
 
 export interface SearchHit {
@@ -37,7 +55,7 @@ export interface SearchHit {
 export interface SearchOpts {
   db: DB;
   embed: EmbedProvider;
-  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number };
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number };
   /** Multiplier used by vector search (cap to limit vector scan) */
   vecK?: number;
 }
@@ -64,19 +82,87 @@ function escapeFtsQuery(q: string): string {
 }
 
 /**
- * Deterministic fake vector for testing — 1024-dim seeded by text hash.
- * Exported so tests can call it directly without importing the EmbedProvider.
+ * Bitemporal validity SQL clause (FEAT-401) — the ONE shared filter used by
+ * every caller of search() (GET /search, POST /recall, the eval harness).
+ * There is deliberately no second implementation anywhere else: the CLI
+ * `--as-of` flag and the API `as_of` filter both terminate here because the
+ * CLI is a thin HTTP client of the same routes that call search().
+ *
+ *  - No as_of (undefined): current snapshot — only rows with valid_to IS
+ *    NULL surface, byte-identical to pre-FEAT-401 behavior (AC-2).
+ *  - as_of = T: the row valid AT INSTANT T — valid_from <= T AND (valid_to
+ *    IS NULL OR valid_to > T). Half-open interval [valid_from, valid_to):
+ *    at the exact instant a supersede/invalidate event lands, the new
+ *    generation is already the one considered valid (AC-5).
  */
-export function makeFakeVec(text: string): Float32Array {
-  const v = new Float32Array(1024);
+export function validityFilterClause(asOf?: number): { clause: string; params: number[] } {
+  if (asOf === undefined) {
+    return { clause: 'valid_to IS NULL', params: [] };
+  }
+  return { clause: 'valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)', params: [asOf, asOf] };
+}
+
+/**
+ * Parse an `as_of` wire value (ISO-8601 date-time string) into epoch ms.
+ * Shared by every route that accepts the filter (GET /search query param,
+ * POST /recall body) so a malformed value is rejected identically everywhere
+ * — one parsing path, not a per-route reimplementation. Returns undefined
+ * for an absent/empty value; throws for a present-but-unparseable value so
+ * callers can turn it into a 400.
+ */
+export function parseAsOf(value: string | undefined): number | undefined {
+  if (value === undefined || value === '') return undefined;
+  const ms = Date.parse(value);
+  if (Number.isNaN(ms)) {
+    throw new Error(`invalid as_of value: ${value} (expected ISO-8601 date-time)`);
+  }
+  return ms;
+}
+
+/**
+ * Deterministic fake vector for testing — seeded by text hash, dim
+ * defaults to DEFAULT_EMBED_DIM (1024). Exported so tests can call it
+ * directly without importing the EmbedProvider. Pass `dim` to generate a
+ * fixture vector matching a non-default schema (FEAT-409 AC-2).
+ */
+export function makeFakeVec(text: string, dim: number = DEFAULT_EMBED_DIM): Float32Array {
+  const v = new Float32Array(dim);
   let hash = 0;
   for (let i = 0; i < text.length; i++) {
     hash = (hash * 31 + text.charCodeAt(i)) & 0xffffffff;
   }
-  for (let i = 0; i < 1024; i++) {
+  for (let i = 0; i < dim; i++) {
     v[i] = Math.sin(hash * 0.001 + i * 0.01);
   }
   return v;
+}
+
+/**
+ * Compute the ζ entity-relevance bonus map (FEAT-402 slice 2 AC-6): for
+ * every known entity whose normalized name appears as a substring of the
+ * (lowercased) query text, any candidate id linked to that entity gets a
+ * bonus of 1. Only called when `search.zeta > 0` — with the default
+ * zeta=0 this function never runs, which is what makes the AC-6 snapshot
+ * guarantee (identical ranking at zeta=0) hold structurally, not just
+ * numerically.
+ */
+function entityBonusForQuery(db: DB, query: string, candidateIds: Set<string>): Map<string, number> {
+  const q = query.trim().toLowerCase();
+  if (!q || candidateIds.size === 0) return new Map();
+
+  const entityRows = db.prepare('SELECT id, name FROM entities').all() as Array<{ id: string; name: string }>;
+  const matchedEntityIds = entityRows.filter(r => r.name && q.includes(r.name)).map(r => r.id);
+  if (matchedEntityIds.length === 0) return new Map();
+
+  const idPh = Array.from(candidateIds).map(() => '?').join(',');
+  const entPh = matchedEntityIds.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT DISTINCT memory_id FROM memory_entities WHERE memory_id IN (${idPh}) AND entity_id IN (${entPh})`
+  ).all(...candidateIds, ...matchedEntityIds) as Array<{ memory_id: string }>;
+
+  const bonus = new Map<string, number>();
+  for (const row of rows) bonus.set(row.memory_id, 1);
+  return bonus;
 }
 
 export async function search(
@@ -114,7 +200,7 @@ export async function search(
     const vecs = await embed.embed([query]);
     const queryVec = vecs[0];
     if (!queryVec) throw new Error('embed provider returned empty result');
-    const vecStore = new SqliteVecStore(db);
+    const vecStore = new SqliteVecStore(db, embed.dim);
     // Pass empty filter to vec adapter — post-fusion filters applied below
     const raw = await vecStore.search(queryVec, vecK);
     vecHits.push(...raw.map(h => ({ id: h.id, cosine: h.score })));
@@ -122,8 +208,23 @@ export async function search(
     // Vector search unavailable (no rows, no provider) — FTS-only mode
   }
 
+  // 2b. Entity filter (FEAT-402 slice 2 AC-4) — resolve `entity` to entity
+  // ids (AC-9 normalize seam) and intersect the FTS+vec candidate set BEFORE
+  // fusion, so the result is all-and-only entity-linked members of that
+  // candidate set. An entity name that resolves to zero entities filters the
+  // candidate set to empty (not "unfiltered") — search() returns [] below.
+  let filteredFtsHits = ftsHits;
+  let filteredVecHits = vecHits;
+  if (filters.entity !== undefined) {
+    const entityRepo = new EntityRepo(db);
+    const entityIds = entityRepo.resolveIds(filters.entity);
+    const linkedIds = entityRepo.memoryIdsForEntities(entityIds);
+    filteredFtsHits = ftsHits.filter(h => linkedIds.has(h.id));
+    filteredVecHits = vecHits.filter(h => linkedIds.has(h.id));
+  }
+
   // 3. Load meta for all candidate ids (importance + created_at for freshness)
-  const allIds = new Set([...ftsHits.map(h => h.id), ...vecHits.map(h => h.id)]);
+  const allIds = new Set([...filteredFtsHits.map(h => h.id), ...filteredVecHits.map(h => h.id)]);
   if (allIds.size === 0) return [];
 
   const placeholders = Array.from(allIds).map(() => '?').join(',');
@@ -133,9 +234,14 @@ export async function search(
 
   const metaMap = new Map(metaRows.map(r => [r.id, { importance: r.importance, created_at: r.created_at }]));
 
-  // 4. Fuse — usefulness (ADR-010 v1.x) joins as the ε component
+  // 4. Fuse — usefulness (ADR-010 v1.x) joins as the ε component. ζ
+  // (FEAT-402 AC-6) joins as an entity-relevance bonus: DEFAULT 0 (config
+  // search.zeta) means the term is skipped entirely — no query, no DB scan,
+  // no change to ranking order versus pre-AC-6 behavior.
   const usefulness = usefulnessScores(db, Array.from(allIds));
-  const fused = fuseHits(ftsHits, vecHits, metaMap, weights, Date.now(), undefined, usefulness);
+  const zeta = weights.zeta ?? 0;
+  const entityBonus = zeta > 0 ? entityBonusForQuery(db, query, allIds) : undefined;
+  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, Date.now(), undefined, usefulness, entityBonus);
 
   // 5. Apply post-fusion SQL filters then join full memory records
   //    Build filter clauses dynamically
@@ -164,10 +270,14 @@ export async function search(
   const fusedIds = fused.map(h => h.id);
   const idPlaceholders = fusedIds.map(() => '?').join(',');
   // Atom v3 (ADR-001): invalidated memories (valid_to set) must never surface
-  // in recall — why_memory can still fetch them by id directly.
+  // in a current-snapshot recall — why_memory can still fetch them by id
+  // directly. FEAT-401: when as_of is set, the snapshot rule is replaced by
+  // the bitemporal validity window so a past-valid (now superseded) memory
+  // can surface again for a point-in-time query.
+  const { clause: validityClause, params: validityParams } = validityFilterClause(filters.as_of);
   const whereFilter = filterClauses.length > 0 ? ` AND ${filterClauses.join(' AND ')}` : '';
-  const sql = `SELECT id, type, text FROM memories WHERE id IN (${idPlaceholders}) AND valid_to IS NULL${whereFilter}`;
-  const memRows = db.prepare(sql).all(...fusedIds, ...filterParams) as Array<{ id: string; type: MemoryType; text: string }>;
+  const sql = `SELECT id, type, text FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
+  const memRows = db.prepare(sql).all(...fusedIds, ...validityParams, ...filterParams) as Array<{ id: string; type: MemoryType; text: string }>;
 
   const memMap = new Map(memRows.map(r => [r.id, r]));
 

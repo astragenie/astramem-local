@@ -515,7 +515,7 @@ function checkLLMChat(provider: LLMProvider, label: string): Check {
 
 function checkEmbed(provider: EmbedProvider): Check {
   return {
-    name: 'Embed probe (1024-dim)',
+    name: `Embed probe (${provider.dim}-dim)`,
     async run(): Promise<CheckResult> {
       return embedProbe(provider);
     },
@@ -713,7 +713,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     }
   }
 
-  // Embed probe — real embed call + 1024-dim assertion.
+  // Embed probe — real embed call + config-derived dim assertion (FEAT-409).
   if (opts.embedProvider) {
     checks.push(checkEmbed(opts.embedProvider));
   }

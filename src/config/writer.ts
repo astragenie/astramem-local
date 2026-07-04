@@ -50,6 +50,12 @@ export function configToYaml(cfg: Config): string {
     line(0, 'port', cfg.port),
     line(0, 'dataDir', cfg.dataDir),
     '',
+    // FEAT-406: leave at 127.0.0.1 unless you intend remote /health scraping.
+    // Any other value requires Bearer auth on /health + /version too — see
+    // docs/security/remote-health-threat-model.md before changing this.
+    line(0, 'network'),
+    line(1, 'host', cfg.network.host),
+    '',
     line(0, 'llm'),
     line(1, 'compaction'),
     line(2, 'provider', cfg.llm.compaction.provider),
@@ -83,6 +89,7 @@ export function configToYaml(cfg: Config): string {
     line(1, 'gamma', cfg.search.gamma),
     line(1, 'delta', cfg.search.delta),
     line(1, 'epsilon', cfg.search.epsilon),
+    line(1, 'zeta', cfg.search.zeta),
     '',
     line(0, 'recallPack'),
     line(1, 'enabled', cfg.recallPack.enabled),
@@ -100,6 +107,10 @@ export function configToYaml(cfg: Config): string {
     line(2, 'entropyThreshold', cfg.security.redaction.entropyThreshold),
     line(1, 'encryption'),
     line(2, 'enabled', cfg.security.encryption.enabled),
+    '',
+    line(0, 'tagHygiene'),
+    line(1, 'tier2Enabled', cfg.tagHygiene.tier2Enabled),
+    line(1, 'tier2ConfidenceThreshold', cfg.tagHygiene.tier2ConfidenceThreshold),
     '',
   ];
   return lines.join('\n');

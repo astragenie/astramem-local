@@ -154,6 +154,104 @@ describe('GET /search', () => {
   });
 });
 
+describe('FEAT-401: as_of temporal filter — GET /search and POST /recall', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  const t0 = 1_800_000_000_000;
+  const t1 = t0 + 1000;
+  const t2 = t0 + 2000;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    app = await buildApp({ db, token: 'tok', embed: buildMockEmbed() });
+  });
+
+  function seedSupersededPair(): { oldId: string; newId: string } {
+    // Distinct first-16-char prefixes: seedMemory's dedup hash is derived
+    // from the leading bytes of the text, and a shared prefix would collide
+    // two logically-different rows into one insert (repo.insert dedups by
+    // hash) — same trap FTS5 escaping already documents elsewhere.
+    const oldId = seedMemory(repo, 'gen1(old): adopt postgres canonical store decision');
+    const newId = seedMemory(repo, 'gen2(new): adopt postgres canonical store decision refined');
+    db.prepare('UPDATE memories SET valid_from = ?, valid_to = ?, superseded_by = ? WHERE id = ?')
+      .run(t0, t2, newId, oldId);
+    db.prepare('UPDATE memories SET valid_from = ?, valid_to = NULL WHERE id = ?').run(t2, newId);
+    return { oldId, newId };
+  }
+
+  it('AC-1 via GET /search: as_of before the supersede instant returns the old memory, not the successor', async () => {
+    const { oldId, newId } = seedSupersededPair();
+    const res = await app.inject({
+      method: 'GET',
+      url: `/search?q=postgres+canonical+store&as_of=${new Date(t1).toISOString()}`,
+      headers: { authorization: 'Bearer tok' }
+    });
+    expect(res.statusCode).toBe(200);
+    const ids = (res.json().hits as Array<{ id: string }>).map(h => h.id);
+    expect(ids).toContain(oldId);
+    expect(ids).not.toContain(newId);
+  });
+
+  it('AC-4: POST /recall filters.as_of resolves to the identical hit set as GET /search as_of for the same instant', async () => {
+    const { oldId, newId } = seedSupersededPair();
+    const asOfIso = new Date(t1).toISOString();
+
+    const getRes = await app.inject({
+      method: 'GET',
+      url: `/search?q=postgres+canonical+store&as_of=${asOfIso}`,
+      headers: { authorization: 'Bearer tok' }
+    });
+    const postRes = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { query: 'postgres canonical store', k: 10, filters: { as_of: asOfIso } }
+    });
+
+    expect(getRes.statusCode).toBe(200);
+    expect(postRes.statusCode).toBe(200);
+    const getIds = (getRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    const postIds = (postRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    expect(postIds).toEqual(getIds);
+    expect(getIds).toContain(oldId);
+    expect(getIds).not.toContain(newId);
+  });
+
+  it('AC-2: omitting as_of on GET /search returns current-snapshot behavior unchanged', async () => {
+    const { oldId, newId } = seedSupersededPair();
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres+canonical+store',
+      headers: { authorization: 'Bearer tok' }
+    });
+    const ids = (res.json().hits as Array<{ id: string }>).map(h => h.id);
+    expect(ids).toContain(newId);
+    expect(ids).not.toContain(oldId);
+  });
+
+  it('rejects an unparseable as_of on GET /search with 400', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres&as_of=not-a-date',
+      headers: { authorization: 'Bearer tok' }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('rejects an unparseable as_of on POST /recall with 400', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { query: 'postgres', k: 5, filters: { as_of: 'not-a-date' } }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 describe('POST /recall', () => {
   let db: DB;
   let repo: MemoryRepo;
@@ -291,5 +389,77 @@ describe('POST /remember', () => {
       payload: { text: 'hello', type: 'unknown' }
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+// FEAT-402 slice 2 AC-4: entity= filter on GET /search and POST /recall.
+describe('entity filter — GET /search and POST /recall (AC-4)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    app = await buildApp({ db, token: 'tok', embed: buildMockEmbed() });
+  });
+
+  async function linkEntity(memId: string, name: string): Promise<string> {
+    const { EntityRepo } = await import('../../src/storage/entities.js');
+    const entities = new EntityRepo(db);
+    const id = entities.upsert(name, 'tech');
+    entities.link(memId, id);
+    return id;
+  }
+
+  it('GET /search?entity= returns all-and-only entity-linked members', async () => {
+    const linked = seedMemory(repo, 'adopt postgres as the canonical store decision', 'decision');
+    const unlinked = seedMemory(repo, 'postgres canonical store rejected alternative decision', 'decision');
+    await linkEntity(linked, 'postgres');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres+canonical+store&entity=postgres',
+      headers: { authorization: 'Bearer tok' }
+    });
+    expect(res.statusCode).toBe(200);
+    const ids = (res.json().hits as Array<{ id: string }>).map(h => h.id);
+    expect(ids).toContain(linked);
+    expect(ids).not.toContain(unlinked);
+  });
+
+  it('POST /recall filters.entity resolves to the identical hit set as GET /search entity= for the same query', async () => {
+    const linked = seedMemory(repo, 'adopt postgres as the canonical store decision', 'decision');
+    seedMemory(repo, 'postgres canonical store rejected alternative decision', 'decision');
+    await linkEntity(linked, 'postgres');
+
+    const getRes = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres+canonical+store&entity=postgres',
+      headers: { authorization: 'Bearer tok' }
+    });
+    const postRes = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { query: 'postgres canonical store', k: 10, filters: { entity: 'postgres' } }
+    });
+    const getIds = (getRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    const postIds = (postRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    expect(postIds).toEqual(getIds);
+    expect(getIds).toEqual([linked]);
+  });
+
+  it('an unresolvable entity name returns zero hits, not an unfiltered search', async () => {
+    seedMemory(repo, 'postgres canonical store decision', 'decision');
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=postgres+canonical+store&entity=nonexistent-entity',
+      headers: { authorization: 'Bearer tok' }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().hits).toEqual([]);
   });
 });

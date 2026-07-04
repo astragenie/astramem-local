@@ -1,0 +1,13 @@
+-- 009: tag hygiene (W4.3, FEAT-403) — persist session cwd.
+--
+-- `cwd` was already accepted on the canonical ingest envelope
+-- (CanonicalIngestSchema.cwd, src/server/routes/ingest.ts) but never
+-- persisted anywhere — the canonical wire path only ever wrote `project`
+-- (from project_id) into `sessions`, leaving `sessions.repo` NULL forever
+-- for every canonical-ingested session. That left no durable signal to
+-- derive a memory's `repo` tag from after the fact.
+--
+-- Storing cwd lets the tag-hygiene backfill (src/tag-hygiene/backfill.ts)
+-- derive `repo` from the last path segment of the session's cwd when
+-- `sessions.repo` itself is unset (tier-1 heuristic, AC-1).
+ALTER TABLE sessions ADD COLUMN cwd TEXT;

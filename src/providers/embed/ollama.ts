@@ -1,14 +1,17 @@
 import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
+import { DEFAULT_EMBED_DIM } from '../../contracts/embed.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
 
 const EMBED_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 10_000;
-const EXPECTED_DIM = 1024;
 
 export interface OllamaEmbedConfig {
   baseUrl?: string;
   model?: string;
+  /** FEAT-409: expected output dim — defaults to DEFAULT_EMBED_DIM (1024).
+   * Set from config.embedding.dim by providers/index.ts. */
+  dim?: number;
 }
 
 interface OllamaEmbedResponse {
@@ -49,12 +52,13 @@ async function fetchWithRetry(
 export class OllamaEmbedProvider implements EmbedProvider {
   readonly name = 'ollama' as const;
   readonly model: string;
-  readonly dim = EXPECTED_DIM as 1024;
+  readonly dim: number;
   private readonly baseUrl: string;
 
   constructor(config: OllamaEmbedConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
     this.model = config.model ?? 'mxbai-embed-large';
+    this.dim = config.dim ?? DEFAULT_EMBED_DIM;
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
@@ -92,14 +96,14 @@ export class OllamaEmbedProvider implements EmbedProvider {
         throw new Error(`Ollama embed response missing 'embedding' field`);
       }
 
-      if (data.embedding.length !== EXPECTED_DIM) {
+      if (data.embedding.length !== this.dim) {
         throw new Error(
-          `Ollama embed dimension mismatch: expected ${EXPECTED_DIM}, got ${data.embedding.length} (model: ${this.model})`,
+          `Ollama embed dimension mismatch: expected ${this.dim}, got ${data.embedding.length} (model: ${this.model})`,
         );
       }
 
       const latency_ms = Date.now() - t0;
-      log.info({ latency_ms, tokens_in: 0, tokens_out: EXPECTED_DIM }, 'ollama embed ok');
+      log.info({ latency_ms, tokens_in: 0, tokens_out: this.dim }, 'ollama embed ok');
       results.push(new Float32Array(data.embedding));
     }
 
@@ -115,7 +119,7 @@ export class OllamaEmbedProvider implements EmbedProvider {
       const latency_ms = Date.now() - t0;
 
       if (!res.ok) {
-        return { ok: false, model: this.model, dim: EXPECTED_DIM, error: `HTTP ${res.status}` };
+        return { ok: false, model: this.model, dim: this.dim, error: `HTTP ${res.status}` };
       }
 
       const data = (await res.json()) as OllamaTagsResponse;
@@ -127,14 +131,14 @@ export class OllamaEmbedProvider implements EmbedProvider {
       return {
         ok: found,
         model: this.model,
-        dim: EXPECTED_DIM,
+        dim: this.dim,
         ...(found ? {} : { error: `model ${this.model} not found in ollama list` }),
       };
     } catch (err) {
       return {
         ok: false,
         model: this.model,
-        dim: EXPECTED_DIM,
+        dim: this.dim,
         error: err instanceof Error ? err.message : String(err),
       };
     }

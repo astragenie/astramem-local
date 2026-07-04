@@ -56,10 +56,10 @@ function buildLLMProvider(
 }
 
 function buildEmbedProvider(config: Config): EmbedProvider {
-  const { provider, model } = config.embedding;
+  const { provider, model, dim } = config.embedding;
 
   if (provider === 'ollama') {
-    return new OllamaEmbedProvider({ baseUrl: config.ollama.baseUrl, model });
+    return new OllamaEmbedProvider({ baseUrl: config.ollama.baseUrl, model, dim });
   }
 
   const endpoint = config.azure.endpoint ?? process.env.AZURE_OPENAI_ENDPOINT;
@@ -76,6 +76,7 @@ function buildEmbedProvider(config: Config): EmbedProvider {
     apiKey: resolveAzureApiKey(),
     apiVersion: config.azure.apiVersion,
     model,
+    dim,
   });
 }
 

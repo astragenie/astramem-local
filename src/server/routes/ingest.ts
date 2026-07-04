@@ -113,12 +113,16 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
     'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
   );
 
-  const stmtUpsertSession = db.prepare<[string, string | null, string | null, number]>(`
-    INSERT INTO sessions (id, repo, project, branch, agent, started_at)
-    VALUES (?, NULL, ?, NULL, ?, ?)
+  // cwd (FEAT-403 / migration 009) is stored so the tag-hygiene backfill can
+  // derive `repo` from it later — the canonical envelope never sends `repo`
+  // directly, so without cwd this session would have no repo signal at all.
+  const stmtUpsertSession = db.prepare<[string, string | null, string | null, string | null, number]>(`
+    INSERT INTO sessions (id, repo, project, branch, agent, cwd, started_at)
+    VALUES (?, NULL, ?, NULL, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       project = COALESCE(excluded.project, project),
-      agent   = COALESCE(excluded.agent, agent)
+      agent   = COALESCE(excluded.agent, agent),
+      cwd     = COALESCE(excluded.cwd, cwd)
   `);
 
   const stmtInsertTranscript = db.prepare<[
@@ -292,7 +296,7 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
             const tx = db.transaction(() => {
               if (idempotencyKey !== null) claimIdempotencySlot(idempotencyKey, bodyHash, now);
 
-              stmtUpsertSession.run(data.session_id, data.project_id, data.agent_type ?? null, now);
+              stmtUpsertSession.run(data.session_id, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
 
               transcriptId = randomUUID();
               stmtInsertTranscript.run(
@@ -448,7 +452,7 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
             }
 
             // --- Real insert ---
-            stmtUpsertSession.run(data.session_id, data.project_id, data.agent_type ?? null, now);
+            stmtUpsertSession.run(data.session_id, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
 
             transcriptId = randomUUID();
             stmtInsertTranscript.run(

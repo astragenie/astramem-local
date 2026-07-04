@@ -6,8 +6,9 @@
  * - MockLLMProvider: compaction returns the input text unchanged;
  *   extraction returns a single decision atom about 'sqlite-vec' when
  *   the text mentions it, otherwise an empty atoms list.
- * - MockEmbedProvider: deterministic 1024-float vector seeded from text hash.
- *   No network, no Ollama required.
+ * - MockEmbedProvider: deterministic vector (dim defaults to
+ *   DEFAULT_EMBED_DIM = 1024, configurable) seeded from text hash. No
+ *   network, no Ollama required.
  *
  * These mocks satisfy the LLMProvider / EmbedProvider contracts and make
  * the full 8-stage distillation pipeline runnable in CI.
@@ -16,6 +17,7 @@
 import { createHash } from 'node:crypto';
 import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../contracts/llm.js';
 import type { EmbedProvider, EmbedHealth } from '../contracts/embed.js';
+import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import type { ProviderSet } from '../providers/index.js';
 
 // ── Mock LLM ─────────────────────────────────────────────────────────────────
@@ -71,10 +73,14 @@ class MockLLMProvider implements LLMProvider {
 class MockEmbedProvider implements EmbedProvider {
   readonly name = 'ollama' as const;
   readonly model = 'mock-embed';
-  readonly dim = 1024 as const;
+  readonly dim: number;
+
+  constructor(dim: number = DEFAULT_EMBED_DIM) {
+    this.dim = dim;
+  }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
-    return texts.map(t => makeDeterministicVec(t));
+    return texts.map(t => makeDeterministicVec(t, this.dim));
   }
 
   async health(): Promise<EmbedHealth> {
@@ -83,15 +89,16 @@ class MockEmbedProvider implements EmbedProvider {
 }
 
 /**
- * Deterministic 1024-dim vector seeded by text content hash.
- * Matches the approach used in search.ts makeFakeVec but uses SHA-256
- * for better distribution across similar texts.
+ * Deterministic vector seeded by text content hash, dim defaults to
+ * DEFAULT_EMBED_DIM (1024) — pass `dim` for a non-default schema (FEAT-409
+ * AC-2). Matches the approach used in search.ts makeFakeVec but uses
+ * SHA-256 for better distribution across similar texts.
  */
-function makeDeterministicVec(text: string): Float32Array {
+function makeDeterministicVec(text: string, dim: number = DEFAULT_EMBED_DIM): Float32Array {
   const hash = createHash('sha256').update(text, 'utf8').digest();
-  const v = new Float32Array(1024);
+  const v = new Float32Array(dim);
   // Seed each float from hash bytes cycling
-  for (let i = 0; i < 1024; i++) {
+  for (let i = 0; i < dim; i++) {
     const b0 = hash[i % 32] ?? 0;
     const b1 = hash[(i + 1) % 32] ?? 0;
     // Normalize to [-1, 1]
@@ -107,14 +114,17 @@ export type MockProviderSet = ProviderSet;
 /**
  * Returns a ProviderSet backed entirely by mock providers.
  * Safe to call multiple times — each call returns fresh instances.
+ * `dim` defaults to DEFAULT_EMBED_DIM (1024); pass e.g. cfg.embedding.dim
+ * to exercise a non-default dim under ASTRA_MEMORY_MOCK_PROVIDERS=1
+ * (FEAT-409 AC-2).
  */
-export function makeMockProviders(): MockProviderSet {
+export function makeMockProviders(dim: number = DEFAULT_EMBED_DIM): MockProviderSet {
   const llm = new MockLLMProvider();
   return {
     llm: {
       compaction: llm,
       extraction: llm,
     },
-    embed: new MockEmbedProvider(),
+    embed: new MockEmbedProvider(dim),
   };
 }

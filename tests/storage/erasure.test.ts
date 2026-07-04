@@ -63,6 +63,27 @@ describe('MemoryEventRepo.erase (3f)', () => {
     expect(() => events.erase('nope')).toThrow(MemoryNotFoundError);
   });
 
+  // FEAT-402 AC-3 — erase() hard-deletes the memories row; memory_entities
+  // links follow it via ON DELETE CASCADE (foreign_keys=ON, migration 012)
+  // with no code in erase() itself needing to know about entities.
+  it('erase cascades to memory_entities via ON DELETE CASCADE — zero orphan links', async () => {
+    const { EntityRepo } = await import('../../src/storage/entities.js');
+    const entityRepo = new EntityRepo(db);
+    const id = seed(db, 'h-erase-entities');
+    entityRepo.linkEntitiesForMemory(id, [{ name: 'Postgres', kind: 'tech' }]);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_entities').get()).toEqual({ n: 1 });
+
+    events.erase(id);
+
+    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_entities').get()).toEqual({ n: 0 });
+    const orphans = db.prepare(`
+      SELECT COUNT(*) AS n FROM memory_entities me
+      LEFT JOIN memories m ON m.id = me.memory_id
+      WHERE m.id IS NULL
+    `).get() as { n: number };
+    expect(orphans.n).toBe(0);
+  });
+
   it('replay filter: stage 8 refuses to resurrect an erased content hash', async () => {
     const id = seed(db, 'h-erase-replay');
     events.erase(id);

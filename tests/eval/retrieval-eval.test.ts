@@ -73,10 +73,15 @@ describe('ADR-005 retrieval eval gate', () => {
     console.log(`  mean recall@10=${report.meanRecall.toFixed(3)} mean ndcg@10=${report.meanNdcg.toFixed(3)}`);
   });
 
-  it('evaluates every query except the known as_of gap (q6)', () => {
+  // FEAT-401: as_of is now supported end-to-end — q6 (the temporal case) runs
+  // like every other query instead of being reported as a skipped gap.
+  it('evaluates every query, including the as_of temporal case (q6)', () => {
     expect(report.perQuery).toHaveLength(querySet.queries.length);
-    expect(report.skipped).toBe(1);
-    expect(report.perQuery.find(r => r.id === 'q6')?.skipped).toContain('as_of');
+    expect(report.skipped).toBe(0);
+    const q6 = report.perQuery.find(r => r.id === 'q6');
+    expect(q6?.skipped).toBeNull();
+    // q6 asserts atom-001 (valid at as_of) outranks atom-002 (not yet valid).
+    expect(q6?.recall).toBe(1);
   });
 
   // Baseline measured 2026-07-02 with the fake embedder: mean recall@10 =
@@ -89,5 +94,70 @@ describe('ADR-005 retrieval eval gate', () => {
 
   it('mean NDCG@10 stays at or above the regression floor', () => {
     expect(report.meanNdcg).toBeGreaterThanOrEqual(0.7);
+  });
+
+  // FEAT-402 slice 2 AC-8: entity-tagged fixtures + entity queries. q9/q10
+  // exercise the AC-4 pre-fusion intersection against entities shared by
+  // exactly two corpus atoms (deterministic full recall/NDCG); q11 exercises
+  // the AC-4/AC-9 exact-then-LIKE resolution plus the current-snapshot
+  // validity filter. Floors above already include these queries in the mean
+  // — this test additionally pins the exact per-query numbers so a
+  // regression in the entity join is caught precisely, not just averaged away.
+  it('AC-8: entity queries (q9-q11) score full recall/NDCG against their graded set', () => {
+    for (const id of ['q9', 'q10', 'q11']) {
+      const r = report.perQuery.find(q => q.id === id);
+      expect(r?.skipped, `${id} skipped`).toBeNull();
+      expect(r?.recall, `${id} recall`).toBe(1);
+      expect(r?.ndcg, `${id} ndcg`).toBe(1);
+    }
+  });
+
+  it('AC-4: q9/q10 entity filter returns all-and-only the entity-linked atoms (no lexical leakage)', () => {
+    const q9 = report.perQuery.find(r => r.id === 'q9');
+    expect(new Set(q9?.rankedAtomIds)).toEqual(new Set([
+      '10000000-0000-4000-8000-000000000003',
+      '10000000-0000-4000-8000-000000000009',
+    ]));
+
+    const q10 = report.perQuery.find(r => r.id === 'q10');
+    // atom-005 ('bun run test' command) is lexically related to "Bun" but
+    // carries no entity link — it MUST NOT appear once entity=bun filters.
+    expect(new Set(q10?.rankedAtomIds)).toEqual(new Set([
+      '10000000-0000-4000-8000-000000000004',
+      '10000000-0000-4000-8000-000000000009',
+    ]));
+    expect(q10?.rankedAtomIds).not.toContain('10000000-0000-4000-8000-000000000005');
+  });
+});
+
+// FEAT-402 slice 2 AC-6: with search.zeta=0 (default), ranking is
+// byte-identical to the pre-AC-6 baseline — proven by running the exact same
+// ADR-005 corpus + query set through two independently-seeded DBs, one with
+// the current defaultConfig().search (zeta: 0) and one with a weights object
+// that doesn't carry a `zeta` key at all (the pre-AC-6 shape). If zeta ever
+// stopped being a true no-op at 0, this snapshot would catch it immediately.
+describe('AC-6: zeta=0 ranking snapshot', () => {
+  it('every query\'s ranked order is identical with zeta=0 vs no zeta key at all', async () => {
+    const dbWithZetaZero = openDb(':memory:');
+    migrate(dbWithZetaZero);
+    const reportWithZetaZero = await runRetrievalEval(
+      dbWithZetaZero, fakeEmbed, defaultConfig().search, corpus, querySet,
+    );
+
+    const dbNoZeta = openDb(':memory:');
+    migrate(dbNoZeta);
+    const { zeta: _zeta, ...weightsNoZeta } = defaultConfig().search;
+    const reportNoZeta = await runRetrievalEval(
+      dbNoZeta, fakeEmbed, weightsNoZeta, corpus, querySet,
+    );
+
+    expect(reportWithZetaZero.perQuery.map(r => r.rankedAtomIds))
+      .toEqual(reportNoZeta.perQuery.map(r => r.rankedAtomIds));
+    expect(reportWithZetaZero.meanRecall).toBe(reportNoZeta.meanRecall);
+    expect(reportWithZetaZero.meanNdcg).toBe(reportNoZeta.meanNdcg);
+  });
+
+  it('zeta defaults to 0 in defaultConfig().search (AC-6 default OFF)', () => {
+    expect(defaultConfig().search.zeta).toBe(0);
   });
 });

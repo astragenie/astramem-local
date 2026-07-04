@@ -88,6 +88,26 @@ describe('listUnsynced — ADR-009 scope filter', () => {
     db.prepare('UPDATE memory_events SET synced_at = ? WHERE seq = ?').run(Date.now(), seq);
     expect(listUnsynced(db, 100)).toHaveLength(0);
   });
+
+  it('archive/restore never ship, even for team/org scope (local-only retention decision, review fix HIGH); a supersede on the same scope still ships', () => {
+    const events = new MemoryEventRepo(db);
+    // Same scope (team) on both atoms — proves the exclusion is type-specific,
+    // not an accidental scope-filter regression.
+    const archivedAtom = seedMemory(db, 'team', 'h-archive-1');
+    const supersededAtom = seedMemory(db, 'team', 'h-archive-2');
+    const successor = seedMemory(db, 'team', 'h-archive-3');
+    events.append({ event_type: 'create', atom_id: archivedAtom });
+    events.append({ event_type: 'create', atom_id: supersededAtom });
+
+    events.archive(archivedAtom);
+    events.append({ event_type: 'restore', atom_id: archivedAtom }); // direct append — exercises the type filter without needing the archived state cleared first
+    events.supersede(supersededAtom, successor);
+
+    const eventTypes = listUnsynced(db, 100).map(r => r.event_type);
+    expect(eventTypes).not.toContain('archive');
+    expect(eventTypes).not.toContain('restore');
+    expect(eventTypes).toContain('supersede');
+  });
 });
 
 describe('buildEnvelope — wire conformance', () => {
@@ -112,6 +132,23 @@ describe('buildEnvelope — wire conformance', () => {
     expect(ok).toBe(true);
     expect(envelope.protocol).toBe(SYNC_PROTOCOL);
     expect(envelope.events[0]!.payload_json).toEqual({ scope: 'team' });
+  });
+
+  // FEAT-407 AC-6: WireSyncEvent gains event_id as an ADDITIVE field
+  // (ADR-011, migration 010) — every event this daemon ships now carries
+  // one, and the schema still validates envelopes that omit it (see the
+  // sync-envelope-v1-single-create-event.json fixture, which has no
+  // event_id and still passes contracts/validate.mjs), so older push
+  // clients are unaffected.
+  it('every shipped event carries a UUID event_id (ADR-011 dedup/tie-break key)', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const events = new MemoryEventRepo(db);
+    const team = seedMemory(db, 'team', 'h-wire-eid');
+    events.append({ event_type: 'create', atom_id: team, content_hash: 'b'.repeat(64) });
+
+    const envelope = buildEnvelope('device-1', 'ws-1', 0, listUnsynced(db, 100));
+    expect(envelope.events[0]!.event_id).toMatch(/^[0-9a-f-]{36}$/);
   });
 });
 

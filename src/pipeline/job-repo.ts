@@ -152,6 +152,28 @@ export class JobRepo {
     return { completed, poison };
   }
 
+  /** List all jobs currently in the 'poison' state, oldest first (FEAT-405 manual purge). */
+  listPoison(): Job[] {
+    return this.db.prepare(`
+      SELECT * FROM jobs WHERE state = 'poison' ORDER BY updated_at ASC
+    `).all() as Job[];
+  }
+
+  /**
+   * Delete specific poison jobs by id (FEAT-405 `queue purge --poison`).
+   * Guarded to state = 'poison' so a job that transitions out of poison
+   * between the caller's read (for the forensics dump) and this delete is
+   * never silently swept up. Callers must capture ids via listPoison() first
+   * and write the forensics dump BEFORE calling this.
+   */
+  purgePoisonByIds(ids: string[]): number {
+    if (ids.length === 0) return 0;
+    const placeholders = ids.map(() => '?').join(',');
+    return this.db.prepare(
+      `DELETE FROM jobs WHERE state = 'poison' AND id IN (${placeholders})`,
+    ).run(...ids).changes;
+  }
+
   /** State → count map for /health queue reporting. */
   stateCounts(): Record<string, number> {
     const rows = this.db.prepare(

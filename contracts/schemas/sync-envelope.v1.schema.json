@@ -35,6 +35,11 @@
             "minimum": 1,
             "description": "memory_events.seq — per-device monotonic, AUTOINCREMENT locally."
           },
+          "event_id": {
+            "type": "string",
+            "format": "uuid",
+            "description": "ADR-011 globally-unique event identity (migration 010). Additive field, NOT required — older push clients that predate ADR-011 may omit it without breaking envelope validation (ADR-001 additive-field evolution rule, no astramem-sync@1 version bump). Cloud/pull-side dedup and the multi-device conflict tie-break both key on this once present."
+          },
           "event_type": {
             "type": "string",
             "enum": ["create", "invalidate", "supersede", "promote_scope", "erase_request", "usefulness"]

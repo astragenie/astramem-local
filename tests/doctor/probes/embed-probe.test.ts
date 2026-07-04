@@ -92,4 +92,38 @@ describe('embedProbe', () => {
     const result = await embedProbe(provider, 5000);
     expect(result.message).toMatch(/in \d+ms/);
   });
+
+  // FEAT-409 AC-3 — expectedDim is DERIVED from provider.dim (config-driven
+  // via providers/index.ts), not a hardcoded 1024 constant. A provider
+  // configured for dim=768 whose actual output is 1024-dim (the OPPOSITE
+  // mismatch direction from the '768 (mismatch)' case above) must still
+  // fail loud, proving the expectation tracks the provider's own dim.
+  it('derives expectedDim from provider.dim (768-configured provider, 1024 actual output)', async () => {
+    const provider = makeEmbedProvider({
+      embed: vi.fn().mockResolvedValue([new Float32Array(1024).fill(0.1)]),
+    });
+    (provider as { dim: number }).dim = 768;
+    const result = await embedProbe(provider, 5000);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('dim 1024');
+    expect(result.message).toContain('expected 768');
+  });
+
+  it('succeeds when a non-default configured dim matches actual output (768/768)', async () => {
+    const provider = makeEmbedProvider({
+      embed: vi.fn().mockResolvedValue([new Float32Array(768).fill(0.1)]),
+    });
+    (provider as { dim: number }).dim = 768;
+    const result = await embedProbe(provider, 5000);
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('768-dim');
+  });
+
+  it('an explicit expectedDim overrides the provider.dim default', async () => {
+    const provider = makeEmbedProvider({
+      embed: vi.fn().mockResolvedValue([new Float32Array(1024).fill(0.1)]),
+    });
+    const result = await embedProbe(provider, 5000, 1024);
+    expect(result.ok).toBe(true);
+  });
 });

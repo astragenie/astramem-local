@@ -117,11 +117,13 @@ You can substitute any Ollama model that supports JSON mode for extraction:
 | LLM        | `mistral:7b`               | Fast, good JSON mode                |
 | LLM        | `phi4:14b`                 | Best quality, ~9GB, needs 16GB RAM  |
 | Embedding  | `mxbai-embed-large`        | 1024-dim, good retrieval quality    |
-| Embedding  | `all-minilm`               | 384-dim — NOT compatible (dim mismatch) |
+| Embedding  | `all-minilm`               | 384-dim — needs a dim migration first |
 
-The embedding model must produce exactly 1024-dimensional vectors. Do not use `all-minilm` or
-other models with different dimensions without changing `embedding.dim` AND running a full
-`astra-memory rebuild --reembed`.
+The embedding model must produce exactly `embedding.dim`-dimensional vectors (default 1024,
+matching `mxbai-embed-large`). Switching to `all-minilm` or another model with a different
+native dimension requires updating `embedding.dim` to match AND running the resumable
+`astra-memory reembed-dim` procedure against an existing database — see
+docs/embed-dim-migration.md. A fresh install can just set `embedding.dim` before the first run.
 
 ---
 

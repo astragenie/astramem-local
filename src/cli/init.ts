@@ -304,7 +304,10 @@ function buildConfig(answers: WizardAnswers): Config {
     embedding: {
       provider: answers.embedProvider,
       model: embedModel,
-      dim: 1024,
+      // FEAT-409: derived from base.embedding.dim (DEFAULT_EMBED_DIM) —
+      // the wizard doesn't yet expose a dim override, so this stays the
+      // default until a future non-default-dim onboarding flow is added.
+      dim: base.embedding.dim,
     },
     vector: { store: answers.vector === 'lancedb' ? 'sqlite-vec' : answers.vector },
     budget: { daily_usd: answers.budget },
@@ -420,11 +423,12 @@ export async function init(argv: string[] = []): Promise<void> {
     }
   }
 
-  // 7. Run migrations
+  // 7. Run migrations — this is the fresh-DB creation path, so
+  // cfg.embedding.dim (FEAT-409) is what actually bakes into memories_vec.
   const dbPath = join(answers.dataDir, 'memory.sqlite');
   mkdirSync(answers.dataDir, { recursive: true });
   const db = openDb(dbPath);
-  migrate(db);
+  migrate(db, cfg.embedding.dim);
   db.close();
   if (!nonInteractive) console.log(`  ✓ DB migrations applied at ${dbPath}`);
 

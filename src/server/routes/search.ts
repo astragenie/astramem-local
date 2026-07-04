@@ -1,7 +1,8 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&since=&limit=
- *   POST /recall  { query, k, filters? }
+ *   GET  /search?q=&type=&repo=&project=&since=&as_of=&entity=&limit=
+ *   POST /recall  { query, k, filters? }  filters.as_of: ISO-8601 date-time,
+ *                                          filters.entity: FEAT-402 AC-4
  *   POST /remember { text, type, metadata? }
  */
 
@@ -14,7 +15,7 @@ import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { recordRecallServed } from '../../storage/usefulness.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
-import { search, type SearchFilters } from '../../search/search.js';
+import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
 import { redactIfEnabled } from '../../redact/index.js';
@@ -29,7 +30,11 @@ const RecallBodySchema = z.object({
     type: z.array(z.string()).optional(),
     repo: z.string().optional(),
     project: z.string().optional(),
-    since: z.number().optional()
+    since: z.number().optional(),
+    /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
+    as_of: z.string().optional(),
+    /** FEAT-402 slice 2 AC-4: entity name — resolved via the AC-9 normalize seam. */
+    entity: z.string().optional()
   }).optional()
 });
 
@@ -73,6 +78,14 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
           filters.since = sinceNum;
         }
       }
+      if (params.as_of) {
+        try {
+          filters.as_of = parseAsOf(params.as_of);
+        } catch (err) {
+          return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
+        }
+      }
+      if (params.entity) filters.entity = params.entity;
 
       const hits = await search(q, filters, limit, { db, embed, weights });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
@@ -98,6 +111,14 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (rawFilters?.repo) filters.repo = rawFilters.repo;
       if (rawFilters?.project) filters.project = rawFilters.project;
       if (rawFilters?.since !== undefined) filters.since = rawFilters.since;
+      if (rawFilters?.as_of !== undefined) {
+        try {
+          filters.as_of = parseAsOf(rawFilters.as_of);
+        } catch (err) {
+          return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
+        }
+      }
+      if (rawFilters?.entity !== undefined) filters.entity = rawFilters.entity;
 
       const hits = await search(query, filters, k, { db, embed, weights });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
@@ -151,7 +172,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       // Embed + upsert into vec store
       try {
         const vecs = await embed.embed([text]);
-        const vecStore = new SqliteVecStore(db);
+        const vecStore = new SqliteVecStore(db, embed.dim);
         if (!vecs[0]) throw new Error('embed provider returned empty result');
         await vecStore.upsert(id, vecs[0]);
       } catch (err) {

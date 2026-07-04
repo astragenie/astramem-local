@@ -30,7 +30,8 @@ function migrateUpTo(db: DB, beforeVersion: number): void {
   for (const f of files) {
     const version = parseInt(f.split('-')[0] ?? '', 10);
     if (version >= beforeVersion) continue;
-    db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8'));
+    // Substitute the FEAT-409 embed-dim placeholder (real migrate() does this too).
+    db.exec(readFileSync(join(MIGRATIONS_DIR, f), 'utf8').split('__EMBED_DIM__').join('1024'));
     db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(version, Date.now());
   }
 }
@@ -257,6 +258,41 @@ describe('MemoryEventRepo.supersede', () => {
     const newId = insertMem('sup-new-5');
     events.invalidate(oldId);
     expect(() => events.supersede(oldId, newId)).toThrow(MemoryConflictError);
+  });
+
+  // FEAT-402 AC-3 — supersede removes the old memory's memory_entities links
+  // (the memories row itself survives for bitemporal history, but its
+  // entity links do not — a superseded fact stops counting as current
+  // evidence for "everything about entity X").
+  it('supersede deletes oldId memory_entities links — zero orphan links remain', async () => {
+    const { EntityRepo } = await import('../../src/storage/entities.js');
+    const entityRepo = new EntityRepo(db);
+    const oldId = insertMem('sup-old-entities');
+    const newId = insertMem('sup-new-entities');
+    entityRepo.linkEntitiesForMemory(oldId, [{ name: 'Postgres', kind: 'tech' }]);
+    expect(entityRepo.listForMemory(oldId)).toHaveLength(1);
+
+    events.supersede(oldId, newId);
+
+    expect(entityRepo.listForMemory(oldId)).toEqual([]);
+    const orphans = db.prepare(`
+      SELECT COUNT(*) AS n FROM memory_entities me
+      LEFT JOIN memories m ON m.id = me.memory_id
+      WHERE m.id IS NULL
+    `).get() as { n: number };
+    expect(orphans.n).toBe(0);
+  });
+
+  it('supersede does not touch newId memory_entities links', async () => {
+    const { EntityRepo } = await import('../../src/storage/entities.js');
+    const entityRepo = new EntityRepo(db);
+    const oldId = insertMem('sup-old-entities-2');
+    const newId = insertMem('sup-new-entities-2');
+    entityRepo.linkEntitiesForMemory(newId, [{ name: 'TypeScript', kind: 'tech' }]);
+
+    events.supersede(oldId, newId);
+
+    expect(entityRepo.listForMemory(newId)).toHaveLength(1);
   });
 });
 

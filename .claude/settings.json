@@ -1,0 +1,81 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|clear|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PWD}/.claude/hooks/log_event.sh session_start",
+            "description": "crew:session-start"
+          }
+        ]
+      }
+    ],
+    "TaskCreated": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PWD}/.claude/hooks/log_event.sh task_created",
+            "description": "crew:task-created"
+          }
+        ]
+      }
+    ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PWD}/.claude/hooks/log_event.sh task_completed",
+            "description": "crew:task-completed"
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PWD}/.claude/hooks/log_event.sh subagent_start",
+            "description": "crew:subagent-start"
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PWD}/.claude/hooks/log_event.sh subagent_stop",
+            "description": "crew:subagent-stop"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PWD}/.claude/hooks/check_git_gate.sh",
+            "description": "crew:git-gate-reminder"
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/read-guard.sh"
+          }
+        ]
+      }
+    ]
+  }
+}

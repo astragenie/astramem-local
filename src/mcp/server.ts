@@ -229,7 +229,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       // Embed + upsert into vec store (non-fatal on failure)
       try {
         const vecs = await embed.embed([text]);
-        const vecStore = new SqliteVecStore(db);
+        const vecStore = new SqliteVecStore(db, embed.dim);
         if (!vecs[0]) throw new Error('embed provider returned empty result');
         await vecStore.upsert(id, vecs[0]);
       } catch (err) {

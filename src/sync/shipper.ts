@@ -32,6 +32,16 @@ export interface WireSyncEvent {
   payload_json: Record<string, unknown> | null;
   content_hash: string | null;
   created_at: number;
+  /**
+   * Globally-unique event identity (ADR-011, migration 010). Additive field
+   * — no astramem-sync@1 version bump (ADR-001's additive-field evolution
+   * rule): older push clients that omit it are still valid envelopes; this
+   * daemon always populates it (migration 010 backfills every pre-existing
+   * row, and MemoryEventRepo.append() always assigns one going forward).
+   * It is the pull-side dedup key (FEAT-407 AC-2) and the ADR-011 conflict
+   * tie-break key (created_at, event_id).
+   */
+  event_id: string;
 }
 
 export interface SyncEnvelope {
@@ -83,6 +93,7 @@ export function getOrCreateDeviceId(configDir: string): string {
 
 interface UnsyncedRow {
   seq: number;
+  event_id: string;
   event_type: string;
   atom_id: string;
   payload_json: string | null;
@@ -94,14 +105,23 @@ interface UnsyncedRow {
  * Unsynced, ship-eligible events in seq order (ADR-009 scope filter).
  * LEFT JOIN: an erase_request may outlive its memories row — it ships when
  * its payload records a team/org scope.
+ *
+ * `archive`/`restore` (FEAT-404) are excluded unconditionally, regardless of
+ * scope: archival is a per-device retention/storage-hygiene decision (one
+ * device's local SQLite-growth mitigation), not a semantic memory change,
+ * so it must never leave the machine. The sync wire schema
+ * (contracts/schemas/sync-envelope.v1.schema.json) also never lists these
+ * two types in its event_type enum — shipping one would fail schema
+ * validation on the wire, on top of being the wrong policy.
  */
 export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
   return db
     .prepare(`
-      SELECT e.seq, e.event_type, e.atom_id, e.payload_json, e.content_hash, e.created_at
+      SELECT e.seq, e.event_id, e.event_type, e.atom_id, e.payload_json, e.content_hash, e.created_at
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
+        AND e.event_type NOT IN ('archive', 'restore')
         AND (
           m.scope IN ('team', 'org')
           OR (
@@ -136,6 +156,7 @@ export function buildEnvelope(
     cursor,
     events: rows.map(r => ({
       seq: r.seq,
+      event_id: r.event_id,
       event_type: r.event_type,
       atom_id: r.atom_id,
       payload_json: r.payload_json !== null ? (JSON.parse(r.payload_json) as Record<string, unknown>) : null,
