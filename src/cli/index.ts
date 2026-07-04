@@ -21,6 +21,7 @@ import { reinstallCommand } from './reinstall.js';
 import { reembedDimCommand } from './reembed-dim.js';
 import { entityBackfillCommand } from './entity-backfill.js';
 import { cliMemoryRestore } from './memory.js';
+import { mcpStdio } from './mcp-stdio.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -225,6 +226,13 @@ async function main() {
       // astramem-local consolidate run|proposals|accept|reject
       const { consolidateCommand } = await import('./consolidate.js');
       await consolidateCommand(rest);
+      break;
+    }
+
+    case 'mcp-stdio': {
+      // astramem-local mcp-stdio — MCP server over stdio transport (test-enabling
+      // infrastructure; the daemon's POST /mcp is the supported production surface)
+      await mcpStdio();
       break;
     }
 
