@@ -1,0 +1,2 @@
+{"type":"slice_start","sliceId":"SLICE-413","timestamp":"2026-07-04T12:44:29.806Z","featureId":"FEAT-419","title":"SLICE-413: Concurrency tests — parallel ingest + Idempotency-Key race","planPath":"C:\\work\\mega\\astramemory-local-worktrees\\feat-419\\.claude\\artifacts\\loop\\plans\\20260704T124426Z-plan-SLICE-413.md","requiresApprovalGate":true}
+{"type":"slice_complete","sliceId":"SLICE-413","timestamp":"2026-07-04T13:03:57.866Z","featureId":"FEAT-419","featureMovedTo":null,"validationSatisfied":true}

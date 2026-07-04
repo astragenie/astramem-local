@@ -16,13 +16,8 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Repo is bun-locked (bun.lock, no package-lock.json) — setup-node's npm
-      # cache and `npm ci` both fail without an npm lockfile. Mirror test.yml.
-      - name: Setup Bun 1.3
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.3'
-
+      # Bun is baked into the runner image at /usr/local/bin (devops#64) —
+      # setup-bun's cache-restore/exec race caused intermittent ETXTBSY.
       - name: Install dependencies
         run: bun install --frozen-lockfile
 
