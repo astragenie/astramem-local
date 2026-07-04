@@ -102,6 +102,24 @@ All nine Wave-4 features merged to `main`. Phase-gate green ×2: **113 files, 11
 - **409**: reembed-dim never updated per-memory embedding metadata → columns permanently lied post-migration. + AC-3 preflight only checked provider self-consistency, not the persisted schema dim.
 - Plus: 409 build closed inline by lead after 5 builder limit-hits (missing __EMBED_DIM__ substitution in 2 raw-migration test helpers); a Date.now() flake in 402-s2's zeta snapshot fixed deterministically; 404's migration-013 memory_events rewrite initially dropped event_id (407/ADR-011) — builder caught + fixed with explicit column list.
 
+### Post-wave holistic verification (2026-07-04, user-requested)
+Two independent whole-wave reviews on `git diff 2a30ced..HEAD` (160 files, +11091):
+- **typescript-reviewer: CLEAN-WITH-NITS** — build/tests/contracts green, zero new deps, type boundaries sound. 1 MEDIUM + 2 LOW.
+- **architect-reviewer: SOUND-WITH-RISKS** — core designs sound; integration gaps between same-wave features. 2 HIGH + 1 MEDIUM scope gap + 1 design-call.
+
+**Fixed + merged (`fix/w4-review-findings`, lead-reviewed, suite 1119 green):**
+1. [HIGH] `GET /entities/:id/memories` surfaced retired (superseded/invalidated/archived) atoms — now filters `valid_to IS NULL`.
+2. [HIGH] archive/restore events leaked into sync for team/org scopes + would fail the wire schema — now excluded from `listUnsynced` (ruling: archival = per-device retention policy, never ships).
+3. [LOW] `runReembedDim` self-guards dim before DDL interpolation.
+
+**Root-cause (architect):** ADR-011's reduce was closed over "the 6 event types at time of writing"; the same wave added 2 more (404) + a supersede side-effect (402 entity unlink) without revisiting it. Process rule to adopt: new event type or supersede side-effect → explicit "does conflict-resolve.ts need a rule?" checklist item.
+
+### Design decisions still OPEN (user)
+1. **Cross-device archival propagation** — currently local-only (interim ruling). If archival should sync: ADR-011 addendum (archive/restore conflict rules + wire enum + cloud handling).
+2. **Daemon pull loop** — push auto-runs at boot; pull is CLI-only (`sync pull`) → daemons don't auto-converge. Add scheduled pull loop mirroring startShipper, or document as deferred (blocked on cloud /sync/pull contract anyway).
+3. **as_of × archival** — time-travel surfaces archived-for-staleness content (by design, consistent with superseded). Needs a one-line ADR ruling to make it a decision, not an accident.
+4. [LOW hardening] Zod schema on `httpPullFetcher` response boundary before live cloud pull. Fusion weights sum 1.1 (not normalized) — tidy before more additive terms.
+
 ### Follow-ups (surfaced, NOT done — for user)
 1. **[407]** Cloud `GET /sync/pull` atom-body contract undefined — live A→cloud→B round-trip needs the SaaS-side response shape defined first. Local merge engine is tested; httpPullFetcher unexercised. `atom_snapshot` is a local assumption.
 2. **[402-s2]** `contracts/schemas/retrieval-query.v1.schema.json` lacks `entity` in filters — cross-repo contract change if SaaS needs entity filtering.
