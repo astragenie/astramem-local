@@ -25,6 +25,12 @@ export type CaptureEnvelopeV1 = {
   client_scrub_hits: number;
   client_version: string;
   client_scrub_version: string;
+  /**
+   * Per-label scrubber hit counts (e.g. {"aws_key": 2, "jwt": 1}) across all turns. Additive minor over the original v1 shape — cloud (IngestTranscriptRequest) and the plugin (TranscriptIngestPayloadSchema) both already send it; the schema was missing it. Optional so pre-existing writers stay valid.
+   */
+  client_scrub_hits_by_label?: {
+    [k: string]: number;
+  };
   wire_version: string;
   /**
    * @minItems 1

@@ -50,6 +50,14 @@
     "client_scrub_version": {
       "type": "string"
     },
+    "client_scrub_hits_by_label": {
+      "type": "object",
+      "description": "Per-label scrubber hit counts (e.g. {\"aws_key\": 2, \"jwt\": 1}) across all turns. Additive minor over the original v1 shape — cloud (IngestTranscriptRequest) and the plugin (TranscriptIngestPayloadSchema) both already send it; the schema was missing it. Optional so pre-existing writers stay valid.",
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 0
+      }
+    },
     "wire_version": {
       "type": "string",
       "pattern": "^v(?:0|[1-9][0-9]*)\\.[0-9]+$"

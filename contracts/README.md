@@ -89,6 +89,18 @@ validate against the canonical contract instead. Round-tripped against the same
 `fixtures/{valid,invalid}/*` in CI. Cloud (.NET) still uses JSON Schema + a .NET
 validator — Zod is a TypeScript-consumer convenience only.
 
+> **⚠ Caveat — Zod is LOSSY on conditional schemas.** `json-schema-to-zod` cannot
+> translate JSON-Schema `if/then`/`allOf` conditionals; it emits a no-op
+> (`z.intersection(z.any(), z.any())`). This affects **`capture-envelope.v1`**,
+> whose `kind:"events" → require events` / else `require turns` rule is therefore
+> **NOT enforced by `CaptureEnvelopeV1Schema`**. The `validate.mjs` ajv gate (and
+> any .NET JSON-Schema validator) DOES enforce it — so the JSON Schema stays the
+> authoritative validator. Consumers needing the conditional at runtime should
+> `.superRefine()` on top of the generated Zod, or validate with ajv against
+> `schemas/capture-envelope.v1.schema.json` directly. `atom.v1`, `retrieval-query.v1`,
+> `retrieval-result.v1`, `sync-envelope.v1` have no conditionals and generate
+> faithful Zod.
+
 ## Fixture naming convention (load-bearing)
 
 `validate.mjs` and `tests/contracts/conformance.test.ts` both route fixtures
