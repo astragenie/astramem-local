@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [self-hosted]  # linux on dedicated runner; win/mac weekly in test-xplat.yml
+        os: [self-hosted]  # linux on dedicated runner (fleet policy: no GitHub-hosted runners)
         bun: ['1.3']
     runs-on: ${{ matrix.os }}
 
@@ -21,14 +21,10 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Bun ${{ matrix.bun }}
-        uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: ${{ matrix.bun }}
-
+      # Bun is baked into the runner image at /usr/local/bin (devops#64) —
+      # setup-bun's cache-restore/exec race caused intermittent ETXTBSY.
       # better-sqlite3 and sqlite-vec are native modules.
       # bun install --frozen-lockfile triggers node-gyp rebuild via better-sqlite3's install script.
-      # On Windows, the MSVC build toolchain must be present (GitHub-hosted runners have it).
       # sqlite-vec ships prebuilt binaries for linux-x64, darwin-arm64, darwin-x64, win32-x64.
       # If a prebuilt is missing the load() call in src/storage/db.ts will throw at runtime
       # and tests will fail with a clear error — this is intentional (no silent green).
@@ -41,8 +37,7 @@ jobs:
         run: bun run build
 
       - name: Run tests
-        # Increase per-test timeout to 60 s to accommodate slower Windows filesystem
-        # and spawn startup latency on the CI runner.
+        # Increase per-test timeout to 60 s to accommodate spawn startup latency
         # INTEGRATION_LIVE tests are NOT run — only contract + unit + spawn-based tests.
         run: bun run test -- --testTimeout=60000
         shell: bash

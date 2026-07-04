@@ -9,7 +9,8 @@
 # REQUIRES: repo secret NPM_TOKEN (npm automation token with publish rights
 # on @astragenie). Without it the publish step fails loudly — by design.
 #
-# Runs on GitHub-hosted ubuntu (not self-hosted) for provenance attestation.
+# Runs on the self-hosted fleet (no GitHub-hosted runners — fleet policy).
+# npm --provenance uses the same Actions OIDC token on self-hosted runners.
 
 name: publish
 
@@ -25,7 +26,7 @@ permissions:
 jobs:
   publish:
     name: npm publish (provenance)
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, astragenie, aws]
     steps:
       - uses: actions/checkout@v4
 
@@ -38,10 +39,7 @@ jobs:
             exit 1
           fi
 
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.3'
-
+      # Bun baked into runner image (devops#64); setup-node kept for registry-url auth.
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
