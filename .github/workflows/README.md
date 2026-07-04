@@ -57,6 +57,25 @@ would catch the same errors.
 
 Triggers: push/PR to `main`, `workflow_dispatch`.
 
+## cross-repo-roundtrip.yml (FEAT-411)
+
+Checks out this repo, builds it, then checks out the PUBLIC astramem-plugin
+repo (no token needed) and runs its
+`tests/e2e/plugin-daemon-roundtrip.test.ts` against the freshly built daemon
+via `ASTRAMEM_LOCAL_DIST_PATH=<daemon checkout>`. This is the primary CI gate
+for the plugin<->daemon wire contract — a regression here (e.g. the
+fused-score-over-1 bug fixed in cedc8a9) fails the job red and blocks merge.
+
+Job name `cross-repo-roundtrip` is the candidate for a required branch
+protection check on this repo.
+
+The mirror job in astramem-plugin's own workflows checks out this (private)
+repo instead and is secret-gated (`ASTRAMEM_LOCAL_TOKEN`) — see that repo's
+workflow file for operator setup steps. It is a secondary/best-effort check;
+this repo's job is the one that should be required.
+
+Triggers: push/PR to `main`, `workflow_dispatch`.
+
 ## dependabot.yml
 
 Weekly Dependabot PRs for:
