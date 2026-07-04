@@ -3,6 +3,7 @@
  *   POST /memory/:id/invalidate { reason? } -> 200 { ok: true } | 404 | 409
  *   POST /memory/:id/supersede  { new_id }  -> 200 { ok: true } | 404 | 409
  *   POST /memory/:id/promote    { scope }   -> 200 { ok: true } | 400 | 404
+ *   POST /memory/:id/restore                -> 200 { ok: true } | 404 | 409   (FEAT-416, un-archive)
  *   GET  /memory/:id/history                -> { id, history: MemoryEvent[] }
  *   POST /memory/:id/used                   -> 200 { ok: true } | 404
  *   DELETE /memory/:id                      -> 200 { ok: true } | 404   (erasure v1, ADR-006 W5)
@@ -10,6 +11,10 @@
  * `history` also backs the Wave 2c MCP `memory_history` tool.
  * `used` is the ADR-010 (2e) explicit recall-used signal — REST twin of the
  * MCP `mark_memory_used` tool (src/mcp/server.ts).
+ * `restore` un-archives a memory previously archived by the W4.4 TTL policy
+ * (src/storage/archival.ts) or by a manual `archive` event — mirrors
+ * `invalidate`'s 404/409 semantics exactly (MemoryEventRepo.restore() already
+ * throws MemoryNotFoundError/MemoryConflictError for the same two cases).
  */
 
 import { z } from 'zod';
@@ -91,6 +96,18 @@ export function lifecycleRoutes(db: DB) {
       } catch (err) {
         if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
         if (err instanceof InvalidScopeTransitionError) return reply.code(400).send({ error: err.message });
+        throw err;
+      }
+    });
+
+    app.post('/memory/:id/restore', async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        events.restore(id);
+        return { ok: true };
+      } catch (err) {
+        if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
+        if (err instanceof MemoryConflictError) return reply.code(409).send({ error: err.message, id });
         throw err;
       }
     });
