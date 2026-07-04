@@ -129,24 +129,35 @@ as `/root/.ollama`. Because the key is a direct function of the model list
 and a manual version bump, any model-tag change or forced invalidation is
 grep-verifiable in the workflow diff — no stale silent cache hits.
 
-**Timing**: target ≤15 min warm (cache hit — model pull steps become no-ops
-since `ollama pull` on an already-present blob just verifies the manifest).
-Cold-start (first run, empty cache) pulls the `ollama/ollama` image plus
-~6 GB of model blobs across the three models above; see the run-brief
-artifact for this slice for the actual first-run timing measured on this
-branch.
+**Timing (measured, first-ever run, cold cache)**: 3m58s total —
+checkout/install/build/cache-restore/probe ~30s, Docker image pull +
+container start 68s, pulling all three models (~6 GB) 92s, live test subset
+36s, smoke suite 9s, issue automation + cleanup ~3s. Comfortably under the
+≤15 min target even cold, on a CPU-only host. Warm-cache timing (model pull
+steps become near-instant manifest checks) will be confirmed on a
+subsequent run once the cache-save fix below has landed.
 
-**Known risk (documented, not fixed by this slice)**: the live block in
-`tests/providers/ollama-embed.test.ts` still hardcodes model name
-`nomic-embed-text-v2-moe` from before the v0.2.1 hotfix. That model is
-natively 768-dim; `OllamaEmbedProvider` expects 1024 regardless of the model
-string passed in, so a real run of that specific test is expected to fail
-with a dimension-mismatch error until someone updates the test's model
-reference to `mxbai-embed-large`. This is a follow-up FEAT candidate, not
-this slice's scope (touches test code, not CI wiring). A red run from
-exactly this test is expected on the first several nightly runs — check the
-pinned issue body for the specific failing test name before assuming a new
-regression.
+**Known risks (documented, not fixed by this slice — both confirmed via a
+real dispatched run, not speculation)**:
+
+1. The live block in `tests/providers/ollama-embed.test.ts` still hardcodes
+   model name `nomic-embed-text-v2-moe` from before the v0.2.1 hotfix. That
+   model is natively 768-dim; `OllamaEmbedProvider` expects 1024 regardless
+   of the model string passed in, so a real run of that specific test is
+   expected to fail with a dimension-mismatch error until someone updates
+   the test's model reference to `mxbai-embed-large`.
+2. `tests/e2e/plugin-flow.test.ts`'s live-mode pipeline test failed on its
+   first real run with a 30s search-poll timeout. Real `qwen2.5-coder:7b`
+   distillation across the pipeline's several LLM stages, running on a
+   CPU-only host, plausibly exceeds that test's hardcoded 30s poll window —
+   this looks like a CPU-inference-timing limitation in the pre-existing
+   test rather than a functional regression, but is unconfirmed pending a
+   second data point.
+
+Both are follow-up FEAT candidates, not this slice's scope (they touch test
+code, not CI wiring). A red run from one or both of these is expected on
+the first several nightly runs — check the pinned issue body for the
+specific failing test names before assuming a new regression.
 
 **Failure path**: a red run opens or updates a single pinned issue titled
 `nightly-live: red` with the failing test names (via
