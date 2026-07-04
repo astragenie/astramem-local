@@ -1,7 +1,7 @@
 {
   "session_id": "caceaca6-88ab-479b-9115-50d6a75debfd",
   "first_seen": "2026-07-04T07:45:43.911Z",
-  "last_seen": "2026-07-04T09:28:07.491Z",
+  "last_seen": "2026-07-04T09:30:11.584Z",
   "total_bytes": 0,
   "entries": {
     "C:\\work\\mega\\astramemory-local\\src\\server\\app.ts": {
@@ -315,9 +315,9 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\2026-07-04-smoke-suite-phase0-1.md": {
-      "read_count": 7,
+      "read_count": 8,
       "first_read_at": "2026-07-04T07:50:35.566Z",
-      "last_read_at": "2026-07-04T09:26:48.633Z",
+      "last_read_at": "2026-07-04T09:30:11.572Z",
       "mtime_at_last_read": "2026-07-04T09:11:58.352Z",
       "size_at_last_read": 16228,
       "content_bytes": 0,
