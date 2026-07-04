@@ -91,9 +91,13 @@ export async function serve(opts: ServeOpts): Promise<void> {
   if (dataDir === ':memory:') {
     db = openDb(dbPath);
   } else if (cfg.security.encryption.enabled) {
-    const key = getOrCreateKey(defaultConfigDir()).key;
-    encryptIfPlaintext(dbPath, key);
-    db = openDb(dbPath, { key });
+    const keyResult = getOrCreateKey(defaultConfigDir());
+    encryptIfPlaintext(dbPath, keyResult.key);
+    try {
+      db = openDb(dbPath, { key: keyResult.key });
+    } catch (err) {
+      throw rewrapWrongKeyError(err, dbPath, keyResult.source);
+    }
   } else {
     // SEC-9: disabling encryption is a deliberate trust trade-off — make it loud.
     console.warn(
@@ -326,6 +330,32 @@ export async function serve(opts: ServeOpts): Promise<void> {
  * database is pure data-at-rest exposure. Doctor reports it during the
  * grace window so the user knows it exists.
  */
+/**
+ * A wrong/stale encryption key surfaces from openDb()'s first real pragma
+ * (journal_mode = WAL) as `SqliteError: file is not a database
+ * (SQLITE_NOTADB)` — the SAME message a genuinely corrupt file or a
+ * cipher-less build produces (see CLAUDE.md's bare-`astramem-local`
+ * shadowing note), so it reads as "your database is broken" rather than
+ * "your encryption key doesn't match this file" (FEAT-415 AC-3). Rewraps
+ * that one specific, unambiguous signal — a key was supplied and the open
+ * still failed as NOTADB — into an actionable message; anything else
+ * (a real SQLITE_CORRUPT, a permissions error, etc.) passes through
+ * unchanged.
+ */
+function rewrapWrongKeyError(err: unknown, dbPath: string, keySource: string): Error {
+  const code = (err as { code?: string } | null)?.code;
+  if (code !== 'SQLITE_NOTADB') return err instanceof Error ? err : new Error(String(err));
+  return new Error(
+    `[astramem-local] FATAL: failed to open the encrypted database at ${dbPath} — ` +
+    `the encryption key resolved from the ${keySource === 'credential-store' ? 'OS credential store' : 'key file'} ` +
+    `does not match this file (wrong or stale key), or the file is corrupt. ` +
+    `This is NOT a plaintext-vs-cipher-build issue (see CLAUDE.md) — a key was supplied and rejected. ` +
+    `If you rotated or lost the encryption key, restore memory.sqlite from a backup made with the ` +
+    `matching key (see 'astramem-local backup'/'restore'); do not delete db.key or the credential-store ` +
+    `entry without one, or the existing data becomes permanently unreadable. Original error: ${(err as Error).message}`,
+  );
+}
+
 function cleanupPreEncryptionBak(dbPath: string): void {
   const bakPath = `${dbPath}.pre-encryption.bak`;
   try {

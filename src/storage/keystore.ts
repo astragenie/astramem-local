@@ -20,6 +20,15 @@
  * getOrCreateKey() is idempotent: a second call against the same configDir
  * (and, for the credential-store path, the same machine/user) returns the
  * same key rather than minting a new one.
+ *
+ * ASTRA_MEMORY_TEST_FORCE_KEYFILE=1 (FEAT-415): test-only bypass that skips
+ * the credential-store attempt entirely and goes straight to the key-file
+ * fallback. Exists because the encrypted-restart smoke suite spawns the
+ * daemon as a separate child process — the in-process __setEntryCtorForTests
+ * stub below has no effect across a process boundary, and without this flag
+ * an encryption-enabled smoke run would read/write the REAL OS credential
+ * store (Entry(service, account) is keyed globally, not by configDir).
+ * Never set by real serving; no config.yaml/CLI surface exposes it.
  */
 import { Entry } from '@napi-rs/keyring';
 import { randomBytes } from 'node:crypto';
@@ -60,6 +69,14 @@ export function __setEntryCtorForTests(ctor: typeof Entry | undefined): void {
  * duplicate resolution pass. `.key` is what openDb()/migrate-encrypt need.
  */
 export function getOrCreateKey(configDir: string): KeyResult {
+  if (process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE === '1') {
+    console.warn(
+      '[astramem-local] WARNING: TEST-ONLY key-file bypass active ' +
+      '(ASTRA_MEMORY_TEST_FORCE_KEYFILE=1) — skipping the OS credential store. ' +
+      'Real serving environments must never set this variable.',
+    );
+    return getOrCreateKeyFile(configDir);
+  }
   try {
     return getOrCreateCredentialStoreKey();
   } catch (err) {
