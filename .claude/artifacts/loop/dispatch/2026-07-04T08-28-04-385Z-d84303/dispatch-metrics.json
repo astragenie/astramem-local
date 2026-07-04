@@ -1,0 +1,12 @@
+{
+  "runId": "2026-07-04T08-28-04-385Z-d84303",
+  "startedAt": "2026-07-04T08:42:23.053Z",
+  "completedAt": "2026-07-04T08:42:31.305Z",
+  "status": "complete",
+  "totalTokens": 0,
+  "promptTokens": 0,
+  "completionTokens": 0,
+  "estimatedCostUsd": 0,
+  "model": "unknown",
+  "childCount": 2
+}

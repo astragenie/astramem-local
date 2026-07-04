@@ -1,7 +1,11 @@
 {
   "session_id": "caceaca6-88ab-479b-9115-50d6a75debfd",
   "first_seen": "2026-07-04T07:45:43.911Z",
+<<<<<<< HEAD
   "last_seen": "2026-07-04T09:30:11.584Z",
+=======
+  "last_seen": "2026-07-04T08:44:42.686Z",
+>>>>>>> feat/FEAT-410-dashboard
   "total_bytes": 0,
   "entries": {
     "C:\\work\\mega\\astramemory-local\\src\\server\\app.ts": {
@@ -32,6 +36,7 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\search\\fuse.ts": {
+<<<<<<< HEAD
       "read_count": 5,
       "first_read_at": "2026-07-04T07:45:49.131Z",
       "last_read_at": "2026-07-04T09:06:16.050Z",
@@ -48,6 +53,24 @@
       "last_read_at": "2026-07-04T09:03:17.985Z",
       "mtime_at_last_read": "2026-07-04T08:50:46.599Z",
       "size_at_last_read": 7877,
+=======
+      "read_count": 3,
+      "first_read_at": "2026-07-04T07:45:49.131Z",
+      "last_read_at": "2026-07-04T08:42:53.047Z",
+      "mtime_at_last_read": "2026-07-03T21:32:38.301Z",
+      "size_at_last_read": 6327,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-04T08:43:32.528Z",
+      "mtime_at_last_edit": "2026-07-04T08:43:32.345Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\tests\\e2e\\plugin-flow.test.ts": {
+      "read_count": 7,
+      "first_read_at": "2026-07-04T07:45:51.888Z",
+      "last_read_at": "2026-07-04T08:25:49.029Z",
+      "mtime_at_last_read": "2026-07-04T08:25:44.792Z",
+      "size_at_last_read": 7695,
+>>>>>>> feat/FEAT-410-dashboard
       "content_bytes": 0,
       "content": null,
       "last_edit_at": "2026-07-04T08:25:45.014Z",
@@ -315,11 +338,19 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\2026-07-04-smoke-suite-phase0-1.md": {
+<<<<<<< HEAD
       "read_count": 8,
       "first_read_at": "2026-07-04T07:50:35.566Z",
       "last_read_at": "2026-07-04T09:30:11.572Z",
       "mtime_at_last_read": "2026-07-04T09:11:58.352Z",
       "size_at_last_read": 16228,
+=======
+      "read_count": 4,
+      "first_read_at": "2026-07-04T07:50:35.566Z",
+      "last_read_at": "2026-07-04T08:19:10.749Z",
+      "mtime_at_last_read": "2026-07-04T08:09:19.301Z",
+      "size_at_last_read": 12313,
+>>>>>>> feat/FEAT-410-dashboard
       "content_bytes": 0,
       "content": null,
       "last_edit_at": "2026-07-04T07:50:35.566Z",
@@ -353,36 +384,60 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\cli\\serve.ts": {
+<<<<<<< HEAD
       "read_count": 7,
       "first_read_at": "2026-07-04T08:04:12.378Z",
       "last_read_at": "2026-07-04T09:04:17.137Z",
+=======
+      "read_count": 4,
+      "first_read_at": "2026-07-04T08:04:12.378Z",
+      "last_read_at": "2026-07-04T08:20:54.182Z",
+>>>>>>> feat/FEAT-410-dashboard
       "mtime_at_last_read": "2026-07-03T20:37:46.364Z",
       "size_at_last_read": 17637,
       "content_bytes": 0,
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\config\\resolve-runtime.ts": {
+<<<<<<< HEAD
       "read_count": 5,
       "first_read_at": "2026-07-04T08:04:43.261Z",
       "last_read_at": "2026-07-04T09:04:17.325Z",
+=======
+      "read_count": 3,
+      "first_read_at": "2026-07-04T08:04:43.261Z",
+      "last_read_at": "2026-07-04T08:20:54.524Z",
+>>>>>>> feat/FEAT-410-dashboard
       "mtime_at_last_read": "2026-07-03T08:13:25.451Z",
       "size_at_last_read": 3168,
       "content_bytes": 0,
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\service\\instance-lock.ts": {
+<<<<<<< HEAD
       "read_count": 3,
       "first_read_at": "2026-07-04T08:05:19.524Z",
       "last_read_at": "2026-07-04T08:58:34.597Z",
+=======
+      "read_count": 2,
+      "first_read_at": "2026-07-04T08:05:19.524Z",
+      "last_read_at": "2026-07-04T08:21:36.751Z",
+>>>>>>> feat/FEAT-410-dashboard
       "mtime_at_last_read": "2026-07-03T07:31:36.809Z",
       "size_at_last_read": 5458,
       "content_bytes": 0,
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\config\\datadir.ts": {
+<<<<<<< HEAD
       "read_count": 4,
       "first_read_at": "2026-07-04T08:18:46.036Z",
       "last_read_at": "2026-07-04T09:03:32.349Z",
+=======
+      "read_count": 2,
+      "first_read_at": "2026-07-04T08:18:46.036Z",
+      "last_read_at": "2026-07-04T08:21:02.839Z",
+>>>>>>> feat/FEAT-410-dashboard
       "mtime_at_last_read": "2026-07-01T14:10:28.449Z",
       "size_at_last_read": 2467,
       "content_bytes": 0,
@@ -398,9 +453,15 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\config\\loader.ts": {
+<<<<<<< HEAD
       "read_count": 4,
       "first_read_at": "2026-07-04T08:18:59.876Z",
       "last_read_at": "2026-07-04T09:04:33.663Z",
+=======
+      "read_count": 2,
+      "first_read_at": "2026-07-04T08:18:59.876Z",
+      "last_read_at": "2026-07-04T08:21:13.167Z",
+>>>>>>> feat/FEAT-410-dashboard
       "mtime_at_last_read": "2026-07-03T05:43:24.233Z",
       "size_at_last_read": 3844,
       "content_bytes": 0,
@@ -470,9 +531,15 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\storage\\bearer-keystore.ts": {
+<<<<<<< HEAD
       "read_count": 4,
       "first_read_at": "2026-07-04T08:19:37.679Z",
       "last_read_at": "2026-07-04T09:09:50.419Z",
+=======
+      "read_count": 2,
+      "first_read_at": "2026-07-04T08:19:37.679Z",
+      "last_read_at": "2026-07-04T08:21:04.256Z",
+>>>>>>> feat/FEAT-410-dashboard
       "mtime_at_last_read": "2026-07-03T05:43:24.292Z",
       "size_at_last_read": 3841,
       "content_bytes": 0,
@@ -488,11 +555,19 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\pipeline\\mock-providers.ts": {
+<<<<<<< HEAD
       "read_count": 4,
       "first_read_at": "2026-07-04T08:19:54.966Z",
       "last_read_at": "2026-07-04T09:03:17.189Z",
       "mtime_at_last_read": "2026-07-04T08:54:26.713Z",
       "size_at_last_read": 8319,
+=======
+      "read_count": 2,
+      "first_read_at": "2026-07-04T08:19:54.966Z",
+      "last_read_at": "2026-07-04T08:38:00.318Z",
+      "mtime_at_last_read": "2026-07-03T20:37:46.381Z",
+      "size_at_last_read": 4995,
+>>>>>>> feat/FEAT-410-dashboard
       "content_bytes": 0,
       "content": null,
       "last_edit_at": "2026-07-04T08:38:26.031Z",
@@ -670,11 +745,19 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\package.json": {
+<<<<<<< HEAD
       "read_count": 3,
       "first_read_at": "2026-07-04T08:21:37.481Z",
       "last_read_at": "2026-07-04T09:03:17.969Z",
       "mtime_at_last_read": "2026-07-04T08:54:26.705Z",
       "size_at_last_read": 1187,
+=======
+      "read_count": 1,
+      "first_read_at": "2026-07-04T08:21:37.481Z",
+      "last_read_at": "2026-07-04T08:21:37.481Z",
+      "mtime_at_last_read": "2026-07-03T08:13:25.444Z",
+      "size_at_last_read": 1142,
+>>>>>>> feat/FEAT-410-dashboard
       "content_bytes": 0,
       "content": null,
       "last_edit_at": "2026-07-04T08:30:18.748Z",
@@ -699,9 +782,15 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\config\\migrate-dirs.ts": {
+<<<<<<< HEAD
       "read_count": 2,
       "first_read_at": "2026-07-04T08:22:45.328Z",
       "last_read_at": "2026-07-04T08:58:33.796Z",
+=======
+      "read_count": 1,
+      "first_read_at": "2026-07-04T08:22:45.328Z",
+      "last_read_at": "2026-07-04T08:22:45.328Z",
+>>>>>>> feat/FEAT-410-dashboard
       "mtime_at_last_read": "2026-07-03T07:31:36.795Z",
       "size_at_last_read": 6129,
       "content_bytes": 0,
@@ -726,11 +815,19 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\tests\\smoke\\helpers\\daemon.ts": {
+<<<<<<< HEAD
       "read_count": 2,
       "first_read_at": "2026-07-04T08:24:46.564Z",
       "last_read_at": "2026-07-04T09:03:16.327Z",
       "mtime_at_last_read": "2026-07-04T08:50:46.613Z",
       "size_at_last_read": 10909,
+=======
+      "read_count": 0,
+      "first_read_at": "2026-07-04T08:24:46.564Z",
+      "last_read_at": "2026-07-04T08:24:46.564Z",
+      "mtime_at_last_read": "2026-07-04T08:24:46.378Z",
+      "size_at_last_read": 0,
+>>>>>>> feat/FEAT-410-dashboard
       "content_bytes": 0,
       "content": null,
       "last_edit_at": "2026-07-04T08:25:12.004Z",
@@ -757,11 +854,19 @@
       "mtime_at_last_edit": "2026-07-04T08:26:05.893Z"
     },
     "C:\\work\\mega\\astramemory-local\\tests\\smoke\\_fixtures\\session-canonical.json": {
+<<<<<<< HEAD
       "read_count": 4,
       "first_read_at": "2026-07-04T08:26:38.479Z",
       "last_read_at": "2026-07-04T09:03:16.754Z",
       "mtime_at_last_read": "2026-07-04T08:50:46.607Z",
       "size_at_last_read": 1524,
+=======
+      "read_count": 2,
+      "first_read_at": "2026-07-04T08:26:38.479Z",
+      "last_read_at": "2026-07-04T08:38:58.345Z",
+      "mtime_at_last_read": "2026-07-04T08:38:53.808Z",
+      "size_at_last_read": 1503,
+>>>>>>> feat/FEAT-410-dashboard
       "content_bytes": 0,
       "content": null,
       "last_edit_at": "2026-07-04T08:38:54.030Z",
@@ -801,11 +906,19 @@
       "mtime_at_last_edit": "2026-07-04T08:28:12.814Z"
     },
     "C:\\work\\mega\\astramemory-local\\tests\\smoke\\smoke.test.ts": {
+<<<<<<< HEAD
       "read_count": 11,
       "first_read_at": "2026-07-04T08:30:14.086Z",
       "last_read_at": "2026-07-04T09:27:45.054Z",
       "mtime_at_last_read": "2026-07-04T08:50:46.617Z",
       "size_at_last_read": 20493,
+=======
+      "read_count": 8,
+      "first_read_at": "2026-07-04T08:30:14.086Z",
+      "last_read_at": "2026-07-04T08:42:20.387Z",
+      "mtime_at_last_read": "2026-07-04T08:41:11.787Z",
+      "size_at_last_read": 19771,
+>>>>>>> feat/FEAT-410-dashboard
       "content_bytes": 0,
       "content": null,
       "last_edit_at": "2026-07-04T08:42:41.692Z",
@@ -852,6 +965,7 @@
       "mtime_at_last_edit": "2026-07-04T08:40:45.031Z"
     },
     "C:\\work\\mega\\astramemory-local\\tests\\search\\fuse.test.ts": {
+<<<<<<< HEAD
       "read_count": 3,
       "first_read_at": "2026-07-04T08:43:00.704Z",
       "last_read_at": "2026-07-04T09:08:50.769Z",
@@ -861,6 +975,15 @@
       "content": null,
       "last_edit_at": "2026-07-04T09:07:38.973Z",
       "mtime_at_last_edit": "2026-07-04T09:07:38.246Z"
+=======
+      "read_count": 1,
+      "first_read_at": "2026-07-04T08:43:00.704Z",
+      "last_read_at": "2026-07-04T08:43:00.704Z",
+      "mtime_at_last_read": "2026-07-03T21:54:30.492Z",
+      "size_at_last_read": 5619,
+      "content_bytes": 0,
+      "content": null
+>>>>>>> feat/FEAT-410-dashboard
     },
     "C:\\work\\mega\\astramemory-local\\tests\\search\\search-debug.test.ts": {
       "read_count": 1,
@@ -888,6 +1011,7 @@
       "size_at_last_read": 13190,
       "content_bytes": 0,
       "content": null
+<<<<<<< HEAD
     },
     "C:\\work\\mega\\astramemory-local\\vitest.config.ts": {
       "read_count": 2,
@@ -1007,6 +1131,8 @@
       "size_at_last_read": 11208,
       "content_bytes": 0,
       "content": null
+=======
+>>>>>>> feat/FEAT-410-dashboard
     }
   }
 }

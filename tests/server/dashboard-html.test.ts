@@ -1,0 +1,178 @@
+import { describe, it, expect } from 'vitest';
+import { renderDashboard } from '../../src/server/routes/dashboard-html.js';
+import { defaultConfig } from '../../src/config/config.js';
+import type { DashboardData, DashboardHealth } from '../../src/server/queries/dashboard.js';
+
+// FEAT-410 SLICE-410-4: Mission Control rewrite of renderDashboard.
+// Codes against the ACTUAL DashboardData/DashboardHealth DTOs exported by
+// queries/dashboard.ts (SLICE-410-1), not the design-doc mockup's literal
+// field names/shapes.
+
+function baseData(overrides: Partial<DashboardData> = {}): DashboardData {
+  return {
+    memoryCounts: [],
+    recentMemories: [],
+    jobStates: [],
+    jobStatesByKind: [],
+    hourlyThroughput: [],
+    providers: [],
+    todaySpend: null,
+    mtdSpend: 0,
+    mtdCalls: 0,
+    usefulness: { served: 0, used: 0, rate: null },
+    consolidation: { count: 0, oldest: null },
+    recentFailedJobs: [],
+    entityLinkage: { entityCount: 0, unlinkedMemoryCount: 0 },
+    health: null,
+    ...overrides,
+  };
+}
+
+function healthyHealth(): DashboardHealth {
+  return {
+    status: 'ok',
+    uptimeSeconds: 120,
+    embed: { ok: true, lastOkAt: Date.now(), lastError: null, attempts: 1 },
+    worker: { alive: true, lastTickAt: Date.now() - 3000, lastTickAgoMs: 3000 },
+    diskFreeBytes: 42 * 1024 * 1024 * 1024,
+  };
+}
+
+function degradedHealth(overrides: Partial<DashboardHealth> = {}): DashboardHealth {
+  return {
+    status: 'degraded',
+    uptimeSeconds: 120,
+    embed: { ok: false, lastOkAt: null, lastError: 'ollama unreachable', attempts: 3 },
+    worker: { alive: true, lastTickAt: Date.now() - 3000, lastTickAgoMs: 3000 },
+    diskFreeBytes: 42 * 1024 * 1024 * 1024,
+    ...overrides,
+  };
+}
+
+const config = defaultConfig();
+
+describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
+  // AC-1
+  it('AC-1: healthy HealthState shows an OK banner naming each subsystem individually', () => {
+    const html = renderDashboard(baseData({ health: healthyHealth() }), config);
+    expect(html).toContain('DAEMON OK');
+    expect(html.toLowerCase()).toContain('embed:ok');
+    expect(html.toLowerCase()).toContain('worker:alive');
+    expect(html.toLowerCase()).toContain('disk:');
+  });
+
+  // AC-2
+  it('AC-2: embed.ok=false renders a DEGRADED banner naming the failing subsystem, page still renders fully', () => {
+    const html = renderDashboard(baseData({ health: degradedHealth() }), config);
+    expect(html).toContain('DAEMON DEGRADED');
+    expect(html).toContain('embed');
+    expect(html).toContain('</html>');
+  });
+
+  it('AC-2: worker.alive=false renders DEGRADED even when embed.ok=true', () => {
+    const health = healthyHealth();
+    health.worker = { alive: false, lastTickAt: null, lastTickAgoMs: null };
+    const html = renderDashboard(baseData({ health }), config);
+    expect(html).toContain('DAEMON DEGRADED');
+    expect(html).toContain('worker');
+    expect(html.toLowerCase()).toContain('worker:dead');
+  });
+
+  it('does not crash and reports UNKNOWN when health is null (bare test apps)', () => {
+    const html = renderDashboard(baseData({ health: null }), config);
+    expect(html).toContain('DAEMON UNKNOWN');
+    expect(html).toContain('</html>');
+  });
+
+  // AC-3
+  it('AC-3: zero pending proposals renders an explicit "0" state, not blank or NaN', () => {
+    const html = renderDashboard(baseData({ consolidation: { count: 0, oldest: null } }), config);
+    expect(html).toContain('0 pending proposals');
+    expect(html).not.toContain('NaN');
+  });
+
+  it('AC-3: zero failed/poison jobs renders explicit "0" counts, not blank or NaN', () => {
+    const html = renderDashboard(baseData({ jobStates: [] }), config);
+    expect(html).not.toContain('NaN');
+    // JOBS strip must show explicit zeros for all four states even when
+    // the GROUP BY query returned no rows for any of them.
+    const jobsSection = html.slice(html.indexOf('<h3>Jobs</h3>'), html.indexOf('<h3>Consolidation</h3>'));
+    expect(jobsSection).toContain('>0<');
+  });
+
+  // AC-4
+  it('AC-4: pipeline row shows per-stage pending/running counts from jobStatesByKind', () => {
+    const html = renderDashboard(baseData({
+      jobStatesByKind: [
+        { kind: 'distill', state: 'pending', count: 3 },
+        { kind: 'distill', state: 'running', count: 1 },
+        { kind: 'reembed', state: 'poison', count: 1 },
+      ],
+    }), config);
+    expect(html).toContain('3p / 1r');
+  });
+
+  it('AC-4: entity-link stage shows linked/unlinked memory counts, not a job-kind count', () => {
+    const html = renderDashboard(baseData({
+      entityLinkage: { entityCount: 248, unlinkedMemoryCount: 2 },
+    }), config);
+    expect(html).toContain('248 ent');
+    expect(html).toContain('2 unlinked');
+  });
+
+  // AC-5
+  it('AC-5: demoted sections do not appear in their old form', () => {
+    const html = renderDashboard(baseData({
+      memoryCounts: [{ type: 'fact', count: 10 }],
+      recentMemories: Array.from({ length: 25 }, (_, i) => ({
+        id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
+        session_id: null, created_at: Date.now() - i * 1000,
+      })),
+    }), config);
+    // Old headers must be gone.
+    expect(html.toLowerCase()).not.toContain('memory counts by type');
+    expect(html.toLowerCase()).not.toContain('recent captures (last 25)');
+    // Budget is a single collapsed tile, not Today/MTD 4-decimal side-by-side.
+    expect(html).not.toMatch(/\$\d+\.\d{4}/);
+    expect(html.toLowerCase()).not.toContain('mtd');
+  });
+
+  it('AC-5: recent-activity feed merges failures and memories, capped well under 25 rows', () => {
+    const html = renderDashboard(baseData({
+      recentFailedJobs: [
+        { id: 'j1', kind: 'distill', state: 'poison', last_error: 'ollama embed timeout', updated_at: Date.now() },
+      ],
+      recentMemories: Array.from({ length: 25 }, (_, i) => ({
+        id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
+        session_id: null, created_at: Date.now() - i * 1000,
+      })),
+    }), config);
+    expect(html).toContain('ollama embed timeout');
+    const rowMatches = html.match(/<tr>/g) ?? [];
+    // 1 header <tr> + up to 15 body rows in the feed table; well under the
+    // old 25-row recent-captures table.
+    expect(rowMatches.length).toBeLessThan(20);
+  });
+
+  // AC-6 (regression guard — this slice must not touch auth)
+  it('AC-6: does not render any auth-bearing content (rendering-only concern)', () => {
+    const html = renderDashboard(baseData(), config);
+    expect(html.toLowerCase()).not.toContain('bearer');
+    expect(html.toLowerCase()).not.toContain('astramem_dash');
+  });
+
+  it('keeps zero-JS, no external assets, and the <meta refresh> poll', () => {
+    const html = renderDashboard(baseData(), config);
+    expect(html.toLowerCase()).not.toContain('<script');
+    expect(html).toContain('<meta http-equiv="refresh" content="5">');
+    expect(html).not.toMatch(/https?:\/\//);
+  });
+
+  it('renders the Mission Control nav tab row', () => {
+    const html = renderDashboard(baseData(), config);
+    expect(html).toContain('Mission Control');
+    expect(html).toContain('/dashboard/jobs');
+    expect(html).toContain('/dashboard/consolidation');
+    expect(html).toContain('/dashboard/search');
+  });
+});
