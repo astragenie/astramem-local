@@ -1,0 +1,54 @@
+{
+  "schemaVersionAtGeneration": 12,
+  "embedDim": 8,
+  "counts": {
+    "memories": 10,
+    "entities": 4,
+    "memory_entities": 4,
+    "memory_events": 10
+  },
+  "memoryIds": [
+    "fixture-mem-01",
+    "fixture-mem-02",
+    "fixture-mem-03",
+    "fixture-mem-04",
+    "fixture-mem-05",
+    "fixture-mem-06",
+    "fixture-mem-07",
+    "fixture-mem-08",
+    "fixture-mem-09",
+    "fixture-mem-10"
+  ],
+  "entityNames": [
+    "astramemory-local",
+    "priya nair",
+    "sqlite-vec",
+    "typescript"
+  ],
+  "spotChecks": [
+    {
+      "id": "fixture-mem-01",
+      "type": "fact",
+      "textContains": "sqlite-vec"
+    },
+    {
+      "id": "fixture-mem-10",
+      "type": "decision",
+      "textContains": "fail loud"
+    }
+  ],
+  "search": [
+    {
+      "query": "sqlite-vec",
+      "expectedHitIds": [
+        "fixture-mem-01"
+      ]
+    },
+    {
+      "query": "Priya Nair",
+      "expectedHitIds": [
+        "fixture-mem-03"
+      ]
+    }
+  ]
+}
