@@ -37,6 +37,12 @@ on:
     # 09:17 UTC nightly — off-the-hour to avoid GitHub Actions' cron thundering herd.
     - cron: '17 9 * * *'
   workflow_dispatch:
+  # TEMP-TESTING-ONLY: workflow_dispatch cannot target a workflow file that
+  # only exists on a non-default branch. This push trigger is scoped to this
+  # feature branch so SLICE-415 AC-2 can be exercised with a real dispatched
+  # run before merge, and MUST be removed before this workflow lands on main.
+  push:
+    branches: [feat/FEAT-421-nightly-live-ci]
 
 permissions:
   contents: read
