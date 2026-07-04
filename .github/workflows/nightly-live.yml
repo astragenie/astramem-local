@@ -88,7 +88,7 @@ jobs:
         id: ollama-cache
         uses: actions/cache/restore@v4
         with:
-          path: ${{ github.workspace }}/.ollama-models
+          path: /opt/ollama-models
           key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
 
       - name: Probe for existing Ollama
@@ -109,13 +109,13 @@ jobs:
       - name: Start Ollama (docker)
         if: steps.probe.outputs.found == '0'
         run: |
-          mkdir -p "${{ github.workspace }}/.ollama-models"
+          mkdir -p "/opt/ollama-models"
           # Defensive: a previous crashed run may have left a stale container
           # on this (persistent, shared) self-hosted host.
           docker rm -f "$OLLAMA_CONTAINER" >/dev/null 2>&1 || true
           docker run -d --name "$OLLAMA_CONTAINER" \
             -p 11434:11434 \
-            -v "${{ github.workspace }}/.ollama-models:/root/.ollama" \
+            -v "/opt/ollama-models:/root/.ollama" \
             ollama/ollama:latest
 
       - name: Wait for Ollama API
@@ -156,7 +156,7 @@ jobs:
         # nothing was written into this path in that case.
         if: always()
         run: |
-          docker run --rm -v "${{ github.workspace }}/.ollama-models:/data" \
+          docker run --rm -v "/opt/ollama-models:/data" \
             alpine chown -R "$(id -u):$(id -g)" /data
 
       - name: Save Ollama model cache
@@ -166,7 +166,7 @@ jobs:
         if: always()
         uses: actions/cache/save@v4
         with:
-          path: ${{ github.workspace }}/.ollama-models
+          path: /opt/ollama-models
           key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
 
       - name: Run INTEGRATION_LIVE=ollama test subset
