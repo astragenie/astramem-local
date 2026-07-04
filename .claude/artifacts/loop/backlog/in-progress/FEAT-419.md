@@ -5,24 +5,22 @@ priority: P1
 created: 2026-07-04
 updated: 2026-07-04
 depends_on: []
-slices: []
+slices: [SLICE-412]
 derived_from: test-inventory-2026-07-04
-pm_customer_impact: 0.70
+pm_customer_impact: 0.7
 pm_effort_estimate: 0.55
-pm_strategic_alignment: 0.60
+pm_strategic_alignment: 0.6
 pm_technical_risk: 0.65
-pm_dependency_depth: 0.30
+pm_dependency_depth: 0.3
 pm_effort_points: 5
 composite_score: 0.63
 composite_priority: P1
 autonomous_safe: false
 pm_demand_evidence: "Code-reading finding, not yet a confirmed incident: the check-then-insert idempotency lookup plus async distill enqueue leaves a plausible race window for concurrent identical Idempotency-Key requests; grep confirms zero existing test exercises Promise.all against /ingest across the 121-file suite."
-pm_scope_notes: "Scope includes the fix if a race is confirmed (transactional insert-or-replay) — do not split test-authorship from the fix into separate slices; shipping a known race with a disabled red test instead of a fix defeats the purpose."
-pm_risks:
-  - "If the race is real, the fix touches the core ingest/idempotency path used by every request — needs careful transactional design, not a quick patch."
-  - "Concurrency tests are inherently flaky to write well; timing-dependent assertions must use deterministic sync points (mock provider callbacks), not sleeps."
-  - "The N-distinct-ingest burst test could surface a separate backpressure/queue design gap that is itself a larger followup, not fixable inside this slice."
+pm_scope_notes: Scope includes the fix if a race is confirmed (transactional insert-or-replay) — do not split test-authorship from the fix into separate slices; shipping a known race with a disabled red test instead of a fix defeats the purpose.
+pm_risks: ["\"If the race is real", the fix touches the core ingest/idempotency path used by every request — needs careful transactional design, "not a quick patch.\"", "\"Concurrency tests are inherently flaky to write well; timing-dependent assertions must use deterministic sync points (mock provider callbacks)", "not sleeps.\"", "\"The N-distinct-ingest burst test could surface a separate backpressure/queue design gap that is itself a larger followup", "not fixable inside this slice.\""]
 reasoning: "Highest-signal FEAT in this batch: this is not just a coverage gap, it is a plausible real bug (duplicate memories, or a 500 where a 200 replay is expected) in a path every ingest request goes through. autonomous_safe=false because a confirmed race very likely requires a production code fix to ship in the same slice, not just new tests."
+slices_complete: [SLICE-413]
 ---
 # FEAT-419: Concurrency tests — parallel ingest + Idempotency-Key race
 
