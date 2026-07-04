@@ -1,7 +1,7 @@
 ---
 id: SLICE-411
 title: Response-side score contract enforcement at daemon serialization boundary
-status: pending
+status: completed
 feature: FEAT-413
 phase: null
 priority: P2
@@ -10,11 +10,8 @@ requires_validation: true
 risk: medium
 created: 2026-07-04
 updated: 2026-07-04
-touches_files:
-  - src/server/lib/score-contract.ts
-  - src/server/routes/search.ts
-  - src/server/routes/recall.ts
-  - tests/server/score-contract.test.ts
+touches_files: [src/server/lib/score-contract.ts, src/server/routes/search.ts, src/server/routes/recall.ts, tests/server/score-contract.test.ts]
+completed_at: 2026-07-04
 ---
 # SLICE-411: Response-side score contract enforcement at daemon serialization boundary
 
