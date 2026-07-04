@@ -1,6 +1,7 @@
 ---
 id: FEAT-416
-status: triaged
+status: done
+completed: 2026-07-04
 priority: P1
 created: 2026-07-04
 updated: 2026-07-04
@@ -37,3 +38,8 @@ MemoryEventRepo.restore() exists but nothing calls it — no route, no CLI, no M
 
 ## Evidence
 Phase-1 inventory gap 2; architecture review debt rank 3 ("one route closes it").
+
+
+## Resolution (2026-07-04, Wave A)
+Restore surface merged e12437d: POST /memory/:id/restore (invalidate-mirrored 404/409), CLI `memory restore <id>` (new subcommand group — no lifecycle CLI precedent existed), restore_memory MCP tool (count 15). Review PASS, no findings above LOW.
+

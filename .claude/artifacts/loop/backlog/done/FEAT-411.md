@@ -1,6 +1,7 @@
 ---
 id: FEAT-411
-status: triaged
+status: done
+completed: 2026-07-04
 priority: P1
 created: 2026-07-04
 updated: 2026-07-04
@@ -37,3 +38,8 @@ The SLICE-SMOKE-2 roundtrip test (astramemory-plugin tests/e2e/plugin-daemon-rou
 
 ## Evidence
 Run artifact .claude/artifacts/crew/runs/2026-07-04-smoke-suite-phase0-1.md — architecture review finding 3 [HIGH]. Existing contracts/ schema conformance could NOT catch this class (numeric-range, not shape).
+
+
+## Resolution (2026-07-04, Wave A)
+Daemon-side cross-repo-roundtrip workflow (self-hosted pool, public plugin checkout, no token) merged a884815; plugin-side secret-gated mirror committed on plugin branch feat/FEAT-411-crossrepo-ci. Review PASS after runs-on fix. Operator TODO: add required check "cross-repo-roundtrip" + create ASTRAMEM_LOCAL_TOKEN secret in astramem-plugin.
+
