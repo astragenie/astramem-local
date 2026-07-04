@@ -15,11 +15,12 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { spawn } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { setTimeout as sleep } from 'node:timers/promises';
-import type { ChildProcess } from 'node:child_process';
+import {
+  spawnDaemon, killDaemon, waitForHealthReachable, pollSearchHits,
+  type DaemonHandle, type SearchHit,
+} from '../smoke/helpers/daemon.js';
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
@@ -39,76 +40,33 @@ const FIXTURE_PATH = join(
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-interface SearchHit {
-  id: string;
-  type: string;
-  text: string;
-  score: number;
-  source: string;
-}
-
 async function pollSearch(
   query: string,
   expectedType: string,
   expectedTextFragment: string,
   timeoutMs: number = 30_000,
 ): Promise<SearchHit[]> {
-  const deadline = Date.now() + timeoutMs;
-  const headers = {
-    authorization: `Bearer ${TOKEN}`,
-    'content-type': 'application/json',
-  };
-
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${BASE_URL}/search?q=${encodeURIComponent(query)}&limit=20`, {
-        headers,
-      });
-      if (res.ok) {
-        const body = await res.json() as { hits: SearchHit[] };
-        const matching = body.hits.filter(
-          h => h.type === expectedType &&
-               h.text.toLowerCase().includes(expectedTextFragment.toLowerCase()),
-        );
-        if (matching.length > 0) return matching;
-      }
-    } catch {
-      // Daemon not ready yet — keep polling
-    }
-    await sleep(300);
-  }
-  throw new Error(
-    `pollSearch timed out after ${timeoutMs}ms: no '${expectedType}' memory containing '${expectedTextFragment}'`,
+  return pollSearchHits(
+    BASE_URL,
+    TOKEN,
+    query,
+    hits => hits.filter(
+      h => h.type === expectedType &&
+           h.text.toLowerCase().includes(expectedTextFragment.toLowerCase()),
+    ),
+    {
+      timeoutMs,
+      label: `GET ${BASE_URL}/search?q=${query} to return a '${expectedType}' memory containing '${expectedTextFragment}'`,
+    },
   );
-}
-
-/** Wait for the daemon /health endpoint to respond (max 8s). */
-async function waitForHealth(maxMs = 8_000): Promise<void> {
-  const deadline = Date.now() + maxMs;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${BASE_URL}/health`);
-      if (res.ok) return;
-    } catch {
-      // not yet
-    }
-    await sleep(200);
-  }
-  throw new Error(`Daemon at ${BASE_URL} did not respond to /health within ${maxMs}ms`);
 }
 
 // ── Test lifecycle ─────────────────────────────────────────────────────────────
 
-let daemon: ChildProcess | null = null;
+let daemon: DaemonHandle | null = null;
 
 afterAll(async () => {
-  if (daemon && !daemon.killed) {
-    daemon.kill('SIGTERM');
-    await new Promise<void>(resolve => {
-      const t = setTimeout(resolve, 3000);
-      daemon!.on('exit', () => { clearTimeout(t); resolve(); });
-    });
-  }
+  if (daemon) await killDaemon(daemon, 'SIGTERM', 3_000);
 });
 
 // ── Suite ─────────────────────────────────────────────────────────────────────
@@ -129,31 +87,23 @@ describe('Plugin flow E2E — ingest → distill → search', () => {
 
       // ── 1. Spin daemon ──────────────────────────────────────────────────────
 
-      const env: Record<string, string> = {
-        ...process.env as Record<string, string>,
-        ASTRA_MEMORY_DATADIR: ':memory:',
-        ASTRA_MEMORY_TOKEN: TOKEN,
-        // Mock providers unless a live integration mode is requested
-        ...(IS_MOCK ? { ASTRA_MEMORY_MOCK_PROVIDERS: '1' } : {}),
-      };
-
-      daemon = spawn(process.execPath, ['dist/cli/index.js', 'serve', '--port', String(PORT)], {
-        env,
-        stdio: 'pipe',
-        cwd: join(new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'), '..', '..'),
+      daemon = spawnDaemon({
+        port: PORT,
+        token: TOKEN,
+        env: {
+          ASTRA_MEMORY_DATADIR: ':memory:',
+          // Mock providers unless a live integration mode is requested
+          ...(IS_MOCK ? { ASTRA_MEMORY_MOCK_PROVIDERS: '1' } : {}),
+        },
       });
 
       // Surface daemon stderr for debugging
-      daemon.stderr?.on('data', (chunk: Buffer) => {
+      daemon.proc.stderr?.on('data', (chunk: Buffer) => {
         process.stderr.write(`[daemon] ${chunk.toString()}`);
       });
 
-      // Bail if daemon exits early
-      let daemonExitCode: number | null = null;
-      daemon.on('exit', code => { daemonExitCode = code; });
-
-      await waitForHealth();
-      expect(daemonExitCode, 'daemon should still be running').toBeNull();
+      await waitForHealthReachable(BASE_URL);
+      expect(daemon.exitInfo().code, 'daemon should still be running').toBeNull();
 
       // ── 2. POST fixture transcript (mirrors plugin hook payload) ────────────
 
