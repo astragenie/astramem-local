@@ -1,7 +1,7 @@
 {
   "session_id": "caceaca6-88ab-479b-9115-50d6a75debfd",
   "first_seen": "2026-07-04T07:45:43.911Z",
-  "last_seen": "2026-07-04T08:27:14.659Z",
+  "last_seen": "2026-07-04T08:27:33.793Z",
   "total_bytes": 0,
   "entries": {
     "C:\\work\\mega\\astramemory-local\\src\\server\\app.ts": {
@@ -268,9 +268,9 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\memory-tool\\adapter.ts": {
-      "read_count": 1,
+      "read_count": 2,
       "first_read_at": "2026-07-04T07:46:23.127Z",
-      "last_read_at": "2026-07-04T07:46:23.127Z",
+      "last_read_at": "2026-07-04T08:27:33.792Z",
       "mtime_at_last_read": "2026-07-03T05:43:24.254Z",
       "size_at_last_read": 13333,
       "content_bytes": 0,
@@ -779,7 +779,9 @@
       "mtime_at_last_read": "2026-07-02T01:36:31.068Z",
       "size_at_last_read": 1062,
       "content_bytes": 0,
-      "content": null
+      "content": null,
+      "last_edit_at": "2026-07-04T08:27:18.010Z",
+      "mtime_at_last_edit": "2026-07-04T08:27:17.813Z"
     }
   }
 }

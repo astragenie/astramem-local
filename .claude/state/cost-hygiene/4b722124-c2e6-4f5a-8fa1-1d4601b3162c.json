@@ -1,7 +1,7 @@
 {
   "session_id": "4b722124-c2e6-4f5a-8fa1-1d4601b3162c",
   "first_seen": "2026-07-04T07:36:41.270Z",
-  "last_seen": "2026-07-04T08:26:09.397Z",
+  "last_seen": "2026-07-04T08:27:38.389Z",
   "total_bytes": 0,
   "entries": {
     "C:\\work\\mega\\astramemory-local\\src\\server\\routes\\dashboard.ts": {
@@ -298,6 +298,17 @@
       "content": null,
       "last_edit_at": "2026-07-04T08:25:56.597Z",
       "mtime_at_last_edit": "2026-07-04T08:25:56.286Z"
+    },
+    "C:\\Users\\serge\\AppData\\Local\\Temp\\claude\\C--work-mega-astramemory-local\\4b722124-c2e6-4f5a-8fa1-1d4601b3162c\\scratchpad\\wave1-plan.json": {
+      "read_count": 0,
+      "first_read_at": "2026-07-04T08:27:38.388Z",
+      "last_read_at": "2026-07-04T08:27:38.388Z",
+      "mtime_at_last_read": "2026-07-04T08:27:38.214Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-04T08:27:38.388Z",
+      "mtime_at_last_edit": "2026-07-04T08:27:38.214Z"
     }
   }
 }
