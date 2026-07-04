@@ -14,9 +14,7 @@ jobs:
     runs-on: [self-hosted, astragenie, aws]
     steps:
       - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: '1.3'
+      # Bun baked into runner image (devops#64) — no setup-bun, no ETXTBSY race.
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Fail on high/critical vulnerabilities
         run: bun audit --audit-level=high
