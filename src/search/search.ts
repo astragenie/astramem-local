@@ -16,7 +16,7 @@ import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
 import type { Memory, MemoryType } from '../contracts/index.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
-import { fuseHits, type FusedHit } from './fuse.js';
+import { fuseHits, normalizeScores, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
@@ -58,6 +58,48 @@ export interface SearchOpts {
   weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number };
   /** Multiplier used by vector search (cap to limit vector scan) */
   vecK?: number;
+  /**
+   * SLICE-410-3: when true, search() returns SearchDebugHit[] — the
+   * per-candidate fusion intermediates (raw+normalized bm25/cosine,
+   * importance, freshness, usefulness, entityBonus, effective weights, and
+   * the final fused score) instead of collapsing to SearchHit[]. Every
+   * other step (candidate gathering, entity filter, post-fusion SQL
+   * filters, validity/as_of, limit, ranking order) is unchanged — debug is
+   * purely an alternate projection of the same fused list, so debug:false
+   * or omitted is byte-identical to pre-change behavior (AC-2).
+   */
+  debug?: boolean;
+}
+
+/**
+ * Per-candidate fusion breakdown (SLICE-410-3 AC-1) — the upstream contract
+ * for SLICE-410-6's search-debug dashboard page. Mirrors the components
+ * `fuseHits`/`fuseScores` (fuse.ts) compute internally and normally discard.
+ *
+ * Sentinel (AC-4): when a leg has no hit for this candidate (e.g. embed
+ * provider down → no vector leg at all), that leg's `raw` is `null` and
+ * `normalized` is `0` — identical to the no-signal default `fuseHits`
+ * already uses internally, so `score` stays reproducible from these fields
+ * even in a degraded (FTS-only or vec-only) run.
+ *
+ * `usefulness`/`entityBonus`/`weights` are always the *effective* values
+ * actually fed into `fuseScores` (defaults resolved, e.g. usefulness 0.5 /
+ * entityBonus 0 / zeta 0) so `score` can be reconstructed exactly as:
+ *   weights.alpha * bm25.normalized + weights.beta * cosine.normalized
+ *   + weights.gamma * importance + weights.delta * freshness
+ *   + weights.epsilon * usefulness + weights.zeta * entityBonus
+ */
+export interface SearchDebugHit {
+  id: string;
+  source: 'fts' | 'vec' | 'both';
+  bm25: { raw: number | null; normalized: number };
+  cosine: { raw: number | null; normalized: number };
+  importance: number;
+  freshness: number;
+  usefulness: number;
+  entityBonus: number;
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number };
+  score: number;
 }
 
 /**
@@ -165,12 +207,24 @@ function entityBonusForQuery(db: DB, query: string, candidateIds: Set<string>): 
   return bonus;
 }
 
+export function search(
+  query: string,
+  filters: SearchFilters,
+  limit: number,
+  opts: SearchOpts & { debug: true }
+): Promise<SearchDebugHit[]>;
+export function search(
+  query: string,
+  filters: SearchFilters,
+  limit: number,
+  opts: SearchOpts
+): Promise<SearchHit[]>;
 export async function search(
   query: string,
   filters: SearchFilters,
   limit: number,
   opts: SearchOpts
-): Promise<SearchHit[]> {
+): Promise<SearchHit[] | SearchDebugHit[]> {
   const { db, embed, weights } = opts;
   const vecK = opts.vecK ?? Math.max(limit * 4, 50);
 
@@ -241,7 +295,8 @@ export async function search(
   const usefulness = usefulnessScores(db, Array.from(allIds));
   const zeta = weights.zeta ?? 0;
   const entityBonus = zeta > 0 ? entityBonusForQuery(db, query, allIds) : undefined;
-  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, Date.now(), undefined, usefulness, entityBonus);
+  const nowMs = Date.now();
+  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus);
 
   // 5. Apply post-fusion SQL filters then join full memory records
   //    Build filter clauses dynamically
@@ -280,6 +335,59 @@ export async function search(
   const memRows = db.prepare(sql).all(...fusedIds, ...validityParams, ...filterParams) as Array<{ id: string; type: MemoryType; text: string }>;
 
   const memMap = new Map(memRows.map(r => [r.id, r]));
+
+  // 6a. Debug projection (SLICE-410-3 AC-1) — recompute the same
+  // normalization fuseHits() applies internally (normalizeScores is
+  // exported from fuse.ts for exactly this reuse) so components are
+  // guaranteed consistent with `fused[].score`, without touching fuse.ts.
+  if (opts.debug) {
+    const bm25RawMap = new Map(filteredFtsHits.map(h => [h.id, h.bm25]));
+    const normBm25Arr = normalizeScores(filteredFtsHits.map(h => -h.bm25));
+    const normBm25Map = new Map(filteredFtsHits.map((h, i) => [h.id, normBm25Arr[i] ?? 0]));
+
+    const cosineRawMap = new Map(filteredVecHits.map(h => [h.id, h.cosine]));
+    const normCosineArr = normalizeScores(filteredVecHits.map(h => h.cosine));
+    const normCosineMap = new Map(filteredVecHits.map((h, i) => [h.id, normCosineArr[i] ?? 0]));
+
+    // Freshness half-life: fuse.ts fuseHits() default freshnessDecayDays=30,
+    // which search() always uses (passes `undefined` through to that
+    // default). Kept identical here so freshness — and thus `score` — stays
+    // reproducible from the documented weights (AC-3).
+    const freshnessDecayDays = 30;
+    const effectiveWeights = {
+      alpha: weights.alpha,
+      beta: weights.beta,
+      gamma: weights.gamma,
+      delta: weights.delta,
+      epsilon: weights.epsilon ?? 0,
+      zeta,
+    };
+
+    const debugResults: SearchDebugHit[] = [];
+    for (const hit of fused) {
+      if (!memMap.has(hit.id)) continue;  // filtered out, same as SearchHit path
+      const meta = metaMap.get(hit.id);
+      const importance = meta?.importance ?? 0.5;
+      const createdAt = meta?.created_at ?? nowMs;
+      const ageDays = (nowMs - createdAt) / (24 * 60 * 60 * 1000);
+      const freshness = Math.exp(-ageDays / freshnessDecayDays);
+
+      debugResults.push({
+        id: hit.id,
+        source: hit.source,
+        bm25: { raw: bm25RawMap.get(hit.id) ?? null, normalized: normBm25Map.get(hit.id) ?? 0 },
+        cosine: { raw: cosineRawMap.get(hit.id) ?? null, normalized: normCosineMap.get(hit.id) ?? 0 },
+        importance,
+        freshness,
+        usefulness: usefulness.get(hit.id) ?? 0.5,
+        entityBonus: entityBonus?.get(hit.id) ?? 0,
+        weights: effectiveWeights,
+        score: hit.score,
+      });
+      if (debugResults.length >= limit) break;
+    }
+    return debugResults;
+  }
 
   // 6. Build result — preserve fused ranking order, skip filtered-out ids
   const results: SearchHit[] = [];
