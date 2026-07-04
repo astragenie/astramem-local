@@ -17,7 +17,6 @@
     "dev": "tsc -w -p .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:smoke": "vitest run tests/smoke",
     "contracts:validate": "node contracts/validate.mjs",
     "prepublishOnly": "bun run build"
   },

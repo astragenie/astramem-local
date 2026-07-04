@@ -1,8 +1,8 @@
 /**
  * Score fusion for hybrid BM25 + cosine + importance + freshness ranking.
  *
- * Formula: score = (α·norm(bm25) + β·norm(cosine) + γ·importance + δ·freshness
- *                    + ε·usefulness + ζ·entityBonus) / (α+β+γ+δ+ε+ζ)
+ * Formula: score = α·norm(bm25) + β·norm(cosine) + γ·importance + δ·freshness
+ *                  + ε·usefulness + ζ·entityBonus
  *
  * Defaults: α=β=0.4, γ=δ=ε=0.1, ζ=0. Pulled from config.search. The
  * usefulness component (ADR-010 v1.x) is Laplace-smoothed to a neutral 0.5
@@ -16,18 +16,6 @@
  * every candidate and ranking order is byte-identical to pre-AC-6 behavior
  * (see tests/search/fuse.test.ts zeta=0 no-op case and the eval harness
  * zeta=0 snapshot test).
- *
- * Wire-contract invariant (memory-plugin#8): the fused score MUST land in
- * [0,1] — the plugin's Zod schema (src/contracts/wire.ts) rejects anything
- * outside that range. Every component input is already normalized to [0,1]
- * (normBm25/normCosine via normalizeScores(), importance/freshness/usefulness
- * by construction, entityBonus is 0 or 1), so the weighted sum divided by
- * the sum of the active weights is a convex combination and stays in [0,1].
- * Dividing by the weight sum rather than assuming it equals 1 matters
- * because the configured defaults (0.4+0.4+0.1+0.1+0.1 = 1.1) do not sum to
- * 1 — the un-normalized sum could exceed the wire contract's upper bound.
- * This is a monotone rescale for a fixed weight config, so it never changes
- * ranking order.
  */
 
 export interface FuseInput {
@@ -67,25 +55,16 @@ export function normalizeScores(scores: number[]): number[] {
 
 /**
  * Compute fused score for a single hit whose components are already normalized.
- *
- * Returns a value in [0,1]: the weighted sum is divided by the sum of the
- * active weights (see module doc comment for the wire-contract rationale).
  */
 export function fuseScores(input: FuseInput): number {
-  const epsilon = input.epsilon ?? 0;
-  const zeta = input.zeta ?? 0;
-  const weightSum = input.alpha + input.beta + input.gamma + input.delta + epsilon + zeta;
-  if (weightSum <= 0) return 0;
-
-  const weightedSum =
+  return (
     input.alpha * input.normBm25 +
     input.beta  * input.normCosine +
     input.gamma * input.importance +
     input.delta * input.freshness +
-    epsilon * (input.usefulness ?? 0.5) +
-    zeta * (input.entityBonus ?? 0);
-
-  return weightedSum / weightSum;
+    (input.epsilon ?? 0) * (input.usefulness ?? 0.5) +
+    (input.zeta ?? 0) * (input.entityBonus ?? 0)
+  );
 }
 
 export interface RawHit {
