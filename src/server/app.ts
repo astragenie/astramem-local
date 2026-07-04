@@ -13,6 +13,10 @@ import { digestRoute } from './routes/digest.js';
 import { recallRoute } from './routes/recall.js';
 import { mcpRoute } from './routes/mcp.js';
 import { dashboardRoute } from './routes/dashboard.js';
+import { dashboardConsolidationRoute } from './routes/dashboard-consolidation-html.js';
+import { dashboardJobsRoute } from './routes/dashboard-jobs-html.js';
+import { dashboardSearchRoute } from './routes/dashboard-search-html.js';
+import { dashboardApiRoute } from './routes/dashboard-api-html.js';
 import { memoryToolRoute } from './routes/memory-tool.js';
 import { consolidationRoutes } from './routes/consolidation.js';
 import { entitiesRoute } from './routes/entities.js';
@@ -91,7 +95,9 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   });
 
   // Auth check — scrub the Authorization header value from any error logs.
-  // /dashboard validates its own token via ?token= query param — always exempt.
+  // /dashboard and its sub-pages (/dashboard/consolidation, /dashboard/jobs,
+  // /dashboard/search — FEAT-410) validate their own token via ?token= query
+  // param or cookie — always exempt on prefix, not just the exact path.
   // /health and /version are public ONLY while the daemon is bound to loopback
   // (default). FEAT-406: opting into a non-local bind (config.network.host set
   // to anything but 127.0.0.1/localhost/::1) requires Bearer auth on BOTH
@@ -100,7 +106,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   const isLocalBind = isLoopbackHost(config.network.host);
   app.addHook('preHandler', async (req, reply) => {
     const path = req.url.split('?')[0];
-    if (path === '/dashboard') return;
+    if (path === '/dashboard' || path?.startsWith('/dashboard/')) return;
     if (isLocalBind && (path === '/health' || path === '/version')) return;
     const auth = req.headers.authorization;
     if (auth !== `Bearer ${opts.token}`) {
@@ -141,7 +147,11 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(digestRoute(opts.db));
   await app.register(recallRoute(opts.db, config));
   await app.register(mcpRoute(opts.db, embed, config));
-  await app.register(dashboardRoute(opts.db, config, opts.token));
+  await app.register(dashboardRoute(opts.db, config, opts.token, opts.healthState));
+  await app.register(dashboardConsolidationRoute(opts.db, opts.token));
+  await app.register(dashboardJobsRoute(opts.db, opts.token));
+  await app.register(dashboardSearchRoute(opts.db, embed, opts.token));
+  await app.register(dashboardApiRoute(opts.token));
   await app.register(memoryToolRoute(opts.db, config));
   await app.register(consolidationRoutes(opts.db));
   await app.register(entitiesRoute(opts.db));

@@ -133,6 +133,10 @@ Fleet view: `node hero-crew/scripts/crew.mjs fleet --repo "$PWD"` from any workt
 
 Constraints: each worktree must be on its own branch. Never push from inside the autonomous loop. Never run `/crew:build` and the autonomous loop simultaneously on the same worktree.
 
+Never run bare `git stash` / `git stash pop` inside a per-slice worktree. The stash stack is SHARED across all worktrees of one repo (`refs/stash` lives in the common `.git` dir), so a pop can silently apply a sibling slice's diff into your tree and consume their entry (observed 2026-07-04, FEAT-410 wave 2: two parallel workers swapped diffs). For a baseline comparison use `git diff HEAD`, a temp WIP commit, or `git stash push -u -m "<unique-tag>"` + `git stash apply <sha>` per the global stash protocol — never bare stash/pop.
+
+Wave-mode dispatch preflight requires a clean tree — never satisfy it with `git add -A` in a checkout another session may be using. Targeted `git add <paths>` only, or orchestrate from a dedicated branch/worktree (observed 2026-07-04: `add -A` swept a concurrent session's in-flight fuse.ts rework into the wave lineage and broke 4 tests two waves later).
+
 ## Tool Discipline
 
 - **Prefer dedicated tools over Bash.** Use Read/Grep/Glob for file operations. Reserve Bash for shell-only operations (git, npm, build commands).

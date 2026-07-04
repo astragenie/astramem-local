@@ -194,3 +194,113 @@ describe('consolidation REST surface', () => {
     expect(unauthed.statusCode).toBe(401);
   });
 });
+
+describe('containment auto-merge (FEAT-410 follow-up)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('auto-merges a normalized-subset pair with the SUPERSET text as winner, reason contained', async () => {
+    // Similar vectors (proposal band ~0.90) but text containment → auto-merge.
+    const short = await seedEmbedded(db, 'Port 7777 is the default.', 'h-ct-1', vecAt(0));
+    const long = await seedEmbedded(db, 'port 7777 is the default for API endpoints', 'h-ct-2', vecAt(0, 0.45));
+    // Give the SHORT one the usefulness win — containment must override it.
+    recordRecallUsed(db, { atomId: short, surface: 'rest', signal: 'explicit' });
+
+    const summary = runConsolidation(db);
+    expect(summary.proposed).toHaveLength(0);
+    expect(summary.merged).toHaveLength(1);
+    expect(summary.merged[0]).toMatchObject({ winner: long, loser: short, reason: 'contained' });
+    expect(new MemoryRepo(db).get(short)!.superseded_by).toBe(long);
+  });
+
+  it('treats case/punctuation-only variants as equal and merges by the usual winner rules', async () => {
+    const a = await seedEmbedded(db, 'Use SQLite, not Postgres', 'h-ct-3', vecAt(0));
+    const b = await seedEmbedded(db, 'use SQLite not Postgres.', 'h-ct-4', vecAt(0, 0.45));
+    recordRecallUsed(db, { atomId: b, surface: 'rest', signal: 'explicit' });
+
+    const summary = runConsolidation(db);
+    expect(summary.merged).toHaveLength(1);
+    expect(summary.merged[0]).toMatchObject({ winner: b, loser: a, reason: 'contained' });
+  });
+
+  it('autoMergeContained:false keeps contained pairs as manual proposals', async () => {
+    await seedEmbedded(db, 'Port 7777 is the default.', 'h-ct-5', vecAt(0));
+    await seedEmbedded(db, 'port 7777 is the default for API endpoints', 'h-ct-6', vecAt(0, 0.45));
+
+    const summary = runConsolidation(db, { autoMergeContained: false });
+    expect(summary.merged).toHaveLength(0);
+    expect(summary.proposed).toHaveLength(1);
+  });
+
+  it('sweeps EXISTING pending proposals whose loser is contained in the winner', async () => {
+    // Queue a proposal first with containment disabled.
+    const winner = await seedEmbedded(db, 'port 7777 is the default for API endpoints', 'h-ct-7', vecAt(0));
+    const loser = await seedEmbedded(db, 'Port 7777 is the default', 'h-ct-8', vecAt(0, 0.45));
+    recordRecallUsed(db, { atomId: winner, surface: 'rest', signal: 'explicit' }); // superset wins the row
+    const first = runConsolidation(db, { autoMergeContained: false });
+    expect(first.proposed).toHaveLength(1);
+
+    const second = runConsolidation(db);
+    expect(second.autoAcceptedProposals).toHaveLength(1);
+    expect(new ProposalRepo(db).list('pending')).toHaveLength(0);
+    expect(new MemoryRepo(db).get(loser)!.superseded_by).toBe(winner);
+  });
+
+  it('leaves a pending proposal manual when the WINNER is the contained (shorter) text', async () => {
+    // Loser holds extra info — accepting would drop it from the active set.
+    const shortWinner = await seedEmbedded(db, 'Port 7777 is the default', 'h-ct-9', vecAt(0));
+    const longLoser = await seedEmbedded(db, 'port 7777 is the default for API endpoints', 'h-ct-10', vecAt(0, 0.45));
+    recordRecallUsed(db, { atomId: shortWinner, surface: 'rest', signal: 'explicit' });
+    const first = runConsolidation(db, { autoMergeContained: false });
+    expect(first.proposed).toHaveLength(1);
+    expect(first.proposed[0]).toMatchObject({ winner: shortWinner, loser: longLoser });
+
+    const second = runConsolidation(db, { autoMergeContained: true });
+    // The sweep must NOT accept it (winner ⊂ loser)…
+    expect(second.autoAcceptedProposals).toHaveLength(0);
+    // …but the pair-scan re-encounters the pair and merges it superset-first.
+    expect(second.merged).toHaveLength(1);
+    expect(second.merged[0]).toMatchObject({ winner: longLoser, loser: shortWinner, reason: 'contained' });
+  });
+});
+
+describe('stale-proposal sweep (FEAT-410 follow-up)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('marks a pending proposal accepted when the pair was already merged by the pair-scan, and rejected when unactionable', async () => {
+    // Queue two proposals with containment off.
+    const w1 = await seedEmbedded(db, 'port 7777 is the default for API endpoints', 'h-st-1', vecAt(0));
+    const l1 = await seedEmbedded(db, 'Port 7777 is the default', 'h-st-2', vecAt(0, 0.45));
+    recordRecallUsed(db, { atomId: w1, surface: 'rest', signal: 'explicit' });
+    const w2 = await seedEmbedded(db, 'deploys run at midnight', 'h-st-3', vecAt(2));
+    const l2 = await seedEmbedded(db, 'deploys run nightly', 'h-st-4', vecAt(2, 0.45));
+    recordRecallUsed(db, { atomId: w2, surface: 'rest', signal: 'explicit' });
+    const first = runConsolidation(db, { autoMergeContained: false });
+    expect(first.proposed).toHaveLength(2);
+
+    // Pair 1's work happens out-of-band (same as the scheduled consolidate
+    // job's pair-scan): loser superseded by winner directly.
+    mergeAsSupersede(db, w1, l1);
+    // Pair 2's loser becomes unactionable for a different reason: superseded
+    // by an unrelated atom.
+    const other = await seedEmbedded(db, 'unrelated survivor', 'h-st-5', vecAt(7));
+    mergeAsSupersede(db, other, l2);
+
+    const second = runConsolidation(db);
+    expect(second.autoAcceptedProposals).toHaveLength(1);   // pair 1: already done
+    expect(second.staleRejectedProposals).toHaveLength(1);  // pair 2: unactionable
+    const repo = new ProposalRepo(db);
+    expect(repo.list('pending')).toHaveLength(0);
+    // No double-merge attempted: w1 lineage contains l1 exactly once.
+    expect(new MemoryRepo(db).get(l1)!.superseded_by).toBe(w1);
+  });
+});
