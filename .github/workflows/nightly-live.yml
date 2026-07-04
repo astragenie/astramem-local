@@ -12,9 +12,15 @@
 # availability. Triggers are schedule + workflow_dispatch ONLY.
 #
 # Runner: self-hosted fleet (fleet policy — no GitHub-hosted runners; see
-# test.yml / audit.yml / lint.yml). All five runners in the pool advertise a
-# `docker` label (astragenie/devops#64), so Ollama runs in a container rather
-# than needing a system-wide install on a shared, persistent host.
+# test.yml / audit.yml / lint.yml). The "5 runners" in this pool are actually
+# 5 job slots on ONE shared, persistent Linux EC2 host — there is no `ollama`
+# label, so this workflow probes port 11434 first: if a host-level Ollama is
+# already running (singleton, potentially shared with other jobs/repos on the
+# same box), it reuses it rather than starting a second instance and fighting
+# over the port; only if nothing answers does it start its own container
+# (`docker` label is present on this host, per astragenie/devops#64). It never
+# installs anything system-wide, to avoid the documented ETXTBSY-style races
+# this shared host hits under concurrent global-tooling installs.
 #
 # Model cache: actions/cache keyed on the OLLAMA_MODELS env value below —
 # bump a model tag here and the cache key changes automatically, forcing a
@@ -83,7 +89,23 @@ jobs:
           path: ${{ github.workspace }}/.ollama-models
           key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
 
+      - name: Probe for existing Ollama
+        # This host is shared (5 job slots on 1 EC2 box, no `ollama` label) —
+        # treat Ollama as a host singleton. If something already answers on
+        # :11434 (ours from a prior run, or another job's), reuse it instead
+        # of starting a second instance and fighting over the port.
+        id: probe
+        run: |
+          if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+            echo "found=1" >> "$GITHUB_OUTPUT"
+            echo "Existing Ollama service detected on :11434 — reusing it, not starting a container."
+          else
+            echo "found=0" >> "$GITHUB_OUTPUT"
+            echo "No Ollama on :11434 — starting one via Docker."
+          fi
+
       - name: Start Ollama (docker)
+        if: steps.probe.outputs.found == '0'
         run: |
           mkdir -p "${{ github.workspace }}/.ollama-models"
           # Defensive: a previous crashed run may have left a stale container
@@ -104,7 +126,7 @@ jobs:
             sleep 1
           done
           echo "Ollama did not become ready in time" >&2
-          docker logs "$OLLAMA_CONTAINER" || true
+          docker logs "$OLLAMA_CONTAINER" 2>&1 || true
           exit 1
 
       - name: Pull models
@@ -234,7 +256,10 @@ jobs:
             }
 
       - name: Stop Ollama container
-        if: always()
+        # Only tear down the container if THIS run started it — never stop a
+        # host-level Ollama singleton (or another job's container) we merely
+        # reused, since other jobs on this shared host may depend on it.
+        if: always() && steps.probe.outputs.found == '0'
         run: docker rm -f "$OLLAMA_CONTAINER" >/dev/null 2>&1 || true
 
       - name: Fail job if red

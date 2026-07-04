@@ -103,9 +103,16 @@ only. Deliberately never `push` or `pull_request` — merges to `main` must
 never depend on Ollama availability on the runner.
 
 **Runner**: self-hosted fleet (`[self-hosted, astragenie, aws, docker]`),
-same fleet as every other workflow in this repo. Ollama runs inside a
-container (`ollama/ollama:latest`) rather than a system-wide install, since
-the runners are shared, persistent hosts.
+same fleet as every other workflow in this repo. The "5 runners" org-level
+inventory is actually 5 job slots on **one** shared, persistent Linux EC2
+host — there is no `ollama` label, so the workflow probes `127.0.0.1:11434`
+first and reuses a host-level Ollama singleton if one is already answering
+(possibly shared with another concurrent job on the same box) rather than
+starting a second instance and fighting over the port. Only if nothing
+answers does it start its own container (`ollama/ollama:latest`); it never
+installs anything system-wide, matching this host's documented aversion to
+concurrent global-tooling installs (the `setup-bun` ETXTBSY flake noted
+above in this same README).
 
 **Models pulled**: listed once in the `OLLAMA_MODELS` env var at the top of
 the workflow (single source of truth — also drives the cache key, so bumping
