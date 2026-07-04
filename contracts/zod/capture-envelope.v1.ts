@@ -1,0 +1,9 @@
+/* eslint-disable */
+/**
+ * GENERATED — do not edit. Source: contracts/schemas/capture-envelope.v1.schema.json
+ * Regenerate: node contracts/generate-zod.mjs
+ */
+import { z } from "zod"
+
+export const CaptureEnvelopeV1Schema = z.object({ "event": z.enum(["pre_compact","session_end","subagent_stop"]), "session_id": z.string().min(1), "project_id": z.string().min(1), "agent_type": z.string().optional(), "cwd": z.string().optional(), "captured_at": z.string().datetime({ offset: true }), "kind": z.enum(["transcript","events"]).default("transcript"), "tool": z.string().describe("Provenance — no default, record what the adapter sends.").optional(), "client_scrub_applied": z.boolean(), "client_scrub_hits": z.number().int().gte(0), "client_version": z.string(), "client_scrub_version": z.string(), "wire_version": z.string().regex(new RegExp("^v(?:0|[1-9][0-9]*)\\.[0-9]+$")), "turns": z.array(z.object({ "role": z.enum(["user","assistant"]), "text": z.string(), "ts": z.string().datetime({ offset: true }).optional() }).strict()).min(1).optional(), "events": z.array(z.object({ "type": z.enum(["decision","fact","lesson","command","todo","note","event"]), "text": z.string().min(1), "importance": z.number().gte(0).lte(1).optional(), "confidence": z.number().gte(0).lte(1).optional(), "evidence": z.string().optional(), "occurred_at": z.number().int().gte(0).describe("Epoch ms — when the event happened, vs. captured_at (when it was captured).").optional() }).strict()).min(1).max(500).optional() }).strict().and(z.intersection(z.any(), z.any())).describe("Formalizes docs/capture-protocol.md (ADR-008). POST /ingest/transcript accepts one astramem-capture@1 envelope per session boundary, in one of two kinds: 'transcript' (raw turns, runs the full 8-stage pipeline) or 'events' (pre-typed atom candidates, skips stages 1-5). kind defaults to 'transcript' when omitted.")
+export type CaptureEnvelopeV1 = z.infer<typeof CaptureEnvelopeV1Schema>

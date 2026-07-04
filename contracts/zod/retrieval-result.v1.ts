@@ -1,0 +1,9 @@
+/* eslint-disable */
+/**
+ * GENERATED — do not edit. Source: contracts/schemas/retrieval-result.v1.schema.json
+ * Regenerate: node contracts/generate-zod.mjs
+ */
+import { z } from "zod"
+
+export const RetrievalResultV1Schema = z.object({ "schema": z.literal("astramem-retrieval-result@1"), "query": z.object({ "text": z.string().optional(), "mode": z.enum(["keyword","semantic","hybrid"]).optional() }).strict().describe("Echo of the originating query, for trace correlation.").optional(), "hits": z.array(z.object({ "id": z.string().uuid(), "type": z.enum(["decision","fact","lesson","command","todo","note","event"]), "text": z.string(), "score": z.number().describe("Final fused score."), "scope": z.enum(["personal","team","org"]).optional(), "explanation": z.object({ "final": z.number().describe("Sum of all signal contributions; matches the hit's top-level `score`."), "signals": z.record(z.string(), z.object({ "raw": z.number(), "weight": z.number(), "final": z.number() }).strict()).describe("Open map keyed by signal name (e.g. bm25, cosine, importance, freshness locally; local's 4 signals or cloud's 6, including RRF/cross-encoder signals, both validate here).") }).strict().describe("ScoreExplanation (ADR-005): per-signal raw score, weight, and contribution to the final score.") }).strict()), "total": z.number().int().gte(0).optional() }).strict().describe("Result envelope for the shared retrieval contract (ADR-005). Every hit carries a ScoreExplanation — per ADR-005 this is the debugging/trust surface and is never optional, regardless of the query's `explain` flag. The signal map is open (additionalProperties) so cloud's 6-signal fusion and local's 4-signal fusion (bm25, cosine, importance, freshness — see src/search/fuse.ts) both validate without the schema hardcoding either engine's signal set.")
+export type RetrievalResultV1 = z.infer<typeof RetrievalResultV1Schema>

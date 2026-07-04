@@ -11,20 +11,24 @@
     },
     "./types": "./types/index.d.ts",
     "./types/*": "./types/*",
+    "./zod": "./zod/index.ts",
+    "./zod/*": "./zod/*",
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },
   "scripts": {
-    "generate": "node generate-types.mjs",
+    "generate": "node generate-types.mjs && node generate-zod.mjs",
     "validate": "node validate.mjs",
-    "build": "node generate-types.mjs && node validate.mjs"
+    "build": "node generate-types.mjs && node generate-zod.mjs && node validate.mjs"
   },
   "files": [
     "schemas",
     "types",
+    "zod",
     "fixtures",
     "validate.mjs",
     "generate-types.mjs",
+    "generate-zod.mjs",
     "README.md"
   ]
 }

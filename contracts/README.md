@@ -69,6 +69,26 @@ wasn't accompanied by a regenerated type is caught as drift.
 Cloud (.NET) does NOT use these — it consumes the JSON Schema directly (above).
 The generated `.d.ts` are a TypeScript-consumer convenience only.
 
+## Generated Zod validators (`zod/`)
+
+TypeScript consumers that validate untrusted wire input at **runtime** (the
+plugin's providers call `.parse()` on backend responses; local's routes validate
+request bodies) want a Zod schema, not just compile-time types. `generate-zod.mjs`
+compiles each JSON Schema to a runtime Zod validator under `zod/` +
+an `index.ts` barrel. **GENERATED — never hand-edit.**
+
+```ts
+import { RetrievalQueryV1Schema, RetrievalResultV1Schema } from '@astragenie/astramem-contracts/zod';
+const result = RetrievalResultV1Schema.parse(await res.json()); // runtime-validated + typed
+```
+
+Const names are `<Name>V<N>Schema` (`AtomV1Schema`, `RetrievalQueryV1Schema`, …),
+each with a co-exported `z.infer` type. This is what lets the plugin delete its
+hand-rolled `RecallResponseSchema`/`IngestPayloadSchema` (program slice U3) and
+validate against the canonical contract instead. Round-tripped against the same
+`fixtures/{valid,invalid}/*` in CI. Cloud (.NET) still uses JSON Schema + a .NET
+validator — Zod is a TypeScript-consumer convenience only.
+
 ## Fixture naming convention (load-bearing)
 
 `validate.mjs` and `tests/contracts/conformance.test.ts` both route fixtures
