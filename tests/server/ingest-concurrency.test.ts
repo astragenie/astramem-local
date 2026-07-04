@@ -194,11 +194,27 @@ describe('ingest concurrency — AC-1: k=5 identical Idempotency-Key + body', ()
     expect(creators.length).toBe(1);
     expect(replays.length).toBe(4);
 
-    // No dangling '__pending__' placeholder leak — every response, winner or
-    // replay, must resolve to the SAME real transcript id.
+    // No dangling '__pending__' placeholder leak. D-DEF2 (CLAUDE.md
+    // "summary_memory_id"): the id is OPAQUE and legitimately changes ONCE —
+    // pre-backfill responses carry the transcript UUID; once async distill
+    // completes, ingest_idempotency is backfilled and later replays return
+    // the first real memory id. On a fast host the backfill can land MID-
+    // burst (observed on Linux CI, run 28707137768: ids.size === 2 while
+    // Windows always saw 1), so the invariant is: at most two distinct ids —
+    // the creator's transcript UUID and the backfilled memory id — and never
+    // the placeholder.
+    const creatorId = creators[0]!.summary_memory_id;
+    expect(creatorId).not.toBe('__pending__');
     const ids = new Set(bodies.map(b => b.summary_memory_id));
-    expect(ids.size).toBe(1);
-    expect([...ids][0]).not.toBe('__pending__');
+    expect(ids.size).toBeLessThanOrEqual(2);
+    const nonCreatorIds = [...ids].filter(id => id !== creatorId);
+    if (nonCreatorIds.length === 1) {
+      // Backfill landed mid-burst: the second value must be the real memory
+      // id distill produced for this session — not the placeholder, not junk.
+      await waitFor(() => countMemories(sessionId) === 1);
+      const memId = (db.prepare('SELECT id FROM memories WHERE session_id = ?').get(sessionId) as { id: string }).id;
+      expect(nonCreatorIds[0]).toBe(memId);
+    }
 
     // Exactly one distill job enqueued for the whole k=5 burst.
     expect(countJobs('distill') - jobsBefore).toBe(1);
