@@ -35,12 +35,14 @@ import {
 } from '../storage/memory-events.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { recordRecallServed, recordRecallUsed } from '../storage/usefulness.js';
-import { search, type SearchFilters } from '../search/search.js';
+import { search, parseAsOf, type SearchFilters } from '../search/search.js';
 import { defaultConfig, type Config } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
+import { getWhyReceipt } from '../server/queries/why.js';
+import { getSessionDigest, getLatestSessionId } from '../server/queries/digest.js';
 import {
   ProposalRepo,
   ProposalNotFoundError,
@@ -86,6 +88,18 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .number()
           .optional()
           .describe('Epoch-ms lower bound on created_at'),
+        as_of: z
+          .string()
+          .optional()
+          .describe(
+            'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
+          ),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+          ),
       }),
     },
     async (args) => {
@@ -94,6 +108,19 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.repo) filters.repo = args.repo;
       if (args.project) filters.project = args.project;
       if (args.since !== undefined) filters.since = args.since;
+      if (args.as_of !== undefined) {
+        try {
+          filters.as_of = parseAsOf(args.as_of);
+        } catch (err) {
+          return {
+            content: [
+              { type: 'text' as const, text: JSON.stringify({ error: err instanceof Error ? err.message : 'invalid as_of' }) },
+            ],
+            isError: true,
+          };
+        }
+      }
+      if (args.entity !== undefined) filters.entity = args.entity;
 
       const hits = await search(args.query, filters, args.limit ?? 10, {
         db,
@@ -139,6 +166,18 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .number()
           .optional()
           .describe('Epoch-ms lower bound on created_at'),
+        as_of: z
+          .string()
+          .optional()
+          .describe(
+            'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
+          ),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+          ),
       }),
     },
     async (args) => {
@@ -147,6 +186,19 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.repo) filters.repo = args.repo;
       if (args.project) filters.project = args.project;
       if (args.since !== undefined) filters.since = args.since;
+      if (args.as_of !== undefined) {
+        try {
+          filters.as_of = parseAsOf(args.as_of);
+        } catch (err) {
+          return {
+            content: [
+              { type: 'text' as const, text: JSON.stringify({ error: err instanceof Error ? err.message : 'invalid as_of' }) },
+            ],
+            isError: true,
+          };
+        }
+      }
+      if (args.entity !== undefined) filters.entity = args.entity;
 
       const hits = await search(args.query, filters, args.k ?? 5, {
         db,
@@ -285,27 +337,13 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       }),
     },
     async (args) => {
-      const memRepo = new MemoryRepo(db);
-      const memory = memRepo.get(args.id);
-      if (!memory) {
+      const receipt = getWhyReceipt(db, args.id);
+      if (!receipt) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
           isError: true,
         };
       }
-      let session: unknown = null;
-      if (memory.session_id) {
-        session = db
-          .prepare('SELECT id, repo, branch, agent, started_at FROM sessions WHERE id = ?')
-          .get(memory.session_id) ?? null;
-      }
-      const receipt = {
-        id: memory.id, type: memory.type, text: memory.text,
-        importance: memory.importance, confidence: memory.confidence,
-        evidence: memory.evidence, session,
-        transcript_ref: memory.source_hash, created_at: memory.created_at,
-        history: new MemoryEventRepo(db).listForAtom(args.id),
-      };
       return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
     }
   );
@@ -323,34 +361,22 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     async (args) => {
       let sessionId = args.session_id;
       if (!sessionId) {
-        const latest = db
-          .prepare('SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1')
-          .get() as { id: string } | undefined;
+        const latest = getLatestSessionId(db);
         if (!latest) {
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no sessions recorded' }) }],
             isError: true,
           };
         }
-        sessionId = latest.id;
+        sessionId = latest;
       }
-      const activeJob = db.prepare(`
-        SELECT id FROM jobs
-        WHERE kind = 'distill' AND state IN ('pending', 'running')
-          AND json_extract(payload_json, '$.session_id') = ?
-        LIMIT 1
-      `).get(sessionId);
-      const rows = db.prepare(
-        'SELECT id, type, text FROM memories WHERE session_id = ? ORDER BY created_at ASC'
-      ).all(sessionId) as Array<{ id: string; type: string; text: string }>;
-      const counts: Record<string, number> = {};
-      for (const r of rows) counts[r.type] = (counts[r.type] ?? 0) + 1;
-      const digest = {
-        session_id: sessionId,
-        status: activeJob ? 'pending' : 'ready',
-        counts,
-        memories: rows,
-      };
+      const digest = getSessionDigest(db, sessionId);
+      if (!digest) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', session_id: sessionId }) }],
+          isError: true,
+        };
+      }
       return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };
     }
   );
