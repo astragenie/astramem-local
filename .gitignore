@@ -7,6 +7,11 @@ secrets.env
 .vitest-cache/
 .superpowers/
 
+# FEAT-420 (SLICE-414): scoped un-ignore — this is a deliberately-committed,
+# small, plaintext fixture used by tests/storage/upgrade-path.test.ts, NOT a
+# real datadir. Never widen this to cover other paths.
+!tests/storage/fixtures/**/*.sqlite
+
 # crew:start
 # Crew framework local state. Generated; do not edit between markers.
 .claude/logs/
