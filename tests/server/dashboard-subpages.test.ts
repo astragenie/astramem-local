@@ -33,16 +33,15 @@ describe('GET /dashboard/* prefix auth exemption + stub pages', () => {
     expect(res.statusCode).toBe(401);
   });
 
-  // /dashboard/consolidation got its real render in SLICE-410-2 — it no
-  // longer serves the wave-1 placeholder body. /jobs and /search are still
-  // pending their own wave-2 slices, so they keep the placeholder assertion.
-  it.each([
-    ['/dashboard/search'],
-  ])('%s: 200 placeholder page with a valid Authorization bearer', async (path) => {
-    const res = await app.inject({ method: 'GET', url: path, headers: AUTH });
+  // All three sub-pages received their real render internals in wave 2
+  // (SLICE-410-2 consolidation, SLICE-410-5 jobs, SLICE-410-6 search); no
+  // wave-1 placeholders remain. Content assertions live in each page's own
+  // test file — these checks guard the stable auth/registration contract
+  // from SLICE-410-1.
+  it('/dashboard/search: 200 real page (no longer the wave-1 placeholder) with a valid Authorization bearer', async () => {
+    const res = await app.inject({ method: 'GET', url: '/dashboard/search', headers: AUTH });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);
-    expect(res.body.toLowerCase()).toContain('coming in wave 2');
   });
 
   it.each([
