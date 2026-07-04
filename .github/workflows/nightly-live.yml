@@ -151,6 +151,20 @@ jobs:
             echo "::endgroup::"
           done
 
+      - name: Fix model cache directory ownership
+        # The Ollama container runs as root, so files it writes into the
+        # bind-mounted .ollama-models/ (e.g. its internal id_ed25519 key,
+        # cache/model-recommendations.json) end up root-owned. The runner
+        # process invoking `tar` for actions/cache/save is unprivileged and
+        # can't read them ("Permission denied", confirmed on run 28708537635),
+        # so hand ownership back via a throwaway container before saving.
+        # No-op (and harmless) when reusing a pre-existing host Ollama, since
+        # nothing was written into this path in that case.
+        if: always()
+        run: |
+          docker run --rm -v "${{ github.workspace }}/.ollama-models:/data" \
+            alpine chown -R "$(id -u):$(id -g)" /data
+
       - name: Save Ollama model cache
         # Explicit save (see the restore-step comment above): runs whenever
         # the model pulls themselves succeeded, independent of whether the
