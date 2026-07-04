@@ -1,9 +1,11 @@
 # astramem-local — Hardening Roadmap (post-PR #29)
 
-Status 2026-07-03: Wave 0 shipped (PR #29) · **Wave 1 shipped (PR #30)** · **Wave 2 shipped (PR #31)** ·
+Status 2026-07-04: Wave 0 shipped (PR #29) · **Wave 1 shipped (PR #30)** · **Wave 2 shipped (PR #31)** ·
 **Wave 3 investigated — 3.1/3.2/3.3/3.4 were already implemented** (D-DEF1 flatten `55ac082`,
 ADR-005 eval gate `c0a0571`, D-DEF2 summary-id backfill `55ac082`, ADR-010 ε-fusion `f8dbc5d`);
-remaining Wave-3 delta was a harness type fix + docs truth-up. Wave 4 = backlog, unscheduled.
+remaining Wave-3 delta was a harness type fix + docs truth-up. **Wave 4 shipped (PR #37)** — all
+nine features (W4.1–W4.9), SCHEMA_VERSION 8→13, + post-wave architect/TS review fixes.
+Wave 5 = backlog below, unscheduled.
 Each wave = one PR, independently shippable, zero wire breaks unless flagged.
 
 Operational note: W2.3 publish workflow needs the `NPM_TOKEN` repo secret set before the next release tag.
@@ -96,6 +98,31 @@ Effort: ~2 slices (extraction+schema+backfill; query+CLI+eval). Needs one schema
 the first since v0.6.0 — and a distill prompt change; wire contract stays additive.
 Prereq: none hard, but repo/project tag hygiene (untagged legacy memories) makes entity scoping
 more useful — consider a `rebuild --retag` pass first.
+
+## Wave 5 — backlog, numbered (drafted 2026-07-04, post-Wave-4 review)
+
+Sources: Wave-4 follow-ups (architect + TS holistic reviews), handoff open items
+(3g rerank, consolidation v1.x, Cursor), and the deferred cloud-sync contract work.
+
+| # | Feature | What it does | Complexity | Est. |
+|---|---------|--------------|------------|------|
+| W5.1 | Sync completion: cloud pull contract + daemon loop | Define the real cloud `GET /sync/pull` response shape (atom-body transport — today's `atom_snapshot` is a local assumption; push envelope carries no atom body). Zod-validate the `httpPullFetcher` boundary. Add a scheduled daemon pull loop mirroring `startShipper` (pull is CLI-only today — two daemons never auto-converge). Prove a live A→cloud→B round trip. | High — cross-repo contract design + local loop; conflict engine already built (ADR-011) | 12–18h (needs cloud repo) |
+| W5.2 | Consolidation v1.x — LLM passes | Lesson abstraction (N episodic atoms → 1 semantic lesson) + contradiction detector (proposal queue already reserves `kind='contradiction'`). Proposal-only (never destructive), same review surface as stage-9 merges. | High — prompt design + eval fixtures; plumbing exists | 10–16h |
+| W5.3 | Cloud rerank rollout (3g) | Execute ticket astramem-local#26: go/no-go, second TEI container (BAAI/bge-reranker-v2-m3 proposal), dev flip → A/B NDCG delta → prod → publish the delta (ADR-005 gate rule). ⚠️ 300 ms hard cap (DEC-011/012) on the shared CI box. | Med — code 100% built cloud-side, `Search:CrossEncoder:Enabled=false`; this is rollout + measurement | 4–8h (mostly cloud repo + ops) |
+| W5.4 | Wire parity: retrieval-query.v1 gains `entity` + `as_of` | Local search grew entity/as_of filters (W4.1/W4.2); the shared cloud/local ADR-005 wire envelope (`contracts/schemas/retrieval-query.v1.schema.json`) doesn't know them. Additive schema change + SaaS-side handling so plugin/SaaS callers can use both. | Med — additive, two repos | 4–6h |
+| W5.5 | ADR rulings + review-debt batch | (a) ADR addendum: as_of × archival (time-travel currently surfaces archived-for-staleness content — make it a decision); (b) document archival = local-only sync policy (or design propagation as ADR-011 addendum); (c) ADR-011 rule-coverage checklist: new event type / new supersede side-effect ⇒ "does conflict-resolve.ts need a rule?"; (d) normalize fusion weights (sum 1.1 today); (e) doctor/providers CLI schema-dim parity check (boot has it, tooling doesn't); (f) test nits (05-extract name, 403 partially-tagged idempotency case). | Low — docs + small diffs, batchable in one slice | 3–5h |
+| W5.6 | Cursor capture adapter | Revisit postponed 4c decision: Cursor's chat store is a proprietary SQLite blob; Cursor users currently get MCP recall only (documented in docs/codex-capture.md). Re-evaluate feasibility vs demand before building. | Med-high — reverse-engineering risk; spike first | 4h spike, impl TBD |
+| W5.7 | Launch (2f) | Marketplace publish + announcement post. Operator/user task; needs `NPM_TOKEN` repo secret before the release tag (W2.3 note). | Trivial-med — ops/comms | 2–4h |
+
+Suggested order if Wave 5 activates: **W5.5 → W5.4 → W5.2 → W5.1 → W5.3 → W5.7 → W5.6**
+(rulings + parity first — they unblock and de-risk everything sync-shaped; consolidation is
+pure-local value independent of the cloud; sync completion and rerank need the cloud repo;
+launch when the story is coherent; Cursor spike last, gated on demand).
+
+Dependencies: W5.1 needs cloud-repo access + the SaaS team's contract sign-off; W5.3 needs the
+pending go/no-go (#26); W5.4 touches the same schema file as W5.1 — sequence them, don't parallelize.
+W5.2 must respect the never-tune-blind rule: contradiction/lesson fixtures extend the ADR-005
+corpus BEFORE any ranking-visible effect ships (same discipline as ε and ζ).
 
 ## Sequencing rationale
 
