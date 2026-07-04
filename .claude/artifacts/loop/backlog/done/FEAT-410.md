@@ -1,6 +1,6 @@
 ---
 id: FEAT-410
-status: triaged
+status: done
 priority: P2
 category: observability
 target_release: null
