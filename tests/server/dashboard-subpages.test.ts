@@ -32,12 +32,21 @@ describe('GET /dashboard/* prefix auth exemption + stub pages', () => {
   it.each([
     ['/dashboard/consolidation'],
     ['/dashboard/jobs'],
-    ['/dashboard/search'],
   ])('%s: 200 placeholder page with a valid Authorization bearer', async (path) => {
     const res = await app.inject({ method: 'GET', url: path, headers: AUTH });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.body.toLowerCase()).toContain('coming in wave 2');
+  });
+
+  // FEAT-410 SLICE-410-6 (wave 2): /dashboard/search's render internals are no
+  // longer the wave-1 placeholder — its real content is covered by
+  // tests/server/dashboard-search-html.test.ts. This just confirms the
+  // stable auth/registration contract from SLICE-410-1 still holds.
+  it('/dashboard/search: 200 real page (no longer the wave-1 placeholder) with a valid Authorization bearer', async () => {
+    const res = await app.inject({ method: 'GET', url: '/dashboard/search', headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toMatch(/text\/html/);
   });
 
   it.each([
