@@ -236,6 +236,13 @@ export async function pollSearchHits(
 export interface IsolatedDaemonEnv {
   root: string;
   configDir: string;
+  /** The directory a spawned daemon ACTUALLY reads config.yaml from and
+   *  passes to getOrCreateKey() — src/config/datadir.ts's defaultConfigDir()
+   *  joins a platform-specific subdir onto APPDATA/HOME/XDG_CONFIG_HOME
+   *  (e.g. `<APPDATA>/Astramem` on Windows), so it is NOT the same as
+   *  `configDir` above (see the FEAT-415 doc comment on
+   *  makeIsolatedDaemonEnv below for why this distinction matters). */
+  effectiveConfigDir: string;
   dataDir: string;
   /** Env vars that redirect EVERY OS-standard config/data dir lookup
    *  (APPDATA, LOCALAPPDATA, HOME, XDG_CONFIG_HOME, XDG_DATA_HOME) into temp
@@ -254,13 +261,47 @@ export interface IsolatedDaemonEnv {
 }
 
 /**
- * Create an isolated temp config dir (config.yaml with encryption disabled)
- * + temp data dir + a sandboxed "local app data" dir, and return the env
- * overrides that keep a spawned daemon entirely inside them. Never touches
- * the real %APPDATA%\Astramem / %LOCALAPPDATA%\Astramem (or the legacy
- * AstraMemory dirs) on the host.
+ * Mirrors src/config/datadir.ts's defaultConfigDir() platform branches,
+ * applied to the sandbox's OWN env values (not process.env — this runs in
+ * the parent test process, which keeps its real, unmodified env). Needed
+ * because defaultConfigDir() joins a platform subdir onto
+ * APPDATA/HOME/XDG_CONFIG_HOME (e.g. `<APPDATA>/Astramem` on Windows,
+ * `<HOME>/Library/Application Support/astra-memory` on macOS,
+ * `<XDG_CONFIG_HOME>/astra-memory` on Linux) — a spawned daemon given these
+ * env overrides resolves its config dir to that NESTED path, not the flat
+ * `configDir` this sandbox's directories are rooted at.
  */
-export function makeIsolatedDaemonEnv(prefix: string): IsolatedDaemonEnv {
+function resolveEffectiveConfigDir(env: Record<string, string>): string {
+  switch (process.platform) {
+    case 'win32':
+      return join(env['APPDATA'] as string, 'Astramem');
+    case 'darwin':
+      return join(env['HOME'] as string, 'Library', 'Application Support', 'astra-memory');
+    default:
+      return join(env['XDG_CONFIG_HOME'] as string, 'astra-memory');
+  }
+}
+
+export interface IsolatedDaemonEnvOpts {
+  /** Write `security.encryption.enabled: true` into the sandboxed
+   *  config.yaml instead of the default `false`, and set
+   *  ASTRA_MEMORY_TEST_FORCE_KEYFILE=1 so the spawned daemon's
+   *  getOrCreateKey() (src/storage/keystore.ts) skips the OS credential
+   *  store entirely and uses a key file under the sandboxed configDir
+   *  (FEAT-415) — an encryption-enabled sandbox would otherwise touch the
+   *  REAL OS credential store, since Entry(service, account) is keyed
+   *  globally and not namespaced by the APPDATA/HOME overrides below. */
+  encryption?: boolean;
+}
+
+/**
+ * Create an isolated temp config dir (config.yaml with encryption disabled
+ * by default) + temp data dir + a sandboxed "local app data" dir, and return
+ * the env overrides that keep a spawned daemon entirely inside them. Never
+ * touches the real %APPDATA%\Astramem / %LOCALAPPDATA%\Astramem (or the
+ * legacy AstraMemory dirs) on the host.
+ */
+export function makeIsolatedDaemonEnv(prefix: string, opts: IsolatedDaemonEnvOpts = {}): IsolatedDaemonEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const configDir = join(root, 'config');
   const dataDir = join(root, 'data');
@@ -268,12 +309,6 @@ export function makeIsolatedDaemonEnv(prefix: string): IsolatedDaemonEnv {
   mkdirSync(configDir, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
   mkdirSync(localAppData, { recursive: true });
-
-  writeFileSync(
-    join(configDir, 'config.yaml'),
-    "security:\n  encryption:\n    enabled: false\n",
-    'utf8',
-  );
 
   const env: Record<string, string> = {
     APPDATA: configDir,
@@ -285,7 +320,32 @@ export function makeIsolatedDaemonEnv(prefix: string): IsolatedDaemonEnv {
     ASTRA_MEMORY_MOCK_PROVIDERS: '1',
   };
 
-  return { root, configDir, dataDir, env };
+  const encryptionEnabled = opts.encryption ?? false;
+  if (encryptionEnabled) {
+    env['ASTRA_MEMORY_TEST_FORCE_KEYFILE'] = '1';
+  }
+
+  const configYaml = `security:\n  encryption:\n    enabled: ${encryptionEnabled}\n`;
+  // FEAT-415 finding: defaultConfigDir() (src/config/datadir.ts) joins a
+  // platform subdir onto APPDATA/HOME/XDG_CONFIG_HOME — a daemon spawned
+  // with the env above reads config.yaml from effectiveConfigDir, NOT from
+  // this flat configDir. Writing ONLY to configDir/config.yaml (as this
+  // helper did before FEAT-415) means the daemon never finds it and
+  // silently falls back to defaultConfig() — encryption.enabled: true —
+  // regardless of what this file says. That was a real, previously
+  // undetected bug: every SLICE-SMOKE-1 smoke run had encryption ON by
+  // that silent fallback and was reaching the REAL OS credential store via
+  // getOrCreateKey(), contradicting this suite's own "encryption disabled,
+  // never touches the credential store" doc comments. Write to BOTH paths:
+  // effectiveConfigDir so the daemon actually reads it, and the flat
+  // configDir so any existing assertion reading `<configDir>/config.yaml`
+  // directly keeps working unchanged.
+  const effectiveConfigDir = resolveEffectiveConfigDir(env);
+  mkdirSync(effectiveConfigDir, { recursive: true });
+  writeFileSync(join(effectiveConfigDir, 'config.yaml'), configYaml, 'utf8');
+  writeFileSync(join(configDir, 'config.yaml'), configYaml, 'utf8');
+
+  return { root, configDir, effectiveConfigDir, dataDir, env };
 }
 
 /** Remove the isolated sandbox (config dir + data dir + everything under root). */
