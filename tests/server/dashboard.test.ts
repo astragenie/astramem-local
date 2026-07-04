@@ -84,15 +84,16 @@ describe('GET /dashboard', () => {
     expect(res.headers['content-type']).toMatch(/utf-8/);
   });
 
-  // (d) Rendered HTML content
+  // (d) Rendered HTML content — FEAT-410 SLICE-410-4 Mission Control layout
   it.each([
-    'memory counts',
-    'recent captures',
-    'job queue',
-    'distill throughput',
-    'provider state',
+    'mission control',
+    'pipeline',
+    'jobs',
+    'consolidation',
+    'providers / storage',
     'usefulness',
     'budget',
+    'recent activity',
   ])('HTML body contains "%s" section header', async section => {
     const res = await app.inject({ method: 'GET', url: '/dashboard', headers: AUTH });
     expect(res.body.toLowerCase()).toContain(section);
