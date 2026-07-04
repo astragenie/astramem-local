@@ -1,16 +1,16 @@
 ---
 id: FEAT-418
-status: triaged
+status: done
 priority: P2
 created: 2026-07-04
 updated: 2026-07-04
 depends_on: []
-slices: []
+slices: [SLICE-412]
 derived_from: test-inventory-2026-07-04
 pm_customer_impact: 0.55
 pm_effort_estimate: 0.45
-pm_strategic_alignment: 0.60
-pm_technical_risk: 0.40
+pm_strategic_alignment: 0.6
+pm_technical_risk: 0.4
 pm_dependency_depth: 0.25
 pm_effort_points: 5
 composite_score: 0.57
@@ -18,11 +18,10 @@ composite_priority: P2
 autonomous_safe: true
 pm_demand_evidence: "Test-inventory review 2026-07-04: MCP is the only client surface (HTTP/CLI/MCP) with zero transport-level test coverage; FEAT-417 (parity params) is unit-level only and this is the harness those tests would eventually run through."
 pm_scope_notes: "Reuse existing smoke sandbox helpers (temp datadir, env isolation, teardown) rather than building a parallel harness; scope to initialize + tools/list + 2-3 representative tool calls, not exhaustive tool-by-tool coverage in this slice."
-pm_risks:
-  - "stdio JSON-RPC framing/buffering can behave differently on Windows vs POSIX — must validate on the actual CI runner OS, not just locally."
-  - "Child-process lifecycle (orphan on test failure) needs a hard teardown or CI runners accumulate zombie processes over time."
-  - "Scope creep risk: don't let this slice balloon into full MCP tool-by-tool e2e coverage — that is incremental follow-on work, not this FEAT."
+pm_risks: ["\\"stdio JSON-RPC framing/buffering can behave differently on Windows vs POSIX — must validate on the actual CI runner OS", "not just locally.\\"", Child-process lifecycle (orphan on test failure) needs a hard teardown or CI runners accumulate zombie processes over time., "\\"Scope creep risk: don't let this slice balloon into full MCP tool-by-tool e2e coverage — that is incremental follow-on work", "not this FEAT.\\""]
 reasoning: "Real, if not yet incident-confirmed, coverage gap: MCP is a full client surface with zero transport testing, and this harness unblocks future MCP e2e work. Kept at P2 rather than P1 because there is no confirmed production incident (unlike FEAT-411/415) and it is additive test infrastructure with a clear low-risk reuse path via existing smoke helpers."
+slices_complete: [SLICE-412]
+completed_at: 2026-07-04
 ---
 # FEAT-418: MCP e2e over stdio transport
 
