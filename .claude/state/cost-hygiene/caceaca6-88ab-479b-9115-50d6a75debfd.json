@@ -1,7 +1,7 @@
 {
   "session_id": "caceaca6-88ab-479b-9115-50d6a75debfd",
   "first_seen": "2026-07-04T07:45:43.911Z",
-  "last_seen": "2026-07-04T08:26:06.143Z",
+  "last_seen": "2026-07-04T08:27:14.659Z",
   "total_bytes": 0,
   "entries": {
     "C:\\work\\mega\\astramemory-local\\src\\server\\app.ts": {
@@ -477,9 +477,9 @@
       "content": null
     },
     "C:\\work\\mega\\astramemory-local\\src\\server\\routes\\ingest.ts": {
-      "read_count": 1,
+      "read_count": 3,
       "first_read_at": "2026-07-04T08:19:49.409Z",
-      "last_read_at": "2026-07-04T08:19:49.409Z",
+      "last_read_at": "2026-07-04T08:27:14.658Z",
       "mtime_at_last_read": "2026-07-03T19:36:45.301Z",
       "size_at_last_read": 27557,
       "content_bytes": 0,
@@ -749,6 +749,37 @@
       "content": null,
       "last_edit_at": "2026-07-04T08:26:06.142Z",
       "mtime_at_last_edit": "2026-07-04T08:26:05.893Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\tests\\smoke\\_fixtures\\session-canonical.json": {
+      "read_count": 0,
+      "first_read_at": "2026-07-04T08:26:38.479Z",
+      "last_read_at": "2026-07-04T08:26:38.479Z",
+      "mtime_at_last_read": "2026-07-04T08:26:38.214Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-04T08:26:38.479Z",
+      "mtime_at_last_edit": "2026-07-04T08:26:38.214Z"
+    },
+    "C:\\work\\mega\\astramemory-plugin\\tests\\e2e\\plugin-daemon-roundtrip.test.ts": {
+      "read_count": 0,
+      "first_read_at": "2026-07-04T08:27:07.982Z",
+      "last_read_at": "2026-07-04T08:27:07.982Z",
+      "mtime_at_last_read": "2026-07-04T08:27:07.707Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-04T08:27:07.982Z",
+      "mtime_at_last_edit": "2026-07-04T08:27:07.707Z"
+    },
+    "C:\\work\\mega\\astramemory-plugin\\package.json": {
+      "read_count": 1,
+      "first_read_at": "2026-07-04T08:27:12.805Z",
+      "last_read_at": "2026-07-04T08:27:12.805Z",
+      "mtime_at_last_read": "2026-07-02T01:36:31.068Z",
+      "size_at_last_read": 1062,
+      "content_bytes": 0,
+      "content": null
     }
   }
 }

@@ -1,0 +1,21 @@
+{
+  "event": "pre_compact",
+  "session_id": "smoke-session-canonical-1",
+  "project_id": "astramemory-local-smoke",
+  "agent_type": "claude-code",
+  "cwd": "C:/work/mega/astramemory-local",
+  "captured_at": "2026-07-01T12:00:00.000Z",
+  "kind": "transcript",
+  "turns": [
+    { "role": "user", "text": "We need to pick a vector store for v1. LanceDB vs sqlite-vec.", "ts": "2026-07-01T11:55:00.000Z" },
+    { "role": "assistant", "text": "sqlite-vec keeps everything in one SQLite file. LanceDB is a separate columnar store. For v1 with under 1M memories, sqlite-vec wins on simplicity and Windows install pain.", "ts": "2026-07-01T11:56:00.000Z" },
+    { "role": "user", "text": "OK let's go with sqlite-vec. Document it as the v1 default. TODO: write a migration guide before we ship. cc Priya Nair to review the write-up once it's ready, and file it under the astramemory-local repo docs folder.", "ts": "2026-07-01T11:58:00.000Z" },
+    { "role": "assistant", "text": "Done. Decision: use sqlite-vec for v1, LanceDB-ready via the VectorStore interface for later. Filed a TODO for the migration guide and tagged Priya Nair as reviewer on the astramemory-local repo.", "ts": "2026-07-01T12:00:00.000Z" }
+  ],
+  "tool": "claude-code",
+  "client_scrub_applied": true,
+  "client_scrub_hits": 0,
+  "client_version": "0.6.0",
+  "client_scrub_version": "1.2.0",
+  "wire_version": "v1.0"
+}
