@@ -16,6 +16,7 @@ import { dashboardRoute } from './routes/dashboard.js';
 import { dashboardConsolidationRoute } from './routes/dashboard-consolidation-html.js';
 import { dashboardJobsRoute } from './routes/dashboard-jobs-html.js';
 import { dashboardSearchRoute } from './routes/dashboard-search-html.js';
+import { dashboardApiRoute } from './routes/dashboard-api-html.js';
 import { memoryToolRoute } from './routes/memory-tool.js';
 import { consolidationRoutes } from './routes/consolidation.js';
 import { entitiesRoute } from './routes/entities.js';
@@ -150,6 +151,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(dashboardConsolidationRoute(opts.db, opts.token));
   await app.register(dashboardJobsRoute(opts.db, opts.token));
   await app.register(dashboardSearchRoute(opts.db, embed, opts.token));
+  await app.register(dashboardApiRoute(opts.token));
   await app.register(memoryToolRoute(opts.db, config));
   await app.register(consolidationRoutes(opts.db));
   await app.register(entitiesRoute(opts.db));

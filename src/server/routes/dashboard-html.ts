@@ -29,7 +29,9 @@ function esc(s: string): string {
 
 function fmtTime(epochMs: number): string {
   try {
-    return new Date(epochMs).toISOString().slice(11, 19); // HH:MM:SS
+    // Local-first: the daemon runs on the operator's own machine, so the OS
+    // locale/timezone IS the client's — render local time, not UTC.
+    return new Date(epochMs).toLocaleTimeString(undefined, { hour12: false });
   } catch {
     return '??:??:??';
   }
@@ -346,7 +348,7 @@ function renderActivityFeed(data: DashboardData): string {
 // ---------------------------------------------------------------------------
 
 export function renderDashboard(data: DashboardData, config: Config): string {
-  const now = new Date().toISOString().replace('T', ' ').slice(0, 19) + ' UTC';
+  const now = new Date().toLocaleString(undefined, { hour12: false });
   const dailyCap = config.budget.daily_usd;
   const { label } = bannerStatus(data.health);
   const statusColor = label === 'OK' ? '#2ecc71' : label === 'DEGRADED' ? '#e74c3c' : '#888';
@@ -374,6 +376,7 @@ export function renderDashboard(data: DashboardData, config: Config): string {
   <a href="/dashboard/jobs">Jobs</a>
   <a href="/dashboard/consolidation">Consolidation</a>
   <a href="/dashboard/search">Search</a>
+  <a href="/dashboard/api">API</a>
   <span class="asof">as of ${esc(now)}</span>
 </nav>
 

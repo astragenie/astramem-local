@@ -16,7 +16,7 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import type { EmbedProvider } from '../../contracts/index.js';
-import { search, type SearchDebugHit } from '../../search/search.js';
+import { search, type SearchDebugHit, type SearchFilters } from '../../search/search.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 
 const COOKIE_NAME = 'astramem_dash';
@@ -64,8 +64,32 @@ export function dashboardSearchRoute(db: DB, embed: EmbedProvider, token: string
           .send('401 Unauthorized');
       }
 
-      const rawQuery = (req.query as Record<string, string | undefined>).query;
+      const q = req.query as Record<string, string | undefined>;
+      const rawQuery = q.query;
       const weights = defaultConfig().search;
+
+      // Optional filter fields — every implemented search() filter mode is
+      // exposed: entity (FEAT-402), as_of temporal time-travel (FEAT-401),
+      // since lower bound, type list. Empty strings mean "not set".
+      const filterInputs = {
+        entity: q.entity?.trim() || undefined,
+        type: q.type?.trim() || undefined,
+        as_of: q.as_of?.trim() || undefined,
+        since: q.since?.trim() || undefined,
+      };
+      const filters: SearchFilters = {};
+      if (filterInputs.entity) filters.entity = filterInputs.entity;
+      if (filterInputs.type) filters.type = filterInputs.type.split(',').map(s => s.trim()).filter(Boolean);
+      // datetime-local values ("2026-07-04T09:30") parse as local time —
+      // matching the operator's clock on this local-first daemon.
+      if (filterInputs.as_of) {
+        const t = new Date(filterInputs.as_of).getTime();
+        if (!Number.isNaN(t)) filters.as_of = t;
+      }
+      if (filterInputs.since) {
+        const t = new Date(filterInputs.since).getTime();
+        if (!Number.isNaN(t)) filters.since = t;
+      }
 
       // AC-2: no `query` key at all → initial load, form + weights only.
       // Any present value (including "") is treated as a submitted search
@@ -74,14 +98,14 @@ export function dashboardSearchRoute(db: DB, embed: EmbedProvider, token: string
       const ranSearch = rawQuery !== undefined;
       let hits: SearchDebugHit[] = [];
       if (ranSearch) {
-        hits = await search(rawQuery, {}, RESULT_LIMIT, { db, embed, weights, debug: true });
+        hits = await search(rawQuery, filters, RESULT_LIMIT, { db, embed, weights, debug: true });
       }
 
       return reply
         .code(200)
         .header('content-type', 'text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(renderPage(rawQuery, weights, ranSearch, hits));
+        .send(renderPage(rawQuery, weights, ranSearch, hits, filterInputs));
     });
   };
 }
@@ -131,13 +155,28 @@ form{margin-bottom:8px}
 input[type=text]{background:#0f0f0f;color:#e0e0e0;border:1px solid #333;padding:4px 8px;width:320px}
 button{background:#2a2a2a;color:#e0e0e0;border:1px solid #444;padding:4px 10px;margin-left:4px}
 .weights{color:#888;margin-bottom:16px}
+nav{display:flex;gap:16px;margin:8px 0 16px;padding-bottom:8px;border-bottom:1px solid #333;font-size:12px}
+nav a{color:#888;text-decoration:none}
+nav a:hover{color:#3a7bd5}
+nav .active{color:#fff;font-weight:bold}
+.filters{margin-top:8px;display:flex;gap:12px;flex-wrap:wrap;color:#888}
+.filters input{width:170px}
+.filters input[type=datetime-local]{width:200px;background:#0f0f0f;color:#e0e0e0;border:1px solid #333;padding:3px 6px}
+.hint{color:#666;font-size:11px;margin-top:6px}
 table{border-collapse:collapse;width:100%}
 th,td{border-bottom:1px solid #333;padding:4px 8px;text-align:left}
 th{color:#aaa;text-transform:uppercase;font-size:11px;letter-spacing:.05em}
 .empty{color:#888;margin-top:12px}
 `;
 
-function renderPage(rawQuery: string | undefined, weights: Config['search'], ranSearch: boolean, hits: SearchDebugHit[]): string {
+interface FilterInputs {
+  entity?: string;
+  type?: string;
+  as_of?: string;
+  since?: string;
+}
+
+function renderPage(rawQuery: string | undefined, weights: Config['search'], ranSearch: boolean, hits: SearchDebugHit[], f: FilterInputs): string {
   const queryValue = esc(rawQuery ?? '');
   return `<!DOCTYPE html>
 <html lang="en">
@@ -149,9 +188,17 @@ function renderPage(rawQuery: string | undefined, weights: Config['search'], ran
 </head>
 <body>
 <h1>Search debug</h1>
+<nav><a href="/dashboard">Mission Control</a> <a href="/dashboard/jobs">Jobs</a> <a href="/dashboard/consolidation">Consolidation</a> <span class="active">Search</span> <a href="/dashboard/api">API</a></nav>
 <form method="get" action="/dashboard/search">
   <input type="text" name="query" value="${queryValue}" placeholder="query...">
   <button type="submit">run</button>
+  <div class="filters">
+    <label>entity <input type="text" name="entity" value="${esc(f.entity ?? '')}" placeholder="entity name"></label>
+    <label>type <input type="text" name="type" value="${esc(f.type ?? '')}" placeholder="fact,decision,…"></label>
+    <label>as of <input type="datetime-local" name="as_of" value="${esc(f.as_of ?? '')}"></label>
+    <label>since <input type="datetime-local" name="since" value="${esc(f.since ?? '')}"></label>
+  </div>
+  <p class="hint">modes: hybrid FTS(bm25)+vector fusion always on &middot; entity filter (exact, then substring) &middot; as-of = bitemporal time-travel &middot; since = created_at lower bound &middot; type = comma-separated list</p>
 </form>
 <p class="weights">weights: ${renderWeights(weights)}</p>
 ${renderResults(ranSearch, hits)}
