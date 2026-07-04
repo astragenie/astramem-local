@@ -2,16 +2,29 @@
   "name": "@astragenie/astramem-contracts",
   "version": "1.0.0",
   "private": true,
-  "description": "Canonical JSON Schemas + golden fixtures for the AstraMem cross-repo wire contracts (atom@1, retrieval@1, sync@1, capture@1). Consumed in-repo today; publishable standalone once the cloud repo needs an out-of-tree dependency.",
+  "description": "Canonical JSON Schemas + golden fixtures + generated TypeScript types for the AstraMem cross-repo wire contracts (atom@1, retrieval@1, sync@1, capture@1). Consumed in-repo today; publishable standalone once the cloud repo needs an out-of-tree dependency.",
   "type": "module",
+  "types": "./types/index.d.ts",
   "exports": {
+    ".": {
+      "types": "./types/index.d.ts"
+    },
+    "./types": "./types/index.d.ts",
+    "./types/*": "./types/*",
     "./schemas/*": "./schemas/*",
     "./fixtures/*": "./fixtures/*"
   },
+  "scripts": {
+    "generate": "node generate-types.mjs",
+    "validate": "node validate.mjs",
+    "build": "node generate-types.mjs && node validate.mjs"
+  },
   "files": [
     "schemas",
+    "types",
     "fixtures",
     "validate.mjs",
+    "generate-types.mjs",
     "README.md"
   ]
 }

@@ -46,6 +46,29 @@ constructs — this is deliberate so the .NET cloud repo's CI can consume the
 exact same files with a JVM/.NET JSON Schema validator (NJsonSchema,
 JsonSchema.Net, etc.) without any transpilation step.
 
+## Generated TypeScript types (`types/`)
+
+For TypeScript consumers (astramem-local itself, astramem-plugin) that want
+compile-time types on the hot path rather than a runtime ajv validator,
+`generate-types.mjs` compiles each schema to a `.d.ts` under `types/` plus an
+`index.d.ts` barrel. **These are GENERATED — never hand-edit.** The JSON Schema
+stays the single source of truth; the types are a build artifact.
+
+```bash
+node contracts/generate-types.mjs   # regenerate types/*.d.ts
+npm run contracts:generate          # same, via root script
+npm run contracts:build             # generate + validate in one step
+```
+
+Root interface names are deterministic `<Name>V<N>` (`AtomV1`,
+`RetrievalQueryV1`, `RetrievalResultV1`, `CaptureEnvelopeV1`, `SyncEnvelopeV1`),
+re-exported from `@astragenie/astramem-contracts/types`. CI should run
+`contracts:generate` and fail on a non-empty git diff, so a schema change that
+wasn't accompanied by a regenerated type is caught as drift.
+
+Cloud (.NET) does NOT use these — it consumes the JSON Schema directly (above).
+The generated `.d.ts` are a TypeScript-consumer convenience only.
+
 ## Fixture naming convention (load-bearing)
 
 `validate.mjs` and `tests/contracts/conformance.test.ts` both route fixtures
