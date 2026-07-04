@@ -1,0 +1,2 @@
+{"type":"slice_start","sliceId":"SLICE-415","timestamp":"2026-07-04T13:35:58.262Z","featureId":"FEAT-421","title":"SLICE-415: Nightly live-provider CI lane (INTEGRATION_LIVE=ollama)","planPath":"C:\\work\\mega\\astramemory-local-worktrees\\feat-421\\.claude\\artifacts\\loop\\plans\\20260704T133554Z-plan-SLICE-415.md","requiresApprovalGate":false}
+{"type":"slice_complete","sliceId":"SLICE-415","timestamp":"2026-07-04T14:20:45.086Z","featureId":"FEAT-421","featureMovedTo":null,"validationSatisfied":true}
