@@ -7,9 +7,13 @@ import type { DB } from '../../src/storage/db.js';
 const TOKEN = 'testtoken';
 const AUTH = { authorization: `Bearer ${TOKEN}` };
 
-// FEAT-410 SLICE-410-1 AC-8/AC-9: the three stub pages must be reachable
+// FEAT-410 SLICE-410-1 AC-8/AC-9: the three sub-pages must be reachable
 // under the widened /dashboard prefix auth exemption, and the exemption
 // must not leak to unrelated paths.
+// /dashboard/jobs got its real render internals in SLICE-410-5 — see
+// tests/server/dashboard-jobs.test.ts for its content assertions. It stays
+// in the 401/200-shape checks below since those are prefix-exemption
+// regression guards, not stub-content checks.
 describe('GET /dashboard/* prefix auth exemption + stub pages', () => {
   let db: DB;
   let app: Awaited<ReturnType<typeof buildApp>>;
@@ -33,7 +37,6 @@ describe('GET /dashboard/* prefix auth exemption + stub pages', () => {
   // longer serves the wave-1 placeholder body. /jobs and /search are still
   // pending their own wave-2 slices, so they keep the placeholder assertion.
   it.each([
-    ['/dashboard/jobs'],
     ['/dashboard/search'],
   ])('%s: 200 placeholder page with a valid Authorization bearer', async (path) => {
     const res = await app.inject({ method: 'GET', url: path, headers: AUTH });
@@ -42,8 +45,11 @@ describe('GET /dashboard/* prefix auth exemption + stub pages', () => {
     expect(res.body.toLowerCase()).toContain('coming in wave 2');
   });
 
-  it('/dashboard/consolidation: 200 real render (not the placeholder) with a valid Authorization bearer', async () => {
-    const res = await app.inject({ method: 'GET', url: '/dashboard/consolidation', headers: AUTH });
+  it.each([
+    ['/dashboard/consolidation'],
+    ['/dashboard/jobs'],
+  ])('%s: 200 real render (not the placeholder) with a valid Authorization bearer', async (path) => {
+    const res = await app.inject({ method: 'GET', url: path, headers: AUTH });
     expect(res.statusCode).toBe(200);
     expect(res.headers['content-type']).toMatch(/text\/html/);
     expect(res.body.toLowerCase()).not.toContain('coming in wave 2');
