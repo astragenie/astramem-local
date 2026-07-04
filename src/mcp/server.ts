@@ -36,6 +36,7 @@ import {
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { recordRecallServed, recordRecallUsed } from '../storage/usefulness.js';
 import { search, parseAsOf, type SearchFilters } from '../search/search.js';
+import { clampScores } from '../server/lib/score-contract.js';
 import { defaultConfig, type Config } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
@@ -140,7 +141,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ hits }),
+            text: JSON.stringify({ hits: clampScores(hits, 'mcp search_memory') }),
           },
         ],
       };
@@ -218,7 +219,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ hits }),
+            text: JSON.stringify({ hits: clampScores(hits, 'mcp recall_memory') }),
           },
         ],
       };
