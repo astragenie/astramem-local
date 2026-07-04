@@ -83,8 +83,16 @@ jobs:
         run: bun run build
 
       - name: Restore Ollama model cache
+        # Explicit restore/save (not the combined actions/cache@v4 action):
+        # its auto-save post step only fires on success(), and this job
+        # deliberately exits 1 on a red live-test result (see "Fail job if
+        # red" below) so the Actions UI shows red — which would silently
+        # skip cache save on every red run and defeat the cache entirely,
+        # since the known nomic-embed-text-v2-moe drift makes red the
+        # common case today. The explicit save step below runs on
+        # `always()`, gated only on the model pulls themselves succeeding.
         id: ollama-cache
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: ${{ github.workspace }}/.ollama-models
           key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
@@ -130,12 +138,28 @@ jobs:
           exit 1
 
       - name: Pull models
+        # Pull via the Ollama HTTP API rather than `docker exec` — this works
+        # identically whether Ollama is the container we just started or a
+        # pre-existing host-level singleton we reused (which may not even be
+        # a container we can `docker exec` into).
         run: |
           for model in $OLLAMA_MODELS; do
             echo "::group::pull $model"
-            docker exec "$OLLAMA_CONTAINER" ollama pull "$model"
+            curl -sf http://127.0.0.1:11434/api/pull \
+              -d "{\"name\": \"$model\"}" | tail -c 2000
+            echo
             echo "::endgroup::"
           done
+
+      - name: Save Ollama model cache
+        # Explicit save (see the restore-step comment above): runs whenever
+        # the model pulls themselves succeeded, independent of whether the
+        # later live-test step passes or the job as a whole ends red.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ github.workspace }}/.ollama-models
+          key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
 
       - name: Run INTEGRATION_LIVE=ollama test subset
         id: live-tests
