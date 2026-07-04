@@ -3,8 +3,11 @@
  * Extracted here so tests can exercise them independently of the route layer.
  */
 
+import { statfsSync } from 'node:fs';
 import type { DB } from '../../storage/db.js';
-import { usefulnessRate, usefulnessByType, type UsefulnessRate, type UsefulnessByType } from '../../storage/usefulness.js';
+import { usefulnessRate, type UsefulnessRate } from '../../storage/usefulness.js';
+import { ProposalRepo } from '../../consolidate/proposals.js';
+import type { HealthState } from '../health-state.js';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -30,6 +33,56 @@ export interface JobStateCount {
   count: number;
 }
 
+/** FEAT-410: job counts grouped by (kind, state) — distinguishes e.g.
+ *  distill:poison=2 from reembed:poison=1, which the state-only
+ *  `queryJobStates` cannot. */
+export interface JobStateByKind {
+  kind: string;
+  state: string;
+  count: number;
+}
+
+/** FEAT-410: pending consolidation-proposal count + oldest created_at. */
+export interface ConsolidationSummary {
+  count: number;
+  oldest: number | null;
+}
+
+/** FEAT-410: a failed/poison job row with its error text, for the
+ *  "what failed and why" surface. */
+export interface RecentFailedJob {
+  id: string;
+  kind: string;
+  state: string;
+  last_error: string | null;
+  updated_at: number;
+}
+
+/** FEAT-410: entity-linking pipeline-stage visibility. */
+export interface EntityLinkage {
+  entityCount: number;
+  unlinkedMemoryCount: number;
+}
+
+/** FEAT-410: subsystem health rolled up from the boot-time HealthState —
+ *  reuses the same instance /health reads instead of recomputing anything. */
+export interface DashboardHealth {
+  status: ReturnType<HealthState['status']>;
+  uptimeSeconds: number;
+  embed: {
+    ok: boolean | null;
+    lastOkAt: number | null;
+    lastError: string | null;
+    attempts: number;
+  };
+  worker: {
+    alive: boolean;
+    lastTickAt: number | null;
+    lastTickAgoMs: number | null;
+  };
+  diskFreeBytes: number | null;
+}
+
 export interface HourlyThroughput {
   hour: string;
   count: number;
@@ -53,14 +106,19 @@ export interface DashboardData {
   memoryCounts: MemoryCountByType[];
   recentMemories: RecentMemory[];
   jobStates: JobStateCount[];
+  jobStatesByKind: JobStateByKind[];
   hourlyThroughput: HourlyThroughput[];
   providers: ProviderRow[];
   todaySpend: BudgetSpendRow | null;
   mtdSpend: number;
   mtdCalls: number;
-  pendingDir: { count: number; oldestAgeMs: number | null };
   usefulness: UsefulnessRate;
-  usefulnessByType: UsefulnessByType[];
+  consolidation: ConsolidationSummary;
+  recentFailedJobs: RecentFailedJob[];
+  entityLinkage: EntityLinkage;
+  /** null when no HealthState was wired in (e.g. bare test apps) — callers
+   *  degrade the same way /health does when this field is absent. */
+  health: DashboardHealth | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -86,6 +144,87 @@ export function queryJobStates(db: DB): JobStateCount[] {
   return db.prepare<[], JobStateCount>(
     'SELECT state, COUNT(*) as count FROM jobs GROUP BY state',
   ).all() as JobStateCount[];
+}
+
+/** FEAT-410 AC-1: job counts grouped by kind AND state. */
+export function queryJobStatesByKind(db: DB): JobStateByKind[] {
+  return db.prepare<[], JobStateByKind>(
+    'SELECT kind, state, COUNT(*) as count FROM jobs GROUP BY kind, state',
+  ).all() as JobStateByKind[];
+}
+
+/** FEAT-410 AC-3/AC-4: pending proposal count + oldest created_at (via the
+ *  existing ProposalRepo — no new table scan). Never throws on an empty
+ *  queue; ProposalRepo.list('pending') already orders by created_at ASC so
+ *  the first row is the oldest. */
+export function queryConsolidationSummary(db: DB): ConsolidationSummary {
+  const pending = new ProposalRepo(db).list('pending');
+  if (pending.length === 0) return { count: 0, oldest: null };
+  return { count: pending.length, oldest: pending[0]!.created_at };
+}
+
+/** FEAT-410 AC-5: most recent failed/poison jobs with their error text,
+ *  newest-updated first. */
+export function queryRecentFailedJobs(db: DB, limit = 10): RecentFailedJob[] {
+  return db.prepare<[number], RecentFailedJob>(`
+    SELECT id, kind, state, last_error, updated_at
+    FROM jobs
+    WHERE state IN ('failed', 'poison')
+    ORDER BY updated_at DESC
+    LIMIT ?
+  `).all(limit) as RecentFailedJob[];
+}
+
+/** FEAT-410: entity count + unlinked-memory count (currently-valid,
+ *  not-archived memories with no memory_entities row) for the entity-link
+ *  pipeline stage. Same "currently valid" predicate used by archival.ts. */
+export function queryEntityLinkage(db: DB): EntityLinkage {
+  const entityCount = (db.prepare(
+    'SELECT COUNT(*) as n FROM entities',
+  ).get() as { n: number }).n;
+
+  const unlinkedMemoryCount = (db.prepare(`
+    SELECT COUNT(*) as n
+    FROM memories m
+    WHERE valid_to IS NULL AND archived = 0
+      AND NOT EXISTS (SELECT 1 FROM memory_entities me WHERE me.memory_id = m.id)
+  `).get() as { n: number }).n;
+
+  return { entityCount, unlinkedMemoryCount };
+}
+
+/** Generous liveness window: the worker stamps lastTickAt at tick START, so
+ *  a single long-running job (LLM distill can take up to the 60s chat
+ *  timeout) must not read as "worker dead". Mirrors health.ts's own
+ *  WORKER_ALIVE_WINDOW_MS — duplicated locally by design (same precedent as
+ *  the stub pages' local auth check) to avoid a routes/health.ts <->
+ *  queries/dashboard.ts import cycle. */
+const WORKER_ALIVE_WINDOW_MS = 90_000;
+
+function diskFreeBytes(dataDir: string): number | null {
+  try {
+    const s = statfsSync(dataDir);
+    return s.bavail * s.bsize;
+  } catch {
+    return null;
+  }
+}
+
+/** FEAT-410: merge the boot-time HealthState (built for /health) into
+ *  DashboardData instead of recomputing subsystem health from scratch. */
+export function buildDashboardHealth(healthState: HealthState): DashboardHealth {
+  const lastTick = healthState.worker.lastTickAt;
+  return {
+    status: healthState.status(),
+    uptimeSeconds: healthState.uptimeSeconds(),
+    embed: { ...healthState.embed },
+    worker: {
+      alive: lastTick !== null && Date.now() - lastTick < WORKER_ALIVE_WINDOW_MS,
+      lastTickAt: lastTick,
+      lastTickAgoMs: lastTick === null ? null : Date.now() - lastTick,
+    },
+    diskFreeBytes: healthState.dataDir ? diskFreeBytes(healthState.dataDir) : null,
+  };
 }
 
 export function queryHourlyThroughput(db: DB): HourlyThroughput[] {
@@ -126,77 +265,51 @@ export function queryBudget(db: DB): { today: BudgetSpendRow | null; mtdUsd: num
   };
 }
 
-/**
- * Scan %APPDATA%\Astramem\pending\ (Windows) for pending capture files.
- * Returns count + oldest age in ms. Wrapped in try/catch — dir may not exist.
- */
-export async function queryPendingDir(): Promise<{ count: number; oldestAgeMs: number | null }> {
-  try {
-    const { readdir, stat } = await import('node:fs/promises');
-    const appData = process.env['APPDATA'];
-    if (!appData) return { count: 0, oldestAgeMs: null };
-
-    const pendingDir = `${appData}\\Astramem\\pending`;
-    let files: string[];
-    try {
-      files = await readdir(pendingDir);
-    } catch {
-      // Dir does not exist — normal on fresh installs
-      return { count: 0, oldestAgeMs: null };
-    }
-
-    if (files.length === 0) return { count: 0, oldestAgeMs: null };
-
-    const now = Date.now();
-    let oldestMtime = now;
-    for (const f of files) {
-      try {
-        const s = await stat(`${pendingDir}\\${f}`);
-        if (s.mtimeMs < oldestMtime) oldestMtime = s.mtimeMs;
-      } catch {
-        // skip unreadable entry
-      }
-    }
-
-    return { count: files.length, oldestAgeMs: now - oldestMtime };
-  } catch {
-    return { count: 0, oldestAgeMs: null };
-  }
-}
-
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
-/** ADR-010 recall-usefulness rate + per-type breakdown, last 7 days. */
-export function queryUsefulness(db: DB): { overall: UsefulnessRate; byType: UsefulnessByType[] } {
+/** ADR-010 recall-usefulness rate, last 7 days. Per-type breakdown is
+ *  intentionally not part of the dashboard primary path (FEAT-410 design:
+ *  real product-quality signal, but not an operational glance-screen
+ *  signal) — see storage/usefulness.ts's usefulnessByType for that data. */
+export function queryUsefulness(db: DB): UsefulnessRate {
   const since = Date.now() - SEVEN_DAYS_MS;
-  return {
-    overall: usefulnessRate(db, { sinceMs: since }),
-    byType: usefulnessByType(db, { sinceMs: since }),
-  };
+  return usefulnessRate(db, { sinceMs: since });
 }
 
-/** Run all dashboard queries in a single synchronous pass (except pendingDir which is async). */
-export async function queryDashboard(db: DB): Promise<DashboardData> {
+/**
+ * Run all dashboard queries in a single pass. `healthState` is the same
+ * instance built at boot for GET /health (FEAT-410) — when omitted (bare
+ * test apps), `health` is null and callers degrade the same way /health
+ * does without it.
+ */
+export async function queryDashboard(db: DB, healthState?: HealthState): Promise<DashboardData> {
   const memoryCounts = queryMemoryCounts(db);
   const recentMemories = queryRecentMemories(db);
   const jobStates = queryJobStates(db);
+  const jobStatesByKind = queryJobStatesByKind(db);
   const hourlyThroughput = queryHourlyThroughput(db);
   const providers = queryProviders(db);
   const budget = queryBudget(db);
-  const pendingDir = await queryPendingDir();
   const usefulness = queryUsefulness(db);
+  const consolidation = queryConsolidationSummary(db);
+  const recentFailedJobs = queryRecentFailedJobs(db);
+  const entityLinkage = queryEntityLinkage(db);
+  const health = healthState ? buildDashboardHealth(healthState) : null;
 
   return {
     memoryCounts,
     recentMemories,
     jobStates,
+    jobStatesByKind,
     hourlyThroughput,
     providers,
     todaySpend: budget.today,
     mtdSpend: budget.mtdUsd,
     mtdCalls: budget.mtdCalls,
-    pendingDir,
-    usefulness: usefulness.overall,
-    usefulnessByType: usefulness.byType,
+    usefulness,
+    consolidation,
+    recentFailedJobs,
+    entityLinkage,
+    health,
   };
 }

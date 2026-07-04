@@ -238,8 +238,12 @@ function fmtRate(rate: number | null): string {
   return rate === null ? '<span class="muted">n/a</span>' : `${(rate * 100).toFixed(1)}%`;
 }
 
-function renderUsefulness(overall: DashboardData['usefulness'], byType: DashboardData['usefulnessByType']): string {
-  const summary = `<div style="display:flex;gap:32px;flex-wrap:wrap;margin-bottom:8px">
+/** FEAT-410 SLICE-410-1: per-type usefulness table dropped from the primary
+ *  path (design: real signal, not a 30x/day glance-screen one) — only the
+ *  overall 7-day rate renders here now. Full Mission Control layout lands
+ *  in SLICE-410-4. */
+function renderUsefulness(overall: DashboardData['usefulness']): string {
+  return `<div style="display:flex;gap:32px;flex-wrap:wrap;margin-bottom:8px">
   <div>
     <div class="muted" style="font-size:11px;margin-bottom:2px">SERVED (7D)</div>
     <div style="font-size:20px;color:#e0e0e0">${overall.served}</div>
@@ -253,30 +257,6 @@ function renderUsefulness(overall: DashboardData['usefulness'], byType: Dashboar
     <div style="font-size:20px;color:#3a7bd5">${fmtRate(overall.rate)}</div>
   </div>
 </div>`;
-
-  if (byType.length === 0) {
-    return `${summary}<p class="muted">No usefulness events by type yet.</p>`;
-  }
-
-  const trs = byType.map(t => `<tr>
-      <td>${esc(t.type)}</td>
-      <td class="num">${t.served}</td>
-      <td class="num">${t.used}</td>
-      <td class="num">${fmtRate(t.rate)}</td>
-    </tr>`).join('');
-  const table = `<table>
-  <thead><tr><th>Type</th><th class="num">Served</th><th class="num">Used</th><th class="num">Rate</th></tr></thead>
-  <tbody>${trs}</tbody>
-</table>`;
-  return `${summary}${table}`;
-}
-
-function renderPending(p: DashboardData['pendingDir']): string {
-  if (p.count === 0) {
-    return '<div class="pending-box"><span class="ok">0 pending</span></div>';
-  }
-  const age = p.oldestAgeMs != null ? ` &middot; oldest ${esc(fmtAgeMs(p.oldestAgeMs))}` : '';
-  return `<div class="pending-box"><span class="warn">${p.count} pending${age}</span></div>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -326,17 +306,12 @@ ${renderProviders(data.providers)}
 
 <section>
 <h2>Usefulness</h2>
-${renderUsefulness(data.usefulness, data.usefulnessByType)}
+${renderUsefulness(data.usefulness)}
 </section>
 
 <section>
 <h2>Budget</h2>
 ${renderBudget(data, dailyCap)}
-</section>
-
-<section>
-<h2>Pending queue</h2>
-${renderPending(data.pendingDir)}
 </section>
 </body>
 </html>`;
