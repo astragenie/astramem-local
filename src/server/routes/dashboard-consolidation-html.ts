@@ -26,6 +26,9 @@ import { ProposalRepo, type ConsolidationProposal } from '../../consolidate/prop
 import { MemoryRepo } from '../../storage/memories.js';
 
 const COOKIE_NAME = 'astramem_dash';
+const RESOLVED_LIMIT = 100;
+
+type ProposalStatus = ConsolidationProposal['status'];
 
 function readCookie(req: FastifyRequest, name: string): string | undefined {
   const header = req.headers.cookie;
@@ -73,6 +76,14 @@ tr:nth-child(odd) td{background:#1e1e1e}
 .muted{color:#666}
 button{font-family:monospace;font-size:12px;padding:2px 8px;margin-right:4px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:3px;cursor:pointer}
 button:hover{background:#333}
+nav{display:flex;gap:16px;margin:8px 0 16px;padding-bottom:8px;border-bottom:1px solid #333;font-size:12px}
+nav a{color:#888;text-decoration:none}
+nav a:hover{color:#3a7bd5}
+nav .active{color:#fff;font-weight:bold}
+.tabs{margin:0 0 10px;display:flex;gap:14px}
+.tabs a{color:#3a7bd5;text-decoration:none}
+.tabs .active{color:#fff;font-weight:bold}
+.note{color:#666;font-size:11px;margin-bottom:10px}
 `.trim();
 
 /** `db` backs the real proposal + memory lookups (SLICE-410-1's stub
@@ -93,13 +104,32 @@ export function dashboardConsolidationRoute(db: DB, token: string) {
 
       const proposals = new ProposalRepo(db);
       const memories = new MemoryRepo(db);
-      const pending = proposals.list('pending');
+
+      const q = req.query as Record<string, string | undefined>;
+      const status: ProposalStatus =
+        q.status === 'accepted' || q.status === 'rejected' ? q.status : 'pending';
+
+      const counts: Record<ProposalStatus, number> = {
+        pending: proposals.list('pending').length,
+        accepted: proposals.list('accepted').length,
+        rejected: proposals.list('rejected').length,
+      };
+      // Resolved lists show newest-first (most recent auto-sweep results on
+      // top) and are capped — the operator cares about "what just happened",
+      // not the full history.
+      let rows = proposals.list(status);
+      if (status !== 'pending') {
+        rows = rows
+          .slice()
+          .sort((a, b) => (b.resolved_at ?? 0) - (a.resolved_at ?? 0))
+          .slice(0, RESOLVED_LIMIT);
+      }
 
       return reply
         .code(200)
         .header('content-type', 'text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(renderPage(pending, memories));
+        .send(renderPage(status, counts, rows, memories));
     });
   };
 }
@@ -115,8 +145,22 @@ function renderRow(p: ConsolidationProposal, memories: MemoryRepo): string {
   const kind = esc(p.kind);
   const sim = p.similarity.toFixed(2);
   const age = esc(fmtAge(Date.now() - p.created_at));
-  const acceptAction = `/consolidation/proposals/${encodeURIComponent(p.id)}/accept`;
-  const rejectAction = `/consolidation/proposals/${encodeURIComponent(p.id)}/reject`;
+
+  let lastCell: string;
+  if (p.status === 'pending') {
+    const acceptAction = `/consolidation/proposals/${encodeURIComponent(p.id)}/accept`;
+    const rejectAction = `/consolidation/proposals/${encodeURIComponent(p.id)}/reject`;
+    lastCell = `
+      <form method="post" action="${esc(acceptAction)}" style="display:inline">
+        <button type="submit">accept</button>
+      </form>
+      <form method="post" action="${esc(rejectAction)}" style="display:inline">
+        <button type="submit">reject</button>
+      </form>`;
+  } else {
+    const resolvedAge = p.resolved_at !== null ? fmtAge(Date.now() - p.resolved_at) : '?';
+    lastCell = `<span class="muted">${esc(p.status)} ${esc(resolvedAge)} ago</span>`;
+  }
 
   return `<tr>
     <td>${id}</td>
@@ -125,31 +169,40 @@ function renderRow(p: ConsolidationProposal, memories: MemoryRepo): string {
     <td class="trunc">${renderExcerpt(p.winner_id, memories)}</td>
     <td class="trunc">${renderExcerpt(p.loser_id, memories)}</td>
     <td class="muted">${age}</td>
-    <td>
-      <form method="post" action="${esc(acceptAction)}" style="display:inline">
-        <button type="submit">accept</button>
-      </form>
-      <form method="post" action="${esc(rejectAction)}" style="display:inline">
-        <button type="submit">reject</button>
-      </form>
-    </td>
+    <td>${lastCell}</td>
   </tr>`;
 }
 
-function renderBody(pending: ConsolidationProposal[], memories: MemoryRepo): string {
-  if (pending.length === 0) {
-    return '<p class="muted">No pending proposals.</p>';
+function renderTabs(status: ProposalStatus, counts: Record<ProposalStatus, number>): string {
+  const tab = (s: ProposalStatus): string => {
+    const label = `${s} (${counts[s]})`;
+    if (s === status) return `<span class="active">${esc(label)}</span>`;
+    return `<a href="/dashboard/consolidation?status=${s}">${esc(label)}</a>`;
+  };
+  return `<div class="tabs">${tab('pending')} ${tab('accepted')} ${tab('rejected')}</div>`;
+}
+
+function renderBody(status: ProposalStatus, rows: ConsolidationProposal[], memories: MemoryRepo): string {
+  if (rows.length === 0) {
+    return `<p class="muted">No ${esc(status)} proposals.</p>`;
   }
-  const rows = pending.map(p => renderRow(p, memories)).join('');
-  return `<table>
+  const lastHeader = status === 'pending' ? 'Actions' : 'Resolved';
+  const capNote = rows.length === RESOLVED_LIMIT && status !== 'pending'
+    ? `<p class="muted">showing ${RESOLVED_LIMIT} most recently resolved</p>` : '';
+  return `${capNote}<table>
   <thead><tr>
-    <th>ID</th><th>Kind</th><th class="num">Sim</th><th>Winner</th><th>Loser</th><th>Age</th><th>Actions</th>
+    <th>ID</th><th>Kind</th><th class="num">Sim</th><th>Winner</th><th>Loser</th><th>Age</th><th>${lastHeader}</th>
   </tr></thead>
-  <tbody>${rows}</tbody>
+  <tbody>${rows.map(p => renderRow(p, memories)).join('')}</tbody>
 </table>`;
 }
 
-function renderPage(pending: ConsolidationProposal[], memories: MemoryRepo): string {
+function renderPage(
+  status: ProposalStatus,
+  counts: Record<ProposalStatus, number>,
+  rows: ConsolidationProposal[],
+  memories: MemoryRepo,
+): string {
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -159,8 +212,11 @@ function renderPage(pending: ConsolidationProposal[], memories: MemoryRepo): str
 <style>${CSS}</style>
 </head>
 <body>
-<h1>Consolidation — pending: ${pending.length}</h1>
-${renderBody(pending, memories)}
+<h1>Consolidation — ${esc(status)}: ${counts[status]}</h1>
+<nav><a href="/dashboard">Mission Control</a> <a href="/dashboard/jobs">Jobs</a> <span class="active">Consolidation</span> <a href="/dashboard/search">Search</a> <a href="/dashboard/api">API</a></nav>
+${renderTabs(status, counts)}
+<p class="note">accepted = merged (auto containment-sweep or manual). Direct auto-merges at &ge;0.95 similarity or exact-containment never create proposals — they land straight in memory history.</p>
+${renderBody(status, rows, memories)}
 </body>
 </html>`;
 }
