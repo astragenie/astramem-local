@@ -161,3 +161,32 @@ checkout.
 - dev-team: crew plugin 0.48.0 staged (test-automator v2.0.0 promotion) — release blocked
   behind gepa-core 0.6.0 note in [Unreleased]
 - Cleanup: fusefix agent worktree (.claude/worktrees/agent-*) can be removed — content merged
+
+---
+
+## Post-delivery architecture review (2026-07-04, sonnet replacement after first stalled)
+
+VERDICT: sound-with-recommendations. Findings:
+
+1. [MEDIUM] Mock keyword table <-> fixture lockstep is a drift trap — nothing but manual
+   review enforces it. Recommend shared constants module imported by both mock provider
+   and fixture so drift becomes a type error.
+2. [MEDIUM] No response-side score validation at the daemon's HTTP serialization boundary —
+   [0,1] invariant lives only inside fuseScores' math + plugin's client-side Zod. Add cheap
+   clamp/assert where search hits serialize (recommend before next search-path change).
+3. [HIGH] Cross-repo roundtrip test not wired into CI — the bug it caught was found by a
+   manual run; next regression passes hermetic CI silently. Wire a checkout-both-repos CI
+   job, or publish a golden contract-fixture per daemon release into the plugin repo.
+   Complementary to (not replaced by) contracts/ schema conformance, which cannot catch
+   numeric-range bugs.
+4. [MEDIUM-HIGH] .claude/worktrees/ nested inside the tracked tree is the wrong layout —
+   vitest exclusion is a correct patch for the symptom. Migrate agent/wave worktrees to
+   sibling dirs (git worktree add ../name); removes exclusion-list whack-a-mole and makes
+   concurrent-branch ops physically isolated. Root cause of this session's shared-tree
+   incident.
+
+Debt ranking (FEAT-now first): (1) wave-vs-interactive shared-tree hazard [fired once
+already]; (2) encrypted-restart-path untested [silent data-inaccessibility class];
+(3) restore() unreachable [half-implemented feature, one route closes it]; (4) why/digest
+route-vs-MCP duplication [trust-critical, no test forces agreement]; (5) MCP as_of/entity
+parity; (6) parseQuery dead code + its dead test; (7) HOME-override Windows note [no action].
