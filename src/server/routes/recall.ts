@@ -18,6 +18,7 @@ import { selectPack, renderPack } from '../../recall/pack.js';
 import { decideInjection } from '../../recall/policy.js';
 import { recordRecallServed } from '../../storage/usefulness.js';
 import { defaultConfig } from '../../config/config.js';
+import { clampScores } from '../lib/score-contract.js';
 
 const PackRequestSchema = z.object({
   repo: z.string().min(1),
@@ -43,9 +44,11 @@ export function recallRoute(db: DB, config: Config = defaultConfig()) {
           prompt: parsed.data.prompt,
           budgetTokens: parsed.data.budget_tokens,
         });
+        // SLICE-411: enforce the [0,1] wire score contract at serialization,
+        // independent of fuseScores() internal math.
         return {
           pack: decision.pack,
-          memories: decision.memories,
+          memories: clampScores(decision.memories, 'POST /recall/pack'),
           decision: {
             inject: decision.inject,
             reason: decision.reason,
@@ -70,7 +73,9 @@ export function recallRoute(db: DB, config: Config = defaultConfig()) {
         surface: 'rest',
         mode: 'pack',
       });
-      return { pack: renderPack(memories), memories };
+      // SLICE-411: enforce the [0,1] wire score contract at serialization,
+      // independent of fuseScores() internal math.
+      return { pack: renderPack(memories), memories: clampScores(memories, 'POST /recall/pack') };
     });
   };
 }

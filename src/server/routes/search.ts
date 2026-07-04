@@ -20,6 +20,7 @@ import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
 import { redactIfEnabled } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
+import { clampScores } from '../lib/score-contract.js';
 
 const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
 
@@ -96,7 +97,9 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         surface: 'rest',
         mode: 'search',
       });
-      return { hits };
+      // SLICE-411: enforce the [0,1] wire score contract at serialization,
+      // independent of fuseScores() internal math.
+      return { hits: clampScores(hits, 'GET /search') };
     });
 
     // POST /recall
@@ -129,7 +132,9 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         surface: 'rest',
         mode: 'recall',
       });
-      return { hits };
+      // SLICE-411: enforce the [0,1] wire score contract at serialization,
+      // independent of fuseScores() internal math.
+      return { hits: clampScores(hits, 'POST /recall') };
     });
 
     // POST /remember — direct insert bypassing distillation pipeline
