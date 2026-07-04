@@ -183,7 +183,11 @@ function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: s
 }
 
 export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): ConsolidateSummary {
-  const mergeThreshold = opts.mergeThreshold ?? 0.95;
+  // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
+  // reliably same-fact paraphrases, while 0.90–0.92 still contains
+  // distinct facts (e.g. two different env-var names at sim 0.91) —
+  // do not lower further without re-auditing pending proposals.
+  const mergeThreshold = opts.mergeThreshold ?? 0.92;
   const proposeThreshold = opts.proposeThreshold ?? 0.85;
   const maxGroupSize = opts.maxGroupSize ?? 500;
   const autoMergeContained = opts.autoMergeContained ?? true;

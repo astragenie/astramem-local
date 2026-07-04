@@ -61,7 +61,7 @@ describe('runConsolidation (stage 9)', () => {
   });
 
   it('borderline similarity becomes a pending proposal, never an auto-merge', async () => {
-    // cos = 0.45/(1·~1.09) ≈ 0.90 — inside [0.85, 0.95)
+    // cos = 0.45/(1·~1.09) ≈ 0.90 — inside [0.85, 0.92)
     const a = await seedEmbedded(db, 'deploys run at midnight', 'h-c-3', vecAt(0));
     const b = await seedEmbedded(db, 'deploys run nightly', 'h-c-4', vecAt(0, 0.45));
 
