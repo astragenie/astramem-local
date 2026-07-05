@@ -10,12 +10,21 @@
 // CI green on ubuntu + macos + windows -> 1b proceeds with the driver swap.
 // Any OS fails -> ADR-002 fallback: app-level encryption of text/evidence/transcripts columns.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import CipherDatabase from 'better-sqlite3-multiple-ciphers';
 import * as sqliteVec from 'sqlite-vec';
+
+// FEAT-431 (class B, cold-import flake): this file's FIRST call into
+// better-sqlite3-multiple-ciphers / sqlite-vec pays a real, disk/AV-
+// contention-sensitive native-addon cold-load cost (see
+// tests/setup/native-warmup.globalsetup.ts, which pre-warms the OS page
+// cache for both once, up front). Belt-and-suspenders: scope a generous
+// per-FILE timeout too (not the global vitest config / CI --testTimeout
+// flag), for residual jitter the warm-up can't fully absorb.
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
 
 const CIPHER_KEY = "spike-key-do-not-use-in-prod-42";
 const DIM = 1024;
