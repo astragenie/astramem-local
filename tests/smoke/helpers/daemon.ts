@@ -12,8 +12,10 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { defaultConfigDir } from '../../../src/config/datadir.js';
 
 /** Repo root, resolved relative to this file — works whether ts-node/vitest
  *  runs it from source or a built copy, and handles the Windows
@@ -22,6 +24,10 @@ export const REPO_ROOT = join(
   new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'),
   '..', '..', '..',
 );
+
+/** Directory this file lives in — used to locate the fake-keyring loader
+ *  hook shipped alongside it (see makeIsolatedDaemonEnv's `encrypted` opt). */
+const HELPERS_DIR = dirname(fileURLToPath(import.meta.url));
 
 // ── Daemon process lifecycle ────────────────────────────────────────────────
 
@@ -248,42 +254,109 @@ export interface IsolatedDaemonEnv {
    *  of the ASTRA_MEMORY_DATADIR override applied later. Without
    *  redirecting LOCALAPPDATA too, a real legacy %LOCALAPPDATA%\AstraMemory
    *  dir on the host machine could get renamed as a side effect of running
-   *  this test. Config encryption is disabled via config.yaml so serve.ts
-   *  never calls getOrCreateKey() (no OS Credential Manager access either). */
+   *  this test. Config encryption is disabled via config.yaml (default) so
+   *  serve.ts never calls getOrCreateKey() (no OS Credential Manager access
+   *  either) — unless `encrypted: true` was requested, see below. */
   env: Record<string, string>;
 }
 
+export interface IsolatedDaemonEnvOpts {
+  /** When true, config.yaml sets `security.encryption.enabled: true` (the
+   *  daemon actually SQLCipher-encrypts memory.sqlite) AND `env` gets a
+   *  NODE_OPTIONS `--import` hook (see helpers/fake-keyring-register.mjs)
+   *  that makes keystore.ts's `@napi-rs/keyring` Entry constructor always
+   *  throw. That deterministically forces getOrCreateKey() down its
+   *  documented key-file fallback (a `db.key` file under `configDir`)
+   *  instead of the REAL OS credential store (Windows Credential Manager /
+   *  macOS Keychain / Linux libsecret) — preserving the same "never touch a
+   *  real OS resource" guarantee the base (encryption-disabled) sandbox
+   *  already has, while still exercising the genuine SQLCipher-encrypted
+   *  open/close/reopen code path end to end. Default false. */
+  encrypted?: boolean;
+}
+
 /**
- * Create an isolated temp config dir (config.yaml with encryption disabled)
- * + temp data dir + a sandboxed "local app data" dir, and return the env
- * overrides that keep a spawned daemon entirely inside them. Never touches
- * the real %APPDATA%\Astramem / %LOCALAPPDATA%\Astramem (or the legacy
- * AstraMemory dirs) on the host.
+ * Temporarily apply `overrides` to `process.env`, run `fn`, then restore the
+ * prior values (even keys that were previously unset). Used to compute what
+ * defaultConfigDir() resolves to for a GIVEN set of env overrides without
+ * duplicating datadir.ts's per-platform branching here — the two must never
+ * drift, or config.yaml gets written to a directory the spawned daemon never
+ * actually reads (see the historical bug this replaced: config.yaml was
+ * written directly under the value assigned to APPDATA, but defaultConfigDir()
+ * always appends its own platform-specific leaf — "Astramem" on win32,
+ * "astra-memory" under XDG_CONFIG_HOME on Linux — so the file silently landed
+ * one directory too shallow and every isolated-sandbox daemon boot fell back
+ * to defaultConfig(), i.e. security.encryption.enabled: true, the exact real
+ * OS-credential-store contact this sandbox exists to prevent).
  */
-export function makeIsolatedDaemonEnv(prefix: string): IsolatedDaemonEnv {
+function withEnvOverrides<T>(overrides: Record<string, string>, fn: () => T): T {
+  const saved: Record<string, string | undefined> = {};
+  for (const key of Object.keys(overrides)) {
+    saved[key] = process.env[key];
+    process.env[key] = overrides[key];
+  }
+  try {
+    return fn();
+  } finally {
+    for (const key of Object.keys(overrides)) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  }
+}
+
+/**
+ * Create an isolated temp config dir (config.yaml with encryption disabled
+ * by default, or enabled via `opts.encrypted`) + temp data dir + a sandboxed
+ * "local app data" dir, and return the env overrides that keep a spawned
+ * daemon entirely inside them. Never touches the real %APPDATA%\Astramem /
+ * %LOCALAPPDATA%\Astramem (or the legacy AstraMemory dirs) on the host, and
+ * — with `opts.encrypted: true` — never touches the real OS credential store
+ * either (see IsolatedDaemonEnvOpts doc above).
+ */
+export function makeIsolatedDaemonEnv(prefix: string, opts: IsolatedDaemonEnvOpts = {}): IsolatedDaemonEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
-  const configDir = join(root, 'config');
+  const appDataRoot = join(root, 'appdata');
   const dataDir = join(root, 'data');
-  const localAppData = join(root, 'localappdata');
-  mkdirSync(configDir, { recursive: true });
+  const localAppDataRoot = join(root, 'localappdata');
+  mkdirSync(appDataRoot, { recursive: true });
   mkdirSync(dataDir, { recursive: true });
-  mkdirSync(localAppData, { recursive: true });
+  mkdirSync(localAppDataRoot, { recursive: true });
+
+  const dirEnvOverrides: Record<string, string> = {
+    APPDATA: appDataRoot,
+    LOCALAPPDATA: localAppDataRoot,
+    HOME: appDataRoot,
+    XDG_CONFIG_HOME: appDataRoot,
+    XDG_DATA_HOME: localAppDataRoot,
+  };
+
+  // The REAL leaf dir the spawned daemon's defaultConfigDir() will resolve
+  // to given the above overrides — NOT necessarily `appDataRoot` itself
+  // (win32 appends "Astramem"; Linux appends "astra-memory" under
+  // XDG_CONFIG_HOME; darwin ignores APPDATA/XDG entirely and derives from
+  // HOME). config.yaml must live exactly here or the daemon never reads it.
+  const configDir = withEnvOverrides(dirEnvOverrides, defaultConfigDir);
+  mkdirSync(configDir, { recursive: true });
 
   writeFileSync(
     join(configDir, 'config.yaml'),
-    "security:\n  encryption:\n    enabled: false\n",
+    `security:\n  encryption:\n    enabled: ${opts.encrypted ? 'true' : 'false'}\n`,
     'utf8',
   );
 
   const env: Record<string, string> = {
-    APPDATA: configDir,
-    LOCALAPPDATA: localAppData,
-    HOME: configDir,
-    XDG_CONFIG_HOME: configDir,
-    XDG_DATA_HOME: localAppData,
+    ...dirEnvOverrides,
     ASTRA_MEMORY_DATADIR: dataDir,
     ASTRA_MEMORY_MOCK_PROVIDERS: '1',
   };
+
+  if (opts.encrypted) {
+    // See IsolatedDaemonEnvOpts doc: forces keystore.ts's getOrCreateKey()
+    // down the key-file fallback, never the real OS credential store.
+    const registerUrl = pathToFileURL(join(HELPERS_DIR, 'fake-keyring-register.mjs')).href;
+    env['NODE_OPTIONS'] = [process.env['NODE_OPTIONS'], `--import ${registerUrl}`].filter(Boolean).join(' ');
+  }
 
   return { root, configDir, dataDir, env };
 }
