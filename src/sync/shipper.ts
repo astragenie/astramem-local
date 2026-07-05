@@ -262,6 +262,109 @@ export function backoffDelay(baseMs: number, consecutiveFailures: number): numbe
 }
 
 /**
+ * Last-ship-ATTEMPT state (FEAT-434) — distinct from `lastShipAt`/
+ * `countUnsynced` above, which only ever reflect SUCCESS (or ADR-009
+ * eligibility). This is what lets `GET /sync/status` (FEAT-427) show
+ * "failing/backing off" instead of only ever success/idle.
+ *
+ * Persisted (not in-memory) for the same reason `sync_pull_state` (migration
+ * 010) is persisted rather than kept in the puller's closure: a daemon
+ * restart should not silently erase the fact that the last attempt failed —
+ * `startShipper`'s own in-memory `failures` counter resets to 0 on restart,
+ * but this row does not.
+ */
+export interface ShipAttemptState {
+  last_attempt_at: number | null;
+  last_result: 'ok' | 'error' | null;
+  /** Sanitized (no token) + length-capped. See {@link recordShipFailure}. */
+  last_error: string | null;
+  consecutive_failures: number;
+  /** Epoch ms of the next scheduled retry, or null when not currently backing off. */
+  next_retry_at: number | null;
+}
+
+const MAX_SHIP_ERROR_LEN = 500;
+
+/**
+ * Strip the device sync token (if present) and cap length before an error
+ * message is persisted/exposed. Defense-in-depth: `shipOnce` failures today
+ * come from HTTP status text or fetch/transport errors, neither of which
+ * includes the bearer token (it's sent as a header, never interpolated into
+ * a thrown message) — but a future error path doing so must not leak it via
+ * this state row or the FEAT-427 `/sync/status` route that reads it.
+ */
+export function sanitizeShipError(message: string, token?: string): string {
+  let msg = token && token.length > 0 ? message.split(token).join('[redacted]') : message;
+  if (msg.length > MAX_SHIP_ERROR_LEN) msg = `${msg.slice(0, MAX_SHIP_ERROR_LEN)}…`;
+  return msg;
+}
+
+function upsertShipState(
+  db: DB,
+  row: { last_attempt_at: number; last_result: 'ok' | 'error'; last_error: string | null; consecutive_failures: number; next_retry_at: number | null },
+): void {
+  db.prepare(
+    `INSERT INTO sync_ship_state (id, last_attempt_at, last_result, last_error, consecutive_failures, next_retry_at)
+     VALUES (1, ?, ?, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       last_attempt_at = excluded.last_attempt_at,
+       last_result = excluded.last_result,
+       last_error = excluded.last_error,
+       consecutive_failures = excluded.consecutive_failures,
+       next_retry_at = excluded.next_retry_at`,
+  ).run(row.last_attempt_at, row.last_result, row.last_error, row.consecutive_failures, row.next_retry_at);
+}
+
+/** Record a successful ship attempt — clears error/backoff state. */
+export function recordShipSuccess(db: DB, at: number): void {
+  upsertShipState(db, { last_attempt_at: at, last_result: 'ok', last_error: null, consecutive_failures: 0, next_retry_at: null });
+}
+
+/** Record a failed ship attempt — captures the (sanitized) error + backoff schedule. */
+export function recordShipFailure(
+  db: DB,
+  at: number,
+  error: unknown,
+  consecutiveFailures: number,
+  nextRetryAt: number,
+  token?: string,
+): void {
+  const raw = error instanceof Error ? error.message : String(error);
+  upsertShipState(db, {
+    last_attempt_at: at,
+    last_result: 'error',
+    last_error: sanitizeShipError(raw, token),
+    consecutive_failures: consecutiveFailures,
+    next_retry_at: nextRetryAt,
+  });
+}
+
+/**
+ * Current persisted ship-attempt state, or all-null/zero defaults if the
+ * shipper has never run a round on this DB. Read-only observability helper
+ * (FEAT-434 GET /sync/status) — does not affect shipping behavior.
+ */
+export function getShipAttemptState(db: DB): ShipAttemptState {
+  const row = db
+    .prepare(
+      'SELECT last_attempt_at, last_result, last_error, consecutive_failures, next_retry_at FROM sync_ship_state WHERE id = 1',
+    )
+    .get() as
+    | {
+        last_attempt_at: number | null;
+        last_result: 'ok' | 'error' | null;
+        last_error: string | null;
+        consecutive_failures: number;
+        next_retry_at: number | null;
+      }
+    | undefined;
+  if (!row) {
+    return { last_attempt_at: null, last_result: null, last_error: null, consecutive_failures: 0, next_retry_at: null };
+  }
+  return row;
+}
+
+/**
  * Start the periodic shipper loop. Ships immediately, then every intervalMs;
  * on failure the next attempt is delayed by exponential backoff.
  */
@@ -274,21 +377,25 @@ export function startShipper(opts: ShipperOpts): ShipperHandle {
 
   async function round(): Promise<void> {
     if (stopped) return;
+    const attemptAt = Date.now();
+    let delay = intervalMs;
     try {
       const result = await shipOnce(opts);
       failures = 0;
+      recordShipSuccess(opts.db, attemptAt);
       if (!result.idle) {
         logger.info({ shipped: result.shipped, acked: result.acked }, 'sync: batch shipped');
       }
     } catch (err) {
       failures++;
+      delay = backoffDelay(intervalMs, failures);
+      recordShipFailure(opts.db, attemptAt, err, failures, attemptAt + delay, opts.token);
       logger.warn(
         { err: (err as Error).message, consecutive_failures: failures },
         'sync: ship failed — will retry with backoff',
       );
     }
     if (!stopped) {
-      const delay = failures > 0 ? backoffDelay(intervalMs, failures) : intervalMs;
       timer = setTimeout(launch, delay);
     }
   }

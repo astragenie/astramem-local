@@ -1,6 +1,6 @@
 /**
  * Upgrade-path e2e (FEAT-420 / SLICE-414): a frozen schema-v12 datadir must
- * open clean on the current (v13) build via the SAME openDb+migrate path
+ * open clean on the current (v14) build via the SAME openDb+migrate path
  * serve.ts uses, with zero data loss (AC-1), searchable pre-upgrade content
  * (AC-2), and fail-loud behavior for corrupt/half-migrated datadirs (AC-3) —
  * never a silent partial open. AC-5 anti-rot: the committed fixture must
@@ -42,13 +42,13 @@ function makeEmbed(dim: number): EmbedProvider {
 }
 
 describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
-  it('AC-1: migrates to schema_version 13 with zero data loss — counts + spot-checked ids match manifest', () => {
+  it('AC-1: migrates to schema_version 14 with zero data loss — counts + spot-checked ids match manifest', () => {
     const dbPath = copyFixtureToTemp();
     const db = openDb(dbPath);
     migrate(db);
 
     const versionRow = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versionRow.v).toBe(13);
+    expect(versionRow.v).toBe(14);
 
     const countOf = (table: string): number =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
