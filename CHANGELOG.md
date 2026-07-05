@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.2] — 2026-07-05
+
+### Fixed
+- **CI: npm publish on self-hosted runners** — dropped `--provenance` from `npm publish`. npm rejects sigstore provenance from self-hosted runners (`E422 Unsupported GitHub Actions runner environment: "self-hosted"`) and fleet policy is self-hosted only, so provenance and the publish were mutually exclusive. Completes the publish fix started in 0.7.1 (#58). No runtime change.
+
+---
+
 ## [0.7.1] — 2026-07-05
 
 ### Fixed
