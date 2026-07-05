@@ -95,8 +95,13 @@ daemon silently ignored — the "any --project returns everything" no-op in
 issue #56. Fixed.)
 
 **SaaS provider** maps `project` → `project_id` and `repo` → `source` against
-the cloud `POST /memories/search`; it does **not** yet forward `agent`. Track
-contract parity in the unify-contracts feature.
+the cloud `POST /memories/search`, and (as of FEAT-424) also forwards `agent`
+verbatim. The SaaS API itself has no canonical `agent` filter yet, though — it
+silently drops the unknown key server-side, so `agent` against the SaaS
+provider is still an effective no-op **end-to-end** (unfiltered results, no
+error) until `astragenie/memory` grows one. See the plugin's
+`docs/recall-filter-contract.md` for the full caveat and per-surface mapping
+table.
 
 ## Precedence / gotchas
 

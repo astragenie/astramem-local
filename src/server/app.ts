@@ -20,6 +20,7 @@ import { dashboardApiRoute } from './routes/dashboard-api-html.js';
 import { memoryToolRoute } from './routes/memory-tool.js';
 import { consolidationRoutes } from './routes/consolidation.js';
 import { entitiesRoute } from './routes/entities.js';
+import { syncStatusRoute } from './routes/sync-status.js';
 import { makeFakeVec } from '../search/search.js';
 import { childLogger } from '../log/logger.js';
 import { newRequestId, runWithRequestId } from '../log/correlation.js';
@@ -155,6 +156,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(memoryToolRoute(opts.db, config));
   await app.register(consolidationRoutes(opts.db));
   await app.register(entitiesRoute(opts.db));
+  await app.register(syncStatusRoute(opts.db, config));
 
   return app;
 }
