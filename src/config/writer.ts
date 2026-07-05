@@ -6,8 +6,8 @@
  * YAML library. Add the `yaml` package when Config grows nested lists.
  */
 
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import type { Config } from './config.js';
 
 /** Emit a scalar value as a YAML-safe string (no quoting for safe values). */
@@ -119,8 +119,28 @@ export function configToYaml(cfg: Config): string {
 
 /**
  * Write config.yaml to `path`, creating parent directories as needed.
+ *
+ * FEAT-433: writes atomically via a sibling tmp file + rename rather than
+ * truncating `path` in place. A plain truncate-then-write leaves a window
+ * where a concurrent reader (daemon boot's `loadConfigFromDisk`, which reads
+ * config.yaml exactly once — there is no live reload) can observe a torn
+ * file: empty, or a YAML fragment with only some keys written. `rename()` is
+ * atomic on the same filesystem (POSIX rename(2); Windows via Node's
+ * MoveFileEx binding), so a concurrent reader always sees either the
+ * complete old file or the complete new one, never a partial write.
  */
 export function writeConfig(cfg: Config, path: string): void {
-  mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, configToYaml(cfg), 'utf8');
+  const dir = dirname(path);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = join(dir, `.config.yaml.${process.pid}.${Date.now()}.tmp`);
+  try {
+    writeFileSync(tmpPath, configToYaml(cfg), 'utf8');
+    renameSync(tmpPath, path);
+  } catch (err) {
+    // Covers both failure points: writeFileSync (disk full/perms, tmp may not
+    // exist yet) and renameSync (tmp exists, rename itself failed). Either
+    // way, don't leave a stray .tmp file behind in the config directory.
+    try { unlinkSync(tmpPath); } catch { /* best-effort cleanup; tmp may not exist */ }
+    throw err;
+  }
 }

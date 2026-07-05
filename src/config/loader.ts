@@ -10,6 +10,21 @@
  * grows past that, swap in a real YAML package (see writer.ts header).
  * Unknown keys are ignored; a malformed file logs a warning and falls back
  * to defaults rather than blocking daemon boot.
+ *
+ * FEAT-433: config is read exactly once per process (there is no live
+ * reload — see resolve-runtime.ts). writer.ts's own writes are fully
+ * torn-proof (tmp+rename), so the remaining race is an EXTERNAL, non-atomic
+ * hand-edit (e.g. an editor that truncates-then-writes) whose save happens
+ * to land mid-boot. Two guarded shapes:
+ *   - fully empty/whitespace read → `readConfigFileWithRetry` retries
+ *     briefly, then WARNs and falls back to defaults.
+ *   - non-empty read that parses to zero keys (cut off before any complete
+ *     `key: value` line landed) → WARNs and falls back to defaults.
+ * A partial hand-edit that lands mid-write AFTER at least one complete
+ * top-level line — losing some keys but not all — is NOT distinguishable
+ * from an intentionally minimal config (e.g. a file containing only
+ * `port: 7001`) and is applied without a warning, same as always. Stop the
+ * service before hand-editing config.yaml to avoid that narrow window.
  */
 
 import { readFileSync } from 'node:fs';
@@ -82,20 +97,80 @@ function deepMerge<T>(base: T, overrides: PlainObject): T {
   return out as T;
 }
 
+/** Synchronous sleep for the bounded torn-read retry — boot is synchronous
+ *  at this point (before app.listen), so there's no event loop to yield to. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Read config.yaml, retrying a couple of times a few ms apart if it reads
+ * back empty. `configToYaml`/`writeConfig` never emit an empty file, so an
+ * existing file that reads back blank is almost certainly a torn read
+ * racing a concurrent write, not an intentionally-empty config — riding out
+ * a ~20ms window costs nothing on the happy path (returns after the first
+ * read) and beats silently discarding the user's config.
+ *
+ * `reader` is an injectable seam for tests; production always uses the real
+ * `readFileSync`.
+ */
+function readConfigFileWithRetry(
+  path: string,
+  reader: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+  attempts = 3,
+  delayMs = 10,
+): string {
+  let text = '';
+  for (let i = 0; i < attempts; i++) {
+    text = reader(path);
+    if (text.trim() !== '') return text;
+    if (i < attempts - 1) sleepSync(delayMs);
+  }
+  return text; // still empty after retries — caller decides how to handle it
+}
+
 /**
  * defaultConfig() with config.yaml (if present and well-formed) merged over
  * it. Never throws — daemon boot must not be blocked by a bad config file.
  */
-export function loadConfigFromDisk(configDir: string): Config {
+export function loadConfigFromDisk(configDir: string, reader?: (path: string) => string): Config {
   const base = defaultConfig();
+  const path = join(configDir, 'config.yaml');
   let text: string;
   try {
-    text = readFileSync(join(configDir, 'config.yaml'), 'utf8');
+    text = readConfigFileWithRetry(path, reader);
   } catch {
-    return base; // no file — defaults
+    return base; // no file (or unreadable) — defaults
   }
+
+  if (text.trim() === '') {
+    console.warn(
+      `[astramem-local] WARNING: config.yaml at ${path} exists but read back empty after retrying — ` +
+      'likely a torn read racing a concurrent write (e.g. an editor save landing mid-boot). ' +
+      'Using defaults for this boot; restart once the write has finished to pick up your config.',
+    );
+    return base;
+  }
+
   try {
-    return deepMerge(base, parseConfigYaml(text));
+    const parsed = parseConfigYaml(text);
+    if (Object.keys(parsed).length === 0) {
+      // Non-empty text (already checked above) that yielded zero parseable
+      // key: value lines. parseConfigYaml never throws — it silently skips
+      // lines it can't parse — so this is the one case that case would
+      // otherwise merge silently: a write truncated before any complete
+      // top-level line landed (e.g. cut off mid-header or mid-first-key).
+      // A file with at least one real key (including an intentionally
+      // minimal hand-edit like just `port: 7001`) does NOT hit this path —
+      // only the all-or-nothing torn case does, so this can't misfire on a
+      // legitimate partial config.
+      console.warn(
+        `[astramem-local] WARNING: config.yaml at ${path} is non-empty but no valid keys were parsed — ` +
+        'this looks like a truncated or corrupt write (e.g. an edit cut off mid-line). ' +
+        'Using defaults for this boot; check the file and restart to pick up your config.',
+      );
+    }
+    return deepMerge(base, parsed);
   } catch (err) {
     console.warn(`[astramem-local] WARNING: config.yaml could not be parsed (${String(err)}) — using defaults.`);
     return base;
