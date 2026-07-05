@@ -101,7 +101,7 @@ rely on the loader alone to catch it.
 
 ## Do NOT
 - Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
-- Do NOT change embed dim without also editing schema (`memories_vec FLOAT[N]`), config default, embed provider `dim`, contracts. Six-file coordinated change. Backlog: parameterize.
+- Do NOT hand-edit `memories_vec FLOAT[N]` in a migration file directly. Since FEAT-409 (merged) the dim is single-sourced from `DEFAULT_EMBED_DIM` (`src/contracts/embed.ts`) — config default, embed providers, `SqliteVecStore`, mock providers, the `__EMBED_DIM__` migration placeholder, and the boot-time preflight (`src/doctor/probes/embed-probe.ts`) all derive from it or from `getVecSchemaDim()`. Changing the *default* is a one-constant edit for fresh DBs; migrating an *existing* DB's live vectors to a new dim requires `astramem-local reembed-dim` (migration 011, `docs/embed-dim-migration.md`) — there is no ALTER for a sqlite-vec vec0 table. FEAT-436 (2026-07-05) re-audited this and confirmed it is resolved, not an open coordinated-change hazard.
 
 <!-- crew:start -->
 <!-- Crew framework memory. Run /crew:install after plugin updates that change framework memory. -->
