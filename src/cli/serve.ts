@@ -273,6 +273,27 @@ export async function serve(opts: ServeOpts): Promise<void> {
     consolidateTimer.unref();
   }
 
+  // Cleanup cadence (FEAT-432): the `cleanup` handler (jobs prune + archival
+  // pass + ingest_idempotency prune) has existed since Wave 4/FEAT-404 and is
+  // registered on the worker + covered by unit tests, but — same bug class as
+  // `consolidate` above — nothing ever enqueued it. Daily is comfortably
+  // frequent relative to the day-scale retention windows it enforces
+  // (older_than_days default 30, ingestIdempotency.retentionDays default 7).
+  let cleanupTimer: NodeJS.Timeout | null = null;
+  if (dataDir !== ':memory:') {
+    const CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000;
+    const enqueueCleanup = () => {
+      try {
+        bootRepo.enqueue('cleanup', { kind: 'cleanup' });
+      } catch (err) {
+        console.warn(`[astramem-local] cleanup enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    enqueueCleanup(); // boot pass — catches anything a downtime window skipped
+    cleanupTimer = setInterval(enqueueCleanup, CLEANUP_INTERVAL_MS);
+    cleanupTimer.unref();
+  }
+
   // WAL discipline (W1.5): with synchronous=NORMAL a hard crash loses the
   // un-checkpointed WAL tail. Truncate hourly so the at-risk window stays
   // small, and once more on graceful shutdown. Timer unref'd — never holds
@@ -295,6 +316,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       stopPreflight?.();
       if (walTimer) clearInterval(walTimer);
       if (consolidateTimer) clearInterval(consolidateTimer);
+      if (cleanupTimer) clearInterval(cleanupTimer);
       if (shipper) await shipper.stop();
       await worker.stop();         // drain in-flight tick before closing DB
       try {

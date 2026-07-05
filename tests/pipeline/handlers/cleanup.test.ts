@@ -97,4 +97,64 @@ describe('cleanupHandler', () => {
     expect(ids).toContain('three-days-old');
     expect(ids).not.toContain('eight-days-old');
   });
+
+  describe('ingest_idempotency retention (FEAT-432)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    function insertIdempotencyRow(id: string, createdAt: number): void {
+      db.prepare(`
+        INSERT INTO ingest_idempotency (key, body_hash, summary_memory_id, created_at)
+        VALUES (?, 'hash', ?, ?)
+      `).run(id, id, createdAt);
+    }
+
+    it('prunes rows older than config.ingestIdempotency.retentionDays and keeps recent ones', async () => {
+      const now = Date.now();
+      insertIdempotencyRow('old-key', now - 8 * DAY_MS);   // older than default 7d — pruned
+      insertIdempotencyRow('recent-key', now - 1 * DAY_MS); // within window — kept
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const remaining = db.prepare('SELECT key FROM ingest_idempotency').all() as { key: string }[];
+      const keys = remaining.map(r => r.key);
+      expect(keys).not.toContain('old-key');
+      expect(keys).toContain('recent-key');
+    });
+
+    it('keeps a row that is still within the configured retention window (replay stays safe)', async () => {
+      const now = Date.now();
+      const withinWindowTs = now - 6 * DAY_MS; // within default 7-day TTL
+      insertIdempotencyRow('within-window-key', withinWindowTs);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const row = db.prepare('SELECT key, body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?')
+        .get('within-window-key') as { key: string; body_hash: string; summary_memory_id: string } | undefined;
+
+      // Row survives the prune, so a replay within the TTL still resolves —
+      // idempotent-replay behavior is unchanged for anything inside the window.
+      expect(row).toBeDefined();
+      expect(row?.summary_memory_id).toBe('within-window-key');
+    });
+
+    it('respects a configured retentionDays value other than the default', async () => {
+      const now = Date.now();
+      insertIdempotencyRow('three-days-old', now - 3 * DAY_MS);
+      insertIdempotencyRow('eight-days-old', now - 8 * DAY_MS);
+
+      const customCtx: HandlerCtx = {
+        db,
+        config: { ...defaultConfig(), ingestIdempotency: { retentionDays: 5 } },
+      };
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, customCtx);
+
+      const remaining = db.prepare('SELECT key FROM ingest_idempotency').all() as { key: string }[];
+      const keys = remaining.map(r => r.key);
+      expect(keys).toContain('three-days-old');
+      expect(keys).not.toContain('eight-days-old');
+    });
+  });
 });

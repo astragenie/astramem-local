@@ -105,6 +105,21 @@ export interface Config {
      * in the trailing 7 days. */
     usefulnessFloor: number;
   };
+  /** Retention for `ingest_idempotency` rows (FEAT-432, HARD hardening pass).
+   * The table exists so a retried `POST /ingest/transcript` with the same
+   * `Idempotency-Key` + body replays a 200 instead of double-writing; nothing
+   * pruned it before this, so it grew forever on an always-on daemon. Runs on
+   * the same cleanup-job cadence as the `jobs` prune / archival pass
+   * (src/pipeline/handlers/cleanup.ts). Default 7 days is a large multiple of
+   * any realistic client retry window (seconds-to-minutes backoff, or an
+   * offline client replaying on next launch) — pruning a row a client still
+   * retries against turns a would-be idempotent replay into a fresh
+   * double-write, so this must stay comfortably above real retry windows. */
+  ingestIdempotency: {
+    /** Rows older than this (by created_at) are pruned. Must stay well above
+     * any realistic client retry window — see rationale above. */
+    retentionDays: number;
+  };
 }
 
 export function defaultConfig(): Config {
@@ -133,7 +148,8 @@ export function defaultConfig(): Config {
       encryption: { enabled: true }
     },
     tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
-    archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 }
+    archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
+    ingestIdempotency: { retentionDays: 7 }
   };
 }
 
