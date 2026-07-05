@@ -63,6 +63,35 @@ Investigation found:
 - `CLAUDE.md`: replaced the unexplained "reload racey" warning with the
   concrete boot-only-read explanation and the new safety guarantees.
 
+### Review round (needs_fix → resolved)
+
+Reviewer caught two real gaps and a doc overclaim in the first pass:
+
+- **Docs overclaimed the guard.** The tolerant parser never throws — a
+  non-empty-but-truncated file (cut off mid-value, after at least one
+  complete `key: value` line) still merges silently, no warning. CLAUDE.md
+  and this FEAT originally implied hand-editing was fully safe. Corrected
+  both to state the guarantee precisely: daemon-own writes are fully
+  torn-proof (atomic rename); a fully-empty read and a non-empty-but-
+  zero-keys-parsed read are both caught + WARNed; a partial hand-edit that
+  loses some-but-not-all keys is a narrow, undetectable-by-design remaining
+  window (indistinguishable from an intentionally minimal config) — stop the
+  service before hand-editing to avoid it.
+- **Added the zero-keys-parsed guard** (`loader.ts`): non-empty text that
+  parses to zero top-level keys — the header-only/mid-first-key truncation
+  case — now WARNs before falling back to defaults, same as the
+  fully-empty case. This is safe because it can't fire on a legitimate
+  partial config (any real key present, e.g. a lone `port: 7001`, skips it).
+  The stronger "required sections missing" heuristic originally proposed
+  was **not** implemented — it would misfire on exactly the intentionally-
+  partial configs the loader is designed to support (see the existing
+  "partial file → merged" test), so it's the wrong shape of guard.
+- **Fixed a tmp-file leak** (`writer.ts`): `writeConfig`'s cleanup only
+  fired when `renameSync` threw; a `writeFileSync` failure (disk full,
+  perms) before the rename left the tmp file behind. Both calls now sit
+  inside one try/catch so any failure path unlinks the tmp file.
+- **De-duplicated a CLAUDE.md line** left over from the original edit.
+
 ## Acceptance criteria
 
 - Given `config.yaml` reads back empty on the first attempt but valid
@@ -72,12 +101,18 @@ Investigation found:
 - Given `config.yaml` stays empty across all retry attempts, when
   `loadConfigFromDisk` is called, then it returns `defaultConfig()`, logs a
   WARN containing "torn read", and never throws.
+- Given `config.yaml` is non-empty but parses to zero top-level keys, when
+  `loadConfigFromDisk` is called, then it returns `defaultConfig()` and logs
+  a WARN, without throwing.
 - Given a well-formed `config.yaml` (full or partial), when
   `loadConfigFromDisk` is called, then behavior is unchanged from before this
   fix (existing roundtrip + partial-file + garbage-file tests stay green).
 - Given `writeConfig` is called, when the write completes, then no
   `.tmp` file is left behind in the config directory and the target file
   contains the complete, parseable YAML.
+- Given `writeConfig` fails at either the write or the rename step, when
+  the call throws, then no `.tmp` file is left behind in the config
+  directory.
 
 ## Refs
 

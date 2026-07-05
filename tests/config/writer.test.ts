@@ -1,10 +1,23 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readFileSync, mkdirSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { configToYaml, writeConfig } from '../../src/config/writer.js';
 import { defaultConfig } from '../../src/config/config.js';
+
+// Wrap the real implementations in vi.fn() so every existing test keeps
+// hitting the real filesystem by default — only the tmp-cleanup tests below
+// override writeFileSync/renameSync with mockImplementationOnce.
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return {
+    ...actual,
+    writeFileSync: vi.fn(actual.writeFileSync),
+    renameSync: vi.fn(actual.renameSync),
+  };
+});
+
+import { readFileSync, mkdirSync, readdirSync, writeFileSync, renameSync } from 'node:fs';
 
 function tmpPath(): string {
   const dir = join(tmpdir(), `astra-writer-test-${randomUUID()}`);
@@ -69,5 +82,43 @@ describe('writeConfig', () => {
     writeConfig(cfg, path);
     const content = readFileSync(path, 'utf8');
     expect(content).toContain('port:');
+  });
+});
+
+// Review round (needs_fix): the tmp cleanup only ran when renameSync threw —
+// a writeFileSync failure (disk full, perms) before the rename left the tmp
+// file behind. Both failure points are now covered by one try/catch.
+describe('writeConfig tmp-file cleanup on failure', () => {
+  afterEach(() => {
+    vi.mocked(writeFileSync).mockClear();
+    vi.mocked(renameSync).mockClear();
+  });
+
+  it('removes the tmp file when writeFileSync throws', () => {
+    const dir = join(tmpdir(), `astra-writer-wfail-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'config.yaml');
+
+    vi.mocked(writeFileSync).mockImplementationOnce(() => {
+      throw new Error('ENOSPC: no space left on device');
+    });
+
+    expect(() => writeConfig(defaultConfig(), path)).toThrow('ENOSPC');
+    const leftoverTmp = readdirSync(dir).filter((f) => f.endsWith('.tmp'));
+    expect(leftoverTmp).toEqual([]);
+  });
+
+  it('removes the tmp file when renameSync throws', () => {
+    const dir = join(tmpdir(), `astra-writer-rfail-${randomUUID()}`);
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'config.yaml');
+
+    vi.mocked(renameSync).mockImplementationOnce(() => {
+      throw new Error('EPERM: operation not permitted');
+    });
+
+    expect(() => writeConfig(defaultConfig(), path)).toThrow('EPERM');
+    const leftoverTmp = readdirSync(dir).filter((f) => f.endsWith('.tmp'));
+    expect(leftoverTmp).toEqual([]);
   });
 });

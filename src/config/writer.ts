@@ -133,11 +133,14 @@ export function writeConfig(cfg: Config, path: string): void {
   const dir = dirname(path);
   mkdirSync(dir, { recursive: true });
   const tmpPath = join(dir, `.config.yaml.${process.pid}.${Date.now()}.tmp`);
-  writeFileSync(tmpPath, configToYaml(cfg), 'utf8');
   try {
+    writeFileSync(tmpPath, configToYaml(cfg), 'utf8');
     renameSync(tmpPath, path);
   } catch (err) {
-    try { unlinkSync(tmpPath); } catch { /* best-effort cleanup */ }
+    // Covers both failure points: writeFileSync (disk full/perms, tmp may not
+    // exist yet) and renameSync (tmp exists, rename itself failed). Either
+    // way, don't leave a stray .tmp file behind in the config directory.
+    try { unlinkSync(tmpPath); } catch { /* best-effort cleanup; tmp may not exist */ }
     throw err;
   }
 }

@@ -86,14 +86,20 @@ config.yaml is read exactly once per process at boot (`resolveRuntimeConfig` →
 `loadConfigFromDisk`) — there is no live reload, so hand-editing it while the
 service is running has no effect on the running process either way; the
 change is picked up on the next restart. `writeConfig` (`init`,
-`reembed-dim`, `pair`) now writes atomically via tmp-file + rename, and the
-boot-time loader retries + WARNs (never silently defaults) if it ever reads
-config.yaml back empty mid-write. It's safe to edit by hand; just make sure
-your editor's save has finished before restarting/upgrading the service so
-the new boot doesn't land mid-write.
+`reembed-dim`, `pair`) now writes atomically via tmp-file + rename, so the
+DAEMON's own writes (including the schtasks keepalive racing a restart) can
+never be observed torn — that's the footgun this warning used to be about,
+and it's fully closed.
+Guarantee, precisely: a fully-empty boot-time read is retried then WARNs +
+falls back to defaults; a non-empty read that parses to zero keys (cut off
+before any complete line) also WARNs + falls back. A hand-edit's own save is
+NOT atomic, though — if a restart lands mid-save AFTER at least one complete
+key: value line was written, the loader applies that partial content with no
+warning (indistinguishable from an intentionally minimal config). Stop the
+service before hand-editing config.yaml to avoid that narrow window; don't
+rely on the loader alone to catch it.
 
 ## Do NOT
-- Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
 - Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
 - Do NOT change embed dim without also editing schema (`memories_vec FLOAT[N]`), config default, embed provider `dim`, contracts. Six-file coordinated change. Backlog: parameterize.
 
