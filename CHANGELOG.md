@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.1] — 2026-07-05
+
+### Fixed
+- **CI: npm publish workflow** — `bun install` in the publish job now runs with `--ignore-scripts`, skipping `better-sqlite3`'s node-gyp native compile that crashed the fleet runner (`webidl.util.markAsUncloneable is not a function`; no prebuilt binary for the target). The publish only needs the TS `dist/` build; the native driver is compiled on the consumer's install. Fixes #58. No runtime changes.
+
+---
+
 ## [0.7.0] — 2026-07-05
 
 Project- and agent-scoped recall (FEAT-423, issue #56).
