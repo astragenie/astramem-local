@@ -43,14 +43,25 @@ jobs:
           path: plugin
 
       # Bun baked into runner image (devops#64) — no setup-bun, no ETXTBSY race.
+      # NODE_ENV=development for the same reason as the plugin install below:
+      # a leaked NODE_ENV=production would make `bun install` skip
+      # devDependencies (typescript), breaking `bun run build` (tsc) — symmetric
+      # guard so the flake can't reappear one step earlier with a `tsc`-not-found
+      # symptom.
       - name: Install + build daemon
         working-directory: daemon
+        env:
+          NODE_ENV: development
         run: |
           bun install --frozen-lockfile
           bun run build
 
+      # Self-hosted runner may inherit NODE_ENV=production from prior jobs,
+      # which makes bun install skip devDependencies (vitest) — force dev deps.
       - name: Install plugin dependencies
         working-directory: plugin
+        env:
+          NODE_ENV: development
         run: bun install --frozen-lockfile
 
       # AC-1/AC-2: ASTRAMEM_LOCAL_DIST_PATH must be the daemon REPO ROOT
