@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.7.0] — 2026-07-05
+
+Project- and agent-scoped recall (FEAT-423, issue #56).
+
+### Added
+
+- **`project` and `agent` recall filters** — `POST /recall` (`filters.project`, `filters.agent`), `GET /search` (`&project=`, `&agent=`), and MCP `search_memory`/`recall_memory` now narrow results by `provenance.project` / `provenance.agent` (exact match, AND-composed). Both accept a single value (`col = ?`) or a comma-list / array (`col IN (...)`, OR-semantics; empty list = no constraint). `agent` is a hard filter; role-scoped soft-boost (FEAT-219) is deferred.
+- **CLI `--project` / `--agent`** on `search`, `recall`, and `remember` (`astramem-local`). `remember` persists them via `metadata.project` / `metadata.agent`.
+- **MCP parity**: `search_memory`/`recall_memory` gained the missing `entity` filter alongside `project`/`agent`.
+- **Docs**: `docs/recall-filters.md` — end-to-end integration contract (wire shapes, CLI, precedence, tests). `/dashboard/api` route table updated.
+- **Tests**: `tests/search/project-filter.test.ts`, `tests/cli/project-filter.test.ts`, and `tests/smoke/smoke.test.ts` filter battery (GET + POST + CLI over a real daemon).
+
+### Fixed
+
+- The recall `project` filter was inert end-to-end because the client never sent it under `filters` (issue #56). Server always supported it; the companion `astramem-plugin` client fix nests the filter correctly.
+
+---
+
 ## [0.6.0] — 2026-07-02
 
 Waves 3 + 4 of the migration map: the cloud bridge and the moat. The full local→cloud loop now works end to end: pair → capture → distill → ship → cloud ledger.

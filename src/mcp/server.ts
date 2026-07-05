@@ -82,7 +82,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
-        project: z.string().optional().describe('Filter by project name'),
+        project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
+        agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
+        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
         since: z
           .number()
           .optional()
@@ -94,6 +96,8 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.type) filters.type = args.type;
       if (args.repo) filters.repo = args.repo;
       if (args.project) filters.project = args.project;
+      if (args.agent) filters.agent = args.agent;
+      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
 
       const hits = await search(args.query, filters, args.limit ?? 10, {
@@ -135,7 +139,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
-        project: z.string().optional().describe('Filter by project name'),
+        project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
+        agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
+        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
         since: z
           .number()
           .optional()
@@ -147,6 +153,8 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.type) filters.type = args.type;
       if (args.repo) filters.repo = args.repo;
       if (args.project) filters.project = args.project;
+      if (args.agent) filters.agent = args.agent;
+      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
 
       const hits = await search(args.query, filters, args.k ?? 5, {

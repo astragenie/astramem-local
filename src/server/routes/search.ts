@@ -1,6 +1,6 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&since=&as_of=&entity=&limit=
+ *   GET  /search?q=&type=&repo=&project=&agent=&since=&as_of=&entity=&limit=
  *   POST /recall  { query, k, filters? }  filters.as_of: ISO-8601 date-time,
  *                                          filters.entity: FEAT-402 AC-4
  *   POST /remember { text, type, metadata? }
@@ -24,13 +24,28 @@ import { clampScores } from '../lib/score-contract.js';
 
 const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
 
+/**
+ * FEAT-423: normalize a comma-separated query-param value into the
+ * SearchFilters shape — a single string stays a string (`col = ?`), multiple
+ * comma-separated values become a string[] (`col IN (...)`). Empty/whitespace
+ * segments are dropped; an all-empty value yields undefined (no filter).
+ */
+function csvFilter(raw: string): string | string[] | undefined {
+  const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+  if (parts.length === 0) return undefined;
+  return parts.length === 1 ? parts[0] : parts;
+}
+
 const RecallBodySchema = z.object({
   query: z.string().min(1),
   k: z.number().int().positive().default(5),
   filters: z.object({
     type: z.array(z.string()).optional(),
     repo: z.string().optional(),
-    project: z.string().optional(),
+    /** FEAT-423: single project or a list (OR-semantics). */
+    project: z.union([z.string(), z.array(z.string())]).optional(),
+    /** FEAT-423: single agent or a list; exact match on provenance agent/agent_type. */
+    agent: z.union([z.string(), z.array(z.string())]).optional(),
     since: z.number().optional(),
     /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
     as_of: z.string().optional(),
@@ -71,7 +86,8 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
 
       if (params.type) filters.type = params.type.split(',').map(t => t.trim());
       if (params.repo) filters.repo = params.repo;
-      if (params.project) filters.project = params.project;
+      if (params.project) filters.project = csvFilter(params.project);
+      if (params.agent) filters.agent = csvFilter(params.agent);
       if (params.since) {
         // Accept epoch ms directly or duration strings like "7d", "24h"
         const sinceNum = Number(params.since);
@@ -113,6 +129,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (rawFilters?.type) filters.type = rawFilters.type;
       if (rawFilters?.repo) filters.repo = rawFilters.repo;
       if (rawFilters?.project) filters.project = rawFilters.project;
+      if (rawFilters?.agent) filters.agent = rawFilters.agent;
       if (rawFilters?.since !== undefined) filters.since = rawFilters.since;
       if (rawFilters?.as_of !== undefined) {
         try {
