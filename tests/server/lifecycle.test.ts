@@ -273,7 +273,11 @@ describe('POST /memory/:id/promote', () => {
     expect(repo.get(id)?.scope).toBe('team');
   });
 
-  it('downward promotion (team -> personal) -> 400', async () => {
+  // FEAT-435: a downward promotion is a valid id whose current state makes
+  // the transition inapplicable — the same error class as "already invalid"
+  // (invalidate) or "never archived" (restore), so it's a 409, not a 400.
+  // 400 is reserved for malformed/invalid request bodies only.
+  it('downward promotion (team -> personal) -> 409', async () => {
     const id = insertMem(repo, 'lc-prom-2');
     await app.inject({
       method: 'POST', url: `/memory/${id}/promote`,
@@ -283,7 +287,8 @@ describe('POST /memory/:id/promote', () => {
       method: 'POST', url: `/memory/${id}/promote`,
       headers: { authorization: 'Bearer tok' }, payload: { scope: 'personal' },
     });
-    expect(res.statusCode).toBe(400);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ id });
   });
 
   it('invalid scope literal -> 400', async () => {
@@ -395,5 +400,152 @@ describe('why_memory history is populated after lifecycle events (KF-A follow-up
       headers: { authorization: 'Bearer tok' },
     });
     expect(res.json().history).toEqual([]);
+  });
+});
+
+// FEAT-435: lock the 404/409/401/400 matrix uniform across every lifecycle
+// verb (invalidate / supersede / promote / restore) so a future 5th verb
+// that diverges from mapLifecycleError fails CI instead of shipping quietly.
+describe('lifecycle error-status conformance (FEAT-435)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let events: MemoryEventRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    events = new MemoryEventRepo(db);
+    app = await buildApp({ db, token: 'tok' });
+  });
+
+  const auth = { authorization: 'Bearer tok' };
+  const UNKNOWN_ID = 'conf-nope';
+
+  // Each verb's not-found/conflict/bad-body/unauthorized request, built
+  // lazily so repo/events/app (bound in beforeEach) are always fresh.
+  function getCase(verb: 'invalidate' | 'supersede' | 'promote' | 'restore') {
+    switch (verb) {
+      case 'invalidate':
+        return {
+          notFound: () => app.inject({
+            method: 'POST', url: `/memory/${UNKNOWN_ID}/invalidate`, headers: auth, payload: {},
+          }),
+          conflict: () => {
+            const id = insertMem(repo, 'conf-inv-conflict');
+            events.invalidate(id);
+            return app.inject({ method: 'POST', url: `/memory/${id}/invalidate`, headers: auth, payload: {} })
+              .then(res => ({ res, id }));
+          },
+          badBody: () => {
+            const id = insertMem(repo, 'conf-inv-badbody');
+            return app.inject({
+              method: 'POST', url: `/memory/${id}/invalidate`, headers: auth,
+              payload: { reason: 123 },
+            });
+          },
+          unauthorized: () => {
+            const id = insertMem(repo, 'conf-inv-unauth');
+            return app.inject({ method: 'POST', url: `/memory/${id}/invalidate`, payload: {} });
+          },
+        };
+      case 'supersede':
+        return {
+          notFound: () => {
+            const newId = insertMem(repo, 'conf-sup-notfound-new');
+            return app.inject({
+              method: 'POST', url: `/memory/${UNKNOWN_ID}/supersede`, headers: auth,
+              payload: { new_id: newId },
+            });
+          },
+          conflict: () => {
+            const oldId = insertMem(repo, 'conf-sup-conflict-old');
+            const newId = insertMem(repo, 'conf-sup-conflict-new');
+            events.invalidate(newId);
+            return app.inject({
+              method: 'POST', url: `/memory/${oldId}/supersede`, headers: auth,
+              payload: { new_id: newId },
+            }).then(res => ({ res, id: oldId }));
+          },
+          badBody: () => {
+            const id = insertMem(repo, 'conf-sup-badbody');
+            return app.inject({ method: 'POST', url: `/memory/${id}/supersede`, headers: auth, payload: {} });
+          },
+          unauthorized: () => {
+            const id = insertMem(repo, 'conf-sup-unauth');
+            return app.inject({ method: 'POST', url: `/memory/${id}/supersede`, payload: { new_id: id } });
+          },
+        };
+      case 'promote':
+        return {
+          notFound: () => app.inject({
+            method: 'POST', url: `/memory/${UNKNOWN_ID}/promote`, headers: auth,
+            payload: { scope: 'team' },
+          }),
+          conflict: () => {
+            const id = insertMem(repo, 'conf-prom-conflict');
+            events.promoteScope(id, 'team');
+            return app.inject({
+              method: 'POST', url: `/memory/${id}/promote`, headers: auth,
+              payload: { scope: 'personal' },
+            }).then(res => ({ res, id }));
+          },
+          badBody: () => {
+            const id = insertMem(repo, 'conf-prom-badbody');
+            return app.inject({
+              method: 'POST', url: `/memory/${id}/promote`, headers: auth,
+              payload: { scope: 'galaxy' },
+            });
+          },
+          unauthorized: () => {
+            const id = insertMem(repo, 'conf-prom-unauth');
+            return app.inject({ method: 'POST', url: `/memory/${id}/promote`, payload: { scope: 'team' } });
+          },
+        };
+      case 'restore':
+        return {
+          notFound: () => app.inject({ method: 'POST', url: `/memory/${UNKNOWN_ID}/restore`, headers: auth }),
+          conflict: () => {
+            const id = insertMem(repo, 'conf-res-conflict'); // never archived
+            return app.inject({ method: 'POST', url: `/memory/${id}/restore`, headers: auth })
+              .then(res => ({ res, id }));
+          },
+          badBody: null, // restore takes no body -> no malformed-body case
+          unauthorized: () => {
+            const id = insertMem(repo, 'conf-res-unauth');
+            return app.inject({ method: 'POST', url: `/memory/${id}/restore` });
+          },
+        };
+    }
+  }
+
+  const verbs = ['invalidate', 'supersede', 'promote', 'restore'] as const;
+
+  it.each(verbs)('%s: nonexistent memory id -> 404 { error: "not found", id }', async (verb) => {
+    const res = await getCase(verb).notFound();
+    expect(res.statusCode).toBe(404);
+    const body = res.json() as { error: string; id: string };
+    expect(body.error).toBe('not found');
+    expect(body.id).toBe(UNKNOWN_ID);
+  });
+
+  it.each(verbs)('%s: valid id, operation not applicable -> 409 { error, id }', async (verb) => {
+    const { res, id } = await getCase(verb).conflict();
+    expect(res.statusCode).toBe(409);
+    const body = res.json() as { error: string; id: string };
+    expect(typeof body.error).toBe('string');
+    expect(body.error.length).toBeGreaterThan(0);
+    expect(body.id).toBe(id);
+  });
+
+  it.each(verbs)('%s: missing/invalid Bearer -> 401', async (verb) => {
+    const res = await getCase(verb).unauthorized();
+    expect(res.statusCode).toBe(401);
+  });
+
+  it.each(verbs.filter(v => getCase(v).badBody !== null))('%s: malformed body -> 400', async (verb) => {
+    const res = await getCase(verb).badBody!();
+    expect(res.statusCode).toBe(400);
   });
 });
