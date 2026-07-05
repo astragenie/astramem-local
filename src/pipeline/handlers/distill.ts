@@ -12,6 +12,7 @@ import { isExtendedCtx } from '../handler-ctx-ext.js';
 import { runPipeline, BudgetExceeded } from '../../distill/pipeline.js';
 import { flattenTranscriptContent } from '../../distill/flatten-turns.js';
 import { backfillSummaryMemoryId } from '../../storage/ingest-idempotency.js';
+import { deriveProject } from '../derive-project.js';
 import { JobRepo } from '../job-repo.js';
 
 /**
@@ -38,6 +39,7 @@ interface SessionRow {
   project: string | null;
   branch: string | null;
   agent: string | null;
+  cwd: string | null;
 }
 
 export const distillHandler: JobHandler = {
@@ -62,7 +64,7 @@ export const distillHandler: JobHandler = {
 
     // Fetch session metadata for memory context
     const session = ctx.db
-      .prepare('SELECT id, repo, project, branch, agent FROM sessions WHERE id = ?')
+      .prepare('SELECT id, repo, project, branch, agent, cwd FROM sessions WHERE id = ?')
       .get(session_id) as SessionRow | undefined;
 
     // D-DEF1: canonical transcripts store JSON.stringify(turns) in `content`
@@ -96,7 +98,7 @@ export const distillHandler: JobHandler = {
       capUsd: ctx.config.budget.daily_usd,
       sessionId: session_id,
       repo: session?.repo ?? null,
-      project: session?.project ?? null,
+      project: session?.project ?? deriveProject(session?.cwd, session?.repo),
       branch: session?.branch ?? null,
       agent: session?.agent ?? null,
       sourceHash,

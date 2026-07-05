@@ -21,6 +21,7 @@
 
 import type { DB } from '../storage/db.js';
 import { deriveRepoFromCwd } from './derive-repo.js';
+import { deriveProject } from '../pipeline/derive-project.js';
 import type { Tier2InferFn, TagCandidatePair } from './tier2-infer.js';
 
 export interface BackfillOptions {
@@ -112,7 +113,10 @@ export async function runTagHygieneBackfill(
       const session = sessionStmt.get(row.session_id) as SessionRow | undefined;
       if (session) {
         const sessionRepo = session.repo ?? deriveRepoFromCwd(session.cwd);
-        const sessionProject = session.project;
+        // FEAT-423: fall back to cwd-basename/repo when the session carries
+        // no explicit project (mirrors the write-side derivation applied at
+        // ingest time in src/pipeline/handlers/distill*.ts).
+        const sessionProject = session.project ?? deriveProject(session.cwd, sessionRepo);
         let changed = false;
         if (isBlank(proposedRepo) && !isBlank(sessionRepo)) { proposedRepo = sessionRepo; changed = true; }
         if (isBlank(proposedProject) && !isBlank(sessionProject)) { proposedProject = sessionProject; changed = true; }

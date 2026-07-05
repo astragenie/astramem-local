@@ -20,6 +20,7 @@ import { reduce } from '../../distill/stages/06-reduce.js';
 import { memoryNormalize } from '../../distill/stages/07-memory-normalize.js';
 import { embedAndIndex } from '../../distill/stages/08-embed-index.js';
 import { backfillSummaryMemoryId } from '../../storage/ingest-idempotency.js';
+import { deriveProject } from '../derive-project.js';
 import { childLogger } from '../../log/logger.js';
 import type { Atom } from '../../distill/prompts/extract.js';
 
@@ -62,6 +63,7 @@ interface SessionRow {
   project: string | null;
   branch: string | null;
   agent: string | null;
+  cwd: string | null;
 }
 
 /** Applied when the source event omits importance/confidence (ADR-008). */
@@ -91,7 +93,7 @@ export const distillEventsHandler: JobHandler = {
 
     // Fetch session metadata for memory context
     const session = ctx.db
-      .prepare('SELECT id, repo, project, branch, agent FROM sessions WHERE id = ?')
+      .prepare('SELECT id, repo, project, branch, agent, cwd FROM sessions WHERE id = ?')
       .get(session_id) as SessionRow | undefined;
 
     let rawEvents: unknown;
@@ -151,7 +153,7 @@ export const distillEventsHandler: JobHandler = {
       embed: ctx.providers.embed,
       sessionId: session_id,
       repo: session?.repo ?? null,
-      project: session?.project ?? null,
+      project: session?.project ?? deriveProject(session?.cwd, session?.repo),
       branch: session?.branch ?? null,
       agent: session?.agent ?? null,
       sourceHash,
