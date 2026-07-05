@@ -143,6 +143,44 @@ export function lastAckedSeq(db: DB): number {
   return row.s ?? 0;
 }
 
+/**
+ * Timestamp (ms epoch) of the most recently-shipped event, or null if
+ * nothing has ever shipped from this device. Read-only observability helper
+ * (FEAT-427 GET /sync/status) — does not affect shipping behavior.
+ */
+export function lastShipAt(db: DB): number | null {
+  const row = db
+    .prepare('SELECT MAX(synced_at) AS a FROM memory_events WHERE synced_at IS NOT NULL')
+    .get() as { a: number | null };
+  return row.a ?? null;
+}
+
+/**
+ * Count of currently ship-eligible, not-yet-synced events (same ADR-009
+ * scope-filter WHERE clause as {@link listUnsynced}, without the batch
+ * LIMIT). Read-only observability helper (FEAT-427 GET /sync/status) — does
+ * not affect shipping behavior.
+ */
+export function countUnsynced(db: DB): number {
+  const row = db
+    .prepare(`
+      SELECT COUNT(*) AS n
+      FROM memory_events e
+      LEFT JOIN memories m ON m.id = e.atom_id
+      WHERE e.synced_at IS NULL
+        AND e.event_type NOT IN ('archive', 'restore')
+        AND (
+          m.scope IN ('team', 'org')
+          OR (
+            e.event_type = 'erase_request'
+            AND json_extract(e.payload_json, '$.scope') IN ('team', 'org')
+          )
+        )
+    `)
+    .get() as { n: number };
+  return row.n;
+}
+
 export function buildEnvelope(
   deviceId: string,
   workspaceId: string,
