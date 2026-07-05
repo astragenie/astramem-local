@@ -19,7 +19,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       # Bun is baked into the runner image at /usr/local/bin (devops#64) —
       # setup-bun's cache-restore/exec race caused intermittent ETXTBSY.
