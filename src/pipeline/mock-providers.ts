@@ -16,26 +16,14 @@
  * TEST-ONLY deterministic extraction vocabulary (SLICE-SMOKE-1 orchestrator
  * decision, 2026-07-04: extending this file additively was approved as a
  * relaxation of "no product-code changes" for test-double code specifically
- * — see the smoke-suite run brief. Exclusively consumed by
- * tests/smoke/_fixtures/session-canonical.json; fixture and this table must
- * stay in lockstep, and this file is never reachable outside
- * ASTRA_MEMORY_MOCK_PROVIDERS=1 (CI/test only — real serving never sets it).
- * Each row is an independent case-insensitive substring match against the
- * full extraction input; matching keywords each append one fixed atom (no
- * parsing, no branching beyond the match itself):
- *
- *   trigger keyword              -> atom type -> entity emitted
- *   ---------------------------------------------------------------------
- *   "sqlite-vec" / "sqlite_vec"  -> decision   -> none (ORIGINAL, unchanged
- *                                                 byte-for-byte since before
- *                                                 SLICE-SMOKE-1)
- *   "priya nair"                 -> fact       -> person: "Priya Nair"
- *   "astramemory-local"          -> fact       -> repo: "astramemory-local"
- *   "typescript"                 -> fact       -> tech: "TypeScript"
- *   "todo:"                      -> todo       -> none
- *   "prefers markdown summaries" -> note       -> none (closest valid
- *                                                 MemoryType — the schema
- *                                                 has no 'preference' type)
+ * — see the smoke-suite run brief). The keyword -> atom-type -> entity table
+ * itself now lives in ./mock-extraction-vocab.ts (FEAT-414) — the single
+ * source of truth shared with tests/hygiene/mock-vocab-fixture-lockstep.test.ts,
+ * which asserts tests/smoke/_fixtures/session-canonical.json still triggers
+ * every rule. Edit the vocab there, not here; drift between the vocab and
+ * the fixture is now a failing test, not silence. This file is never
+ * reachable outside ASTRA_MEMORY_MOCK_PROVIDERS=1 (CI/test only — real
+ * serving never sets it).
  */
 
 import { createHash } from 'node:crypto';
@@ -43,6 +31,7 @@ import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../c
 import type { EmbedProvider, EmbedHealth } from '../contracts/embed.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import type { ProviderSet } from '../providers/index.js';
+import { MOCK_EXTRACTION_VOCAB } from './mock-extraction-vocab.js';
 
 // ── Mock LLM ─────────────────────────────────────────────────────────────────
 
@@ -59,71 +48,19 @@ class MockLLMProvider implements LLMProvider {
 
     if (isExtraction) {
       // Return a valid ExtractionSchema JSON that the Zod validator will accept.
-      // See the file-header keyword table — each check below is independent
-      // and additive; the sqlite-vec case is byte-identical to the original.
+      // Vocabulary lives in ./mock-extraction-vocab.ts (FEAT-414) — each rule
+      // fires independently and additively; the sqlite-vec rule is
+      // byte-identical to the pre-FEAT-414 original.
       const lower = userContent.toLowerCase();
       const atoms: Array<{
         type: string; text: string; importance: number; confidence: number;
         evidence?: string; entities?: Array<{ name: string; kind: string }>;
       }> = [];
 
-      // ORIGINAL — unchanged since before SLICE-SMOKE-1.
-      if (lower.includes('sqlite-vec') || lower.includes('sqlite_vec')) {
-        atoms.push({
-          type: 'decision',
-          text: 'use sqlite-vec for v1 vector storage',
-          importance: 0.9,
-          confidence: 0.9,
-          evidence: 'OK let\'s go with sqlite-vec',
-        });
-      }
-
-      if (lower.includes('priya nair')) {
-        atoms.push({
-          type: 'fact',
-          text: 'Priya Nair is the designated reviewer for this work',
-          importance: 0.5,
-          confidence: 0.8,
-          entities: [{ name: 'Priya Nair', kind: 'person' }],
-        });
-      }
-
-      if (lower.includes('astramemory-local')) {
-        atoms.push({
-          type: 'fact',
-          text: 'This work belongs to the astramemory-local repo',
-          importance: 0.5,
-          confidence: 0.8,
-          entities: [{ name: 'astramemory-local', kind: 'repo' }],
-        });
-      }
-
-      if (lower.includes('typescript')) {
-        atoms.push({
-          type: 'fact',
-          text: 'This project is written in TypeScript',
-          importance: 0.5,
-          confidence: 0.8,
-          entities: [{ name: 'TypeScript', kind: 'tech' }],
-        });
-      }
-
-      if (lower.includes('todo:')) {
-        atoms.push({
-          type: 'todo',
-          text: 'Write a migration guide before shipping',
-          importance: 0.6,
-          confidence: 0.8,
-        });
-      }
-
-      if (lower.includes('prefers markdown summaries')) {
-        atoms.push({
-          type: 'note',
-          text: 'Prefers markdown-formatted memory summaries',
-          importance: 0.4,
-          confidence: 0.7,
-        });
+      for (const rule of MOCK_EXTRACTION_VOCAB) {
+        if (rule.keywords.some(kw => lower.includes(kw))) {
+          atoms.push({ ...rule.atom });
+        }
       }
 
       return {
