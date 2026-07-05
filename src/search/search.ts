@@ -24,7 +24,20 @@ import { EntityRepo } from '../storage/entities.js';
 export interface SearchFilters {
   type?: string[];
   repo?: string;
-  project?: string;
+  /**
+   * Project filter (FEAT-423). Exact match on `memories.project`. A single
+   * string → `project = ?`; a string[] → `project IN (...)` (OR-semantics,
+   * mirrors `type[]`). Empty array = no constraint. Absent → all projects.
+   */
+  project?: string | string[];
+  /**
+   * Agent filter (FEAT-423 nice-to-have). Exact match on `memories.agent`
+   * (the provenance `agent`/`agent_type` populated at ingest). Applied
+   * post-fusion exactly like `repo`/`project`; single string or string[]
+   * (IN). Absent → all agents. This is a HARD filter; role-scoped soft-boost
+   * recall (FEAT-219) is a separate, later ranking concern and does not go here.
+   */
+  agent?: string | string[];
   since?: number;  // epoch ms lower bound on created_at
   /**
    * Bitemporal time-travel (FEAT-401, ADR-001/ADR-005): return memories as
@@ -312,10 +325,21 @@ export async function search(
     filterClauses.push('repo = ?');
     filterParams.push(filters.repo);
   }
-  if (filters.project !== undefined) {
-    filterClauses.push('project = ?');
-    filterParams.push(filters.project);
-  }
+  // FEAT-423: project/agent accept a single value (`col = ?`) or a list
+  // (`col IN (...)`, OR-semantics like `type[]`). An empty list is treated as
+  // no constraint, never as "match nothing".
+  const addEqOrIn = (col: 'project' | 'agent', val: string | string[]) => {
+    if (Array.isArray(val)) {
+      if (val.length === 0) return;
+      filterClauses.push(`${col} IN (${val.map(() => '?').join(',')})`);
+      filterParams.push(...val);
+    } else {
+      filterClauses.push(`${col} = ?`);
+      filterParams.push(val);
+    }
+  };
+  if (filters.project !== undefined) addEqOrIn('project', filters.project);
+  if (filters.agent !== undefined) addEqOrIn('agent', filters.agent);
   if (filters.since !== undefined) {
     filterClauses.push('created_at >= ?');
     filterParams.push(filters.since);
