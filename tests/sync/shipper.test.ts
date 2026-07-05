@@ -21,6 +21,11 @@ import {
   lastAckedSeq,
   getOrCreateDeviceId,
   SYNC_PROTOCOL,
+  recordShipSuccess,
+  recordShipFailure,
+  getShipAttemptState,
+  sanitizeShipError,
+  startShipper,
 } from '../../src/sync/shipper.js';
 
 function seedMemory(db: DB, scope: 'personal' | 'team' | 'org', hash: string): string {
@@ -236,5 +241,127 @@ describe('getOrCreateDeviceId', () => {
     const first = getOrCreateDeviceId(dir);
     expect(first).toMatch(/^[0-9a-f-]{36}$/);
     expect(getOrCreateDeviceId(dir)).toBe(first);
+  });
+});
+
+// FEAT-434 — last-ship-ATTEMPT state (distinct from lastShipAt, which only
+// ever reflects success). Persisted in sync_ship_state (migration 014),
+// same single-row convention as sync_pull_state (migration 010).
+describe('ship-attempt state (FEAT-434)', () => {
+  let db: DB;
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('defaults to all-null/zero before any round has run', () => {
+    expect(getShipAttemptState(db)).toEqual({
+      last_attempt_at: null,
+      last_result: null,
+      last_error: null,
+      consecutive_failures: 0,
+      next_retry_at: null,
+    });
+  });
+
+  it('recordShipFailure captures result, sanitized error, failure count, and backoff', () => {
+    recordShipFailure(db, 1000, new Error('sync ship failed: HTTP 503'), 1, 1000 + 60_000, 'sekret-token');
+    expect(getShipAttemptState(db)).toEqual({
+      last_attempt_at: 1000,
+      last_result: 'error',
+      last_error: 'sync ship failed: HTTP 503',
+      consecutive_failures: 1,
+      next_retry_at: 61_000,
+    });
+  });
+
+  it('recordShipSuccess clears error/backoff state and resets the failure count', () => {
+    recordShipFailure(db, 1000, new Error('boom'), 3, 1000 + 240_000, 'tok');
+    recordShipSuccess(db, 2000);
+    expect(getShipAttemptState(db)).toEqual({
+      last_attempt_at: 2000,
+      last_result: 'ok',
+      last_error: null,
+      consecutive_failures: 0,
+      next_retry_at: null,
+    });
+  });
+
+  it('a subsequent failure overwrites (not accumulates) the single persisted row', () => {
+    recordShipFailure(db, 1000, new Error('first'), 1, 1060_000, 'tok');
+    recordShipFailure(db, 2000, new Error('second'), 2, 2120_000, 'tok');
+    const state = getShipAttemptState(db);
+    expect(state.last_error).toBe('second');
+    expect(state.consecutive_failures).toBe(2);
+  });
+});
+
+describe('sanitizeShipError (FEAT-434) — no secret ever persisted/exposed', () => {
+  it('redacts every occurrence of the device token', () => {
+    const msg = sanitizeShipError('sync ship failed: token abc123 rejected, retry with abc123', 'abc123');
+    expect(msg).not.toContain('abc123');
+    expect(msg).toBe('sync ship failed: token [redacted] rejected, retry with [redacted]');
+  });
+
+  it('is a no-op when no token is supplied', () => {
+    expect(sanitizeShipError('HTTP 503')).toBe('HTTP 503');
+  });
+
+  it('caps message length so an unbounded error body cannot bloat local state', () => {
+    const huge = 'x'.repeat(2000);
+    const msg = sanitizeShipError(huge);
+    expect(msg.length).toBeLessThan(600);
+    expect(msg.endsWith('…')).toBe(true);
+  });
+});
+
+describe('startShipper — records attempt state across rounds (FEAT-434)', () => {
+  let db: DB;
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    const events = new MemoryEventRepo(db);
+    const team = seedMemory(db, 'team', 'h-loop-1');
+    events.append({ event_type: 'create', atom_id: team });
+  });
+
+  it('a failed round records error + failure count; a later successful round clears it', async () => {
+    let call = 0;
+    const flakyThenOk = (async () => {
+      call++;
+      if (call === 1) {
+        return { ok: false, status: 503, json: async () => ({}) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ acked_seq: 1 }) } as Response;
+    }) as typeof fetch;
+
+    const handle = startShipper({
+      db, url: 'https://cloud.example', workspaceId: 'ws-1',
+      deviceId: 'dev-1', token: 'shh-secret', fetchImpl: flakyThenOk,
+      intervalMs: 10_000_000, // never auto-fire a second round during the test
+    });
+    // stop() awaits the in-flight round, so this settles the immediate first attempt.
+    await handle.stop();
+
+    const afterFailure = getShipAttemptState(db);
+    expect(afterFailure.last_result).toBe('error');
+    expect(afterFailure.consecutive_failures).toBe(1);
+    expect(afterFailure.last_error).toContain('HTTP 503');
+    expect(afterFailure.last_error).not.toContain('shh-secret');
+    expect(afterFailure.next_retry_at).not.toBeNull();
+
+    // Second (successful) round, started fresh — as if the backoff timer fired.
+    const handle2 = startShipper({
+      db, url: 'https://cloud.example', workspaceId: 'ws-1',
+      deviceId: 'dev-1', token: 'shh-secret', fetchImpl: flakyThenOk,
+      intervalMs: 10_000_000,
+    });
+    await handle2.stop();
+
+    const afterSuccess = getShipAttemptState(db);
+    expect(afterSuccess.last_result).toBe('ok');
+    expect(afterSuccess.consecutive_failures).toBe(0);
+    expect(afterSuccess.last_error).toBeNull();
+    expect(afterSuccess.next_retry_at).toBeNull();
   });
 });
