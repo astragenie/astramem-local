@@ -81,8 +81,19 @@ Local dev: `serve --port 7777` foreground, `ASTRA_MEMORY_DATADIR=:memory:` for t
 - Retrieval eval gate: ADR-005 harness (tests/eval/retrieval-eval.test.ts) runs in every vitest/CI pass — recall@10 ≥ 0.9, NDCG@10 ≥ 0.7 regression floors, deterministic fake embedder.
 - Usefulness → ranking: ADR-010 v1.x epsilon component live in src/search/fuse.ts (`epsilon: 0.1` default; Laplace-smoothed used/corrected per atom).
 
+## Config reload (FEAT-433, resolved)
+config.yaml is read exactly once per process at boot (`resolveRuntimeConfig` →
+`loadConfigFromDisk`) — there is no live reload, so hand-editing it while the
+service is running has no effect on the running process either way; the
+change is picked up on the next restart. `writeConfig` (`init`,
+`reembed-dim`, `pair`) now writes atomically via tmp-file + rename, and the
+boot-time loader retries + WARNs (never silently defaults) if it ever reads
+config.yaml back empty mid-write. It's safe to edit by hand; just make sure
+your editor's save has finished before restarting/upgrading the service so
+the new boot doesn't land mid-write.
+
 ## Do NOT
-- Do NOT edit `%APPDATA%\Astramem\config.yaml` by hand while service is running — reload racey. Stop service first.
+- Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
 - Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
 - Do NOT change embed dim without also editing schema (`memories_vec FLOAT[N]`), config default, embed provider `dim`, contracts. Six-file coordinated change. Backlog: parameterize.
 

@@ -10,6 +10,16 @@
  * grows past that, swap in a real YAML package (see writer.ts header).
  * Unknown keys are ignored; a malformed file logs a warning and falls back
  * to defaults rather than blocking daemon boot.
+ *
+ * FEAT-433: config is read exactly once per process (there is no live
+ * reload — see resolve-runtime.ts), so the only real race is a *boot*
+ * landing mid-write of config.yaml (writer.ts now writes atomically via
+ * tmp+rename, but an external editor's own truncate-then-write save could
+ * still be caught mid-flight). writer.ts never emits an empty file, so an
+ * existing config.yaml that reads back empty/whitespace-only is the
+ * signature of a torn read — `readConfigFileWithRetry` retries briefly
+ * before falling back, and a bad read always logs a WARN rather than
+ * silently reverting to defaults.
  */
 
 import { readFileSync } from 'node:fs';
@@ -82,18 +92,61 @@ function deepMerge<T>(base: T, overrides: PlainObject): T {
   return out as T;
 }
 
+/** Synchronous sleep for the bounded torn-read retry — boot is synchronous
+ *  at this point (before app.listen), so there's no event loop to yield to. */
+function sleepSync(ms: number): void {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Read config.yaml, retrying a couple of times a few ms apart if it reads
+ * back empty. `configToYaml`/`writeConfig` never emit an empty file, so an
+ * existing file that reads back blank is almost certainly a torn read
+ * racing a concurrent write, not an intentionally-empty config — riding out
+ * a ~20ms window costs nothing on the happy path (returns after the first
+ * read) and beats silently discarding the user's config.
+ *
+ * `reader` is an injectable seam for tests; production always uses the real
+ * `readFileSync`.
+ */
+function readConfigFileWithRetry(
+  path: string,
+  reader: (p: string) => string = (p) => readFileSync(p, 'utf8'),
+  attempts = 3,
+  delayMs = 10,
+): string {
+  let text = '';
+  for (let i = 0; i < attempts; i++) {
+    text = reader(path);
+    if (text.trim() !== '') return text;
+    if (i < attempts - 1) sleepSync(delayMs);
+  }
+  return text; // still empty after retries — caller decides how to handle it
+}
+
 /**
  * defaultConfig() with config.yaml (if present and well-formed) merged over
  * it. Never throws — daemon boot must not be blocked by a bad config file.
  */
-export function loadConfigFromDisk(configDir: string): Config {
+export function loadConfigFromDisk(configDir: string, reader?: (path: string) => string): Config {
   const base = defaultConfig();
+  const path = join(configDir, 'config.yaml');
   let text: string;
   try {
-    text = readFileSync(join(configDir, 'config.yaml'), 'utf8');
+    text = readConfigFileWithRetry(path, reader);
   } catch {
-    return base; // no file — defaults
+    return base; // no file (or unreadable) — defaults
   }
+
+  if (text.trim() === '') {
+    console.warn(
+      `[astramem-local] WARNING: config.yaml at ${path} exists but read back empty after retrying — ` +
+      'likely a torn read racing a concurrent write (e.g. an editor save landing mid-boot). ' +
+      'Using defaults for this boot; restart once the write has finished to pick up your config.',
+    );
+    return base;
+  }
+
   try {
     return deepMerge(base, parseConfigYaml(text));
   } catch (err) {
