@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { randomUUID } from 'node:crypto';
 import { openDb } from '../../../src/storage/db.js';
 import { migrate } from '../../../src/storage/migrate.js';
@@ -15,6 +15,19 @@ import type { EmbedProvider, EmbedHealth, LLMProvider, ChatMsg, ChatOpts, ChatRe
 // calls, so the mock LLM provider here is never invoked (present only
 // because ExtendedHandlerCtx.providers requires it).
 // ---------------------------------------------------------------------------
+
+// FEAT-431 (class B, cold-import flake — discovered during full-suite
+// repeated-run verification, same pattern as migrate-dirs/cipher-spike/
+// codex-scan): the e2e-ish test below does `await import('../../../src/
+// server/app.js')` + `openDb(':memory:')` (native better-sqlite3-multiple-
+// ciphers/sqlite-vec load) + a full `buildApp()` route/schema compile, all
+// inside one `it()` with the default 5000ms testTimeout and no override.
+// Reproduced: full-suite `bunx vitest run` failed here with "Test timed out
+// in 5000ms" on a rerun while every assertion in the test is deterministic
+// (no sleeps, no external timing) — purely a cold-import/compile budget
+// issue under worker-pool contention. Scope a generous per-FILE timeout
+// (not the global vitest config / CI --testTimeout flag).
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
 
 function makeMockLLM(): LLMProvider {
   return {

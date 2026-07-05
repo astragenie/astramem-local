@@ -21,6 +21,29 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
 
+// FEAT-431 (class B, cold-import flake): every test below runs
+// `vi.resetModules()` in `beforeEach` then dynamically re-`import()`s
+// `../../src/config/migrate-dirs.js` (+ `./datadir.js`) under fresh mocks.
+// `vi.resetModules()` only clears Vitest's module-INSTANCE registry — it
+// does not invalidate Vite's underlying esbuild transform cache — but the
+// FIRST transform of a given file in this worker can spike unpredictably
+// under disk/AV contention. Reproduced locally: an isolated back-to-back
+// loop of just this file saw one run balloon to 13.38s wall-clock
+// ("transform 12.09s") against ~1.5-2.2s for the other four. Hoisting one
+// throwaway import of the real (unmocked) module here, at collection time —
+// before any `beforeEach`/`resetModules()` cycle starts and outside any
+// per-test timeout window — pre-warms that transform cache so every
+// per-test dynamic re-import below only pays cheap re-instantiation, not
+// re-transformation.
+import '../../src/config/migrate-dirs.js';
+
+// Belt-and-suspenders: scope a generous per-FILE timeout (not the global
+// vitest config / CI --testTimeout flag) so residual environmental jitter
+// the warm-import above can't fully absorb (e.g. antivirus/EDR scanning a
+// freshly-written temp file on a cold self-hosted runner) doesn't flake this
+// suite. Only affects this file's tests/hooks.
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
+
 function makeTmpDir(): string {
   const d = join(tmpdir(), `migrate-test-${randomUUID()}`);
   mkdirSync(d, { recursive: true });
