@@ -106,6 +106,16 @@ jobs:
             echo "No Ollama on :11434 — starting one via Docker."
           fi
 
+      - name: Preflight — Ollama CLI presence on host
+        # Distinct from the port-11434 probe above: this checks whether the
+        # `ollama` binary itself is installed on the runner host (even if not
+        # currently running as a service), so a future maintainer can tell
+        # "no service running" apart from "no binary present at all" (FEAT-421
+        # diagnostic — see .github/workflows/README.md nightly-live section).
+        run: |
+          ollama --version || echo "OLLAMA_MISSING"
+          which ollama || echo "ollama binary not found on PATH"
+
       - name: Start Ollama (docker)
         if: steps.probe.outputs.found == '0'
         run: |
