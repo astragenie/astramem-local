@@ -7,6 +7,7 @@ import { stableStringify } from '../lib/stable-stringify.js';
 import { type Config, defaultConfig } from '../../config/config.js';
 import { redactIfEnabled, type RedactionEvent } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
+import { deriveRepoFromCwd } from '../../tag-hygiene/derive-repo.js';
 
 // ---------------------------------------------------------------------------
 // Legacy envelope (v0.0) — original shape; discriminated by presence of `content`
@@ -114,12 +115,15 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
   );
 
   // cwd (FEAT-403 / migration 009) is stored so the tag-hygiene backfill can
-  // derive `repo` from it later — the canonical envelope never sends `repo`
-  // directly, so without cwd this session would have no repo signal at all.
-  const stmtUpsertSession = db.prepare<[string, string | null, string | null, string | null, number]>(`
+  // still catch stragglers, but FEAT-423 also derives `repo` from it
+  // synchronously here — the canonical envelope never sends `repo` directly,
+  // so without this the `repo` column (and anything preferring it, e.g.
+  // deriveProject) would sit NULL until the async backfill runs.
+  const stmtUpsertSession = db.prepare<[string, string | null, string | null, string | null, string | null, number]>(`
     INSERT INTO sessions (id, repo, project, branch, agent, cwd, started_at)
-    VALUES (?, NULL, ?, NULL, ?, ?, ?)
+    VALUES (?, ?, ?, NULL, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
+      repo    = COALESCE(excluded.repo, repo),
       project = COALESCE(excluded.project, project),
       agent   = COALESCE(excluded.agent, agent),
       cwd     = COALESCE(excluded.cwd, cwd)
@@ -296,7 +300,7 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
             const tx = db.transaction(() => {
               if (idempotencyKey !== null) claimIdempotencySlot(idempotencyKey, bodyHash, now);
 
-              stmtUpsertSession.run(data.session_id, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
+              stmtUpsertSession.run(data.session_id, deriveRepoFromCwd(data.cwd), data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
 
               transcriptId = randomUUID();
               stmtInsertTranscript.run(
@@ -452,7 +456,7 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
             }
 
             // --- Real insert ---
-            stmtUpsertSession.run(data.session_id, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
+            stmtUpsertSession.run(data.session_id, deriveRepoFromCwd(data.cwd), data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
 
             transcriptId = randomUUID();
             stmtInsertTranscript.run(

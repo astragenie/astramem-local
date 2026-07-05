@@ -89,6 +89,53 @@ describe('runTagHygieneBackfill', () => {
     db.close();
   });
 
+  // ---- FEAT-423: project derivation falls back to cwd/repo when session.project is null ----
+  it('FEAT-423: derives project from session cwd when session.project is null', async () => {
+    const db = setupDb();
+    const sessionId = randomUUID();
+    // No explicit project on the session — only cwd.
+    insertSession(db, sessionId, { project: null, cwd: '/home/user/my-repo' });
+    const memId = insertMemory(db, { session_id: sessionId, repo: null, project: null });
+
+    const result = await runTagHygieneBackfill(db, { dryRun: false, tier2Enabled: false, confidenceThreshold: 0.7 });
+
+    expect(result.tier1Applied).toBe(1);
+    const row = db.prepare('SELECT repo, project FROM memories WHERE id = ?').get(memId) as { repo: string; project: string };
+    expect(row.repo).toBe('my-repo');
+    expect(row.project).toBe('my-repo');
+    db.close();
+  });
+
+  it('FEAT-423: --dry-run proposes a cwd-derived project without mutating rows', async () => {
+    const db = setupDb();
+    const sessionId = randomUUID();
+    insertSession(db, sessionId, { project: null, cwd: '/home/user/my-repo' });
+    const memId = insertMemory(db, { session_id: sessionId });
+
+    const result = await runTagHygieneBackfill(db, { dryRun: true, tier2Enabled: false, confidenceThreshold: 0.7 });
+
+    const candidate = result.candidates.find(c => c.id === memId)!;
+    expect(candidate.proposedProject).toBe('my-repo');
+    expect(candidate.applied).toBe(false);
+
+    const row = db.prepare('SELECT project FROM memories WHERE id = ?').get(memId) as { project: string | null };
+    expect(row.project).toBeNull();
+    db.close();
+  });
+
+  it('FEAT-423: falls back to explicit session.repo for project when session has no cwd', async () => {
+    const db = setupDb();
+    const sessionId = randomUUID();
+    insertSession(db, sessionId, { repo: 'explicit-repo', project: null, cwd: null });
+    const memId = insertMemory(db, { session_id: sessionId });
+
+    await runTagHygieneBackfill(db, { dryRun: false, tier2Enabled: false, confidenceThreshold: 0.7 });
+
+    const row = db.prepare('SELECT project FROM memories WHERE id = ?').get(memId) as { project: string | null };
+    expect(row.project).toBe('explicit-repo');
+    db.close();
+  });
+
   it('AC-1: prefers session.repo over cwd-derived repo when both present', async () => {
     const db = setupDb();
     const sessionId = randomUUID();

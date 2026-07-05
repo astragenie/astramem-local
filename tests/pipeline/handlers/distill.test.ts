@@ -64,6 +64,14 @@ function insertSession(db: DB, id: string): void {
   `).run(id, Date.now());
 }
 
+/** FEAT-423: session carries only a cwd (no explicit repo/project). */
+function insertSessionWithCwd(db: DB, id: string, cwd: string): void {
+  db.prepare(`
+    INSERT INTO sessions (id, repo, project, branch, agent, cwd, started_at)
+    VALUES (?, NULL, NULL, NULL, NULL, ?, ?)
+  `).run(id, cwd, Date.now());
+}
+
 /** Inserts a transcript row shaped exactly as the canonical ingest path writes it (JSON.stringify(turns)). */
 function insertCanonicalTranscript(db: DB, id: string, sessionId: string, turns: Array<{ role: string; text: string }>): void {
   db.prepare(`
@@ -159,6 +167,24 @@ describe('distillHandler', () => {
 
     const rows = db.prepare('SELECT * FROM ingest_idempotency').all();
     expect(rows).toHaveLength(0);
+  });
+
+  it('FEAT-423: derives a non-null project from session cwd when session.project is null', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    insertSessionWithCwd(db, sessionId, '/home/user/my-repo');
+    insertCanonicalTranscript(db, transcriptId, sessionId, [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ]);
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+
+    const memories = db.prepare('SELECT id, project FROM memories').all() as { id: string; project: string | null }[];
+    expect(memories.length).toBeGreaterThanOrEqual(1);
+    for (const m of memories) {
+      expect(m.project).toBe('my-repo');
+    }
   });
 
   it('does not create memories or crash when extraction yields zero atoms (no sqlite-vec mention)', async () => {
