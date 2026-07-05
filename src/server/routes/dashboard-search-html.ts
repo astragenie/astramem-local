@@ -113,7 +113,8 @@ export function dashboardSearchRoute(db: DB, embed: EmbedProvider, token: string
 function renderWeights(weights: Config['search']): string {
   return `&alpha;${fmtWeight(weights.alpha)} &beta;${fmtWeight(weights.beta)} `
     + `&gamma;${fmtWeight(weights.gamma)} &delta;${fmtWeight(weights.delta)} `
-    + `&epsilon;${fmtWeight(weights.epsilon)} &zeta;${fmtWeight(weights.zeta)}`;
+    + `&epsilon;${fmtWeight(weights.epsilon)} &zeta;${fmtWeight(weights.zeta)} `
+    + `&eta;${fmtWeight(weights.eta)}`;
 }
 
 function renderTable(hits: SearchDebugHit[]): string {

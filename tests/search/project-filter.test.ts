@@ -4,7 +4,7 @@
 // because the client never sent the filter — the daemon side has always
 // applied `project = ?` post-fusion, see search.ts).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
@@ -168,5 +168,83 @@ describe('search() agent filter (FEAT-423)', () => {
     });
 
     expect(hits.map(h => h.id).sort()).toEqual([a, b].sort());
+  });
+});
+
+describe('search() agent soft-boost mode (FEAT-426)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('default (agentMode omitted) is byte-identical to the pre-FEAT-426 hard filter', async () => {
+    const db = setupDb();
+    const reviewer = seedAgent(db, 'prior review lesson about null checks', 'h-ab-1', 'crew:reviewer');
+    const builder = seedAgent(db, 'prior review lesson about null checks', 'h-ab-2', 'crew:builder');
+
+    // Freeze the clock — both calls must share one Date.now() so freshness
+    // (and thus the fused score) is deterministic across the two searches.
+    const frozenNow = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(frozenNow);
+
+    const withoutMode = await search('prior review lesson null checks', { agent: 'crew:reviewer' }, 10, {
+      db, embed: fakeEmbed, weights: defaultConfig().search,
+    });
+    const withFilterMode = await search('prior review lesson null checks', { agent: 'crew:reviewer', agentMode: 'filter' }, 10, {
+      db, embed: fakeEmbed, weights: defaultConfig().search,
+    });
+
+    expect(withoutMode.map(h => h.id)).toEqual([reviewer]);
+    expect(withoutMode.map(h => h.id)).not.toContain(builder);
+    expect(withFilterMode).toEqual(withoutMode);
+  });
+
+  it("agentMode 'boost' with eta=0 (config default) behaves like NO agent constraint at all — every atom is still present, ranking unaffected by agent", async () => {
+    const db = setupDb();
+    const reviewer = seedAgent(db, 'prior review lesson about null checks', 'h-ab-3', 'crew:reviewer');
+    const builder = seedAgent(db, 'prior review lesson about null checks', 'h-ab-4', 'crew:builder');
+
+    // eta defaults to 0 in defaultConfig().search — the boost is OFF, so
+    // 'boost' mode with no eta configured is a pure no-constraint search:
+    // both atoms are present (unlike the hard-filter default, which drops 'builder').
+    const hits = await search('prior review lesson null checks', { agent: 'crew:reviewer', agentMode: 'boost' }, 10, {
+      db, embed: fakeEmbed, weights: defaultConfig().search,
+    });
+
+    const ids = hits.map(h => h.id).sort();
+    expect(ids).toEqual([reviewer, builder].sort());
+  });
+
+  it("agentMode 'boost' with eta>0 changes RANK, not membership — non-matching agent stays in the result set but ranks lower", async () => {
+    const db = setupDb();
+    // Identical text for both so BM25/cosine/importance/freshness tie —
+    // any rank difference is attributable only to the agent-match boost.
+    const reviewer = seedAgent(db, 'shared incident postmortem write-up', 'h-ab-5', 'crew:reviewer');
+    const builder = seedAgent(db, 'shared incident postmortem write-up', 'h-ab-6', 'crew:builder');
+
+    const weights = { ...defaultConfig().search, eta: 0.5 };
+
+    const boosted = await search('shared incident postmortem write-up', { agent: 'crew:reviewer', agentMode: 'boost' }, 10, {
+      db, embed: fakeEmbed, weights,
+    });
+
+    // Membership: BOTH atoms present — the non-matching agent was NOT excluded.
+    expect(boosted.map(h => h.id).sort()).toEqual([reviewer, builder].sort());
+    // Rank: the agent-matched atom ('crew:reviewer') outranks the non-match.
+    expect(boosted[0]?.id).toBe(reviewer);
+    expect(boosted[0]?.score).toBeGreaterThan(boosted[1]?.score as number);
+  });
+
+  it("agentMode 'filter' still hard-excludes even when eta>0 is configured (mode gates the behavior, not the weight)", async () => {
+    const db = setupDb();
+    const reviewer = seedAgent(db, 'gated filter lesson one', 'h-ab-7', 'crew:reviewer');
+    const builder = seedAgent(db, 'gated filter lesson one', 'h-ab-8', 'crew:builder');
+
+    const weights = { ...defaultConfig().search, eta: 0.5 };
+    const hits = await search('gated filter lesson one', { agent: 'crew:reviewer', agentMode: 'filter' }, 10, {
+      db, embed: fakeEmbed, weights,
+    });
+
+    expect(hits.map(h => h.id)).toEqual([reviewer]);
+    expect(hits.map(h => h.id)).not.toContain(builder);
   });
 });

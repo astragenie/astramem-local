@@ -52,13 +52,14 @@ async function main() {
     }
 
     case 'search': {
-      // astramem-local search "query" [--type TYPE] [--repo REPO] [--project P] [--agent A] [--since 7d] [--as-of DATE] [--entity NAME] [--limit N]
+      // astramem-local search "query" [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost] [--since 7d] [--as-of DATE] [--entity NAME] [--limit N]
       const query = rest.find(a => !a.startsWith('-')) ?? '';
       await cliSearch(query, {
         type: parseArg(rest, '--type'),
         repo: parseArg(rest, '--repo'),
         project: parseArg(rest, '--project'),
         agent: parseArg(rest, '--agent'),
+        agentMode: parseArg(rest, '--agent-mode'),
         since: parseArg(rest, '--since'),
         limit: parseArg(rest, '--limit'),
         asOf: parseArg(rest, '--as-of'),
@@ -68,7 +69,7 @@ async function main() {
     }
 
     case 'recall': {
-      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--project P] [--agent A] [--as-of DATE] [--entity NAME]
+      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost] [--as-of DATE] [--entity NAME]
       const question = rest.find(a => !a.startsWith('-')) ?? '';
       await cliRecall(question, {
         k: parseArg(rest, '--k'),
@@ -76,6 +77,7 @@ async function main() {
         repo: parseArg(rest, '--repo'),
         project: parseArg(rest, '--project'),
         agent: parseArg(rest, '--agent'),
+        agentMode: parseArg(rest, '--agent-mode'),
         asOf: parseArg(rest, '--as-of'),
         entity: parseArg(rest, '--entity')
       });
@@ -264,9 +266,9 @@ Commands:
                                          (stable shim + task) -> start -> verify
                                          health + version. Run after every upgrade.
   doctor [--json] [--port N]             Run health checks
-  search "query" [--type TYPE] [--repo REPO] [--project P] [--agent A]
+  search "query" [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost]
                  [--since 7d|24h] [--as-of DATE] [--entity NAME] [--limit N]
-  recall "question" [--k N] [--type TYPE] [--repo REPO] [--project P] [--agent A] [--as-of DATE] [--entity NAME]
+  recall "question" [--k N] [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost] [--as-of DATE] [--entity NAME]
                                          --as-of: ISO-8601 date-time — point-in-time
                                          (bitemporal) recall, FEAT-401
                                          --entity: filter to memories linked to
@@ -278,6 +280,10 @@ Commands:
                                          --agent: filter to memories whose
                                          provenance agent matches (FEAT-423,
                                          exact match; omit = all agents)
+                                         --agent-mode: 'filter' (default) hard-excludes
+                                         non-matching agents; 'boost' (FEAT-426) keeps
+                                         them but ranks agent-matches higher (requires
+                                         search.eta > 0 in config)
   remember "text" [--type TYPE] [--repo REPO] [--project P] [--agent A]
   entities list [query] [--limit N]      Autocomplete known entities (FEAT-402)
   entities show <id>                     List every memory linked to entity <id>

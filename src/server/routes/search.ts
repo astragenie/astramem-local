@@ -1,8 +1,9 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&agent=&since=&as_of=&entity=&limit=
+ *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=
  *   POST /recall  { query, k, filters? }  filters.as_of: ISO-8601 date-time,
- *                                          filters.entity: FEAT-402 AC-4
+ *                                          filters.entity: FEAT-402 AC-4,
+ *                                          filters.agentMode: FEAT-426 ('filter'|'boost')
  *   POST /remember { text, type, metadata? }
  */
 
@@ -46,6 +47,9 @@ const RecallBodySchema = z.object({
     project: z.union([z.string(), z.array(z.string())]).optional(),
     /** FEAT-423: single agent or a list; exact match on provenance agent/agent_type. */
     agent: z.union([z.string(), z.array(z.string())]).optional(),
+    /** FEAT-426: 'filter' (default, omitted) = current hard-filter behavior;
+     *  'boost' = agent stays a ranking preference, non-matches are not excluded. */
+    agentMode: z.enum(['filter', 'boost']).optional(),
     since: z.number().optional(),
     /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
     as_of: z.string().optional(),
@@ -88,6 +92,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (params.repo) filters.repo = params.repo;
       if (params.project) filters.project = csvFilter(params.project);
       if (params.agent) filters.agent = csvFilter(params.agent);
+      if (params.agentMode === 'filter' || params.agentMode === 'boost') filters.agentMode = params.agentMode;
       if (params.since) {
         // Accept epoch ms directly or duration strings like "7d", "24h"
         const sinceNum = Number(params.since);
@@ -130,6 +135,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (rawFilters?.repo) filters.repo = rawFilters.repo;
       if (rawFilters?.project) filters.project = rawFilters.project;
       if (rawFilters?.agent) filters.agent = rawFilters.agent;
+      if (rawFilters?.agentMode) filters.agentMode = rawFilters.agentMode;
       if (rawFilters?.since !== undefined) filters.since = rawFilters.since;
       if (rawFilters?.as_of !== undefined) {
         try {
