@@ -42,6 +42,7 @@ import { childLogger } from '../log/logger.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
+import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import {
   ProposalRepo,
   ProposalNotFoundError,
@@ -294,27 +295,13 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       }),
     },
     async (args) => {
-      const memRepo = new MemoryRepo(db);
-      const memory = memRepo.get(args.id);
-      if (!memory) {
+      const receipt = buildWhyReceipt(db, args.id);
+      if (!receipt) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
           isError: true,
         };
       }
-      let session: unknown = null;
-      if (memory.session_id) {
-        session = db
-          .prepare('SELECT id, repo, branch, agent, started_at FROM sessions WHERE id = ?')
-          .get(memory.session_id) ?? null;
-      }
-      const receipt = {
-        id: memory.id, type: memory.type, text: memory.text,
-        importance: memory.importance, confidence: memory.confidence,
-        evidence: memory.evidence, session,
-        transcript_ref: memory.source_hash, created_at: memory.created_at,
-        history: new MemoryEventRepo(db).listForAtom(args.id),
-      };
       return { content: [{ type: 'text' as const, text: JSON.stringify(receipt) }] };
     }
   );
@@ -343,23 +330,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         }
         sessionId = latest.id;
       }
-      const activeJob = db.prepare(`
-        SELECT id FROM jobs
-        WHERE kind = 'distill' AND state IN ('pending', 'running')
-          AND json_extract(payload_json, '$.session_id') = ?
-        LIMIT 1
-      `).get(sessionId);
-      const rows = db.prepare(
-        'SELECT id, type, text FROM memories WHERE session_id = ? ORDER BY created_at ASC'
-      ).all(sessionId) as Array<{ id: string; type: string; text: string }>;
-      const counts: Record<string, number> = {};
-      for (const r of rows) counts[r.type] = (counts[r.type] ?? 0) + 1;
-      const digest = {
-        session_id: sessionId,
-        status: activeJob ? 'pending' : 'ready',
-        counts,
-        memories: rows,
-      };
+      const digest = buildSessionDigest(db, sessionId);
       return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };
     }
   );
