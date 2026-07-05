@@ -59,6 +59,9 @@ export interface SearchCliOpts {
   /** FEAT-423: agent name, forwarded verbatim to `agent=` — exact match on
    *  provenance agent/agent_type; absent → all agents. */
   agent?: string;
+  /** FEAT-426: 'filter' (default) or 'boost', forwarded verbatim to
+   *  `agentMode=`. Only meaningful when `agent` is also set. */
+  agentMode?: string;
 }
 
 export async function cliSearch(query: string, opts: SearchCliOpts): Promise<void> {
@@ -71,6 +74,7 @@ export async function cliSearch(query: string, opts: SearchCliOpts): Promise<voi
   if (opts.entity) params.set('entity', opts.entity);
   if (opts.project) params.set('project', opts.project);
   if (opts.agent) params.set('agent', opts.agent);
+  if (opts.agentMode) params.set('agentMode', opts.agentMode);
 
   const base = getBaseUrl();
   const result = await fetchJson(`${base}/search?${params.toString()}`) as { hits: unknown[] };
@@ -107,6 +111,9 @@ export interface RecallCliOpts {
   project?: string;
   /** FEAT-423: agent name, forwarded to POST /recall filters.agent. */
   agent?: string;
+  /** FEAT-426: 'filter' (default) or 'boost', forwarded to POST /recall
+   *  filters.agentMode. Only meaningful when `agent` is also set. */
+  agentMode?: string;
 }
 
 export async function cliRecall(question: string, opts: RecallCliOpts): Promise<void> {
@@ -118,6 +125,7 @@ export async function cliRecall(question: string, opts: RecallCliOpts): Promise<
   if (opts.entity) filters.entity = opts.entity;
   if (opts.project) filters.project = csvFilter(opts.project);
   if (opts.agent) filters.agent = csvFilter(opts.agent);
+  if (opts.agentMode) filters.agentMode = opts.agentMode;
 
   const base = getBaseUrl();
   const result = await fetchJson(`${base}/recall`, {

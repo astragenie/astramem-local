@@ -32,12 +32,27 @@ export interface SearchFilters {
   project?: string | string[];
   /**
    * Agent filter (FEAT-423 nice-to-have). Exact match on `memories.agent`
-   * (the provenance `agent`/`agent_type` populated at ingest). Applied
-   * post-fusion exactly like `repo`/`project`; single string or string[]
-   * (IN). Absent → all agents. This is a HARD filter; role-scoped soft-boost
-   * recall (FEAT-219) is a separate, later ranking concern and does not go here.
+   * (the provenance `agent`/`agent_type` populated at ingest). Single string
+   * or string[] (IN). Absent → all agents. Whether this excludes non-matches
+   * (hard filter) or merely re-ranks matches upward (soft boost) is governed
+   * by `agentMode` below.
    */
   agent?: string | string[];
+  /**
+   * FEAT-426 (role-scoped soft-boost recall, FEAT-219 consumer): selects how
+   * `agent` above is applied.
+   *  - 'filter' (default, omitted): current behavior — `agent` is a HARD
+   *    filter, non-matching atoms are excluded at the SQL layer post-fusion.
+   *    Byte-identical to pre-FEAT-426 behavior; existing callers are
+   *    unaffected without any code change.
+   *  - 'boost': `agent` is NOT applied as a SQL filter — every otherwise-
+   *    matching atom stays in the result set, but atoms whose
+   *    `memories.agent` matches get the η agent-match bonus (see fuse.ts),
+   *    ranking them higher without excluding anyone else. Requires
+   *    `weights.eta > 0` to have any effect (eta defaults to 0 = OFF).
+   * Ignored when `agent` is undefined.
+   */
+  agentMode?: 'filter' | 'boost';
   since?: number;  // epoch ms lower bound on created_at
   /**
    * Bitemporal time-travel (FEAT-401, ADR-001/ADR-005): return memories as
@@ -68,7 +83,7 @@ export interface SearchHit {
 export interface SearchOpts {
   db: DB;
   embed: EmbedProvider;
-  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number };
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number };
   /** Multiplier used by vector search (cap to limit vector scan) */
   vecK?: number;
   /**
@@ -220,6 +235,30 @@ function entityBonusForQuery(db: DB, query: string, candidateIds: Set<string>): 
   return bonus;
 }
 
+/**
+ * Compute the η agent-match bonus map (FEAT-426): every candidate id whose
+ * `memories.agent` matches one of the caller's preferred agent(s) gets a
+ * bonus of 1. Only called when `filters.agentMode === 'boost'` — the
+ * complementary HARD filter path ('filter', the default) never calls this
+ * and instead excludes non-matches at the SQL layer via `addEqOrIn('agent',
+ * ...)` below, exactly as it did before FEAT-426.
+ */
+function agentBonusForFilter(db: DB, agent: string | string[], candidateIds: Set<string>): Map<string, number> {
+  if (candidateIds.size === 0) return new Map();
+  const agents = Array.isArray(agent) ? agent : [agent];
+  if (agents.length === 0) return new Map();
+
+  const idPh = Array.from(candidateIds).map(() => '?').join(',');
+  const agentPh = agents.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT id FROM memories WHERE id IN (${idPh}) AND agent IN (${agentPh})`
+  ).all(...candidateIds, ...agents) as Array<{ id: string }>;
+
+  const bonus = new Map<string, number>();
+  for (const row of rows) bonus.set(row.id, 1);
+  return bonus;
+}
+
 export function search(
   query: string,
   filters: SearchFilters,
@@ -308,8 +347,17 @@ export async function search(
   const usefulness = usefulnessScores(db, Array.from(allIds));
   const zeta = weights.zeta ?? 0;
   const entityBonus = zeta > 0 ? entityBonusForQuery(db, query, allIds) : undefined;
+  // FEAT-426: η agent-match soft-boost — only computed when the caller
+  // opted `agent` into 'boost' mode (default 'filter' skips this entirely;
+  // the hard-filter clause in the post-fusion filter step below is
+  // unchanged for that default path).
+  const eta = weights.eta ?? 0;
+  const agentMode = filters.agentMode ?? 'filter';
+  const agentBonus = (eta > 0 && agentMode === 'boost' && filters.agent !== undefined)
+    ? agentBonusForFilter(db, filters.agent, allIds)
+    : undefined;
   const nowMs = Date.now();
-  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus);
+  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus);
 
   // 5. Apply post-fusion SQL filters then join full memory records
   //    Build filter clauses dynamically
@@ -339,7 +387,11 @@ export async function search(
     }
   };
   if (filters.project !== undefined) addEqOrIn('project', filters.project);
-  if (filters.agent !== undefined) addEqOrIn('agent', filters.agent);
+  // FEAT-426: agent is a HARD filter only in the default 'filter' mode
+  // (byte-identical to pre-FEAT-426 behavior). In 'boost' mode the SQL
+  // filter is skipped entirely — non-matches stay in the result set and are
+  // instead re-ranked via the η agentBonus computed above.
+  if (filters.agent !== undefined && agentMode === 'filter') addEqOrIn('agent', filters.agent);
   if (filters.since !== undefined) {
     filterClauses.push('created_at >= ?');
     filterParams.push(filters.since);

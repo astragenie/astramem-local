@@ -2,8 +2,8 @@
  * Score fusion for hybrid BM25 + cosine + importance + freshness ranking.
  *
  * Formula: raw   = α·norm(bm25) + β·norm(cosine) + γ·importance + δ·freshness
- *                  + ε·usefulness + ζ·entityBonus
- *          score = raw / (α + β + γ + δ + ε + ζ)   ["active weight sum"]
+ *                  + ε·usefulness + ζ·entityBonus + η·agentBonus
+ *          score = raw / (α + β + γ + δ + ε + ζ + η)   ["active weight sum"]
  *
  * Wire-contract invariant: score MUST land in [0,1] (plugin Zod schema,
  * memory-plugin#8) so the daemon response validates. Every component input
@@ -28,6 +28,17 @@
  * (see tests/search/fuse.test.ts zeta=0 no-op case and the eval harness
  * zeta=0 snapshot test).
  *
+ * η (eta, FEAT-426) is an agent-match SOFT-BOOST, structurally identical to
+ * ζ: 1 when a candidate's `memories.agent` matches the caller's preferred
+ * agent(s), 0 otherwise. DEFAULT 0 (OFF) — with the default `eta=0` weight
+ * the term contributes exactly 0 and ranking is byte-identical to
+ * pre-FEAT-426 behavior. This is deliberately NOT the same code path as the
+ * existing `SearchFilters.agent` HARD filter (FEAT-423): the hard filter
+ * excludes non-matching atoms at the SQL layer before fusion ever runs; the
+ * η boost instead lets non-matching atoms stay in the candidate set and
+ * merely re-ranks matches upward. `search.ts` decides which one applies
+ * based on `SearchFilters.agentMode` ('filter', the default, vs 'boost').
+ *
  * Normalizing by the active weight sum is a per-call constant scalar (the
  * weights config doesn't vary across hits in the same search), so it never
  * changes relative ranking order for a fixed weight config — it is a
@@ -43,6 +54,8 @@ export interface FuseInput {
   usefulness?: number;
   /** FEAT-402 AC-6 entity-relevance bonus, 0 or 1; 0 = no signal (unlike usefulness). */
   entityBonus?: number;
+  /** FEAT-426 agent-match soft-boost, 0 or 1; 0 = no signal (same shape as entityBonus). */
+  agentBonus?: number;
   alpha: number;       // bm25 weight
   beta: number;        // cosine weight
   gamma: number;       // importance weight
@@ -51,6 +64,8 @@ export interface FuseInput {
   epsilon?: number;
   /** entity-bonus weight; omitted or 0 = OFF (AC-6 default, ranking unchanged) */
   zeta?: number;
+  /** agent-bonus weight; omitted or 0 = OFF (FEAT-426 default, ranking unchanged) */
+  eta?: number;
 }
 
 /**
@@ -84,11 +99,12 @@ export function fuseScores(input: FuseInput): number {
     input.gamma * input.importance +
     input.delta * input.freshness +
     (input.epsilon ?? 0) * (input.usefulness ?? 0.5) +
-    (input.zeta ?? 0) * (input.entityBonus ?? 0);
+    (input.zeta ?? 0) * (input.entityBonus ?? 0) +
+    (input.eta ?? 0) * (input.agentBonus ?? 0);
 
   const weightSum =
     input.alpha + input.beta + input.gamma + input.delta +
-    (input.epsilon ?? 0) + (input.zeta ?? 0);
+    (input.epsilon ?? 0) + (input.zeta ?? 0) + (input.eta ?? 0);
 
   if (weightSum === 0) return 0;
   // Defense-in-depth: components are bounded to [0,1] at their sources, but a
@@ -122,16 +138,18 @@ export interface FusedHit {
  * @param freshnessDecayDays  Half-life of freshness decay in days (default 30)
  * @param usefulness Optional id → usefulness score [0,1] (ADR-010); missing ids default to 0.5
  * @param entityBonus Optional id → entity-relevance bonus (FEAT-402 AC-6); missing ids default to 0
+ * @param agentBonus Optional id → agent-match soft-boost (FEAT-426); missing ids default to 0
  */
 export function fuseHits(
   ftsHits: Array<{ id: string; bm25: number }>,
   vecHits: Array<{ id: string; cosine: number }>,
   metas: Map<string, { importance: number; created_at: number }>,
-  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number },
+  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number },
   nowMs: number,
   freshnessDecayDays = 30,
   usefulness?: Map<string, number>,
-  entityBonus?: Map<string, number>
+  entityBonus?: Map<string, number>,
+  agentBonus?: Map<string, number>
 ): FusedHit[] {
   // Build per-id raw maps
   const ftsMap = new Map(ftsHits.map(h => [h.id, h.bm25]));
@@ -176,6 +194,7 @@ export function fuseHits(
       freshness,
       usefulness: usefulness?.get(id),
       entityBonus: entityBonus?.get(id),
+      agentBonus: agentBonus?.get(id),
       ...weights
     });
 

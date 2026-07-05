@@ -35,8 +35,13 @@ export interface Config {
    * an unsignaled corpus), ζ entity-relevance bonus (FEAT-402 AC-6: DEFAULT
    * 0 = OFF; a candidate entity-linked to an entity mentioned in the query
    * text gets +ζ. At zeta=0 ranking is byte-identical to no-entity ranking —
-   * see the AC-6 snapshot test in tests/eval/retrieval-eval.test.ts). */
-  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number };
+   * see the AC-6 snapshot test in tests/eval/retrieval-eval.test.ts), η
+   * agent-match soft-boost (FEAT-426: DEFAULT 0 = OFF; when a caller opts a
+   * `SearchFilters.agent` value into `agentMode: 'boost'` instead of the
+   * default hard filter, a candidate whose provenance.agent matches gets
+   * +η instead of having non-matches excluded outright. At eta=0 ranking is
+   * byte-identical to pre-FEAT-426 behavior). */
+  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number; eta: number };
   recallPack: {
     enabled: boolean;
     budgetTokens: number;
@@ -116,7 +121,7 @@ export function defaultConfig(): Config {
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
-    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0 },
+    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0 },
     recallPack: {
       enabled: false,
       budgetTokens: 1500,
