@@ -46,8 +46,16 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install + build
+        # --ignore-scripts skips dependency postinstall scripts — specifically
+        # better-sqlite3's node-gyp native compile, which crashes on the fleet
+        # runner (bunx node-gyp@latest pulls an undici incompatible with the
+        # runner Node: "webidl.util.markAsUncloneable is not a function", and
+        # no prebuilt binary exists for the target). The publish only needs the
+        # TS build (dist/) — better-sqlite3 is a RUNTIME dep the consumer
+        # compiles on their own install, and its .d.ts types (all tsc needs)
+        # are present without the native build. See issue #58.
         run: |
-          bun install --frozen-lockfile
+          bun install --frozen-lockfile --ignore-scripts
           bun run build
 
       - name: Publish
