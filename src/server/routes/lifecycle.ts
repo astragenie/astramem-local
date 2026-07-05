@@ -1,12 +1,12 @@
 /**
  * Memory lifecycle routes (Wave 2b, ADR-002 memory_events log):
- *   POST /memory/:id/invalidate { reason? } -> 200 { ok: true } | 404 | 409
- *   POST /memory/:id/supersede  { new_id }  -> 200 { ok: true } | 404 | 409
- *   POST /memory/:id/promote    { scope }   -> 200 { ok: true } | 400 | 404
- *   POST /memory/:id/restore                -> 200 { ok: true } | 404 | 409   (FEAT-416, un-archive)
- *   GET  /memory/:id/history                -> { id, history: MemoryEvent[] }
- *   POST /memory/:id/used                   -> 200 { ok: true } | 404
- *   DELETE /memory/:id                      -> 200 { ok: true } | 404   (erasure v1, ADR-006 W5)
+ *   POST /memory/:id/invalidate { reason? } -> 200 { ok: true } | 400 | 401 | 404 | 409
+ *   POST /memory/:id/supersede  { new_id }  -> 200 { ok: true } | 400 | 401 | 404 | 409
+ *   POST /memory/:id/promote    { scope }   -> 200 { ok: true } | 400 | 401 | 404 | 409
+ *   POST /memory/:id/restore                -> 200 { ok: true } | 401 | 404 | 409   (FEAT-416, un-archive)
+ *   GET  /memory/:id/history                -> { id, history: MemoryEvent[] } | 401 | 404
+ *   POST /memory/:id/used                   -> 200 { ok: true } | 401 | 404
+ *   DELETE /memory/:id                      -> 200 { ok: true } | 401 | 404   (erasure v1, ADR-006 W5)
  *
  * `history` also backs the Wave 2c MCP `memory_history` tool.
  * `used` is the ADR-010 (2e) explicit recall-used signal — REST twin of the
@@ -15,10 +15,20 @@
  * (src/storage/archival.ts) or by a manual `archive` event — mirrors
  * `invalidate`'s 404/409 semantics exactly (MemoryEventRepo.restore() already
  * throws MemoryNotFoundError/MemoryConflictError for the same two cases).
+ *
+ * Error-class -> status mapping is centralized in `mapLifecycleError` below
+ * (FEAT-435 conformance): MemoryNotFoundError always -> 404, and both
+ * MemoryConflictError and InvalidScopeTransitionError (a valid id whose
+ * current state makes the requested transition inapplicable — e.g. a
+ * downward scope promotion) -> 409. 400 is reserved exclusively for
+ * malformed/invalid request bodies (zod parse failures). Every verb below
+ * routes its typed-error catch through this one helper so a future 5th verb
+ * can't silently diverge — see tests/server/lifecycle.test.ts's
+ * "lifecycle error-status conformance" suite.
  */
 
 import { z } from 'zod';
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import {
@@ -32,6 +42,25 @@ import { recordRecallUsed } from '../../storage/usefulness.js';
 const InvalidateBodySchema = z.object({ reason: z.string().optional() });
 const SupersedeBodySchema = z.object({ new_id: z.string().min(1) });
 const PromoteBodySchema = z.object({ scope: z.enum(['personal', 'team', 'org']) });
+
+/**
+ * Uniform mapping from the repo's typed lifecycle errors to HTTP status +
+ * error-body shape. `id` is the route's :id param, used as the 409 body's
+ * `id` field (MemoryConflictError/InvalidScopeTransitionError carry no
+ * atomId of their own). 404 uses `err.atomId` instead of the route `id`
+ * because supersede's not-found can refer to either the source id or the
+ * `new_id` target — both still surface under the same `id` key. Anything
+ * else is rethrown for Fastify's default error handler.
+ */
+function mapLifecycleError(err: unknown, id: string, reply: FastifyReply) {
+  if (err instanceof MemoryNotFoundError) {
+    return reply.code(404).send({ error: 'not found', id: err.atomId });
+  }
+  if (err instanceof MemoryConflictError || err instanceof InvalidScopeTransitionError) {
+    return reply.code(409).send({ error: err.message, id });
+  }
+  throw err;
+}
 
 export function lifecycleRoutes(db: DB) {
   return async (app: FastifyInstance) => {
@@ -47,9 +76,7 @@ export function lifecycleRoutes(db: DB) {
         events.invalidate(id, parsed.data.reason);
         return { ok: true };
       } catch (err) {
-        if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
-        if (err instanceof MemoryConflictError) return reply.code(409).send({ error: err.message, id });
-        throw err;
+        return mapLifecycleError(err, id, reply);
       }
     });
 
@@ -63,8 +90,7 @@ export function lifecycleRoutes(db: DB) {
         events.erase(id, typeof body.reason === 'string' ? body.reason : undefined);
         return { ok: true };
       } catch (err) {
-        if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
-        throw err;
+        return mapLifecycleError(err, id, reply);
       }
     });
 
@@ -78,9 +104,7 @@ export function lifecycleRoutes(db: DB) {
         events.supersede(id, parsed.data.new_id);
         return { ok: true };
       } catch (err) {
-        if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id: err.atomId });
-        if (err instanceof MemoryConflictError) return reply.code(409).send({ error: err.message });
-        throw err;
+        return mapLifecycleError(err, id, reply);
       }
     });
 
@@ -94,9 +118,7 @@ export function lifecycleRoutes(db: DB) {
         events.promoteScope(id, parsed.data.scope);
         return { ok: true };
       } catch (err) {
-        if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
-        if (err instanceof InvalidScopeTransitionError) return reply.code(400).send({ error: err.message });
-        throw err;
+        return mapLifecycleError(err, id, reply);
       }
     });
 
@@ -106,9 +128,7 @@ export function lifecycleRoutes(db: DB) {
         events.restore(id);
         return { ok: true };
       } catch (err) {
-        if (err instanceof MemoryNotFoundError) return reply.code(404).send({ error: 'not found', id });
-        if (err instanceof MemoryConflictError) return reply.code(409).send({ error: err.message, id });
-        throw err;
+        return mapLifecycleError(err, id, reply);
       }
     });
 
