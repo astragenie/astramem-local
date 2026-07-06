@@ -155,6 +155,80 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
     expect(payload.session_id).toBe(CANONICAL_PAYLOAD.session_id);
   });
 
+  // ---- Response fields promised by CHANGELOG v0.2.0 / FEAT-4a §4.2.3.4 ----
+  // (SLICE U2 — extraction_job_id, extracted_count, failed_atom_count,
+  // scrub_hits, queued_extraction_types were documented but never wired
+  // through to the actual HTTP response.)
+
+  it('canonical transcript-kind response includes extraction_job_id/extracted_count/failed_atom_count/scrub_hits/queued_extraction_types', async () => {
+    const { db, app } = makeApp();
+    const payload = { ...CANONICAL_PAYLOAD, session_id: 'sess-u2-fields', client_scrub_hits: 2 };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    // extraction_job_id must be the real enqueued job id, not a placeholder.
+    const jobs = db.prepare("SELECT * FROM jobs WHERE state = 'pending'").all() as Record<string, unknown>[];
+    expect(jobs.length).toBe(1);
+    expect(body.extraction_job_id).toBe(jobs[0]!['id']);
+
+    // Extraction hasn't run yet (async job) — stubbed to 0, not fabricated.
+    expect(body.extracted_count).toBe(0);
+    expect(body.failed_atom_count).toBe(0);
+
+    // scrub_hits.client mirrors the client-reported count; server is the
+    // count of secrets this ingest's own redaction pass found (0 here —
+    // payload has no secret-shaped text).
+    expect(body.scrub_hits).toEqual({ client: 2, server: 0 });
+
+    // transcript-kind hasn't run LLM extraction yet, so the full atom-type
+    // registry is reported as the queued candidate set.
+    expect(body.queued_extraction_types).toEqual([
+      'decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event',
+    ]);
+  });
+
+  it('events-kind response reports only the distinct types actually posted (not the full registry)', async () => {
+    const { app } = makeApp();
+    const payload = {
+      event: 'session_end' as const,
+      session_id: 'sess-u2-events-fields',
+      project_id: 'proj-abc',
+      captured_at: '2025-06-30T10:00:00.000Z',
+      kind: 'events' as const,
+      events: [
+        { type: 'decision' as const, text: 'Use SQLite for local storage' },
+        { type: 'fact' as const, text: 'Default port is 7777' },
+        { type: 'decision' as const, text: 'Duplicate type should collapse in the set' },
+      ],
+      client_scrub_applied: true,
+      client_scrub_hits: 1,
+      client_version: '0.6.0',
+      client_scrub_version: '1.2.0',
+      wire_version: 'v1.0',
+    };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    expect(typeof body.extraction_job_id).toBe('string');
+    expect(body.extracted_count).toBe(0);
+    expect(body.failed_atom_count).toBe(0);
+    expect(body.scrub_hits).toEqual({ client: 1, server: 0 });
+    // Deduped, first-seen order — not the full 7-type registry.
+    expect(body.queued_extraction_types).toEqual(['decision', 'fact']);
+  });
+
   it('canonical envelope with all optional fields round-trips through DB', async () => {
     const { db, app } = makeApp();
     const payload = {
