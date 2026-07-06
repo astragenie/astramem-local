@@ -5,7 +5,7 @@ import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
-import { planBackfill, applyBackfill } from '../../src/sync/backfill.js';
+import { planBackfill, applyBackfill, planReship, applyReship } from '../../src/sync/backfill.js';
 
 type Scope = 'personal' | 'team' | 'org';
 
@@ -96,5 +96,111 @@ describe('sync backfill', () => {
     const p = seed(db, { scope: 'personal', hash: 'org1', withPayload: false });
     applyBackfill(db, { scope: 'org' });
     expect((db.prepare('SELECT scope FROM memories WHERE id=?').get(p) as { scope: string }).scope).toBe('org');
+  });
+});
+
+// astramem-local#97 / memory#629 — reship already-synced, null-payload
+// team/org create events so their empty cloud replica gets re-materialized.
+describe('sync backfill --reship', () => {
+  let db: DB;
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('planReship counts already-synced, null-payload team/org creates', () => {
+    seed(db, { scope: 'team', hash: 'rs-t1', withPayload: false, synced: true }); // pre-#86, shipped empty → counted
+    seed(db, { scope: 'org', hash: 'rs-o1', withPayload: false, synced: true }); // counted
+    seed(db, { scope: 'team', hash: 'rs-t2', withPayload: true, synced: true }); // already has payload → not counted
+    seed(db, { scope: 'team', hash: 'rs-t3', withPayload: false, synced: false }); // unsynced → not counted (normal backfill's job)
+    seed(db, { scope: 'personal', hash: 'rs-p1', withPayload: false, synced: true }); // personal → never counted
+
+    const plan = planReship(db, {});
+    expect(plan.scope).toBe('team+org');
+    expect(plan.createEventsToBackfillAndReship).toBe(2);
+  });
+
+  it('planReship is read-only (no mutation)', () => {
+    const id = seed(db, { scope: 'team', hash: 'rs-ro1', withPayload: false, synced: true });
+    planReship(db, {});
+    const ev = db.prepare(`SELECT payload_json, synced_at FROM memory_events WHERE atom_id=? AND event_type='create'`).get(id) as {
+      payload_json: string | null;
+      synced_at: number | null;
+    };
+    expect(ev.payload_json).toBeNull();
+    expect(ev.synced_at).not.toBeNull();
+  });
+
+  it('applyReship backfills payload and resets synced_at on synced null-payload creates', () => {
+    const id = seed(db, { scope: 'team', hash: 'rs-ap1', withPayload: false, synced: true });
+
+    const result = applyReship(db, {});
+    expect(result.reshipped).toBe(1);
+
+    const ev = db.prepare(`SELECT payload_json, synced_at FROM memory_events WHERE atom_id=? AND event_type='create'`).get(id) as {
+      payload_json: string;
+      synced_at: number | null;
+    };
+    expect(JSON.parse(ev.payload_json)).toMatchObject({ text: 'text rs-ap1', type: 'fact', scope: 'team' });
+    expect(ev.synced_at).toBeNull();
+  });
+
+  it('leaves non-null-payload synced events alone', () => {
+    const id = seed(db, { scope: 'team', hash: 'rs-np1', withPayload: true, synced: true });
+
+    const result = applyReship(db, {});
+    expect(result.reshipped).toBe(0);
+
+    const ev = db.prepare(`SELECT synced_at FROM memory_events WHERE atom_id=? AND event_type='create'`).get(id) as { synced_at: number | null };
+    expect(ev.synced_at).not.toBeNull(); // untouched — still synced
+  });
+
+  it('never touches personal-scope creates, even if null-payload and synced', () => {
+    const id = seed(db, { scope: 'personal', hash: 'rs-pers1', withPayload: false, synced: true });
+
+    const result = applyReship(db, {});
+    expect(result.reshipped).toBe(0);
+
+    const ev = db.prepare(`SELECT payload_json, synced_at FROM memory_events WHERE atom_id=? AND event_type='create'`).get(id) as {
+      payload_json: string | null;
+      synced_at: number | null;
+    };
+    expect(ev.payload_json).toBeNull();
+    expect(ev.synced_at).not.toBeNull();
+  });
+
+  it('is idempotent — a second apply reships nothing new', () => {
+    seed(db, { scope: 'team', hash: 'rs-idem1', withPayload: false, synced: true });
+    applyReship(db, {});
+    const second = applyReship(db, {});
+    expect(second).toEqual({ reshipped: 0 });
+  });
+
+  it('respects the scope filter — org filter excludes team rows', () => {
+    seed(db, { scope: 'team', hash: 'rs-scope-t', withPayload: false, synced: true });
+    seed(db, { scope: 'org', hash: 'rs-scope-o', withPayload: false, synced: true });
+
+    const plan = planReship(db, { scope: 'org' });
+    expect(plan.scope).toBe('org');
+    expect(plan.createEventsToBackfillAndReship).toBe(1);
+
+    const result = applyReship(db, { scope: 'org' });
+    expect(result.reshipped).toBe(1);
+
+    const teamEv = db.prepare(`SELECT payload_json FROM memory_events WHERE event_type='create' AND payload_json IS NULL`).all() as { payload_json: null }[];
+    expect(teamEv.length).toBe(1); // the team row is still untouched (null payload)
+  });
+
+  it('respects the --project filter', () => {
+    seed(db, { scope: 'team', hash: 'rs-proj-a', project: 'A', withPayload: false, synced: true });
+    seed(db, { scope: 'team', hash: 'rs-proj-b', project: 'B', withPayload: false, synced: true });
+
+    const result = applyReship(db, { project: 'A' });
+    expect(result.reshipped).toBe(1);
+
+    const bEv = db.prepare(`SELECT payload_json FROM memory_events e JOIN memories m ON m.id = e.atom_id WHERE m.project='B'`).get() as {
+      payload_json: string | null;
+    };
+    expect(bEv.payload_json).toBeNull();
   });
 });
