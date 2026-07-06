@@ -130,11 +130,17 @@ describe('Plugin flow E2E — ingest → distill → search', () => {
       expect(ingestBody.ok).toBe(true);
 
       // ── 3. Wait for worker to drain the distill job ─────────────────────────
-      // Poll /search for up to 30s — live Ollama may be slower than mock.
+      // Poll /search for up to 90s — live Ollama may be slower than mock.
+      // #50 (nightly-live: red): bumped from 30s -> 90s. Confirmed on
+      // nightly-live run 28793332627: with INTEGRATION_LIVE=ollama this
+      // test drives real qwen2.5-coder:7b distillation across several LLM
+      // stages on a shared, CPU-only, 5-job-slot EC2 host, which measurably
+      // exceeded the prior 30s window (documented as known risk #2 in
+      // .github/workflows/README.md before this fix).
 
       // Search for 'sqlite' (not 'sqlite-vec' — FTS5 interprets the hyphen as negation).
       // The distilled memory text contains 'sqlite-vec' so the FTS hit on 'sqlite' will match.
-      const hits = await pollSearch('sqlite', 'decision', 'sqlite-vec', 30_000);
+      const hits = await pollSearch('sqlite', 'decision', 'sqlite-vec', 90_000);
 
       // ── 4. Assert at least one decision memory mentions sqlite-vec ──────────
 

@@ -168,10 +168,22 @@ describe('ollama-embed', () => {
   });
 
   describe.skipIf(!process.env.INTEGRATION_LIVE)('live integration', () => {
+    // #50 (nightly-live: red): this block previously hardcoded
+    // 'nomic-embed-text-v2-moe' (pre-v0.2.1-hotfix reference), which is
+    // natively 768-dim while OllamaEmbedProvider expects 1024 regardless
+    // of the model string passed in — a guaranteed dim-mismatch on any
+    // real run (documented in .github/workflows/README.md known risk #1).
+    // Switched to 'mxbai-embed-large', the actual production embed default
+    // (see CLAUDE.md + config.ts), so this test now exercises what
+    // production actually uses instead of a stale pre-hotfix reference.
+    // Timeout bumped 15s -> 60s: nightly-live run 28793332627 timed out
+    // at 15s on this call before ever reaching the dim assertion — the
+    // runner is a shared, CPU-only, 5-job-slot EC2 host where a cold real
+    // embed call can exceed 15s.
     it('actually calls ollama embeddings', async () => {
-      const p = new OllamaEmbedProvider({ model: 'nomic-embed-text-v2-moe' });
+      const p = new OllamaEmbedProvider({ model: 'mxbai-embed-large' });
       const vecs = await p.embed(['hello from integration test']);
       expect(vecs[0].length).toBe(1024);
-    }, 15_000);
+    }, 60_000);
   });
 });
