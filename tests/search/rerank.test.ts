@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   MockCrossEncoderProvider,
+  HttpCrossEncoderProvider,
   applyRerank,
   buildCrossEncoderProvider,
   resolveRerankOpts,
@@ -57,10 +58,23 @@ describe('buildCrossEncoderProvider', () => {
     expect(provider.name).toBe('mock');
   });
 
-  it("throws a clear TODO error for provider: 'http' (not yet implemented)", () => {
+  it("throws a clear config error for provider: 'http' when sidecarUrl is unset", () => {
     expect(() =>
       buildCrossEncoderProvider({ enabled: true, provider: 'http', topK: 50, timeoutMs: 300 }),
-    ).toThrow(/not implemented/i);
+    ).toThrow(/sidecarUrl/i);
+  });
+
+  it("builds a live HttpCrossEncoderProvider for provider: 'http' when sidecarUrl is set", () => {
+    const provider = buildCrossEncoderProvider({
+      enabled: true,
+      provider: 'http',
+      topK: 50,
+      timeoutMs: 300,
+      sidecarUrl: 'http://127.0.0.1:9000/rerank',
+      model: 'bge-reranker-v2-m3',
+    });
+    expect(provider.name).toBe('http');
+    expect(provider).toBeInstanceOf(HttpCrossEncoderProvider);
   });
 });
 
@@ -76,6 +90,132 @@ describe('resolveRerankOpts', () => {
     expect(opts?.topK).toBe(7);
     expect(opts?.timeoutMs).toBe(123);
     expect(opts?.provider.name).toBe('mock');
+  });
+});
+
+describe('HttpCrossEncoderProvider', () => {
+  const candidates = [
+    { id: 'a', text: 'sqlite vec hybrid bm25 fusion search', fusedScore: 0.1 },
+    { id: 'b', text: 'completely unrelated banana bread recipe', fusedScore: 0.9 },
+  ];
+
+  it('parses a bare TEI-style array response ([{index,score}]) into id-keyed scores', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify([{ index: 1, score: 0.2 }, { index: 0, score: 0.95 }]), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl });
+
+    const scores = await provider.score('sqlite vec hybrid search', candidates);
+
+    expect(scores.get('a')).toBe(0.95);
+    expect(scores.get('b')).toBe(0.2);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('http://sidecar/rerank');
+    const body = JSON.parse(init.body as string);
+    expect(body).toEqual({ query: 'sqlite vec hybrid search', texts: candidates.map(c => c.text) });
+  });
+
+  it('parses a wrapped {results:[{index,score}]} response', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ results: [{ index: 0, score: 0.5 }, { index: 1, score: 0.1 }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl });
+
+    const scores = await provider.score('query', candidates);
+
+    expect(scores.get('a')).toBe(0.5);
+    expect(scores.get('b')).toBe(0.1);
+  });
+
+  it('forwards the configured model in the request body when set', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify([]), { status: 200, headers: { 'content-type': 'application/json' } }),
+    ) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', model: 'bge-reranker-v2-m3', fetchImpl });
+
+    await provider.score('query', candidates);
+
+    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(init.body as string);
+    expect(body.model).toBe('bge-reranker-v2-m3');
+  });
+
+  it('returns an empty map without calling fetch when there are no candidates', async () => {
+    const fetchImpl = vi.fn();
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl: fetchImpl as unknown as typeof fetch });
+
+    const scores = await provider.score('query', []);
+
+    expect(scores.size).toBe(0);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('throws on a non-2xx response (caller — applyRerank — is responsible for fallback)', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response('internal error', { status: 500 }),
+    ) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl });
+
+    await expect(provider.score('query', candidates)).rejects.toThrow(/500/);
+  });
+
+  it('throws when the fetch call itself rejects (network error)', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl });
+
+    await expect(provider.score('query', candidates)).rejects.toThrow(/ECONNREFUSED/);
+  });
+
+  it('throws when the response body has no parseable results array', async () => {
+    const fetchImpl = vi.fn(async () =>
+      new Response(JSON.stringify({ unexpected: true }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    ) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl });
+
+    await expect(provider.score('query', candidates)).rejects.toThrow(/results array/i);
+  });
+
+  it('end-to-end via applyRerank: HTTP error falls back to the un-reranked fused order (never fails the search)', async () => {
+    const fetchImpl = vi.fn(async () => new Response('boom', { status: 502 })) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl });
+    const hits = [
+      { id: 'a', text: candidates[0]!.text, score: 0.1 },
+      { id: 'b', text: candidates[1]!.text, score: 0.9 },
+    ];
+    const opts: RerankOpts = { topK: 10, timeoutMs: 300, provider };
+
+    const result = await applyRerank('query', hits, opts);
+
+    expect(result).toEqual(hits);
+  });
+
+  it('end-to-end via applyRerank: a slow HTTP provider times out and falls back to the un-reranked fused order', async () => {
+    const fetchImpl = vi.fn(
+      () => new Promise<Response>(resolve => setTimeout(
+        () => resolve(new Response(JSON.stringify([]), { status: 200 })),
+        50,
+      )),
+    ) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', fetchImpl });
+    const hits = [
+      { id: 'a', text: candidates[0]!.text, score: 0.1 },
+      { id: 'b', text: candidates[1]!.text, score: 0.9 },
+    ];
+    const opts: RerankOpts = { topK: 10, timeoutMs: 5, provider };
+
+    const result = await applyRerank('query', hits, opts);
+
+    expect(result).toEqual(hits);
   });
 });
 
