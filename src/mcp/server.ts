@@ -43,6 +43,9 @@ import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
 import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../contracts/recall-filters.js';
+// FEAT-429: project/agent/entity arg-parsing derives from the shared
+// filter-descriptor registry — see src/contracts/filter-registry.ts.
+import { assignStructuredFilterValues } from '../contracts/filter-registry.js';
 import { contentHash } from '../storage/content-hash.js';
 import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import {
@@ -111,8 +114,8 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       const filters: SearchFilters = {};
       if (args.type) filters.type = args.type;
       if (args.repo) filters.repo = args.repo;
-      if (args.project) filters.project = args.project;
-      if (args.agent) filters.agent = args.agent;
+      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      assignStructuredFilterValues(args, filters as unknown as Record<string, unknown>);
       if (args.agentMode) filters.agentMode = args.agentMode;
       if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
@@ -127,7 +130,6 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           };
         }
       }
-      if (args.entity !== undefined) filters.entity = args.entity;
 
       const hits = await search(args.query, filters, args.limit ?? 10, {
         db,
@@ -192,8 +194,8 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       const filters: SearchFilters = {};
       if (args.type) filters.type = args.type;
       if (args.repo) filters.repo = args.repo;
-      if (args.project) filters.project = args.project;
-      if (args.agent) filters.agent = args.agent;
+      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      assignStructuredFilterValues(args, filters as unknown as Record<string, unknown>);
       if (args.agentMode) filters.agentMode = args.agentMode;
       if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
@@ -208,7 +210,6 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           };
         }
       }
-      if (args.entity !== undefined) filters.entity = args.entity;
 
       const hits = await search(args.query, filters, args.k ?? 5, {
         db,

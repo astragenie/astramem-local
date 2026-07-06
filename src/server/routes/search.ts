@@ -25,20 +25,13 @@ import { recordRedactionEvents } from '../../storage/redaction-log.js';
 import { contentHash } from '../../storage/content-hash.js';
 import { clampScores } from '../lib/score-contract.js';
 import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../../contracts/recall-filters.js';
+// FEAT-429: project/agent/entity parsing for both the GET query-string and
+// the POST JSON body now derives from the shared filter-descriptor registry
+// instead of three hand-rolled `if (params.x) filters.x = ...` blocks per
+// surface — see src/contracts/filter-registry.ts.
+import { assignQueryFilterValues, assignStructuredFilterValues } from '../../contracts/filter-registry.js';
 
 const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
-
-/**
- * FEAT-423: normalize a comma-separated query-param value into the
- * SearchFilters shape — a single string stays a string (`col = ?`), multiple
- * comma-separated values become a string[] (`col IN (...)`). Empty/whitespace
- * segments are dropped; an all-empty value yields undefined (no filter).
- */
-function csvFilter(raw: string): string | string[] | undefined {
-  const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
-  if (parts.length === 0) return undefined;
-  return parts.length === 1 ? parts[0] : parts;
-}
 
 const RecallBodySchema = z.object({
   query: z.string().min(1),
@@ -99,8 +92,8 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
 
       if (params.type) filters.type = params.type.split(',').map(t => t.trim());
       if (params.repo) filters.repo = params.repo;
-      if (params.project) filters.project = csvFilter(params.project);
-      if (params.agent) filters.agent = csvFilter(params.agent);
+      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      assignQueryFilterValues(params, filters as unknown as Record<string, unknown>);
       if (params.agentMode === 'filter' || params.agentMode === 'boost') filters.agentMode = params.agentMode;
       if (params.since) {
         // Accept epoch ms directly or duration strings like "7d", "24h"
@@ -116,7 +109,6 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
           return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
         }
       }
-      if (params.entity) filters.entity = params.entity;
 
       const hits = await search(q, filters, limit, { db, embed, weights, rerank });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
@@ -142,8 +134,8 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       const filters: SearchFilters = {};
       if (rawFilters?.type) filters.type = rawFilters.type;
       if (rawFilters?.repo) filters.repo = rawFilters.repo;
-      if (rawFilters?.project) filters.project = rawFilters.project;
-      if (rawFilters?.agent) filters.agent = rawFilters.agent;
+      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      assignStructuredFilterValues(rawFilters, filters as unknown as Record<string, unknown>);
       if (rawFilters?.agentMode) filters.agentMode = rawFilters.agentMode;
       if (rawFilters?.since !== undefined) filters.since = rawFilters.since;
       if (rawFilters?.as_of !== undefined) {
@@ -153,7 +145,6 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
           return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
         }
       }
-      if (rawFilters?.entity !== undefined) filters.entity = rawFilters.entity;
 
       const hits = await search(query, filters, k, { db, embed, weights, rerank });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
