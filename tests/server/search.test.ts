@@ -403,7 +403,7 @@ describe('filters.type enum validation (#112 AC-1/AC-3)', () => {
     // surfaces under the `filters` key (not a further-nested `type` key) —
     // assert against that real shape, not a fabricated `type` field.
     expect(body.details.fieldErrors.filters).toBeDefined();
-    expect(body.details.fieldErrors.filters[0]).toMatch(/invalid enum value/i);
+    expect(body.details.fieldErrors.filters[0]).toMatch(/invalid option|expected one of/i);
     expect(body.details.fieldErrors.filters[0]).toContain('bogus-value');
   });
 
@@ -418,7 +418,7 @@ describe('filters.type enum validation (#112 AC-1/AC-3)', () => {
     // GET /search validates the parsed CSV list directly (`z.array(...).safeParse`),
     // so flatten() reports the offending index ("0") as the field key, not `type`.
     expect(body.details.fieldErrors['0']).toBeDefined();
-    expect(body.details.fieldErrors['0'][0]).toMatch(/invalid enum value/i);
+    expect(body.details.fieldErrors['0'][0]).toMatch(/invalid option|expected one of/i);
     expect(body.details.fieldErrors['0'][0]).toContain('bogus-value');
   });
 
