@@ -1,0 +1,10 @@
+{
+  "text": "reviewer lessons across projects",
+  "mode": "hybrid",
+  "filters": {
+    "project": ["runner-plugin", "astramem"],
+    "agent": ["crew:reviewer", "crew:builder"],
+    "entity": "Priya Nair"
+  },
+  "limit": 10
+}

@@ -174,6 +174,34 @@ number }`. See `contracts/fixtures/valid/retrieval-result-v1-cloud-six-signals.j
 vs. `retrieval-result-v1-single-hit-local-signals.json` for both engines
 validating against the same schema.
 
+## Retrieval query — project/agent/entity filters (FEAT-424)
+
+`retrieval-query.v1.schema.json`'s `filters` block is the **canonical**
+project/agent/entity recall-filter contract — the single source of truth
+FEAT-424 unifies `astramem-local`, `astramem-plugin`, and the memory SaaS
+backend around, replacing three independently-drifted filter shapes:
+
+- `filters.project` and `filters.agent` are `anyOf [string, string[]]` — a
+  single value is exact match, a list is OR/IN-semantics. An empty array is
+  "no constraint" (never match-nothing).
+- `filters.entity` is a plain `string`, resolved by each engine's own
+  normalize seam (case/whitespace-insensitive, exact match then substring
+  fallback per ADR-005 / FEAT-402).
+- `project` + `agent` AND-compose when both are present.
+
+`astramem-local`'s own `tsconfig.json` scopes `rootDir` to `src/`, so its
+daemon code cannot `import` `contracts/zod/retrieval-query.v1.ts` directly
+(TS6059 — the file lives outside `rootDir`). Its wiring
+(`src/contracts/recall-filters.ts`) is therefore a hand-mirrored copy of this
+schema's filter shape, held honest by
+`tests/contracts/recall-filter-parity.test.ts` (ajv-compiles this schema at
+test time and asserts the Zod mirror agrees). `astramem-plugin` and the
+memory SaaS backend do not have that constraint — they should import
+`@astragenie/astramem-contracts/zod`'s `RetrievalQueryV1Schema` (or the
+`.d.ts` types) directly rather than hand-rolling a third copy. See
+`docs/recall-filters.md` "Canonical contract (FEAT-424)" for full daemon-side
+wiring detail and the cross-repo adoption follow-up.
+
 ## Sync envelope timestamps
 
 `sync-envelope.v1.schema.json` keeps `created_at` as an **epoch-ms

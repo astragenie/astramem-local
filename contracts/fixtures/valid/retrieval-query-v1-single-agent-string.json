@@ -1,0 +1,8 @@
+{
+  "text": "single agent scoped recall",
+  "mode": "keyword",
+  "filters": {
+    "project": "runner-plugin",
+    "agent": "crew:reviewer"
+  }
+}
