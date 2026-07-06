@@ -1,10 +1,15 @@
 /**
  * Search routes:
  *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=
- *   POST /recall  { query, k, filters? }  filters.as_of: ISO-8601 date-time,
+ *   POST /recall  { query|text, k|limit, filters? }  filters.as_of: ISO-8601 date-time,
  *                                          filters.entity: FEAT-402 AC-4,
  *                                          filters.agentMode: FEAT-426 ('filter'|'boost')
  *   POST /remember { text, type, metadata? }
+ *
+ * #112 (U3-local): `query`/`k` are the pre-ADR-005 legacy field names for
+ * POST /recall; `text`/`limit` are the canonical ADR-005 names
+ * (contracts/schemas/retrieval-query.v1.schema.json). Both spellings are
+ * accepted for exactly one release — drop `query`/`k` next release.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -30,14 +35,30 @@ import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../.
 // instead of three hand-rolled `if (params.x) filters.x = ...` blocks per
 // surface — see src/contracts/filter-registry.ts.
 import { assignQueryFilterValues, assignStructuredFilterValues } from '../../contracts/filter-registry.js';
+// #112 (U3-local, AC-1): consume the single source of truth for the memory
+// type union instead of re-declaring a hand-copied list here. Once #111 lands
+// the canonical 10-value union in src/contracts/memory.ts, this schema picks
+// it up automatically — tests/contracts/recall-filter-parity.test.ts is the
+// regression gate that fails the build if a local copy is ever re-introduced.
+import { MEMORY_TYPES } from '../../contracts/memory.js';
 
-const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
+const MemoryTypeEnum = z.enum(MEMORY_TYPES);
 
 const RecallBodySchema = z.object({
-  query: z.string().min(1),
-  k: z.number().int().positive().default(5),
+  // #112 AC-2: `text` (ADR-005 canonical) and `query` (legacy) are both
+  // accepted for exactly one release — at least one is required, enforced
+  // by the `.refine` below. Drop `query` next release.
+  query: z.string().min(1).optional(),
+  text: z.string().min(1).optional(),
+  // #112 AC-2: `limit` (ADR-005 canonical) and `k` (legacy) are both accepted
+  // for exactly one release. Drop `k` next release.
+  k: z.number().int().positive().optional(),
+  limit: z.number().int().positive().optional(),
   filters: z.object({
-    type: z.array(z.string()).optional(),
+    // #112 AC-1/AC-3: enum-validated against the shared MEMORY_TYPES union —
+    // an out-of-union value now fails validation with a 400 naming the
+    // field, instead of silently passing through as a free-form string.
+    type: z.array(MemoryTypeEnum).optional(),
     repo: z.string().optional(),
     /** FEAT-423/FEAT-424: single project or a list (OR-semantics) — canonical contract. */
     project: ProjectFilterSchema,
@@ -52,6 +73,12 @@ const RecallBodySchema = z.object({
     /** FEAT-402 slice 2 AC-4/FEAT-424: entity name — resolved via the AC-9 normalize seam — canonical contract. */
     entity: EntityFilterSchema
   }).optional()
+}).refine((body) => (body.text ?? body.query) !== undefined, {
+  // #112 AC-2: at least one of the canonical/legacy query-text spellings
+  // is required — mirrors the pre-#112 `query: z.string().min(1)` required
+  // check, now satisfiable by either field name.
+  message: 'text (or legacy `query`) is required',
+  path: ['text'],
 });
 
 const RememberBodySchema = z.object({
@@ -90,7 +117,17 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       const limit = params.limit ? Math.max(1, Math.min(100, Number(params.limit))) : 10;
       const filters: SearchFilters = {};
 
-      if (params.type) filters.type = params.type.split(',').map(t => t.trim());
+      if (params.type) {
+        // #112 AC-3: enum-validate against the shared MEMORY_TYPES union —
+        // an out-of-union value is a 400 naming the field, not a silent
+        // passthrough that quietly matches zero rows downstream.
+        const rawTypes = params.type.split(',').map(t => t.trim()).filter(Boolean);
+        const parsedTypes = z.array(MemoryTypeEnum).safeParse(rawTypes);
+        if (!parsedTypes.success) {
+          return reply.code(400).send({ error: 'invalid', details: parsedTypes.error.flatten() });
+        }
+        filters.type = parsedTypes.data;
+      }
       if (params.repo) filters.repo = params.repo;
       // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
       assignQueryFilterValues(params, filters as unknown as Record<string, unknown>);
@@ -130,7 +167,13 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
       }
-      const { query, k, filters: rawFilters } = parsed.data;
+      // #112 AC-2: normalize the canonical/legacy aliases to one shape before
+      // processing — `text`/`limit` (ADR-005 canonical) take priority over
+      // `query`/`k` (legacy) when a caller sends both; `limit` defaults to 5,
+      // preserving the pre-#112 `k.default(5)` behavior.
+      const query = parsed.data.text ?? parsed.data.query!;
+      const k = parsed.data.limit ?? parsed.data.k ?? 5;
+      const { filters: rawFilters } = parsed.data;
       const filters: SearchFilters = {};
       if (rawFilters?.type) filters.type = rawFilters.type;
       if (rawFilters?.repo) filters.repo = rawFilters.repo;

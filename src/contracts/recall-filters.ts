@@ -37,6 +37,23 @@
  * entry in `filter-registry.ts` is now the one place a project/agent/entity
  * shape change needs to land, and it also drives the route/MCP parsing and
  * the SQL WHERE-clause builder that used to be hand-rolled per surface.
+ *
+ * #112 (U3-local) AC-4 — scope-conflict resolution, recorded explicitly per
+ * the issue's mandate: this slice keeps path (a), the hand-mirrored +
+ * parity-tested copy described above, and treats it as satisfying "consume
+ * the package" in spirit. `rootDir` is NOT widened and no runtime import from
+ * `contracts/` into `src/` was added. Parity coverage was extended to every
+ * additional field this issue touches:
+ *   - `filters.type` — `search.ts` now imports `MEMORY_TYPES` from
+ *     `src/contracts/memory.ts` (the existing single source of truth for the
+ *     type union) instead of re-declaring it; `recall-filter-parity.test.ts`
+ *     gained a case asserting that union stays byte-identical to this same
+ *     canonical schema's `filters.type` enum.
+ *   - `text`/`limit` (POST /recall's ADR-005 field names) vs. the legacy
+ *     `query`/`k` spellings — a plain field-name alias, not a shape mirror;
+ *     covered by request-level tests in `tests/server/search.test.ts` rather
+ *     than an ajv parity case, since both names already resolve to the exact
+ *     `string`/`integer` types the canonical schema declares.
  */
 import type { z } from 'zod';
 import { RECALL_FILTER_REGISTRY, getFilterSchema, buildFilterFieldsSchema } from './filter-registry.js';

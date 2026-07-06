@@ -14,7 +14,9 @@ export interface RetrievalQueryV1 {
   text: string;
   mode: 'keyword' | 'semantic' | 'hybrid';
   filters?: {
-    type?: ('decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event')[];
+    type?: (
+      'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event' | 'preference' | 'task_result' | 'summary'
+    )[];
     scope?: ('personal' | 'team' | 'org')[];
     repo?: string;
     /**
