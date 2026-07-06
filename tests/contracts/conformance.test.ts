@@ -227,6 +227,52 @@ describe('contracts/ — LIVE conformance (real pipeline paths, not fixtures)', 
     expect(ok, ajv.errorsText(validateFn.errors)).toBe(true);
   });
 
+  it('astramem-local#84: a real POST /remember-produced content_hash validates against sync-envelope.v1 (^[a-f0-9]{64}$)', async () => {
+    // Exercises the actual daemon hash site (src/server/routes/search.ts
+    // POST /remember, backed by src/storage/content-hash.ts contentHash())
+    // rather than a manually-supplied fixture hash — the schema's
+    // content_hash pattern is 64-char-only, and this call site used to
+    // truncate to 32 chars (astragenie/memory#619, #620). This test fails
+    // if that regresses.
+    const db = openDb(':memory:');
+    migrate(db);
+    const app = await buildApp({ db, token: 't' });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/remember',
+      headers: { authorization: 'Bearer t', 'content-type': 'application/json' },
+      payload: { text: 'live conformance: POST /remember content_hash must be 64 chars', type: 'fact' },
+    });
+    expect(res.statusCode).toBe(200);
+    const { id } = res.json();
+
+    const row = db
+      .prepare(`SELECT seq, event_type, atom_id, payload_json, content_hash, created_at FROM memory_events WHERE atom_id = ? AND event_type = 'create'`)
+      .get(id) as { seq: number; event_type: string; atom_id: string; payload_json: string | null; content_hash: string; created_at: number };
+
+    const envelope = {
+      protocol: 'astramem-sync@1',
+      device_id: 'device-conformance-84',
+      workspace_id: 'ws-conformance-84',
+      cursor: 0,
+      events: [
+        {
+          seq: row.seq,
+          event_type: row.event_type,
+          atom_id: row.atom_id,
+          payload_json: row.payload_json !== null ? JSON.parse(row.payload_json) : null,
+          content_hash: row.content_hash,
+          created_at: row.created_at,
+        },
+      ],
+    };
+
+    const validateFn = compiled.get('sync-envelope.v1.schema.json')!;
+    const ok = validateFn(envelope);
+    expect(ok, ajv.errorsText(validateFn.errors)).toBe(true);
+  });
+
   it('a capture events-kind envelope (the shape ingest tests POST) validates against capture-envelope.v1', async () => {
     // Mirrors tests/server/ingest-events.test.ts EVENTS_PAYLOAD — proves the
     // wire shape the server actually accepts on /ingest/transcript is a

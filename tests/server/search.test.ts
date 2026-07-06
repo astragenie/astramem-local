@@ -324,6 +324,25 @@ describe('POST /remember', () => {
     expect(typeof body.id).toBe('string');
   });
 
+  // astramem-local#84: content_hash must be a full 64-char sha256 hex digest
+  // (contracts/schemas/sync-envelope.v1.schema.json pattern ^[a-f0-9]{64}$),
+  // not the legacy 32-char truncation. Asserted against the real DB row so
+  // this exercises the actual POST /remember hash site, not a synthetic value.
+  it('stores a full 64-char sha256 hex content hash, not a 32-char truncation', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/remember',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'astramem-local#84: hash must be 64 chars, not 32', type: 'fact' }
+    });
+    expect(res.statusCode).toBe(200);
+    const { id } = res.json();
+    const row = db.prepare('SELECT hash FROM memories WHERE id = ?').get(id) as { hash: string };
+    expect(row.hash).toMatch(/^[a-f0-9]{64}$/);
+    const event = db.prepare(`SELECT content_hash FROM memory_events WHERE atom_id = ? AND event_type = 'create'`).get(id) as { content_hash: string };
+    expect(event.content_hash).toBe(row.hash);
+  });
+
   it('inserted memory is findable via FTS', async () => {
     await app.inject({
       method: 'POST',

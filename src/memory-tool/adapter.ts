@@ -40,7 +40,6 @@
  *   - Unknown paths/commands never throw; they return { error }.
  */
 
-import { createHash } from 'node:crypto';
 import type { DB } from '../storage/db.js';
 import type { Config } from '../config/config.js';
 import type { MemoryType } from '../contracts/index.js';
@@ -48,6 +47,7 @@ import { MemoryRepo } from '../storage/memories.js';
 import { MemoryEventRepo, MemoryNotFoundError, MemoryConflictError } from '../storage/memory-events.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
+import { contentHash } from '../storage/content-hash.js';
 
 const MEMORY_TYPES: readonly MemoryType[] = ['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event'];
 
@@ -166,7 +166,7 @@ function handleCreateOrInsert(db: DB, config: Config, cmd: MemoryToolCommand): M
   const { text, events: redactionEvents } = redactIfEnabled(rawText, config);
   recordRedactionEvents(db, redactionEvents, null);
 
-  const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
+  const hash = contentHash(text);
   const repo = new MemoryRepo(db);
   const events = new MemoryEventRepo(db);
   const { id } = repo.insertWithCreateEvent(
@@ -221,7 +221,7 @@ function handleStrReplace(db: DB, config: Config, cmd: MemoryToolCommand): Memor
 
   const { text, events: redactionEvents } = redactIfEnabled(replacedText, config);
   recordRedactionEvents(db, redactionEvents, null);
-  const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
+  const hash = contentHash(text);
 
   const repo = new MemoryRepo(db);
   const events = new MemoryEventRepo(db);

@@ -190,7 +190,7 @@ describe('GET /health over real HTTP', () => {
     expect(body.ok).toBe(true);
     expect(body.wire_versions_supported).toContain('v0.0');
     expect(body.wire_versions_supported).toContain('v1.0');
-    expect(body.schema_version).toBe(14);
+    expect(body.schema_version).toBe(15);
   }, 20_000);
 });
 
@@ -213,7 +213,7 @@ describe('GET /version over real HTTP', () => {
     expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(body.wire_versions_supported).toContain('v0.0');
     expect(body.wire_versions_supported).toContain('v1.0');
-    expect(body.schema_version).toBe(14);
+    expect(body.schema_version).toBe(15);
     expect(typeof body.ts).toBe('number');
   }, 20_000);
 

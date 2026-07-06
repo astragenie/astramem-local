@@ -1,6 +1,6 @@
 /**
  * Upgrade-path e2e (FEAT-420 / SLICE-414): a frozen schema-v12 datadir must
- * open clean on the current (v14) build via the SAME openDb+migrate path
+ * open clean on the current (v15) build via the SAME openDb+migrate path
  * serve.ts uses, with zero data loss (AC-1), searchable pre-upgrade content
  * (AC-2), and fail-loud behavior for corrupt/half-migrated datadirs (AC-3) —
  * never a silent partial open. AC-5 anti-rot: the committed fixture must
@@ -42,13 +42,13 @@ function makeEmbed(dim: number): EmbedProvider {
 }
 
 describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
-  it('AC-1: migrates to schema_version 14 with zero data loss — counts + spot-checked ids match manifest', () => {
+  it('AC-1: migrates to schema_version 15 with zero data loss — counts + spot-checked ids match manifest', () => {
     const dbPath = copyFixtureToTemp();
     const db = openDb(dbPath);
     migrate(db);
 
     const versionRow = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versionRow.v).toBe(14);
+    expect(versionRow.v).toBe(15);
 
     const countOf = (table: string): number =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
@@ -114,7 +114,7 @@ describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
       expect(() => openDb(p)).toThrow(CorruptDatadirError);
     });
 
-    it('half-migrated datadir (schema_version row for the last migration lost) throws an actionable error', () => {
+    it('half-migrated datadir (schema_version row for a DDL migration lost) throws an actionable error', () => {
       const dbPath = copyFixtureToTemp();
 
       // First bring it fully up to date, matching the real upgrade path...
@@ -122,14 +122,21 @@ describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
       migrate(db);
       db.close();
 
-      // ...then simulate a half-migrated state: the 013 schema change landed
-      // (memories.archived exists) but the bookkeeping row recording it does
-      // not (e.g. crash between DDL and the schema_version INSERT — both run
-      // in the same transaction in real migrate(), but this simulates a
-      // datadir that reached that state some other way, e.g. manual editing
-      // or a restore of a stale schema_version table over a newer file).
+      // ...then simulate a half-migrated state: migration 014's DDL landed
+      // (the sync_ship_state table exists) but the bookkeeping row recording
+      // it does not (e.g. crash between DDL and the schema_version INSERT —
+      // both run in the same transaction in real migrate(), but this
+      // simulates a datadir that reached that state some other way, e.g.
+      // manual editing or a restore of a stale schema_version table over a
+      // newer file). This must target a migration with real DDL (CREATE/
+      // ALTER), not simply MAX(version): migration 015
+      // (canonical-content-hash, astramem-local#84) is a data-only UPDATE
+      // and is intentionally idempotent — re-running it after its
+      // bookkeeping row is lost silently (and correctly) self-heals instead
+      // of throwing, so it can't stand in for "the last migration" here.
+      // 014 is the newest migration that still has real DDL to conflict on.
       const db2 = openDb(dbPath);
-      db2.prepare('DELETE FROM schema_version WHERE version = (SELECT MAX(version) FROM schema_version)').run();
+      db2.prepare('DELETE FROM schema_version WHERE version = 14').run();
       db2.close();
 
       const db3 = openDb(dbPath);

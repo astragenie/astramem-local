@@ -175,6 +175,31 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     expect(row).toBeDefined();
   });
 
+  // astramem-local#84: content_hash must be a full 64-char sha256 hex digest
+  // (contracts/schemas/sync-envelope.v1.schema.json pattern ^[a-f0-9]{64}$),
+  // not the legacy 32-char truncation. Exercises the real MCP remember hash
+  // site (src/mcp/server.ts), not a synthetic value.
+  it('tools/call remember stores a full 64-char sha256 hex content hash, not a 32-char truncation', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'remember',
+        arguments: { text: 'astramem-local#84: mcp remember hash must be 64 chars', type: 'fact' },
+      },
+      id: 4,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    const text = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text) as { id: string; ok: boolean };
+    expect(payload.ok).toBe(true);
+
+    const row = db.prepare('SELECT hash FROM memories WHERE id = ?').get(payload.id) as { hash: string };
+    expect(row.hash).toMatch(/^[a-f0-9]{64}$/);
+    const event = db.prepare(`SELECT content_hash FROM memory_events WHERE atom_id = ? AND event_type = 'create'`).get(payload.id) as { content_hash: string };
+    expect(event.content_hash).toBe(row.hash);
+  });
+
   // -------------------------------------------------------------------------
   // search_memory
   // -------------------------------------------------------------------------
