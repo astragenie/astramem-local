@@ -11,9 +11,10 @@ export interface AtomV1 {
   schema: 'astramem/atom@1';
   id: string;
   /**
-   * Registry-extensible, closed by default. v1 registry = the 7 types both implementations ship today. New types are additive (minor version bump); consumers seeing an unknown type should degrade gracefully rather than reject the atom.
+   * Registry-extensible, closed by default. v1 registry = the canonical 10-value union ratified by ADR D4 (U4 contract-unification): decision, fact, lesson, command, todo, note, event (astramem-local's 7 today) plus preference, task_result, summary (cloud-only today, until local adds writers). New types are additive (minor version bump); consumers seeing an unknown type should degrade gracefully rather than reject the atom.
    */
-  type: 'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event';
+  type:
+    'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event' | 'preference' | 'task_result' | 'summary';
   /**
    * Canonical normalized text.
    */

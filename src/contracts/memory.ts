@@ -1,7 +1,37 @@
 /** Single runtime source of truth for memory types — CLI validation and any
  *  future enum checks must use this array, not a hand-copied list (the CLI
- *  once drifted to a stale 5-type copy and silently rejected note/event). */
-export const MEMORY_TYPES = ['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event'] as const;
+ *  once drifted to a stale 5-type copy and silently rejected note/event).
+ *
+ *  U4-local (#111, ADR D4): reconciled to the canonical ~10-value union
+ *  shared with `@astragenie/astramem-contracts` (`contracts/schemas/
+ *  atom.v1.schema.json` `type` enum) — astramem-local's original 7
+ *  (`decision`..`event`) plus 3 cloud-only types (`preference`,
+ *  `task_result`, `summary`). This widening is additive/type-level only:
+ *  astramem-local does not yet WRITE the 3 cloud types anywhere (its own
+ *  extraction registry in `src/distill/prompts/extract.ts` AtomSchema and
+ *  the mirrored request-body enums in `src/server/routes/ingest.ts` /
+ *  `src/pipeline/handlers/distill-events.ts` are deliberately left at 7 —
+ *  those are local's writer-surface contracts, out of scope for #111/#112,
+ *  not this shared type registry). The `memories.type` SQLite CHECK
+ *  constraint (migrations/003-expand-memory-types.sql) ALSO still only
+ *  allows the 7 local values — a real INSERT of a `preference`/
+ *  `task_result`/`summary` row (e.g. a future sync-pull materializing a
+ *  cloud-authored atom, see src/sync/puller.ts) will throw at the DB layer
+ *  until a follow-up migration widens that CHECK. Storing the 3 new types
+ *  locally is intentionally NOT implemented by this change — only the
+ *  shared vocabulary is. */
+export const MEMORY_TYPES = [
+  'decision',
+  'fact',
+  'lesson',
+  'command',
+  'todo',
+  'note',
+  'event',
+  'preference',
+  'task_result',
+  'summary',
+] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 
 /** ADR-009 memory scope — personal is the default for all local-agent writes. */

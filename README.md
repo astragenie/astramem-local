@@ -121,13 +121,25 @@ Everything derived (vectors, FTS rows, compactions) can be rebuilt by replaying 
 
 ## Memory types
 
-| Type       | Description                                            | Example                                      |
-|------------|--------------------------------------------------------|----------------------------------------------|
-| `decision` | Architectural or design choice made during a session   | "Use sqlite-vec for v1 vector storage"       |
-| `fact`     | Objective project fact, configuration detail           | "Port 7777 is the default daemon port"       |
-| `lesson`   | Something that went wrong and how it was resolved      | "sqlite-vec rowid must match memories rowid" |
-| `command`  | CLI command or script worth remembering                | "bun run build && bun run test -- migrate"   |
-| `todo`     | Outstanding work item surfaced in conversation         | "Add reembed job when provider changes"      |
+Canonical ~10-value `type` registry (U4 contract-unification, ADR D4),
+single-sourced in `@astragenie/astramem-contracts`
+(`contracts/schemas/atom.v1.schema.json`) and mirrored in
+`src/contracts/memory.ts` `MEMORY_TYPES`. astramem-local writes the first 7
+today; the last 3 are cloud-authored types local can read (e.g. via sync)
+but does not yet produce.
+
+| Type          | Description                                            | Example                                      | Ships from            |
+|---------------|---------------------------------------------------------|-----------------------------------------------|------------------------|
+| `decision`    | Architectural or design choice made during a session   | "Use sqlite-vec for v1 vector storage"       | local                  |
+| `fact`        | Objective project fact, configuration detail           | "Port 7777 is the default daemon port"       | local                  |
+| `lesson`      | Something that went wrong and how it was resolved      | "sqlite-vec rowid must match memories rowid" | local                  |
+| `command`     | CLI command or script worth remembering                | "bun run build && bun run test -- migrate"   | local                  |
+| `todo`        | Outstanding work item surfaced in conversation         | "Add reembed job when provider changes"      | local                  |
+| `note`        | Freeform observation not fitting another type           | "Team prefers PRs under 400 lines"           | local                  |
+| `event`       | Something that happened at a point in time              | "Deployed v0.8.1 to prod"                     | local                  |
+| `preference`  | User/agent preference atom                               | "User prefers terse commit messages"          | cloud only (today)     |
+| `task_result` | Outcome of a completed task                              | "Migration 014 applied cleanly"               | cloud only (today)     |
+| `summary`     | Session/thread summary atom                              | "Summary of the FEAT-424 filter-unification session" | cloud only (today) |
 
 ---
 
