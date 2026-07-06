@@ -7,6 +7,13 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# devops#69: 5 self-hosted runners share ONE VM — a re-push must cancel the
+# superseded run instead of doubling fleet load (and doubling the odds of
+# concurrent spawned-daemon test processes colliding on shared host state).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     name: Test (${{ matrix.os }}, Bun ${{ matrix.bun }})

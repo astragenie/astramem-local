@@ -11,11 +11,16 @@
  *   INTEGRATION_LIVE=ollama  — real local Ollama must be running
  *   INTEGRATION_LIVE=azure   — AZURE_OPENAI_API_KEY + AZURE_OPENAI_ENDPOINT must be set
  *
- * Port: randomised high port (base 18900) to avoid conflicts with other test servers.
+ * Port: devops#69 — OS-assigned ephemeral (spawnDaemon({ port: 0 })), resolved
+ * from the daemon's boot log after spawn. A fixed port collides with the
+ * shared self-hosted runner VM's persistent TEI container on :8080 and with
+ * neighbor CI jobs' own spawned daemons (whole-daemon 401s from a token this
+ * test never set, while public /health still passes).
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import {
   spawnDaemon, killDaemon, waitForHealthReachable, pollSearchHits,
@@ -24,10 +29,14 @@ import {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-const TOKEN = 'e2etok-plugin-flow';
-// Use a stable port that doesn't collide with ingest-e2e (17778) or serve.test (17900+)
-const PORT = 18950;
-const BASE_URL = `http://127.0.0.1:${PORT}`;
+// Unique per test run so an accidental cross-connect across concurrent jobs
+// on the shared runner fails closed (401) instead of silently succeeding
+// against a neighbor's daemon that happens to share a hardcoded literal token.
+const TOKEN = `e2etok-plugin-flow-${randomUUID()}`;
+// devops#69: placeholders, overwritten with the REAL bound port once the
+// daemon is spawned below (port: 0 = OS-assigned ephemeral).
+let PORT = 0;
+let BASE_URL = '';
 
 const INTEGRATION_LIVE = process.env.INTEGRATION_LIVE as 'ollama' | 'azure' | undefined;
 const IS_MOCK = !INTEGRATION_LIVE;
@@ -87,8 +96,8 @@ describe('Plugin flow E2E — ingest → distill → search', () => {
 
       // ── 1. Spin daemon ──────────────────────────────────────────────────────
 
-      daemon = spawnDaemon({
-        port: PORT,
+      daemon = await spawnDaemon({
+        port: 0,
         token: TOKEN,
         env: {
           ASTRA_MEMORY_DATADIR: ':memory:',
@@ -96,6 +105,8 @@ describe('Plugin flow E2E — ingest → distill → search', () => {
           ...(IS_MOCK ? { ASTRA_MEMORY_MOCK_PROVIDERS: '1' } : {}),
         },
       });
+      PORT = daemon.port;
+      BASE_URL = daemon.baseUrl;
 
       // Surface daemon stderr for debugging
       daemon.proc.stderr?.on('data', (chunk: Buffer) => {
