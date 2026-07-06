@@ -22,10 +22,53 @@ export const PKG_VERSION: string = _PkgSchema.parse(
 ).version;
 
 // ---------------------------------------------------------------------------
-// Wire versions — single authoritative list
+// Wire versions — single authoritative list (U6 wire-version unification,
+// astramem-local#106)
+//
+// `tsconfig.json` scopes `rootDir` to `src/`, so this file cannot `import`
+// `contracts/schemas/*.v1.schema.json` directly (contracts/ lives outside
+// rootDir -> tsc TS6059, same constraint documented in
+// src/contracts/recall-filters.ts). SCHEMA_FILE_TO_DOMAIN is therefore a
+// **hand-mirrored, explicit** map of every `contracts/schemas/*.v1.schema.json`
+// file to its un-prefixed `domain@gen` id. The schema `title` fields are NOT
+// parsed to derive this list — they are internally inconsistent prefix-wise
+// (atom.v1 uses `astramem/atom@1`; the rest use `astramem-<domain>@1 ...`
+// with trailing words like "envelope"/"query"/"result").
+//
+// `tests/contracts/wire-version-map-parity.test.ts` is the regression gate:
+// it `readdirSync`s contracts/schemas/*.v1.schema.json and fails the build if
+// a schema file is added/removed without a matching update here.
+//
+// WIRE_VERSIONS_SUPPORTED is REPURPOSED from the old flat envelope-negotiation
+// list (`['v0.0', 'v1.0']`) to this domain@gen vocabulary — the plugin's live
+// wire-probe reads this exact field name. The per-request `wire_version`
+// negotiation on POST /ingest/transcript (src/server/routes/ingest.ts, regex
+// `^v(?:0|[1-9][0-9]*)\.[0-9]+$`) is a SEPARATE axis and does not read this
+// constant or this map.
 // ---------------------------------------------------------------------------
 
-export const WIRE_VERSIONS_SUPPORTED = ['v0.0', 'v1.0'] as const satisfies readonly string[];
+export const SCHEMA_FILE_TO_DOMAIN = {
+  'atom.v1.schema.json': 'atom@1',
+  'retrieval-query.v1.schema.json': 'retrieval@1',
+  'retrieval-result.v1.schema.json': 'retrieval@1',
+  'sync-envelope.v1.schema.json': 'sync@1',
+  'capture-envelope.v1.schema.json': 'capture@1',
+} as const satisfies Record<string, string>;
+
+// Deduped, first-seen-order derivation from the map above (5 schema files ->
+// 4 domains: retrieval-query + retrieval-result both collapse to `retrieval@1`).
+export const WIRE_VERSIONS_SUPPORTED = Array.from(
+  new Set(Object.values(SCHEMA_FILE_TO_DOMAIN)),
+) as readonly string[];
+
+// ---------------------------------------------------------------------------
+// Contract schema version — coarse wire-CONTRACT generation (U6, #106).
+// Distinct from SCHEMA_VERSION below (the SQLite migration counter, hard-
+// asserted by migrate()'s drift guard) — this is a separate, additive field.
+// Bump when the domain@gen vocabulary itself changes generation.
+// ---------------------------------------------------------------------------
+
+export const CONTRACT_SCHEMA_VERSION = '1' as const;
 
 // ---------------------------------------------------------------------------
 // Schema version — single authoritative literal

@@ -25,7 +25,14 @@ describe('/health hardening fields (P1.3) — additive, wire-safe', () => {
     const body = res.json();
     expect(body.ok).toBe(true);
     expect(body.version).toBeDefined();
+    // U6 (#106): wire_versions_supported is now the domain@gen vocabulary
+    // (repurposed from the legacy flat v0.0/v1.0 list) — still additive/
+    // wire-safe, and contract_schema_version rides alongside it.
     expect(body.wire_versions_supported).toBeDefined();
+    expect(new Set(body.wire_versions_supported)).toEqual(
+      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+    );
+    expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBeDefined();
     expect(body.security).toBeDefined();
     expect(body.usefulness).toBeDefined();

@@ -30,11 +30,24 @@ describe('GET /version', () => {
     expect(version).toMatch(/^\d+\.\d+\.\d+/);
   });
 
-  it('wire_versions_supported includes v0.0 and v1.0', async () => {
+  // U6 (#106): wire_versions_supported was REPURPOSED from the legacy flat
+  // v0.0/v1.0 envelope-negotiation list to the un-prefixed domain@gen
+  // wire-contract vocabulary — the plugin's live wire-probe reads this exact
+  // field name. See src/server/lib/wire-meta.ts for the hand-mirrored map +
+  // tests/contracts/wire-version-map-parity.test.ts for the coverage gate.
+  it('wire_versions_supported is the domain@gen vocabulary (atom@1, retrieval@1, sync@1, capture@1)', async () => {
     const res = await app.inject({ method: 'GET', url: '/version' });
     const { wire_versions_supported } = res.json() as { wire_versions_supported: string[] };
-    expect(wire_versions_supported).toContain('v0.0');
-    expect(wire_versions_supported).toContain('v1.0');
+    expect(new Set(wire_versions_supported)).toEqual(
+      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+    );
+  });
+
+  // U6 (#106): coarse wire-CONTRACT generation, additive and distinct from
+  // schema_version (the SQLite migration counter, unchanged below).
+  it('contract_schema_version is "1"', async () => {
+    const res = await app.inject({ method: 'GET', url: '/version' });
+    expect(res.json().contract_schema_version).toBe('1');
   });
 
   it('schema_version is 15', async () => {
@@ -63,13 +76,20 @@ describe('GET /health (wire metadata)', () => {
     app = await buildApp({ db, token: 'tok' });
   });
 
-  it('returns 200 and includes wire_versions_supported', async () => {
+  it('returns 200 and includes the domain@gen wire_versions_supported + contract_schema_version', async () => {
     const res = await app.inject({ method: 'GET', url: '/health' });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as { ok: boolean; wire_versions_supported: string[]; schema_version: number };
+    const body = res.json() as {
+      ok: boolean;
+      wire_versions_supported: string[];
+      contract_schema_version: string;
+      schema_version: number;
+    };
     expect(body.ok).toBe(true);
-    expect(body.wire_versions_supported).toContain('v0.0');
-    expect(body.wire_versions_supported).toContain('v1.0');
+    expect(new Set(body.wire_versions_supported)).toEqual(
+      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+    );
+    expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBe(15);
   });
 
