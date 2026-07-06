@@ -102,6 +102,39 @@ validator — Zod is a TypeScript-consumer convenience only.
 > `retrieval-result.v1`, `sync-envelope.v1` have no conditionals and generate
 > faithful Zod.
 
+## Memory atom `type` registry (U4, ADR D4)
+
+`atom.v1.schema.json`'s `type` enum is the canonical, cross-repo vocabulary
+for memory atoms — 10 values, ratified in the U4 contract-unification wave
+(ADR D4) as the union of astramem-local's original 7 and cloud's 3:
+
+| Type          | Ships from                         | Notes                                                                 |
+|---------------|-------------------------------------|------------------------------------------------------------------------|
+| `decision`    | local (+ cloud consumes via sync)   | Architectural/design choice.                                          |
+| `fact`        | local (+ cloud consumes via sync)   | Objective project fact.                                               |
+| `lesson`      | local (+ cloud consumes via sync)   | Learning from failure/surprise.                                       |
+| `command`     | local (+ cloud consumes via sync)   | Useful shell incantation.                                             |
+| `todo`        | local (+ cloud consumes via sync)   | Pending work item.                                                    |
+| `note`        | local (+ cloud consumes via sync)   | Freeform observation not fitting other types.                        |
+| `event`       | local (+ cloud consumes via sync)   | Something that happened at a point in time.                          |
+| `preference`  | cloud only (today)                  | User/agent preference atom. Local has no writer yet.                 |
+| `task_result` | cloud only (today)                  | Outcome of a completed task. Local has no writer yet.                 |
+| `summary`     | cloud only (today)                  | Session/thread summary atom. Local has no writer yet.                |
+
+Local's own writer-facing surfaces (the extraction LLM prompt
+`src/distill/prompts/extract.ts`, the ADR-008 `events`-kind request schemas
+in `src/server/routes/ingest.ts` / `src/pipeline/handlers/distill-events.ts`,
+and the `memories.type` SQLite `CHECK` constraint) are **deliberately left at
+the original 7** by this change — astramem-local does not yet produce
+`preference`/`task_result`/`summary` atoms anywhere, so widening those
+writer-side surfaces (and the DB `CHECK`) is a separate follow-up, not part
+of authoring the shared contract vocabulary. `src/contracts/memory.ts`'s
+`MEMORY_TYPES`/`MemoryType` (the daemon's in-process type union, used by
+read paths like search/sync/eval) IS reconciled to the full 10 here, since
+those paths must be able to represent an atom of any canonical type (e.g. one
+pulled from cloud via `src/sync/puller.ts`) even before local gains its own
+writer for it.
+
 ## Fixture naming convention (load-bearing)
 
 `validate.mjs` and `tests/contracts/conformance.test.ts` both route fixtures
