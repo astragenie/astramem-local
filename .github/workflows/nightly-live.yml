@@ -86,7 +86,7 @@ jobs:
         # common case today. The explicit save step below runs on
         # `always()`, gated only on the model pulls themselves succeeding.
         id: ollama-cache
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@v6
         with:
           path: /opt/ollama-models
           key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
@@ -174,7 +174,7 @@ jobs:
         # the model pulls themselves succeeded, independent of whether the
         # later live-test step passes or the job as a whole ends red.
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@v6
         with:
           path: /opt/ollama-models
           key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
