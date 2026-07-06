@@ -1,5 +1,6 @@
 import { defaultDataDir } from './datadir.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
+import { hasPassingEvalEvidence } from '../eval/eval-evidence.js';
 
 export interface Config {
   port: number;
@@ -40,8 +41,25 @@ export interface Config {
    * `SearchFilters.agent` value into `agentMode: 'boost'` instead of the
    * default hard filter, a candidate whose provenance.agent matches gets
    * +η instead of having non-matches excluded outright. At eta=0 ranking is
-   * byte-identical to pre-FEAT-426 behavior). */
-  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number; eta: number };
+   * byte-identical to pre-FEAT-426 behavior).
+   *
+   * FEAT-428 (fusion-model governance, arch-review of FEAT-426 findings 1+3):
+   * `governance` is a guard over these weights, not a ranking behavior —
+   * `applyFusionGovernance` below enforces it once at config-load time
+   * (`loadConfig`), so every downstream consumer of `config.search` already
+   * sees governed weights. See that function's doc comment for the two
+   * guards (component ceiling, η eval-evidence gate). */
+  search: {
+    alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number; eta: number;
+    governance: {
+      /** No individual component weight may exceed this. Over-ceiling
+       * weights are clamped (not rejected — a bad config value must not
+       * block an otherwise-healthy daemon from booting) and logged. Default
+       * (1.0) sits well above every shipped default weight (max 0.4) so it
+       * only ever guards a runaway/typo'd value, never a normal config. */
+      maxComponentWeight: number;
+    };
+  };
   /** Cross-encoder rerank stage (issue #26, ADR-005). OFF by default — ADR-005
    * ruled "no reranker in v1 (CPU budget)" for local, so this is a
    * config-flagged, opt-in seam (mirrors the cloud engine's stub-by-default
@@ -167,7 +185,10 @@ export function defaultConfig(): Config {
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
-    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0 },
+    search: {
+      alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0,
+      governance: { maxComponentWeight: 1.0 },
+    },
     crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
     recallPack: {
       enabled: false,
@@ -185,8 +206,74 @@ export function defaultConfig(): Config {
   };
 }
 
+/**
+ * FEAT-428: fusion-model governance guard (arch-review of FEAT-426 findings
+ * 1+3 — no ceiling on additive fusion weights, no eval evidence gating any
+ * of them). Applied once here, at config-load time, so every caller that
+ * gets its weights from `loadConfig` (and, transitively, `config.search`)
+ * already sees governed values — there is no separate call site to wire or
+ * forget downstream.
+ *
+ * Two independent guards, both non-fatal (a bad config value must never
+ * block daemon boot — matches the rest of this config layer's "never throw,
+ * degrade and log" philosophy, see loader.ts):
+ *
+ * 1. Component ceiling: no configured weight may exceed
+ *    `search.governance.maxComponentWeight` — a runaway weight (a typo'd 40
+ *    instead of 0.4, or a well-intentioned "just crank it up") can't
+ *    dominate ranking. Over-ceiling weights are CLAMPED to the ceiling, not
+ *    rejected, and a warning is logged.
+ * 2. η eval-evidence gate: `eta` (FEAT-426 agent soft-boost) may only be
+ *    nonzero if `src/eval/eval-evidence.ts` records a passing ADR-005
+ *    harness run for 'eta'. With no such evidence recorded (the state as of
+ *    FEAT-428 — see that module), a configured `eta > 0` is forced back to
+ *    0 (the safe, byte-identical-ranking default) and a warning is logged,
+ *    instead of silently shipping an unvalidated ranking change.
+ *
+ * `checkEvalEvidence` is an injectable seam for tests; production always
+ * uses the real `hasPassingEvalEvidence` lookup. `log` defaults to
+ * `console.warn`; tests can inject a collector instead of spying on the
+ * console.
+ */
+export function applyFusionGovernance(
+  search: Config['search'],
+  opts: {
+    log?: (message: string) => void;
+    checkEvalEvidence?: (component: 'eta') => boolean;
+  } = {},
+): Config['search'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const checkEvalEvidence = opts.checkEvalEvidence ?? hasPassingEvalEvidence;
+  const ceiling = search.governance.maxComponentWeight;
+
+  const governed: Config['search'] = { ...search };
+  const componentKeys = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta'] as const;
+  for (const key of componentKeys) {
+    const value = governed[key];
+    if (value > ceiling) {
+      log(
+        `[fusion-governance] search.${key}=${value} exceeds the component ceiling ` +
+        `(${ceiling}); clamping to ${ceiling}. See FEAT-428 / applyFusionGovernance.`,
+      );
+      governed[key] = ceiling;
+    }
+  }
+
+  if (governed.eta > 0 && !checkEvalEvidence('eta')) {
+    log(
+      `[fusion-governance] search.eta=${governed.eta} is configured but no passing ADR-005 ` +
+      "eval-harness evidence is recorded for 'eta' (src/eval/eval-evidence.ts) — forcing " +
+      'eta=0 for this config. Record a passing tests/eval/retrieval-eval.test.ts run before ' +
+      'shipping a nonzero eta.',
+    );
+    governed.eta = 0;
+  }
+
+  return governed;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
-  if (!overrides) return base;
-  return { ...base, ...overrides };
+  const merged = overrides ? { ...base, ...overrides } : base;
+  return { ...merged, search: applyFusionGovernance(merged.search) };
 }
