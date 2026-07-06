@@ -242,7 +242,7 @@ export function httpPullFetcher(url: string, token: string, fetchImpl: typeof fe
     if (cursor !== null) qs.set('cursor', cursor);
     const res = await fetchImpl(`${url.replace(/\/$/, '')}/sync/pull?${qs.toString()}`, {
       method: 'GET',
-      headers: { authorization: `Bearer ${token}` },
+      headers: { authorization: `ApiKey ${token}` },
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
