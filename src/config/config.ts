@@ -49,11 +49,12 @@ export interface Config {
    * search pipeline is byte-identical to pre-rerank behavior — the stage is
    * never invoked, not merely a no-op weight (see src/search/rerank.ts).
    *
-   * `provider: 'mock'` is the only implemented provider (deterministic
-   * lexical-overlap scorer — fully testable, no network/model dependency);
-   * `'http'` is a documented TODO for a real cross-encoder sidecar (see
-   * docs/runbooks/cross-encoder-rerank.md) and throws at provider-build time
-   * until implemented.
+   * `provider: 'mock'` is a deterministic lexical-overlap scorer — fully
+   * testable, no network/model dependency. `provider: 'http'` calls a real
+   * cross-encoder sidecar over HTTP (see docs/runbooks/cross-encoder-rerank.md
+   * for the endpoint contract, cost/latency notes, and how to run one) —
+   * requires `sidecarUrl`; `buildCrossEncoderProvider` throws at
+   * provider-build time if it's unset.
    *
    * `topK` bounds how many post-fusion candidates are sent through the
    * reranker (cost/latency control — mirrors cloud's TopK=50 default).
@@ -65,8 +66,12 @@ export interface Config {
     provider: 'mock' | 'http';
     topK: number;
     timeoutMs: number;
-    /** Required when provider === 'http' (TODO, not yet implemented). */
+    /** Required when provider === 'http'. Base URL of the cross-encoder
+     * sidecar's rerank endpoint (e.g. a TEI `/rerank` deployment). */
     sidecarUrl?: string;
+    /** Optional model identifier forwarded in the request body when the
+     * sidecar hosts more than one model (provider === 'http' only). */
+    model?: string;
   };
   recallPack: {
     enabled: boolean;

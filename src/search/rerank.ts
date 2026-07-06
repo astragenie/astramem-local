@@ -25,6 +25,7 @@
  */
 
 import type { Config } from '../config/config.js';
+import { childLogger } from '../log/logger.js';
 
 /** One post-fusion candidate handed to the reranker. */
 export interface CrossEncoderCandidate {
@@ -49,9 +50,9 @@ export interface CrossEncoderProvider {
  * it carries no semantic signal beyond shared tokens — but it is fully
  * deterministic (no network, no model, no seed drift across OSes/CI), which
  * is exactly what a rerank-stage unit test and the ADR-005 eval harness need
- * to prove the stage is correctly wired end-to-end. A real provider (TODO:
- * HTTP sidecar, see docs/runbooks/cross-encoder-rerank.md) plugs in behind
- * the same `CrossEncoderProvider` interface without touching `applyRerank`.
+ * to prove the stage is correctly wired end-to-end. `HttpCrossEncoderProvider`
+ * (below) plugs a real sidecar in behind the same `CrossEncoderProvider`
+ * interface without touching `applyRerank`.
  */
 export class MockCrossEncoderProvider implements CrossEncoderProvider {
   readonly name = 'mock' as const;
@@ -83,6 +84,116 @@ function jaccard(a: Set<string>, b: Set<string>): number {
   return union === 0 ? 0 : intersection / union;
 }
 
+export interface HttpCrossEncoderConfig {
+  /** Base URL of the sidecar's rerank endpoint (config.crossEncoder.sidecarUrl). */
+  url: string;
+  /** Optional model id forwarded in the request body (config.crossEncoder.model). */
+  model?: string;
+  /** Per-request abort budget. Independent of (but normally set to)
+   * `RerankOpts.timeoutMs` — see `buildCrossEncoderProvider`. */
+  timeoutMs?: number;
+  /** Test-only seam: injected fetch so unit tests never hit the network. */
+  fetchImpl?: typeof fetch;
+}
+
+/** One entry of a TEI-style `/rerank` response. */
+interface HttpRerankResult {
+  index: number;
+  score: number;
+}
+
+type HttpRerankResponse = HttpRerankResult[] | { results?: HttpRerankResult[] };
+
+const DEFAULT_HTTP_TIMEOUT_MS = 300;
+
+/**
+ * Real HTTP cross-encoder provider (issue #26/#94). Speaks the common
+ * cross-encoder sidecar contract: a Hugging Face Text Embeddings Inference
+ * (TEI) `/rerank`-shaped endpoint.
+ *
+ * Request:  `POST <url>` with JSON body `{ query, texts, model? }`, where
+ *           `texts[i]` corresponds positionally to `candidates[i]`.
+ * Response: either a bare array of `{ index, score }` (TEI's native shape,
+ *           `index` into `texts`) or `{ results: [{ index, score }] }`
+ *           (the wrapped shape some sidecars use). Either is accepted.
+ *
+ * Errors (non-2xx status, network failure, malformed/missing response
+ * shape) are thrown rather than swallowed here — `applyRerank` is the single
+ * place that converts a provider failure into the whole-call fallback to the
+ * un-reranked fused order, so this provider must not silently return a
+ * partial or empty map on failure (that would look like "no candidate
+ * matched" instead of "the sidecar is unreachable").
+ */
+export class HttpCrossEncoderProvider implements CrossEncoderProvider {
+  readonly name = 'http' as const;
+  private readonly url: string;
+  private readonly model: string | undefined;
+  private readonly timeoutMs: number;
+  private readonly fetchImpl: typeof fetch;
+
+  constructor(config: HttpCrossEncoderConfig) {
+    this.url = config.url;
+    this.model = config.model;
+    this.timeoutMs = config.timeoutMs ?? DEFAULT_HTTP_TIMEOUT_MS;
+    this.fetchImpl = config.fetchImpl ?? fetch;
+  }
+
+  async score(query: string, candidates: CrossEncoderCandidate[]): Promise<Map<string, number>> {
+    if (candidates.length === 0) return new Map();
+
+    const log = childLogger({ provider: this.name, url: this.url });
+    const t0 = Date.now();
+    const body: Record<string, unknown> = {
+      query,
+      texts: candidates.map(c => c.text),
+    };
+    if (this.model) body['model'] = this.model;
+
+    let res: Response;
+    try {
+      res = await this.fetchImpl(this.url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.timeoutMs),
+      });
+    } catch (err) {
+      const latency_ms = Date.now() - t0;
+      log.warn({ latency_ms, error: err instanceof Error ? err.message : String(err) }, 'cross-encoder http request failed');
+      throw new Error(
+        `cross-encoder HTTP request to ${this.url} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    if (!res.ok) {
+      const snippet = (await res.text().catch(() => '')).slice(0, 200);
+      const latency_ms = Date.now() - t0;
+      log.warn({ latency_ms, status: res.status }, 'cross-encoder http non-2xx response');
+      throw new Error(`cross-encoder HTTP ${res.status} from ${this.url}: ${snippet}`);
+    }
+
+    const data = (await res.json()) as HttpRerankResponse;
+    const results = Array.isArray(data) ? data : data.results;
+    if (!Array.isArray(results)) {
+      throw new Error(
+        `cross-encoder HTTP response from ${this.url} missing a results array (expected TEI-style [{index,score}] or {results:[...]})`,
+      );
+    }
+
+    const out = new Map<string, number>();
+    for (const r of results) {
+      const candidate = candidates[r.index];
+      if (candidate !== undefined && Number.isFinite(r.score)) {
+        out.set(candidate.id, r.score);
+      }
+    }
+
+    const latency_ms = Date.now() - t0;
+    log.info({ latency_ms, candidates: candidates.length, scored: out.size }, 'cross-encoder http rerank ok');
+    return out;
+  }
+}
+
 /** Resolved rerank options as consumed by `applyRerank` / `SearchOpts.rerank`. */
 export interface RerankOpts {
   topK: number;
@@ -91,18 +202,25 @@ export interface RerankOpts {
 }
 
 /**
- * Build a `CrossEncoderProvider` from config. Throws for `provider: 'http'`
- * — the real sidecar client is a documented TODO (see
- * docs/runbooks/cross-encoder-rerank.md); wiring an HTTP call here without a
- * real sidecar to test against would be unverifiable, so it fails loudly at
- * startup instead of silently degrading every search.
+ * Build a `CrossEncoderProvider` from config. `provider: 'http'` requires
+ * `sidecarUrl` — throws a clear config error at build time (startup) rather
+ * than at first-search-time if it's missing. See
+ * docs/runbooks/cross-encoder-rerank.md for the endpoint contract and how to
+ * run a sidecar.
  */
 export function buildCrossEncoderProvider(config: Config['crossEncoder']): CrossEncoderProvider {
   if (config.provider === 'mock') return new MockCrossEncoderProvider();
-  throw new Error(
-    "crossEncoder.provider 'http' is not implemented yet (TODO — see docs/runbooks/cross-encoder-rerank.md). " +
-      "Use provider: 'mock' or set crossEncoder.enabled: false.",
-  );
+  if (!config.sidecarUrl) {
+    throw new Error(
+      "crossEncoder.provider 'http' requires crossEncoder.sidecarUrl to be set " +
+        "(see docs/runbooks/cross-encoder-rerank.md). Set sidecarUrl or use provider: 'mock'.",
+    );
+  }
+  return new HttpCrossEncoderProvider({
+    url: config.sidecarUrl,
+    model: config.model,
+    timeoutMs: config.timeoutMs,
+  });
 }
 
 /**
