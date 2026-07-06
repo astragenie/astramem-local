@@ -179,17 +179,23 @@ function makeCanonical(sessionId: string, extra: Record<string, unknown> = {}): 
 // ---------------------------------------------------------------------------
 
 describe('GET /health over real HTTP', () => {
-  it('returns 200 with ok=true and wire_versions_supported', async () => {
+  // U6 (#106): wire_versions_supported was REPURPOSED from the legacy flat
+  // v0.0/v1.0 envelope-negotiation list to the un-prefixed domain@gen
+  // wire-contract vocabulary; contract_schema_version rides alongside it.
+  it('returns 200 with ok=true and the domain@gen wire_versions_supported + contract_schema_version', async () => {
     const res = await fetch(`${BASE_URL}/health`);
     expect(res.status).toBe(200);
     const body = await res.json() as {
       ok: boolean;
       wire_versions_supported: string[];
+      contract_schema_version: string;
       schema_version: number;
     };
     expect(body.ok).toBe(true);
-    expect(body.wire_versions_supported).toContain('v0.0');
-    expect(body.wire_versions_supported).toContain('v1.0');
+    expect(new Set(body.wire_versions_supported)).toEqual(
+      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+    );
+    expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBe(15);
   }, 20_000);
 });
@@ -199,20 +205,23 @@ describe('GET /health over real HTTP', () => {
 // ---------------------------------------------------------------------------
 
 describe('GET /version over real HTTP', () => {
-  it('returns 200 with the documented shape and wire_versions_supported', async () => {
+  it('returns 200 with the documented shape and the domain@gen wire_versions_supported + contract_schema_version', async () => {
     const res = await fetch(`${BASE_URL}/version`);
     expect(res.status).toBe(200);
     const body = await res.json() as {
       name: string;
       version: string;
       wire_versions_supported: string[];
+      contract_schema_version: string;
       schema_version: number;
       ts: number;
     };
     expect(body.name).toBe('astramemory-local');
     expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
-    expect(body.wire_versions_supported).toContain('v0.0');
-    expect(body.wire_versions_supported).toContain('v1.0');
+    expect(new Set(body.wire_versions_supported)).toEqual(
+      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+    );
+    expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBe(15);
     expect(typeof body.ts).toBe('number');
   }, 20_000);

@@ -425,10 +425,15 @@ describe('migrate — schema-version drift guard', () => {
   });
 
   it('throws a clear error when SCHEMA_VERSION constant is ahead of DB', async () => {
-    // Simulate constant drift: mock wire-meta to report a higher version than what migrations apply
+    // Simulate constant drift: mock wire-meta to report a higher version than what migrations apply.
+    // migrate.ts only imports SCHEMA_VERSION from wire-meta.js (see src/storage/migrate.ts:5), so
+    // WIRE_VERSIONS_SUPPORTED/CONTRACT_SCHEMA_VERSION here are inert stand-ins for shape parity with
+    // the real module — kept in the domain@gen shape (U6, #106) so this mock doesn't silently drift
+    // from wire-meta.ts's actual exports.
     vi.doMock('../../src/server/lib/wire-meta.js', () => ({
       SCHEMA_VERSION: 999,
-      WIRE_VERSIONS_SUPPORTED: ['v0.0', 'v1.0'],
+      WIRE_VERSIONS_SUPPORTED: ['atom@1', 'retrieval@1', 'sync@1', 'capture@1'],
+      CONTRACT_SCHEMA_VERSION: '1',
       PKG_VERSION: '0.2.0',
     }));
 
