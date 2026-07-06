@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.0] — 2026-07-06
+
+### Fixed
+- **sync: device token sent under the ApiKey scheme, not Bearer** (#82, closes #79/#83) — the cloud `AuthMiddleware` accepts `Authorization: ApiKey <key>` for device keys and `Bearer <jwt>` for Clerk JWTs only. The shipper/puller sent the `sk-…` device token as `Bearer`, so every ship/pull got **401**. Switched both to `ApiKey`.
+- **sync: `create` events ship a content payload** (#86, closes #80 / memory#618) — the `create` memory_event carried `content_hash` but no `payload`, so `payload_json` shipped null and cloud replicas materialized with **empty, unsearchable** content. The create event now carries `text`/`type`/`scope`/`importance`/`confidence`/`repo`. Personal atoms never ship (scope filter); only team/org.
+
+### Notes
+- Requires the cloud `sync_events.content_hash` constraint relax (memory#619, released in memory v0.8.4) on prod, else `create` events still 500. Ship the memory release first or together.
+- **`pair` default-`--url`** (#87, closes #85) is NOT in this release — its CI (`cross-repo-roundtrip`) is stuck on a native-binding runner flake. `pair` still requires an explicit `--url https://api.astramemory.com`. Ships in a follow-up once the flake clears.
+
+---
+
 ## [0.7.2] — 2026-07-05
 
 ### Fixed
