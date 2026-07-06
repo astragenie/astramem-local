@@ -1,6 +1,6 @@
 ---
 id: FEAT-430
-status: pending
+status: done
 priority: null
 category: security
 target_release: null
