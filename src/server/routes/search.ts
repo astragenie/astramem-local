@@ -17,6 +17,7 @@ import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { recordRecallServed } from '../../storage/usefulness.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
+import { resolveRerankOpts } from '../../search/rerank.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
 import { redactIfEnabled } from '../../redact/index.js';
@@ -74,6 +75,12 @@ const RememberBodySchema = z.object({
 export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defaultConfig()) {
   const cfg = defaultConfig();
   const weights = cfg.search;
+  // issue #26 / ADR-005: cross-encoder rerank stage, read from the REAL
+  // passed-in `config` (not `cfg` above — that pre-existing `defaultConfig()`
+  // fallback for `weights` is out of scope here) so config.yaml's
+  // `crossEncoder.enabled` actually takes effect on this route. `undefined`
+  // when disabled (the default) — search() takes zero extra branches.
+  const rerank = resolveRerankOpts(config);
 
   return async (app: FastifyInstance) => {
     // GET /search
@@ -109,7 +116,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
       if (params.entity) filters.entity = params.entity;
 
-      const hits = await search(q, filters, limit, { db, embed, weights });
+      const hits = await search(q, filters, limit, { db, embed, weights, rerank });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
         query: q,
@@ -146,7 +153,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
       if (rawFilters?.entity !== undefined) filters.entity = rawFilters.entity;
 
-      const hits = await search(query, filters, k, { db, embed, weights });
+      const hits = await search(query, filters, k, { db, embed, weights, rerank });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
         query,

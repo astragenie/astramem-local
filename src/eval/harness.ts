@@ -30,6 +30,7 @@ import { MemoryRepo } from '../storage/memories.js';
 import { EntityRepo } from '../storage/entities.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { search, parseAsOf } from '../search/search.js';
+import type { RerankOpts } from '../search/rerank.js';
 import { recallAtK, ndcgAtK, type GradedRelevance } from './metrics.js';
 
 export interface EvalAtom {
@@ -152,13 +153,20 @@ export async function runRetrievalEval(
   corpus: EvalCorpus,
   querySet: EvalQuerySet,
   k = 10,
+  // issue #26 / ADR-005: optional cross-encoder rerank stage. Undefined (the
+  // default — every existing caller is unaffected) runs the pre-rerank
+  // pipeline exactly as before; passing a `RerankOpts` (see
+  // resolveRerankOpts/buildCrossEncoderProvider in search/rerank.ts) exercises
+  // the reranked path through the exact same eval gate, proving on/off both
+  // clear the recall@10/NDCG@10 floors (tests/eval/retrieval-eval.test.ts).
+  rerank?: RerankOpts,
 ): Promise<EvalReport> {
   const memToAtom = await seedEvalCorpus(db, embed, corpus);
 
   const perQuery: QueryResult[] = [];
   for (const q of querySet.queries) {
     const as_of = q.filters.as_of !== undefined ? parseAsOf(q.filters.as_of) : undefined;
-    const hits = await search(q.text, { type: q.filters.type, as_of, entity: q.filters.entity }, k, { db, embed, weights });
+    const hits = await search(q.text, { type: q.filters.type, as_of, entity: q.filters.entity }, k, { db, embed, weights, rerank });
     const rankedAtomIds = hits
       .map(h => memToAtom.get(h.id))
       .filter((id): id is string => id !== undefined);

@@ -22,6 +22,7 @@ import {
   type EvalReport,
 } from '../../src/eval/harness.js';
 import { recallAtK, ndcgAtK } from '../../src/eval/metrics.js';
+import { MockCrossEncoderProvider, resolveRerankOpts, type RerankOpts } from '../../src/search/rerank.js';
 
 const fixturesDir = join(__dirname, '..', '..', 'contracts', 'fixtures', 'eval');
 const corpus = JSON.parse(readFileSync(join(fixturesDir, 'corpus.json'), 'utf8')) as EvalCorpus;
@@ -159,5 +160,49 @@ describe('AC-6: zeta=0 ranking snapshot', () => {
 
   it('zeta defaults to 0 in defaultConfig().search (AC-6 default OFF)', () => {
     expect(defaultConfig().search.zeta).toBe(0);
+  });
+});
+
+// Issue #26 / ADR-005: cross-encoder rerank stage gate. ADR-005 ruled local
+// ships v1 with "no reranker (CPU budget)" — crossEncoder.enabled defaults to
+// false, so the reranked path below is exercised explicitly (not via
+// defaultConfig()) to prove BOTH states clear the recall@10/NDCG@10 floors
+// before the seam is ever flipped on for real traffic. See
+// docs/runbooks/cross-encoder-rerank.md for the operator rollout procedure.
+describe('issue #26: cross-encoder rerank gate', () => {
+  it('crossEncoder.enabled defaults to false (ADR-005: no reranker in v1)', () => {
+    expect(defaultConfig().crossEncoder.enabled).toBe(false);
+  });
+
+  it('resolveRerankOpts returns undefined when disabled (search() takes zero extra branches)', () => {
+    expect(resolveRerankOpts(defaultConfig())).toBeUndefined();
+  });
+
+  it('rerank OFF (default): mean recall@10 / NDCG@10 clear the ADR-005 floors', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const report = await runRetrievalEval(db, fakeEmbed, defaultConfig().search, corpus, querySet);
+    expect(report.meanRecall).toBeGreaterThanOrEqual(0.9);
+    expect(report.meanNdcg).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('rerank ON (mock provider): mean recall@10 / NDCG@10 still clear the ADR-005 floors', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const rerank: RerankOpts = { topK: 50, timeoutMs: 300, provider: new MockCrossEncoderProvider() };
+    const report = await runRetrievalEval(db, fakeEmbed, defaultConfig().search, corpus, querySet, 10, rerank);
+    expect(report.meanRecall).toBeGreaterThanOrEqual(0.9);
+    expect(report.meanNdcg).toBeGreaterThanOrEqual(0.7);
+  });
+
+  it('rerank ON via config wiring (resolveRerankOpts) also clears the floors', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const cfg = { ...defaultConfig(), crossEncoder: { enabled: true, provider: 'mock' as const, topK: 50, timeoutMs: 300 } };
+    const rerank = resolveRerankOpts(cfg);
+    expect(rerank).toBeDefined();
+    const report = await runRetrievalEval(db, fakeEmbed, cfg.search, corpus, querySet, 10, rerank);
+    expect(report.meanRecall).toBeGreaterThanOrEqual(0.9);
+    expect(report.meanNdcg).toBeGreaterThanOrEqual(0.7);
   });
 });
