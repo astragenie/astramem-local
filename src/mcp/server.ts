@@ -86,7 +86,12 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
         agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
         agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
-        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+          ),
         since: z
           .number()
           .optional()
@@ -97,12 +102,6 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .describe(
             'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
           ),
-        entity: z
-          .string()
-          .optional()
-          .describe(
-            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
-          ),
       }),
     },
     async (args) => {
@@ -112,7 +111,6 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.project) filters.project = args.project;
       if (args.agent) filters.agent = args.agent;
       if (args.agentMode) filters.agentMode = args.agentMode;
-      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
         try {
@@ -170,7 +168,12 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
         agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
         agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
-        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+          ),
         since: z
           .number()
           .optional()
@@ -181,12 +184,6 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .describe(
             'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
           ),
-        entity: z
-          .string()
-          .optional()
-          .describe(
-            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
-          ),
       }),
     },
     async (args) => {
@@ -196,7 +193,6 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.project) filters.project = args.project;
       if (args.agent) filters.agent = args.agent;
       if (args.agentMode) filters.agentMode = args.agentMode;
-      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
         try {

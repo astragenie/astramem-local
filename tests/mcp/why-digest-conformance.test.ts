@@ -1,7 +1,7 @@
 /**
  * FEAT-417a conformance test: GET /memory/:id/why and GET /sessions/:id/digest
- * share getWhyReceipt()/getSessionDigest() (src/server/queries/why.ts,
- * digest.ts) with the why_memory/session_digest MCP tools. This test asserts
+ * share buildWhyReceipt()/buildSessionDigest() (src/server/queries/provenance.ts)
+ * with the why_memory/session_digest MCP tools. This test asserts
  * the REST route and the MCP tool return byte-identical output for the same
  * seeded data — the FEAT's top risk (the shared fn silently changing output
  * for one caller) would show up here as a failing deepEqual.
