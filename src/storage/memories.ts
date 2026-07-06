@@ -57,7 +57,27 @@ export class MemoryRepo {
       const existing = this.db.prepare('SELECT id FROM memories WHERE hash = ?').get(input.hash) as {id: string} | undefined;
       if (existing) return { id: existing.id, created: false };
       const id = this.insertRow(input);
-      events.append({ event_type: 'create', atom_id: id, content_hash: input.hash });
+      // Ship the content + materialization metadata in the create-event
+      // payload so cloud-replicated atoms are non-empty and searchable
+      // (astramem-local#80 / memory#618). The cloud materializer reads
+      // text/type/scope/importance/confidence/repo from this payload; a
+      // null payload previously landed atoms with empty content. Personal
+      // atoms never ship (the shipper scope-filters), so this only leaves
+      // the machine for team/org scope. valid_from is omitted — the cloud
+      // falls back to the event's created_at.
+      events.append({
+        event_type: 'create',
+        atom_id: id,
+        content_hash: input.hash,
+        payload: {
+          text: input.text,
+          type: input.type,
+          scope: input.scope ?? 'personal',
+          importance: input.importance ?? 0.5,
+          confidence: input.confidence ?? 0.5,
+          repo: input.repo ?? input.project ?? '',
+        },
+      });
       return { id, created: true };
     });
     return tx();
