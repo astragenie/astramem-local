@@ -42,7 +42,10 @@ jobs:
           repository: astragenie/astramem-plugin
           path: plugin
 
-      # Bun baked into runner image (devops#64) — no setup-bun, no ETXTBSY race.
+      # Bun baked into runner image (devops#64) — no setup-bun, but a fleet of
+      # self-hosted runners can still race on bun's own cache-restore /
+      # lockfile step (issue #93: intermittent ETXTBSY). Retry the install
+      # once before failing the job outright.
       # NODE_ENV=development for the same reason as the plugin install below:
       # a leaked NODE_ENV=production would make `bun install` skip
       # devDependencies (typescript), breaking `bun run build` (tsc) — symmetric
@@ -53,16 +56,70 @@ jobs:
         env:
           NODE_ENV: development
         run: |
-          bun install --frozen-lockfile
+          set -e
+          for attempt in 1 2; do
+            if bun install --frozen-lockfile; then
+              break
+            fi
+            if [ "$attempt" = "2" ]; then
+              echo "::error::bun install failed after 2 attempts (daemon)"
+              exit 1
+            fi
+            echo "bun install attempt $attempt failed (ETXTBSY/cache race?) — retrying in 5s..."
+            sleep 5
+          done
           bun run build
+
+      # issue #93: on some self-hosted runners the node-gyp compile of the
+      # native better-sqlite3-multiple-ciphers addon is skipped or silently
+      # fails during `bun install` (stale/incomplete toolchain state on that
+      # runner), leaving no `.node` binary present. Left unchecked this
+      # surfaces steps later as an opaque "Could not locate the bindings
+      # file" error from inside the roundtrip smoke test. Verify the addon
+      # loads right after install; if it doesn't, force a rebuild and
+      # re-verify, so a genuine toolchain gap fails here with a clear message
+      # instead of a confusing downstream test error.
+      - name: Verify native addon (better-sqlite3-multiple-ciphers)
+        working-directory: daemon
+        env:
+          NODE_ENV: development
+        run: |
+          set -e
+          if node -e "require('better-sqlite3-multiple-ciphers')" 2>addon-check.log; then
+            echo "native addon present and loadable"
+          else
+            echo "native addon missing/broken on this runner — forcing rebuild:"
+            cat addon-check.log
+            npm rebuild better-sqlite3-multiple-ciphers --build-from-source || bun install --force
+            if node -e "require('better-sqlite3-multiple-ciphers')"; then
+              echo "native addon rebuilt successfully"
+            else
+              echo "::error::better-sqlite3-multiple-ciphers could not be built on this runner after a forced rebuild — this is a real toolchain gap (check python3/make/g++ on this runner image), not a flake."
+              exit 1
+            fi
+          fi
+          rm -f addon-check.log
 
       # Self-hosted runner may inherit NODE_ENV=production from prior jobs,
       # which makes bun install skip devDependencies (vitest) — force dev deps.
+      # Same ETXTBSY/cache-race retry guard as the daemon install above.
       - name: Install plugin dependencies
         working-directory: plugin
         env:
           NODE_ENV: development
-        run: bun install --frozen-lockfile
+        run: |
+          set -e
+          for attempt in 1 2; do
+            if bun install --frozen-lockfile; then
+              break
+            fi
+            if [ "$attempt" = "2" ]; then
+              echo "::error::bun install failed after 2 attempts (plugin)"
+              exit 1
+            fi
+            echo "bun install attempt $attempt failed (ETXTBSY/cache race?) — retrying in 5s..."
+            sleep 5
+          done
 
       # AC-1/AC-2: ASTRAMEM_LOCAL_DIST_PATH must be the daemon REPO ROOT
       # (containing dist/cli/index.js after build), not the dist/ dir itself —
