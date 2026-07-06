@@ -301,6 +301,129 @@ describe('POST /recall', () => {
   });
 });
 
+// #112 (U3-local) AC-2: `text`/`limit` (ADR-005 canonical) and `query`/`k`
+// (legacy) are both accepted for exactly one release on POST /recall.
+describe('POST /recall — field-name aliases (#112 AC-2)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    seedMemory(repo, 'use sqlite-vec for vector storage');
+    app = await buildApp({ db, token: 'tok', embed: buildMockEmbed() });
+  });
+
+  it('accepts the canonical text/limit spelling', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'vector storage', limit: 5 }
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(Array.isArray(body.hits)).toBe(true);
+    expect(body.hits.length).toBeGreaterThan(0);
+  });
+
+  it('legacy {query,k} and canonical {text,limit} return the same shape of response for the same request', async () => {
+    const legacyRes = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { query: 'vector storage', k: 5 }
+    });
+    const canonicalRes = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'vector storage', limit: 5 }
+    });
+    expect(legacyRes.statusCode).toBe(200);
+    expect(canonicalRes.statusCode).toBe(200);
+    const legacyIds = (legacyRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    const canonicalIds = (canonicalRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    expect(canonicalIds).toEqual(legacyIds);
+    expect(legacyIds.length).toBeGreaterThan(0);
+  });
+
+  it('returns 400 when neither text nor query is supplied', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { limit: 5 }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('limit defaults to 5 (preserving the pre-#112 k.default(5) behavior) when omitted', async () => {
+    for (let i = 0; i < 10; i++) {
+      seedMemory(repo, `vector storage related memory number ${i}`);
+    }
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'vector storage' }
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().hits.length).toBeLessThanOrEqual(5);
+  });
+});
+
+// #112 (U3-local) AC-1/AC-3: `filters.type` is now enum-validated against the
+// shared MEMORY_TYPES union instead of accepting free-form strings.
+describe('filters.type enum validation (#112 AC-1/AC-3)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    seedMemory(repo, 'use sqlite-vec for vector storage');
+    app = await buildApp({ db, token: 'tok', embed: buildMockEmbed() });
+  });
+
+  it('POST /recall rejects an out-of-union filters.type value with 400 naming the field', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'vector storage', limit: 5, filters: { type: ['not-a-real-type'] } }
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json();
+    expect(JSON.stringify(body)).toContain('type');
+  });
+
+  it('GET /search rejects an out-of-union type value with 400 naming the field', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=vector&type=not-a-real-type',
+      headers: { authorization: 'Bearer tok' }
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json();
+    expect(JSON.stringify(body)).toContain('type');
+  });
+
+  it('POST /remember still rejects an invalid type the same way (no regression from the shared enum)', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/remember',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'hello', type: 'not-a-real-type' }
+    });
+    expect(res.statusCode).toBe(400);
+  });
+});
+
 describe('POST /remember', () => {
   let db: DB;
   let app: Awaited<ReturnType<typeof buildApp>>;
