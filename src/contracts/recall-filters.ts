@@ -29,34 +29,43 @@
  * project/agent/entity filter shape MUST land in
  * `contracts/schemas/retrieval-query.v1.schema.json` first, then be mirrored
  * here — the parity test fails the build otherwise.
+ *
+ * FEAT-429: the three schemas below are now sourced from the single
+ * filter-descriptor registry (`./filter-registry.ts`) instead of being
+ * hand-defined here directly. Every existing import of these three names
+ * (routes, MCP server, the parity test above) is unaffected — the registry
+ * entry in `filter-registry.ts` is now the one place a project/agent/entity
+ * shape change needs to land, and it also drives the route/MCP parsing and
+ * the SQL WHERE-clause builder that used to be hand-rolled per surface.
  */
-import { z } from 'zod';
+import type { z } from 'zod';
+import { RECALL_FILTER_REGISTRY, getFilterSchema, buildFilterFieldsSchema } from './filter-registry.js';
 
 /**
  * `filters.project` — exact match on `memories.project`. A single string is
  * `project = ?`; a string[] is `project IN (...)` (OR-semantics). An empty
  * array is "no constraint", never match-nothing. Absent -> all projects.
  */
-export const ProjectFilterSchema = z.union([z.string(), z.array(z.string())]).optional();
+export const ProjectFilterSchema = getFilterSchema('project') as z.ZodOptional<
+  z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString>]>
+>;
 
 /**
  * `filters.agent` — exact match on provenance `agent`/`agent_type`. A single
  * string is `agent = ?`; a string[] is `agent IN (...)` (OR-semantics).
  * AND-composes with `project` when both are present. Absent -> all agents.
  */
-export const AgentFilterSchema = z.union([z.string(), z.array(z.string())]).optional();
+export const AgentFilterSchema = getFilterSchema('agent') as z.ZodOptional<
+  z.ZodUnion<[z.ZodString, z.ZodArray<z.ZodString>]>
+>;
 
 /**
  * `filters.entity` — entity name filter (FEAT-402), resolved via the
  * normalize seam (case/whitespace-insensitive, exact match then substring
  * fallback). An unresolvable name yields zero results, not an unfiltered set.
  */
-export const EntityFilterSchema = z.string().optional();
+export const EntityFilterSchema = getFilterSchema('entity') as z.ZodOptional<z.ZodString>;
 
-/** Convenience bundle for surfaces that accept all three filters as a group. */
-export const RecallFilterFieldsSchema = z.object({
-  project: ProjectFilterSchema,
-  agent: AgentFilterSchema,
-  entity: EntityFilterSchema,
-});
+/** Convenience bundle for surfaces that accept all three filters as a group — built from the registry. */
+export const RecallFilterFieldsSchema = buildFilterFieldsSchema(RECALL_FILTER_REGISTRY);
 export type RecallFilterFields = z.infer<typeof RecallFilterFieldsSchema>;
