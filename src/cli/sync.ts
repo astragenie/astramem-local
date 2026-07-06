@@ -16,7 +16,7 @@
 import { openRuntimeDb } from './open-runtime-db.js';
 import { readSyncToken } from '../storage/keystore.js';
 import { drainPull, httpPullFetcher, getPullWatermark } from '../sync/puller.js';
-import { planBackfill, applyBackfill } from '../sync/backfill.js';
+import { planBackfill, applyBackfill, planReship, applyReship } from '../sync/backfill.js';
 
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -31,10 +31,36 @@ export async function syncCommand(args: string[]): Promise<void> {
     // Backfill + bulk-promote so existing memories can sync to the cloud.
     // DESTRUCTIVE + IRREVERSIBLE (scope is upward-only) — dry-run unless --yes.
     case 'backfill': {
-      const scope = flagValue(rest, '--scope') === 'org' ? 'org' : 'team';
       const project = flagValue(rest, '--project') ?? null;
       const apply = rest.includes('--yes');
+      const scopeArg = flagValue(rest, '--scope');
 
+      // --reship (astramem-local#97): fix already-synced create events whose
+      // cloud replica materialized empty because they shipped before #86's
+      // payload fix. Distinct from the default mode below, which only ever
+      // touches NOT-yet-synced rows.
+      if (rest.includes('--reship')) {
+        const reshipScope = scopeArg === 'team' || scopeArg === 'org' ? scopeArg : undefined;
+        const { db } = openRuntimeDb();
+        const plan = planReship(db, { scope: reshipScope, project });
+
+        console.log(`sync backfill --reship — ${apply ? 'APPLY' : 'DRY RUN'}${project ? ` (project=${project})` : ''}`);
+        console.log(`  scope                                    : ${plan.scope}`);
+        console.log(`  create events to backfill+reship (null payload, already-synced team/org): ${plan.createEventsToBackfillAndReship}`);
+
+        if (!apply) {
+          console.log('\nDRY RUN — nothing changed.');
+          console.log('Re-run with --yes to backfill payload + reset synced_at so the shipper re-sends. Stop the daemon first: `node dist/cli/index.js service stop`.');
+          break;
+        }
+
+        const result = applyReship(db, { scope: reshipScope, project });
+        console.log(`\n✓ backfilled + reset synced_at on ${result.reshipped} create-event payload(s) — shipper will re-send them.`);
+        console.log('Restart the daemon to ship the backlog: `node dist/cli/index.js reinstall`.');
+        break;
+      }
+
+      const scope = scopeArg === 'org' ? 'org' : 'team';
       const { db } = openRuntimeDb();
       const plan = planBackfill(db, { scope, project });
 
@@ -93,6 +119,12 @@ Subcommands:
                         Bulk-promote personal memories + backfill create-event
                         content so existing memories sync to the cloud. Dry-run
                         unless --yes. IRREVERSIBLE (scope is upward-only).
+  backfill --reship [--scope team|org] [--project X] [--yes]
+                        Fix already-synced team/org create events whose cloud
+                        replica materialized empty (shipped before #86's
+                        payload fix): backfill payload + reset synced_at so
+                        the shipper re-sends them. Dry-run unless --yes.
+                        Idempotent; scope-safe (team/org only).
 
 Push (local -> cloud) runs automatically inside the daemon when
 sync.enabled=true (see \`astramem-local pair\`) — it has no CLI subcommand.`);
