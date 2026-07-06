@@ -20,6 +20,7 @@ import { fuseHits, normalizeScores, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
+import { applyRerank, type RerankOpts } from './rerank.js';
 
 export interface SearchFilters {
   type?: string[];
@@ -97,6 +98,15 @@ export interface SearchOpts {
    * or omitted is byte-identical to pre-change behavior (AC-2).
    */
   debug?: boolean;
+  /**
+   * Optional post-fusion cross-encoder rerank stage (issue #26, ADR-005).
+   * `undefined` (the default — see config.crossEncoder.enabled / resolveRerankOpts
+   * in rerank.ts) means the stage is never invoked and the SearchHit[] path is
+   * byte-identical to pre-rerank behavior. When present, only the debug:false
+   * path is affected — SearchDebugHit[] (debug:true) always reflects the raw
+   * fusion breakdown, never reranked, since its purpose is explaining fusion.
+   */
+  rerank?: RerankOpts;
 }
 
 /**
@@ -474,6 +484,13 @@ export async function search(
   }
 
   // 6. Build result — preserve fused ranking order, skip filtered-out ids
+  //
+  // When the rerank stage is enabled (opts.rerank), build up to topK
+  // candidates (not just `limit`) so the reranker has the full candidate
+  // window it's configured for, then rerank + truncate to `limit` below.
+  // When disabled (the default), buildLimit === limit — byte-identical to
+  // pre-rerank behavior.
+  const buildLimit = opts.rerank ? Math.max(limit, opts.rerank.topK) : limit;
   const results: SearchHit[] = [];
   for (const hit of fused) {
     const mem = memMap.get(hit.id);
@@ -485,7 +502,12 @@ export async function search(
       score: hit.score,
       source: hit.source
     });
-    if (results.length >= limit) break;
+    if (results.length >= buildLimit) break;
+  }
+
+  if (opts.rerank) {
+    const reranked = await applyRerank(query, results, opts.rerank);
+    return reranked.slice(0, limit);
   }
 
   return results;
