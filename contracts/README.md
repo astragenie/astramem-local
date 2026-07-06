@@ -12,16 +12,17 @@ conform to, enforced in CI on both sides. See:
 
 v1 ships **in-repo**, consumed directly by this repo's CI (`.github/workflows/lint.yml`)
 and vitest suite (`tests/contracts/conformance.test.ts`). The `package.json`
-in this directory is already shaped for a future standalone npm publish
-(`@astragenie/astramem-contracts`) once the cloud repo needs it as an
-out-of-tree dependency instead of a git-submodule / vendored copy — see
-"Cloud consumption" below for what that migration looks like.
+in this directory is publishable (`@astragenie/astramem-contracts`, GitHub
+Packages) via `.github/workflows/contracts-publish.yml`, tag-triggered on
+`contracts-v*` — separate from the root package's `v*` tag scheme. See
+"Publishing" and "Cloud + plugin consumption" below.
 
 ## What's here
 
 ```
 contracts/
-  package.json              — publishable package metadata (private: true for now)
+  package.json              — publishable package metadata (GitHub Packages,
+                                see "Publishing" below)
   validate.mjs               — plain Node script; compiles every schema, asserts
                                 every fixtures/valid/* passes and every
                                 fixtures/invalid/* fails. No deps beyond ajv +
@@ -227,14 +228,52 @@ step immediately after `tsc --noEmit` (cheap, fast, no build required).
 `.github/workflows/test.yml` gates on the vitest conformance suite as part
 of the normal `bun run test` run.
 
-## Cloud consumption (what task 3b/3c needs)
+## Publishing
+
+`.github/workflows/contracts-publish.yml` publishes `@astragenie/astramem-contracts`
+to GitHub Packages (`npm.pkg.github.com`) on push of a `contracts-v*` tag
+(NOT the root package's `v*` tag — the two packages release independently;
+see "Versioning" below for why). The workflow:
+
+1. Asserts the tag suffix matches `contracts/package.json` version (same
+   parity gate pattern as `version-tag-parity.yml`, scoped to this package).
+2. Regenerates `types/` + `zod/` from `schemas/` and fails the job if that
+   produces a diff — the checked-in generated output must already match
+   what's published (prevents publishing stale generated code).
+3. Publishes with the ambient Actions `GITHUB_TOKEN` (`packages: write`
+   permission) — this is CI-to-same-org publish, not the classic-PAT path.
+
+Cutting a release: bump `contracts/package.json` version, land that on
+`main`, then push tag `contracts-vX.Y.Z` pointing at that commit.
+
+**Consuming the published package** (plugin repo CI, or any local install)
+needs read access to GitHub Packages, which — unlike consuming a public
+npmjs.org package — always requires an authenticated request. Configure:
+
+```
+# ~/.npmrc or repo .npmrc
+@astragenie:registry=https://npm.pkg.github.com
+//npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+```
+
+with `NODE_AUTH_TOKEN` set to a classic PAT (`ghp_...`, `read:packages` scope
+— `gho_` OAuth tokens from `gh auth login` are rejected, see
+`github-packages-auth.md`). Whether the consuming repo's own CI can instead
+rely on its ambient `GITHUB_TOKEN` for a same-org cross-repo package read
+was **not verified live** in this change — treat that as open until checked
+against this org's GitHub Packages visibility settings.
+
+## Cloud + plugin consumption (what task 3b/3c needs)
 
 The cloud (.NET) repo's CI needs:
 
 1. **The files**: either (a) a git submodule / subtree pointing at this
-   repo's `contracts/` directory, or (b) once published, an npm/NuGet-side
-   artifact download of `@astragenie/astramem-contracts@1.0.0`. v1 ships (a)
-   — no publish step yet, `private: true` in `contracts/package.json`.
+   repo's `contracts/` directory, or (b) an npm-side artifact download of
+   `@astragenie/astramem-contracts` via GitHub Packages once a
+   `contracts-v*` tag has been published (see "Publishing" above). Cloud
+   only needs the JSON Schemas + fixtures (not the TS types/Zod), so a thin
+   fetch-and-unpack step (`npm pack` + extract, or a raw GH Packages tarball
+   download) is enough — cloud CI does not need a Node toolchain otherwise.
 2. **A runner**: cloud's CI does not need Node — the schemas are pure JSON
    Schema draft 2020-12 with `additionalProperties`, `anyOf`, `allOf`/`if`/
    `then`, `format` (uuid, date-time), and `pattern` keywords only. Any
@@ -253,3 +292,27 @@ The cloud (.NET) repo's CI needs:
    a schema `$id`/`title` version it doesn't recognize, per the dual-read
    window rule above — that failure is the signal a contract bump needs a
    coordinated two-repo rollout, not a silent skip.
+
+## Versioning: package semver vs. wire_version (two separate axes)
+
+These are deliberately decoupled and must not be conflated:
+
+- **`contracts/package.json` version** (npm semver, e.g. `1.3.0`) tracks
+  changes to the *package artifact*: new fixtures, regenerated types/Zod,
+  README updates, tooling changes, additive schema fields. It bumps on every
+  `contracts-v*` release regardless of whether any wire-visible shape
+  changed.
+- **`wire_version`** (the field embedded inside envelopes, e.g.
+  `capture-envelope.v1.schema.json`'s `wire_version`, and the `v1` suffix in
+  schema `$id`/filenames like `atom.v1.schema.json`) is the *protocol*
+  version — it only changes on a breaking change to the wire shape itself,
+  and a bump requires the dual-read migration window described above,
+  coordinated across all three consuming repos.
+
+Consequence: a package version bump (e.g. `1.0.0` -> `1.1.0`) does **not**
+imply a `wire_version` bump, and is safe for consumers to pick up without a
+protocol migration. A `wire_version` bump (e.g. introducing `atom.v2`) always
+forces at least a package **major** bump, but the reverse is not true — most
+package releases will be minor/patch schema-package hygiene, not protocol
+changes. CI on the consuming side should gate on `wire_version` compatibility
+explicitly (point 4 above), not infer it from the npm package's semver.

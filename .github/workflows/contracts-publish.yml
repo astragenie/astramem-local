@@ -1,0 +1,100 @@
+# contracts-publish.yml — publish @astragenie/astramem-contracts to GitHub
+# Packages on a dedicated tag push (unification execution plan U-publish gate).
+#
+# WHY: astramem cloud (.NET conformance/CI oracle) and astramem-plugin (TS)
+# both need to consume contracts/ as an out-of-tree dependency instead of a
+# vendored copy or git-submodule. GitHub Packages was chosen (not npmjs.org)
+# because the package is org-internal and we don't want a second public
+# registry surface for a contracts-only artifact.
+#
+# TAG NAMESPACE: uses `contracts-v*`, NOT the root package's `v*` tag scheme
+# (see publish.yml / version-tag-parity.yml). This repo publishes TWO
+# independent npm packages (root @astragenie/astramemory-local + this one) —
+# sharing the `v*` tag would either double-trigger both publish jobs on every
+# tag or force the two packages to release in lockstep, which they must not:
+# contracts/package.json semver tracks contracts-package changes (schema
+# additions, fixture updates, generated-type regen), which is a SEPARATE axis
+# from the wire_version field embedded inside envelopes (e.g. "capture@1",
+# "sync@1" in contracts/schemas/*.schema.json). A contracts package minor/patch
+# bump does NOT imply a wire_version bump, and a wire_version bump (breaking
+# envelope change) forces at least a package major bump but is authored and
+# reviewed independently. Tag format: `contracts-v1.2.3` -> package.json
+# version `1.2.3`.
+#
+# AUTH: publish uses the ambient Actions GITHUB_TOKEN with the `packages:
+# write` permission below — this is sufficient for GitHub Packages when the
+# publish target is a package owned by the SAME repo/org as the workflow run.
+# This is deliberately NOT the classic ghp_ PAT pattern documented in
+# `github-packages-auth.md` — that PAT requirement is for humans publishing
+# from a local shell (`gh auth login`'s gho_ OAuth token is 403-rejected by
+# npm.pkg.github.com). CI-triggered publish via GITHUB_TOKEN does not hit
+# that restriction. If this assumption is wrong for this org's GH Packages
+# policy, the publish step below fails loudly with a 401/403 — treat that as
+# signal to fall back to a repo secret holding a classic PAT (write:packages)
+# named CONTRACTS_PUBLISH_TOKEN, not a silent workaround.
+#
+# CONSUMPTION (separate concern, not this workflow): astramem-plugin's CI and
+# any engineer's local `bun install` need read:packages to install this
+# package. That still requires a classic PAT (per github-packages-auth.md)
+# configured as NODE_AUTH_TOKEN + a scoped ~/.npmrc / .npmrc in the consuming
+# repo:
+#   @astragenie:registry=https://npm.pkg.github.com
+#   //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
+# Cross-repo GITHUB_TOKEN read access to org packages was NOT verified live as
+# part of this change — see the write-up for the open question.
+#
+# Runs on the self-hosted fleet, consistent with every other workflow here.
+
+name: contracts publish
+
+on:
+  push:
+    tags:
+      - 'contracts-v*'
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    name: npm publish (GitHub Packages)
+    runs-on: [self-hosted, astragenie, aws]
+    defaults:
+      run:
+        working-directory: contracts
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify tag matches contracts/package.json
+        run: |
+          PKG_VERSION=$(jq -r '.version' package.json)
+          TAG="${GITHUB_REF_NAME#contracts-v}"
+          if [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::contracts/package.json ($PKG_VERSION) != tag ($TAG) — bump contracts/package.json in the release PR"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@astragenie'
+
+      - name: Install root deps (generator toolchain lives at repo root)
+        working-directory: .
+        run: bun install --frozen-lockfile --ignore-scripts
+
+      - name: Regenerate + validate (fail if generated output is stale)
+        working-directory: .
+        run: |
+          bun run contracts:build
+          git diff --exit-code -- contracts/types contracts/zod || {
+            echo "::error::generated types/zod are stale — run 'bun run contracts:build' and commit before tagging";
+            exit 1;
+          }
+
+      - name: Publish
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
