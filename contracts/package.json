@@ -10,7 +10,16 @@
     "directory": "contracts"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
+    "registry": "https://npm.pkg.github.com",
+    "access": "restricted"
+  },
+  "peerDependencies": {
+    "zod": "^4.4.3"
+  },
+  "peerDependenciesMeta": {
+    "zod": {
+      "optional": true
+    }
   },
   "types": "./types/index.d.ts",
   "exports": {
