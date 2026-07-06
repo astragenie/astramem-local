@@ -7,7 +7,7 @@
  *   POST /remember { text, type, metadata? }
  */
 
-import { randomUUID, createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
@@ -22,6 +22,7 @@ import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
 import { redactIfEnabled } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
+import { contentHash } from '../../storage/content-hash.js';
 import { clampScores } from '../lib/score-contract.js';
 import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../../contracts/recall-filters.js';
 
@@ -183,7 +184,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       recordRedactionEvents(db, redactionEvents, null);
 
       // Compute hash for dedup
-      const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
+      const hash = contentHash(text);
 
       const repo = new MemoryRepo(db);
       const events = new MemoryEventRepo(db);

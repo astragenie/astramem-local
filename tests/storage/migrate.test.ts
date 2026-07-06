@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { createHash } from 'node:crypto';
 import { openDb } from '../../src/storage/db.js';
 import { migrate, getVecSchemaDim } from '../../src/storage/migrate.js';
 import { embedProbe } from '../../src/doctor/probes/embed-probe.js';
@@ -27,10 +28,10 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    // 14 migration files (001-014: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
+    // 15 migration files (001-015: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
     // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities, 013 = FEAT-404 archival,
-    // 014 = FEAT-434 sync_ship_state).
-    expect(versions.n).toBe(14);
+    // 014 = FEAT-434 sync_ship_state, 015 = astramem-local#84 canonical content_hash).
+    expect(versions.n).toBe(15);
   });
 
   it('enables WAL mode', () => {
@@ -85,7 +86,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(14);
+    expect(versions.n).toBe(15);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -161,7 +162,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(14);
+    expect(versions.v).toBe(15);
   });
 
   it('allows inserting type note after migration', () => {
@@ -329,6 +330,80 @@ describe('migration 007-memory-events', () => {
   });
 });
 
+describe('migration 015-canonical-content-hash (astramem-local#84)', () => {
+  it('recomputes 32-char legacy hashes to the full 64-char sha256 digest, leaves already-64-char hashes untouched, and re-syncs memory_events.content_hash', () => {
+    const db = openDb(':memory:');
+    migrate(db); // fresh DB — 001-015 all applied, including 015 (a no-op here, nothing to recompute yet)
+
+    // Simulate a row written by one of the pre-fix /remember-family call
+    // sites (POST /remember, the MCP remember tool, the memory-tool
+    // adapter): a 32-char truncated sha256 hex digest of `text`.
+    const text = 'legacy pre-fix remember text';
+    const full = createHash('sha256').update(text, 'utf8').digest('hex');
+    const legacy32 = full.slice(0, 32);
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at, valid_from, scope)
+      VALUES ('legacy-1', 'fact', ?, ?, 0.5, 0.5, ?, 1, 1, 1, 'personal')
+    `).run(text, text.toLowerCase(), legacy32);
+    db.prepare(`
+      INSERT INTO memory_events (event_type, atom_id, content_hash, created_at)
+      VALUES ('create', 'legacy-1', ?, 1)
+    `).run(legacy32);
+
+    // Simulate a row written by the distill pipeline (stage 6/7's own
+    // computeHash): already a full 64-char digest, just over NORMALIZED text
+    // rather than raw text — must be left completely untouched.
+    const normText = 'distill style already correct';
+    const full64 = createHash('sha256').update(normText, 'utf8').digest('hex');
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at, valid_from, scope)
+      VALUES ('distill-1', 'fact', ?, ?, 0.5, 0.5, ?, 2, 2, 2, 'personal')
+    `).run(normText, normText, full64);
+    db.prepare(`
+      INSERT INTO memory_events (event_type, atom_id, content_hash, created_at)
+      VALUES ('create', 'distill-1', ?, 2)
+    `).run(full64);
+
+    // Mark 015 as not-yet-applied so a re-run of migrate() re-executes its
+    // recompute against this legacy-shaped data — mirrors the schema-version
+    // drift guard tests' own "delete the last schema_version row" idiom
+    // below, standing in for a genuine pre-#84 datadir being upgraded.
+    db.prepare('DELETE FROM schema_version WHERE version = 15').run();
+    migrate(db);
+
+    const legacyRow = db.prepare('SELECT hash FROM memories WHERE id = ?').get('legacy-1') as { hash: string };
+    const distillRow = db.prepare('SELECT hash FROM memories WHERE id = ?').get('distill-1') as { hash: string };
+    const legacyEvent = db.prepare(`SELECT content_hash FROM memory_events WHERE atom_id = 'legacy-1'`).get() as { content_hash: string };
+    const distillEvent = db.prepare(`SELECT content_hash FROM memory_events WHERE atom_id = 'distill-1'`).get() as { content_hash: string };
+
+    // Recomputed to the full digest...
+    expect(legacyRow.hash).toBe(full);
+    expect(legacyRow.hash).toHaveLength(64);
+    // ...and the dedup-safety guarantee: the leading 32 chars are IDENTICAL
+    // to what was already stored — this only extends the digest, it never
+    // changes what a row's hash prefix already was.
+    expect(legacyRow.hash.startsWith(legacy32)).toBe(true);
+    // memory_events.content_hash re-synced to mirror the (now 64-char) hash.
+    expect(legacyEvent.content_hash).toBe(legacyRow.hash);
+
+    // Already-64-char rows (distill pipeline) are byte-for-byte untouched.
+    expect(distillRow.hash).toBe(full64);
+    expect(distillEvent.content_hash).toBe(full64);
+  });
+
+  it('is idempotent — re-running after 015 already applied does not rehash a 64-char value', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const before = db.prepare('SELECT hash FROM memories WHERE 1=0').all(); // schema sanity only
+    expect(before).toEqual([]);
+    migrate(db); // second run: 015 already recorded in schema_version, skipped entirely
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 15').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
@@ -361,7 +436,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 14/,
+      /Schema-version constant drift: wire-meta says 999, DB says 15/,
     );
   });
 });

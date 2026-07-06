@@ -23,7 +23,6 @@
 
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
 import { MemoryRepo } from '../storage/memories.js';
@@ -44,6 +43,7 @@ import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
 import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../contracts/recall-filters.js';
+import { contentHash } from '../storage/content-hash.js';
 import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import {
   ProposalRepo,
@@ -268,7 +268,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       const { text, events: redactionEvents } = redactIfEnabled(args.text, cfg);
       recordRedactionEvents(db, redactionEvents, null);
 
-      const hash = createHash('sha256').update(text).digest('hex').slice(0, 32);
+      const hash = contentHash(text);
 
       const repo = new MemoryRepo(db);
       const events = new MemoryEventRepo(db);

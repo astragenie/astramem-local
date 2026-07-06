@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import type { DB } from './db.js';
 import { SCHEMA_VERSION } from '../server/lib/wire-meta.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
+import { contentHash } from './content-hash.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const MIGRATIONS_DIR = join(__dirname, '..', '..', 'migrations');
@@ -37,6 +38,17 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
       applied_at INTEGER NOT NULL
     )
   `);
+
+  // sha256_hex(text) -- custom SQL function backing
+  // migrations/015-canonical-content-hash.sql's data-only recompute of
+  // legacy 32-char truncated content hashes to the full 64-char digest
+  // (astramem-local#84). Delegates to the SAME contentHash() helper the
+  // application call sites use post-fix, so the migration and the runtime
+  // code can never compute a different digest for the same input. Cheap to
+  // register unconditionally on every migrate() call (a no-op for every
+  // migration file that doesn't reference it) -- better-sqlite3 allows
+  // re-registering a function under the same name on a connection.
+  db.function('sha256_hex', (text: unknown) => contentHash(String(text)));
 
   const applied = new Set(
     (db.prepare('SELECT version FROM schema_version').all() as {version: number}[])

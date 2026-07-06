@@ -79,6 +79,20 @@ describe('memory-tool adapter (4a)', () => {
     expect(row.type).toBe('note');
   });
 
+  // astramem-local#84: content_hash must be a full 64-char sha256 hex digest
+  // (contracts/schemas/sync-envelope.v1.schema.json pattern ^[a-f0-9]{64}$),
+  // not the legacy 32-char truncation. Exercises the real adapter hash site
+  // (src/memory-tool/adapter.ts handleCreateOrInsert), not a synthetic value.
+  it('create stores a full 64-char sha256 hex content hash, not a 32-char truncation', () => {
+    handleMemoryToolCommand(db, cfg, {
+      command: 'create', path: '/memories/fact.md', file_text: 'astramem-local#84: adapter hash must be 64 chars',
+    });
+    const row = db.prepare(`SELECT id, hash FROM memories WHERE type = 'fact'`).get() as { id: string; hash: string };
+    expect(row.hash).toMatch(/^[a-f0-9]{64}$/);
+    const event = db.prepare(`SELECT content_hash FROM memory_events WHERE atom_id = ? AND event_type = 'create'`).get(row.id) as { content_hash: string };
+    expect(event.content_hash).toBe(row.hash);
+  });
+
   it('str_replace supersedes: old invalid + linked, new valid', () => {
     const oldId = seed(db, 'decision', 'Use Postgres for storage', 'h-mt-sr');
     const res = handleMemoryToolCommand(db, cfg, {
@@ -93,6 +107,9 @@ describe('memory-tool adapter (4a)', () => {
     const successor = new MemoryRepo(db).get(old.superseded_by!)!;
     expect(successor.text).toBe('Use SQLite for storage');
     expect(successor.valid_to).toBeNull();
+    // astramem-local#84: str_replace's hash site (adapter.ts handleStrReplace)
+    // must also produce a full 64-char digest, not the legacy 32-char one.
+    expect(successor.hash).toMatch(/^[a-f0-9]{64}$/);
     // history chain recorded
     const history = new MemoryEventRepo(db).listForAtom(oldId).map(e => e.event_type);
     expect(history).toContain('supersede');
