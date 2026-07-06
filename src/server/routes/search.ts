@@ -23,6 +23,7 @@ import { childLogger } from '../../log/logger.js';
 import { redactIfEnabled } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
 import { clampScores } from '../lib/score-contract.js';
+import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../../contracts/recall-filters.js';
 
 const MemoryTypeEnum = z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
 
@@ -44,18 +45,18 @@ const RecallBodySchema = z.object({
   filters: z.object({
     type: z.array(z.string()).optional(),
     repo: z.string().optional(),
-    /** FEAT-423: single project or a list (OR-semantics). */
-    project: z.union([z.string(), z.array(z.string())]).optional(),
-    /** FEAT-423: single agent or a list; exact match on provenance agent/agent_type. */
-    agent: z.union([z.string(), z.array(z.string())]).optional(),
+    /** FEAT-423/FEAT-424: single project or a list (OR-semantics) — canonical contract. */
+    project: ProjectFilterSchema,
+    /** FEAT-423/FEAT-424: single agent or a list; exact match on provenance agent/agent_type — canonical contract. */
+    agent: AgentFilterSchema,
     /** FEAT-426: 'filter' (default, omitted) = current hard-filter behavior;
      *  'boost' = agent stays a ranking preference, non-matches are not excluded. */
     agentMode: z.enum(['filter', 'boost']).optional(),
     since: z.number().optional(),
     /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
     as_of: z.string().optional(),
-    /** FEAT-402 slice 2 AC-4: entity name — resolved via the AC-9 normalize seam. */
-    entity: z.string().optional()
+    /** FEAT-402 slice 2 AC-4/FEAT-424: entity name — resolved via the AC-9 normalize seam — canonical contract. */
+    entity: EntityFilterSchema
   }).optional()
 });
 

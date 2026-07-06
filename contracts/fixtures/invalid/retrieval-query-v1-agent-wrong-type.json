@@ -1,0 +1,7 @@
+{
+  "text": "some query",
+  "mode": "keyword",
+  "filters": {
+    "agent": 123
+  }
+}

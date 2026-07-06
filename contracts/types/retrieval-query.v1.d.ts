@@ -17,7 +17,18 @@ export interface RetrievalQueryV1 {
     type?: ('decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event')[];
     scope?: ('personal' | 'team' | 'org')[];
     repo?: string;
-    project?: string;
+    /**
+     * FEAT-424 canonical project filter: exact match. A single string is `= ?`; a string[] is `IN (...)` (OR-semantics). An empty array is 'no constraint', never match-nothing.
+     */
+    project?: string | string[];
+    /**
+     * FEAT-424 canonical agent filter: exact match on provenance agent/agent_type. A single string is `= ?`; a string[] is `IN (...)` (OR-semantics). AND-composes with `project` when both are present.
+     */
+    agent?: string | string[];
+    /**
+     * FEAT-424/FEAT-402: entity name filter, resolved via the engine's normalize seam (case/whitespace-insensitive, exact match then substring fallback). An unresolvable name yields zero results.
+     */
+    entity?: string;
     /**
      * Lower bound on created_at.
      */

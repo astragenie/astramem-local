@@ -43,6 +43,7 @@ import { childLogger } from '../log/logger.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
+import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../contracts/recall-filters.js';
 import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import {
   ProposalRepo,
@@ -87,15 +88,13 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
-        project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
-        agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
+        /** FEAT-423/FEAT-424: canonical recall-filter contract (contracts/schemas/retrieval-query.v1.schema.json). */
+        project: ProjectFilterSchema.describe('Filter by project name(s) — string or list (OR)'),
+        agent: AgentFilterSchema.describe('Filter by provenance agent/agent_type — string or list (OR)'),
         agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
-        entity: z
-          .string()
-          .optional()
-          .describe(
-            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
-          ),
+        entity: EntityFilterSchema.describe(
+          'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+        ),
         since: z
           .number()
           .optional()
@@ -170,15 +169,13 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
-        project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
-        agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
+        /** FEAT-423/FEAT-424: canonical recall-filter contract (contracts/schemas/retrieval-query.v1.schema.json). */
+        project: ProjectFilterSchema.describe('Filter by project name(s) — string or list (OR)'),
+        agent: AgentFilterSchema.describe('Filter by provenance agent/agent_type — string or list (OR)'),
         agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
-        entity: z
-          .string()
-          .optional()
-          .describe(
-            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
-          ),
+        entity: EntityFilterSchema.describe(
+          'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+        ),
         since: z
           .number()
           .optional()

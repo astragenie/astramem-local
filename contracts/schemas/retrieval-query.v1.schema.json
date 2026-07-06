@@ -33,7 +33,24 @@
           }
         },
         "repo": { "type": "string" },
-        "project": { "type": "string" },
+        "project": {
+          "description": "FEAT-424 canonical project filter: exact match. A single string is `= ?`; a string[] is `IN (...)` (OR-semantics). An empty array is 'no constraint', never match-nothing.",
+          "anyOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "agent": {
+          "description": "FEAT-424 canonical agent filter: exact match on provenance agent/agent_type. A single string is `= ?`; a string[] is `IN (...)` (OR-semantics). AND-composes with `project` when both are present.",
+          "anyOf": [
+            { "type": "string" },
+            { "type": "array", "items": { "type": "string" } }
+          ]
+        },
+        "entity": {
+          "type": "string",
+          "description": "FEAT-424/FEAT-402: entity name filter, resolved via the engine's normalize seam (case/whitespace-insensitive, exact match then substring fallback). An unresolvable name yields zero results."
+        },
         "since": {
           "type": "string",
           "format": "date-time",
