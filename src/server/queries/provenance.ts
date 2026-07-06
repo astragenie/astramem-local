@@ -89,9 +89,11 @@ export interface SessionDigest {
  * Builds the "what I learned this session" digest for a session id.
  * Derived at read time from memories(session_id); no stored digest state.
  * status=pending while a distill job for this session is queued/running.
- * Does not verify the session itself exists — callers that need a 404 on
- * an unknown session id check that separately (HTTP route does; the MCP
- * tool defaults to the latest session instead).
+ * Does not verify the session itself exists — callers that need a 404/isError
+ * on an unknown session id check that separately (HTTP route does; the MCP
+ * tool does too for an explicit session_id — FEAT-417a harmonization — and
+ * otherwise defaults to the latest session, which is always guaranteed to
+ * exist since it was just read from the table).
  */
 export function buildSessionDigest(db: DB, sessionId: string): SessionDigest {
   // A distill job for this session still queued or running → pending.

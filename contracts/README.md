@@ -46,6 +46,61 @@ constructs — this is deliberate so the .NET cloud repo's CI can consume the
 exact same files with a JVM/.NET JSON Schema validator (NJsonSchema,
 JsonSchema.Net, etc.) without any transpilation step.
 
+## Generated TypeScript types (`types/`)
+
+For TypeScript consumers (astramem-local itself, astramem-plugin) that want
+compile-time types on the hot path rather than a runtime ajv validator,
+`generate-types.mjs` compiles each schema to a `.d.ts` under `types/` plus an
+`index.d.ts` barrel. **These are GENERATED — never hand-edit.** The JSON Schema
+stays the single source of truth; the types are a build artifact.
+
+```bash
+node contracts/generate-types.mjs   # regenerate types/*.d.ts
+npm run contracts:generate          # same, via root script
+npm run contracts:build             # generate + validate in one step
+```
+
+Root interface names are deterministic `<Name>V<N>` (`AtomV1`,
+`RetrievalQueryV1`, `RetrievalResultV1`, `CaptureEnvelopeV1`, `SyncEnvelopeV1`),
+re-exported from `@astragenie/astramem-contracts/types`. CI should run
+`contracts:generate` and fail on a non-empty git diff, so a schema change that
+wasn't accompanied by a regenerated type is caught as drift.
+
+Cloud (.NET) does NOT use these — it consumes the JSON Schema directly (above).
+The generated `.d.ts` are a TypeScript-consumer convenience only.
+
+## Generated Zod validators (`zod/`)
+
+TypeScript consumers that validate untrusted wire input at **runtime** (the
+plugin's providers call `.parse()` on backend responses; local's routes validate
+request bodies) want a Zod schema, not just compile-time types. `generate-zod.mjs`
+compiles each JSON Schema to a runtime Zod validator under `zod/` +
+an `index.ts` barrel. **GENERATED — never hand-edit.**
+
+```ts
+import { RetrievalQueryV1Schema, RetrievalResultV1Schema } from '@astragenie/astramem-contracts/zod';
+const result = RetrievalResultV1Schema.parse(await res.json()); // runtime-validated + typed
+```
+
+Const names are `<Name>V<N>Schema` (`AtomV1Schema`, `RetrievalQueryV1Schema`, …),
+each with a co-exported `z.infer` type. This is what lets the plugin delete its
+hand-rolled `RecallResponseSchema`/`IngestPayloadSchema` (program slice U3) and
+validate against the canonical contract instead. Round-tripped against the same
+`fixtures/{valid,invalid}/*` in CI. Cloud (.NET) still uses JSON Schema + a .NET
+validator — Zod is a TypeScript-consumer convenience only.
+
+> **⚠ Caveat — Zod is LOSSY on conditional schemas.** `json-schema-to-zod` cannot
+> translate JSON-Schema `if/then`/`allOf` conditionals; it emits a no-op
+> (`z.intersection(z.any(), z.any())`). This affects **`capture-envelope.v1`**,
+> whose `kind:"events" → require events` / else `require turns` rule is therefore
+> **NOT enforced by `CaptureEnvelopeV1Schema`**. The `validate.mjs` ajv gate (and
+> any .NET JSON-Schema validator) DOES enforce it — so the JSON Schema stays the
+> authoritative validator. Consumers needing the conditional at runtime should
+> `.superRefine()` on top of the generated Zod, or validate with ajv against
+> `schemas/capture-envelope.v1.schema.json` directly. `atom.v1`, `retrieval-query.v1`,
+> `retrieval-result.v1`, `sync-envelope.v1` have no conditionals and generate
+> faithful Zod.
+
 ## Fixture naming convention (load-bearing)
 
 `validate.mjs` and `tests/contracts/conformance.test.ts` both route fixtures

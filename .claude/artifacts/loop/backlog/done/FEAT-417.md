@@ -1,6 +1,7 @@
 ---
 id: FEAT-417
-status: triaged
+status: done
+completed: 2026-07-04
 priority: P2
 created: 2026-07-04
 updated: 2026-07-04
@@ -38,3 +39,8 @@ Three small items from the 2026-07-04 retrieval-surface inventory, batchable in 
 
 ## Evidence
 Phase-1 inventory gaps 1/3/4; architecture review debt ranks 4-6. Overlaps W5.5 review-debt batch intent (distinct items — see pm_scope_notes).
+
+
+## Resolution (2026-07-04, Wave A)
+Merged 1bc7203: getWhyReceipt/getSessionDigest shared queries + deep-equal conformance tests; MCP search/recall as_of+entity params inheriting REST seams; parseQuery+test deleted. FEAT-417a harmonization: MCP session_digest unknown explicit session_id now errors (REST semantics won). Review PASS.
+

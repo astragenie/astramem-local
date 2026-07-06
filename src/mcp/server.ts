@@ -35,7 +35,7 @@ import {
 } from '../storage/memory-events.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { recordRecallServed, recordRecallUsed } from '../storage/usefulness.js';
-import { search, type SearchFilters } from '../search/search.js';
+import { search, parseAsOf, type SearchFilters } from '../search/search.js';
 import { resolveRerankOpts } from '../search/rerank.js';
 import { clampScores } from '../server/lib/score-contract.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -90,11 +90,22 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
         agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
         agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
-        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+          ),
         since: z
           .number()
           .optional()
           .describe('Epoch-ms lower bound on created_at'),
+        as_of: z
+          .string()
+          .optional()
+          .describe(
+            'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
+          ),
       }),
     },
     async (args) => {
@@ -104,8 +115,20 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.project) filters.project = args.project;
       if (args.agent) filters.agent = args.agent;
       if (args.agentMode) filters.agentMode = args.agentMode;
-      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
+      if (args.as_of !== undefined) {
+        try {
+          filters.as_of = parseAsOf(args.as_of);
+        } catch (err) {
+          return {
+            content: [
+              { type: 'text' as const, text: JSON.stringify({ error: err instanceof Error ? err.message : 'invalid as_of' }) },
+            ],
+            isError: true,
+          };
+        }
+      }
+      if (args.entity !== undefined) filters.entity = args.entity;
 
       const hits = await search(args.query, filters, args.limit ?? 10, {
         db,
@@ -150,11 +173,22 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
         agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
         agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
-        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
+        entity: z
+          .string()
+          .optional()
+          .describe(
+            'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.'
+          ),
         since: z
           .number()
           .optional()
           .describe('Epoch-ms lower bound on created_at'),
+        as_of: z
+          .string()
+          .optional()
+          .describe(
+            'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
+          ),
       }),
     },
     async (args) => {
@@ -164,8 +198,20 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.project) filters.project = args.project;
       if (args.agent) filters.agent = args.agent;
       if (args.agentMode) filters.agentMode = args.agentMode;
-      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
+      if (args.as_of !== undefined) {
+        try {
+          filters.as_of = parseAsOf(args.as_of);
+        } catch (err) {
+          return {
+            content: [
+              { type: 'text' as const, text: JSON.stringify({ error: err instanceof Error ? err.message : 'invalid as_of' }) },
+            ],
+            isError: true,
+          };
+        }
+      }
+      if (args.entity !== undefined) filters.entity = args.entity;
 
       const hits = await search(args.query, filters, args.k ?? 5, {
         db,
@@ -339,6 +385,18 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           };
         }
         sessionId = latest.id;
+      } else {
+        // FEAT-417a harmonization: an explicit, unknown session_id errors here
+        // too (REST route semantics win) instead of silently returning an
+        // empty "ready" digest — buildSessionDigest() never verifies the
+        // session itself exists (see its own doc comment).
+        const session = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId);
+        if (!session) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', session_id: sessionId }) }],
+            isError: true,
+          };
+        }
       }
       const digest = buildSessionDigest(db, sessionId);
       return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };

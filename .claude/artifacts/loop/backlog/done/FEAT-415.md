@@ -1,6 +1,7 @@
 ---
 id: FEAT-415
-status: triaged
+status: done
+completed: 2026-07-04
 priority: P1
 created: 2026-07-04
 updated: 2026-07-04
@@ -38,3 +39,8 @@ SLICE-SMOKE-1 restart persistence runs with security.encryption.enabled: false (
 
 ## Evidence
 Run artifact F1 accepted-limitation note; architecture review debt rank 2.
+
+
+## Resolution (2026-07-04, Wave A)
+Encrypted restart smoke merged 7bb804b. ASTRA_MEMORY_TEST_FORCE_KEYFILE seam (warn-logged), wrong-key SQLITE_NOTADB rewrap in serve.ts, PLUS pre-existing bug fixed: SLICE-SMOKE-1 daemons silently ran encryption-ON against real credential store (config.yaml path bug in daemon.ts helper). Review PASS after warn-log fix. Follow-up noted: tests/smoke ~1-in-10 flake under repeated concurrent runs (pre-existing class).
+
