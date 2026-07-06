@@ -395,22 +395,31 @@ describe('filters.type enum validation (#112 AC-1/AC-3)', () => {
       method: 'POST',
       url: '/recall',
       headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
-      payload: { text: 'vector storage', limit: 5, filters: { type: ['not-a-real-type'] } }
+      payload: { text: 'vector storage', limit: 5, filters: { type: ['bogus-value'] } }
     });
     expect(res.statusCode).toBe(400);
     const body = res.json();
-    expect(JSON.stringify(body)).toContain('type');
+    // zod's flatten() only nests one level deep, so a bad `filters.type` value
+    // surfaces under the `filters` key (not a further-nested `type` key) —
+    // assert against that real shape, not a fabricated `type` field.
+    expect(body.details.fieldErrors.filters).toBeDefined();
+    expect(body.details.fieldErrors.filters[0]).toMatch(/invalid enum value/i);
+    expect(body.details.fieldErrors.filters[0]).toContain('bogus-value');
   });
 
   it('GET /search rejects an out-of-union type value with 400 naming the field', async () => {
     const res = await app.inject({
       method: 'GET',
-      url: '/search?q=vector&type=not-a-real-type',
+      url: '/search?q=vector&type=bogus-value',
       headers: { authorization: 'Bearer tok' }
     });
     expect(res.statusCode).toBe(400);
     const body = res.json();
-    expect(JSON.stringify(body)).toContain('type');
+    // GET /search validates the parsed CSV list directly (`z.array(...).safeParse`),
+    // so flatten() reports the offending index ("0") as the field key, not `type`.
+    expect(body.details.fieldErrors['0']).toBeDefined();
+    expect(body.details.fieldErrors['0'][0]).toMatch(/invalid enum value/i);
+    expect(body.details.fieldErrors['0'][0]).toContain('bogus-value');
   });
 
   it('POST /remember still rejects an invalid type the same way (no regression from the shared enum)', async () => {

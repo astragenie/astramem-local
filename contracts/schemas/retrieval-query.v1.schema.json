@@ -22,7 +22,7 @@
           "type": "array",
           "items": {
             "type": "string",
-            "enum": ["decision", "fact", "lesson", "command", "todo", "note", "event"]
+            "enum": ["decision", "fact", "lesson", "command", "todo", "note", "event", "preference", "task_result", "summary"]
           }
         },
         "scope": {
