@@ -2,7 +2,7 @@
   "schema": "astramem/atom@1",
   "id": "00000000-0000-4000-8000-000000000008",
   "type": "todo",
-  "text": "'global' is not a valid ADR-009 scope (personal|team|org).",
+  "text": "'global' is not a valid ADR-009 scope (private|team|org|personal).",
   "evidence": "n/a",
   "confidence": 0.5,
   "importance": 0.5,

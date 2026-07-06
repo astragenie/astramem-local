@@ -20,7 +20,7 @@ function fakeEmbed(): EmbedProvider {
   };
 }
 
-function seed(db: DB, hash: string, scope: 'personal' | 'team' = 'team'): string {
+function seed(db: DB, hash: string, scope: 'private' | 'team' = 'team'): string {
   return new MemoryRepo(db).insert({
     type: 'fact',
     text: `secret text ${hash}`,

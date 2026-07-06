@@ -34,8 +34,35 @@ export const MEMORY_TYPES = [
 ] as const;
 export type MemoryType = (typeof MEMORY_TYPES)[number];
 
-/** ADR-009 memory scope — personal is the default for all local-agent writes. */
-export type MemoryScope = 'personal' | 'team' | 'org';
+/** ADR-009 memory scope — private is the default for all local-agent writes.
+ *  Renamed from 'personal' (DEC-048, U7-local astramem-local#110); team/org
+ *  are unchanged. */
+export type MemoryScope = 'private' | 'team' | 'org';
+
+/**
+ * One-release inbound alias (U7-local astramem-local#110, DEC-048): accepts
+ * the pre-rename 'personal' literal on top of the canonical MemoryScope so
+ * older clients/plugins that still send it don't break. Boundary-only type —
+ * nothing in storage or contracts/schemas' *required* enum should ever store
+ * or require the literal 'personal'; normalizeScopeAlias() below converts it
+ * before it reaches persistence.
+ *
+ * TODO(remove-personal-alias): drop this type, normalizeScopeAlias(), and
+ * the wire schemas' additive 'personal' enum value in the release AFTER this
+ * one — tracked in astramem-local#115.
+ */
+export type MemoryScopeAlias = MemoryScope | 'personal';
+
+/**
+ * Normalize an inbound scope value that may still carry the pre-rename
+ * 'personal' literal (DEC-048 one-release alias) to the canonical
+ * MemoryScope. Apply at every boundary that parses a client-supplied scope
+ * (currently: POST /memory/:id/promote) so no new row ever persists the
+ * literal 'personal'.
+ */
+export function normalizeScopeAlias(scope: MemoryScopeAlias): MemoryScope {
+  return scope === 'personal' ? 'private' : scope;
+}
 
 export interface Memory {
   id: string;
@@ -67,7 +94,7 @@ export interface Memory {
   superseded_by: string | null;
   /** Consolidation lineage — memory ids this atom was derived from. */
   derived_from: string[] | null;
-  /** ADR-009 scope. Defaults to 'personal'. */
+  /** ADR-009 scope. Defaults to 'private'. */
   scope: MemoryScope;
   /** TTL/archival tiers (FEAT-404). true once the archival policy (or a
    *  direct MemoryEventRepo.archive() call) has archived this atom — set in

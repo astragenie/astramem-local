@@ -7,7 +7,7 @@ import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { planBackfill, applyBackfill, planReship, applyReship } from '../../src/sync/backfill.js';
 
-type Scope = 'personal' | 'team' | 'org';
+type Scope = 'private' | 'team' | 'org';
 
 /** Seed a memory + its create event. `withPayload=false` mimics a pre-#86
  *  create event (null payload). Returns the atom id. */
@@ -34,26 +34,26 @@ describe('sync backfill', () => {
     migrate(db);
   });
 
-  it('planBackfill counts personal, shareable, and null-payload unsynced creates', () => {
-    seed(db, { scope: 'personal', hash: 'p1', withPayload: false });
-    seed(db, { scope: 'personal', hash: 'p2', withPayload: false });
+  it('planBackfill counts private, shareable, and null-payload unsynced creates', () => {
+    seed(db, { scope: 'private', hash: 'p1', withPayload: false });
+    seed(db, { scope: 'private', hash: 'p2', withPayload: false });
     seed(db, { scope: 'team', hash: 't1', withPayload: false });
     seed(db, { scope: 'team', hash: 't2', withPayload: true }); // already has payload → not counted
 
     const plan = planBackfill(db, { scope: 'team' });
-    expect(plan.personalToPromote).toBe(2);
+    expect(plan.privateToPromote).toBe(2);
     expect(plan.alreadyShareable).toBe(2);
     expect(plan.createEventsToBackfill).toBe(3); // p1, p2, t1 (t2 has payload)
   });
 
   it('planBackfill is read-only (no mutation)', () => {
-    seed(db, { scope: 'personal', hash: 'ro1', withPayload: false });
+    seed(db, { scope: 'private', hash: 'ro1', withPayload: false });
     planBackfill(db, { scope: 'team' });
-    expect((db.prepare(`SELECT COUNT(*) n FROM memories WHERE scope='personal'`).get() as { n: number }).n).toBe(1);
+    expect((db.prepare(`SELECT COUNT(*) n FROM memories WHERE scope='private'`).get() as { n: number }).n).toBe(1);
   });
 
-  it('applyBackfill promotes personal → target and backfills create payloads', () => {
-    const p = seed(db, { scope: 'personal', hash: 'ap1', withPayload: false });
+  it('applyBackfill promotes private → target and backfills create payloads', () => {
+    const p = seed(db, { scope: 'private', hash: 'ap1', withPayload: false });
 
     const result = applyBackfill(db, { scope: 'team' });
     expect(result.promoted).toBe(1);
@@ -69,7 +69,7 @@ describe('sync backfill', () => {
   });
 
   it('is idempotent — a second apply promotes/backfills nothing', () => {
-    seed(db, { scope: 'personal', hash: 'idem1', withPayload: false });
+    seed(db, { scope: 'private', hash: 'idem1', withPayload: false });
     applyBackfill(db, { scope: 'team' });
     const second = applyBackfill(db, { scope: 'team' });
     expect(second).toEqual({ promoted: 0, backfilled: 0 });
@@ -84,16 +84,16 @@ describe('sync backfill', () => {
   });
 
   it('respects the --project filter', () => {
-    seed(db, { scope: 'personal', hash: 'proj-a', project: 'A', withPayload: false });
-    seed(db, { scope: 'personal', hash: 'proj-b', project: 'B', withPayload: false });
+    seed(db, { scope: 'private', hash: 'proj-a', project: 'A', withPayload: false });
+    seed(db, { scope: 'private', hash: 'proj-b', project: 'B', withPayload: false });
 
     const result = applyBackfill(db, { scope: 'team', project: 'A' });
     expect(result.promoted).toBe(1);
-    expect((db.prepare(`SELECT scope FROM memories WHERE project='B'`).get() as { scope: string }).scope).toBe('personal');
+    expect((db.prepare(`SELECT scope FROM memories WHERE project='B'`).get() as { scope: string }).scope).toBe('private');
   });
 
   it('promotes to org when requested (cloud: shared)', () => {
-    const p = seed(db, { scope: 'personal', hash: 'org1', withPayload: false });
+    const p = seed(db, { scope: 'private', hash: 'org1', withPayload: false });
     applyBackfill(db, { scope: 'org' });
     expect((db.prepare('SELECT scope FROM memories WHERE id=?').get(p) as { scope: string }).scope).toBe('org');
   });
@@ -113,7 +113,7 @@ describe('sync backfill --reship', () => {
     seed(db, { scope: 'org', hash: 'rs-o1', withPayload: false, synced: true }); // counted
     seed(db, { scope: 'team', hash: 'rs-t2', withPayload: true, synced: true }); // already has payload → not counted
     seed(db, { scope: 'team', hash: 'rs-t3', withPayload: false, synced: false }); // unsynced → not counted (normal backfill's job)
-    seed(db, { scope: 'personal', hash: 'rs-p1', withPayload: false, synced: true }); // personal → never counted
+    seed(db, { scope: 'private', hash: 'rs-p1', withPayload: false, synced: true }); // private → never counted
 
     const plan = planReship(db, {});
     expect(plan.scope).toBe('team+org');
@@ -155,8 +155,8 @@ describe('sync backfill --reship', () => {
     expect(ev.synced_at).not.toBeNull(); // untouched — still synced
   });
 
-  it('never touches personal-scope creates, even if null-payload and synced', () => {
-    const id = seed(db, { scope: 'personal', hash: 'rs-pers1', withPayload: false, synced: true });
+  it('never touches private-scope creates, even if null-payload and synced', () => {
+    const id = seed(db, { scope: 'private', hash: 'rs-pers1', withPayload: false, synced: true });
 
     const result = applyReship(db, {});
     expect(result.reshipped).toBe(0);

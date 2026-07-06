@@ -20,7 +20,7 @@ export interface InsertInput {
   embedding_model?: string | null;
   embedding_dim?: number | null;
   evidence?: string | null;
-  /** ADR-009 scope. Defaults to 'personal'. */
+  /** ADR-009 scope. Defaults to 'private'. */
   scope?: MemoryScope;
 }
 
@@ -61,7 +61,7 @@ export class MemoryRepo {
       // payload so cloud-replicated atoms are non-empty and searchable
       // (astramem-local#80 / memory#618). The cloud materializer reads
       // text/type/scope/importance/confidence/repo from this payload; a
-      // null payload previously landed atoms with empty content. Personal
+      // null payload previously landed atoms with empty content. Private
       // atoms never ship (the shipper scope-filters), so this only leaves
       // the machine for team/org scope. valid_from is omitted — the cloud
       // falls back to the event's created_at.
@@ -72,7 +72,7 @@ export class MemoryRepo {
         payload: {
           text: input.text,
           type: input.type,
-          scope: input.scope ?? 'personal',
+          scope: input.scope ?? 'private',
           importance: input.importance ?? 0.5,
           confidence: input.confidence ?? 0.5,
           repo: input.repo ?? input.project ?? '',
@@ -98,7 +98,7 @@ export class MemoryRepo {
       input.repo, input.project, input.branch, input.agent, input.session_id,
       input.importance ?? 0.5, input.confidence ?? 0.5, input.hash,
       input.embedding_provider ?? null, input.embedding_model ?? null, input.embedding_dim ?? null,
-      now, now, input.source_hash, input.evidence ?? null, now, input.scope ?? 'personal'
+      now, now, input.source_hash, input.evidence ?? null, now, input.scope ?? 'private'
     );
     return id;
   }

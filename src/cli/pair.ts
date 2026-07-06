@@ -115,5 +115,5 @@ export async function pairCommand(args: string[]): Promise<void> {
     console.log(`  note      : cloud echoed a different apiUrl (${responseApiUrl}) — using your --url instead`);
   }
   console.log(`  token     : ${stored.stored ? 'stored in OS credential store' : 'NOT stored — set ASTRA_SYNC_TOKEN yourself'}`);
-  console.log('\nRestart the daemon to start the sync shipper (team/org-scoped memories only — personal never syncs).');
+  console.log('\nRestart the daemon to start the sync shipper (team/org-scoped memories only — private never syncs).');
 }

@@ -88,7 +88,7 @@ export async function embedAndIndex(
       embedding_model: ctx.embed.model,
       embedding_dim: ctx.embed.dim,
       evidence: mem.evidence ?? null,
-      scope: 'personal',
+      scope: 'private',
     }, eventsRepo);
 
     // FEAT-402 AC-1: link entities emitted in the same extraction call.

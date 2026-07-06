@@ -105,7 +105,7 @@ export interface Config {
   };
   /** One-way log shipping to the cloud ledger (ADR-003). Off by default;
    * requires url + workspaceId + a device token in the keystore
-   * (or ASTRA_SYNC_TOKEN). personal-scoped atoms never ship (ADR-009). */
+   * (or ASTRA_SYNC_TOKEN). private-scoped atoms never ship (ADR-009). */
   sync: {
     enabled: boolean;
     url: string;

@@ -38,10 +38,18 @@ import {
   InvalidScopeTransitionError,
 } from '../../storage/memory-events.js';
 import { recordRecallUsed } from '../../storage/usefulness.js';
+import { normalizeScopeAlias } from '../../contracts/index.js';
 
 const InvalidateBodySchema = z.object({ reason: z.string().optional() });
 const SupersedeBodySchema = z.object({ new_id: z.string().min(1) });
-const PromoteBodySchema = z.object({ scope: z.enum(['personal', 'team', 'org']) });
+// One-release alias (U7-local astramem-local#110, DEC-048): 'personal' is
+// still accepted from older clients/plugins and normalized to 'private'
+// before it reaches promoteScope() — no new row ever persists the literal
+// 'personal'. TODO(remove-personal-alias): drop 'personal' from this enum
+// in the release AFTER this one — tracked in astramem-local#115.
+const PromoteBodySchema = z.object({
+  scope: z.enum(['private', 'team', 'org', 'personal']).transform(normalizeScopeAlias),
+});
 
 /**
  * Uniform mapping from the repo's typed lifecycle errors to HTTP status +

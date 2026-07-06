@@ -73,8 +73,8 @@ export class InvalidScopeTransitionError extends Error {
   }
 }
 
-// ADR-009: scope only ever moves upward — personal -> team -> org.
-const SCOPE_RANK: Record<MemoryScope, number> = { personal: 0, team: 1, org: 2 };
+// ADR-009: scope only ever moves upward — private -> team -> org.
+const SCOPE_RANK: Record<MemoryScope, number> = { private: 0, team: 1, org: 2 };
 
 interface MemoryValidityRow {
   id: string;
@@ -278,7 +278,7 @@ export class MemoryEventRepo {
   }
 
   /**
-   * Promote a memory's scope: personal -> team -> org (ADR-009). Only
+   * Promote a memory's scope: private -> team -> org (ADR-009). Only
    * upward promotions are allowed; same-scope or downward requests throw
    * InvalidScopeTransitionError. State update + event append in one
    * transaction.
@@ -292,7 +292,7 @@ export class MemoryEventRepo {
 
       if (SCOPE_RANK[toScope] <= SCOPE_RANK[row.scope]) {
         throw new InvalidScopeTransitionError(
-          `cannot promote memory ${atomId} from '${row.scope}' to '${toScope}' — only upward promotions allowed (personal -> team -> org)`,
+          `cannot promote memory ${atomId} from '${row.scope}' to '${toScope}' — only upward promotions allowed (private -> team -> org)`,
         );
       }
 

@@ -10,7 +10,7 @@ import { buildApp } from '../../src/server/app.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { recordShipFailure, recordShipSuccess } from '../../src/sync/shipper.js';
 
-function seedMemory(db: DB, scope: 'personal' | 'team' | 'org', hash: string): string {
+function seedMemory(db: DB, scope: 'private' | 'team' | 'org', hash: string): string {
   return new MemoryRepo(db).insert({
     type: 'fact',
     text: `text ${hash}`,
@@ -62,9 +62,9 @@ describe('GET /sync/status (FEAT-427)', () => {
 
     const events = new MemoryEventRepo(db);
     const team = seedMemory(db, 'team', 'h-t1');
-    const personal = seedMemory(db, 'personal', 'h-p1');
+    const priv = seedMemory(db, 'private', 'h-p1');
     events.append({ event_type: 'create', atom_id: team });
-    events.append({ event_type: 'create', atom_id: personal }); // personal never ships (ADR-009)
+    events.append({ event_type: 'create', atom_id: priv }); // private never ships (ADR-009)
 
     const app = await buildApp({ db, token: 't', config });
     const res = await app.inject({ method: 'GET', url: '/sync/status', headers: { authorization: 'Bearer t' } });

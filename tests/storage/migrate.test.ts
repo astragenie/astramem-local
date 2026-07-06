@@ -28,10 +28,11 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    // 15 migration files (001-015: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
+    // 16 migration files (001-016: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
     // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities, 013 = FEAT-404 archival,
-    // 014 = FEAT-434 sync_ship_state, 015 = astramem-local#84 canonical content_hash).
-    expect(versions.n).toBe(15);
+    // 014 = FEAT-434 sync_ship_state, 015 = astramem-local#84 canonical content_hash,
+    // 016 = astramem-local#110 scope personal->private rename).
+    expect(versions.n).toBe(16);
   });
 
   it('enables WAL mode', () => {
@@ -86,7 +87,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(15);
+    expect(versions.n).toBe(16);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -162,7 +163,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(15);
+    expect(versions.v).toBe(16);
   });
 
   it('allows inserting type note after migration', () => {
@@ -405,6 +406,113 @@ describe('migration 015-canonical-content-hash (astramem-local#84)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 016 — scope 'personal' -> 'private' rename (U7-local #110, DEC-048)
+// AC-1: an existing scope='personal' row must read scope='private' after
+// migration, with zero rows left at scope='personal', and any
+// memory_events.payload_json `$.scope` occurrence swapped the same way.
+// ---------------------------------------------------------------------------
+
+describe("migration 016-scope-private-rename (astramem-local#110)", () => {
+  it("renames every memories.scope='personal' row to 'private' and leaves team/org untouched", () => {
+    const db = openDb(':memory:');
+    migrate(db); // fresh DB — 001-016 all applied, including 016 (no-op here, nothing to seed yet)
+
+    // Simulate a pre-rename datadir: seed rows the way a pre-#110 build would
+    // have (scope='personal'), then mark 016 as not-yet-applied so re-running
+    // migrate() re-executes the rename against this legacy-shaped data —
+    // mirrors migration 015's own "delete the schema_version row" idiom above.
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at, valid_from, scope)
+      VALUES ('legacy-personal-1', 'fact', 'legacy personal row', 'legacy personal row', 0.5, 0.5, 'h-personal-1', 1, 1, 1, 'personal')
+    `).run();
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at, valid_from, scope)
+      VALUES ('legacy-team-1', 'fact', 'legacy team row', 'legacy team row', 0.5, 0.5, 'h-team-1', 2, 2, 2, 'team')
+    `).run();
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at, valid_from, scope)
+      VALUES ('legacy-org-1', 'fact', 'legacy org row', 'legacy org row', 0.5, 0.5, 'h-org-1', 3, 3, 3, 'org')
+    `).run();
+
+    db.prepare('DELETE FROM schema_version WHERE version = 16').run();
+    migrate(db);
+
+    const scopes = db.prepare('SELECT id, scope FROM memories ORDER BY id').all() as { id: string; scope: string }[];
+    expect(scopes).toEqual([
+      { id: 'legacy-org-1', scope: 'org' },
+      { id: 'legacy-personal-1', scope: 'private' },
+      { id: 'legacy-team-1', scope: 'team' },
+    ]);
+
+    const remainingPersonal = db.prepare(`SELECT COUNT(*) AS n FROM memories WHERE scope = 'personal'`).get() as { n: number };
+    expect(remainingPersonal.n).toBe(0);
+  });
+
+  it("rewrites memory_events.payload_json '$.scope' occurrences from 'personal' to 'private'", () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at, valid_from, scope)
+      VALUES ('legacy-personal-2', 'fact', 'legacy personal row 2', 'legacy personal row 2', 0.5, 0.5, 'h-personal-2', 1, 1, 1, 'personal')
+    `).run();
+    // A 'create' event payload carrying the pre-rename literal (mirrors
+    // MemoryRepo.insertWithCreateEvent's payload shape).
+    db.prepare(`
+      INSERT INTO memory_events (event_type, atom_id, payload_json, created_at)
+      VALUES ('create', 'legacy-personal-2', '{"text":"legacy personal row 2","type":"fact","scope":"personal","importance":0.5,"confidence":0.5,"repo":""}', 1)
+    `).run();
+    // An 'erase_request' tombstone payload also carries a top-level `scope` key.
+    db.prepare(`
+      INSERT INTO memory_events (event_type, atom_id, payload_json, created_at)
+      VALUES ('erase_request', 'ghost-personal', '{"scope":"personal","reason":null}', 2)
+    `).run();
+    // A 'promote_scope' payload uses from/to, not `scope` — must be left alone.
+    db.prepare(`
+      INSERT INTO memory_events (event_type, atom_id, payload_json, created_at)
+      VALUES ('promote_scope', 'legacy-personal-2', '{"from":"personal","to":"team"}', 3)
+    `).run();
+
+    db.prepare('DELETE FROM schema_version WHERE version = 16').run();
+    migrate(db);
+
+    const createPayload = JSON.parse(
+      (db.prepare(`SELECT payload_json FROM memory_events WHERE event_type = 'create' AND atom_id = 'legacy-personal-2'`).get() as { payload_json: string }).payload_json,
+    );
+    expect(createPayload.scope).toBe('private');
+
+    const erasePayload = JSON.parse(
+      (db.prepare(`SELECT payload_json FROM memory_events WHERE event_type = 'erase_request' AND atom_id = 'ghost-personal'`).get() as { payload_json: string }).payload_json,
+    );
+    expect(erasePayload.scope).toBe('private');
+
+    // promote_scope's from/to keys are untouched — not targeted by AC-1's
+    // `$.scope`-only scope.
+    const promotePayload = JSON.parse(
+      (db.prepare(`SELECT payload_json FROM memory_events WHERE event_type = 'promote_scope'`).get() as { payload_json: string }).payload_json,
+    );
+    expect(promotePayload).toEqual({ from: 'personal', to: 'team' });
+  });
+
+  it('is idempotent — re-running after 016 already applied does not error or re-touch already-private rows', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at, valid_from, scope)
+      VALUES ('already-private-1', 'fact', 'already private row', 'already private row', 0.5, 0.5, 'h-already-private-1', 1, 1, 1, 'private')
+    `).run();
+    expect(() => migrate(db)).not.toThrow(); // 016 already recorded in schema_version, skipped entirely
+    const row = db.prepare(`SELECT scope FROM memories WHERE id = 'already-private-1'`).get() as { scope: string };
+    expect(row.scope).toBe('private');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
 // ---------------------------------------------------------------------------
@@ -441,7 +549,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 15/,
+      /Schema-version constant drift: wire-meta says 999, DB says 16/,
     );
   });
 });

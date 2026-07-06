@@ -219,7 +219,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   });
 
   // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
-  // Requires explicit opt-in + url + workspace + device token; personal
+  // Requires explicit opt-in + url + workspace + device token; private
   // atoms never ship regardless (scope filter inside the shipper).
   let shipper: ShipperHandle | null = null;
   if (cfg.sync.enabled && dataDir !== ':memory:') {

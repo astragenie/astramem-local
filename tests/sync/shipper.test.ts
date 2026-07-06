@@ -28,7 +28,7 @@ import {
   startShipper,
 } from '../../src/sync/shipper.js';
 
-function seedMemory(db: DB, scope: 'personal' | 'team' | 'org', hash: string): string {
+function seedMemory(db: DB, scope: 'private' | 'team' | 'org', hash: string): string {
   // MemoryRepo.insert appends nothing to memory_events itself (stage 8 does),
   // so tests append 'create' events explicitly where needed.
   return new MemoryRepo(db).insert({
@@ -58,12 +58,15 @@ describe('listUnsynced — ADR-009 scope filter', () => {
     migrate(db);
   });
 
-  it('ships team/org events, never personal', () => {
+  // U7-local (astramem-local#110, DEC-048): scope renamed 'personal' ->
+  // 'private'; this test is the AC-3 regression gate proving the ADR-009
+  // "never ships" invariant survives the rename under its new name.
+  it('ships team/org events, never private', () => {
     const events = new MemoryEventRepo(db);
-    const personal = seedMemory(db, 'personal', 'h-p');
+    const priv = seedMemory(db, 'private', 'h-p');
     const team = seedMemory(db, 'team', 'h-t');
     const org = seedMemory(db, 'org', 'h-o');
-    events.append({ event_type: 'create', atom_id: personal });
+    events.append({ event_type: 'create', atom_id: priv });
     events.append({ event_type: 'create', atom_id: team });
     events.append({ event_type: 'create', atom_id: org });
 
@@ -71,19 +74,19 @@ describe('listUnsynced — ADR-009 scope filter', () => {
     const atoms = rows.map(r => r.atom_id);
     expect(atoms).toContain(team);
     expect(atoms).toContain(org);
-    expect(atoms).not.toContain(personal);
+    expect(atoms).not.toContain(priv);
   });
 
   it('erase_request for a hard-deleted atom ships when its payload records team/org scope', () => {
     const events = new MemoryEventRepo(db);
     const ghostTeam = randomUUID();
-    const ghostPersonal = randomUUID();
+    const ghostPrivate = randomUUID();
     events.append({ event_type: 'erase_request', atom_id: ghostTeam, payload: { scope: 'team' } });
-    events.append({ event_type: 'erase_request', atom_id: ghostPersonal, payload: { scope: 'personal' } });
+    events.append({ event_type: 'erase_request', atom_id: ghostPrivate, payload: { scope: 'private' } });
 
     const atoms = listUnsynced(db, 100).map(r => r.atom_id);
     expect(atoms).toContain(ghostTeam);
-    expect(atoms).not.toContain(ghostPersonal);
+    expect(atoms).not.toContain(ghostPrivate);
   });
 
   it('already-synced events are excluded', () => {

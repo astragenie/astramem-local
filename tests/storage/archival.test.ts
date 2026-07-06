@@ -29,7 +29,7 @@ function insertMemory(db: DB, id: string, createdAt: number, text = `text-${id}`
     INSERT INTO memories
       (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at,
        valid_from, scope)
-    VALUES (?, 'fact', ?, ?, 0.5, 0.5, ?, ?, ?, ?, 'personal')
+    VALUES (?, 'fact', ?, ?, 0.5, 0.5, ?, ?, ?, ?, 'private')
   `).run(id, text, text, `hash-${id}`, createdAt, createdAt, createdAt);
 }
 

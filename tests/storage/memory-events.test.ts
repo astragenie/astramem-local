@@ -316,13 +316,13 @@ describe('MemoryEventRepo.promoteScope', () => {
     });
   }
 
-  it('personal -> team is allowed and appends a promote_scope event', () => {
+  it('private -> team is allowed and appends a promote_scope event', () => {
     const id = insertMem('scope-1');
     events.promoteScope(id, 'team');
     expect(repo.get(id)?.scope).toBe('team');
     const log = events.listForAtom(id);
     const promoteEvent = log.find(e => e.event_type === 'promote_scope');
-    expect(JSON.parse(promoteEvent?.payload_json ?? '{}')).toEqual({ from: 'personal', to: 'team' });
+    expect(JSON.parse(promoteEvent?.payload_json ?? '{}')).toEqual({ from: 'private', to: 'team' });
   });
 
   it('team -> org is allowed', () => {
@@ -332,21 +332,21 @@ describe('MemoryEventRepo.promoteScope', () => {
     expect(repo.get(id)?.scope).toBe('org');
   });
 
-  it('personal -> org (skip a level) is allowed — still upward', () => {
+  it('private -> org (skip a level) is allowed — still upward', () => {
     const id = insertMem('scope-3');
     events.promoteScope(id, 'org');
     expect(repo.get(id)?.scope).toBe('org');
   });
 
-  it('downward promotion (team -> personal) is rejected', () => {
+  it('downward promotion (team -> private) is rejected', () => {
     const id = insertMem('scope-4');
     events.promoteScope(id, 'team');
-    expect(() => events.promoteScope(id, 'personal')).toThrow(InvalidScopeTransitionError);
+    expect(() => events.promoteScope(id, 'private')).toThrow(InvalidScopeTransitionError);
   });
 
-  it('same-scope promotion (personal -> personal) is rejected', () => {
+  it('same-scope promotion (private -> private) is rejected', () => {
     const id = insertMem('scope-5');
-    expect(() => events.promoteScope(id, 'personal')).toThrow(InvalidScopeTransitionError);
+    expect(() => events.promoteScope(id, 'private')).toThrow(InvalidScopeTransitionError);
   });
 
   it('unknown id throws MemoryNotFoundError', () => {
