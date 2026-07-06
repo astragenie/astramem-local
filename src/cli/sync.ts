@@ -66,7 +66,7 @@ export async function syncCommand(args: string[]): Promise<void> {
 
       console.log(`sync backfill — ${apply ? 'APPLY' : 'DRY RUN'}${project ? ` (project=${project})` : ''}`);
       console.log(`  target scope        : ${scope}  (cloud: ${scope === 'org' ? 'shared' : 'project'})`);
-      console.log(`  personal → promote  : ${plan.personalToPromote}`);
+      console.log(`  private → promote   : ${plan.privateToPromote}`);
       console.log(`  already team/org    : ${plan.alreadyShareable}`);
       console.log(`  create events to backfill (null payload, unsynced): ${plan.createEventsToBackfill}`);
 
@@ -77,7 +77,7 @@ export async function syncCommand(args: string[]): Promise<void> {
       }
 
       const result = applyBackfill(db, { scope, project });
-      console.log(`\n✓ promoted ${result.promoted} personal → ${scope}; backfilled ${result.backfilled} create-event payload(s).`);
+      console.log(`\n✓ promoted ${result.promoted} private → ${scope}; backfilled ${result.backfilled} create-event payload(s).`);
       console.log('Restart the daemon to ship the backlog: `node dist/cli/index.js reinstall`.');
       break;
     }
@@ -116,7 +116,7 @@ Subcommands:
                         advance + persist the watermark.
   watermark [--json]   Show the current persisted pull watermark.
   backfill [--scope team|org] [--project X] [--yes]
-                        Bulk-promote personal memories + backfill create-event
+                        Bulk-promote private memories + backfill create-event
                         content so existing memories sync to the cloud. Dry-run
                         unless --yes. IRREVERSIBLE (scope is upward-only).
   backfill --reship [--scope team|org] [--project X] [--yes]

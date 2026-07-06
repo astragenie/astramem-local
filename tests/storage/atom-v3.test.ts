@@ -59,13 +59,13 @@ describe('Atom v3 migration (006-atom-v3, ADR-001)', () => {
     expect(colNames).toContain('scope');
   });
 
-  it('DB max schema version is 15 after migration', () => {
+  it('DB max schema version is 16 after migration', () => {
     migrate(db);
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(15);
+    expect(row.v).toBe(16);
   });
 
-  it('a new row inserted via the repo gets valid_from = created_at, scope personal, valid_to null', () => {
+  it('a new row inserted via the repo gets valid_from = created_at, scope private, valid_to null', () => {
     migrate(db);
     const repo = new MemoryRepo(db);
     const id = repo.insert({
@@ -79,7 +79,7 @@ describe('Atom v3 migration (006-atom-v3, ADR-001)', () => {
     expect(m).not.toBeNull();
     expect(m?.valid_from).toBe(m?.created_at);
     expect(m?.valid_to).toBeNull();
-    expect(m?.scope).toBe('personal');
+    expect(m?.scope).toBe('private');
     expect(m?.superseded_by).toBeNull();
     expect(m?.derived_from).toBeNull();
   });
@@ -95,10 +95,14 @@ describe('Atom v3 migration (006-atom-v3, ADR-001)', () => {
     expect(repo.get(id)?.scope).toBe('team');
   });
 
-  it('backfills valid_from = created_at for rows that predate the migration', () => {
+  it('backfills valid_from = created_at for rows that predate the migration, and the scope default rides through the 016 rename to private', () => {
     // Apply 001-005 only (pre-Atom-v3 schema — no valid_from/scope columns
     // exist yet), insert a legacy row the way v0.x code would, then apply
-    // 006 for real and assert the backfill UPDATE ran.
+    // 006 for real and assert the backfill UPDATE ran. 006's ALTER TABLE ADD
+    // COLUMN scope TEXT NOT NULL DEFAULT 'personal' backfills this legacy row
+    // to 'personal' at that point in the same migrate() call — migration 016
+    // (astramem-local#110) then renames it to 'private' before migrate()
+    // returns, so the row never observably rests at the pre-rename literal.
     migrateUpTo(db, 6);
     db.prepare(`
       INSERT INTO memories
@@ -114,7 +118,7 @@ describe('Atom v3 migration (006-atom-v3, ADR-001)', () => {
       .get('legacy-1') as { valid_from: number; created_at: number; valid_to: number | null; scope: string };
     expect(row.valid_from).toBe(row.created_at);
     expect(row.valid_to).toBeNull();
-    expect(row.scope).toBe('personal');
+    expect(row.scope).toBe('private');
   });
 
   it('derived_from round-trips through repo.get as a string array', () => {

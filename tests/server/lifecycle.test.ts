@@ -277,7 +277,11 @@ describe('POST /memory/:id/promote', () => {
   // the transition inapplicable — the same error class as "already invalid"
   // (invalidate) or "never archived" (restore), so it's a 409, not a 400.
   // 400 is reserved for malformed/invalid request bodies only.
-  it('downward promotion (team -> personal) -> 409', async () => {
+  // Also exercises the one-release 'personal' alias (U7-local
+  // astramem-local#110): the body normalizes 'personal' -> 'private' before
+  // reaching promoteScope(), which is still rank 0 — a downward request from
+  // 'team', so this must still 409 exactly as it did pre-rename.
+  it('downward promotion (team -> personal, via the alias) -> 409', async () => {
     const id = insertMem(repo, 'lc-prom-2');
     await app.inject({
       method: 'POST', url: `/memory/${id}/promote`,

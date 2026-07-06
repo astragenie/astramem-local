@@ -17,7 +17,10 @@ export interface RetrievalQueryV1 {
     type?: (
       'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event' | 'preference' | 'task_result' | 'summary'
     )[];
-    scope?: ('personal' | 'team' | 'org')[];
+    /**
+     * ADR-009 memory scope. private is the default (renamed from 'personal', U7-local astramem-local#110, DEC-048); 'personal' is additively accepted for one release. TODO(remove-personal-alias): drop 'personal' from this enum in the release AFTER this one (tracked in astramem-local#115).
+     */
+    scope?: ('private' | 'team' | 'org' | 'personal')[];
     repo?: string;
     /**
      * FEAT-424 canonical project filter: exact match. A single string is `= ?`; a string[] is `IN (...)` (OR-semantics). An empty array is 'no constraint', never match-nothing.

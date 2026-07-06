@@ -24,7 +24,10 @@ export interface RetrievalResultV1 {
      * Final fused score.
      */
     score: number;
-    scope?: 'personal' | 'team' | 'org';
+    /**
+     * ADR-009 memory scope. private is the default (renamed from 'personal', U7-local astramem-local#110, DEC-048); 'personal' is additively accepted for one release. TODO(remove-personal-alias): drop 'personal' from this enum in the release AFTER this one (tracked in astramem-local#115).
+     */
+    scope?: 'private' | 'team' | 'org' | 'personal';
     /**
      * ScoreExplanation (ADR-005): per-signal raw score, weight, and contribution to the final score.
      */

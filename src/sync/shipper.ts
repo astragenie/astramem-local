@@ -8,7 +8,8 @@
  * content_hash and (device_id, seq)).
  *
  * Scope filter (ADR-009): only events whose atom is team/org-scoped ship.
- * `personal` atoms never leave the machine. erase_request events for atoms
+ * `private` atoms (renamed from `personal`, U7-local astramem-local#110,
+ * DEC-048) never leave the machine. erase_request events for atoms
  * whose row is already hard-deleted ship when their payload carries a
  * team/org scope (3f writes the scope into the erase payload for exactly
  * this reason).

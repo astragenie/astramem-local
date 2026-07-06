@@ -111,7 +111,7 @@ export async function seedEvalCorpus(
       importance: atom.importance,
       confidence: atom.confidence,
       evidence: Array.isArray(atom.evidence) ? atom.evidence.join('; ') : atom.evidence,
-      scope: atom.scope as 'personal' | 'team' | 'org',
+      scope: atom.scope as 'private' | 'team' | 'org',
     });
     // FEAT-401: backfill the fixture-declared valid_from/valid_to so corpus
     // atoms carry their real bitemporal windows instead of insert-time "now"

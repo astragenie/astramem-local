@@ -3,8 +3,8 @@
  * cloud (`astramem-local sync backfill`).
  *
  * Two obstacles this closes:
- *   1. Scope filter (ADR-009): only team/org atoms ship. Personal never does.
- *      `applyBackfill` promotes personal → the chosen tier so they become
+ *   1. Scope filter (ADR-009): only team/org atoms ship. Private never does.
+ *      `applyBackfill` promotes private → the chosen tier so they become
  *      shippable. IRREVERSIBLE — scope is upward-only.
  *   2. Empty replicas: `create` events written before the payload fix
  *      (astramem-local#86) carry `payload_json = NULL`, so they materialize
@@ -31,7 +31,7 @@ import { MemoryEventRepo } from '../storage/memory-events.js';
 import type { MemoryScope } from '../contracts/index.js';
 
 export interface BackfillOptions {
-  /** Promotion target for personal atoms. Upward-only. */
+  /** Promotion target for private atoms. Upward-only. */
   scope: Extract<MemoryScope, 'team' | 'org'>;
   /** Restrict to a single local project (memories.project); null = all. */
   project?: string | null;
@@ -40,8 +40,8 @@ export interface BackfillOptions {
 export interface BackfillPlan {
   scope: MemoryScope;
   project: string | null;
-  /** Personal atoms that would be promoted (and thus start shipping). */
-  personalToPromote: number;
+  /** Private atoms that would be promoted (and thus start shipping). */
+  privateToPromote: number;
   /** Atoms already team/org (already shippable). */
   alreadyShareable: number;
   /** Null-payload, unsynced create events that would be backfilled. */
@@ -66,7 +66,7 @@ export function planBackfill(db: DB, opts: BackfillOptions): BackfillPlan {
   return {
     scope: opts.scope,
     project,
-    personalToPromote: count(`SELECT COUNT(*) n FROM memories WHERE scope='personal' ${clause}`),
+    privateToPromote: count(`SELECT COUNT(*) n FROM memories WHERE scope='private' ${clause}`),
     alreadyShareable: count(`SELECT COUNT(*) n FROM memories WHERE scope IN ('team','org') ${clause}`),
     createEventsToBackfill: count(`
       SELECT COUNT(*) n FROM memory_events e JOIN memories m ON m.id = e.atom_id
@@ -77,7 +77,7 @@ export function planBackfill(db: DB, opts: BackfillOptions): BackfillPlan {
 
 /**
  * Apply the promotion + backfill in one transaction. IRREVERSIBLE.
- *   1. Promote personal → target FIRST, so the payload backfill reads the
+ *   1. Promote private → target FIRST, so the payload backfill reads the
  *      final scope and the create event materializes at the right cloud tier.
  *   2. Backfill content onto null-payload, unsynced create events for every
  *      now-shareable atom.
@@ -88,7 +88,7 @@ export function applyBackfill(db: DB, opts: BackfillOptions): BackfillResult {
   const events = new MemoryEventRepo(db);
 
   const tx = db.transaction((): BackfillResult => {
-    const rows = db.prepare(`SELECT id FROM memories WHERE scope='personal' ${clause}`).all(bind) as { id: string }[];
+    const rows = db.prepare(`SELECT id FROM memories WHERE scope='private' ${clause}`).all(bind) as { id: string }[];
     for (const r of rows) events.promoteScope(r.id, opts.scope);
 
     const filled = db.prepare(`
@@ -167,7 +167,7 @@ export function planReship(db: DB, opts: ReshipOptions): ReshipPlan {
  * Idempotent: the WHERE clause requires `payload_json IS NULL`, so a row
  * this already touched (payload now non-null) is never matched again — a
  * second call reships nothing new. Scope-safe: only atoms currently
- * team/org are eligible; personal atoms are never reset or reshipped here
+ * team/org are eligible; private atoms are never reset or reshipped here
  * (use `applyBackfill` to promote them first).
  */
 export function applyReship(db: DB, opts: ReshipOptions): ReshipResult {

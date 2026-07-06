@@ -481,7 +481,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
   server.registerTool(
     'promote_memory',
     {
-      description: 'Promote a memory\'s scope upward — personal -> team -> org (ADR-009). Downward/same-scope requests error.',
+      description: 'Promote a memory\'s scope upward — private -> team -> org (ADR-009). Downward/same-scope requests error.',
       inputSchema: z.object({
         id: z.string().min(1).describe('Memory id to promote'),
         scope: z.enum(['team', 'org']).describe('Target scope; must be upward from the memory\'s current scope'),

@@ -1,0 +1,25 @@
+{
+  "schema": "astramem/atom@1",
+  "id": "00000000-0000-4000-8000-000000000009",
+  "type": "note",
+  "text": "U7-local (astramem-local#110, DEC-048): scope renamed 'personal' -> 'private'; this fixture proves the new canonical literal validates.",
+  "evidence": "contracts/schemas/atom.v1.schema.json scope enum",
+  "confidence": 0.9,
+  "importance": 0.4,
+  "provenance": {
+    "tool": "claude-code",
+    "session_id": "sess-scope-rename",
+    "repo": "astramem-local",
+    "project": "astramem",
+    "extractor": "astramem-local@0.6.0"
+  },
+  "valid_from": "2026-07-06T00:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "private",
+  "content_hash": "3762e413e94d89d5109c3798bf74d89fa5babaffa16fac7fb722ef59103864f1",
+  "entities": [],
+  "created_at": "2026-07-06T00:00:00.000Z",
+  "updated_at": "2026-07-06T00:00:00.000Z"
+}

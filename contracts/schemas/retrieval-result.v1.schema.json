@@ -37,7 +37,8 @@
           },
           "scope": {
             "type": "string",
-            "enum": ["personal", "team", "org"]
+            "description": "ADR-009 memory scope. private is the default (renamed from 'personal', U7-local astramem-local#110, DEC-048); 'personal' is additively accepted for one release. TODO(remove-personal-alias): drop 'personal' from this enum in the release AFTER this one (tracked in astramem-local#115).",
+            "enum": ["private", "team", "org", "personal"]
           },
           "explanation": {
             "type": "object",

@@ -77,9 +77,9 @@ export interface AtomV1 {
    */
   derived_from?: string[] | null;
   /**
-   * ADR-009 memory scope. personal is the default.
+   * ADR-009 memory scope. private is the default (renamed from 'personal', U7-local astramem-local#110, DEC-048). 'personal' is additively accepted for one release as a dual-read window for older clients/plugins — new writers should emit 'private'. TODO(remove-personal-alias): drop 'personal' from this enum in the release AFTER this one (tracked in astramem-local#115).
    */
-  scope: 'personal' | 'team' | 'org';
+  scope: 'private' | 'team' | 'org' | 'personal';
   /**
    * sha256 hex digest — dedup + sync idempotency (ADR-003).
    */
