@@ -58,7 +58,23 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
       db.exec(sql);
       db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(version, Date.now());
     });
-    tx();
+    try {
+      tx();
+    } catch (err) {
+      // FEAT-420 AC-3: a half-migrated datadir (e.g. the schema_version row
+      // for the last-applied migration was lost while the underlying schema
+      // change already landed) makes migrate() try to re-apply SQL against
+      // an already-migrated table — SQLite throws a low-level error (e.g.
+      // "duplicate column name") that IS fail-loud but not actionable on its
+      // own. Wrap it so the operator gets a diagnosis, not just a raw DDL
+      // error. No change to migration order/content/skip logic above.
+      throw new Error(
+        `Migration ${f} (version ${version}) failed to apply — the database schema may already ` +
+        `partially reflect this migration while schema_version does not record it (a half-migrated ` +
+        `or corrupted datadir). Restore from a backup rather than continuing. Original error: ` +
+        `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
   }
 
   // Boot-time schema-version drift guard: the SCHEMA_VERSION constant in

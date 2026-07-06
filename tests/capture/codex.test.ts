@@ -1,6 +1,6 @@
 // Wave 4c — Codex CLI capture connector (ADR-008). Codex first, Cursor postponed.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,6 +15,16 @@ import { CanonicalIngestSchema } from '../../src/server/routes/ingest.js';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
+
+// FEAT-431 (class B, cold-import flake): the session-scan test does
+// real recursive fs I/O over freshly-written temp files, and the
+// end-to-end test's `openDb()` call is this file's first native-addon
+// (better-sqlite3-multiple-ciphers + sqlite-vec) load plus a full
+// `buildApp()` route/schema compile. tests/setup/native-warmup.globalsetup.ts
+// pre-warms the native-addon page cache once, up front; this per-FILE
+// (not global) timeout scope absorbs residual jitter (disk/AV contention,
+// Fastify schema-compile cost) the warm-up can't fully cover.
+vi.setConfig({ testTimeout: 20_000, hookTimeout: 20_000 });
 
 const line = (obj: unknown): string => JSON.stringify(obj);
 

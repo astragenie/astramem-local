@@ -42,8 +42,7 @@ import { childLogger } from '../log/logger.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { redactIfEnabled } from '../redact/index.js';
 import { recordRedactionEvents } from '../storage/redaction-log.js';
-import { getWhyReceipt } from '../server/queries/why.js';
-import { getSessionDigest, getLatestSessionId } from '../server/queries/digest.js';
+import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import {
   ProposalRepo,
   ProposalNotFoundError,
@@ -84,7 +83,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
-        project: z.string().optional().describe('Filter by project name'),
+        project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
+        agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
+        agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
+        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
         since: z
           .number()
           .optional()
@@ -108,6 +110,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.type) filters.type = args.type;
       if (args.repo) filters.repo = args.repo;
       if (args.project) filters.project = args.project;
+      if (args.agent) filters.agent = args.agent;
+      if (args.agentMode) filters.agentMode = args.agentMode;
+      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
         try {
@@ -162,7 +167,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .optional()
           .describe('Filter by memory type'),
         repo: z.string().optional().describe('Filter by repo name'),
-        project: z.string().optional().describe('Filter by project name'),
+        project: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by project name(s) — string or list (OR)'),
+        agent: z.union([z.string(), z.array(z.string())]).optional().describe('Filter by provenance agent/agent_type — string or list (OR)'),
+        agentMode: z.enum(['filter', 'boost']).optional().describe("FEAT-426: 'filter' (default) hard-excludes non-matching agents; 'boost' keeps them but ranks agent matches higher (requires search.eta > 0)"),
+        entity: z.string().optional().describe('Filter to memories linked to this entity (FEAT-402)'),
         since: z
           .number()
           .optional()
@@ -186,6 +194,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.type) filters.type = args.type;
       if (args.repo) filters.repo = args.repo;
       if (args.project) filters.project = args.project;
+      if (args.agent) filters.agent = args.agent;
+      if (args.agentMode) filters.agentMode = args.agentMode;
+      if (args.entity) filters.entity = args.entity;
       if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
         try {
@@ -338,7 +349,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       }),
     },
     async (args) => {
-      const receipt = getWhyReceipt(db, args.id);
+      const receipt = buildWhyReceipt(db, args.id);
       if (!receipt) {
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
@@ -362,22 +373,30 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     async (args) => {
       let sessionId = args.session_id;
       if (!sessionId) {
-        const latest = getLatestSessionId(db);
+        const latest = db
+          .prepare('SELECT id FROM sessions ORDER BY started_at DESC LIMIT 1')
+          .get() as { id: string } | undefined;
         if (!latest) {
           return {
             content: [{ type: 'text' as const, text: JSON.stringify({ error: 'no sessions recorded' }) }],
             isError: true,
           };
         }
-        sessionId = latest;
+        sessionId = latest.id;
+      } else {
+        // FEAT-417a harmonization: an explicit, unknown session_id errors here
+        // too (REST route semantics win) instead of silently returning an
+        // empty "ready" digest — buildSessionDigest() never verifies the
+        // session itself exists (see its own doc comment).
+        const session = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId);
+        if (!session) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', session_id: sessionId }) }],
+            isError: true,
+          };
+        }
       }
-      const digest = getSessionDigest(db, sessionId);
-      if (!digest) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', session_id: sessionId }) }],
-          isError: true,
-        };
-      }
+      const digest = buildSessionDigest(db, sessionId);
       return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };
     }
   );

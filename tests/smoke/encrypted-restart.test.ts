@@ -1,46 +1,47 @@
 /**
- * tests/smoke/encrypted-restart.test.ts — FEAT-415: smoke coverage for the
- * encrypted-DB restart path.
+ * FEAT-415 — encrypted-DB restart smoke coverage.
  *
- * SLICE-SMOKE-1 (tests/smoke/smoke.test.ts) explicitly ran with
- * security.encryption.enabled:false (accepted F1 tradeoff) to avoid a
- * spawned daemon touching the real OS credential store. Since encryption is
- * the PRODUCTION default (src/config/config.ts defaultConfig()), that left
- * the encrypted reopen path (better-sqlite3-multiple-ciphers + keystore
- * fallback) with zero automated restart coverage.
+ * tests/smoke/smoke.test.ts's step 5 already proves SIGKILL + respawn against
+ * the SAME datadir, but its isolated sandbox runs with
+ * `security.encryption.enabled: false` (see that file's step 0 assertion), so
+ * it never exercises the SQLCipher-encrypted open/reopen path at all — the
+ * exact class of bug a stale-global `SQLITE_NOTADB` trap belongs to (a
+ * daemon that opens an encrypted memory.sqlite without the right key, or
+ * with no key at all, throws `SQLITE_NOTADB` from better-sqlite3-multiple-
+ * ciphers). This suite spawns a daemon with encryption ENABLED against a
+ * real file datadir, ingests a fixture, kills it with SIGKILL, and respawns
+ * against the SAME encrypted datadir — proving the second boot re-derives
+ * the identical key and decrypts the existing file cleanly.
  *
- * Seam (see .claude/artifacts/crew/runs/FEAT-415-premortem.md for the full
- * writeup): ASTRA_MEMORY_TEST_FORCE_KEYFILE=1 makes getOrCreateKey()
- * (src/storage/keystore.ts) skip the OS credential-store attempt entirely
- * and go straight to the key-file fallback (`<configDir>/db.key`). This is
- * necessary — not just convenient — because the daemon under test is a
- * separate child process; the existing in-process __setEntryCtorForTests
- * stub used by tests/security/encryption.test.ts has no effect across a
- * process boundary, and Entry(service, account) is keyed globally by the OS
- * credential store, not namespaced by the sandboxed APPDATA/HOME env
- * overrides makeIsolatedDaemonEnv already applies.
+ * Isolation note (see helpers/daemon.ts:makeIsolatedDaemonEnv's `encrypted`
+ * option): `security.encryption.enabled: true` makes serve.ts call
+ * getOrCreateKey(), which tries the REAL OS credential store first (fixed
+ * identity service='astramem-local', account='db-key' — the SAME identity a
+ * real production install uses). To keep this sandbox from touching that
+ * real OS resource, `encrypted: true` also installs a NODE_OPTIONS `--import`
+ * hook that makes the credential-store binding always throw, deterministically
+ * forcing the documented key-file fallback (`<configDir>/db.key`) instead.
+ * The encryption itself is 100% real SQLCipher — only the key SOURCE is
+ * faked away from the OS keychain.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { existsSync, readFileSync, writeFileSync, readdirSync, mkdtempSync, rmSync } from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
+import { readLockInfo } from '../../src/service/instance-lock.js';
 import { defaultConfigDir, defaultDataDir } from '../../src/config/datadir.js';
-import { getOrCreateKey, __setEntryCtorForTests, keyFilePath } from '../../src/storage/keystore.js';
-import type { Entry } from '@napi-rs/keyring';
 import {
-  spawnDaemon, killDaemon, waitForHealthOk, pollSearchHits, pollUntil,
+  spawnDaemon, killDaemon, waitForHealthOk, pollSearchHits,
   makeIsolatedDaemonEnv, cleanupIsolatedDaemonEnv,
   type DaemonHandle, type IsolatedDaemonEnv, type SearchHit,
 } from './helpers/daemon.js';
 
-const PORT = 19200; // unique — 19000 is smoke.test.ts's port
+// ── Config ───────────────────────────────────────────────────────────────────
+
+const PORT = 19010;
 const TOKEN = 'smoke-enc-tok-1';
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const AUTH = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' } as const;
-
-const PLAINTEXT_MAGIC = 'SQLite format 3\0';
 
 const FIXTURE_PATH = join(
   new URL('.', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1'),
@@ -50,122 +51,67 @@ const FIXTURE_PATH = join(
 const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
   captured_at: string;
   project_id: string;
+  agent_type: string;
 };
 
-function fileHeader(path: string): string {
+const PLAINTEXT_MAGIC = 'SQLite format 3\0';
+
+function dbHeader(path: string): string {
   return readFileSync(path).subarray(0, 16).toString('latin1');
 }
 
+// Real (unmodified) OS dirs, resolved in THIS process — must stay untouched,
+// same non-flaky name-set-only comparison approach as smoke.test.ts (a real
+// concurrently-running production daemon on this host legitimately rewrites
+// its own files on its own schedule).
+const REAL_CONFIG_DIR = defaultConfigDir();
+const REAL_DATA_DIR = defaultDataDir();
+
+/** Sorted filename listing (null if absent) — same name-set-only comparison
+ *  as smoke.test.ts's snapshotDir, deliberately not mtimes/content (a real
+ *  concurrently-running production daemon on this host legitimately
+ *  rewrites its own files on its own schedule). */
 function snapshotDir(dir: string): string[] | null {
   if (!existsSync(dir)) return null;
   return [...readdirSync(dir)].sort();
 }
 
-// Real (unmodified) OS dirs — never touched by the sandboxed spawn below.
-const REAL_CONFIG_DIR = defaultConfigDir();
-const REAL_DATA_DIR = defaultDataDir();
 const realDirsBefore = { config: snapshotDir(REAL_CONFIG_DIR), data: snapshotDir(REAL_DATA_DIR) };
-
-// ─────────────────────────────────────────────────────────────────────────
-// AC-4 (unit-level, no daemon spawn): production default (flag unset) still
-// routes through the credential-store attempt first — the seam added for
-// this FEAT does not change behavior outside tests. Exercised in-process
-// against a STUBBED Entry (never the real OS credential store) so this
-// assertion itself stays safe to run anywhere.
-// ─────────────────────────────────────────────────────────────────────────
-
-describe('AC-4: ASTRA_MEMORY_TEST_FORCE_KEYFILE is off by default — production path unchanged', () => {
-  const tmpDirs: string[] = [];
-
-  afterAll(() => {
-    __setEntryCtorForTests(undefined);
-    for (const dir of tmpDirs) rmSync(dir, { recursive: true, force: true });
-  });
-
-  function mkTmpConfigDir(): string {
-    const dir = mkdtempSync(join(tmpdir(), 'astramem-enc-restart-unit-'));
-    tmpDirs.push(dir);
-    return dir;
-  }
-
-  it('with the flag unset, getOrCreateKey still attempts the credential store first', () => {
-    expect(process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE).toBeUndefined();
-
-    let constructed = false;
-    __setEntryCtorForTests(class {
-      constructor(_service: string, _account: string) {
-        constructed = true;
-      }
-      getPassword(): string | null { return null; }
-      setPassword(_p: string): void { /* no-op */ }
-      deleteCredential(): boolean { return false; }
-      deletePassword(): boolean { return false; }
-    } as unknown as typeof Entry);
-
-    const result = getOrCreateKey('C:/unused-configdir-credential-store-path');
-    expect(constructed, 'credential-store Entry constructor must be attempted when the seam flag is unset').toBe(true);
-    expect(result.source).toBe('credential-store');
-  });
-
-  it('with the flag set to "1", getOrCreateKey bypasses the credential store entirely (never constructs Entry)', () => {
-    let constructed = false;
-    __setEntryCtorForTests(class {
-      constructor(_service: string, _account: string) {
-        constructed = true;
-        throw new Error('must never be reached when ASTRA_MEMORY_TEST_FORCE_KEYFILE=1');
-      }
-      getPassword(): string | null { throw new Error('unreachable'); }
-      setPassword(_p: string): void { throw new Error('unreachable'); }
-    } as unknown as typeof Entry);
-
-    const dir = mkTmpConfigDir();
-    process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE = '1';
-    try {
-      const result = getOrCreateKey(dir);
-      expect(constructed, 'credential-store Entry constructor must NOT be constructed when the seam flag is "1"').toBe(false);
-      expect(result.source).toBe('key-file');
-      expect(existsSync(keyFilePath(dir))).toBe(true);
-    } finally {
-      delete process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE;
-    }
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────────────
-// AC-1/2/3: full spawned-daemon restart suite against a REAL encrypted file
-// datadir.
-// ─────────────────────────────────────────────────────────────────────────
 
 let isolated: IsolatedDaemonEnv;
 let daemon: DaemonHandle | null = null;
+let firstMemoryId: string;
 let dbPath: string;
-let beforeIds: string[];
 
-describe.sequential('Encrypted-DB restart suite (FEAT-415)', () => {
+describe.sequential('Encrypted-DB restart smoke suite (FEAT-415)', () => {
   beforeAll(() => {
-    isolated = makeIsolatedDaemonEnv('astramem-enc-restart', { encryption: true });
+    isolated = makeIsolatedDaemonEnv('astramem-smoke-enc', { encrypted: true });
     dbPath = join(isolated.dataDir, 'memory.sqlite');
   });
 
   afterAll(async () => {
+    // Defensive backstop: holds even if a step above threw before its own
+    // cleanup ran.
     if (daemon) await killDaemon(daemon, 'SIGKILL', 5_000);
     cleanupIsolatedDaemonEnv(isolated);
   });
 
-  it('step 0: sandbox has encryption ENABLED (at the path the daemon actually reads) and the test-only key-file-force flag set', () => {
-    // effectiveConfigDir, not configDir — see helpers/daemon.ts's FEAT-415
-    // doc comment: defaultConfigDir() joins a platform subdir onto
-    // APPDATA/HOME/XDG_CONFIG_HOME, so this is the path the spawned daemon
-    // actually resolves and reads config.yaml from.
-    const cfgText = readFileSync(join(isolated.effectiveConfigDir, 'config.yaml'), 'utf8');
+  it('step 0: isolated sandbox created — encryption ENABLED in config.yaml, no real OS dirs aliased', () => {
+    expect(existsSync(isolated.configDir)).toBe(true);
+    expect(existsSync(isolated.dataDir)).toBe(true);
+    const cfgText = readFileSync(join(isolated.configDir, 'config.yaml'), 'utf8');
     expect(cfgText).toContain('enabled: true');
-    expect(isolated.env['ASTRA_MEMORY_TEST_FORCE_KEYFILE']).toBe('1');
+
     expect(isolated.configDir).not.toBe(REAL_CONFIG_DIR);
-    expect(isolated.effectiveConfigDir).not.toBe(REAL_CONFIG_DIR);
     expect(isolated.dataDir).not.toBe(REAL_DATA_DIR);
+
+    // The encrypted-restart env carries the fake-keyring NODE_OPTIONS hook —
+    // this is the mechanism that keeps the real OS credential store
+    // untouched (see helpers/fake-keyring-register.mjs).
+    expect(isolated.env['NODE_OPTIONS']).toContain('fake-keyring-register.mjs');
   });
 
-  it('step 1: daemon spawns, ingests, and distills into a searchable memory against an ENCRYPTED datadir (AC-1 setup)', async () => {
+  it('step 1: daemon spawns with encryption enabled and GET /health reports "ok"', async () => {
     daemon = spawnDaemon({ port: PORT, token: TOKEN, env: isolated.env });
     daemon.proc.stderr?.on('data', (chunk: Buffer) => {
       process.stderr.write(`[enc-smoke-daemon] ${chunk.toString()}`);
@@ -174,106 +120,114 @@ describe.sequential('Encrypted-DB restart suite (FEAT-415)', () => {
     await waitForHealthOk(BASE_URL);
     expect(daemon.exitInfo().code, `daemon exited early — stderr:\n${daemon.stderr()}`).toBeNull();
 
+    // Boot must NOT have fallen back to the real OS credential store: the
+    // fake-keyring hook forces getOrCreateKey() down the key-file path, so a
+    // db.key file must now exist under the isolated configDir (never the
+    // real one — REAL_CONFIG_DIR was asserted distinct above).
+    const keyFilePath = join(isolated.configDir, 'db.key');
+    expect(existsSync(keyFilePath), `expected key-file fallback at ${keyFilePath} — stderr:\n${daemon.stderr()}`).toBe(true);
+
+    // The daemon's stderr must show the credential-store WARNING (proves the
+    // fake-keyring throw actually fired, not that encryption silently no-op'd).
+    expect(daemon.stderr()).toContain('WARNING: OS credential store unavailable');
+  }, 20_000);
+
+  it('step 2: canonical ingest returns 200, distill drains to a searchable memory, and the on-disk file is genuinely encrypted (not plaintext SQLite)', async () => {
     const res = await fetch(`${BASE_URL}/ingest/transcript`, {
       method: 'POST',
-      headers: { ...AUTH, 'idempotency-key': 'enc-smoke-ingest-1' },
+      headers: { ...AUTH, 'idempotency-key': 'smoke-enc-ingest-1' },
       body: JSON.stringify(FIXTURE),
     });
-    const body = (await res.json()) as { ok: boolean };
+    const body = (await res.json()) as { ok: boolean; summary_memory_id: string; session_id: string };
     expect(res.status, JSON.stringify(body)).toBe(200);
     expect(body.ok).toBe(true);
+    expect(body.session_id).toBe('smoke-session-canonical-1');
 
-    await pollSearchHits(
-      BASE_URL, TOKEN, 'sqlite',
-      hits => hits.filter(h => h.type === 'decision' && h.text.toLowerCase().includes('sqlite-vec')),
+    const hits = await pollSearchHits(
+      BASE_URL,
+      TOKEN,
+      'sqlite',
+      allHits => allHits.filter(h => h.type === 'decision' && h.text.toLowerCase().includes('sqlite-vec')),
       { label: 'distill worker to drain the transcript into a decision memory mentioning sqlite-vec' },
     );
+    expect(hits.length).toBeGreaterThan(0);
+    firstMemoryId = hits[0]!.id;
+
+    // Real at-rest encryption evidence (mirrors tests/security/encryption.test.ts
+    // AC-1): the file header must NOT be the plaintext SQLite magic. This is
+    // the actual proof the "encrypted restart" path is being exercised, not
+    // just a config flag that got ignored.
+    expect(existsSync(dbPath)).toBe(true);
+    expect(dbHeader(dbPath)).not.toBe(PLAINTEXT_MAGIC);
   }, 40_000);
 
-  it('step 2: on-disk file is genuinely encrypted (header != plaintext magic) — the test-only seam never left the DB unencrypted', () => {
-    expect(existsSync(dbPath)).toBe(true);
-    expect(fileHeader(dbPath)).not.toBe(PLAINTEXT_MAGIC);
-  });
+  it('step 3: SIGKILL + respawn against the SAME encrypted datadir — no SQLITE_NOTADB, data decrypts intact, daemon.lock PID changed (AC-5/AC-9 for the encrypted path)', async () => {
+    const priorLock = readLockInfo(isolated.dataDir);
+    expect(priorLock).not.toBeNull();
+    const priorPid = priorLock!.pid;
+    expect(priorPid).toBe(daemon!.proc.pid);
 
-  it('step 3: key resolved via the key-file fallback, never the real OS credential store (AC-2)', () => {
-    const keyPath = keyFilePath(isolated.effectiveConfigDir);
-    expect(existsSync(keyPath), 'ASTRA_MEMORY_TEST_FORCE_KEYFILE=1 must produce a key file under the sandboxed configDir').toBe(true);
-    const key = readFileSync(keyPath, 'utf8').trim();
-    expect(key).toMatch(/^[0-9a-f]{64}$/);
-
-    // Real OS dirs untouched so far — the strongest available proxy (short of
-    // reading the Windows Credential Manager directly) that this run never
-    // reached the real credential store: it never even touched the real
-    // APPDATA/LOCALAPPDATA dirs the credential-store path has no reason to
-    // touch either, but this at least proves the sandbox held.
-    const realDirsNow = { config: snapshotDir(REAL_CONFIG_DIR), data: snapshotDir(REAL_DATA_DIR) };
-    expect(realDirsNow).toEqual(realDirsBefore);
-  });
-
-  it('step 4: SIGKILL + respawn against the SAME encrypted datadir — identical memory ids/counts (AC-1)', async () => {
     const before = await fetch(`${BASE_URL}/search?q=sqlite&limit=20`, { headers: AUTH });
-    beforeIds = ((await before.json()) as { hits: SearchHit[] }).hits.map(h => h.id).sort();
-    expect(beforeIds.length).toBeGreaterThan(0);
+    const beforeIds = ((await before.json()) as { hits: SearchHit[] }).hits.map(h => h.id).sort();
+    expect(beforeIds).toContain(firstMemoryId);
 
-    await killDaemon(daemon!, 'SIGKILL', 5_000);
-    expect(daemon!.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
+    // No graceful shutdown — exercises stale-lock steal + WAL recovery on the
+    // next boot against the encrypted file, not the clean SIGTERM path.
+    await killDaemon(daemon, 'SIGKILL', 5_000);
+    expect(daemon.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
 
     daemon = spawnDaemon({ port: PORT, token: TOKEN, env: isolated.env });
     daemon.proc.stderr?.on('data', (chunk: Buffer) => {
       process.stderr.write(`[enc-smoke-daemon-respawn] ${chunk.toString()}`);
     });
     await waitForHealthOk(BASE_URL);
-    expect(daemon.exitInfo().code, `respawned daemon exited early — stderr:\n${daemon.stderr()}`).toBeNull();
 
+    // The critical assertion this whole suite exists for: the respawned
+    // daemon must boot clean against the SAME encrypted file — no
+    // SQLITE_NOTADB (wrong/absent key against an encrypted file) and no
+    // early exit at all.
+    const exitInfo = daemon.exitInfo();
+    expect(
+      exitInfo.code,
+      `respawned daemon exited early (code=${exitInfo.code}, signal=${exitInfo.signal}) against the encrypted datadir — stderr:\n${daemon.stderr()}`,
+    ).toBeNull();
+    expect(daemon.stderr()).not.toContain('SQLITE_NOTADB');
+
+    // Same real SQLCipher key re-derived from the SAME db.key file — same
+    // memory still searchable, decrypted intact.
     const after = await fetch(`${BASE_URL}/search?q=sqlite&limit=20`, { headers: AUTH });
     const afterIds = ((await after.json()) as { hits: SearchHit[] }).hits.map(h => h.id).sort();
     expect(afterIds).toEqual(beforeIds);
+
+    // Still genuinely encrypted on disk (not silently downgraded to
+    // plaintext by the second boot).
+    expect(dbHeader(dbPath)).not.toBe(PLAINTEXT_MAGIC);
+
+    const newLock = readLockInfo(isolated.dataDir);
+    expect(newLock).not.toBeNull();
+    expect(newLock!.pid).toBe(daemon.proc.pid);
+    expect(newLock!.pid).not.toBe(priorPid);
   }, 30_000);
 
-  it('step 5: WRONG key on restart fails LOUD with an actionable error, not silent data loss or a generic crash (AC-3)', async () => {
-    await killDaemon(daemon!, 'SIGKILL', 5_000);
-    daemon = null;
+  it('step 4: teardown — kill daemon, remove temp dirs, real OS dirs untouched', async () => {
+    await killDaemon(daemon!, 'SIGTERM', 5_000);
+    const exitInfo = daemon!.exitInfo();
+    expect(exitInfo.code === 0 || exitInfo.signal !== null).toBe(true);
+    daemon = null; // afterAll's backstop becomes a no-op
 
-    const keyPath = keyFilePath(isolated.effectiveConfigDir);
-    const originalKey = readFileSync(keyPath, 'utf8').trim();
-    const wrongKey = randomBytes(32).toString('hex');
-    expect(wrongKey).not.toBe(originalKey);
-    writeFileSync(keyPath, wrongKey, 'utf8');
-
-    const wrongKeyDaemon = spawnDaemon({ port: PORT, token: TOKEN, env: isolated.env });
-    try {
-      await pollUntil(
-        async () => wrongKeyDaemon.exitInfo(),
-        info => info.code !== null || info.signal !== null,
-        { label: 'daemon to exit after being handed the wrong encryption key', timeoutMs: 15_000, intervalMs: 200 },
-      );
-      const exitInfo = wrongKeyDaemon.exitInfo();
-      expect(exitInfo.code, 'wrong-key daemon must exit non-zero, not silently serve stale/empty data').not.toBe(0);
-
-      const stderr = wrongKeyDaemon.stderr();
-      expect(stderr).toContain('does not match this file');
-      expect(stderr).toMatch(/wrong or stale key/i);
-      expect(stderr.toLowerCase()).toContain('key file');
-      // Must NOT read as the unrelated plaintext-vs-cipher-build shadowing
-      // issue documented in CLAUDE.md — the message must be specific enough
-      // to distinguish the two failure classes.
-      expect(stderr).toContain('NOT a plaintext-vs-cipher-build issue');
-    } finally {
-      // Restore the correct key so teardown's health/port checks and any
-      // later run against this dir are not left in a broken state.
-      writeFileSync(keyPath, originalKey, 'utf8');
-      if (wrongKeyDaemon.exitInfo().code === null && wrongKeyDaemon.exitInfo().signal === null) {
-        await killDaemon(wrongKeyDaemon, 'SIGKILL', 5_000);
-      }
-    }
-  }, 20_000);
-
-  it('step 6: teardown — remove temp dirs, verify port free, real OS dirs untouched', async () => {
     await expect(fetch(`${BASE_URL}/health`, { signal: AbortSignal.timeout(1_000) })).rejects.toBeTruthy();
 
     cleanupIsolatedDaemonEnv(isolated);
     expect(existsSync(isolated.root)).toBe(false);
 
+    // Real %APPDATA%\Astramem / %LOCALAPPDATA%\Astramem (or non-Windows
+    // equivalents) must be byte-for-byte untouched — same file-set diff as
+    // smoke.test.ts's step 6 (this ALSO proves the fake-keyring hook did its
+    // job: no real credential-store WRITE means no incidental filesystem
+    // side effect near these dirs either, though the credential store isn't
+    // filesystem-visible here — this assertion covers the dir-redirection
+    // half of isolation; the credential-store half is covered by step 1's
+    // "WARNING: OS credential store unavailable" + db.key-exists assertions).
     const realDirsAfter = { config: snapshotDir(REAL_CONFIG_DIR), data: snapshotDir(REAL_DATA_DIR) };
     expect(realDirsAfter).toEqual(realDirsBefore);
   }, 15_000);

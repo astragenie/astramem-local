@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { redeemClaim } from '../../src/cli/pair.js';
+import { redeemClaim, resolveCloudUrl, resolveSyncBase, DEFAULT_CLOUD_URL } from '../../src/cli/pair.js';
 import {
   readSyncSettings,
   writeSyncSettings,
@@ -17,6 +17,27 @@ function fakeFetch(status: number, body?: unknown, headers?: Record<string, stri
     { status, headers },
   )) as unknown as typeof fetch;
 }
+
+describe('resolveCloudUrl (astramem-local#85)', () => {
+  it('defaults to the prod host when no --url / env is given', () => {
+    expect(resolveCloudUrl(undefined, undefined)).toEqual({ cloudUrl: DEFAULT_CLOUD_URL, urlSource: 'default' });
+    expect(DEFAULT_CLOUD_URL).toBe('https://api.astramemory.com');
+  });
+  it('--url wins over env wins over default', () => {
+    expect(resolveCloudUrl('https://flag.example', 'https://env.example')).toEqual({ cloudUrl: 'https://flag.example', urlSource: 'flag' });
+    expect(resolveCloudUrl(undefined, 'https://env.example')).toEqual({ cloudUrl: 'https://env.example', urlSource: 'env' });
+  });
+});
+
+describe('resolveSyncBase (astramem-local#85)', () => {
+  it('default source trusts the redeem response apiUrl', () => {
+    expect(resolveSyncBase('default', DEFAULT_CLOUD_URL, 'https://cloud.echoed')).toBe('https://cloud.echoed');
+  });
+  it('explicit --url / env overrides the cloud-echoed apiUrl (trailing slash trimmed)', () => {
+    expect(resolveSyncBase('flag', 'https://mydeploy.example/', 'https://api.astramemory.com')).toBe('https://mydeploy.example');
+    expect(resolveSyncBase('env', 'https://staging.example', 'https://api.astramemory.com')).toBe('https://staging.example');
+  });
+});
 
 describe('redeemClaim', () => {
   const GOOD = { apiUrl: 'https://api.astramemory.com', tenantId: 't-1', workspaceId: 'w-1', apiKey: 'ak_secret' };

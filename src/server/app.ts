@@ -20,12 +20,14 @@ import { dashboardApiRoute } from './routes/dashboard-api-html.js';
 import { memoryToolRoute } from './routes/memory-tool.js';
 import { consolidationRoutes } from './routes/consolidation.js';
 import { entitiesRoute } from './routes/entities.js';
+import { syncStatusRoute } from './routes/sync-status.js';
 import { makeFakeVec } from '../search/search.js';
 import { childLogger } from '../log/logger.js';
 import { newRequestId, runWithRequestId } from '../log/correlation.js';
 import { type Config, defaultConfig } from '../config/config.js';
 import type { HealthState } from './health-state.js';
 import { isLoopbackHost } from './lib/network.js';
+import { safeBearerEqual } from './lib/secure-compare.js';
 
 /** Default no-op embed provider used when no real provider is injected.
  * FEAT-409: dim derived from config.embedding.dim (defaults to
@@ -108,8 +110,10 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
     const path = req.url.split('?')[0];
     if (path === '/dashboard' || path?.startsWith('/dashboard/')) return;
     if (isLocalBind && (path === '/health' || path === '/version')) return;
-    const auth = req.headers.authorization;
-    if (auth !== `Bearer ${opts.token}`) {
+    // FEAT-430: constant-time compare — a naive `!==` leaks the token via
+    // response-timing (first differing byte short-circuits the compare).
+    const auth = req.headers.authorization ?? '';
+    if (!safeBearerEqual(auth, `Bearer ${opts.token}`)) {
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
       childLogger({ request_id: requestId ?? 'unknown' }).warn(
         { method: req.method, path: req.url },
@@ -155,6 +159,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(memoryToolRoute(opts.db, config));
   await app.register(consolidationRoutes(opts.db));
   await app.register(entitiesRoute(opts.db));
+  await app.register(syncStatusRoute(opts.db, config));
 
   return app;
 }

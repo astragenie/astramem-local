@@ -130,6 +130,55 @@ describe('fuseScores', () => {
       expect(fuseScores({ ...base, zeta: 0.2 })).toBeCloseTo(0.5 / 1.2);
     });
   });
+
+  // FEAT-426: eta (agent-match soft-boost) — structurally identical to zeta,
+  // DEFAULT OFF, only reshuffles when explicitly enabled.
+  describe('eta (agent-match soft-boost, FEAT-426)', () => {
+    const base = {
+      normBm25: 0.5, normCosine: 0.5, importance: 0.5, freshness: 0.5,
+      alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1,
+    };
+
+    it('eta omitted → agentBonus=1 contributes nothing (byte-identical to no eta)', () => {
+      const withoutEta = fuseScores(base);
+      const withAgentBonusButNoEta = fuseScores({ ...base, agentBonus: 1 });
+      expect(withAgentBonusButNoEta).toBe(withoutEta);
+    });
+
+    it('eta=0 → agentBonus=1 still contributes nothing (explicit OFF, FEAT-426 default)', () => {
+      const etaZero = fuseScores({ ...base, eta: 0, agentBonus: 1 });
+      const noEta = fuseScores(base);
+      expect(etaZero).toBe(noEta);
+    });
+
+    it('eta>0 with agentBonus=1 raises the score by the bonus share of the active weight sum', () => {
+      // base raw = 0.4*0.5 + 0.4*0.5 + 0.1*0.5 + 0.1*0.5 = 0.5, weightSum(no eta) = 1.0 -> plain = 0.5
+      const plain = fuseScores(base);
+      expect(plain).toBeCloseTo(0.5);
+      // boosted raw = 0.5 + 0.2*1 = 0.7, weightSum = 0.4+0.4+0.1+0.1+0.2 = 1.2 -> 0.7/1.2
+      const boosted = fuseScores({ ...base, eta: 0.2, agentBonus: 1 });
+      expect(boosted).toBeCloseTo(0.7 / 1.2);
+      expect(boosted).toBeGreaterThan(plain);
+    });
+
+    it('eta>0 with agentBonus=0 (or absent) dilutes the other components via the larger weight sum', () => {
+      const plain = fuseScores(base);
+      const diluted = fuseScores({ ...base, eta: 0.2, agentBonus: 0 });
+      expect(diluted).toBeCloseTo(0.5 / 1.2);
+      expect(diluted).toBeLessThan(plain);
+      expect(fuseScores({ ...base, eta: 0.2 })).toBeCloseTo(0.5 / 1.2);
+    });
+
+    it('fused score stays <= 1 even with eta stacked on top of every other maxed component', () => {
+      const maxed = fuseScores({
+        normBm25: 1, normCosine: 1, importance: 1, freshness: 1,
+        usefulness: 1, entityBonus: 1, agentBonus: 1,
+        alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0.1, eta: 0.1,
+      });
+      expect(maxed).toBeLessThanOrEqual(1);
+      expect(maxed).toBeCloseTo(1); // raw == weightSum when every component + bonus is maxed
+    });
+  });
 });
 
 // Wire-contract regression (memory-plugin#8): the daemon's default weights
@@ -225,6 +274,50 @@ describe('fuseHits — AC-6 zeta ranking safety', () => {
       ftsHits, vecHits, metas, { ...weights, zeta: 0.5 }, NOW, undefined, undefined,
       new Map([['b', 1]]),
     );
+    expect(boosted[0]?.id).toBe('b');
+    expect(boosted[0]?.score).toBeGreaterThan(boosted[1]?.score as number);
+  });
+});
+
+// FEAT-426 (soft-boost agent recall): eta/agentBonus is a rank-only concern —
+// it must never change WHICH candidates appear (that's still the caller's
+// job — either the SQL hard filter or "no filter at all"), only how the
+// already-present candidate set is ORDERED.
+describe('fuseHits — FEAT-426 eta ranking safety (rank changes, membership does not)', () => {
+  const NOW = 1_700_000_000_000;
+  const metas = new Map([
+    ['a', { importance: 0.5, created_at: NOW }],
+    ['b', { importance: 0.5, created_at: NOW }],
+  ]);
+  // Identical bm25/cosine for both candidates so, absent eta, they tie — any
+  // reshuffle at eta>0 is attributable ONLY to the agent-match bonus term.
+  const ftsHits = [{ id: 'a', bm25: -1 }, { id: 'b', bm25: -1 }];
+  const vecHits = [{ id: 'a', cosine: 0.5 }, { id: 'b', cosine: 0.5 }];
+  const weights = { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1 };
+
+  it('eta=0 (default) → order identical whether or not an agentBonus map is supplied', () => {
+    const withoutBonusMap = fuseHits(ftsHits, vecHits, metas, { ...weights, eta: 0 }, NOW);
+    const withBonusMapButEtaZero = fuseHits(
+      ftsHits, vecHits, metas, { ...weights, eta: 0 }, NOW, undefined, undefined, undefined,
+      new Map([['b', 1]]),
+    );
+    expect(withBonusMapButEtaZero.map(h => h.id)).toEqual(withoutBonusMap.map(h => h.id));
+    expect(withBonusMapButEtaZero.map(h => h.score)).toEqual(withoutBonusMap.map(h => h.score));
+  });
+
+  it('eta>0 with a non-uniform agentBonus map changes rank but not membership', () => {
+    const baseline = fuseHits(ftsHits, vecHits, metas, weights, NOW);
+    // Tied candidates — baseline order is a tie; agentBonus must promote 'b'.
+    expect(baseline.map(h => h.score)[0]).toBeCloseTo(baseline.map(h => h.score)[1] as number);
+    const baselineIds = new Set(baseline.map(h => h.id));
+
+    const boosted = fuseHits(
+      ftsHits, vecHits, metas, { ...weights, eta: 0.5 }, NOW, undefined, undefined, undefined,
+      new Map([['b', 1]]),
+    );
+    // Membership unchanged — same two candidates, neither added nor dropped.
+    expect(new Set(boosted.map(h => h.id))).toEqual(baselineIds);
+    // Rank changed — 'b' (the agent-matched candidate) now ranks first.
     expect(boosted[0]?.id).toBe('b');
     expect(boosted[0]?.score).toBeGreaterThan(boosted[1]?.score as number);
   });

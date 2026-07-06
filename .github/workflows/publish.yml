@@ -21,11 +21,10 @@ on:
 
 permissions:
   contents: read
-  id-token: write # npm --provenance
 
 jobs:
   publish:
-    name: npm publish (provenance)
+    name: npm publish
     runs-on: [self-hosted, astragenie, aws]
     steps:
       - uses: actions/checkout@v4
@@ -46,11 +45,23 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install + build
+        # --ignore-scripts skips dependency postinstall scripts — specifically
+        # better-sqlite3's node-gyp native compile, which crashes on the fleet
+        # runner (bunx node-gyp@latest pulls an undici incompatible with the
+        # runner Node: "webidl.util.markAsUncloneable is not a function", and
+        # no prebuilt binary exists for the target). The publish only needs the
+        # TS build (dist/) — better-sqlite3 is a RUNTIME dep the consumer
+        # compiles on their own install, and its .d.ts types (all tsc needs)
+        # are present without the native build. See issue #58.
         run: |
-          bun install --frozen-lockfile
+          bun install --frozen-lockfile --ignore-scripts
           bun run build
 
+      # --provenance is intentionally NOT used: npm rejects sigstore provenance
+      # from self-hosted runners (E422 "Unsupported GitHub Actions runner
+      # environment: self-hosted"), and fleet policy is self-hosted only
+      # (devops#64). Provenance would require a github-hosted runner. See #58.
       - name: Publish
-        run: npm publish --provenance --access public
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

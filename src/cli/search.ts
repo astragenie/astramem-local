@@ -23,6 +23,16 @@ function authHeaders(): Record<string, string> {
   };
 }
 
+/**
+ * FEAT-423: split a comma-separated CLI value into the filter shape POST
+ * /recall expects — one value stays a string, many become a string[] (IN).
+ * GET /search does this server-side, so this is only needed on the POST path.
+ */
+function csvFilter(raw: string): string | string[] {
+  const parts = raw.split(',').map(s => s.trim()).filter(Boolean);
+  return parts.length <= 1 ? (parts[0] ?? raw) : parts;
+}
+
 async function fetchJson(url: string, init?: RequestInit): Promise<unknown> {
   const res = await fetch(url, { ...init, headers: { ...authHeaders(), ...(init?.headers as Record<string, string> ?? {}) } });
   if (!res.ok) {
@@ -43,6 +53,15 @@ export interface SearchCliOpts {
   asOf?: string;
   /** FEAT-402 slice 2 AC-4: entity name, forwarded verbatim to `entity=`. */
   entity?: string;
+  /** FEAT-423: project name, forwarded verbatim to `project=`. The daemon
+   *  filters atoms on `provenance.project`; absent → unfiltered (all projects). */
+  project?: string;
+  /** FEAT-423: agent name, forwarded verbatim to `agent=` — exact match on
+   *  provenance agent/agent_type; absent → all agents. */
+  agent?: string;
+  /** FEAT-426: 'filter' (default) or 'boost', forwarded verbatim to
+   *  `agentMode=`. Only meaningful when `agent` is also set. */
+  agentMode?: string;
 }
 
 export async function cliSearch(query: string, opts: SearchCliOpts): Promise<void> {
@@ -53,6 +72,9 @@ export async function cliSearch(query: string, opts: SearchCliOpts): Promise<voi
   if (opts.limit) params.set('limit', opts.limit);
   if (opts.asOf) params.set('as_of', opts.asOf);
   if (opts.entity) params.set('entity', opts.entity);
+  if (opts.project) params.set('project', opts.project);
+  if (opts.agent) params.set('agent', opts.agent);
+  if (opts.agentMode) params.set('agentMode', opts.agentMode);
 
   const base = getBaseUrl();
   const result = await fetchJson(`${base}/search?${params.toString()}`) as { hits: unknown[] };
@@ -84,6 +106,14 @@ export interface RecallCliOpts {
   asOf?: string;
   /** FEAT-402 slice 2 AC-4: entity name, forwarded to POST /recall filters.entity. */
   entity?: string;
+  /** FEAT-423: project name, forwarded to POST /recall filters.project.
+   *  Absent → unfiltered recall across all projects. */
+  project?: string;
+  /** FEAT-423: agent name, forwarded to POST /recall filters.agent. */
+  agent?: string;
+  /** FEAT-426: 'filter' (default) or 'boost', forwarded to POST /recall
+   *  filters.agentMode. Only meaningful when `agent` is also set. */
+  agentMode?: string;
 }
 
 export async function cliRecall(question: string, opts: RecallCliOpts): Promise<void> {
@@ -93,6 +123,9 @@ export async function cliRecall(question: string, opts: RecallCliOpts): Promise<
   if (opts.repo) filters.repo = opts.repo;
   if (opts.asOf) filters.as_of = opts.asOf;
   if (opts.entity) filters.entity = opts.entity;
+  if (opts.project) filters.project = csvFilter(opts.project);
+  if (opts.agent) filters.agent = csvFilter(opts.agent);
+  if (opts.agentMode) filters.agentMode = opts.agentMode;
 
   const base = getBaseUrl();
   const result = await fetchJson(`${base}/recall`, {
@@ -122,6 +155,13 @@ export async function cliRecall(question: string, opts: RecallCliOpts): Promise<
 export interface RememberCliOpts {
   type?: string;
   repo?: string;
+  /** FEAT-423: persist provenance.project so the atom is later recallable
+   *  under `recall --project`. Written into metadata.project (route:
+   *  RememberBodySchema.metadata.project → memories.project column). */
+  project?: string;
+  /** FEAT-423: persist provenance.agent so the atom is later recallable
+   *  under `recall --agent`. Written into metadata.agent → memories.agent. */
+  agent?: string;
 }
 
 export async function cliRemember(text: string, opts: RememberCliOpts): Promise<void> {
@@ -135,6 +175,8 @@ export async function cliRemember(text: string, opts: RememberCliOpts): Promise<
 
   const metadata: Record<string, string> = {};
   if (opts.repo) metadata.repo = opts.repo;
+  if (opts.project) metadata.project = opts.project;
+  if (opts.agent) metadata.agent = opts.agent;
 
   const base = getBaseUrl();
   const result = await fetchJson(`${base}/remember`, {

@@ -51,8 +51,26 @@ let daemonExitSignal: NodeJS.Signals | null = null;
 /**
  * Poll /health with exponential-ish back-off.
  * Throws a diagnostic error if the daemon doesn't respond within maxMs.
+ *
+ * Default budget: 18_000ms (call site below passes 20_000ms explicitly,
+ * inside a beforeAll hook whose own vitest hookTimeout is 25_000ms — 5s of
+ * margin for spawn/setup overhead ahead of the poll). The previous default
+ * of 5_000ms (called with no override) silently wasted 15s of already-
+ * declared headroom and caused an
+ * intermittent CI flake: `bunx vitest run` (no file filter) schedules every
+ * spawned-daemon suite (e2e/plugin-flow, smoke/*, integration/embed-dim-e2e,
+ * this file) across the worker pool, and concurrent `spawn()` + port-bind
+ * under that CPU/process contention occasionally exceeds 5s even though the
+ * daemon itself boots fine — reproduced locally: full-suite run failed here
+ * with "did not respond to /health within 5000ms" while every other
+ * spawned-daemon test (tests/cli/serve.test.ts: 25_000ms poll / 30_000ms
+ * hook; tests/smoke/helpers/daemon.ts pollUntil: 8_000-30_000ms) already
+ * budgets far more headroom for exactly this contention. This is a harness
+ * budget mismatch, not a product race — port 19100 is not shared with any
+ * other suite (verified) and the daemon's boot sequence itself is
+ * synchronous with no distill-timing dependency at this stage.
  */
-async function waitForHealth(maxMs = 5_000): Promise<void> {
+async function waitForHealth(maxMs = 18_000): Promise<void> {
   const deadline = Date.now() + maxMs;
   let last: unknown;
   while (Date.now() < deadline) {
@@ -108,8 +126,8 @@ beforeAll(async () => {
     daemonStderr += `\n[spawn error] ${(err as Error).message}`;
   });
 
-  await waitForHealth(5_000);
-}, 20_000);
+  await waitForHealth(20_000);
+}, 25_000);
 
 afterAll(async () => {
   if (daemon && !daemon.killed && daemonExitCode === null && daemonExitSignal === null) {
@@ -172,7 +190,7 @@ describe('GET /health over real HTTP', () => {
     expect(body.ok).toBe(true);
     expect(body.wire_versions_supported).toContain('v0.0');
     expect(body.wire_versions_supported).toContain('v1.0');
-    expect(body.schema_version).toBe(13);
+    expect(body.schema_version).toBe(14);
   }, 20_000);
 });
 
@@ -195,7 +213,7 @@ describe('GET /version over real HTTP', () => {
     expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(body.wire_versions_supported).toContain('v0.0');
     expect(body.wire_versions_supported).toContain('v1.0');
-    expect(body.schema_version).toBe(13);
+    expect(body.schema_version).toBe(14);
     expect(typeof body.ts).toBe('number');
   }, 20_000);
 

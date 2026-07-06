@@ -1,9 +1,9 @@
 {
   "name": "@astragenie/astramemory-local",
-  "version": "0.6.0",
+  "version": "0.8.1",
   "type": "module",
   "bin": {
-    "astramem-local": "./dist/cli/index.js"
+    "astramem-local": "dist/cli/index.js"
   },
   "files": [
     "dist",

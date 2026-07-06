@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.1] — 2026-07-06
+
+### Added
+- **`pair` defaults `--url` to `https://api.astramemory.com`** (#87, closes #85) — `pair <code>` now works with no flag/env against the prod root-relative host (astragenie/common #167/#169). Precedence `--url` > `ASTRA_SYNC_URL` > default; an explicit url now wins over the cloud-echoed `apiUrl` (was silently overridden), and `pair` logs the effective sync base + its source.
+
+---
+
+## [0.8.0] — 2026-07-06
+
+### Fixed
+- **sync: device token sent under the ApiKey scheme, not Bearer** (#82, closes #79/#83) — the cloud `AuthMiddleware` accepts `Authorization: ApiKey <key>` for device keys and `Bearer <jwt>` for Clerk JWTs only. The shipper/puller sent the `sk-…` device token as `Bearer`, so every ship/pull got **401**. Switched both to `ApiKey`.
+- **sync: `create` events ship a content payload** (#86, closes #80 / memory#618) — the `create` memory_event carried `content_hash` but no `payload`, so `payload_json` shipped null and cloud replicas materialized with **empty, unsearchable** content. The create event now carries `text`/`type`/`scope`/`importance`/`confidence`/`repo`. Personal atoms never ship (scope filter); only team/org.
+
+### Notes
+- Requires the cloud `sync_events.content_hash` constraint relax (memory#619, released in memory v0.8.4) on prod, else `create` events still 500. Ship the memory release first or together.
+- **`pair` default-`--url`** (#87, closes #85) is NOT in this release — its CI (`cross-repo-roundtrip`) is stuck on a native-binding runner flake. `pair` still requires an explicit `--url https://api.astramemory.com`. Ships in a follow-up once the flake clears.
+
+---
+
+## [0.7.2] — 2026-07-05
+
+### Fixed
+- **CI: npm publish on self-hosted runners** — dropped `--provenance` from `npm publish`. npm rejects sigstore provenance from self-hosted runners (`E422 Unsupported GitHub Actions runner environment: "self-hosted"`) and fleet policy is self-hosted only, so provenance and the publish were mutually exclusive. Completes the publish fix started in 0.7.1 (#58). No runtime change.
+
+---
+
+## [0.7.1] — 2026-07-05
+
+### Fixed
+- **CI: npm publish workflow** — `bun install` in the publish job now runs with `--ignore-scripts`, skipping `better-sqlite3`'s node-gyp native compile that crashed the fleet runner (`webidl.util.markAsUncloneable is not a function`; no prebuilt binary for the target). The publish only needs the TS `dist/` build; the native driver is compiled on the consumer's install. Fixes #58. No runtime changes.
+
+---
+
+## [0.7.0] — 2026-07-05
+
+Project- and agent-scoped recall (FEAT-423, issue #56).
+
+### Added
+
+- **`project` and `agent` recall filters** — `POST /recall` (`filters.project`, `filters.agent`), `GET /search` (`&project=`, `&agent=`), and MCP `search_memory`/`recall_memory` now narrow results by `provenance.project` / `provenance.agent` (exact match, AND-composed). Both accept a single value (`col = ?`) or a comma-list / array (`col IN (...)`, OR-semantics; empty list = no constraint). `agent` is a hard filter; role-scoped soft-boost (FEAT-219) is deferred.
+- **CLI `--project` / `--agent`** on `search`, `recall`, and `remember` (`astramem-local`). `remember` persists them via `metadata.project` / `metadata.agent`.
+- **MCP parity**: `search_memory`/`recall_memory` gained the missing `entity` filter alongside `project`/`agent`.
+- **Docs**: `docs/recall-filters.md` — end-to-end integration contract (wire shapes, CLI, precedence, tests). `/dashboard/api` route table updated.
+- **Tests**: `tests/search/project-filter.test.ts`, `tests/cli/project-filter.test.ts`, and `tests/smoke/smoke.test.ts` filter battery (GET + POST + CLI over a real daemon).
+
+### Fixed
+
+- The recall `project` filter was inert end-to-end because the client never sent it under `filters` (issue #56). Server always supported it; the companion `astramem-plugin` client fix nests the filter correctly.
+
+---
+
 ## [0.6.0] — 2026-07-02
 
 Waves 3 + 4 of the migration map: the cloud bridge and the moat. The full local→cloud loop now works end to end: pair → capture → distill → ship → cloud ledger.

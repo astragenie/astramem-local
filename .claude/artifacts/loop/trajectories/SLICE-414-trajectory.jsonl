@@ -1,0 +1,2 @@
+{"type":"slice_start","sliceId":"SLICE-414","timestamp":"2026-07-04T12:44:32.873Z","featureId":"FEAT-420","title":"SLICE-414: Upgrade-path e2e — old-schema datadir opens clean on current build","planPath":"C:\\work\\mega\\astramemory-local-worktrees\\feat-420\\.claude\\artifacts\\loop\\plans\\20260704T124430Z-plan-SLICE-414.md","requiresApprovalGate":true}
+{"type":"slice_complete","sliceId":"SLICE-414","timestamp":"2026-07-04T13:21:57.965Z","featureId":"FEAT-420","featureMovedTo":null,"validationSatisfied":true}

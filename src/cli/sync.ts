@@ -16,12 +16,46 @@
 import { openRuntimeDb } from './open-runtime-db.js';
 import { readSyncToken } from '../storage/keystore.js';
 import { drainPull, httpPullFetcher, getPullWatermark } from '../sync/puller.js';
+import { planBackfill, applyBackfill } from '../sync/backfill.js';
+
+function flagValue(args: string[], flag: string): string | undefined {
+  const i = args.indexOf(flag);
+  return i >= 0 ? args[i + 1] : undefined;
+}
 
 export async function syncCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const jsonMode = rest.includes('--json') || args.includes('--json');
 
   switch (sub) {
+    // Backfill + bulk-promote so existing memories can sync to the cloud.
+    // DESTRUCTIVE + IRREVERSIBLE (scope is upward-only) — dry-run unless --yes.
+    case 'backfill': {
+      const scope = flagValue(rest, '--scope') === 'org' ? 'org' : 'team';
+      const project = flagValue(rest, '--project') ?? null;
+      const apply = rest.includes('--yes');
+
+      const { db } = openRuntimeDb();
+      const plan = planBackfill(db, { scope, project });
+
+      console.log(`sync backfill — ${apply ? 'APPLY' : 'DRY RUN'}${project ? ` (project=${project})` : ''}`);
+      console.log(`  target scope        : ${scope}  (cloud: ${scope === 'org' ? 'shared' : 'project'})`);
+      console.log(`  personal → promote  : ${plan.personalToPromote}`);
+      console.log(`  already team/org    : ${plan.alreadyShareable}`);
+      console.log(`  create events to backfill (null payload, unsynced): ${plan.createEventsToBackfill}`);
+
+      if (!apply) {
+        console.log('\nDRY RUN — nothing changed. IRREVERSIBLE once applied (scope is upward-only).');
+        console.log('Re-run with --yes to promote + backfill and ship to the cloud. Stop the daemon first: `node dist/cli/index.js service stop`.');
+        break;
+      }
+
+      const result = applyBackfill(db, { scope, project });
+      console.log(`\n✓ promoted ${result.promoted} personal → ${scope}; backfilled ${result.backfilled} create-event payload(s).`);
+      console.log('Restart the daemon to ship the backlog: `node dist/cli/index.js reinstall`.');
+      break;
+    }
+
     case 'pull': {
       const { db, cfg } = openRuntimeDb();
       const token = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
@@ -55,6 +89,10 @@ Subcommands:
                         merge (dedup by event_id, ADR-011 conflict resolve),
                         advance + persist the watermark.
   watermark [--json]   Show the current persisted pull watermark.
+  backfill [--scope team|org] [--project X] [--yes]
+                        Bulk-promote personal memories + backfill create-event
+                        content so existing memories sync to the cloud. Dry-run
+                        unless --yes. IRREVERSIBLE (scope is upward-only).
 
 Push (local -> cloud) runs automatically inside the daemon when
 sync.enabled=true (see \`astramem-local pair\`) — it has no CLI subcommand.`);

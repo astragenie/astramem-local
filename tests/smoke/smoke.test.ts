@@ -61,6 +61,7 @@ const FIXTURE_PATH = join(
 const FIXTURE = JSON.parse(readFileSync(FIXTURE_PATH, 'utf8')) as {
   captured_at: string;
   project_id: string;
+  agent_type: string;
 };
 
 // Real (unmodified) OS dirs, resolved in THIS process (never touched by the
@@ -259,6 +260,28 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     expect(byProject.status).toBe(200);
     expect(((await byProject.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
 
+    // &project= WRONG value -> excluded (FEAT-423: proves the filter is not a
+    // no-op — the original issue #56 symptom was every value returning all).
+    const byWrongProject = await fetch(`${BASE_URL}/search?q=sqlite&project=nonexistent-project&limit=20`, { headers: AUTH });
+    expect(byWrongProject.status).toBe(200);
+    expect(((await byWrongProject.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(false);
+
+    // &project=a,b multi-value (FEAT-423) -> IN (...) OR-semantics: the real
+    // project listed alongside a decoy still matches.
+    const byProjectList = await fetch(`${BASE_URL}/search?q=sqlite&project=${encodeURIComponent(FIXTURE.project_id)},decoy-project&limit=20`, { headers: AUTH });
+    expect(byProjectList.status).toBe(200);
+    expect(((await byProjectList.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
+
+    // &agent= — canonical agent_type -> sessions.agent -> atom.agent (FEAT-423).
+    const byAgent = await fetch(`${BASE_URL}/search?q=sqlite&agent=${encodeURIComponent(FIXTURE.agent_type)}&limit=20`, { headers: AUTH });
+    expect(byAgent.status).toBe(200);
+    expect(((await byAgent.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
+
+    // &agent= WRONG value -> excluded (hard-filter proof).
+    const byWrongAgent = await fetch(`${BASE_URL}/search?q=sqlite&agent=nonexistent-agent&limit=20`, { headers: AUTH });
+    expect(byWrongAgent.status).toBe(200);
+    expect(((await byWrongAgent.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(false);
+
     // POST /recall
     const recall = await fetch(`${BASE_URL}/recall`, {
       method: 'POST', headers: AUTH,
@@ -266,6 +289,31 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     });
     expect(recall.status).toBe(200);
     expect(((await recall.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
+
+    // POST /recall with filters.project + filters.agent (FEAT-423) — the exact
+    // shape the astramem-plugin LocalProvider now sends. Correct pair -> hit.
+    const recallScoped = await fetch(`${BASE_URL}/recall`, {
+      method: 'POST', headers: AUTH,
+      body: JSON.stringify({ query: 'sqlite', k: 5, filters: { project: FIXTURE.project_id, agent: FIXTURE.agent_type } }),
+    });
+    expect(recallScoped.status).toBe(200);
+    expect(((await recallScoped.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
+
+    // POST /recall with a WRONG filters.project -> excluded (no-op guard).
+    const recallWrong = await fetch(`${BASE_URL}/recall`, {
+      method: 'POST', headers: AUTH,
+      body: JSON.stringify({ query: 'sqlite', k: 5, filters: { project: 'nonexistent-project' } }),
+    });
+    expect(recallWrong.status).toBe(200);
+    expect(((await recallWrong.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(false);
+
+    // POST /recall with a multi-value filters.agent array (FEAT-423) -> IN.
+    const recallAgentList = await fetch(`${BASE_URL}/recall`, {
+      method: 'POST', headers: AUTH,
+      body: JSON.stringify({ query: 'sqlite', k: 5, filters: { agent: [FIXTURE.agent_type, 'decoy-agent'] } }),
+    });
+    expect(recallAgentList.status).toBe(200);
+    expect(((await recallAgentList.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
 
     // POST /memory-tool { command: 'view', path: '/memories/decision.md' } — route smoke,
     // fixture-derived: the rendered markdown must name our memory id + text.
@@ -310,6 +358,21 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     const byEntity = runCli(['recall', 'reviewer', '--entity', 'Priya Nair']);
     expect(byEntity.status, byEntity.stderr).toBe(0);
     expect(byEntity.stdout).toContain('Priya Nair');
+
+    // --project / --agent fixture-derived (FEAT-423): the canonical envelope's
+    // project_id + agent_type flow onto every distilled atom.
+    const byProjectCli = runCli(['recall', 'sqlite', '--project', FIXTURE.project_id]);
+    expect(byProjectCli.status, byProjectCli.stderr).toBe(0);
+    expect(byProjectCli.stdout).toContain(idPrefix);
+
+    const byAgentCli = runCli(['recall', 'sqlite', '--agent', FIXTURE.agent_type]);
+    expect(byAgentCli.status, byAgentCli.stderr).toBe(0);
+    expect(byAgentCli.stdout).toContain(idPrefix);
+
+    // Wrong project -> exit 0 but no hit (prints "No relevant memories found.").
+    const byWrongProjectCli = runCli(['recall', 'sqlite', '--project', 'nonexistent-project']);
+    expect(byWrongProjectCli.status, byWrongProjectCli.stderr).toBe(0);
+    expect(byWrongProjectCli.stdout).not.toContain(idPrefix);
 
     const entitiesList = runCli(['entities', 'list', 'Priya']);
     expect(entitiesList.status, entitiesList.stderr).toBe(0);

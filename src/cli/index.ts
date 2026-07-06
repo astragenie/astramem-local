@@ -21,6 +21,7 @@ import { reinstallCommand } from './reinstall.js';
 import { reembedDimCommand } from './reembed-dim.js';
 import { entityBackfillCommand } from './entity-backfill.js';
 import { cliMemoryRestore } from './memory.js';
+import { mcpStdio } from './mcp-stdio.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -51,11 +52,14 @@ async function main() {
     }
 
     case 'search': {
-      // astramem-local search "query" [--type TYPE] [--repo REPO] [--since 7d] [--as-of DATE] [--entity NAME] [--limit N]
+      // astramem-local search "query" [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost] [--since 7d] [--as-of DATE] [--entity NAME] [--limit N]
       const query = rest.find(a => !a.startsWith('-')) ?? '';
       await cliSearch(query, {
         type: parseArg(rest, '--type'),
         repo: parseArg(rest, '--repo'),
+        project: parseArg(rest, '--project'),
+        agent: parseArg(rest, '--agent'),
+        agentMode: parseArg(rest, '--agent-mode'),
         since: parseArg(rest, '--since'),
         limit: parseArg(rest, '--limit'),
         asOf: parseArg(rest, '--as-of'),
@@ -65,12 +69,15 @@ async function main() {
     }
 
     case 'recall': {
-      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE] [--entity NAME]
+      // astramem-local recall "question" [--k N] [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost] [--as-of DATE] [--entity NAME]
       const question = rest.find(a => !a.startsWith('-')) ?? '';
       await cliRecall(question, {
         k: parseArg(rest, '--k'),
         type: parseArg(rest, '--type'),
         repo: parseArg(rest, '--repo'),
+        project: parseArg(rest, '--project'),
+        agent: parseArg(rest, '--agent'),
+        agentMode: parseArg(rest, '--agent-mode'),
         asOf: parseArg(rest, '--as-of'),
         entity: parseArg(rest, '--entity')
       });
@@ -94,7 +101,7 @@ async function main() {
     }
 
     case 'remember': {
-      // astramem-local remember "text" [--type TYPE] [--repo REPO]
+      // astramem-local remember "text" [--type TYPE] [--repo REPO] [--project P] [--agent A]
       const text = rest.find(a => !a.startsWith('-')) ?? '';
       if (!text) {
         console.error('remember: text argument is required');
@@ -102,7 +109,9 @@ async function main() {
       }
       await cliRemember(text, {
         type: parseArg(rest, '--type'),
-        repo: parseArg(rest, '--repo')
+        repo: parseArg(rest, '--repo'),
+        project: parseArg(rest, '--project'),
+        agent: parseArg(rest, '--agent')
       });
       break;
     }
@@ -228,6 +237,13 @@ async function main() {
       break;
     }
 
+    case 'mcp-stdio': {
+      // astramem-local mcp-stdio — MCP server over stdio transport (test-enabling
+      // infrastructure; the daemon's POST /mcp is the supported production surface)
+      await mcpStdio();
+      break;
+    }
+
     case '--version':
     case '-v':
       console.log(PKG_VERSION);
@@ -250,15 +266,25 @@ Commands:
                                          (stable shim + task) -> start -> verify
                                          health + version. Run after every upgrade.
   doctor [--json] [--port N]             Run health checks
-  search "query" [--type TYPE] [--repo REPO] [--since 7d|24h] [--as-of DATE]
-                 [--entity NAME] [--limit N]
-  recall "question" [--k N] [--type TYPE] [--repo REPO] [--as-of DATE] [--entity NAME]
+  search "query" [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost]
+                 [--since 7d|24h] [--as-of DATE] [--entity NAME] [--limit N]
+  recall "question" [--k N] [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost] [--as-of DATE] [--entity NAME]
                                          --as-of: ISO-8601 date-time — point-in-time
                                          (bitemporal) recall, FEAT-401
                                          --entity: filter to memories linked to
                                          this entity (FEAT-402, exact then
                                          substring match on the normalized name)
-  remember "text" [--type TYPE] [--repo REPO]
+                                         --project: filter to memories whose
+                                         provenance.project matches (FEAT-423,
+                                         exact match; omit = all projects)
+                                         --agent: filter to memories whose
+                                         provenance agent matches (FEAT-423,
+                                         exact match; omit = all agents)
+                                         --agent-mode: 'filter' (default) hard-excludes
+                                         non-matching agents; 'boost' (FEAT-426) keeps
+                                         them but ranks agent-matches higher (requires
+                                         search.eta > 0 in config)
+  remember "text" [--type TYPE] [--repo REPO] [--project P] [--agent A]
   entities list [query] [--limit N]      Autocomplete known entities (FEAT-402)
   entities show <id>                     List every memory linked to entity <id>
   budget [--reset]                       Show today + month LLM spend vs cap

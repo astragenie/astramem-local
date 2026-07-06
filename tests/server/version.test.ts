@@ -37,9 +37,9 @@ describe('GET /version', () => {
     expect(wire_versions_supported).toContain('v1.0');
   });
 
-  it('schema_version is 13', async () => {
+  it('schema_version is 14', async () => {
     const res = await app.inject({ method: 'GET', url: '/version' });
-    expect(res.json().schema_version).toBe(13);
+    expect(res.json().schema_version).toBe(14);
   });
 
   it('ts is a number', async () => {
@@ -70,7 +70,7 @@ describe('GET /health (wire metadata)', () => {
     expect(body.ok).toBe(true);
     expect(body.wire_versions_supported).toContain('v0.0');
     expect(body.wire_versions_supported).toContain('v1.0');
-    expect(body.schema_version).toBe(13);
+    expect(body.schema_version).toBe(14);
   });
 
   it('includes security.redaction — true by default', async () => {

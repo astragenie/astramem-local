@@ -370,7 +370,7 @@ describe('insertWithCreateEvent', () => {
     const result = repo.insertWithCreateEvent({
       type: 'fact', text: 'created via event path', normalized_text: 'created via event path',
       repo: 'r1', project: null, branch: null, agent: null, session_id: null,
-      hash: 'create-evt-1', source_hash: null,
+      hash: 'create-evt-1', source_hash: null, scope: 'team', importance: 0.7, confidence: 0.8,
     }, events);
 
     expect(result.created).toBe(true);
@@ -378,6 +378,12 @@ describe('insertWithCreateEvent', () => {
     expect(log).toHaveLength(1);
     expect(log[0]?.event_type).toBe('create');
     expect(log[0]?.content_hash).toBe('create-evt-1');
+    // create event carries content + materialization metadata so cloud
+    // replicas are non-empty/searchable (astramem-local#80 / memory#618)
+    expect(JSON.parse(log[0]?.payload_json ?? 'null')).toEqual({
+      text: 'created via event path', type: 'fact', scope: 'team',
+      importance: 0.7, confidence: 0.8, repo: 'r1',
+    });
   });
 
   it('dedup by hash — no duplicate row, no duplicate create event', () => {

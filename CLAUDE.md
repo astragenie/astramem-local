@@ -81,10 +81,27 @@ Local dev: `serve --port 7777` foreground, `ASTRA_MEMORY_DATADIR=:memory:` for t
 - Retrieval eval gate: ADR-005 harness (tests/eval/retrieval-eval.test.ts) runs in every vitest/CI pass — recall@10 ≥ 0.9, NDCG@10 ≥ 0.7 regression floors, deterministic fake embedder.
 - Usefulness → ranking: ADR-010 v1.x epsilon component live in src/search/fuse.ts (`epsilon: 0.1` default; Laplace-smoothed used/corrected per atom).
 
+## Config reload (FEAT-433, resolved)
+config.yaml is read exactly once per process at boot (`resolveRuntimeConfig` →
+`loadConfigFromDisk`) — there is no live reload, so hand-editing it while the
+service is running has no effect on the running process either way; the
+change is picked up on the next restart. `writeConfig` (`init`,
+`reembed-dim`, `pair`) now writes atomically via tmp-file + rename, so the
+DAEMON's own writes (including the schtasks keepalive racing a restart) can
+never be observed torn — that's the footgun this warning used to be about,
+and it's fully closed.
+Guarantee, precisely: a fully-empty boot-time read is retried then WARNs +
+falls back to defaults; a non-empty read that parses to zero keys (cut off
+before any complete line) also WARNs + falls back. A hand-edit's own save is
+NOT atomic, though — if a restart lands mid-save AFTER at least one complete
+key: value line was written, the loader applies that partial content with no
+warning (indistinguishable from an intentionally minimal config). Stop the
+service before hand-editing config.yaml to avoid that narrow window; don't
+rely on the loader alone to catch it.
+
 ## Do NOT
-- Do NOT edit `%APPDATA%\Astramem\config.yaml` by hand while service is running — reload racey. Stop service first.
 - Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
-- Do NOT change embed dim without also editing schema (`memories_vec FLOAT[N]`), config default, embed provider `dim`, contracts. Six-file coordinated change. Backlog: parameterize.
+- Do NOT hand-edit `memories_vec FLOAT[N]` in a migration file directly. Since FEAT-409 (merged) the dim is single-sourced from `DEFAULT_EMBED_DIM` (`src/contracts/embed.ts`) — config default, embed providers, `SqliteVecStore`, mock providers, the `__EMBED_DIM__` migration placeholder, and the boot-time preflight (`src/doctor/probes/embed-probe.ts`) all derive from it or from `getVecSchemaDim()`. Changing the *default* is a one-constant edit for fresh DBs; migrating an *existing* DB's live vectors to a new dim requires `astramem-local reembed-dim` (migration 011, `docs/embed-dim-migration.md`) — there is no ALTER for a sqlite-vec vec0 table. FEAT-436 (2026-07-05) re-audited this and confirmed it is resolved, not an open coordinated-change hazard.
 
 <!-- crew:start -->
 <!-- Crew framework memory. Run /crew:install after plugin updates that change framework memory. -->

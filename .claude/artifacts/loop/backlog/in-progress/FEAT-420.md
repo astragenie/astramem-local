@@ -5,10 +5,10 @@ priority: P1
 created: 2026-07-04
 updated: 2026-07-04
 depends_on: []
-slices: []
+slices: [SLICE-412]
 derived_from: test-inventory-2026-07-04
-pm_customer_impact: 0.80
-pm_effort_estimate: 0.60
+pm_customer_impact: 0.8
+pm_effort_estimate: 0.6
 pm_strategic_alignment: 0.65
 pm_technical_risk: 0.55
 pm_dependency_depth: 0.35
@@ -17,12 +17,10 @@ composite_score: 0.64
 composite_priority: P1
 autonomous_safe: false
 pm_demand_evidence: "CLAUDE.md documents git pull && bun run build && reinstall as THE supported upgrade path, yet storage/migrate.test.ts only builds schema from scratch — zero coverage of a real released-version datadir being opened by a newer build."
-pm_scope_notes: "Start with ONE frozen fixture at the most recent prior schema version (not a matrix of every historical version) to bound scope; document the regeneration procedure so future schema bumps add fixtures incrementally rather than this slice trying to backfill full history."
-pm_risks:
-  - "Fixture maintenance cost: frozen binary/db fixtures rot and need regeneration discipline every schema bump, or the test silently stops testing anything meaningful."
-  - "A real migration-order or backfill bug found here likely needs a production fix in the same slice — for a local-first product, an unrecoverable user datadir is the worst-case outcome this FEAT exists to catch."
-  - "Corrupt/half-migrated datadir handling (fail loud, not silent partial open) may not exist yet and could itself require new production code, not just a test."
+pm_scope_notes: Start with ONE frozen fixture at the most recent prior schema version (not a matrix of every historical version) to bound scope; document the regeneration procedure so future schema bumps add fixtures incrementally rather than this slice trying to backfill full history.
+pm_risks: ["\"Fixture maintenance cost: frozen binary/db fixtures rot and need regeneration discipline every schema bump", "or the test silently stops testing anything meaningful.\"", "\"A real migration-order or backfill bug found here likely needs a production fix in the same slice — for a local-first product", "an unrecoverable user datadir is the worst-case outcome this FEAT exists to catch.\"", "\"Corrupt/half-migrated datadir handling (fail loud", not silent partial open) may not exist yet and could itself require new production code, "not just a test.\""]
 reasoning: "Highest customer-impact FEAT in this batch: for a local-first product the user's SQLite file IS the product, and an untested upgrade path risks unrecoverable data loss. P1 despite higher effort (fixture creation + a maintenance procedure) because the downside of skipping it is catastrophic and asymmetric to the cost of testing it. autonomous_safe=false because a real migration bug found here needs a production fix, not just a red test left in place."
+slices_complete: [SLICE-414]
 ---
 # FEAT-420: Upgrade-path e2e — old-schema datadir opens clean on current build
 

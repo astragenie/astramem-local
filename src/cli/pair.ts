@@ -60,12 +60,32 @@ function parseArg(args: string[], flag: string): string | undefined {
   return i >= 0 ? args[i + 1] : undefined;
 }
 
+/** Prod cloud API host — root-relative, no /api prefix (astragenie/common
+ *  #167/#169). Used when no --url / ASTRA_SYNC_URL is given so `pair <code>`
+ *  just works against prod. Override for staging / self-hosted. */
+export const DEFAULT_CLOUD_URL = 'https://api.astramemory.com';
+
+export type UrlSource = 'flag' | 'env' | 'default';
+
+/** Resolve the redeem target: explicit --url wins over ASTRA_SYNC_URL wins
+ *  over the prod default (astramem-local#85). Pure — exported for tests. */
+export function resolveCloudUrl(flagUrl?: string, envUrl?: string): { cloudUrl: string; urlSource: UrlSource } {
+  const urlSource: UrlSource = flagUrl ? 'flag' : envUrl ? 'env' : 'default';
+  return { cloudUrl: flagUrl ?? envUrl ?? DEFAULT_CLOUD_URL, urlSource };
+}
+
+/** Sync base to persist: an explicit operator url wins over the cloud-echoed
+ *  apiUrl; with no override, trust the redeem response (astramem-local#85). */
+export function resolveSyncBase(urlSource: UrlSource, cloudUrl: string, responseApiUrl: string): string {
+  return urlSource === 'default' ? responseApiUrl : cloudUrl.replace(/\/$/, '');
+}
+
 export async function pairCommand(args: string[]): Promise<void> {
   const code = args.find(a => !a.startsWith('-'));
-  const cloudUrl = parseArg(args, '--url') ?? process.env.ASTRA_SYNC_URL;
+  const { cloudUrl, urlSource } = resolveCloudUrl(parseArg(args, '--url'), process.env.ASTRA_SYNC_URL);
 
-  if (!code || !cloudUrl) {
-    console.error('usage: astramem-local pair <claim-code> --url <cloud-url>   (or set ASTRA_SYNC_URL)');
+  if (!code) {
+    console.error('usage: astramem-local pair <claim-code> [--url <cloud-url>]   (default: ' + DEFAULT_CLOUD_URL + '; or set ASTRA_SYNC_URL)');
     process.exit(1);
   }
 
@@ -75,15 +95,25 @@ export async function pairCommand(args: string[]): Promise<void> {
     process.exit(1);
   }
 
-  const { apiUrl, tenantId, workspaceId, apiKey } = result.data;
+  const { apiUrl: responseApiUrl, tenantId, workspaceId, apiKey } = result.data;
+
+  // Sync-base precedence (astramem-local#85): an explicit operator --url /
+  // ASTRA_SYNC_URL wins over the cloud-echoed apiUrl (so pointing at a
+  // specific deployment is not silently overridden). With no override, trust
+  // the redeem response. Always log which base won and why.
+  const syncBase = resolveSyncBase(urlSource, cloudUrl, responseApiUrl);
+  const baseSource = urlSource === 'default' ? 'redeem response' : `--url (${urlSource})`;
 
   const stored = storeSyncToken(apiKey);
   const configDir = defaultConfigDir();
-  writeSyncSettings(configDir, { enabled: true, url: apiUrl, workspaceId, tenantId });
+  writeSyncSettings(configDir, { enabled: true, url: syncBase, workspaceId, tenantId });
 
   console.log('✓ paired with AstraMemory cloud');
   console.log(`  workspace : ${workspaceId}`);
-  console.log(`  api url   : ${apiUrl}`);
+  console.log(`  sync base : ${syncBase}  (source: ${baseSource})`);
+  if (urlSource !== 'default' && responseApiUrl.replace(/\/$/, '') !== syncBase) {
+    console.log(`  note      : cloud echoed a different apiUrl (${responseApiUrl}) — using your --url instead`);
+  }
   console.log(`  token     : ${stored.stored ? 'stored in OS credential store' : 'NOT stored — set ASTRA_SYNC_TOKEN yourself'}`);
   console.log('\nRestart the daemon to start the sync shipper (team/org-scoped memories only — personal never syncs).');
 }

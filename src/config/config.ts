@@ -35,8 +35,13 @@ export interface Config {
    * an unsignaled corpus), ζ entity-relevance bonus (FEAT-402 AC-6: DEFAULT
    * 0 = OFF; a candidate entity-linked to an entity mentioned in the query
    * text gets +ζ. At zeta=0 ranking is byte-identical to no-entity ranking —
-   * see the AC-6 snapshot test in tests/eval/retrieval-eval.test.ts). */
-  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number };
+   * see the AC-6 snapshot test in tests/eval/retrieval-eval.test.ts), η
+   * agent-match soft-boost (FEAT-426: DEFAULT 0 = OFF; when a caller opts a
+   * `SearchFilters.agent` value into `agentMode: 'boost'` instead of the
+   * default hard filter, a candidate whose provenance.agent matches gets
+   * +η instead of having non-matches excluded outright. At eta=0 ranking is
+   * byte-identical to pre-FEAT-426 behavior). */
+  search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number; eta: number };
   recallPack: {
     enabled: boolean;
     budgetTokens: number;
@@ -100,6 +105,21 @@ export interface Config {
      * in the trailing 7 days. */
     usefulnessFloor: number;
   };
+  /** Retention for `ingest_idempotency` rows (FEAT-432, HARD hardening pass).
+   * The table exists so a retried `POST /ingest/transcript` with the same
+   * `Idempotency-Key` + body replays a 200 instead of double-writing; nothing
+   * pruned it before this, so it grew forever on an always-on daemon. Runs on
+   * the same cleanup-job cadence as the `jobs` prune / archival pass
+   * (src/pipeline/handlers/cleanup.ts). Default 7 days is a large multiple of
+   * any realistic client retry window (seconds-to-minutes backoff, or an
+   * offline client replaying on next launch) — pruning a row a client still
+   * retries against turns a would-be idempotent replay into a fresh
+   * double-write, so this must stay comfortably above real retry windows. */
+  ingestIdempotency: {
+    /** Rows older than this (by created_at) are pruned. Must stay well above
+     * any realistic client retry window — see rationale above. */
+    retentionDays: number;
+  };
 }
 
 export function defaultConfig(): Config {
@@ -116,7 +136,7 @@ export function defaultConfig(): Config {
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
-    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0 },
+    search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0 },
     recallPack: {
       enabled: false,
       budgetTokens: 1500,
@@ -128,7 +148,8 @@ export function defaultConfig(): Config {
       encryption: { enabled: true }
     },
     tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
-    archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 }
+    archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
+    ingestIdempotency: { retentionDays: 7 }
   };
 }
 
