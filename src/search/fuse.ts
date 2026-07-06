@@ -43,6 +43,18 @@
  * weights config doesn't vary across hits in the same search), so it never
  * changes relative ranking order for a fixed weight config — it is a
  * monotone rescaling, applied uniformly to every candidate.
+ *
+ * FEAT-428 (fusion-model governance): the functions in this file are pure —
+ * they trust the `weights` they're given and never reach into config or the
+ * eval harness themselves. Governance (a component ceiling on every weight,
+ * and an eval-evidence gate that refuses to let a configured `eta > 0`
+ * activate without a passing ADR-005 harness run backing it) is enforced
+ * upstream of here, once, at config-load time — see `applyFusionGovernance`
+ * in src/config/config.ts and the evidence table in src/eval/eval-evidence.ts.
+ * A caller that hand-builds a weights object (as most of this file's own
+ * tests do) bypasses that gate deliberately, the same way it already
+ * bypasses `defaultConfig()` — governance is a config-loading concern, not a
+ * fusion-math invariant.
  */
 
 export interface FuseInput {
