@@ -92,6 +92,15 @@ export function configToYaml(cfg: Config): string {
     line(1, 'zeta', cfg.search.zeta),
     line(1, 'eta', cfg.search.eta),
     '',
+    // Cross-encoder rerank stage (issue #26, ADR-005) — OFF by default. See
+    // docs/runbooks/cross-encoder-rerank.md before flipping `enabled: true`.
+    line(0, 'crossEncoder'),
+    line(1, 'enabled', cfg.crossEncoder.enabled),
+    line(1, 'provider', cfg.crossEncoder.provider),
+    line(1, 'topK', cfg.crossEncoder.topK),
+    line(1, 'timeoutMs', cfg.crossEncoder.timeoutMs),
+    ...(cfg.crossEncoder.sidecarUrl ? [line(1, 'sidecarUrl', cfg.crossEncoder.sidecarUrl)] : []),
+    '',
     line(0, 'recallPack'),
     line(1, 'enabled', cfg.recallPack.enabled),
     line(1, 'budgetTokens', cfg.recallPack.budgetTokens),

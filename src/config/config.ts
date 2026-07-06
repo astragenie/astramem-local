@@ -42,6 +42,32 @@ export interface Config {
    * +η instead of having non-matches excluded outright. At eta=0 ranking is
    * byte-identical to pre-FEAT-426 behavior). */
   search: { alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number; eta: number };
+  /** Cross-encoder rerank stage (issue #26, ADR-005). OFF by default — ADR-005
+   * ruled "no reranker in v1 (CPU budget)" for local, so this is a
+   * config-flagged, opt-in seam (mirrors the cloud engine's stub-by-default
+   * `ICrossEncoderRanker`), not a default-on capability. When disabled the
+   * search pipeline is byte-identical to pre-rerank behavior — the stage is
+   * never invoked, not merely a no-op weight (see src/search/rerank.ts).
+   *
+   * `provider: 'mock'` is the only implemented provider (deterministic
+   * lexical-overlap scorer — fully testable, no network/model dependency);
+   * `'http'` is a documented TODO for a real cross-encoder sidecar (see
+   * docs/runbooks/cross-encoder-rerank.md) and throws at provider-build time
+   * until implemented.
+   *
+   * `topK` bounds how many post-fusion candidates are sent through the
+   * reranker (cost/latency control — mirrors cloud's TopK=50 default).
+   * `timeoutMs` is a hard cap (mirrors cloud's 300ms DEC-011/012 budget): a
+   * slow/failed rerank call falls back to the un-reranked fused order rather
+   * than blocking the request — degrades quality, never availability. */
+  crossEncoder: {
+    enabled: boolean;
+    provider: 'mock' | 'http';
+    topK: number;
+    timeoutMs: number;
+    /** Required when provider === 'http' (TODO, not yet implemented). */
+    sidecarUrl?: string;
+  };
   recallPack: {
     enabled: boolean;
     budgetTokens: number;
@@ -137,6 +163,7 @@ export function defaultConfig(): Config {
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
     search: { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0 },
+    crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
     recallPack: {
       enabled: false,
       budgetTokens: 1500,

@@ -50,3 +50,15 @@ learned later. This layer — not the store — is the answer to "long context k
   consumed by both repos' CI. This package is the company's technical constitution.
 - Sequencing: harness lands right after launch (migration map) — it gates every subsequent
   retrieval change on both sides.
+
+## Addendum (issue #26): local rerank seam, still OFF by default
+
+The "no reranker in v1 (CPU budget)" ruling above stands as the shipped default. Issue #26 (cloud
+cross-encoder rollout decision) prompted adding the equivalent **seam** to local — a
+config-flagged, off-by-default rerank stage (`src/search/rerank.ts`, `config.crossEncoder`) plus a
+deterministic mock provider so the stage, its eval-harness coverage, and its timeout/fallback
+behavior are all provable today. This does not reverse the ruling: `crossEncoder.enabled` defaults
+to `false` and the only implemented provider (`mock`) carries no real semantic signal, so nothing
+about local's default ranking behavior changed. See
+`docs/runbooks/cross-encoder-rerank.md` for the operator procedure and the eval-evidence bar a
+future real-provider rollout would need to clear before any default changes.

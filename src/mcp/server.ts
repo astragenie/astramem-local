@@ -36,6 +36,7 @@ import {
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { recordRecallServed, recordRecallUsed } from '../storage/usefulness.js';
 import { search, type SearchFilters } from '../search/search.js';
+import { resolveRerankOpts } from '../search/rerank.js';
 import { clampScores } from '../server/lib/score-contract.js';
 import { defaultConfig, type Config } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
@@ -63,6 +64,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
   const { db, embed } = deps;
   const cfg = deps.config ?? defaultConfig();
   const weights = cfg.search;
+  // issue #26 / ADR-005: cross-encoder rerank stage — undefined (search()
+  // takes zero extra branches) unless crossEncoder.enabled is set.
+  const rerank = resolveRerankOpts(cfg);
 
   const server = new McpServer(
     { name: 'astramemory-local', version: PKG_VERSION },
@@ -107,6 +111,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         db,
         embed,
         weights,
+        rerank,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
@@ -166,6 +171,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         db,
         embed,
         weights,
+        rerank,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
