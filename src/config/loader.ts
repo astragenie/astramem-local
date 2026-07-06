@@ -25,11 +25,19 @@
  * from an intentionally minimal config (e.g. a file containing only
  * `port: 7001`) and is applied without a warning, same as always. Stop the
  * service before hand-editing config.yaml to avoid that narrow window.
+ *
+ * FEAT-428: the exported `loadConfigFromDisk` is the single choke point for
+ * fusion-model governance on the real boot path (serve.ts →
+ * resolveRuntimeConfig → here). Every return value — defaults, a partial
+ * merge, or a full merge — is funneled through `applyFusionGovernance`
+ * (src/config/config.ts) before it reaches the caller, so a hand-edited
+ * config.yaml with an over-ceiling weight or an unvalidated `eta > 0` is
+ * clamped/reset exactly like an in-process `loadConfig()` override would be.
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type Config, defaultConfig } from './config.js';
+import { type Config, defaultConfig, applyFusionGovernance } from './config.js';
 
 type PlainObject = Record<string, unknown>;
 
@@ -131,9 +139,20 @@ function readConfigFileWithRetry(
 
 /**
  * defaultConfig() with config.yaml (if present and well-formed) merged over
- * it. Never throws — daemon boot must not be blocked by a bad config file.
+ * it, then run through `applyFusionGovernance` (FEAT-428) so every real
+ * boot read gets a governed `search` block — a single choke point, rather
+ * than relying on every future caller to remember to apply it. Never
+ * throws — daemon boot must not be blocked by a bad config file.
  */
 export function loadConfigFromDisk(configDir: string, reader?: (path: string) => string): Config {
+  const cfg = loadConfigFromDiskRaw(configDir, reader);
+  return { ...cfg, search: applyFusionGovernance(cfg.search) };
+}
+
+/** Un-governed disk load — every return path funnels through the exported
+ * `loadConfigFromDisk` wrapper above, which is the single place governance
+ * is applied. Do not call this directly outside that wrapper. */
+function loadConfigFromDiskRaw(configDir: string, reader?: (path: string) => string): Config {
   const base = defaultConfig();
   const path = join(configDir, 'config.yaml');
   let text: string;
