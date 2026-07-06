@@ -8,6 +8,16 @@ import { type Config, defaultConfig } from '../../config/config.js';
 import { redactIfEnabled, type RedactionEvent } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
 import { deriveRepoFromCwd } from '../../tag-hygiene/derive-repo.js';
+import { AtomSchema } from '../../distill/prompts/extract.js';
+
+// ---------------------------------------------------------------------------
+// FEAT-4a §4.2.3.4 / CHANGELOG v0.2.0 — response-field metadata (read-only,
+// no extraction logic here). `ALL_ATOM_TYPES` mirrors the 7-type registry
+// distillHandler's LLM extraction stage can emit (src/distill/prompts/
+// extract.ts AtomSchema) — used as the "queued" candidate set for the
+// transcript-kind path, where real extraction hasn't run yet (async job).
+// ---------------------------------------------------------------------------
+const ALL_ATOM_TYPES = AtomSchema.shape.type.options;
 
 // ---------------------------------------------------------------------------
 // Legacy envelope (v0.0) — original shape; discriminated by presence of `content`
@@ -380,11 +390,25 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
             'events ingested, distill-events job enqueued',
           );
 
+          // ADR-008 events kind: each event already carries its own atom
+          // `type` (no LLM extraction stage — distillEventsHandler maps
+          // events straight to atoms, see distill-events.ts stage 6+).
+          // Queued types are therefore the exact distinct types posted,
+          // in first-seen order, not the full registry.
+          const queuedExtractionTypesForEvents = [...new Set(events.map(ev => ev.type))];
+
           return reply.code(200).send({
             ok: true,
             summary_memory_id: transcriptId,
             session_id: data.session_id,
             idempotent: false,
+            extraction_job_id: jobId,
+            // Extraction runs asynchronously off the job queue — not yet run
+            // at response time, so these are stubbed per CHANGELOG v0.2.0.
+            extracted_count: 0,
+            failed_atom_count: 0,
+            scrub_hits: { client: data.client_scrub_hits, server: redactionEventsForEvents.length },
+            queued_extraction_types: queuedExtractionTypesForEvents,
           });
         }
 
@@ -549,6 +573,19 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
           summary_memory_id: transcriptId,
           session_id: data.session_id,
           idempotent: false,
+          extraction_job_id: jobId,
+          // Extraction runs asynchronously off the job queue (distillHandler,
+          // stages 4-5 LLM extraction) — not yet run at response time, so
+          // these are stubbed per CHANGELOG v0.2.0 ("full job queue in
+          // v0.3.0+"). Not fabricated: the real values genuinely don't
+          // exist yet when this response is built.
+          extracted_count: 0,
+          failed_atom_count: 0,
+          scrub_hits: { client: data.client_scrub_hits, server: redactionEvents.length },
+          // Full LLM extraction hasn't run yet, so which types will actually
+          // be produced is unknown — report the full candidate registry the
+          // distill pipeline can emit (see ALL_ATOM_TYPES above).
+          queued_extraction_types: ALL_ATOM_TYPES,
         });
       }
 
