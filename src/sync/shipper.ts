@@ -231,8 +231,11 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
     },
     body: JSON.stringify(envelope),
     // A hung cloud socket must not stall shipping rounds indefinitely — abort
-    // and let the caller's backoff handle it.
-    signal: AbortSignal.timeout(10_000),
+    // and let the caller's backoff handle it. Sized for content-carrying create
+    // batches: the cloud materializes + embeds each memory synchronously, so a
+    // full batch can take tens of seconds (a 10s cap starved large backlog
+    // drains — every round timed out). Backoff still bounds a truly hung socket.
+    signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
     throw new Error(`sync ship failed: HTTP ${res.status}`);
