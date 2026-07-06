@@ -404,7 +404,7 @@ describe('filters.type enum validation (#112 AC-1/AC-3)', () => {
     // assert against that real shape, not a fabricated `type` field.
     expect(body.details.fieldErrors.filters).toBeDefined();
     expect(body.details.fieldErrors.filters[0]).toMatch(/invalid (option|enum value)|expected one of/i);
-    expect(body.details.fieldErrors.filters[0]).toContain('bogus-value');
+    expect(body.details.fieldErrors.filters[0]).toContain('decision'); // zod lists the valid options (zod4 drops the received value; both echo the union)
   });
 
   it('GET /search rejects an out-of-union type value with 400 naming the field', async () => {
@@ -419,7 +419,7 @@ describe('filters.type enum validation (#112 AC-1/AC-3)', () => {
     // so flatten() reports the offending index ("0") as the field key, not `type`.
     expect(body.details.fieldErrors['0']).toBeDefined();
     expect(body.details.fieldErrors['0'][0]).toMatch(/invalid (option|enum value)|expected one of/i);
-    expect(body.details.fieldErrors['0'][0]).toContain('bogus-value');
+    expect(body.details.fieldErrors['0'][0]).toContain('decision'); // zod lists the valid options (zod4 drops the received value; both echo the union)
   });
 
   it('POST /remember still rejects an invalid type the same way (no regression from the shared enum)', async () => {
