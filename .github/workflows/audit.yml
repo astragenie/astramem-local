@@ -6,6 +6,12 @@ on:
   pull_request:
     branches: [main]
 
+# devops#69: 5 self-hosted runners share ONE VM — a re-push must cancel the
+# superseded run instead of doubling fleet load.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 

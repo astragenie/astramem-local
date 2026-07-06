@@ -44,6 +44,13 @@ export interface DaemonHandle {
 }
 
 export interface SpawnDaemonOpts {
+  /**
+   * Port to request. Pass `0` (recommended — see `PORT` below) to let the OS
+   * assign an ephemeral port; `spawnDaemon` then parses the REAL bound port
+   * back out of the daemon's boot log line and returns it via
+   * `DaemonHandle.port`/`baseUrl`. A nonzero value is honored as-is (no
+   * ephemeral resolution) for callers with a genuine reason to pin a port.
+   */
   port: number;
   token: string;
   /** Extra/overriding env vars merged over process.env (e.g. ASTRA_MEMORY_DATADIR,
@@ -52,8 +59,64 @@ export interface SpawnDaemonOpts {
   cwd?: string;
 }
 
-/** Spawn `node dist/cli/index.js serve --port <port>` with the given env. */
-export function spawnDaemon(opts: SpawnDaemonOpts): DaemonHandle {
+/** devops#69: the daemon's serve.ts prints this exact line once it has
+ *  bound its listening socket — `<port>` is the REAL bound port, which is
+ *  the OS-assigned ephemeral port when spawned with `--port 0`. This is the
+ *  only place in the codebase that parses that line; keep in sync with
+ *  src/cli/serve.ts's `console.log(\`astramem-local serving on ...\`)` call. */
+const SERVING_LINE_RE = /astramem-local serving on [^\s:]+:(\d+)/;
+
+/**
+ * Poll the daemon's accumulated stdout for the boot line that announces its
+ * REAL bound port (see SERVING_LINE_RE), throwing a diagnostic error if the
+ * process exits first or the line never appears within `timeoutMs`.
+ *
+ * Exported so callers that spawn the daemon themselves instead of going
+ * through `spawnDaemon` (e.g. tests/integration/ingest-e2e.test.ts, which
+ * manages its own ChildProcess lifecycle) can resolve the real ephemeral
+ * port the same way (devops#69).
+ */
+export async function waitForBoundPort(
+  getStdout: () => string,
+  getStderr: () => string,
+  getExitInfo: () => { code: number | null; signal: NodeJS.Signals | null },
+  timeoutMs = 15_000,
+): Promise<number> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const match = SERVING_LINE_RE.exec(getStdout());
+    if (match) return Number(match[1]);
+    const { code, signal } = getExitInfo();
+    if (code !== null || signal !== null) {
+      throw new Error(
+        `daemon exited before printing its bound port (code=${code} signal=${signal})\n` +
+        `stdout:\n${getStdout()}\nstderr:\n${getStderr()}`,
+      );
+    }
+    await sleep(50);
+  }
+  throw new Error(
+    `timed out after ${timeoutMs}ms waiting for the daemon to print its bound port\n` +
+    `stdout:\n${getStdout()}\nstderr:\n${getStderr()}`,
+  );
+}
+
+/**
+ * Spawn `node dist/cli/index.js serve --port <port>` with the given env.
+ *
+ * devops#69: on the shared self-hosted runner VM, a FIXED port collides with
+ * the host's persistent TEI (text-embeddings-inference) container pinned to
+ * :8080, and — more insidiously — with a NEIGHBOR CI job's own spawned
+ * daemon on a different, unrelated auth token: a test client that connects
+ * to the wrong process on a reused fixed port gets a whole-daemon 401 from a
+ * token it never set, while public /health still passes (the fingerprint
+ * that misdiagnosed as an auth bug). Requesting port 0 asks the OS for an
+ * unused ephemeral port, which is unique per process — no two concurrent
+ * jobs (or TEI) can ever collide on it. This function is async because the
+ * REAL bound port is only known once the daemon has printed it after
+ * `app.listen()` resolves.
+ */
+export async function spawnDaemon(opts: SpawnDaemonOpts): Promise<DaemonHandle> {
   let stdout = '';
   let stderr = '';
   let exitCode: number | null = null;
@@ -77,11 +140,15 @@ export function spawnDaemon(opts: SpawnDaemonOpts): DaemonHandle {
   proc.stderr?.on('data', (chunk: Buffer) => { stderr += chunk.toString(); });
   proc.on('exit', (code, signal) => { exitCode = code; exitSignal = signal; });
 
+  const actualPort = opts.port === 0
+    ? await waitForBoundPort(() => stdout, () => stderr, () => ({ code: exitCode, signal: exitSignal }))
+    : opts.port;
+
   return {
     proc,
-    port: opts.port,
+    port: actualPort,
     token: opts.token,
-    baseUrl: `http://127.0.0.1:${opts.port}`,
+    baseUrl: `http://127.0.0.1:${actualPort}`,
     stdout: () => stdout,
     stderr: () => stderr,
     exitInfo: () => ({ code: exitCode, signal: exitSignal }),

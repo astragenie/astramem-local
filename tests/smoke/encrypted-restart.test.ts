@@ -27,6 +27,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { readLockInfo } from '../../src/service/instance-lock.js';
 import { defaultConfigDir, defaultDataDir } from '../../src/config/datadir.js';
@@ -38,9 +39,19 @@ import {
 
 // ── Config ───────────────────────────────────────────────────────────────────
 
-const PORT = 19010;
-const TOKEN = 'smoke-enc-tok-1';
-const BASE_URL = `http://127.0.0.1:${PORT}`;
+// devops#69: PORT/BASE_URL start as placeholders and are overwritten with the
+// REAL OS-assigned ephemeral port once step 1 spawns the daemon with
+// `port: 0` — a fixed port collides with the shared runner VM's persistent
+// TEI container on :8080 and with neighbor CI jobs' own spawned daemons.
+// `let` (not `const`) because later steps' closures read the updated value —
+// describe.sequential guarantees step 1 has already run by then.
+let PORT = 0;
+let BASE_URL = '';
+// Unique per test run (not just per file) so an accidental cross-connect
+// across concurrent jobs on the shared runner fails closed (401) instead of
+// silently succeeding against a neighbor's daemon that happens to share a
+// hardcoded literal token.
+const TOKEN = `smoke-enc-tok-${randomUUID()}`;
 const AUTH = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' } as const;
 
 const FIXTURE_PATH = join(
@@ -112,7 +123,9 @@ describe.sequential('Encrypted-DB restart smoke suite (FEAT-415)', () => {
   });
 
   it('step 1: daemon spawns with encryption enabled and GET /health reports "ok"', async () => {
-    daemon = spawnDaemon({ port: PORT, token: TOKEN, env: isolated.env });
+    daemon = await spawnDaemon({ port: 0, token: TOKEN, env: isolated.env });
+    PORT = daemon.port;
+    BASE_URL = daemon.baseUrl;
     daemon.proc.stderr?.on('data', (chunk: Buffer) => {
       process.stderr.write(`[enc-smoke-daemon] ${chunk.toString()}`);
     });
@@ -176,7 +189,9 @@ describe.sequential('Encrypted-DB restart smoke suite (FEAT-415)', () => {
     await killDaemon(daemon, 'SIGKILL', 5_000);
     expect(daemon.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
 
-    daemon = spawnDaemon({ port: PORT, token: TOKEN, env: isolated.env });
+    daemon = await spawnDaemon({ port: 0, token: TOKEN, env: isolated.env });
+    PORT = daemon.port;
+    BASE_URL = daemon.baseUrl;
     daemon.proc.stderr?.on('data', (chunk: Buffer) => {
       process.stderr.write(`[enc-smoke-daemon-respawn] ${chunk.toString()}`);
     });

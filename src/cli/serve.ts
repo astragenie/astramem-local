@@ -246,8 +246,16 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // the /health + /version auth boundary from the SAME cfg.network.host, so
   // a non-local bind here always implies Bearer-gated health/version there.
   const host = cfg.network.host;
-  await app.listen({ port, host });
-  console.log(`astramem-local serving on ${host}:${port}`);
+  // devops#69: `port` may be 0 (caller asked for an OS-assigned ephemeral
+  // port — see tests/smoke/helpers/daemon.ts spawnDaemon, which parses the
+  // REAL bound port back out of the log line below to avoid fixed-port
+  // collisions with the shared runner VM's persistent TEI container on
+  // :8080 and with neighbor CI jobs' own daemons). Fastify's listen()
+  // resolves with the actual bound address, so read the real port from
+  // there rather than echoing back the (possibly 0) request.
+  const address = await app.listen({ port, host });
+  const actualPort = Number(new URL(address).port);
+  console.log(`astramem-local serving on ${host}:${actualPort}`);
 
   // Degraded-start (D3): probe the embed provider in the background with
   // backoff. /health reports status starting -> ok | degraded meanwhile.

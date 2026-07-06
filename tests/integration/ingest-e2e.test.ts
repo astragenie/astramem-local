@@ -8,12 +8,14 @@
  * The test suite will fail immediately with a clear message if the dist is
  * missing or the daemon does not come up within 5 s.
  *
- * Port: 19100 — distinct from:
- *   - 17777 (cli/serve.test.ts)
- *   - 17778 (the old stub in this file before Stage 5)
- *   - 18950 (e2e/plugin-flow.test.ts)
+ * Port: devops#69 — OS-assigned ephemeral (`--port 0`), resolved from the
+ * daemon's boot log after spawn via waitForBoundPort(). A fixed port (this
+ * file previously pinned 19100) collides with the shared self-hosted runner
+ * VM's persistent TEI container on :8080 and with neighbor CI jobs' own
+ * spawned daemons — the fingerprint being a whole-daemon 401 from a token
+ * this test never set, while public /health still passes.
  *
- * Auth: ASTRA_MEMORY_TOKEN=e2etok
+ * Auth: ASTRA_MEMORY_TOKEN=<unique per run> (see TOKEN below)
  * DB:   :memory: (via ASTRA_MEMORY_DATADIR=:memory:)
  * Providers: mock (ASTRA_MEMORY_MOCK_PROVIDERS=1)
  */
@@ -21,16 +23,23 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
+import { waitForBoundPort } from '../smoke/helpers/daemon.js';
 
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
 
-const PORT = 19100;
-const TOKEN = 'e2etok';
-const BASE_URL = `http://127.0.0.1:${PORT}`;
+// devops#69: placeholders, overwritten with the REAL bound port once
+// beforeAll spawns the daemon with `--port 0` and resolves it below.
+let PORT = 0;
+let BASE_URL = '';
+// Unique per test run so an accidental cross-connect across concurrent jobs
+// on the shared runner fails closed (401) instead of silently succeeding
+// against a neighbor's daemon that happens to share a hardcoded literal token.
+const TOKEN = `e2etok-${randomUUID()}`;
 
 /** Path to the built CLI entry point, relative to the worktree root. */
 const CLI_PATH = join(
@@ -102,7 +111,7 @@ beforeAll(async () => {
 
   daemon = spawn(
     process.execPath,
-    ['dist/cli/index.js', 'serve', '--port', String(PORT)],
+    ['dist/cli/index.js', 'serve', '--port', '0'],
     {
       env: {
         ...process.env as Record<string, string>,
@@ -125,6 +134,15 @@ beforeAll(async () => {
   daemon.on('error', err => {
     daemonStderr += `\n[spawn error] ${(err as Error).message}`;
   });
+
+  // devops#69: resolve the REAL OS-assigned port from the boot log before
+  // polling /health — `--port 0` means BASE_URL isn't known until now.
+  PORT = await waitForBoundPort(
+    () => daemonStdout,
+    () => daemonStderr,
+    () => ({ code: daemonExitCode, signal: daemonExitSignal }),
+  );
+  BASE_URL = `http://127.0.0.1:${PORT}`;
 
   await waitForHealth(20_000);
 }, 25_000);
