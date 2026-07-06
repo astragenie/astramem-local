@@ -32,12 +32,12 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout daemon (this repo)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           path: daemon
 
       - name: Checkout plugin (public, no token needed)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           repository: astragenie/astramem-plugin
           path: plugin

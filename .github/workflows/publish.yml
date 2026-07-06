@@ -27,7 +27,7 @@ jobs:
     name: npm publish
     runs-on: [self-hosted, astragenie, aws]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Verify tag matches package.json (same gate as version-tag-parity)
         run: |

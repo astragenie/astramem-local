@@ -13,7 +13,7 @@ jobs:
   audit:
     runs-on: [self-hosted, astragenie, aws]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       # Bun baked into runner image (devops#64) — no setup-bun, no ETXTBSY race.
       - run: bun install --frozen-lockfile --ignore-scripts
       - name: Fail on high/critical vulnerabilities
