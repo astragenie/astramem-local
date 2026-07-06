@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.8.1] — 2026-07-06
+
+### Added
+- **`pair` defaults `--url` to `https://api.astramemory.com`** (#87, closes #85) — `pair <code>` now works with no flag/env against the prod root-relative host (astragenie/common #167/#169). Precedence `--url` > `ASTRA_SYNC_URL` > default; an explicit url now wins over the cloud-echoed `apiUrl` (was silently overridden), and `pair` logs the effective sync base + its source.
+
+---
+
 ## [0.8.0] — 2026-07-06
 
 ### Fixed
