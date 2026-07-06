@@ -227,7 +227,7 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
-      authorization: `Bearer ${opts.token}`,
+      authorization: `ApiKey ${opts.token}`,
     },
     body: JSON.stringify(envelope),
     // A hung cloud socket must not stall shipping rounds indefinitely — abort

@@ -170,10 +170,10 @@ describe('shipOnce — ack cursor semantics', () => {
   });
 
   function fakeFetch(response: { status?: number; body?: unknown } | 'network-error') {
-    const calls: Array<{ url: string; body: unknown }> = [];
+    const calls: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
     const impl = (async (url: unknown, init?: RequestInit) => {
       if (response === 'network-error') throw new Error('ECONNREFUSED');
-      calls.push({ url: String(url), body: JSON.parse(String(init?.body)) });
+      calls.push({ url: String(url), body: JSON.parse(String(init?.body)), headers: (init?.headers ?? {}) as Record<string, string> });
       return {
         ok: (response.status ?? 200) < 400,
         status: response.status ?? 200,
@@ -195,6 +195,12 @@ describe('shipOnce — ack cursor semantics', () => {
     expect(calls[0]!.url).toBe('https://cloud.example/sync/events');
     expect(listUnsynced(db, 100)).toHaveLength(0);
     expect(lastAckedSeq(db)).toBe(3);
+  });
+
+  it('sends the device token under the ApiKey scheme (SaaS AuthMiddleware rejects Bearer as JWT-only)', async () => {
+    const { impl, calls } = fakeFetch({ body: { acked_seq: 3 } });
+    await shipOnce(baseOpts(impl));
+    expect(calls[0]!.headers.authorization).toBe('ApiKey tok');
   });
 
   it('partial ack (mid-batch) leaves the tail unsynced for the next round', async () => {
