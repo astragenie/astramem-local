@@ -15,8 +15,8 @@
  * where the task kept launching whichever build happened to run
  * `service install`.
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
 export interface ShimPointer {
   nodeBin: string;
@@ -61,17 +61,18 @@ const { readFileSync } = require('node:fs');
 const { spawnSync } = require('node:child_process');
 const { join } = require('node:path');
 
+const ts = () => new Date().toISOString();
 const pointerPath = join(__dirname, 'current.json');
 let ptr;
 try {
   ptr = JSON.parse(readFileSync(pointerPath, 'utf8'));
 } catch (err) {
-  console.error('[astramemd-shim] cannot read ' + pointerPath + ': ' + err.message);
-  console.error('[astramemd-shim] run: astramem-local reinstall');
+  console.error(ts() + ' [astramemd-shim] cannot read ' + pointerPath + ': ' + err.message);
+  console.error(ts() + ' [astramemd-shim] run: astramem-local reinstall');
   process.exit(1);
 }
 if (!ptr.nodeBin || !ptr.entryJs) {
-  console.error('[astramemd-shim] current.json missing nodeBin/entryJs — run: astramem-local reinstall');
+  console.error(ts() + ' [astramemd-shim] current.json missing nodeBin/entryJs — run: astramem-local reinstall');
   process.exit(1);
 }
 const env = { ...process.env };
@@ -82,8 +83,35 @@ process.exit(res.status === null ? 1 : res.status);
 `;
 
 /**
+ * Atomically write current.json (tmp-file + rename — same pattern as
+ * config/writer.ts's writeConfig / instance-lock.ts's lock steal). A reader
+ * (the launcher on daemon start, or a `reinstall` repoint/rollback) must
+ * never observe a torn/partial pointer file: rename() is atomic on the same
+ * filesystem, so a concurrent read always sees either the complete old
+ * pointer or the complete new one (FEAT-438 SLICE-417 AC-4).
+ */
+export function writePointer(pointer: ShimPointer, pointerPath: string): void {
+  const dir = dirname(pointerPath);
+  mkdirSync(dir, { recursive: true });
+  const tmpPath = join(dir, `.current.json.${process.pid}.${Date.now()}.tmp`);
+  try {
+    writeFileSync(tmpPath, JSON.stringify(pointer, null, 2) + '\n', 'utf8');
+    renameSync(tmpPath, pointerPath);
+  } catch (err) {
+    // Covers both failure points: writeFileSync (disk full/perms, tmp may
+    // not exist yet) and renameSync (tmp exists, rename itself failed).
+    // Either way, don't leave a stray .tmp file behind in the bin dir.
+    try { unlinkSync(tmpPath); } catch { /* best-effort cleanup; tmp may not exist */ }
+    throw err;
+  }
+}
+
+/**
  * Write (or overwrite) the stable shim trio. Idempotent — we own the whole
- * file contents, so a plain overwrite is safe and self-healing.
+ * file contents, so a plain overwrite is safe and self-healing. The pointer
+ * (current.json) is written atomically via writePointer(); the cmd/launcher
+ * are small, static, and rewritten in full on every call so a torn write
+ * there just gets corrected on the next reinstall.
  */
 export function writeShim(pointer: ShimPointer, paths: ShimPaths = shimPaths()): ShimPaths {
   mkdirSync(paths.binDir, { recursive: true });
@@ -93,6 +121,6 @@ export function writeShim(pointer: ShimPointer, paths: ShimPaths = shimPaths()):
   const cmd = `@echo off\r\n"${pointer.nodeBin}" "${paths.launcherPath}"\r\n`;
   writeFileSync(paths.cmdPath, cmd, 'utf8');
   writeFileSync(paths.launcherPath, LAUNCHER_SOURCE, 'utf8');
-  writeFileSync(paths.pointerPath, JSON.stringify(pointer, null, 2) + '\n', 'utf8');
+  writePointer(pointer, paths.pointerPath);
   return paths;
 }

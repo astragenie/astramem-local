@@ -40,9 +40,28 @@ export interface InstallFlowOutcome {
   taskExecPath: string;
 }
 
-export async function installServiceFlow(port: number): Promise<InstallFlowOutcome> {
+export interface InstallFlowOptions {
+  /**
+   * Override the resolved CLI entry (e.g. a materialized release dir's
+   * `dist/cli/index.js`, FEAT-438) instead of the checkout's own `dist/`.
+   * `nodeBin` is left as resolveBuild()'s value — only the entry path
+   * changes. Used by `reinstall` to pin the served daemon (and its backup
+   * timer) to an immutable release; `init` / `service install` omit this and
+   * keep pointing at the live checkout as before.
+   */
+  entryJsOverride?: string;
+}
+
+export async function installServiceFlow(port: number, opts: InstallFlowOptions = {}): Promise<InstallFlowOutcome> {
   const adapter = getServiceAdapter();
-  const build = resolveBuild();
+  const resolved = resolveBuild();
+  const build: ResolvedBuild = opts.entryJsOverride
+    ? {
+        nodeBin: resolved.nodeBin,
+        entryJs: opts.entryJsOverride,
+        rawExecPath: `"${resolved.nodeBin}" "${opts.entryJsOverride}"`,
+      }
+    : resolved;
 
   if (!existsSync(build.entryJs)) {
     throw new Error(
