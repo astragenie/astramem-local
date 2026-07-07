@@ -83,6 +83,20 @@ export const AgentFilterSchema = getFilterSchema('agent') as z.ZodOptional<
  */
 export const EntityFilterSchema = getFilterSchema('entity') as z.ZodOptional<z.ZodString>;
 
-/** Convenience bundle for surfaces that accept all three filters as a group — built from the registry. */
+/**
+ * `filters.repo` — exact match on `memories.repo`. Scalar string only (no
+ * OR-list semantics, unlike project/agent). Absent -> all repos (FEAT-429
+ * SLICE-A).
+ */
+export const RepoFilterSchema = getFilterSchema('repo') as z.ZodOptional<z.ZodString>;
+
+/**
+ * `filters.since` — epoch-ms lower bound on `memories.created_at`
+ * (inclusive, `created_at >= since`). Absent -> no lower bound (FEAT-429
+ * SLICE-B).
+ */
+export const SinceFilterSchema = getFilterSchema('since') as z.ZodOptional<z.ZodNumber>;
+
+/** Convenience bundle for surfaces that accept all registry filters as a group — built from the registry. */
 export const RecallFilterFieldsSchema = buildFilterFieldsSchema(RECALL_FILTER_REGISTRY);
 export type RecallFilterFields = z.infer<typeof RecallFilterFieldsSchema>;

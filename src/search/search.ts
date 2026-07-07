@@ -21,10 +21,11 @@ import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
 import { applyRerank, type RerankOpts } from './rerank.js';
-// FEAT-429: the project/agent hard-column WHERE-clause builder now derives
-// from the shared filter-descriptor registry instead of a hand-rolled
-// `addEqOrIn` closure — see src/contracts/filter-registry.ts.
-import { applySqlColumnFilters } from '../contracts/filter-registry.js';
+// FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
+// since numeric-range builder now derive from the shared filter-descriptor
+// registry instead of hand-rolled closures — see
+// src/contracts/filter-registry.ts.
+import { applySqlColumnFilters, applySqlRangeFilters } from '../contracts/filter-registry.js';
 
 export interface SearchFilters {
   type?: string[];
@@ -383,28 +384,27 @@ export async function search(
     filterClauses.push(`type IN (${ph})`);
     filterParams.push(...filters.type);
   }
-  if (filters.repo !== undefined) {
-    filterClauses.push('repo = ?');
-    filterParams.push(filters.repo);
-  }
-  // FEAT-429: project/agent hard-column filters (single value -> `col = ?`,
-  // list -> `col IN (...)`, OR-semantics like `type[]`, empty list -> no
-  // constraint) are now derived from the registry's `applySqlColumnFilters`
-  // instead of a hand-rolled `addEqOrIn` closure. `agent` is only handed in
-  // when `agentMode === 'filter'` (FEAT-426: the default, byte-identical to
-  // pre-FEAT-426 behavior) — in 'boost' mode it is omitted here entirely so
-  // no SQL filter is applied; non-matches stay in the result set and are
-  // instead re-ranked via the η agentBonus computed above.
+  // FEAT-429: repo/project/agent hard-column filters (single value ->
+  // `col = ?`, list -> `col IN (...)`, OR-semantics like `type[]`, empty
+  // list -> no constraint) and the since numeric lower-bound filter
+  // (`created_at >= ?`) are now derived from the registry's
+  // `applySqlColumnFilters`/`applySqlRangeFilters` instead of hand-rolled
+  // clauses. `agent` is only handed in when `agentMode === 'filter'`
+  // (FEAT-426: the default, byte-identical to pre-FEAT-426 behavior) — in
+  // 'boost' mode it is omitted here entirely so no SQL filter is applied;
+  // non-matches stay in the result set and are instead re-ranked via the η
+  // agentBonus computed above.
   const registrySqlInput: Record<string, unknown> = {};
+  if (filters.repo !== undefined) registrySqlInput.repo = filters.repo;
   if (filters.project !== undefined) registrySqlInput.project = filters.project;
   if (filters.agent !== undefined && agentMode === 'filter') registrySqlInput.agent = filters.agent;
+  if (filters.since !== undefined) registrySqlInput.since = filters.since;
   const { clauses: registryClauses, params: registryParams } = applySqlColumnFilters(registrySqlInput);
   filterClauses.push(...registryClauses);
   filterParams.push(...registryParams);
-  if (filters.since !== undefined) {
-    filterClauses.push('created_at >= ?');
-    filterParams.push(filters.since);
-  }
+  const { clauses: rangeClauses, params: rangeParams } = applySqlRangeFilters(registrySqlInput);
+  filterClauses.push(...rangeClauses);
+  filterParams.push(...rangeParams);
 
   // Fetch full memory records in one query using IN clause
   const fusedIds = fused.map(h => h.id);

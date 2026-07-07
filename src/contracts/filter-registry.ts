@@ -33,12 +33,19 @@
 import { z } from 'zod';
 
 /** How a filter's wire value is shaped. */
-export type FilterValueShape = 'stringOrList' | 'scalarString';
+export type FilterValueShape = 'stringOrList' | 'scalarString' | 'scalarNumber';
 
 /** How a filter composes into the post-fusion SQL WHERE clause. */
 export type FilterApply =
   /** Plain `col = ?` (single value) or `col IN (...)` (list, OR-semantics). */
   | { kind: 'sqlColumn'; column: string }
+  /**
+   * Numeric comparison column (FEAT-429 SLICE-B) — `col >= ?`. Narrowly
+   * typed to the one operator `since` actually needs rather than a generic
+   * operator-string field; a second distinct comparison shape showing up
+   * later is the trigger to reconsider this, not a reason to generalize now.
+   */
+  | { kind: 'sqlRangeColumn'; column: string; op: 'gte' }
   /** Resolved through custom logic (e.g. entity -> EntityRepo candidate-set
    *  intersection) rather than a plain SQL column — the registry still
    *  enumerates it for schema/parsing derivation, but SQL-builder helpers
@@ -115,6 +122,52 @@ function scalarCustomFilter(opts: { name: string; description: string }): Filter
 }
 
 /**
+ * Descriptor factory for a scalar-string `col = ?` filter (repo, ...) —
+ * structurally identical to `stringOrListColumnFilter` except the wire value
+ * is always a single string, never a CSV-parsed list (FEAT-429 SLICE-A: repo
+ * has no OR-list semantics today). Presence check mirrors project/agent's
+ * truthy check (an explicit `''` is "absent"), matching repo's pre-registry
+ * hand-rolled `if (params.repo) ...` / `if (rawFilters?.repo) ...` gates.
+ */
+function scalarColumnFilter(opts: { name: string; column: string; description: string }): FilterDescriptor {
+  return {
+    name: opts.name,
+    valueShape: 'scalarString',
+    schema: z.string().optional(),
+    apply: { kind: 'sqlColumn', column: opts.column },
+    compose: 'AND',
+    description: opts.description,
+    presentInStructured: (value) => Boolean(value),
+    parseQueryValue: (raw) => raw,
+  };
+}
+
+/**
+ * Descriptor factory for a numeric `col >= ?` lower-bound filter (since, ...)
+ * (FEAT-429 SLICE-B). Presence check uses `!== undefined` (matches since's
+ * pre-registry `if (rawFilters?.since !== undefined) ...` structured gate —
+ * `0` is a legitimate epoch-ms lower bound, not "absent"). `parseQueryValue`
+ * mirrors the pre-registry `Number(raw)` parse exactly, including silently
+ * dropping an unparseable value (`NaN` -> `undefined`, no 400) rather than
+ * throwing — byte-identical to the old GET /search `if (!isNaN(sinceNum))` gate.
+ */
+function numericRangeColumnFilter(opts: { name: string; column: string; description: string }): FilterDescriptor {
+  return {
+    name: opts.name,
+    valueShape: 'scalarNumber',
+    schema: z.number().optional(),
+    apply: { kind: 'sqlRangeColumn', column: opts.column, op: 'gte' },
+    compose: 'AND',
+    description: opts.description,
+    presentInStructured: (value) => value !== undefined,
+    parseQueryValue: (raw) => {
+      const n = Number(raw);
+      return Number.isNaN(n) ? undefined : n;
+    },
+  };
+}
+
+/**
  * The production recall-filter registry (FEAT-429). Migrated from FEAT-423/
  * FEAT-424's hand-rolled project/agent/entity wiring — see
  * src/contracts/recall-filters.ts for the canonical-contract mirror these
@@ -135,6 +188,16 @@ export const RECALL_FILTER_REGISTRY: readonly FilterDescriptor[] = [
     name: 'entity',
     description:
       'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.',
+  }),
+  scalarColumnFilter({
+    name: 'repo',
+    column: 'repo',
+    description: 'Filter by repo name — scalar exact match (no OR-list)',
+  }),
+  numericRangeColumnFilter({
+    name: 'since',
+    column: 'created_at',
+    description: 'Filter to memories created at or after this epoch-ms timestamp (lower bound, inclusive)',
   }),
 ] as const;
 
@@ -231,6 +294,32 @@ export function applySqlColumnFilters(
       clauses.push(`${d.apply.column} = ?`);
       params.push(value as string | number);
     }
+  }
+  return { clauses, params };
+}
+
+/**
+ * Derive the post-fusion SQL WHERE-clause fragments + bound params for every
+ * `'sqlRangeColumn'`-kind descriptor present in `filters` (FEAT-429 SLICE-B)
+ * — parallel to `applySqlColumnFilters` above but for numeric comparison
+ * filters (e.g. `since` -> `created_at >= ?`) rather than equality/IN-list
+ * filters. A separate function rather than widening `applySqlColumnFilters`
+ * itself, since the equal/IN-only callers of that function should not need
+ * to reason about a comparison operator.
+ */
+export function applySqlRangeFilters(
+  filters: Record<string, unknown>,
+  descriptors: readonly FilterDescriptor[] = RECALL_FILTER_REGISTRY
+): { clauses: string[]; params: (string | number)[] } {
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  for (const d of descriptors) {
+    if (d.apply.kind !== 'sqlRangeColumn') continue;
+    const value = filters[d.name];
+    if (value === undefined) continue;
+    const sqlOp = d.apply.op === 'gte' ? '>=' : d.apply.op;
+    clauses.push(`${d.apply.column} ${sqlOp} ?`);
+    params.push(value as string | number);
   }
   return { clauses, params };
 }
