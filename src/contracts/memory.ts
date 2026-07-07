@@ -6,20 +6,19 @@
  *  shared with `@astragenie/astramem-contracts` (`contracts/schemas/
  *  atom.v1.schema.json` `type` enum) — astramem-local's original 7
  *  (`decision`..`event`) plus 3 cloud-only types (`preference`,
- *  `task_result`, `summary`). This widening is additive/type-level only:
- *  astramem-local does not yet WRITE the 3 cloud types anywhere (its own
- *  extraction registry in `src/distill/prompts/extract.ts` AtomSchema and
- *  the mirrored request-body enums in `src/server/routes/ingest.ts` /
- *  `src/pipeline/handlers/distill-events.ts` are deliberately left at 7 —
- *  those are local's writer-surface contracts, out of scope for #111/#112,
- *  not this shared type registry). The `memories.type` SQLite CHECK
- *  constraint (migrations/003-expand-memory-types.sql) ALSO still only
- *  allows the 7 local values — a real INSERT of a `preference`/
- *  `task_result`/`summary` row (e.g. a future sync-pull materializing a
- *  cloud-authored atom, see src/sync/puller.ts) will throw at the DB layer
- *  until a follow-up migration widens that CHECK. Storing the 3 new types
- *  locally is intentionally NOT implemented by this change — only the
- *  shared vocabulary is. */
+ *  `task_result`, `summary`).
+ *
+ *  The `memories.type` SQLite CHECK constraint was widened to match
+ *  (migrations/017-widen-memory-types.sql) — a real INSERT of `preference`/
+ *  `task_result`/`summary` no longer throws at the DB layer. The MCP
+ *  `remember` tool (src/mcp/server.ts) and the REST `POST /remember` route
+ *  (src/server/routes/search.ts) both write against this widened union as
+ *  part of the canonical cross-repo save-contract unification.
+ *  The distill pipeline's own extraction registry (`src/distill/prompts/
+ *  extract.ts` AtomSchema) and `src/pipeline/handlers/distill-events.ts`
+ *  are deliberately left at 7 — those are separate writer-surface
+ *  contracts (the LLM extractor itself never emits the 3 cloud types),
+ *  out of scope for this change. */
 export const MEMORY_TYPES = [
   'decision',
   'fact',

@@ -53,6 +53,10 @@ import {
   ProposalNotFoundError,
   ProposalAlreadyResolvedError,
 } from '../consolidate/proposals.js';
+// Canonical cross-repo save-contract unification: `remember`'s type enum and
+// the REST POST /remember route (src/server/routes/search.ts) both derive
+// from this single source of truth instead of a hand-copied list.
+import { MEMORY_TYPES } from '../contracts/memory.js';
 
 export interface McpServerDeps {
   db: DB;
@@ -238,16 +242,52 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
   );
 
   // ---- remember ------------------------------------------------------------
+  // Canonical cross-repo save-contract (thin wrapper): a superset shared
+  // with cloud `memory_save`. Local honors every field its storage backs
+  // (content/type/scope/tags*/importance/confidence/evidence/project/agent/
+  // session) and NEVER silently drops what it can't store — decisionJson/
+  // reviewJson (cloud-only) and tags (no `memories.tags` column/table
+  // exists locally today) are accepted, the memory is still saved, and each
+  // supplied unsupported field is named back in the response's
+  // `unsupported_fields` array.
   server.registerTool(
     'remember',
     {
       description:
-        'Directly insert a memory into the store, bypassing the distillation pipeline.',
+        'Directly insert a memory into the store, bypassing the distillation pipeline. ' +
+        'Accepts the canonical cross-repo save contract shared with cloud memory_save; ' +
+        'fields astramem-local cannot store are echoed back in `unsupported_fields`, never silently dropped.',
       inputSchema: z.object({
-        text: z.string().min(1).describe('Memory text to store'),
-        type: z
-          .enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event'])
-          .describe('Memory type'),
+        // Canonical field name (shared with cloud memory_save). `text` is a
+        // deprecated one-release alias, mapped onto `content` when absent.
+        content: z.string().min(1).optional().describe('Memory text to store (canonical name)'),
+        text: z.string().min(1).optional().describe('DEPRECATED alias for `content` — prefer `content`.'),
+        type: z.enum(MEMORY_TYPES).describe('Memory type — canonical 10-value union (ADR D4)'),
+        /** ADR-009 scope. remember() is a born-at-scope path: any value
+         *  (including team/org) is inserted directly, NOT routed through
+         *  promote_memory's upward-only transition. */
+        scope: z
+          .enum(['private', 'team', 'org'])
+          .optional()
+          .describe("ADR-009 scope. Defaults to 'private'. team/org insert directly — no promote step required."),
+        /** Canonical cloud field (tags: string[]) with no local storage
+         *  backing today. Accepted but not persisted — see `unsupported_fields`. */
+        tags: z
+          .array(z.string())
+          .optional()
+          .describe('Free-form tags (cloud canonical field). Not stored locally today — echoed in `unsupported_fields` if supplied.'),
+        importance: z.number().min(0).max(1).optional(),
+        confidence: z.number().min(0).max(1).optional(),
+        evidence: z.string().min(1).optional().describe('Free-text excerpt supporting the atom (ADR-001 provenance).'),
+        // Flat canonical aliases — take priority over the deprecated nested
+        // `metadata` object below when both are supplied.
+        projectId: z.string().optional().describe('Flat canonical alias for metadata.project'),
+        agentId: z.string().optional().describe('Flat canonical alias for metadata.agent'),
+        sessionId: z.string().optional().describe('Flat canonical alias for the memory session_id'),
+        /** Cloud-only attachments. Never stored locally — the memory is
+         *  still saved, and each supplied field is echoed in `unsupported_fields`. */
+        decisionJson: z.unknown().optional().describe('Cloud-only: decision record payload. Not stored locally.'),
+        reviewJson: z.unknown().optional().describe('Cloud-only: review record payload. Not stored locally.'),
         metadata: z
           .object({
             repo: z.string().optional(),
@@ -258,15 +298,20 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             confidence: z.number().min(0).max(1).optional(),
           })
           .optional()
-          .describe('Optional metadata fields'),
+          .describe('DEPRECATED nested metadata form — prefer the flat top-level fields.'),
+      }).refine((v) => (v.content ?? v.text) !== undefined, {
+        message: 'content (or deprecated `text` alias) is required',
+        path: ['content'],
       }),
     },
     async (args) => {
       const { type, metadata } = args;
+      // refine() above guarantees at least one of content/text is present.
+      const rawContent = args.content ?? args.text!;
 
       // Stage-0 secret redaction (SEC-3/5, OQ-2) — same choke point as
       // POST /remember, applied before persistence AND before the embed call.
-      const { text, events: redactionEvents } = redactIfEnabled(args.text, cfg);
+      const { text, events: redactionEvents } = redactIfEnabled(rawContent, cfg);
       recordRedactionEvents(db, redactionEvents, null);
 
       const hash = contentHash(text);
@@ -278,17 +323,21 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         text,
         normalized_text: text.toLowerCase(),
         repo: metadata?.repo ?? null,
-        project: metadata?.project ?? null,
+        // Flat canonical alias wins over the deprecated nested form when both are present.
+        project: args.projectId ?? metadata?.project ?? null,
         branch: metadata?.branch ?? null,
-        agent: metadata?.agent ?? null,
-        session_id: null,
+        agent: args.agentId ?? metadata?.agent ?? null,
+        session_id: args.sessionId ?? null,
         hash,
         source_hash: null,
-        importance: metadata?.importance ?? 0.5,
-        confidence: metadata?.confidence ?? 0.5,
+        importance: args.importance ?? metadata?.importance ?? 0.5,
+        confidence: args.confidence ?? metadata?.confidence ?? 0.5,
         embedding_provider: embed.name,
         embedding_model: embed.model,
         embedding_dim: embed.dim,
+        evidence: args.evidence ?? null,
+        // Born-at-scope insert — MemoryRepo defaults undefined to 'private'.
+        scope: args.scope,
       }, events);
 
       // Embed + upsert into vec store (non-fatal on failure)
@@ -308,11 +357,24 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         );
       }
 
+      // Canonical-save-contract fields with no local storage backing: never
+      // silently dropped — the memory above is still saved, and every
+      // supplied field of this kind is named here so the caller knows it
+      // wasn't persisted.
+      const unsupportedFields: string[] = [];
+      if (args.tags !== undefined) unsupportedFields.push('tags');
+      if (args.decisionJson !== undefined) unsupportedFields.push('decisionJson');
+      if (args.reviewJson !== undefined) unsupportedFields.push('reviewJson');
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify({ id, ok: true }),
+            text: JSON.stringify(
+              unsupportedFields.length > 0
+                ? { id, ok: true, unsupported_fields: unsupportedFields }
+                : { id, ok: true }
+            ),
           },
         ],
       };
