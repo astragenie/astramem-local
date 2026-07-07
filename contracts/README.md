@@ -326,6 +326,73 @@ The cloud (.NET) repo's CI needs:
    window rule above — that failure is the signal a contract bump needs a
    coordinated two-repo rollout, not a silent skip.
 
+## MCP tool-name manifest (U5)
+
+`manifests/mcp-tools.v1.json` is the canonical, cross-repo source of truth
+for the MCP `verb_noun` tool-name vocabulary — astragenie/memory#671 (U5)
+needs both MCP servers (this daemon + the cloud .NET server) to expose the
+identical tool-name surface so `astramem-plugin`'s providers can call one
+contract regardless of which backend answers.
+
+Shape:
+
+```json
+{
+  "version": "1",
+  "tools": [
+    { "name": "search_memory", "owner": "local", "description": "...", "status": "stable" }
+  ]
+}
+```
+
+Fields:
+
+- `name` — the wire-level MCP tool name (`verb_noun`).
+- `owner` — `local` | `cloud` | `both`, mirroring the "ships from" convention
+  in the [memory atom `type` registry](#memory-atom-type-registry-u4-adr-d4)
+  above. astramem-local's own SLICE-A only lists tools it registers today
+  (`owner: "local"`) — cloud-owned rows are added once the cloud-side
+  manifest draft exists, so this file never drifts ahead of what's actually
+  registered on either side.
+- `description` — short, human-facing summary. **Not** required to
+  byte-match the MCP server's own `description` string passed to
+  `registerTool()` — this manifest pins names + ownership, not full
+  per-tool schema parity (see "Scope" below).
+- `status` — `stable` | `planned` | `deprecated`, reserved for a future
+  dual-name migration window (mirrors the wire-version dual-read convention
+  above).
+
+**Scope**: this manifest intentionally does NOT carry a JSON-Schema-per-tool
+input contract. Each server's own `inputSchema` (zod locally, its .NET
+equivalent in cloud) remains the authoritative validator for tool arguments —
+widening this manifest to full input/output schemas was considered and
+rejected as out of scope for #671, whose actual ask is name parity (client
+rename-risk), not input-shape parity (already covered per-tool elsewhere).
+
+**Naming decision (SLICE-A)**: all 15 tools astramem-local registers today
+(`src/mcp/server.ts`) are already `verb_noun` or verb-only where the noun is
+implicit/global, with two names that read noun-noun (`session_digest`,
+`memory_history`) and one bare verb (`remember`). SLICE-A ships these
+**as-is** — `remember` stays as-is (a `remember_memory`/`create_memory`
+rename was considered and rejected: `remember` is the daemon's most-used
+tool and a rename carries real client-config blast radius for no vocabulary
+gain). Whether `session_digest`/`memory_history` need a `get_`-prefixed
+rename to strictly match `verb_noun` (mirroring `get_health`'s shape) is
+deferred to a coordinated SLICE-B, gated on the cross-repo #671 naming call
+— this manifest is additive-only and renames nothing.
+
+Parity is enforced locally by
+`tests/contracts/mcp-tool-manifest-parity.test.ts`, which builds the real
+`McpServer` (mock deps, no live Ollama/network) and asserts its registered
+tool names equal this manifest's `owner: "local"`/`"both"` entries exactly
+— same "readdirSync/JSON.parse at test time, no `src/` import" shape as
+[`tests/contracts/wire-version-map-parity.test.ts`](../tests/contracts/wire-version-map-parity.test.ts),
+required because `tsconfig.json` scopes `rootDir` to `src/` (TS6059 blocks
+`src/` from importing `contracts/`, but nothing stops `tests/` reading it).
+Cloud's half (asserting its own registered names against this same file)
+and the plugin's half (asserting provider tool-call names against it) are
+out of this repo's build.
+
 ## Versioning: package semver vs. wire_version (two separate axes)
 
 These are deliberately decoupled and must not be conflated:

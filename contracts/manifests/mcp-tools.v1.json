@@ -1,0 +1,95 @@
+{
+  "version": "1",
+  "tools": [
+    {
+      "name": "search_memory",
+      "owner": "local",
+      "description": "Hybrid FTS + vector search over stored memories. Returns ranked hits.",
+      "status": "stable"
+    },
+    {
+      "name": "recall_memory",
+      "owner": "local",
+      "description": "Top-K semantic recall over stored memories. Alias of search_memory with k default 5.",
+      "status": "stable"
+    },
+    {
+      "name": "remember",
+      "owner": "local",
+      "description": "Directly insert a memory into the store, bypassing the distillation pipeline.",
+      "status": "stable"
+    },
+    {
+      "name": "get_health",
+      "owner": "local",
+      "description": "Returns daemon health status and version.",
+      "status": "stable"
+    },
+    {
+      "name": "why_memory",
+      "owner": "local",
+      "description": "Provenance receipt for a memory: evidence excerpt, source session, transcript ref.",
+      "status": "stable"
+    },
+    {
+      "name": "session_digest",
+      "owner": "local",
+      "description": "What I learned this session: per-type counts + texts of memories formed. Defaults to the latest session.",
+      "status": "stable"
+    },
+    {
+      "name": "invalidate_memory",
+      "owner": "local",
+      "description": "Mark a memory invalid (soft delete). Appends an invalidate event to the memory_events log.",
+      "status": "stable"
+    },
+    {
+      "name": "supersede_memory",
+      "owner": "local",
+      "description": "Replace an old memory with a new one: invalidates old_id and links it to new_id via the memory_events log.",
+      "status": "stable"
+    },
+    {
+      "name": "promote_memory",
+      "owner": "local",
+      "description": "Promote a memory's scope upward — private -> team -> org (ADR-009). Downward/same-scope requests error.",
+      "status": "stable"
+    },
+    {
+      "name": "restore_memory",
+      "owner": "local",
+      "description": "Un-archive a memory previously archived by the W4.4 TTL policy or a manual archive event.",
+      "status": "stable"
+    },
+    {
+      "name": "memory_history",
+      "owner": "local",
+      "description": "Full memory_events log for a memory, in append order — the supersession/invalidation/promotion chain.",
+      "status": "stable"
+    },
+    {
+      "name": "mark_memory_used",
+      "owner": "local",
+      "description": "ADR-010 explicit recall-used signal: tell astramemory a previously-served memory actually mattered in this turn.",
+      "status": "stable"
+    },
+    {
+      "name": "erase_memory",
+      "owner": "local",
+      "description": "Erasure v1 (ADR-006): permanently hard-delete a memory, leaving only a tombstone event.",
+      "status": "stable"
+    },
+    {
+      "name": "list_consolidation_proposals",
+      "owner": "local",
+      "description": "Pending (or resolved) consolidation proposals from the stage-9 pass (ADR-004): borderline near-duplicate pairs awaiting an explicit merge/keep decision.",
+      "status": "stable"
+    },
+    {
+      "name": "resolve_consolidation_proposal",
+      "owner": "local",
+      "description": "Accept or reject a pending consolidation proposal.",
+      "status": "stable"
+    }
+  ]
+}

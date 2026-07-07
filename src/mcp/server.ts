@@ -1,6 +1,11 @@
 /**
  * MCP server instance for astramemory-local.
  *
+ * Canonical tool-name SoT: contracts/manifests/mcp-tools.v1.json (U5,
+ * astragenie/memory#671) — cross-repo cross-check lives in
+ * tests/contracts/mcp-tool-manifest-parity.test.ts. The list below is a
+ * human-readable summary kept in sync by that test, not a second SoT.
+ *
  * Exposes 15 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
