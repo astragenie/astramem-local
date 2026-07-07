@@ -201,6 +201,221 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   });
 
   // -------------------------------------------------------------------------
+  // remember — canonical unified save contract
+  // -------------------------------------------------------------------------
+
+  it('tools/call remember accepts every canonical type — no CHECK rejection for preference/task_result/summary', async () => {
+    for (const type of ['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event', 'preference', 'task_result', 'summary']) {
+      const { payload, isError } = await toolCall('remember', {
+        content: `canonical-type test for ${type}`,
+        type,
+      });
+      expect(isError, `type "${type}" should not error`).toBe(false);
+      const { id, ok } = payload as { id: string; ok: boolean };
+      expect(ok).toBe(true);
+      const row = db.prepare('SELECT type FROM memories WHERE id = ?').get(id) as { type: string };
+      expect(row.type).toBe(type);
+    }
+  });
+
+  it('tools/call remember with scope: "org" persists the row at scope=org directly (no promote step)', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'born-at-org-scope memory',
+      type: 'fact',
+      scope: 'org',
+    });
+    expect(isError).toBe(false);
+    const { id } = payload as { id: string };
+    const row = db.prepare('SELECT scope FROM memories WHERE id = ?').get(id) as { scope: string };
+    expect(row.scope).toBe('org');
+  });
+
+  it('tools/call remember with scope: "team" persists the row at scope=team directly', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'born-at-team-scope memory',
+      type: 'fact',
+      scope: 'team',
+    });
+    expect(isError).toBe(false);
+    const { id } = payload as { id: string };
+    const row = db.prepare('SELECT scope FROM memories WHERE id = ?').get(id) as { scope: string };
+    expect(row.scope).toBe('team');
+  });
+
+  it('tools/call remember with no scope defaults to private, same as before', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'default scope memory',
+      type: 'fact',
+    });
+    expect(isError).toBe(false);
+    const { id } = payload as { id: string };
+    const row = db.prepare('SELECT scope FROM memories WHERE id = ?').get(id) as { scope: string };
+    expect(row.scope).toBe('private');
+  });
+
+  it('tools/call remember with decisionJson + reviewJson saves the memory AND echoes both in unsupported_fields — no decision/review data reaches storage', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'memory with cloud-only attachments',
+      type: 'decision',
+      decisionJson: { rationale: 'because', outcome: 'accepted' },
+      reviewJson: { reviewer: 'someone', verdict: 'approved' },
+    });
+    expect(isError).toBe(false);
+    const { id, ok, unsupported_fields } = payload as { id: string; ok: boolean; unsupported_fields: string[] };
+    expect(ok).toBe(true);
+    expect(unsupported_fields.sort()).toEqual(['decisionJson', 'reviewJson']);
+
+    // The memory itself was persisted...
+    const row = db.prepare('SELECT id, type FROM memories WHERE id = ?').get(id) as { id: string; type: string };
+    expect(row.id).toBe(id);
+    expect(row.type).toBe('decision');
+    // ...and no decision/review-shaped data reached the memories table —
+    // the memories schema has no such columns at all.
+    const cols = db.prepare('PRAGMA table_info(memories)').all() as { name: string }[];
+    const colNames = cols.map(c => c.name);
+    expect(colNames).not.toContain('decision_json');
+    expect(colNames).not.toContain('review_json');
+  });
+
+  it('tools/call remember with only decisionJson supplied echoes just that one field in unsupported_fields', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'memory with only a decision attachment',
+      type: 'decision',
+      decisionJson: { rationale: 'solo decision field' },
+    });
+    expect(isError).toBe(false);
+    const { unsupported_fields } = payload as { unsupported_fields: string[] };
+    expect(unsupported_fields).toEqual(['decisionJson']);
+  });
+
+  it('tools/call remember with tags supplied saves the memory and echoes tags in unsupported_fields (no local tags storage column)', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'memory with tags',
+      type: 'fact',
+      tags: ['alpha', 'beta'],
+    });
+    expect(isError).toBe(false);
+    const { id, ok, unsupported_fields } = payload as { id: string; ok: boolean; unsupported_fields: string[] };
+    expect(ok).toBe(true);
+    expect(unsupported_fields).toEqual(['tags']);
+    const row = db.prepare('SELECT id FROM memories WHERE id = ?').get(id);
+    expect(row).toBeDefined();
+  });
+
+  it('tools/call remember with no unsupported fields omits unsupported_fields entirely', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'plain memory, nothing unsupported',
+      type: 'fact',
+    });
+    expect(isError).toBe(false);
+    expect(payload).toEqual({ id: (payload as { id: string }).id, ok: true });
+    expect(payload).not.toHaveProperty('unsupported_fields');
+  });
+
+  it('tools/call remember: deprecated `text` alias still works when `content` is absent', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      text: 'legacy text-field call',
+      type: 'fact',
+    });
+    expect(isError).toBe(false);
+    const { id, ok } = payload as { id: string; ok: boolean };
+    expect(ok).toBe(true);
+    const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(id) as { text: string };
+    expect(row.text).toBe('legacy text-field call');
+  });
+
+  it('tools/call remember: canonical `content` field works', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'canonical content-field call',
+      type: 'fact',
+    });
+    expect(isError).toBe(false);
+    const { id, ok } = payload as { id: string; ok: boolean };
+    expect(ok).toBe(true);
+    const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(id) as { text: string };
+    expect(row.text).toBe('canonical content-field call');
+  });
+
+  it('tools/call remember: neither `content` nor `text` supplied is a validation error', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'remember', arguments: { type: 'fact' } },
+      id: 60,
+    }) as { error?: unknown; result?: { isError?: boolean } };
+    // MCP SDK schema validation failures surface either as a JSON-RPC error
+    // or a tool isError, depending on SDK version — either is an acceptable
+    // "rejected" outcome here.
+    const rejected = resp.error !== undefined || resp.result?.isError === true;
+    expect(rejected).toBe(true);
+  });
+
+  it('tools/call remember: deprecated nested `metadata` back-compat still works (repo/project/branch/agent/importance/confidence)', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'nested metadata back-compat call',
+      type: 'fact',
+      metadata: {
+        repo: 'astramem-local',
+        project: 'proj-legacy',
+        branch: 'main',
+        agent: 'claude-code',
+        importance: 0.9,
+        confidence: 0.8,
+      },
+    });
+    expect(isError).toBe(false);
+    const { id } = payload as { id: string };
+    const row = db.prepare(
+      'SELECT repo, project, branch, agent, importance, confidence FROM memories WHERE id = ?'
+    ).get(id) as { repo: string; project: string; branch: string; agent: string; importance: number; confidence: number };
+    expect(row).toEqual({
+      repo: 'astramem-local',
+      project: 'proj-legacy',
+      branch: 'main',
+      agent: 'claude-code',
+      importance: 0.9,
+      confidence: 0.8,
+    });
+  });
+
+  it('tools/call remember: flat projectId/agentId/sessionId win over nested metadata when both are present', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-flat-1', 'astramem-local', null, 'main', 'claude-code', 1000);
+
+    const { payload, isError } = await toolCall('remember', {
+      content: 'flat aliases win over nested metadata',
+      type: 'fact',
+      projectId: 'proj-flat',
+      agentId: 'agent-flat',
+      sessionId: 's-flat-1',
+      metadata: { project: 'proj-nested', agent: 'agent-nested' },
+    });
+    expect(isError).toBe(false);
+    const { id } = payload as { id: string };
+    const row = db.prepare(
+      'SELECT project, agent, session_id FROM memories WHERE id = ?'
+    ).get(id) as { project: string; agent: string; session_id: string };
+    expect(row).toEqual({ project: 'proj-flat', agent: 'agent-flat', session_id: 's-flat-1' });
+  });
+
+  it('tools/call remember: flat importance/confidence/evidence are honored', async () => {
+    const { payload, isError } = await toolCall('remember', {
+      content: 'flat importance/confidence/evidence call',
+      type: 'fact',
+      importance: 0.95,
+      confidence: 0.1,
+      evidence: 'excerpt supporting this atom',
+    });
+    expect(isError).toBe(false);
+    const { id } = payload as { id: string };
+    const row = db.prepare(
+      'SELECT importance, confidence, evidence FROM memories WHERE id = ?'
+    ).get(id) as { importance: number; confidence: number; evidence: string };
+    expect(row).toEqual({ importance: 0.95, confidence: 0.1, evidence: 'excerpt supporting this atom' });
+  });
+
+  // -------------------------------------------------------------------------
   // search_memory
   // -------------------------------------------------------------------------
 

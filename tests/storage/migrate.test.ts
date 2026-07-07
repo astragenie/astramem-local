@@ -28,11 +28,12 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    // 16 migration files (001-016: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
+    // 17 migration files (001-017: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
     // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities, 013 = FEAT-404 archival,
     // 014 = FEAT-434 sync_ship_state, 015 = astramem-local#84 canonical content_hash,
-    // 016 = astramem-local#110 scope personal->private rename).
-    expect(versions.n).toBe(16);
+    // 016 = astramem-local#110 scope personal->private rename, 017 = U4-local #111/#112
+    // widen memories.type CHECK 7->10).
+    expect(versions.n).toBe(17);
   });
 
   it('enables WAL mode', () => {
@@ -87,7 +88,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(16);
+    expect(versions.n).toBe(17);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -163,7 +164,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(16);
+    expect(versions.v).toBe(17);
   });
 
   it('allows inserting type note after migration', () => {
@@ -513,6 +514,123 @@ describe("migration 016-scope-private-rename (astramem-local#110)", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 017 — widen memories.type CHECK 7 -> 10 (U4-local #111/#112, ADR D4)
+// ---------------------------------------------------------------------------
+
+describe('migration 017-widen-memory-types', () => {
+  it('applies cleanly on a fresh DB', () => {
+    const db = openDb(':memory:');
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(versions.v).toBe(17);
+  });
+
+  it('accepts all 3 new canonical types (preference, task_result, summary)', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    for (const t of ['preference', 'task_result', 'summary']) {
+      expect(() =>
+        db.prepare(
+          `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 0.5, 0.5, ?, 1, 1)`
+        ).run(`m-${t}`, t, `a ${t}`, `a ${t}`, `hash-${t}`)
+      ).not.toThrow();
+    }
+  });
+
+  it('still rejects a type outside the widened 10-value union', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() =>
+      db.prepare(
+        `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+         VALUES ('m-bad-017', 'garbage', 'bad', 'bad', 0.5, 0.5, 'hash-bad-017', 1, 1)`
+      ).run()
+    ).toThrow();
+  });
+
+  it('preserves existing rows (all columns grown since 003) across the rewrite — row count, values, and the archival index survive', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    // Seed a row exercising every column the table has grown since 003
+    // (004 evidence; 006 valid_from/valid_to/superseded_by/derived_from/scope;
+    // 013 archived/archived_at) — mark 017 not-yet-applied so re-running
+    // migrate() re-executes the rewrite against this fully-populated shape,
+    // mirroring migrations 015/016's own "delete the schema_version row" idiom.
+    db.prepare(`
+      INSERT INTO memories
+        (id, type, text, normalized_text, repo, project, branch, agent, session_id,
+         importance, confidence, hash, embedding_provider, embedding_model, embedding_dim,
+         created_at, updated_at, source_hash, evidence, valid_from, valid_to,
+         superseded_by, derived_from, scope, archived, archived_at)
+      VALUES
+        ('full-row-1', 'fact', 'full row text', 'full row text', 'r1', 'p1', 'b1', 'a1', NULL,
+         0.7, 0.6, 'hash-full-row-1', 'ollama', 'mxbai', 1024,
+         100, 200, 'src-hash-1', 'evidence excerpt', 100, NULL,
+         NULL, '["dep-1","dep-2"]', 'team', 1, 300)
+    `).run();
+
+    db.prepare('DELETE FROM schema_version WHERE version = 17').run();
+    migrate(db);
+
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get('full-row-1') as Record<string, unknown>;
+    expect(row.type).toBe('fact');
+    expect(row.text).toBe('full row text');
+    expect(row.repo).toBe('r1');
+    expect(row.project).toBe('p1');
+    expect(row.branch).toBe('b1');
+    expect(row.agent).toBe('a1');
+    expect(row.importance).toBe(0.7);
+    expect(row.confidence).toBe(0.6);
+    expect(row.embedding_provider).toBe('ollama');
+    expect(row.embedding_dim).toBe(1024);
+    expect(row.source_hash).toBe('src-hash-1');
+    expect(row.evidence).toBe('evidence excerpt');
+    expect(row.valid_from).toBe(100);
+    expect(row.derived_from).toBe('["dep-1","dep-2"]');
+    expect(row.scope).toBe('team');
+    expect(row.archived).toBe(1);
+    expect(row.archived_at).toBe(300);
+
+    const count = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n;
+    expect(count).toBe(1);
+
+    // Indexes recreated, including the 013-archival candidate index.
+    const indexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memories'").all() as { name: string }[];
+    const indexNames = indexes.map(i => i.name);
+    expect(indexNames).toContain('idx_memories_hash');
+    expect(indexNames).toContain('idx_memories_repo_type');
+    expect(indexNames).toContain('idx_memories_session');
+    expect(indexNames).toContain('idx_memories_archival_candidates');
+  });
+
+  it('FTS5 still finds memories after the rewrite', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(
+      `INSERT INTO memories (id, type, text, normalized_text, importance, confidence, hash, created_at, updated_at)
+       VALUES ('fts-017', 'preference', 'unique 017 fts content', 'unique 017 fts content', 0.5, 0.5, 'fts-hash-017', 1, 1)`
+    ).run();
+
+    const hits = db
+      .prepare(`SELECT m.id FROM memories_fts f JOIN memories m ON m.rowid = f.rowid WHERE memories_fts MATCH ?`)
+      .all('017') as { id: string }[];
+    expect(hits.length).toBeGreaterThan(0);
+    expect(hits[0]?.id).toBe('fts-017');
+  });
+
+  it('is idempotent — re-running after 017 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 17').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
 // ---------------------------------------------------------------------------
@@ -549,7 +667,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 16/,
+      /Schema-version constant drift: wire-meta says 999, DB says 17/,
     );
   });
 });
