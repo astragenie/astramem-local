@@ -7,6 +7,7 @@
  */
 
 import { z } from 'zod';
+import { ts } from '../../log/logger.js';
 import type { JobHandler } from '../handler.js';
 import { isExtendedCtx } from '../handler-ctx-ext.js';
 import { runPipeline, BudgetExceeded } from '../../distill/pipeline.js';
@@ -84,7 +85,7 @@ export const distillHandler: JobHandler = {
       // Fallback: no providers available (e.g. in unit tests without providers)
       // Log and complete — no memories will be created
       console.warn(
-        `[distill] no providers in ctx — transcript ${transcript_id} logged but not distilled. ` +
+        `${ts()} [distill] no providers in ctx — transcript ${transcript_id} logged but not distilled. ` +
           'Ensure ExtendedHandlerCtx is passed when providers are configured.',
       );
       return;
@@ -107,7 +108,7 @@ export const distillHandler: JobHandler = {
     try {
       const result = await runPipeline(transcriptText, pipelineCtx);
       console.log(
-        `[distill] transcript=${transcript_id} chunks=${result.chunksProcessed} atoms=${result.atomsExtracted} ` +
+        `${ts()} [distill] transcript=${transcript_id} chunks=${result.chunksProcessed} atoms=${result.atomsExtracted} ` +
           `created=${result.memoriesCreated} deduped=${result.memoriesDeduped}`,
       );
 

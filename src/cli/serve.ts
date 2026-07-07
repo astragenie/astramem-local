@@ -1,5 +1,6 @@
 import { join } from 'node:path';
 import { mkdirSync, statSync, unlinkSync } from 'node:fs';
+import { ts } from '../log/logger.js';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
 import { migrate, getVecSchemaDim } from '../storage/migrate.js';
@@ -62,7 +63,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       lock = await acquireInstanceLock(dataDir, port, PKG_VERSION);
     } catch (err) {
       if (err instanceof AlreadyRunningError) {
-        console.log(`[astramem-local] ${err.message} — exiting (single-instance).`);
+        console.log(`${ts()} [astramem-local] ${err.message} — exiting (single-instance).`);
         process.exit(0);
       }
       throw err;
@@ -74,7 +75,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // the abnormal exit is visible in task history. Restart comes from the
   // scheduler's repetition trigger, not from exit-code semantics.
   const crashExit = (kind: string) => (err: unknown) => {
-    console.error(`[astramem-local] FATAL ${kind}:`, err);
+    console.error(`${ts()} [astramem-local] FATAL ${kind}:`, err);
     try { lock?.release(); } catch { /* best-effort */ }
     try { dbForCrash?.close(); } catch { /* best-effort */ }
     process.exit(1);
@@ -101,7 +102,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   } else {
     // SEC-9: disabling encryption is a deliberate trust trade-off — make it loud.
     console.warn(
-      '[astramem-local] WARNING: encryption at rest is DISABLED (security.encryption.enabled=false). ' +
+      `${ts()} [astramem-local] WARNING: encryption at rest is DISABLED (security.encryption.enabled=false). ` +
       `memory.sqlite at ${dbPath} will be stored in PLAINTEXT.`,
     );
     db = openDb(dbPath);
@@ -129,13 +130,13 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const recovered = bootRepo.recoverOrphans();
   if (recovered.requeuedRunning + recovered.requeuedFailed > 0) {
     console.log(
-      `[astramem-local] job recovery: requeued ${recovered.requeuedRunning} orphaned running, ` +
+      `${ts()} [astramem-local] job recovery: requeued ${recovered.requeuedRunning} orphaned running, ` +
       `${recovered.requeuedFailed} interrupted retries`,
     );
   }
   const purged = bootRepo.purgeOld();
   if (purged.completed + purged.poison > 0) {
-    console.log(`[astramem-local] job retention: purged ${purged.completed} completed, ${purged.poison} poison`);
+    console.log(`${ts()} [astramem-local] job retention: purged ${purged.completed} completed, ${purged.poison} poison`);
   }
 
   // Encryption-migration backup cleanup (P1.5): once the encrypted DB has
@@ -148,7 +149,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // SEC-9: disabling redaction is a deliberate trust trade-off — make it loud.
   if (!cfg.security.redaction.enabled) {
     console.warn(
-      '[astramem-local] WARNING: secret redaction is DISABLED (security.redaction.enabled=false). ' +
+      `${ts()} [astramem-local] WARNING: secret redaction is DISABLED (security.redaction.enabled=false). ` +
       'Transcripts and memories will be persisted WITHOUT stage-0 secret scrubbing.',
     );
   }
@@ -174,7 +175,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       const preflightResult = await embedProbe(providers.embed, 5000, schemaDim);
       if (!preflightResult.ok) {
         const model = providers.embed.model;
-        console.error(`[astramem-local] embed preflight FAILED: ${preflightResult.message}`);
+        console.error(`${ts()} [astramem-local] embed preflight FAILED: ${preflightResult.message}`);
         console.error(`  Model    : ${model}`);
         console.error(`  Fix      : ${preflightResult.fix ?? 'Check embed provider config'}`);
         console.error(`  Install  : ollama pull ${model}`);
@@ -226,7 +227,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
     if (!cfg.sync.url || !cfg.sync.workspaceId || !syncToken) {
       console.warn(
-        '[astramem-local] sync.enabled=true but url/workspaceId/device-token incomplete — shipper NOT started.',
+        `${ts()} [astramem-local] sync.enabled=true but url/workspaceId/device-token incomplete — shipper NOT started.`,
       );
     } else {
       shipper = startShipper({
@@ -238,7 +239,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
         batchSize: cfg.sync.batchSize,
         intervalMs: cfg.sync.intervalMs,
       });
-      console.log(`astramem-local sync shipper active -> ${cfg.sync.url}`);
+      console.log(`${ts()} astramem-local sync shipper active -> ${cfg.sync.url}`);
     }
   }
 
@@ -255,7 +256,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // there rather than echoing back the (possibly 0) request.
   const address = await app.listen({ port, host });
   const actualPort = Number(new URL(address).port);
-  console.log(`astramem-local serving on ${host}:${actualPort}`);
+  console.log(`${ts()} astramem-local serving on ${host}:${actualPort}`);
 
   // Degraded-start (D3): probe the embed provider in the background with
   // backoff. /health reports status starting -> ok | degraded meanwhile.
@@ -277,7 +278,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       try {
         bootRepo.enqueue('consolidate', {});
       } catch (err) {
-        console.warn(`[astramem-local] consolidate enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`${ts()} [astramem-local] consolidate enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
     enqueueConsolidate(); // boot pass — catches anything a downtime window skipped
@@ -298,7 +299,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       try {
         bootRepo.enqueue('cleanup', { kind: 'cleanup' });
       } catch (err) {
-        console.warn(`[astramem-local] cleanup enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`${ts()} [astramem-local] cleanup enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
     enqueueCleanup(); // boot pass — catches anything a downtime window skipped
@@ -317,7 +318,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       try {
         db.pragma('wal_checkpoint(TRUNCATE)');
       } catch (err) {
-        console.warn(`[astramem-local] periodic WAL checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
+        console.warn(`${ts()} [astramem-local] periodic WAL checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     }, WAL_CHECKPOINT_MS);
     walTimer.unref();
@@ -393,10 +394,10 @@ function cleanupPreEncryptionBak(dbPath: string): void {
     const ageDays = (Date.now() - st.mtimeMs) / (24 * 60 * 60 * 1000);
     if (ageDays > 7) {
       unlinkSync(bakPath);
-      console.log(`[astramem-local] removed plaintext pre-encryption backup (${Math.floor(ageDays)}d old): ${bakPath}`);
+      console.log(`${ts()} [astramem-local] removed plaintext pre-encryption backup (${Math.floor(ageDays)}d old): ${bakPath}`);
     } else {
       console.warn(
-        `[astramem-local] plaintext pre-encryption backup still present (${ageDays.toFixed(1)}d old, ` +
+        `${ts()} [astramem-local] plaintext pre-encryption backup still present (${ageDays.toFixed(1)}d old, ` +
         `auto-removed after 7d): ${bakPath}`,
       );
     }
@@ -425,13 +426,13 @@ function startEmbedPreflight(
       healthState.embed.ok = true;
       healthState.embed.lastOkAt = Date.now();
       healthState.embed.lastError = null;
-      console.log(`[astramem-local] embed preflight ok (attempt ${healthState.embed.attempts}): ${result.message}`);
+      console.log(`${ts()} [astramem-local] embed preflight ok (attempt ${healthState.embed.attempts}): ${result.message}`);
       return;
     }
     healthState.embed.ok = false;
     healthState.embed.lastError = result.message;
     if (healthState.embed.attempts === 1) {
-      console.warn(`[astramem-local] embed preflight failing — serving DEGRADED while retrying: ${result.message}`);
+      console.warn(`${ts()} [astramem-local] embed preflight failing — serving DEGRADED while retrying: ${result.message}`);
       console.warn(`  Fix      : ${result.fix ?? 'Check embed provider config'}`);
       console.warn(`  Install  : ollama pull ${embed.model}`);
     }
