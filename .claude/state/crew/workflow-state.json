@@ -1,27 +1,19 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-08T09:58:30.094Z",
+  "updatedAt": "2026-07-07T09:16:27.718Z",
   "currentRun": {
-    "title": "dev-team#180 prod roll verification fix - draft PR",
-    "goal": "",
-    "mode": "",
+    "title": "FEAT438 SLICE416: Release dir materialization (dist + prod node_modules) + AC-5 failure guard",
+    "goal": "`current.json.entryJs` points at `C:/work/mega/astramemory-local/dist/cli/index.js`",
+    "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-07T15:55:30.351Z",
-    "updatedAt": "2026-07-08T09:58:30.094Z",
-    "next": "If reproducible again, capture: (a) daemon RSS/heap over time via /health or process monitor just before death, (b) the last N ingest.log lines especially any 'FATAL uncaughtException/unhandledRejection' line from serve.ts:78 which would name the exact error and stack, (c) Windows Event Viewer Application log around the death timestamp for a hidden node.exe crash entry filtered differently than assumed.",
+    "startedAt": "2026-07-07T09:16:27.717Z",
+    "updatedAt": "2026-07-07T09:16:27.717Z",
+    "next": "Begin implementation",
     "gates": {
-      "review": {
-        "status": "passed",
-        "updatedAt": "2026-07-08T09:43:18.360Z",
-        "note": "starting light review"
-      },
+      "review": null,
       "validation": null,
       "deployment": {
-        "dev": {
-          "status": "passed",
-          "updatedAt": "2026-07-07T15:55:30.351Z",
-          "note": "starting investigation"
-        },
+        "dev": null,
         "prod": null
       },
       "blocked": null,
@@ -29,19 +21,13 @@
       "incident": null
     },
     "artifacts": {
-      "runBrief": null,
-      "handoffs": [
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T072638Z-handoff-pre-launch-security-audit-auth-secrets-bind-cors-deps.md",
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T072659Z-handoff-test-ci-coverage-audit-ahead-of-0-8-1-oss-launch.md",
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T072730Z-handoff-feature-surface-inventory-cli-http-routes-mcp-tools-fuse-wei.md",
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T072921Z-handoff-saas-repo-memory-audit-roadmap-convergence-ground-truth.md",
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T095830Z-handoff-daemon-disappearance-under-load-crashexit-unbounded-process-.md"
-      ],
-      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T094318Z-review-result-b1-followups-light-review-20260708t094318z.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260707T091627Z-run-brief-feat438-slice416-release-dir-materialization-dist-prod-node-.md",
+      "handoffs": [],
+      "reviewResult": null,
       "validationPlan": null,
       "validationResult": null,
       "deploymentChecks": {
-        "dev": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\deployments\\20260707T155530Z-deployment-check-dev-team-180-prod-roll-verification-fix-draft-pr.md",
+        "dev": null,
         "prod": null
       },
       "finalSynthesis": null

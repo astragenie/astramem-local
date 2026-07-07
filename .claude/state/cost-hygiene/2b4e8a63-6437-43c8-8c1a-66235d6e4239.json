@@ -1,0 +1,310 @@
+{
+  "session_id": "2b4e8a63-6437-43c8-8c1a-66235d6e4239",
+  "first_seen": "2026-07-06T10:12:38.632Z",
+  "last_seen": "2026-07-06T22:23:12.876Z",
+  "total_bytes": 0,
+  "entries": {
+    "C:\\work\\mega\\astramemory-local\\.claude\\state\\crew\\workflow-state.json": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T10:12:38.632Z",
+      "last_read_at": "2026-07-06T10:12:38.632Z",
+      "mtime_at_last_read": "2026-07-05T14:53:04.609Z",
+      "size_at_last_read": 1627,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\sibling-repos.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T10:21:02.558Z",
+      "last_read_at": "2026-07-06T10:21:02.558Z",
+      "mtime_at_last_read": "2026-07-06T10:21:02.282Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T10:21:02.558Z",
+      "mtime_at_last_edit": "2026-07-06T10:21:02.282Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\MEMORY.md": {
+      "read_count": 2,
+      "first_read_at": "2026-07-06T10:21:05.951Z",
+      "last_read_at": "2026-07-06T16:52:38.897Z",
+      "mtime_at_last_read": "2026-07-06T12:36:36.440Z",
+      "size_at_last_read": 616,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T16:52:53.167Z",
+      "mtime_at_last_edit": "2026-07-06T16:52:52.603Z"
+    },
+    "C:\\Users\\serge\\AppData\\Roaming\\Astramem\\sync.json": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T10:38:30.638Z",
+      "last_read_at": "2026-07-06T10:38:30.638Z",
+      "mtime_at_last_read": "2026-07-06T10:38:02.939Z",
+      "size_at_last_read": 143,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T10:38:35.174Z",
+      "mtime_at_last_edit": "2026-07-06T10:38:35.003Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\saas-prod-endpoint.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T10:41:15.921Z",
+      "last_read_at": "2026-07-06T11:07:29.418Z",
+      "mtime_at_last_read": "2026-07-06T10:41:15.734Z",
+      "size_at_last_read": 1545,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T11:07:48.438Z",
+      "mtime_at_last_edit": "2026-07-06T11:07:48.244Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\storage\\keystore.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T10:55:31.179Z",
+      "last_read_at": "2026-07-06T10:55:31.179Z",
+      "mtime_at_last_read": "2026-07-04T14:15:43.639Z",
+      "size_at_last_read": 9633,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\sync\\shipper.ts": {
+      "read_count": 3,
+      "first_read_at": "2026-07-06T10:56:33.033Z",
+      "last_read_at": "2026-07-06T16:46:21.280Z",
+      "mtime_at_last_read": "2026-07-06T14:18:20.150Z",
+      "size_at_last_read": 15070,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T16:46:39.358Z",
+      "mtime_at_last_edit": "2026-07-06T16:46:38.542Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\sync\\puller.ts": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T10:56:34.734Z",
+      "last_read_at": "2026-07-06T10:56:34.734Z",
+      "mtime_at_last_read": "2026-07-06T10:56:34.296Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T10:56:34.734Z",
+      "mtime_at_last_edit": "2026-07-06T10:56:34.296Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\tests\\sync\\shipper.test.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T11:16:44.214Z",
+      "last_read_at": "2026-07-06T11:16:44.214Z",
+      "mtime_at_last_read": "2026-07-06T10:27:05.180Z",
+      "size_at_last_read": 14854,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T11:17:08.747Z",
+      "mtime_at_last_edit": "2026-07-06T11:17:08.469Z"
+    },
+    "C:\\work\\mega\\memory\\src\\AstraMemory.Persistence\\Migrations\\20260706111932_RelaxSyncEventsContentHashCheck.cs": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T11:20:57.142Z",
+      "last_read_at": "2026-07-06T11:20:57.142Z",
+      "mtime_at_last_read": "2026-07-06T11:19:32.216Z",
+      "size_at_last_read": 5528,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T11:21:13.887Z",
+      "mtime_at_last_edit": "2026-07-06T11:21:13.675Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\storage\\memories.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T12:15:56.409Z",
+      "last_read_at": "2026-07-06T12:15:56.409Z",
+      "mtime_at_last_read": "2026-07-03T21:56:11.877Z",
+      "size_at_last_read": 4294,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:16:40.052Z",
+      "mtime_at_last_edit": "2026-07-06T12:16:39.721Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\storage\\memory-events.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T12:16:26.525Z",
+      "last_read_at": "2026-07-06T12:16:26.525Z",
+      "mtime_at_last_read": "2026-07-03T21:56:11.879Z",
+      "size_at_last_read": 14735,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\tests\\storage\\memory-events.test.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T12:17:04.840Z",
+      "last_read_at": "2026-07-06T12:17:04.840Z",
+      "mtime_at_last_read": "2026-07-03T21:01:46.971Z",
+      "size_at_last_read": 15544,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:17:16.947Z",
+      "mtime_at_last_edit": "2026-07-06T12:17:16.736Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\cli\\pair.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T12:23:19.944Z",
+      "last_read_at": "2026-07-06T12:23:19.944Z",
+      "mtime_at_last_read": "2026-07-03T05:43:24.224Z",
+      "size_at_last_read": 3559,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:24:55.906Z",
+      "mtime_at_last_edit": "2026-07-06T12:24:55.701Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\tests\\cli\\pair.test.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T12:25:01.174Z",
+      "last_read_at": "2026-07-06T12:25:01.174Z",
+      "mtime_at_last_read": "2026-07-03T05:43:24.316Z",
+      "size_at_last_read": 2753,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:25:22.979Z",
+      "mtime_at_last_edit": "2026-07-06T12:25:22.761Z"
+    },
+    "C:\\work\\mega\\memory\\CHANGELOG.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T12:33:21.623Z",
+      "last_read_at": "2026-07-06T12:33:21.623Z",
+      "mtime_at_last_read": "2026-07-01T09:39:51.863Z",
+      "size_at_last_read": 26458,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:33:51.364Z",
+      "mtime_at_last_edit": "2026-07-06T12:33:51.003Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\package.json": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T12:34:42.940Z",
+      "last_read_at": "2026-07-06T12:34:42.940Z",
+      "mtime_at_last_read": "2026-07-06T12:34:42.761Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:34:42.940Z",
+      "mtime_at_last_edit": "2026-07-06T12:34:42.761Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\CHANGELOG.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T12:34:57.224Z",
+      "last_read_at": "2026-07-06T12:34:57.224Z",
+      "mtime_at_last_read": "2026-07-06T12:34:56.880Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:34:57.224Z",
+      "mtime_at_last_edit": "2026-07-06T12:34:56.880Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\sync-release-state.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T12:36:25.063Z",
+      "last_read_at": "2026-07-06T12:36:25.063Z",
+      "mtime_at_last_read": "2026-07-06T12:36:24.777Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T12:36:25.063Z",
+      "mtime_at_last_edit": "2026-07-06T12:36:24.777Z"
+    },
+    "C:\\work\\mega\\memory\\src\\AstraMemory.Modules.Ingest\\Application\\SyncIngestService.cs": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T13:40:04.365Z",
+      "last_read_at": "2026-07-06T13:40:04.365Z",
+      "mtime_at_last_read": "2026-07-06T12:33:13.780Z",
+      "size_at_last_read": 12522,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T13:40:59.468Z",
+      "mtime_at_last_edit": "2026-07-06T13:40:59.268Z"
+    },
+    "C:\\work\\mega\\memory\\tests\\AstraMemory.Tests\\Sync\\SyncIngestServiceTests.cs": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T13:41:29.548Z",
+      "last_read_at": "2026-07-06T13:41:29.548Z",
+      "mtime_at_last_read": "2026-07-06T12:33:13.802Z",
+      "size_at_last_read": 8360,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T13:42:01.026Z",
+      "mtime_at_last_edit": "2026-07-06T13:42:00.725Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\cli\\sync.ts": {
+      "read_count": 2,
+      "first_read_at": "2026-07-06T13:52:48.580Z",
+      "last_read_at": "2026-07-06T14:21:43.603Z",
+      "mtime_at_last_read": "2026-07-06T13:53:51.738Z",
+      "size_at_last_read": 6950,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T14:22:55.648Z",
+      "mtime_at_last_edit": "2026-07-06T14:22:54.944Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\sync\\backfill.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T14:22:13.285Z",
+      "last_read_at": "2026-07-06T16:36:00.390Z",
+      "mtime_at_last_read": "2026-07-06T16:02:38.263Z",
+      "size_at_last_read": 4268,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T14:22:13.285Z",
+      "mtime_at_last_edit": "2026-07-06T14:22:12.369Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\tests\\sync\\backfill.test.ts": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T14:23:29.969Z",
+      "last_read_at": "2026-07-06T14:23:29.969Z",
+      "mtime_at_last_read": "2026-07-06T14:23:27.396Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T14:23:29.969Z",
+      "mtime_at_last_edit": "2026-07-06T14:23:27.396Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\worktree-agent-git-race.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T16:51:48.743Z",
+      "last_read_at": "2026-07-06T16:51:48.743Z",
+      "mtime_at_last_read": "2026-07-06T16:51:47.963Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T16:51:48.743Z",
+      "mtime_at_last_edit": "2026-07-06T16:51:47.963Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\sync-bulk-drain-tuning.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T16:52:08.860Z",
+      "last_read_at": "2026-07-06T16:52:08.860Z",
+      "mtime_at_last_read": "2026-07-06T16:52:08.207Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T16:52:08.860Z",
+      "mtime_at_last_edit": "2026-07-06T16:52:08.207Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\memory-repo-deploy-and-ci.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-06T16:52:30.073Z",
+      "last_read_at": "2026-07-06T16:52:30.073Z",
+      "mtime_at_last_read": "2026-07-06T16:52:29.317Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T16:52:30.073Z",
+      "mtime_at_last_edit": "2026-07-06T16:52:29.317Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\worktrees\\agent-af2d3b6f888d056be\\tests\\server\\search.test.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-06T21:57:27.813Z",
+      "last_read_at": "2026-07-06T21:57:27.813Z",
+      "mtime_at_last_read": "2026-07-06T21:50:38.465Z",
+      "size_at_last_read": 23988,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-06T22:23:12.864Z",
+      "mtime_at_last_edit": "2026-07-06T22:23:11.342Z"
+    }
+  }
+}

@@ -1,0 +1,55 @@
+{
+  "session_id": "9c10fd6b-40e6-41fd-97d3-98c55ae504ad",
+  "first_seen": "2026-07-05T22:27:59.468Z",
+  "last_seen": "2026-07-05T23:03:12.786Z",
+  "total_bytes": 0,
+  "entries": {
+    "C:\\work\\mega\\astramemory-local\\src\\sync\\shipper.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-05T22:27:59.468Z",
+      "last_read_at": "2026-07-05T22:27:59.468Z",
+      "mtime_at_last_read": "2026-07-05T14:12:02.494Z",
+      "size_at_last_read": 10649,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-05T23:03:06.798Z",
+      "mtime_at_last_edit": "2026-07-05T23:03:06.550Z"
+    },
+    "C:\\work\\mega\\memory\\src\\AstraMemory.Modules.Ingest\\Controllers\\SyncController.cs": {
+      "read_count": 1,
+      "first_read_at": "2026-07-05T22:29:27.393Z",
+      "last_read_at": "2026-07-05T22:29:27.393Z",
+      "mtime_at_last_read": "2026-07-04T14:13:35.496Z",
+      "size_at_last_read": 4338,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\cli\\pair.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-05T22:58:55.419Z",
+      "last_read_at": "2026-07-05T22:58:55.419Z",
+      "mtime_at_last_read": "2026-07-03T05:43:24.224Z",
+      "size_at_last_read": 3559,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\memory\\src\\AstraMemory.Api\\Middleware\\AuthMiddleware.cs": {
+      "read_count": 1,
+      "first_read_at": "2026-07-05T22:59:36.127Z",
+      "last_read_at": "2026-07-05T22:59:36.127Z",
+      "mtime_at_last_read": "2026-07-05T10:20:52.269Z",
+      "size_at_last_read": 18694,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\cli\\serve.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-05T23:03:12.778Z",
+      "last_read_at": "2026-07-05T23:03:12.778Z",
+      "mtime_at_last_read": "2026-07-04T14:15:43.627Z",
+      "size_at_last_read": 17637,
+      "content_bytes": 0,
+      "content": null
+    }
+  }
+}
