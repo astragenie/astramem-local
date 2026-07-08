@@ -47,8 +47,12 @@ function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (err) {
+    // ESRCH = no such process (genuinely dead). EPERM = the process EXISTS but
+    // we lack permission to signal it → still ALIVE. Treating EPERM as dead
+    // would let `service stop` / reinstall rollback silently leave a live
+    // daemon running while reporting success — the exact failure this helper exists to prevent.
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
   }
 }
 
@@ -128,13 +132,9 @@ export async function stopLockHolder(
   const sendSignal = opts.signal ?? ((pid, sig) => process.kill(pid, sig));
   const probe = opts.healthProbe ?? healthOk;
 
-  let alive = true;
-  try {
-    process.kill(holder.pid, 0);
-  } catch {
-    alive = false;
+  if (!pidAlive(holder.pid)) {
+    return { ok: true, detail: `stale lock (pid ${holder.pid} already dead)` };
   }
-  if (!alive) return { ok: true, detail: `stale lock (pid ${holder.pid} already dead)` };
 
   try {
     sendSignal(holder.pid, 'SIGTERM');

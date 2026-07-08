@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -113,6 +113,29 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
     expect(result.ok).toBe(true);
     expect(result.detail).toContain('stale lock');
     expect(signalCalls).toBe(0);
+  });
+
+  it('treats EPERM (process exists but not signalable) as ALIVE and still stops it', async () => {
+    // Regression: process.kill(pid,0) throwing EPERM means the process EXISTS
+    // but we lack permission to signal — it must NOT be misread as "already dead"
+    // (that would leave a live daemon running while reporting success).
+    writeFileSync(lockPath(dir), JSON.stringify({ pid: process.ppid, port: 9004, startedAt: 'x', version: '0.9.0' }));
+    const spy = vi.spyOn(process, 'kill').mockImplementation(((pid: number, sig?: string | number) => {
+      if (sig === 0) {
+        const e: NodeJS.ErrnoException = new Error('operation not permitted');
+        e.code = 'EPERM';
+        throw e;
+      }
+      return true;
+    }) as typeof process.kill);
+    const signaled: number[] = [];
+    const result = await stopLockHolder(dir, 9004, {
+      signal: pid => { signaled.push(pid); }, // injected SIGTERM path bypasses the spy
+      healthProbe: async () => false,
+    });
+    spy.mockRestore();
+    expect(signaled).toEqual([process.ppid]); // EPERM => alive => signal actually sent
+    expect(result).toEqual({ ok: true, detail: `stopped pid ${process.ppid}` });
   });
 
   it('signals the live holder PID and reports stopped once the health probe goes unhealthy', async () => {
