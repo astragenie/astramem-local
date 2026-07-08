@@ -13,8 +13,11 @@
 # failing the run.
 #
 # Arg1: package version (default: latest).
+# Arg2: space-separated managers to test (default "npm bun"; use "npm" for a
+#       clean node-only container where bun is absent).
 set -uo pipefail
 VER="${1:-latest}"
+MANAGERS="${2:-npm bun}"
 # SSM runs as root without HOME set; resolve it from passwd so set -u is safe.
 export HOME="${HOME:-$(eval echo "~$(id -un)")}"
 export PATH="/usr/local/node20/bin:/usr/local/bin:/var/root/.bun/bin:/root/.bun/bin:$HOME/.bun/bin:$PATH"
@@ -89,8 +92,13 @@ console.log('[$mgr] native addons load+exercise OK');
 }
 
 overall=0
-smoke_one npm || overall=1          # authoritative
-smoke_one bun || echo "(bun-global failure is expected/known — informational, not failing the run)"
+for m in $MANAGERS; do
+  case "$m" in
+    npm) smoke_one npm || overall=1 ;;   # authoritative
+    bun) smoke_one bun || echo "(bun-global failure is expected/known — informational, not failing the run)" ;;
+    *)   echo "unknown manager: $m" ;;
+  esac
+done
 
 echo
 [ "$overall" = 0 ] && echo "INSTALL-SMOKE: PASS (npm-global authoritative)" \
