@@ -30,7 +30,7 @@ import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { legacyDataDir, legacyConfigDir } from '../config/datadir.js';
 import { installServiceFlow, resolveBuild } from '../service/install-flow.js';
 import { getServiceAdapter } from '../service/index.js';
-import { readLockInfo } from '../service/instance-lock.js';
+import { stopLockHolder } from '../service/instance-lock.js';
 import { waitForHealth } from './wait-health.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import {
@@ -46,6 +46,30 @@ import { shimPaths, writeShim, writePointer, type ShimPointer } from '../service
 
 function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
+}
+
+/**
+ * verify-health polling budget (bug #2, this session): a service/task-
+ * launched daemon boots noticeably slower than a foreground `serve` under
+ * contention — specifically, a backlog of orphaned/queued jobs (recovered by
+ * `recoverOrphans()` at boot, see serve.ts) racing an Ollama-backed distill
+ * storm can saturate the single-threaded event loop for tens of seconds
+ * AFTER the port is already bound, so `/health` genuinely doesn't answer in
+ * time even though the daemon is healthy and self-recovers (confirmed live:
+ * a rollback fired twice at 30s, then the SAME build answered in <5s once
+ * the scheduler's PT5M keepalive re-fired after the backlog had drained).
+ * The daemon code itself is not at fault — the fixed-30s window was just too
+ * tight for a legitimately busy (not broken) boot. Configurable so a slow
+ * box/large backlog can raise it further without a code change.
+ */
+const DEFAULT_HEALTH_TIMEOUT_MS = 90_000;
+export function healthTimeoutMs(): number {
+  const raw = process.env.ASTRA_MEMORY_REINSTALL_HEALTH_TIMEOUT_MS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_HEALTH_TIMEOUT_MS;
 }
 
 /**
@@ -88,37 +112,8 @@ interface StepResult {
 }
 
 async function stopRunningDaemon(dataDir: string, port: number): Promise<StepResult> {
-  const holder = readLockInfo(dataDir);
-  if (!holder) return { step: 'stop-daemon', ok: true, detail: 'no daemon.lock — nothing to stop' };
-
-  let alive = true;
-  try {
-    process.kill(holder.pid, 0);
-  } catch {
-    alive = false;
-  }
-  if (!alive) return { step: 'stop-daemon', ok: true, detail: `stale lock (pid ${holder.pid} dead)` };
-
-  try {
-    // SIGTERM runs the daemon's graceful shutdown; on Windows Node this
-    // terminates the process (no handler runs), which is still acceptable —
-    // boot job-recovery handles interrupted work.
-    process.kill(holder.pid, 'SIGTERM');
-  } catch (err) {
-    return { step: 'stop-daemon', ok: false, detail: `kill pid ${holder.pid} failed: ${(err as Error).message}` };
-  }
-
-  // Wait up to 5s for the port to go quiet.
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    try {
-      await fetch(`http://127.0.0.1:${holder.port ?? port}/health`, { signal: AbortSignal.timeout(500) });
-      await new Promise(r => setTimeout(r, 250));
-    } catch {
-      return { step: 'stop-daemon', ok: true, detail: `stopped pid ${holder.pid}` };
-    }
-  }
-  return { step: 'stop-daemon', ok: false, detail: `pid ${holder.pid} still serving after 5s` };
+  const result = await stopLockHolder(dataDir, port);
+  return { step: 'stop-daemon', ok: result.ok, detail: result.detail };
 }
 
 export async function reinstallCommand(args: string[]): Promise<void> {
@@ -190,10 +185,19 @@ export async function reinstallCommand(args: string[]): Promise<void> {
   // Memoized so every post-repoint failure branch can call this unconditionally
   // without risking a second writePointer() once one branch has already
   // restored (e.g. start-service throws, then the health-check also times out).
+  //
+  // Also stops whatever daemon we just started (bug #2, this session): a
+  // rolled-back repoint used to leave the just-started, unverified daemon
+  // running — it kept holding the port and daemon.lock, competing for
+  // CPU/Ollama capacity with the NEXT reinstall attempt's own boot (a
+  // plausible contributor to the observed back-to-back 30s timeouts). Restore
+  // the pointer AND stop the process it no longer describes.
   let pointerRestoreDetail: string | null = null;
-  const restoreOnce = (): string => {
+  const restoreOnce = async (): Promise<string> => {
     if (pointerRestoreDetail === null) {
-      pointerRestoreDetail = restorePriorPointer(priorPointer, pointerPath);
+      const pointerDetail = restorePriorPointer(priorPointer, pointerPath);
+      const stopResult = await stopLockHolder(dataDir, port);
+      pointerRestoreDetail = `${pointerDetail}; unverified daemon: ${stopResult.detail}`;
     }
     return pointerRestoreDetail;
   };
@@ -234,9 +238,9 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       // healthy" — the verbatim tier errors were already printed by install.
       // Restore the prior pointer explicitly (not just via the downstream
       // health-check catch): if a pre-existing keepalive task survives the failed
-      // re-registration and fires inside the 30s health window, we must not leave
+      // re-registration and fires inside the health window, we must not leave
       // current.json pinned at the unverified release.
-      const restoreDetail = restoreOnce();
+      const restoreDetail = await restoreOnce();
       steps.push({
         step: 'install-service',
         ok: false,
@@ -244,7 +248,7 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       });
     }
   } catch (err) {
-    const restoreDetail = restoreOnce();
+    const restoreDetail = await restoreOnce();
     const detail = `${(err as Error).message} — repoint aborted (${restoreDetail})`;
     steps.push({ step: 'install-service', ok: false, detail });
     log(`  ✗ install failed: ${detail}`);
@@ -259,21 +263,23 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       steps.push({ step: 'start-service', ok: true });
       log('  · service started');
     } catch (err) {
-      const restoreDetail = restoreOnce();
+      const restoreDetail = await restoreOnce();
       const detail = `${(err as Error).message} — repoint aborted (${restoreDetail})`;
       steps.push({ step: 'start-service', ok: false, detail });
       log(`  ✗ start failed: ${detail}`);
     }
   }
 
-  // 6. Health + version assertion.
-  const healthy = await waitForHealth(port, 30_000);
+  // 6. Health + version assertion. Budget is configurable (see
+  // healthTimeoutMs() above) — default 90s, up from the original fixed 30s.
+  const healthBudgetMs = healthTimeoutMs();
+  const healthy = await waitForHealth(port, healthBudgetMs);
   if (!healthy) {
-    const restoreDetail = restoreOnce();
+    const restoreDetail = await restoreOnce();
     steps.push({
       step: 'verify-health',
       ok: false,
-      detail: `/health not responding on port ${port} within 30s — repoint aborted (${restoreDetail})`,
+      detail: `/health not responding on port ${port} within ${healthBudgetMs / 1000}s — repoint aborted (${restoreDetail})`,
     });
   } else {
     try {
@@ -292,7 +298,7 @@ export async function reinstallCommand(args: string[]): Promise<void> {
         // Restore the prior pointer (if one existed) so the NEXT boot/
         // keepalive restart resumes the last known-good release; this repoint
         // is reported as failed regardless.
-        const restoreDetail = restoreOnce();
+        const restoreDetail = await restoreOnce();
         steps.push({
           step: 'verify-version',
           ok: false,
@@ -303,7 +309,7 @@ export async function reinstallCommand(args: string[]): Promise<void> {
         });
       }
     } catch (err) {
-      const restoreDetail = restoreOnce();
+      const restoreDetail = await restoreOnce();
       steps.push({
         step: 'verify-version',
         ok: false,
@@ -412,9 +418,14 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
     }
   }
   let pointerRestoreDetail: string | null = null;
-  const restoreOnce = (): string => {
+  const restoreOnce = async (): Promise<string> => {
     if (pointerRestoreDetail === null) {
-      pointerRestoreDetail = restorePriorPointer(priorPointer, pointerPath);
+      const pointerDetail = restorePriorPointer(priorPointer, pointerPath);
+      // Also stop the unverified daemon we just started (bug #2) — see the
+      // matching comment on reinstallCommand's restoreOnce for the full
+      // finding; the mechanism is identical for --rollback/--dev.
+      const stopResult = await stopLockHolder(dataDir, port);
+      pointerRestoreDetail = `${pointerDetail}; unverified daemon: ${stopResult.detail}`;
     }
     return pointerRestoreDetail;
   };
@@ -439,20 +450,23 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
     steps.push({ step: 'start-service', ok: true });
     log('  · service started');
   } catch (err) {
-    const restoreDetail = restoreOnce();
+    const restoreDetail = await restoreOnce();
     const detail = `${(err as Error).message} — repoint aborted (${restoreDetail})`;
     steps.push({ step: 'start-service', ok: false, detail });
     log(`  ✗ start failed: ${detail}`);
     return steps;
   }
 
-  const healthy = await waitForHealth(port, 30_000);
+  // Health budget is configurable (see healthTimeoutMs() above) — default
+  // 90s, up from the original fixed 30s (bug #2).
+  const healthBudgetMs = healthTimeoutMs();
+  const healthy = await waitForHealth(port, healthBudgetMs);
   if (!healthy) {
-    const restoreDetail = restoreOnce();
+    const restoreDetail = await restoreOnce();
     steps.push({
       step: 'verify-health',
       ok: false,
-      detail: `/health not responding on port ${port} within 30s — repoint aborted (${restoreDetail})`,
+      detail: `/health not responding on port ${port} within ${healthBudgetMs / 1000}s — repoint aborted (${restoreDetail})`,
     });
     return steps;
   }
@@ -468,7 +482,7 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
       });
       log(`  ✓ daemon healthy, serving v${body.version} (${expectedLabel})`);
     } else {
-      const restoreDetail = restoreOnce();
+      const restoreDetail = await restoreOnce();
       steps.push({
         step: 'verify-version',
         ok: false,
@@ -478,7 +492,7 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
       });
     }
   } catch (err) {
-    const restoreDetail = restoreOnce();
+    const restoreDetail = await restoreOnce();
     steps.push({
       step: 'verify-version',
       ok: false,
