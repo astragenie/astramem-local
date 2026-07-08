@@ -66,6 +66,17 @@ export MEMORY_BEARER=$(astra-memory token print)
 Restart Claude Code. All plugin hooks (PreCompact, SessionEnd, SubagentStop) now post to the
 local daemon. No other plugin changes needed.
 
+### Try it first — no install, no Ollama
+
+`astra-memory demo` boots an in-memory daemon (nothing written to disk), seeds a handful of
+example memories through a deterministic mock embed/LLM path, runs one sample recall, and keeps
+serving in the foreground until you hit Ctrl+C — a 30-second way to see the product work before
+installing Ollama or running `init`:
+
+```bash
+astra-memory demo
+```
+
 ---
 
 ## Architecture
@@ -222,6 +233,24 @@ Claude Code discovers and calls the tools below automatically when configured in
 
 Set `MEMORY_API_URL=http://127.0.0.1:7777` and `MEMORY_BEARER` to your token
 (printed by `astra-memory token print`).
+
+**Automated wiring:** `astra-memory mcp install --client <name>` writes the above for you —
+resolves the daemon's URL/port and Bearer token the same way `serve` does, and updates the
+target client's config in place (idempotent, backs up the existing file to `.bak` first).
+
+| `--client` | Target file | Written automatically? |
+|---|---|---|
+| `claude-code` | `.mcp.json` (project root) | Yes |
+| `cursor` | `~/.cursor/mcp.json` | Yes |
+| `claude` | Claude Desktop's `claude_desktop_config.json` (per-OS path) | Yes |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` | No — prints a manual snippet |
+| `vscode` | `.vscode/mcp.json` | No — prints a manual snippet |
+
+```bash
+astra-memory mcp install --client claude-code       # writes .mcp.json in the current project
+astra-memory mcp install --client cursor --dry-run  # preview only, no write
+astra-memory mcp install --client claude --url http://127.0.0.1:7777
+```
 
 ---
 
@@ -383,6 +412,8 @@ secret.
 | `astra-memory budget --reset`              | Clear today's spend counter (override, logged)     |
 | `astra-memory token print`                 | Print the current Bearer token                     |
 | `astra-memory token rotate`                | Generate new token, invalidate the old one         |
+| `astra-memory mcp install --client <name>` | Write/update an MCP client's config to point at this daemon's `POST /mcp` (see [MCP tools](#mcp-tools-claude-code-auto-discovery)) |
+| `astra-memory demo`                        | 30s zero-dependency trial: in-memory daemon, seeded example memories, one sample recall, no Ollama required |
 
 ---
 

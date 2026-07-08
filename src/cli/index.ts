@@ -22,6 +22,8 @@ import { reembedDimCommand } from './reembed-dim.js';
 import { entityBackfillCommand } from './entity-backfill.js';
 import { cliMemoryRestore } from './memory.js';
 import { mcpStdio } from './mcp-stdio.js';
+import { mcpInstallCommand } from './mcp-install.js';
+import { demoCommand } from './demo.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -244,6 +246,26 @@ async function main() {
       break;
     }
 
+    case 'mcp': {
+      // astramem-local mcp install --client claude|claude-code|cursor|windsurf|vscode [--url URL] [--dry-run]
+      const [sub, ...subRest] = rest;
+      if (sub === 'install') {
+        await mcpInstallCommand(subRest);
+      } else {
+        console.error(`mcp: unknown subcommand "${sub ?? ''}" (expected: install)`);
+        process.exit(1);
+      }
+      break;
+    }
+
+    case 'demo': {
+      // astramem-local demo — 30s zero-dependency trial: in-memory daemon,
+      // mock embed/LLM providers (no Ollama), seeded example memories, one
+      // sample recall, then keeps serving in the foreground until Ctrl+C
+      await demoCommand(rest);
+      break;
+    }
+
     case '--version':
     case '-v':
       console.log(PKG_VERSION);
@@ -337,6 +359,19 @@ Commands:
                                          the last watermark (ADR-011 conflict
                                          resolve on touched atoms)
   sync watermark [--json]                Show the current persisted pull cursor
+  mcp install --client claude|claude-code|cursor|windsurf|vscode
+              [--url URL] [--dry-run]    Write (or update) that client's MCP config
+                                         to point at this daemon's POST /mcp with a
+                                         Bearer token. claude/claude-code/cursor are
+                                         written directly (idempotent, backs up the
+                                         existing file to .bak first); windsurf/vscode
+                                         print manual instructions. --dry-run prints
+                                         the would-be file contents only.
+  demo                                    30-second zero-dependency trial: in-memory
+                                         daemon, mock embed/LLM providers (no Ollama
+                                         required), seeds a few example memories, runs
+                                         one sample recall, then keeps serving in the
+                                         foreground until Ctrl+C. Nothing is persisted.
 
 Environment:
   ASTRA_MEMORY_URL       Daemon base URL (default: http://127.0.0.1:7777)
