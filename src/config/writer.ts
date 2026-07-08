@@ -122,6 +122,11 @@ export function configToYaml(cfg: Config): string {
     line(1, 'tier2Enabled', cfg.tagHygiene.tier2Enabled),
     line(1, 'tier2ConfidenceThreshold', cfg.tagHygiene.tier2ConfidenceThreshold),
     '',
+    // Distill-job worker pool — concurrency > 1 multiplies local Ollama load;
+    // pair with OLLAMA_NUM_PARALLEL. See Config['pipeline'] doc comment.
+    line(0, 'pipeline'),
+    line(1, 'concurrency', cfg.pipeline.concurrency),
+    '',
   ];
   return lines.join('\n');
 }
