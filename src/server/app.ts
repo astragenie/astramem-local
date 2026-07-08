@@ -4,6 +4,7 @@ import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
 import { healthRoute } from './routes/health.js';
 import { versionRoute } from './routes/version.js';
+import { whoamiRoute } from './routes/whoami.js';
 import { ingestRoute } from './routes/ingest.js';
 import { searchRoute } from './routes/search.js';
 import { memoryRoute } from './routes/memory.js';
@@ -143,6 +144,9 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
 
   await app.register(healthRoute(config, opts.db, opts.healthState));
   await app.register(versionRoute);
+  // Issue #129: NOT added to the loopback public-path exemption above —
+  // always auth-required, so `connect` flows can verify a bearer works.
+  await app.register(whoamiRoute);
   await app.register(ingestRoute(opts.db, config));
   await app.register(searchRoute(opts.db, embed, config));
   await app.register(memoryRoute(opts.db));
