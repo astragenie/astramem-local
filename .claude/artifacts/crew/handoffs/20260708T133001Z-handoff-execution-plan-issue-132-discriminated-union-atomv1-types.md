@@ -1,0 +1,31 @@
+# Task Handoff: Execution plan: issue #132 discriminated-union AtomV1 types
+
+- Created: 2026-07-08T13:30:01.854Z
+- From: researcher
+- To: dispatcher
+- Objective: Plan to publish AtomV1Base/Local/Cloud as 3 sibling schema files (not a oneOf) with a small symmetric regex extension across generate-types.mjs/generate-zod.mjs/validate.mjs, keeping flat AtomV1 for back-compat, minor bump 1.3.0->1.4.0.
+- Allowed Scope:
+  - Read-only research: gh issue 132 body
+  - contracts/ codegen pipeline (generate-types.mjs
+  - generate-zod.mjs
+  - validate.mjs)
+  - atom.v1.schema.json
+  - contracts/package.json
+  - contracts/README.md
+  - contracts-publish.yml
+  - daemon-side AtomV1 consumers (none found in src/
+  - only tests/contracts + fixtures + hand-mirrored atom-wire.ts).
+- Forbidden Scope: -
+- Deliverable: 4-slice execution plan (generator regex extension; 3 new schema files + fixtures; README+package bump; publish) with scope/non-goals, discriminant recommendation (no runtime tag), cross-repo lockstep order vs plugin#38, and a risk table flagging a fixture-prefix-collision hazard in validate.mjs that needs a naming decision before Slice 2.
+- Changed Files:
+  - contracts/schemas/atom.v1.schema.json
+  - contracts/generate-types.mjs
+  - contracts/generate-zod.mjs
+  - contracts/validate.mjs
+  - contracts/package.json
+  - contracts/README.md
+  - .github/workflows/contracts-publish.yml
+- Confidence: high
+- Risks: Fixture-prefix-collision in validate.mjs (startsWith, not exact-match) between new atom-v1-base-* fixtures and the existing flat atom-v1- prefix needs an explicit naming decision before Slice 2 fixture authoring; discriminant field (origin/owner) design deferred to contracts owner as no precedent field exists today; cloud-only field partition beyond the type enum was not found in the current schema, contradicting the issue's phrasing -- flagged as a finding for the issue author.
+- Suggested Next Handoff: Dispatch crew:architect-feature or directly crew:builder for Slice 1 (generator regex extension in generate-types.mjs/generate-zod.mjs/validate.mjs), with the fixture-naming decision resolved first.
+

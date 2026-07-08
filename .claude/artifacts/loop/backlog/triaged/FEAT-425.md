@@ -1,15 +1,29 @@
 ---
 id: FEAT-425
-status: pending
-priority: null
+status: triaged
+priority: P2
 category: platform
 target_release: null
 created: 2026-07-05
+updated: 2026-07-07
 depends_on: [FEAT-423]
 slices: []
 derived_from: null
 tags: [concern:recall, concern:provenance, surface:daemon]
-autonomous_safe: null
+pm_customer_impact: 0.40
+pm_effort_estimate: 0.15
+pm_strategic_alignment: 0.40
+pm_technical_risk: 0.15
+pm_dependency_depth: 0.05
+pm_effort_points: 2
+composite_score: 0.56
+composite_priority: P2
+autonomous_safe: true
+pm_demand_evidence: "Internal follow-up, not end-user reported: triage_notes quotes 'deriveProject's cwd-basename fallback is known to collide across git worktrees. Deliberately left out of scope for the bounded FEAT-423 correctness fix.' Real usage signal: this repo's own CLAUDE.md HARD RULES mandate worktree parallelism ('Run parallel features in sibling git worktrees'), so the loop itself is a guaranteed repeat trigger of the exact collision described."
+pm_scope_notes: "depends_on: [FEAT-423] is resolved (backlog/done/FEAT-423.md: status: done). Smallest deliverable: string-only path heuristic in the two named functions, no git/fs calls added (explicitly required by the FEAT itself). No cost analog found (Framework 5 — no aggregate cost reports exist in this repo). No weak grade dimension applies (lowest is observability at 0.84, above the 0.80 threshold)."
+pm_risks:
+  - "Low blast radius (2 files, ~50 lines) but the heuristic is conservative-by-design; a too-aggressive strip rule could silently merge two genuinely different repos that happen to share a '-worktrees/wt-*' naming coincidence outside this repo's own convention — AC-2 in the body ('non-worktree paths unaffected') already guards this, keep it as a literal regression test, not just a stated intent."
+reasoning: "P2 via formula (impact 0.40 < 0.7/0.8 thresholds). technical_risk banded at 0.15 (0.0-0.2 band: known repo pattern, 2 files, trivially git-revertible, string-only heuristic, no new deps). autonomous_safe true: all three risk/effort/dependency thresholds well under 0.6, and the body's proposed ACs are already Given-When-Then shaped with concrete example paths."
 triage_notes: "Follow-up to the FEAT-423 architect-reviewer fix (CONCERNS-blocking): deriveProject's cwd-basename fallback is known to collide across git worktrees. Deliberately left out of scope for the bounded correctness fix so it doesn't expand that slice."
 ---
 

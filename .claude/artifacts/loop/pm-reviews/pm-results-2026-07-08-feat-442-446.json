@@ -1,0 +1,113 @@
+[
+  {
+    "featureId": "FEAT-442",
+    "scores": {
+      "customer_impact": 0.45,
+      "effort_estimate": 0.35,
+      "strategic_alignment": 0.75,
+      "technical_risk": 0.45,
+      "dependency_depth": 0.25
+    },
+    "compositePriority": "P2",
+    "autonomousSafe": false,
+    "demandEvidence": "2026-07-08 ecosystem research D4 (month-3 differentiation): Supermemory does opaque auto-merge via an isLatest flip with no audit trail. No direct end-user complaint on record for astramemory-local itself — this is a competitive-parity feature, not a reported pain point, so customer_impact is capped at 0.45 rather than scored as critical pain.",
+    "scopeNotes": "Smallest deliverable: a single new confidence band (e.g. autoAcceptThreshold) above the existing proposeThreshold, config-gated default OFF, reusing the existing memory_events provenance path already used for merge/supersede auditing — no new event schema needed if the existing event shape already carries actor/reason. Effort_estimate 0.35 maps to 3 Fibonacci points (pm-effort-mapper band 0.25-0.4) — no decomposition-gate trigger. No directly comparable past slice cost analog found under .claude/artifacts/crew/cost/ for a consolidation-threshold change specifically; scoring from the technical_risk rubric table instead of an actual/predicted cost comparison (noting 'no cost analog' per Framework 5).",
+    "risks": [
+      "Injection-defense note: none of the FEAT-442 body content contained an embedded imperative — no injection attempt to report.",
+      "Data-integrity risk: even gated default-OFF, a misconfigured threshold could auto-merge two memories that a human reviewer would have kept separate; because this is event-sourced, the merge is reversible in principle but the reversal path (replaying memory_events to reconstruct pre-merge state) is not yet a tested/exercised runbook.",
+      "Scope creep risk: 'auditable and reversible' is stated as a requirement in the FEAT body but no concrete AC defines what a successful reversal looks like — this should be tightened before implementation, though it is not required pre-mortem since technical_risk (0.45) is below the 0.6 mandatory-pre-mortem threshold and priority is P2, not P0/P1."
+    ],
+    "reasoning": "Real competitive differentiator (event-sourced auto-merge vs. competitors' opaque flip) but default-OFF and not customer-demanded yet, so P2 not P1. technical_risk 0.45 sits in the 'new pattern in repo OR one module, no contract change, clean rollback' band (0.3-0.5) — this stays within consolidate.ts and the existing memory_events shape, no schema change. autonomousSafe=false because no AC/spec exists yet for a P2 item (ACs are only mandatory to draft here for P0/P1) and the reversal contract is underspecified — a human should scope the AC before this goes autonomous."
+  },
+  {
+    "featureId": "FEAT-443",
+    "scores": {
+      "customer_impact": 0.6,
+      "effort_estimate": 0.6,
+      "strategic_alignment": 0.65,
+      "technical_risk": 0.7,
+      "dependency_depth": 0.4
+    },
+    "compositePriority": "P2",
+    "autonomousSafe": false,
+    "demandEvidence": "2026-07-08 cross-platform audit documents the Windows-only pointer-indirection/rollback architecture and Windows-only restorePriorPointer in src/service/install-flow.ts:74-84 as an 'honest asymmetry' at OSS launch. No direct Linux/macOS user complaint on record yet (daemon has not shipped broadly to those OSes under this architecture), but the OSS launch (2026-07-15) will put non-Windows self-hosters in front of this gap for the first time, so evidence is architectural/audit-based rather than user-reported.",
+    "scopeNotes": "Smallest deliverable that stays reversible: port the pointer-indirection + rollback piece alone first (systemd/launchd analog of the Windows shim architecture), landing the hang-watchdog piece (sd_notify/WatchdogSec, launchd equivalent) as a second increment — these are genuinely separable and are proposed as two slices below since effort_estimate 0.6 maps to 8 Fibonacci points (pm-effort-mapper band 0.6-0.85), which trips the FEAT-168 decomposition gate (points >= 8 requires either proposed_slices or a needs-review escalation). No directly comparable past cost analog exists under .claude/artifacts/crew/cost/ for a systemd/launchd port specifically ('no cost analog' per Framework 5) — effort scored from the dimension table on the basis that it touches install-flow.ts, unit/plist generation, and adds a new OS-level notification protocol (sd_notify).",
+    "risks": [
+      "Pre-mortem (mandatory, technical_risk 0.7 >= 0.6): most likely two-weeks-later failure cause is that sd_notify/WatchdogSec liveness semantics are subtly wrong (e.g. double-restarting an already-healthy daemon, or failing to catch a genuine hang) — this cannot be validated end-to-end from this Windows dev environment, which has no real systemd/launchd host to exercise it against.",
+      "Pre-mortem: rollback is NOT a plain git revert — once a systemd unit or launchd plist has been regenerated onto the new pointer-indirection format on a real machine, undoing it requires restoring the old absolute-path unit/plist and an explicit `systemctl daemon-reload` / `launchctl unload+load`, i.e. a migration step, not just a source revert.",
+      "Pre-mortem: the existing test suite has no CI job exercising real systemd/launchd process supervision (only Windows schtasks reinstall is verified per this repo's CLAUDE.md) — a hang-simulation integration test on actual Linux/macOS runners is the coverage gap this FEAT's AC must close.",
+      "Framing check per dispatcher's context: scored as a non-launch-blocker for the 2026-07-15 OSS date as instructed, but flagging explicit disagreement below — see final note."
+    ],
+    "reasoning": "Meaningful reliability gap for the majority-non-Windows OSS self-hosting audience, but scored P2 because impact (0.6) and alignment (0.65) both fall short of the P1 thresholds (impact>=0.7 and alignment>=0.6, OR alignment>=0.8 and effort<=0.4) in the deterministic formula. autonomousSafe=false because technical_risk (0.7) exceeds the 0.6 autonomous-safe ceiling on its own — this repo/environment cannot validate real systemd/launchd behavior, so a blind autonomous pass is unsafe regardless of AC quality.",
+    "proposedSlices": [
+      { "id_suffix": "-SLICE-1", "title": "Systemd/launchd pointer-indirection + rollback port", "points": 5 },
+      { "id_suffix": "-SLICE-2", "title": "Hang-watchdog equivalent (sd_notify/WatchdogSec + launchd analog)", "points": 5 }
+    ]
+  },
+  {
+    "featureId": "FEAT-444",
+    "scores": {
+      "customer_impact": 0.65,
+      "effort_estimate": 0.25,
+      "strategic_alignment": 0.8,
+      "technical_risk": 0.15,
+      "dependency_depth": 0.15
+    },
+    "compositePriority": "P1",
+    "autonomousSafe": true,
+    "demandEvidence": "2026-07-08 research CTO rec #1: productizing the audit methodology that exposed Mem0's 97.8% junk rate, framed as both a trust feature and a marketing asset via a published self-audit. No direct astramemory-local user complaint on record (evidence is competitive/strategic, not a filed bug), so customer_impact is scored on the strength of the strategic case plus the low cost of delivering it, not on reported pain.",
+    "scopeNotes": "Smallest deliverable: a single read-only doctor Check (src/doctor/types.ts CheckResult/Check shapes) computing junk rate + duplication rate + staleness distribution + poison/partial session counts, surfaced first via `doctor` output and the CLI report; the /health detail block and the optional LLM-judged sample can follow as the same slice's later ACs since none require new pipeline stages. Effort_estimate 0.25 maps to 3 Fibonacci points (pm-effort-mapper band 0.25-0.4) — well under the 8-point decomposition-gate threshold. No directly comparable past cost analog found under .claude/artifacts/crew/cost/ for a read-only reporting feature of this shape ('no cost analog' per Framework 5); effort scored low because it is explicitly read-only over existing tables with no new pipeline stage, per the FEAT body.",
+    "risks": [
+      "Pre-mortem (mandatory, compositePriority P1): most likely two-weeks-later failure cause is a division-by-zero/NaN in the rate calculations (junk rate, duplication rate) on a small or freshly-initialized store with few or zero memories — AC-4 below targets this directly.",
+      "Pre-mortem: rollback is a plain `git revert` — the feature is read-only over existing tables with no schema/migration, so removing the new doctor row / health block / CLI command fully undoes it with no state cleanup.",
+      "Pre-mortem: no existing doctor/health test currently asserts on the numeric correctness of a health-metric block (existing tests check status wiring, e.g. the starting|ok|degraded state in src/server/routes/health.ts, not junk/duplication/staleness math) — that is the coverage gap the new ACs must close with a fixture-DB-based unit test."
+    ],
+    "reasoning": "P1 via the deterministic formula: strategic_alignment (0.8) >= 0.8 AND effort_estimate (0.25) <= 0.4 triggers the second P1 clause. autonomousSafe=true because technical_risk (0.15), effort_estimate (0.25), and dependency_depth (0.15) are all well under the 0.6 ceiling, and this response drafts Given-When-Then ACs inline per FEAT-277 (mandatory for P1), satisfying the hasAcceptanceCriteria condition. Read-only, no schema change, cleanly revertible — genuinely low-risk, high-leverage work.",
+    "acs": [
+      "AC-1: Given a populated encrypted SQLite store with existing memories, When the operator runs `node dist/cli/index.js doctor`, Then the output includes a memory-health row matching the `CheckResultWithName` shape defined in `src/doctor/types.ts` reporting junk rate, duplication rate, staleness distribution, and poison/partial session counts, computed read-only with no writes to any table.",
+      "AC-2: Given the daemon is running, When a client calls `GET /health` (src/server/routes/health.ts), Then the JSON response includes a new `memory_health` detail block alongside the existing `status`/`embed` fields, and every pre-existing field is still present unchanged (preserving the wire-compat guarantee documented in that file's header comment).",
+      "AC-3: Given the daemon's SQLite store, When the operator runs the new `node dist/cli/index.js memory health` CLI report, Then a human-readable summary of the per-store health metrics is printed and the process exits `0` without mutating the memories, memory_events, or consolidation_proposals tables.",
+      "AC-4: Given an empty or newly-initialized store with zero memories, When the memory-health check/report runs, Then it returns all-zero metrics without throwing (no division-by-zero/NaN), and doctor/health/CLI surfaces all show a clean 'no data yet' state rather than an error.",
+      "AC-5: Given the LLM-judged junk-sample option is not explicitly enabled via config, When the health check/report runs, Then junk rate is computed using the heuristic method only and no LLM provider call is made — the optional judged sample only activates when explicitly turned on in config."
+    ]
+  },
+  {
+    "featureId": "FEAT-445",
+    "scores": {
+      "customer_impact": 0.3,
+      "effort_estimate": 0.1,
+      "strategic_alignment": 0.55,
+      "technical_risk": 0.15,
+      "dependency_depth": 0.15
+    },
+    "compositePriority": "P2",
+    "autonomousSafe": false,
+    "demandEvidence": "2026-07-08 Supermemory matrix, packaging gap #3: 'one binary zero config' is a competitive packaging claim we cannot currently counter or confirm/deny. No direct astramemory-local user has requested single-binary packaging on record — evidence is competitive-matrix-based, and the deliverable itself is explicitly a feasibility report/prototype, not a shipped capability, so direct customer_impact today is low (0.3) even though the eventual capability (if 'ship') would score much higher.",
+    "scopeNotes": "Deliverable is already minimally scoped by the FEAT body itself: a 1-day timeboxed feasibility report (what works / what breaks / binary size / startup time / ship-defer-never recommendation) with a working prototype only if trivial — nothing further to cut. Effort_estimate 0.1 maps to 2 Fibonacci points (pm-effort-mapper band 0.1-0.25) — far under the decomposition-gate threshold. No past cost analog found under .claude/artifacts/crew/cost/ for a packaging spike specifically ('no cost analog' per Framework 5); the explicit 1-day timebox in the FEAT body is treated as the effort ceiling rather than the score being derived from an analog.",
+    "risks": [
+      "Not mandatory (technical_risk 0.15 < 0.6 and priority is P2, not P0/P1), but noting for completeness: the named native-module risks (better-sqlite3-multiple-ciphers, @napi-rs/keyring) are exactly the kind of thing that could make `bun build --compile` infeasible outright — that is the point of the spike, not a risk to the spike itself, since nothing here ships to users regardless of outcome.",
+      "Scope-boundary risk: 'working prototype if trivial' is a soft trigger with no crisp definition of 'trivial' — worth tightening before dispatch so the builder doesn't over-invest chasing a marginal prototype past the 1-day timebox."
+    ],
+    "reasoning": "P2 via the deterministic formula — customer_impact (0.3) and strategic_alignment (0.55) both fall under every P0/P1 threshold, and the P3 clause (effort>=0.7 AND impact<=0.3) doesn't trigger either since effort is only 0.1. autonomousSafe=false purely because no AC/spec has been drafted (ACs are only mandatory to draft here for P0/P1, and this is P2) — despite genuinely low risk/effort/dependency scores, the formula's hasSpec/hasAcceptanceCriteria gate is the deciding factor; a human should confirm the 1-day timebox and 'trivial prototype' boundary as a lightweight AC before this goes autonomous."
+  },
+  {
+    "featureId": "FEAT-446",
+    "scores": {
+      "customer_impact": 0.5,
+      "effort_estimate": 0.55,
+      "strategic_alignment": 0.6,
+      "technical_risk": 0.65,
+      "dependency_depth": 0.5
+    },
+    "compositePriority": "P2",
+    "autonomousSafe": false,
+    "demandEvidence": "2026-07-08 SaaS audit finding C: astramem-sdk (TypeScript) is written and tested but has never been published, and its current 4-method surface (create/search/get/delete) would set the wrong expectation of completeness if tagged sdk-v1 today. No direct external-developer complaint on record (nobody can depend on an unpublished package), so demand is inferred from the audit finding and the growth intent, not a filed request.",
+    "scopeNotes": "IMPORTANT: this FEAT targets the sibling `memory` (SaaS) repository, not astramemory-local — it cannot be dispatched from this repo's autonomous loop or worktree; whoever picks this up needs to operate in the memory repo's own working tree. Smallest deliverable: grow the TypeScript SDK surface (memories CRUD+search, entities, decisions, session digest, daemon-compatible subset aligned with @astragenie/astramem-client) and cut the first sdk-v1 tag through the already-existing-but-never-triggered publish CI, deferring the Python mirror to a follow-up if time-boxed pressure demands a cut. Effort_estimate 0.55 maps to 5 Fibonacci points (pm-effort-mapper band 0.4-0.6) — under the 8-point decomposition-gate threshold, so no proposed_slices required. No cost analog found under this repo's .claude/artifacts/crew/cost/ for cross-repo SDK/publish work specifically ('no cost analog' per Framework 5) — scored from the dimension table given genuine first-publish and dual-language-parity unknowns.",
+    "risks": [
+      "Pre-mortem (mandatory, technical_risk 0.65 >= 0.6): most likely two-weeks-later failure cause is that the sdk-v1 publish CI pipeline, which per the audit has 'never been triggered,' fails on its first real run against some environment/credential/registry-auth issue that unit tests never exercised — a green CI config is not evidence of a green first execution.",
+      "Pre-mortem: rollback is NOT a plain revert — once a package version is published to a public registry (npm/PyPI), it cannot be cleanly un-published (npm restricts unpublish after 72h; PyPI disallows re-uploading the same version number), so a bad first sdk-v1 tag requires cutting a new patch version, not reverting the source.",
+      "Pre-mortem: existing unit/integration tests for astramem-sdk and astramem-py would not catch surface drift between the two languages (e.g. a method present in TypeScript but missing in Python) since there is no cross-language contract test today — that is the coverage gap this FEAT should close before or during the mirror work."
+    ],
+    "reasoning": "P2 via the deterministic formula — customer_impact (0.5) and strategic_alignment (0.6) both fall under every P0/P1 threshold. autonomousSafe=false for two independent reasons: technical_risk (0.65) exceeds the 0.6 ceiling on its own (first-ever publish-CI trigger + dual-language parity are real unknowns), and separately this FEAT cannot be executed autonomously from astramemory-local's own loop/worktree at all since its target is the sibling `memory` repo — dispatch requires a human to route it to the correct repo context regardless of score."
+  }
+]
