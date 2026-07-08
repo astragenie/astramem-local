@@ -51,6 +51,39 @@ the local daemon instead of the SaaS endpoint through a single environment varia
 
 ## Quick start
 
+**npm (recommended):**
+
+```bash
+npm install -g astramem-local
+astramem-local init
+# follow the wizard — picks Ollama or Azure, writes config.yaml + secrets.env
+astramem-local service install
+export MEMORY_API_URL=http://127.0.0.1:7777
+export MEMORY_BEARER=$(astramem-local token print)
+```
+
+Requires Node.js >= 20. Native deps (`better-sqlite3-multiple-ciphers`, `@napi-rs/keyring`) use
+prebuilt binaries where available, falling back to a from-source compile otherwise.
+
+**One-liner install scripts** (do the Node check + npm install for you, then hand off to the
+wizard):
+
+```bash
+# Linux / macOS
+curl -fsSL https://raw.githubusercontent.com/astragenie/astramemory-local/main/install.sh | bash
+```
+
+```powershell
+# Windows (PowerShell 5.1+ or 7+)
+irm https://raw.githubusercontent.com/astragenie/astramemory-local/main/install.ps1 | iex
+```
+
+If the script's own output is piped through a non-interactive shell, it stops after installing
+and tells you to run `astramem-local init` yourself — the wizard needs a real terminal to prompt
+for provider choice.
+
+**From source (contributors, or if you want to build from a branch):**
+
 ```bash
 git clone https://github.com/astragenie/astramemory-local.git
 cd astramemory-local
@@ -432,6 +465,26 @@ secret.
 - [docs/troubleshooting.md](docs/troubleshooting.md) — common issues and fixes
 - [docs/contracts.md](docs/contracts.md) — frozen type interfaces (for contributors)
 - [CHANGELOG.md](CHANGELOG.md) — release history
+
+---
+
+## Retrieval quality gates
+
+Every push and pull request to `main` runs the ADR-005 retrieval eval harness
+(`tests/eval/retrieval-eval.test.ts`) as part of `bun run test` — it is a regular test, not an
+optional or manually-triggered check. It runs a fixture corpus of graded queries through the
+real hybrid search path (BM25 + vector + importance + freshness fusion) with a deterministic
+fake embedder, and fails the build if either regression floor is missed: **recall@10 ≥ 0.9** or
+**NDCG@10 ≥ 0.7**.
+
+These are enforced floors, not a self-reported benchmark leaderboard: the numbers are computed
+by CI from a fixture set checked into the repo (`contracts/fixtures/eval/`), on every change, by
+anyone — not hand-picked and reported after the fact. A PR that regresses ranking behavior fails
+the same test suite as any other broken behavior; there is no separate step to remember to run.
+
+See [docs/eval/methodology.md](docs/eval/methodology.md) for what each of the project's eval
+harnesses measures (including the manual extraction-quality benchmark and the LongMemEval
+adapter's current status) and how to reproduce them.
 
 ---
 
