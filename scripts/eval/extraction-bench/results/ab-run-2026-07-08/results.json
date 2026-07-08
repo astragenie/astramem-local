@@ -1,0 +1,4569 @@
+[
+  {
+    "model": "qwen2.5-coder:7b",
+    "daemonBootMs": 1317,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 13688,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The database type is SQLite."
+          },
+          {
+            "type": "fact",
+            "text": "The vector store is sqlite-vec."
+          },
+          {
+            "type": "fact",
+            "text": "The embedding model provider is Ollama."
+          },
+          {
+            "type": "fact",
+            "text": "The embedding model is mxbai-embed-large."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 4,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to use SQLite, but extracted type is 'fact' while gold type is 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Identifies sqlite-vec as the vector store, but labeled as 'fact' instead of gold's 'decision'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Notes Ollama as the embedding provider, matching the gold decision about model source, but type is 'fact' not 'decision'."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Specifies mxbai-embed-large as the model, matching the gold fact about the model, but extracted type is 'fact' whereas gold is also 'fact' (type_correct true)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 3801,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Compress the codebase to reduce size and improve upload time."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 1,
+          "recall": 0,
+          "precision": 0,
+          "junkRate": 1,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "This decision about compressing the codebase is not present in the gold atoms and appears unrelated to the transcript facts; it's unsupported by any gold item."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 3806,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Ship the retry extraction — extracted shared fetchWithRetry logic and updated provider files to import it."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 1,
+          "recall": 0.25,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the decision to extract shared fetchWithRetry and update providers to import it."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 3812,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "git checkout v0.7.3"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 1,
+          "recall": 0.2,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "The extracted atom records the rollback to v0.7.3 (a command to check out that tag) which corresponds to the gold event of rolling back production to v0.7.3, but the extracted type is a command while the gold type is a decision."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 10645,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The default budget cap is set to $10."
+          },
+          {
+            "type": "fact",
+            "text": "Users are expected to use the system for 30 days during onboarding."
+          },
+          {
+            "type": "fact",
+            "text": "The estimated spend per session is $0.02."
+          },
+          {
+            "type": "lesson",
+            "text": "Actual spend per user ranges from $1 to $2, significantly higher than the estimated amount."
+          },
+          {
+            "type": "decision",
+            "text": "Add stricter validation pass in a later release to address config validation gap."
+          },
+          {
+            "type": "lesson",
+            "text": "Running at least the embed step on local Ollama is suggested to mitigate risks associated with using Azure OpenAI services for all providers."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 6,
+          "recall": 0.5,
+          "precision": 0.8333333333333334,
+          "junkRate": 0.16666666666666666,
+          "typeAccuracy": 0.2,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "States default $10 cap, which matches gold fact about default cap but gold[1] is a decision; type differs."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Not supported by any gold atom or transcript facts (invented '30 days' onboarding)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Estimated spend per session $0.02 corresponds to $1-2 per day for 30-40 sessions (captures same numeric content) but type differs (fact vs fact—gold is fact so type actually matches? however extracted labels 'fact' and gold[0] is fact so type should be true)."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Notes actual spend per user $1–$2 which matches gold[0] but this duplicates the same gold atom already matched by index 2; flagged as matching though type differs."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Directly matches gold[3] todo to add stricter validation in a later release."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Suggests running embedding step locally to mitigate Azure-only config, which aligns with gold[2] warning decision but phrasing differs and type is 'lesson' vs gold 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx06-tool-failure-permission",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 6867,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Change the runlevel from 'HighestAvailable' to 'LeastPrivilege' using the XML task definition."
+          },
+          {
+            "type": "command",
+            "text": "schtasks /delete /F"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx06-tool-failure-permission",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Captures the decision to set RunLevel to LeastPrivilege to allow per-user task registration without admin rights."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Reflects the decision to add the /F flag to schtasks /delete to avoid interactive prompts, but labeled as a command rather than a decision."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx07-noisy-tool-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 6081,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Add .vitest-cache to the CI config cache key path and remove --reporter=verbose from the default run (keeping it available via a workflow_dispatch flag for debugging)."
+          },
+          {
+            "type": "lesson",
+            "text": "The default run should be optimized to reduce wall-clock time without sacrificing debugging capabilities."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx07-noisy-tool-spam",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Specifies adding .vitest-cache to CI cache and removing global --reporter=verbose while keeping it available via workflow_dispatch, matching the decision atom."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Summarizes the lesson to optimize default runs to reduce wall-clock time while preserving debugging capability, which aligns with the lesson about caching and reporter flags inflating CI time."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx08-long-multitopic",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 1526,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx08-long-multitopic",
+          "goldCount": 7,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx09-nothing-worth-remembering",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 1523,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "goldCount": 0,
+          "extractedCount": 0,
+          "recall": null,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": 0,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx10-contradiction-correction",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 1517,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx10-contradiction-correction",
+          "goldCount": 3,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx11-todo-heavy",
+        "difficulty": "todo-heavy",
+        "status": "ready",
+        "wallMs": 10690,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Decide on a default value for 'archival.enabled' during upgrades before the release, considering whether flipping it silently could cause users to lose memories they didn't expect."
+          },
+          {
+            "type": "command",
+            "text": "Verify the Windows service uninstall path on a clean VM."
+          },
+          {
+            "type": "decision",
+            "text": "Write migration docs for the new archival tiers feature to ensure users are aware of any changes during upgrades."
+          },
+          {
+            "type": "command",
+            "text": "Add a doctor check for the new 'tag-hygiene' tier2 flag to ensure it functions as expected."
+          },
+          {
+            "type": "decision",
+            "text": "Backfill CHANGELOG entries for the last 3 merged PRs to maintain an up-to-date history of changes."
+          },
+          {
+            "type": "command",
+            "text": "Bump package.json version to 0.9.0 and tag the release."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx11-todo-heavy",
+          "goldCount": 7,
+          "extractedCount": 6,
+          "recall": 0.8571428571428571,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": false,
+                "reason": "Captures the decision about archival.enabled default and risk of silently archiving memories (gold 5) but type 'decision' vs gold 'todo'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Matches verifying Windows service uninstall path on a clean VM (gold 3) but type 'command' vs gold 'todo'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Relates to writing migration docs for archival tiers (gold 0) but labeled 'decision' instead of 'todo'."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Adds a doctor check for tag-hygiene tier2 flag matching gold 1, though typed 'command' vs gold 'todo'."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Backfilling CHANGELOG entries for last 3 PRs matches gold 2, but type 'decision' vs gold 'todo'."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Bumping package.json to 0.9.0 and tagging matches gold 4, but type 'command' vs gold 'todo'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx12-command-heavy",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 29669,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "bun run test"
+          },
+          {
+            "type": "command",
+            "text": "bun run build"
+          },
+          {
+            "type": "command",
+            "text": "bun run contracts:validate"
+          },
+          {
+            "type": "command",
+            "text": "npm version 0.9.0 --no-git-tag-version"
+          },
+          {
+            "type": "command",
+            "text": "git tag v0.9.0 && git push origin v0.9.0"
+          },
+          {
+            "type": "command",
+            "text": "npm publish --access public"
+          },
+          {
+            "type": "command",
+            "text": "npm deprecate @astragenie/astramemory-local@0.9.0 \"broken release, use 0.8.1\""
+          }
+        ],
+        "score": {
+          "fixtureId": "fx12-command-heavy",
+          "goldCount": 8,
+          "extractedCount": 7,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Exact match for the 'bun run test' command."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Exact match for the 'bun run build' command."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Exact match for the 'bun run contracts:validate' command."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Part of the multi-step publish command; this extracted atom captures the npm version step from the gold atom."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Captures the git tag and push portion of the combined release command in the gold atom."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": true,
+                "reason": "Exact match for the 'npm publish --access public' command."
+              },
+              {
+                "index": 6,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": true,
+                "reason": "Exact match for the npm deprecate command and message."
+              }
+            ],
+            "unmatched_gold_indices": [
+              4,
+              7
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx13-entity-rich",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 30426,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The local integration uses 'astramemory-local' tool and 'astramem-plugin' plugin."
+          },
+          {
+            "type": "fact",
+            "text": "The cloud integration utilizes a memory SaaS backend with ASP.NET Core framework, PostgreSQL database hosted on Azure."
+          },
+          {
+            "type": "fact",
+            "text": "External dependencies include 'Ollama' for local inference without data leaving the machine and 'Azure OpenAI (gpt-5-mini)' for cloud-side judging/answering."
+          },
+          {
+            "type": "fact",
+            "text": "'Claude-code' is a supported agent client with 'cursor' and 'GitHub github-copilot' as clients, using 'ingest' as the agent field."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx13-entity-rich",
+          "goldCount": 4,
+          "extractedCount": 4,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.75,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Describes astramemory-local integrating with astramem-plugin and cloud SaaS backend stack."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Specifies the cloud memory SaaS backend uses ASP.NET Core, PostgreSQL, and is hosted on Azure, matching gold atom 0."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Lists Ollama as local inference (no data leaves) and Azure OpenAI (gpt-5-mini) for cloud judging, matching the flagged external dependencies."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Attempts to list supported agent clients and mentions ingest as agent field, but misnames/duplicates and does not align cleanly with gold atom 3."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx14-secrets-present",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 3801,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Rename the function to 'resolveAzureKey()' instead of 'rotated_key' as it better reflects its functionality."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx14-secrets-present",
+          "goldCount": 4,
+          "extractedCount": 1,
+          "recall": 0.25,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Proposes replacing/renaming to resolveAzureKey(), matching the gold decision to use resolveAzureKey() though type is 'decision' in both but extracted name differs from gold's expected replacement detail."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx15-short-ambiguous",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 3053,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Do not prioritize caching search results at present."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx15-short-ambiguous",
+          "goldCount": 1,
+          "extractedCount": 1,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Both state that caching search results should not be prioritized now; types differ (gold is a note, extracted is a decision)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0.4433673469387755,
+      "avgPrecision": 0.9027777777777778,
+      "f1": 0.5946791038490693,
+      "avgJunkRate": 0.07777777777777778,
+      "avgTypeAccuracy": 0.40454545454545454,
+      "overExtractionOnNothingFixture": 0,
+      "failedFixtures": 0,
+      "avgWallMsPerSession": 8727,
+      "totalWallMs": 130905,
+      "azureUsd": 0
+    }
+  },
+  {
+    "model": "qwen2.5:7b",
+    "daemonBootMs": 889,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 9134,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The database type is SQLite, using sqlite-vec for vector storage and embedding provided by Ollama with the mxbai-embed-large model."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 1,
+          "recall": 0.25,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States SQLite is used, which matches gold atom 0 (a decision), but extracted atom labeled as 'fact' not 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 43524,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Use atomic 'INSERT ... ON CONFLICT DO NOTHING' inside a transaction to handle concurrency safely."
+          },
+          {
+            "type": "todo",
+            "text": "Add a concurrency regression test for idempotency."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Captures the decision to use atomic INSERT ... ON CONFLICT DO NOTHING inside a transaction to fix duplicates."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Matches the todo to add a concurrency regression test for idempotency (firing N concurrent requests and asserting one row)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 42557,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Move `fetchWithRetry` usage to `fetchRetry` in providers."
+          },
+          {
+            "type": "decision",
+            "text": "Implement a retry mechanism for fetch requests via the new `fetchRetry` function."
+          },
+          {
+            "type": "todo",
+            "text": "Update all providers to use `fetchRetry` instead of `fetchWithRetry`."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to move/shared fetch retry logic but uses different naming and labels it a command rather than a decision."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "States implementing a retry mechanism which is true and useful but is a restatement/interpretation rather than matching a single specific gold atom."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Notes updating all providers to use the shared retry function, matching the gold note about switching provider call sites, but labeled as a todo instead of a note."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 30522,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Provision keystore entry before enabling encryption in the deployment script."
+          },
+          {
+            "type": "decision",
+            "text": "Add a doctor check to fail if encryption is enabled without a keystore entry."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Captures the same deployment-runbook decision to provision the keystore before enabling encryption."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Matches the decision to add a doctor check that fails when encryption is enabled but no keystore entry exists."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 12165,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Do not raise the default LLM budget cap due to actual spend being under $10 on heavy onboarding days and misconfiguration causing double-billing with azure-openai."
+          },
+          {
+            "type": "command",
+            "text": "Add a warning at boot for users with both compaction and extraction providers set to azure-openai AND embedding provider also set to azure-openai."
+          },
+          {
+            "type": "todo",
+            "text": "File a follow-up to add stricter validation in a later release for the same condition."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.3333333333333333,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Decision not to raise daily budget matches gold decision but extracted type says 'decision' about LLM budget cap wording differs; gold index 1 is decision about not raising default daily budget cap."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Boot-time warning for all-azure-openai configuration matches gold atom about adding a warn, but extracted type is 'command' while gold type is 'decision'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Todo to add stricter validation in a later release matches the gold todo about adding a stricter validation pass."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx06-tool-failure-permission",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 19004,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Uninstalling the application fails due to interactive prompt for confirmation; adding '/F' forces the operation."
+          },
+          {
+            "type": "decision",
+            "text": "Modify the uninstall path to include '/F' to avoid interactive prompts and enforce silent deletion."
+          },
+          {
+            "type": "lesson",
+            "text": "Access is denied error encountered during install; removing <RunLevel>HighestAvailable> from the XML task definition resolves it."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx06-tool-failure-permission",
+          "goldCount": 5,
+          "extractedCount": 3,
+          "recall": 0.6,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.6666666666666666,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Captures the lesson that schtasks /delete prompts for confirmation and would hang in non-interactive scripts (gold [3])."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Is the decision to add '/F' to schtasks /delete to avoid interactive prompts (gold [4])."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Notes that removing <RunLevel>HighestAvailable fixes an access denied install problem (matches lesson about HighestAvailable forcing elevation, gold [0]) but labels it generically as a lesson about access denied rather than the specific RunLevel-elevation cause."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx07-noisy-tool-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 13724,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "CI job updated with new config."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx07-noisy-tool-spam",
+          "goldCount": 4,
+          "extractedCount": 1,
+          "recall": 0,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "High-level statement that CI job was updated matches the decision content but is vague and does not specifically capture the cache key or reporter flag changes in any single gold atom."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx08-long-multitopic",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 20537,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Set refresh-token cookie maxAge in milliseconds using the REFRESH_TOKEN_MAX_AGE_MS constant, fixing the initial issue with days-to-ms conversion."
+          },
+          {
+            "type": "lesson",
+            "text": "The initial maxAge was in days, which caused issues when converted to milliseconds without a proper constant for clarity."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx08-long-multitopic",
+          "goldCount": 7,
+          "extractedCount": 2,
+          "recall": 0.2857142857142857,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Same decision to fix expiry by using a REFRESH_TOKEN_MAX_AGE_MS constant to set cookie maxAge in milliseconds."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the lesson about unit-mismatch causing expiry, but misstates that initial maxAge was in 'days' rather than that ms vs seconds boundary caused it to expire 1000x sooner; also labeled as lesson (gold 0 is a lesson) — type matches but the extracted wording is slightly off about units."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx09-nothing-worth-remembering",
+        "difficulty": "nothing",
+        "status": "partial",
+        "wallMs": 11406,
+        "poisonJobs": 1,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "goldCount": 0,
+          "extractedCount": 0,
+          "recall": null,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": 0,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx10-contradiction-correction",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 13014,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Set epsilon to 0.1."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx10-contradiction-correction",
+          "goldCount": 3,
+          "extractedCount": 1,
+          "recall": 0.3333333333333333,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to set epsilon to 0.1 (gold 0) but labels it as 'fact' instead of 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx11-todo-heavy",
+        "difficulty": "todo-heavy",
+        "status": "ready",
+        "wallMs": 25936,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Decide on the default value for archival.enabled before the release (currently opt-in/false)"
+          },
+          {
+            "type": "todo",
+            "text": "Verify Windows service uninstall path on a clean VM"
+          },
+          {
+            "type": "todo",
+            "text": "Write migration docs for the new archival tiers feature"
+          },
+          {
+            "type": "todo",
+            "text": "Add a doctor check for the new tag-hygiene tier2 flag"
+          },
+          {
+            "type": "todo",
+            "text": "Backfill CHANGELOG entries for the last 3 merged PRs"
+          },
+          {
+            "type": "todo",
+            "text": "Bump package.json version to 0.9.0 and tag"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx11-todo-heavy",
+          "goldCount": 7,
+          "extractedCount": 6,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.8333333333333334,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": false,
+                "reason": "Captures the same decision about archival.enabled default; extracted labeled as decision while gold is todo about deciding (type mismatch)."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Matches the todo to verify the Windows service uninstall path on a clean VM."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Matches the todo to write migration docs for the new archival tiers feature."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Matches the todo to add a doctor check for the new tag-hygiene tier2 flag."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Matches the todo to backfill CHANGELOG entries for the last 3 merged PRs."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Matches the todo to bump package.json version to 0.9.0 and tag for release."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx12-command-heavy",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 26660,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Run tests using bun."
+          },
+          {
+            "type": "command",
+            "text": "Build the project using bun."
+          },
+          {
+            "type": "command",
+            "text": "Validate contracts using bun."
+          },
+          {
+            "type": "command",
+            "text": "Bump the version to 0.9.0 without tagging in Git."
+          },
+          {
+            "type": "fact",
+            "text": "The new version is v0.9.0."
+          },
+          {
+            "type": "command",
+            "text": "Publish the package to npm."
+          },
+          {
+            "type": "command",
+            "text": "Deprecate version 0.9.0 of @astragenie/astramemory-local due to a broken release, recommending use of 0.8.1."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx12-command-heavy",
+          "goldCount": 8,
+          "extractedCount": 7,
+          "recall": 0.625,
+          "precision": 0.8571428571428571,
+          "junkRate": 0.14285714285714285,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the bun run test command as a test-run command."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Captures the bun run build command as a build command."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Captures the bun run contracts:validate command as a contract validation command."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Extracted atom misrepresents the gold atom: gold describes npm version with no git tag then tagging and pushing; this says 'bump without tagging', which is incorrect/hallucinated."
+              },
+              {
+                "index": 4,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "States the new version value v0.9.0 which is true/useful but not listed as a separate gold atom."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": true,
+                "reason": "Captures the npm publish --access public command as publishing the package."
+              },
+              {
+                "index": 6,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": true,
+                "reason": "Captures the npm deprecate command and rationale matching the gold deprecation command."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3,
+              4,
+              7
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx13-entity-rich",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 23866,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The integration uses the astramemory-local plugin for local operations and the astramem-plugin for other integrations."
+          },
+          {
+            "type": "fact",
+            "text": "Cloud sync uses a memory SaaS backend built on ASP.NET Core and PostgreSQL, hosted on Azure."
+          },
+          {
+            "type": "fact",
+            "text": "The wire format version for cloud sync mirrors the FEAT-4a design doc and is versioned."
+          },
+          {
+            "type": "note",
+            "text": "Ollama provides local inference with no data leaving the machine, while Azure OpenAI (gpt-5-mini) can be used for cloud-side judging/answering if users opt into cloud sync."
+          },
+          {
+            "type": "note",
+            "text": "Agent clients include claude-code, cursor, and GitHub Copilot."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx13-entity-rich",
+          "goldCount": 4,
+          "extractedCount": 5,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.75,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "States the same integration components (astramemory-local and astramem-plugin) as the gold atom about integration."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Specifies the cloud sync backend (ASP.NET Core, PostgreSQL on Azure), matching the cloud-hosting details in the same gold atom."
+              },
+              {
+                "index": 2,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Mentions wire format versioning and FEAT-4a alignment which is useful durable info not present in the gold atoms."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Captures the security-relevant external deps Ollama (local inference) and Azure OpenAI (gpt-5-mini) for opt-in cloud sync from the gold atom."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Lists supported agent clients (Claude Code, Cursor, GitHub Copilot) matching the gold atom about agent clients, but the gold atom index is 3; type field matches 'note' vs extracted 'note' (type labels align), however the matched_gold_index is corrected to the actual gold atom index 3."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx14-secrets-present",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 18310,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Replace hardcoded key with a call to resolveAzureKey() for improved security."
+          },
+          {
+            "type": "command",
+            "text": "Perform key rotation and add pre-commit checks."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx14-secrets-present",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Calls to replace hardcoded key with resolveAzureKey() match the gold decision to do exactly that."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Mentions adding pre-commit checks (gold atom 3) and key rotation (gold atom 2) but is typed as a command rather than matching the gold atoms' types (decision/event)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx15-short-ambiguous",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 13739,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Caching search results might be useful in the future if current performance becomes a bottleneck."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx15-short-ambiguous",
+          "goldCount": 1,
+          "extractedCount": 1,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures same content about caching search results as a possible future optimization but the extracted atom labels it as a 'decision' while gold labels it as a 'note'."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0.5102891156462585,
+      "avgPrecision": 0.9897959183673469,
+      "f1": 0.6734046036077829,
+      "avgJunkRate": 0.009523809523809523,
+      "avgTypeAccuracy": 0.5064102564102564,
+      "overExtractionOnNothingFixture": 0,
+      "failedFixtures": 1,
+      "avgWallMsPerSession": 21606.533333333333,
+      "totalWallMs": 324098,
+      "azureUsd": 0
+    }
+  },
+  {
+    "model": "qwen3:8b",
+    "daemonBootMs": 1663,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 35385,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The database system in use is SQLite."
+          },
+          {
+            "type": "fact",
+            "text": "The vector search extension implemented is sqlite-vec."
+          },
+          {
+            "type": "fact",
+            "text": "The embedding model provider is Ollama with model mxbai-embed-large."
+          },
+          {
+            "type": "fact",
+            "text": "The vector store library used is better-sqlite3."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 4,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States SQLite is the database system, matching decision to use SQLite (but extracted type 'fact' vs gold type 'decision')."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Identifies sqlite-vec as the vector search extension, matching the decision to use sqlite-vec (type differs)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Specifies Ollama and mxbai-embed-large as the embedding model provider and model, matching the decision to use mxbai-embed-large via Ollama (type differs)."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Mentions better-sqlite3 as the vector store library; this supports the SQLite storage decision but duplicates/matches the SQLite-related gold atom (type differs)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 44151,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "A concurrent SELECT-INSERT race condition was checked for during ingestion."
+          },
+          {
+            "type": "decision",
+            "text": "Implement atomic INSERT with ON CONFLICT DO NOTHING inside a transaction to prevent duplicate rows."
+          },
+          {
+            "type": "event",
+            "text": "Concurrent POST test with 20 requests showed 1 row created (previously 3 duplicates) after implementing atomic insert."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 3,
+          "recall": 0.6,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.3333333333333333,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the race between SELECT then INSERT but labels it as a fact rather than a lesson."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Directly matches the decision to use atomic INSERT ... ON CONFLICT DO NOTHING inside a transaction."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Reports the verification result (1 row created vs previously 3) but labels it as an event and condenses before/after facts into one."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 55059,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "HTTP call retry logic was refactored into src/providers/lib/fetch-retry.ts and provider imports were updated."
+          },
+          {
+            "type": "decision",
+            "text": "Retain individual childLogger calls in each provider temporarily."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the refactor into src/providers/lib/fetch-retry.ts and provider imports updated, matching the decision to extract duplicated fetchWithRetry logic (gold 0) but labeled as a fact rather than a decision."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "States retaining individual childLogger calls temporarily, matching the decision to leave that duplication alone (gold 3) and correctly labeled as a decision."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 61035,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The new build enables security.encryption.enabled by default."
+          },
+          {
+            "type": "fact",
+            "text": "The deploy script failed to provision an OS keystore entry."
+          },
+          {
+            "type": "fact",
+            "text": "DB open fails with keystore error when encryption is enabled but no keystore exists."
+          },
+          {
+            "type": "event",
+            "text": "Rolled back to release tag v0.7.3 with 500s timeout within 30 seconds."
+          },
+          {
+            "type": "decision",
+            "text": "Provision keystore entry before enabling encryption in the deploy runbook."
+          },
+          {
+            "type": "lesson",
+            "text": "Deploy scripts must provision keystore entries before enabling encryption to avoid runtime failures."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 6,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures that the new build enabled encryption by default causing the incident described in gold 0, but type 'fact' vs gold 'event'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States the deploy script didn't provision the OS keystore entry which is part of the incident in gold 0; type differs."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Describes DB-open failures due to missing keystore when encryption is enabled, matching the lesson about flipping encryption before provisioning."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Reports rollback to v0.7.3 stopping 500s within 30 seconds, matching the decision but type labeled 'event' vs 'decision'."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Matches the decision to provision the keystore entry before flipping encryption as a required deploy-runbook step."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Restates the lesson/decision to ensure deploy scripts provision keystore entries before enabling encryption to avoid failures, matching gold 4."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 57457,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The budget cap is set to $10."
+          },
+          {
+            "type": "fact",
+            "text": "Ollama is identified as a high-usage user."
+          },
+          {
+            "type": "fact",
+            "text": "High usage is caused by misconfigured azure-openai as a fallback, leading to double-billing."
+          },
+          {
+            "type": "fact",
+            "text": "The default budget adjustment is no change to $10."
+          },
+          {
+            "type": "decision",
+            "text": "Implement a warning at boot if all three providers (llm.compaction, llm.extraction, embedding) are set to azure-openai."
+          },
+          {
+            "type": "todo",
+            "text": "File a follow-up to add stricter validation for provider configurations."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 6,
+          "recall": 0.75,
+          "precision": 0.8333333333333334,
+          "junkRate": 0.16666666666666666,
+          "typeAccuracy": 0.4,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Correctly notes $10 budget but gold atom 1 is a decision about not raising the cap, not a fact; type mismatches."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "No gold atom states 'Ollama is identified as a high-usage user' — this appears unsupported or too specific."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Captures that high usage is due to azure-openai misconfiguration matching gold decision 1, but labeled as a fact rather than a decision; however gold atom 1 already matched so this is the best semantic match."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States default budget remains $10 which relates to gold atom 0 about typical onboarding cost vs budget cap; type is fact while gold 0 is a fact about costs — moderate mismatch but captures budget decision element."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Directly matches the decision to warn at boot when all three providers are azure-openai."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Matches the todo to add stricter validation for the all-azure-openai misconfiguration."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx06-tool-failure-permission",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 34668,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The system's runlevel is configured to 'LeastPrivilege'."
+          },
+          {
+            "type": "command",
+            "text": "Use '/F' flag with schtasks to forcefully delete scheduled tasks."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx06-tool-failure-permission",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Captures the decision to set RunLevel to LeastPrivilege (gold 1) but type is 'fact' not 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Expresses adding '/F' to schtasks delete matching decision (gold 4) but labeled as 'command' rather than 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx07-noisy-tool-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 77937,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx07-noisy-tool-spam",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx08-long-multitopic",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 138295,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "No changes required for zod or fastify versions."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx08-long-multitopic",
+          "goldCount": 7,
+          "extractedCount": 1,
+          "recall": 0.14285714285714285,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": false,
+                "reason": "States no changes required for zod or fastify, matching the gold fact about versions but the gold index and type differ."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx09-nothing-worth-remembering",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 17302,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "goldCount": 0,
+          "extractedCount": 0,
+          "recall": null,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": 0,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx10-contradiction-correction",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 46230,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "epsilon is set to 0.1"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx10-contradiction-correction",
+          "goldCount": 3,
+          "extractedCount": 1,
+          "recall": 0.3333333333333333,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to set epsilon to 0.1 but labels it as 'fact' instead of 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx11-todo-heavy",
+        "difficulty": "todo-heavy",
+        "status": "partial",
+        "wallMs": 56287,
+        "poisonJobs": 1,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx11-todo-heavy",
+          "goldCount": 7,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx12-command-heavy",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 62709,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Run tests using bun"
+          },
+          {
+            "type": "command",
+            "text": "Build the project with bun"
+          },
+          {
+            "type": "command",
+            "text": "Validate contracts using bun"
+          },
+          {
+            "type": "command",
+            "text": "Bump package version to 0.9.0 without git tag"
+          },
+          {
+            "type": "command",
+            "text": "Create and push git tag for version v0.9.0"
+          },
+          {
+            "type": "command",
+            "text": "Publish package to npm with public access"
+          },
+          {
+            "type": "decision",
+            "text": "Deprecate 0.9.0 release due to being broken, recommend using 0.8.1"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx12-command-heavy",
+          "goldCount": 8,
+          "extractedCount": 7,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.7142857142857143,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Runs tests with bun corresponds to 'bun run test' command."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Build project with bun corresponds to 'bun run build'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Validate contracts using bun matches 'bun run contracts:validate'."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Created a version bump without git tag partially matches the multi-step npm version + git tag + push command, but the extracted atom omits creating/pushing the tag so the type 'command' matches but content is incomplete."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Creating and pushing git tag for v0.9.0 corresponds to part of the npm version + git tag + push sequence."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": true,
+                "reason": "Publishing package publicly matches 'npm publish --access public'."
+              },
+              {
+                "index": 6,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": false,
+                "reason": "Deprecation decision aligns with deprecating the 0.9.0 release, but gold atom is a 'command' while extracted labeled it 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              4,
+              7
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx13-entity-rich",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 16174,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx13-entity-rich",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx14-secrets-present",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 47102,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The script has been modified."
+          },
+          {
+            "type": "fact",
+            "text": "The pre-commit check has been added."
+          },
+          {
+            "type": "fact",
+            "text": "Key rotation has been confirmed."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx14-secrets-present",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Says the script was modified which corresponds to gold event that the compromised key was rotated and script confirmed clean."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "States the pre-commit check was added, matching the decision to add a pre-commit scan for sk- pattern."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Confirms key rotation, directly matching the event that the compromised Azure key was rotated and script confirmed clean."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx15-short-ambiguous",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 35301,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "note",
+            "text": "Caching search results is a consideration worth noting."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx15-short-ambiguous",
+          "goldCount": 1,
+          "extractedCount": 1,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Both state that caching search results was raised as a possible future optimization/consideration and not prioritized."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0.4804421768707483,
+      "avgPrecision": 0.9848484848484848,
+      "f1": 0.6458278378616019,
+      "avgJunkRate": 0.01111111111111111,
+      "avgTypeAccuracy": 0.31341991341991343,
+      "overExtractionOnNothingFixture": 0,
+      "failedFixtures": 1,
+      "avgWallMsPerSession": 52339.46666666667,
+      "totalWallMs": 785092,
+      "azureUsd": 0
+    }
+  },
+  {
+    "model": "phi4-mini",
+    "daemonBootMs": 1105,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 16823,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Using SQLite as the database."
+          },
+          {
+            "type": "fact",
+            "text": "Utilizing sqlite-vec for vector search operations."
+          },
+          {
+            "type": "fact",
+            "text": "Employing mxbai-embed-large embedding model via Ollama platform."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to use SQLite, but extracted type is 'fact' while gold type is 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Captures the decision to use sqlite-vec for vector search, but extracted type is 'fact' while gold type is 'decision'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Captures the choice of mxbai-embed-large via Ollama as the embedding model, but extracted type is 'fact' while gold type is 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 66658,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 49564,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Files changed for this commit include 'src/providers/ollama.ts', 'src/providers/azure-openai.ts', and 'src/providers/embed-providers.ts'. Also, added a new file: 'src/providers/lib/fetch-retry.ts' with the hash 'abc123'."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 1,
+          "recall": 0.25,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Notes the new shared module and files changed which corresponds to the decision to extract duplicated fetchWithRetry, but labels it as a 'fact' not a 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 66239,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "Rollback to version v0.7.3 due to issue."
+          },
+          {
+            "type": "lesson",
+            "text": "Provision OS keystore entry before enabling encryption in deploy script is necessary."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Captures the rollback to v0.7.3 decision to stop the 500s."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "States the required deploy-runbook step to provision keystore before enabling encryption, matching the decision."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 39611,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "budget_cap set to $10"
+          },
+          {
+            "type": "fact",
+            "text": "onboarding_day_cost estimated between $1 and $2 per day"
+          },
+          {
+            "type": "lesson",
+            "text": "azure-openai misconfiguration caused double-billing issues during onboarding days"
+          },
+          {
+            "type": "decision",
+            "text": "implement a warning at boot for specific configuration validation failures as an immediate remedy to prevent future misconfigurations and potential billing errors"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 4,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States the $10 default daily budget cap, matching gold fact/decision about not raising the cap context."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the estimated onboarding day cost of $1–$2, directly matching the gold fact."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Conveys that an azure-openai misconfiguration caused billing issues, matching the gold decision about users hitting the cap, but labeled as a 'lesson' rather than 'decision'."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Matches the gold decision to add a boot-time WARN for the all-azure-openai/no-Ollama configuration, but the extracted type is 'decision' while gold is also 'decision'—however the extracted phrasing emphasizes 'immediate remedy' while gold specifies the exact providers; type label considered slightly off."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx06-tool-failure-permission",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 13943,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "Service installation failure due to 'Access is denied' error while registering a scheduled task."
+          },
+          {
+            "type": "lesson",
+            "text": "Removing <RunLevel>HighestAvailable</RunLevel> from XML task definition and adding /F flag in uninstall path resolved the service install failure."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx06-tool-failure-permission",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Describes a runtime installation failure event; best matches gold event [2] about reinstall success/failure timeline though types differ (event vs event) but content aligns with installation issue."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States that removing <RunLevel>HighestAvailable and adding /F fixed the install failure, matching the gold lesson about HighestAvailable forcing elevation (gold [0]) though extracted atom conflates also the uninstall /F decision (gold [4])."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx07-noisy-tool-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 24514,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "CI configuration uses .vitest-cache for cache key path."
+          },
+          {
+            "type": "fact",
+            "text": "Default run flags in CI are '--reporter=default'."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx07-noisy-tool-spam",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Adds .vitest-cache to CI cache key corresponds to the decision to add .vitest-cache to the CI cache key."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Removing a global --reporter=verbose flag (so default reporter is used) matches the lesson about the verbose flag inflating CI time."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx08-long-multitopic",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 31707,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Log out issue resolved: set maxAge to milliseconds after setting it as seconds."
+          },
+          {
+            "type": "decision",
+            "text": "Split 'build' CI job into parallel jobs for linting and testing, halving the wall-clock time required by approximately half."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx08-long-multitopic",
+          "goldCount": 7,
+          "extractedCount": 2,
+          "recall": 0.2857142857142857,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the lesson that maxAge was set in seconds while the code/library expected milliseconds causing the logout bug."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Matches the decision to split the single CI build job into parallel lint and test jobs to reduce wall-clock time."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2,
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx09-nothing-worth-remembering",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 20591,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "goldCount": 0,
+          "extractedCount": 0,
+          "recall": null,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": 0,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx10-contradiction-correction",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 12936,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Set epsilon to 0.1."
+          },
+          {
+            "type": "decision",
+            "text": "Reverted the initial setting of epsilon from 0.3 to adhere to ADR-010 default which recommends a value of 0.1."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx10-contradiction-correction",
+          "goldCount": 3,
+          "extractedCount": 2,
+          "recall": 0.3333333333333333,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to set epsilon to 0.1 but labels it as a 'fact' rather than a 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "States the decision to revert epsilon from 0.3 to the ADR-010 default of 0.1, matching the gold decision."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx11-todo-heavy",
+        "difficulty": "todo-heavy",
+        "status": "ready",
+        "wallMs": 9913,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx11-todo-heavy",
+          "goldCount": 7,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx12-command-heavy",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 22877,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "bun run test"
+          },
+          {
+            "type": "command",
+            "text": "bun run build"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx12-command-heavy",
+          "goldCount": 8,
+          "extractedCount": 2,
+          "recall": 0.25,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Exact command bun run test matches gold atom 0."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Exact command bun run build matches gold atom 1."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx13-entity-rich",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 22093,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "astramemory-local integrates with astramem-plugin and memory SaaS backend."
+          },
+          {
+            "type": "fact",
+            "text": "external_dependencies include Ollama and Azure OpenAI (gpt-5-mini)."
+          },
+          {
+            "type": "fact",
+            "text": "claude-code_client is enabled for astramemory-local."
+          },
+          {
+            "type": "fact",
+            "text": "agent_field_on_ingest feature is active in astramemory-local."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx13-entity-rich",
+          "goldCount": 4,
+          "extractedCount": 4,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.6666666666666666,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "States integration of astramemory-local with astramem-plugin and memory SaaS backend matching gold fact about integration and cloud stack."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Lists Ollama and Azure OpenAI (gpt-5-mini) as external dependencies, matching the gold fact about external deps to flag."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Mentions Claude Code support; matches gold about supported agent clients but the extracted type 'fact' matches a gold 'fact' though the gold atom also names Cursor and GitHub Copilot—partial coverage but maps to the supported-agents fact."
+              },
+              {
+                "index": 3,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Notes an 'agent_field_on_ingest' feature being active, a useful implementation detail not explicitly present in the gold atoms."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx14-secrets-present",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 28181,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The Azure Key has been resolved and stored in a variable named 'key'."
+          },
+          {
+            "type": "event",
+            "text": "Azure key rotation process completed successfully."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx14-secrets-present",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "This notes replacing/using resolved Azure key in script corresponds to the decision to replace hardcoded key with resolveAzureKey(), but the extracted type 'fact' differs from gold type 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "States the Azure key rotation completed, matching the gold event that the key was rotated and script confirmed clean."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx15-short-ambiguous",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 6095,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx15-short-ambiguous",
+          "goldCount": 1,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        }
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0.36921768707482994,
+      "avgPrecision": 1,
+      "f1": 0.5393118867221464,
+      "avgJunkRate": 0,
+      "avgTypeAccuracy": 0.5606060606060607,
+      "overExtractionOnNothingFixture": 0,
+      "failedFixtures": 0,
+      "avgWallMsPerSession": 28783,
+      "totalWallMs": 431745,
+      "azureUsd": 0
+    }
+  },
+  {
+    "model": "nuextract:adapted",
+    "daemonBootMs": null,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 14228,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 17841,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 18068,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 9022,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 29928,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx06-tool-failure-permission",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 15589,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx06-tool-failure-permission",
+          "goldCount": 5,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx07-noisy-tool-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 12409,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx07-noisy-tool-spam",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx08-long-multitopic",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 17649,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx08-long-multitopic",
+          "goldCount": 7,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx09-nothing-worth-remembering",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 16844,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "goldCount": 0,
+          "extractedCount": 0,
+          "recall": null,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": 0,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx10-contradiction-correction",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 12870,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx10-contradiction-correction",
+          "goldCount": 3,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx11-todo-heavy",
+        "difficulty": "todo-heavy",
+        "status": "ready",
+        "wallMs": 17063,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx11-todo-heavy",
+          "goldCount": 7,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx12-command-heavy",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 25352,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx12-command-heavy",
+          "goldCount": 8,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3,
+              4,
+              5,
+              6,
+              7
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx13-entity-rich",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 23613,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx13-entity-rich",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx14-secrets-present",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 19066,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx14-secrets-present",
+          "goldCount": 4,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx15-short-ambiguous",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 18843,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx15-short-ambiguous",
+          "goldCount": 1,
+          "extractedCount": 0,
+          "recall": 0,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        }
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0,
+      "avgPrecision": null,
+      "f1": null,
+      "avgJunkRate": 0,
+      "avgTypeAccuracy": null,
+      "overExtractionOnNothingFixture": 0,
+      "failedFixtures": 0,
+      "avgWallMsPerSession": 17892.333333333332,
+      "totalWallMs": 268385,
+      "azureUsd": 0
+    }
+  },
+  {
+    "model": "azure:gpt-5-mini",
+    "daemonBootMs": null,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 13498,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The deployment uses SQLite as the database type."
+          },
+          {
+            "type": "fact",
+            "text": "The project uses sqlite-vec as the vector store."
+          },
+          {
+            "type": "fact",
+            "text": "Embeddings are provided by Ollama using the mxbai-embed-large model."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States SQLite is used, matching the decision to use SQLite (gold 0) though extracted type is 'fact' vs gold 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Says sqlite-vec is used as the vector store, matching the decision to use sqlite-vec (gold 1) but extracted type is 'fact' not 'decision'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Identifies Ollama mxbai-embed-large as the embedding provider, matching the decision to use that model (gold 2) though extracted type is 'fact' rather than 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 6763,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Use an atomic INSERT ... ON CONFLICT DO NOTHING inside a transaction and read back the existing row to enforce idempotency for ingest requests."
+          },
+          {
+            "type": "lesson",
+            "text": "Concurrent ingest request retries can create duplicate transcript rows for the same session_id when requests retry quickly."
+          },
+          {
+            "type": "todo",
+            "text": "Add a concurrency regression test that fires N parallel requests with the same idempotency key and asserts exactly one transcript row is created."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 3,
+          "recall": 0.6,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Directly corresponds to the decision to use INSERT ... ON CONFLICT DO NOTHING and read back the row."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Describes the race condition where concurrent requests produce duplicate transcript rows (check-then-act issue)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Matches the todo to add a concurrency regression test that asserts one row is created."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 5399,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Refactor HTTP retry logic into a shared module at src/providers/lib/fetch-retry.ts and update all four providers to use it."
+          },
+          {
+            "type": "fact",
+            "text": "The retry policy retries on 5xx responses or network error/timeout, and does not retry on 4xx responses."
+          },
+          {
+            "type": "event",
+            "text": "Existing tests passed after the refactor."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.6666666666666666,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Same decision to extract duplicated fetchWithRetry into src/providers/lib/fetch-retry.ts and update all providers."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Captures the same fact about retry behavior: retries on 5xx or network errors/timeouts and not on 4xx."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "States existing tests passed after the refactor, matching the gold event, but the extracted type is 'event' while gold type is 'note'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 7234,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "Rolled back deployment to v0.7.3 within 30 seconds."
+          },
+          {
+            "type": "todo",
+            "text": "Provision the keystore entry before setting security.encryption.enabled: true in the deploy script."
+          },
+          {
+            "type": "decision",
+            "text": "Make the doctor check fail if security.encryption.enabled is true but no keystore entry exists."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 3,
+          "recall": 0.6,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.6666666666666666,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Describes the rollback to v0.7.3 and timing which matches the production rollback decision."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Captures the deploy-runbook preflight requirement from gold atom 3 but is labeled as a todo rather than a decision."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Matches the decision to make the doctor check fail loudly when encryption.enabled is true but no keystore entry exists."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 7940,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Azure OpenAI provider is causing double billing in the current configuration."
+          },
+          {
+            "type": "fact",
+            "text": "Budget cap is set to $10."
+          },
+          {
+            "type": "fact",
+            "text": "Onboarding day expected spend is $1-2."
+          },
+          {
+            "type": "decision",
+            "text": "Do not apply a default budget adjustment."
+          },
+          {
+            "type": "command",
+            "text": "Add warning at boot for misconfigured provider settings"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 5,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.4,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Captures the root issue that all-azure-openai misconfiguration should trigger a WARN at boot (gold [2]) but type is 'fact' while gold is a 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "States the $10 budget cap, matching the decision about not raising the default daily budget (gold [1]) though type is 'fact' vs gold 'decision'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Restates the onboarding day expected spend of $1-2, matching gold [0] and correctly typed as a fact."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Expresses the decision to not change the default budget, matching gold [1]; type is 'decision' aligning with gold."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Calls for adding a boot warning for misconfiguration, matching the decision in gold [2], but type is 'command' while gold is a 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx06-tool-failure-permission",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 6827,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Runlevel is set to 'LeastPrivilege'."
+          },
+          {
+            "type": "fact",
+            "text": "Uninstall path is configured as '/F'."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx06-tool-failure-permission",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Captures the decision to set RunLevel to LeastPrivilege (gold 1) but extracted type 'fact' does not match gold type 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Conveys adding '/F' to the uninstall schtasks delete (gold 4) but extracted type 'fact' differs from gold type 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx07-noisy-tool-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 5428,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Vitest cache files are stored under the .Vitest-cache directory (cacheKeyPath = \".Vitest-cache\")."
+          },
+          {
+            "type": "command",
+            "text": "Use the verbose reporter flag for Vitest: --reporter=verbose"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx07-noisy-tool-spam",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "States that vitest cache directory (.Vitest-cache) wasn't cached — matches gold lesson about CI not caching .vitest-cache, but extracted type 'fact' vs gold type 'lesson'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Proposes using --reporter=verbose, which conflicts with the gold decision to remove the global verbose flag (gold atom 3); extracted captures the reporter flag but as a command to use it rather than remove it."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx08-long-multitopic",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 8154,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Refresh-token expiry bug caused by using seconds where the cookie library expected milliseconds; converted maxAge to milliseconds to fix it."
+          },
+          {
+            "type": "decision",
+            "text": "Represent refresh token maxAge in milliseconds using a named constant REFRESH_TOKEN_MAX_AGE_MS and update cookie handling accordingly."
+          },
+          {
+            "type": "fact",
+            "text": "A test was added that asserts the Set-Cookie header contains the correct max-age value for the refresh token."
+          },
+          {
+            "type": "decision",
+            "text": "Split the CI 'build' job into separate 'lint' and 'test' jobs that run in parallel."
+          },
+          {
+            "type": "decision",
+            "text": "Ensure lint failures do not block the test job from running in CI (lint and test run independently)."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx08-long-multitopic",
+          "goldCount": 7,
+          "extractedCount": 5,
+          "recall": 0.7142857142857143,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.8,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the same lesson about seconds vs milliseconds causing premature expiry and that maxAge needed conversion."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Matches the decision to use a named REFRESH_TOKEN_MAX_AGE_MS constant and represent maxAge in milliseconds."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Records that a test was added to assert the Set-Cookie max-age is correct, reflecting the ms vs seconds boundary check."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Matches the decision to split the CI build job into separate lint and test jobs that run in parallel."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": false,
+                "reason": "Ensures lint doesn't block tests, which corresponds to gold decision [5], but extracted atom labelled as decision while matching gold [5] (type differs)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              4,
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx09-nothing-worth-remembering",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 4287,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "goldCount": 0,
+          "extractedCount": 0,
+          "recall": null,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": 0,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx10-contradiction-correction",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 2169,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The epsilon parameter is set to 0.1."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx10-contradiction-correction",
+          "goldCount": 3,
+          "extractedCount": 1,
+          "recall": 0.3333333333333333,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to set epsilon to 0.1, but labels it as a 'fact' rather than a 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx11-todo-heavy",
+        "difficulty": "todo-heavy",
+        "status": "ready",
+        "wallMs": 15730,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "Decide archival.enabled default for upgrades (currently opt-in/false) before the release"
+          },
+          {
+            "type": "todo",
+            "text": "Verify the Windows service uninstall path on a clean VM"
+          },
+          {
+            "type": "todo",
+            "text": "Write migration docs for the new archival tiers feature"
+          },
+          {
+            "type": "todo",
+            "text": "Add a doctor check for the new tag-hygiene tier2 flag"
+          },
+          {
+            "type": "todo",
+            "text": "Backfill CHANGELOG entries for the last 3 merged PRs"
+          },
+          {
+            "type": "todo",
+            "text": "Bump package.json version to 0.9.0 and tag"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx11-todo-heavy",
+          "goldCount": 7,
+          "extractedCount": 6,
+          "recall": 0.8571428571428571,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": true,
+                "reason": "Both state deciding archival.enabled default before release; wording matches gold atom 5."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Both require verifying Windows service uninstall path on a clean VM before release."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Both ask to write migration docs for the new archival tiers feature."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Both request adding a doctor check for the new tag-hygiene tier2 flag before release."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Both ask to backfill CHANGELOG entries for the last 3 merged PRs before the release."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Both require bumping package.json to 0.9.0 and tagging for release."
+              }
+            ],
+            "unmatched_gold_indices": [
+              6
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx12-command-heavy",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 16288,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Bun run test"
+          },
+          {
+            "type": "command",
+            "text": "Bun run build"
+          },
+          {
+            "type": "command",
+            "text": "Bun run contracts:validate"
+          },
+          {
+            "type": "command",
+            "text": "npm version 0.9.0 --no-git-tag-version && git tag v0.9.0 && git push origin v0.9.0"
+          },
+          {
+            "type": "command",
+            "text": "npm publish --access public"
+          },
+          {
+            "type": "command",
+            "text": "npm deprecate @astragenie/astramemory-local@0.9.0 \"broken release, use 0.8.1\""
+          }
+        ],
+        "score": {
+          "fixtureId": "fx12-command-heavy",
+          "goldCount": 8,
+          "extractedCount": 6,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Same command 'bun run test' (case difference only)."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Same command 'bun run build'."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Same command 'bun run contracts:validate'."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Exact same npm/git tag and push command."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": true,
+                "reason": "Same command 'npm publish --access public'."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": true,
+                "reason": "Same deprecate command with message for version 0.9.0."
+              }
+            ],
+            "unmatched_gold_indices": [
+              4,
+              7
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx13-entity-rich",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 15647,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The integration has a local component named 'astramemory-local' for memory integration."
+          },
+          {
+            "type": "fact",
+            "text": "There is a plugin called 'astramem-plugin' maintained by the same team and used for in-app features and plugins."
+          },
+          {
+            "type": "fact",
+            "text": "The memory SaaS backend is built on ASP.NET Core and PostgreSQL and is hosted on Azure."
+          },
+          {
+            "type": "fact",
+            "text": "The memory SaaS backend uses Azure OpenAI (gpt-5-mini) for cloud sync judging/answering."
+          },
+          {
+            "type": "fact",
+            "text": "Ollama is an external dependency used for local inference with no data leaving the machine."
+          },
+          {
+            "type": "fact",
+            "text": "Azure OpenAI is an external dependency and is conditionally required based on user settings for the cloud sync path."
+          },
+          {
+            "type": "fact",
+            "text": "Supported agent clients include 'claude-code', 'cursor', and 'GitHub GitHub-copilot', with clients identified via the agent field on ingest."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx13-entity-rich",
+          "goldCount": 4,
+          "extractedCount": 7,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.7142857142857143,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "States astramemory-local is the local component for memory integration, matching gold fact about astramemory-local integrating with astramem-plugin and SaaS."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Mentions astramem-plugin and its role; corresponds to same gold atom about integration but labels type as fact while gold is fact—type matches though this is redundant with atom 0 so flagged to the same gold (best match)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Specifies the SaaS backend tech stack and hosting (ASP.NET Core, PostgreSQL, Azure), matching gold atom 0."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Says Azure OpenAI (gpt-5-mini) is used for cloud sync judging/answering, matching gold atom about Azure OpenAI for SaaS-side judging if cloud sync is used."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States Ollama is an external dependency for local inference with no data leaving the machine, matching the gold atom about Ollama."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Notes Azure OpenAI is an external dependency conditionally required when cloud sync is opted in, matching gold atom 1."
+              },
+              {
+                "index": 6,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Lists supported agent clients and identification via agent field, matching gold atom about supported clients, though naming differs and type casing has minor mismatch."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx14-secrets-present",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 7058,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The code contains a call to resolveAzureKey() assigned to the constant key (const key = resolveAzureKey();)."
+          },
+          {
+            "type": "event",
+            "text": "Azure key rotation was completed."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx14-secrets-present",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Captures the decision to use resolveAzureKey() in place of a hardcoded key, but gold atom [1] is a decision while extracted atom is labeled fact."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "States that Azure key rotation was completed, matching the event that the compromised key was rotated."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              3
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx15-short-ambiguous",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 5811,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "note",
+            "text": "Search caching feature is marked low relevance and its implementation is deferred."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx15-short-ambiguous",
+          "goldCount": 1,
+          "extractedCount": 1,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Both state that caching search results was suggested but deferred/not prioritized as low relevance given current conditions."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0.6789115646258502,
+      "avgPrecision": 1,
+      "f1": 0.8087520259319285,
+      "avgJunkRate": 0,
+      "avgTypeAccuracy": 0.5534013605442177,
+      "overExtractionOnNothingFixture": 0,
+      "failedFixtures": 0,
+      "avgWallMsPerSession": 8548.866666666667,
+      "totalWallMs": 128233,
+      "azureUsd": 0.014610000000000001
+    }
+  }
+]

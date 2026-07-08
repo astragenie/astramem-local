@@ -25,9 +25,19 @@ Compress the provided transcript chunk. Remove:
 PRESERVE:
 - All decisions and chosen approaches
 - All file paths and commands
+- All error messages, stderr output, and permission errors from failed tool
+  calls — EVEN IF the failure was never resolved or explained. An unresolved
+  failure is still durable knowledge; do not drop it for lack of a fix.
 - All error messages and their resolutions
 - All rationale and architectural reasoning
 - All TODO items and pending work
+- Named tools, version numbers, and other named entities (products, repos,
+  people, orgs) — keep them verbatim, don't paraphrase away a specific name
+  or number
+
+If the chunk covers multiple distinct topics, keep at least one line per
+topic — do not compress a multi-topic chunk down to only its most prominent
+topic.
 
 Output plain text only. No markdown formatting. No commentary.`;
 

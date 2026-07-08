@@ -13,7 +13,12 @@
  * real daemon HTTP path (lib/daemon-runner.ts). "azure:gpt-5-mini" runs the
  * in-process pipeline path (lib/pipeline-direct.ts) — see
  * lib/azure-reasoning-provider.ts for why gpt-5-mini can't go through the
- * daemon's azure-openai provider today.
+ * daemon's azure-openai provider today. "nuextract:adapted" also runs the
+ * direct pipeline path, but swaps in lib/nuextract-adapter-provider.ts —
+ * the standard chat-instruction prompt was verified live (2026-07-08 smoke
+ * run) to poison every fixture (0 atoms, template-paradigm mismatch), so
+ * this candidate is judged on an adapted prompt instead of the verbatim one
+ * every other candidate gets.
  */
 import { writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -21,6 +26,7 @@ import { loadFixtures, type GoldFixture } from './lib/fixtures.js';
 import { runOllamaCandidate, type DaemonFixtureResult } from './lib/daemon-runner.js';
 import { runDirectPipeline } from './lib/pipeline-direct.js';
 import { AzureReasoningLLMProvider } from './lib/azure-reasoning-provider.js';
+import { NuExtractAdapterProvider } from './lib/nuextract-adapter-provider.js';
 import { judgeFixture, type FixtureScore, type JudgeAtomIn } from './lib/judge.js';
 import { resolveAzureConfig } from '../longmemeval/lib/config.js';
 import { OllamaLLMProvider } from '../../../src/providers/llm/ollama.js';
@@ -73,6 +79,32 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
           usageUsd: result.usageUsd,
         };
         console.log(`${result.atoms.length} atoms in ${result.wallMs}ms ($${result.usageUsd.toFixed(4)})`);
+      } catch (err) {
+        console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
+        perFixture[fixture.id] = { atoms: [], wallMs: 0, status: 'error', poisonJobs: 0, usageUsd: 0 };
+      }
+    }
+    return { model, perFixture, daemonBootMs: null };
+  }
+
+  if (model === 'nuextract:adapted') {
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=ollama/nuextract via bench-side template adapter) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    const llmExtraction = new NuExtractAdapterProvider({ model: 'nuextract' });
+
+    const perFixture: ModelAtomsByFixture['perFixture'] = {};
+    for (const fixture of fixtures) {
+      process.stdout.write(`  ${fixture.id}... `);
+      try {
+        const result = await runDirectPipeline(fixture.turns, { llmCompaction, llmExtraction });
+        perFixture[fixture.id] = {
+          atoms: result.atoms.map(a => ({ type: a.type, text: a.text })),
+          wallMs: result.wallMs,
+          status: 'ready',
+          poisonJobs: 0,
+          usageUsd: result.usageUsd,
+        };
+        console.log(`${result.atoms.length} atoms in ${result.wallMs}ms`);
       } catch (err) {
         console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
         perFixture[fixture.id] = { atoms: [], wallMs: 0, status: 'error', poisonJobs: 0, usageUsd: 0 };

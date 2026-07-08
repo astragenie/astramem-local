@@ -176,9 +176,45 @@ should produce). Difficulty spread:
   `daemon-runner.ts`-style HTTP once pointed at `azure-openai` in config —
   not implemented here since the team's minimal-spend instruction was
   gpt-5-mini only.
+- **A template-fill specialist model (not chat/instruct)**: NuExtract is
+  trained on one fixed `<|input|>/### Template:/### Text:/<|output|>` shape,
+  not a system-prompt + free-text instruction paradigm. Confirmed live
+  (2026-07-08): feeding it the real `EXTRACTION_SYSTEM_PROMPT` through the
+  standard daemon path poisons every fixture (0 atoms, invalid JSON). Use
+  `--models nuextract:adapted` instead — this routes through
+  `lib/nuextract-adapter-provider.ts` (direct pipeline path), which reshapes
+  the atom schema as a NuExtract template, adds a stop-sequence to prevent
+  the model echoing another copy of the template after its own output
+  marker, and fills a fixed importance/confidence default (NuExtract has no
+  basis to invent a 0-1 score for a field not literally present in the
+  source text — it's a span-extraction model). Labelled "adapted prompt" in
+  the report table since it isn't judged on the identical verbatim prompt
+  every other candidate gets. Even with the adapter fixing the crash,
+  2026-07-08's full run scored 0% recall across all 15 fixtures — see
+  "Known limitations" below for why.
+
+## Excluded models (2026-07-08, user decision)
+
+- `llama3.1:8b` — ~3x slower than qwen2.5-coder:7b for similar quality in
+  the 2026-07-08 baseline run (`results/real-run-2026-07-08/`); not worth the
+  latency cost as a local-default candidate.
+- Anything above 9B parameters — this machine's practical ceiling for a
+  background local daemon process (`qwen2.5-coder:14b`, `qwen3.5:9b`,
+  `gemma4` and similar were not benched for this reason).
 
 ## Known limitations
 
+- `04-compact.ts`'s `COMPACT_SYSTEM` instructs "Output plain text only" but
+  `qwen2.5-coder:7b` (the fixed compaction model for every candidate) was
+  observed, on some chunks during the 2026-07-08 A/B run, to instead emit a
+  JSON blob (e.g. `{"db_type": "SQLite", ...}`) despite that instruction.
+  General chat/instruct models tolerate this malformed "plain text" input
+  fine at the extraction step; NuExtract's narrow span-matching does not
+  (confirmed via direct reproduction) — a contributing factor, on top of the
+  template-paradigm mismatch, to `nuextract:adapted`'s 0% recall. This is a
+  pre-existing compaction-stage quirk that affects every candidate equally
+  (out of scope to fix as part of this bench — flagged here for whoever
+  looks at compaction quality next).
 - Atoms sourced from the daemon path carry only `{id, type, text}` (that's
   all `GET /sessions/:id/digest` exposes — see
   `src/server/queries/provenance.ts`'s `DigestMemRow`); atoms from the direct
