@@ -47,13 +47,21 @@ export function touchesWatchedPaths(files, prefixes = WATCHED_PREFIXES) {
   return files.some(f => prefixes.some(p => f.startsWith(p)));
 }
 
+// Generous ceiling so a hung `bun install`/`bun run build` (stalled registry,
+// interactive prompt, etc.) can't block `git pull` forever — this hook runs
+// synchronously inside the user's merge/pull, so an unbounded spawnSync here
+// would hang their shell indefinitely. 10 minutes comfortably covers a cold
+// `bun install` + full build on a slow machine while still guaranteeing the
+// hook eventually returns control to git.
+const SPAWN_TIMEOUT_MS = 10 * 60 * 1000;
+
 function run(cmd, args, cwd) {
   // No `shell: true` — matches src/service/release.ts's runCaptured(), which
   // already spawns 'bun'/node the same way on Windows without it (Node
   // resolves the PATH-installed 'bun'/'git' binary directly). Avoids the
   // Node DEP0190 warning that comes with combining shell:true and an args
   // array (unescaped argument concatenation).
-  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: SPAWN_TIMEOUT_MS });
   return {
     status: res.status ?? 1,
     stdout: res.stdout ?? '',
