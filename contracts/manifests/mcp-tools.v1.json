@@ -2,75 +2,9 @@
   "version": "1",
   "tools": [
     {
-      "name": "search_memory",
-      "owner": "local",
-      "description": "Hybrid FTS + vector search over stored memories. Returns ranked hits.",
-      "status": "stable"
-    },
-    {
-      "name": "recall_memory",
-      "owner": "local",
-      "description": "Top-K semantic recall over stored memories. Alias of search_memory with k default 5.",
-      "status": "stable"
-    },
-    {
-      "name": "remember",
-      "owner": "local",
-      "description": "Directly insert a memory into the store, bypassing the distillation pipeline.",
-      "status": "stable"
-    },
-    {
-      "name": "get_health",
-      "owner": "local",
-      "description": "Returns daemon health status and version.",
-      "status": "stable"
-    },
-    {
-      "name": "why_memory",
-      "owner": "local",
-      "description": "Provenance receipt for a memory: evidence excerpt, source session, transcript ref.",
-      "status": "stable"
-    },
-    {
-      "name": "session_digest",
-      "owner": "local",
-      "description": "What I learned this session: per-type counts + texts of memories formed. Defaults to the latest session.",
-      "status": "stable"
-    },
-    {
-      "name": "invalidate_memory",
-      "owner": "local",
-      "description": "Mark a memory invalid (soft delete). Appends an invalidate event to the memory_events log.",
-      "status": "stable"
-    },
-    {
-      "name": "supersede_memory",
-      "owner": "local",
-      "description": "Replace an old memory with a new one: invalidates old_id and links it to new_id via the memory_events log.",
-      "status": "stable"
-    },
-    {
-      "name": "promote_memory",
-      "owner": "local",
-      "description": "Promote a memory's scope upward — private -> team -> org (ADR-009). Downward/same-scope requests error.",
-      "status": "stable"
-    },
-    {
-      "name": "restore_memory",
-      "owner": "local",
-      "description": "Un-archive a memory previously archived by the W4.4 TTL policy or a manual archive event.",
-      "status": "stable"
-    },
-    {
-      "name": "memory_history",
-      "owner": "local",
-      "description": "Full memory_events log for a memory, in append order — the supersession/invalidation/promotion chain.",
-      "status": "stable"
-    },
-    {
-      "name": "mark_memory_used",
-      "owner": "local",
-      "description": "ADR-010 explicit recall-used signal: tell astramemory a previously-served memory actually mattered in this turn.",
+      "name": "count_memories",
+      "owner": "cloud",
+      "description": "Count active memories in workspace.",
       "status": "stable"
     },
     {
@@ -80,15 +14,195 @@
       "status": "stable"
     },
     {
+      "name": "get_context_pack",
+      "owner": "cloud",
+      "description": "Bundled context pack for a task/query.",
+      "status": "stable"
+    },
+    {
+      "name": "get_decision_graph",
+      "owner": "cloud",
+      "description": "Decision-record graph traversal.",
+      "status": "stable"
+    },
+    {
+      "name": "get_decision_review_status",
+      "owner": "cloud",
+      "description": "Get reviewer status of a decision-type memory row.",
+      "status": "stable"
+    },
+    {
+      "name": "get_entity_related",
+      "owner": "cloud",
+      "description": "Entity relationships (bitemporal as-of aware).",
+      "status": "stable"
+    },
+    {
+      "name": "get_entity_timeline",
+      "owner": "cloud",
+      "description": "Memories mentioning an entity over time.",
+      "status": "stable"
+    },
+    {
+      "name": "get_health",
+      "owner": "local",
+      "description": "Returns daemon health status and version. Cloud exposes an equivalent as a REST /health endpoint only, not an MCP tool.",
+      "status": "stable"
+    },
+    {
+      "name": "get_memory",
+      "owner": "cloud",
+      "description": "Fetch one memory by UUID.",
+      "status": "stable"
+    },
+    {
+      "name": "get_memory_graph_stats",
+      "owner": "cloud",
+      "description": "Graph size/edge-type stats.",
+      "status": "stable"
+    },
+    {
+      "name": "get_memory_improvement_history",
+      "owner": "cloud",
+      "description": "Improvement/expiry job run history.",
+      "status": "stable"
+    },
+    {
+      "name": "get_memory_narrative",
+      "owner": "cloud",
+      "description": "Narrative summary of memories for an agent.",
+      "status": "stable"
+    },
+    {
+      "name": "get_related_memories",
+      "owner": "cloud",
+      "description": "Entity-graph-adjacent related memories.",
+      "status": "stable"
+    },
+    {
+      "name": "get_similar_memories",
+      "owner": "cloud",
+      "description": "Cosine-similarity nearest neighbors.",
+      "status": "stable"
+    },
+    {
+      "name": "invalidate_memory",
+      "owner": "both",
+      "description": "Mark a memory invalid (soft delete). Local appends an invalidate event to the memory_events log; cloud's memory_delete is the same soft-archive semantic under a different wire name pre-U5.",
+      "status": "stable"
+    },
+    {
       "name": "list_consolidation_proposals",
       "owner": "local",
       "description": "Pending (or resolved) consolidation proposals from the stage-9 pass (ADR-004): borderline near-duplicate pairs awaiting an explicit merge/keep decision.",
       "status": "stable"
     },
     {
+      "name": "list_memory_clusters",
+      "owner": "cloud",
+      "description": "List memory consolidation clusters.",
+      "status": "stable"
+    },
+    {
+      "name": "list_recent_memories",
+      "owner": "cloud",
+      "description": "Most recently created memories.",
+      "status": "stable"
+    },
+    {
+      "name": "mark_memory_used",
+      "owner": "local",
+      "description": "DEPRECATED one-release alias for submit_feedback (U5 collapse, astragenie/memory#671 + astragenie/astramem-local#120). Same handler as submit_feedback; will be removed in a future release — callers should migrate to submit_feedback now.",
+      "status": "deprecated"
+    },
+    {
+      "name": "memory_history",
+      "owner": "both",
+      "description": "Full event log for a memory, in append order — the supersession/invalidation/promotion chain. Grandfathered noun_verb exact-match name on both backends (U5 SLICE-A/B decision, not renamed to get_memory_history).",
+      "status": "stable"
+    },
+    {
+      "name": "promote_memory",
+      "owner": "local",
+      "description": "Promote a memory's scope upward — private -> team -> org (ADR-009). Downward/same-scope requests error.",
+      "status": "stable"
+    },
+    {
+      "name": "recall_memory",
+      "owner": "local",
+      "description": "Top-K semantic recall over stored memories. Alias of search_memory with k default 5.",
+      "status": "stable"
+    },
+    {
+      "name": "record_decision",
+      "owner": "cloud",
+      "description": "Record a decision (writes decision-type memory).",
+      "status": "stable"
+    },
+    {
+      "name": "remember",
+      "owner": "both",
+      "description": "Directly insert a memory into the store. Canonical cross-repo save-contract wire name shared with cloud's memory_save (U4).",
+      "status": "stable"
+    },
+    {
       "name": "resolve_consolidation_proposal",
       "owner": "local",
       "description": "Accept or reject a pending consolidation proposal.",
+      "status": "stable"
+    },
+    {
+      "name": "restore_memory",
+      "owner": "local",
+      "description": "Un-archive a memory previously archived by the W4.4 TTL policy or a manual archive event.",
+      "status": "stable"
+    },
+    {
+      "name": "run_memory_improvement",
+      "owner": "cloud",
+      "description": "Trigger memory-improvement batch pass.",
+      "status": "stable"
+    },
+    {
+      "name": "search_decisions",
+      "owner": "cloud",
+      "description": "Search historical decisions.",
+      "status": "stable"
+    },
+    {
+      "name": "search_entities",
+      "owner": "cloud",
+      "description": "Free-text entity lookup.",
+      "status": "stable"
+    },
+    {
+      "name": "search_memory",
+      "owner": "both",
+      "description": "Hybrid FTS + vector search over stored memories. Returns ranked hits. Canonical cross-repo name shared with cloud's memory_search (U5).",
+      "status": "stable"
+    },
+    {
+      "name": "session_digest",
+      "owner": "local",
+      "description": "What I learned this session: per-type counts + texts of memories formed. Defaults to the latest session. Grandfathered noun_verb name (U5 SLICE-B decision) — local-only, no cross-repo naming collision to resolve, kept as-is per the same precedent as memory_history.",
+      "status": "stable"
+    },
+    {
+      "name": "submit_feedback",
+      "owner": "both",
+      "description": "Feedback signal on a served/used memory. Cloud: +1/-1 usefulness score. Local: ADR-010 explicit recall-used signal (always signal=\"explicit\"), collapsed onto this canonical wire name from the former mark_memory_used (U5, astragenie/memory#671 + astragenie/astramem-local#120); mark_memory_used remains a one-release deprecated alias.",
+      "status": "stable"
+    },
+    {
+      "name": "supersede_memory",
+      "owner": "local",
+      "description": "Replace an old memory with a new one: invalidates old_id and links it to new_id via the memory_events log.",
+      "status": "stable"
+    },
+    {
+      "name": "why_memory",
+      "owner": "local",
+      "description": "Provenance receipt for a memory: evidence excerpt, source session, transcript ref.",
       "status": "stable"
     }
   ]
