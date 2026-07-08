@@ -1,0 +1,21 @@
+{
+  "id": "fx03-refactor-extract-module",
+  "title": "Extracting duplicated retry logic into a shared module",
+  "difficulty": "clean",
+  "notes": "Refactor session with a deliberate 'noticed but deferred' decision, to test whether extractors capture both the action taken AND the explicit non-action.",
+  "turns": [
+    { "role": "user", "text": "The retry logic for HTTP calls is duplicated in three provider files (ollama.ts, azure-openai.ts, and the embed providers). Can we extract it?" },
+    { "role": "assistant", "text": "Yes — I'll pull the shared fetchWithRetry logic into a new src/providers/lib/fetch-retry.ts module and have all four providers import it instead of each having their own copy." },
+    { "role": "user", "text": "Make sure the retry behavior stays identical — same timeout, same no-retry-on-4xx rule." },
+    { "role": "assistant", "text": "Confirmed: extracted with the same signature (url, init, timeoutMs), same rules — no retry on 4xx, one retry on 5xx or network error/timeout. All four call sites now import the shared version; ran the existing provider tests and they pass unchanged." },
+    { "role": "user", "text": "Good. Any other duplication you noticed while you were in there?" },
+    { "role": "assistant", "text": "Yes — all four providers also independently build a childLogger({provider, model}) at the top of chat(). That's smaller, I'd leave it for a separate pass since it's low-risk duplication, not worth the churn right now." },
+    { "role": "user", "text": "Agreed, leave that one. Ship the retry extraction." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Extract the duplicated fetchWithRetry logic (present in ollama.ts, azure-openai.ts, and the embed providers) into a shared src/providers/lib/fetch-retry.ts module." },
+    { "type": "fact", "text": "The shared retry logic preserves identical behavior: no retry on 4xx, one retry on 5xx or network error/timeout, same (url, init, timeoutMs) signature." },
+    { "type": "note", "text": "All four provider call sites were switched to import the shared fetchWithRetry; existing provider tests pass unchanged." },
+    { "type": "decision", "text": "Leave the childLogger({provider, model}) duplication across the four providers alone for now — smaller, low-risk, not worth the churn in this refactor." }
+  ]
+}

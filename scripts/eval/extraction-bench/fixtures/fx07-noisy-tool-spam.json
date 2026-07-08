@@ -1,0 +1,22 @@
+{
+  "id": "fx07-noisy-tool-spam",
+  "title": "Test run buried in repeated tool-output spam, then a real CI-speed decision",
+  "difficulty": "noisy",
+  "notes": "Deliberately contains long runs of near-identical tool-output lines (simulating verbose CI/test logs). Tests whether the extractor produces one clean fact/decision set instead of one junk atom per repeated line, and whether the cleanup stage's repeated-line dedup helps or the extractor still overproduces.",
+  "turns": [
+    { "role": "user", "text": "Run the test suite and tell me if it's green." },
+    { "role": "assistant", "text": "Running bun run test..." },
+    { "role": "user", "text": "PASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/a.test.ts\nPASS tests/b.test.ts\nPASS tests/c.test.ts\nPASS tests/z.test.ts\n\nTest Files  40 passed (40)\n     Tests  612 passed (612)\n  Duration  38.2s" },
+    { "role": "assistant", "text": "All green — 40 test files, 612 tests passed." },
+    { "role": "user", "text": "Great. While that ran, I noticed the CI job takes 11 minutes now, up from 4 minutes last month. Any idea why?" },
+    { "role": "assistant", "text": "Looking at the CI config — someone added --reporter=verbose globally which triggers full stack traces even on pass, and more importantly the job isn't using vitest's cache directory between runs (.vitest-cache isn't in the CI cache key). I'd add that to the cache key and drop the global verbose reporter." },
+    { "role": "user", "text": "Do it." },
+    { "role": "assistant", "text": "Updated CI config: added .vitest-cache to the cache key path, removed --reporter=verbose from the default run (kept it available via a manual workflow_dispatch flag for debugging). Should get us most of the way back toward 4 minutes." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "The test suite passed: 40 test files, 612 tests, all green." },
+    { "type": "fact", "text": "CI job duration grew from about 4 minutes to about 11 minutes over the last month." },
+    { "type": "lesson", "text": "CI wasn't caching vitest's .vitest-cache directory between runs, and a global --reporter=verbose flag was forcing full stack traces even on passing tests — both were inflating CI time." },
+    { "type": "decision", "text": "Add .vitest-cache to the CI cache key and remove the global --reporter=verbose flag, keeping verbose output available via a manual workflow_dispatch flag." }
+  ]
+}

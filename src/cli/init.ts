@@ -15,6 +15,7 @@
 
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { defaultConfig, type Config } from '../config/config.js';
 import { defaultConfigDir, defaultDataDir } from '../config/datadir.js';
@@ -43,7 +44,70 @@ const NON_INTERACTIVE_ENV = {
   budget: 'ASTRA_MEMORY_INIT_BUDGET',
   installService: 'ASTRA_MEMORY_INIT_INSTALL_SERVICE',
   installHook: 'ASTRA_MEMORY_INIT_INSTALL_HOOK',
+  openaiCompatBaseUrl: 'ASTRA_MEMORY_INIT_OPENAI_COMPAT_BASE_URL',
+  openaiCompatApiKey: 'ASTRA_MEMORY_INIT_OPENAI_COMPAT_API_KEY',
+  codexAuthPath: 'ASTRA_MEMORY_INIT_CODEX_AUTH_PATH',
+  // Ollama on-demand overrides (interactive-only concepts otherwise — see
+  // promptOllamaModelTier / promptOllamaSetup below). Non-interactive mode
+  // has no "setup mode" concept (it always keeps the legacy env-driven
+  // auto-pull-if-missing behavior), but the model tag and a custom base URL
+  // are still useful to override for scripted/CI installs.
+  ollamaModelTag: 'ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG',
+  ollamaBaseUrl: 'ASTRA_MEMORY_INIT_OLLAMA_BASE_URL',
 } as const;
+
+/** LLM provider values the wizard can select for compaction/extraction. */
+type LlmProviderChoice = 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+
+function defaultCodexAuthPath(): string {
+  return join(homedir(), '.codex', 'auth.json');
+}
+
+/** Default Ollama extraction/compaction model — used when no tier is chosen.
+ * Swapped from qwen2.5-coder:7b after the 2026-07-08 A/B benchmark: the
+ * instruct sibling scores F1 67% / precision 99% / junk 1% vs the coder
+ * variant's 59%/90%/8% on the extraction task (prompt v2), at ~21.6s vs
+ * ~8.7s per session — quality-per-watt winner for a background daemon. */
+const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5:7b';
+
+/** Default Ollama embedding model (fixed — the wizard doesn't offer a tier
+ * picker for embeddings, only for the extraction/compaction LLM). */
+const DEFAULT_OLLAMA_EMBED_MODEL = 'mxbai-embed-large';
+
+/**
+ * Extraction/compaction model tiers offered by the wizard when the LLM
+ * provider is Ollama. Size + RAM figures are approximate download/footprint
+ * guidance surfaced to the user before any pull happens (see
+ * `confirmOllamaDownload` below) — not enforced, just informative.
+ *
+ * F1/latency figures are from the internal extraction A/B benchmark
+ * (2026-07-08, prompt v2 — scripts/eval/extraction-bench/results/
+ * ab-run-2026-07-08/). `qwen2.5-coder:14b` was dropped entirely (20%
+ * permanent-failure/poison rate, 72.7s/session); `llama3.1:8b` was dropped
+ * per operator decision (~3x latency for results the instruct sibling now
+ * beats). `qwen2.5:7b` is the recommended default: F1 67%, precision 99%,
+ * junk 1% at ~21.6s/session vs the coder variant's F1 59% at ~8.7s.
+ */
+const OLLAMA_EXTRACTION_TIERS: { value: string; label: string; size: string; ram: string; stats: string }[] = [
+  { value: 'qwen2.5:7b', label: 'RECOMMENDED (default)', size: '~4.7 GB', ram: '16 GB', stats: 'F1 67%, precision 99%, ~21.6s/session' },
+  { value: 'qwen2.5-coder:7b', label: 'fastest', size: '~5 GB', ram: '16 GB', stats: 'F1 59%, ~8.7s/session' },
+];
+
+/** Sentinel values for the non-model tier-picker choices (item 3/4). One of
+ * them ("BYO cloud") pivots into the full cloud LLM provider choice
+ * (azure-openai / openai-compatible / codex-subscription) — see
+ * `gatherInteractive`'s tier-picker block below. */
+const OLLAMA_TIER_BYO_CLOUD = '__byo_cloud__';
+const OLLAMA_TIER_CUSTOM = '__custom__';
+
+/** Download-size / RAM guidance for every model the wizard might pull,
+ * keyed by model tag — covers the two extraction tiers plus the fixed
+ * embedding model. Unrecognized (custom) tags fall back to an
+ * "unknown — check `ollama show`" note in `describeOllamaModel` below. */
+const OLLAMA_MODEL_INFO: Record<string, { size: string; ram: string }> = {
+  ...Object.fromEntries(OLLAMA_EXTRACTION_TIERS.map((t) => [t.value, { size: t.size, ram: t.ram }])),
+  [DEFAULT_OLLAMA_EMBED_MODEL]: { size: '~670 MB', ram: '8 GB' },
+};
 
 /** Test-only injection point for the hook install target (see hook-install.ts). */
 const SETTINGS_PATH_ENV = 'ASTRA_MEMORY_INIT_SETTINGS_PATH';
@@ -83,7 +147,7 @@ async function promptConfirm(message: string, defaultValue: boolean): Promise<bo
 interface WizardAnswers {
   vector: 'sqlite-vec' | 'lancedb';
   embedProvider: 'ollama' | 'azure-openai';
-  llmProvider: 'ollama' | 'azure-openai';
+  llmProvider: LlmProviderChoice;
   dataDir: string;
   port: number;
   budget: number;
@@ -92,6 +156,24 @@ interface WizardAnswers {
   azureEndpoint?: string;
   azureDeployment?: string;
   azureApiKey?: string;
+  // openai-compatible-only
+  openaiCompatBaseUrl?: string;
+  openaiCompatApiKey?: string;
+  // codex-subscription-only (EXPERIMENTAL)
+  codexAuthPath?: string;
+  // Ollama-only (present when llmProvider and/or embedProvider is 'ollama')
+  /** Chosen extraction/compaction model tag (tier pick or custom). Only
+   * asked when llmProvider === 'ollama'. Falls back to
+   * DEFAULT_OLLAMA_LLM_MODEL when unset. */
+  ollamaModelTag?: string;
+  /** How the wizard should get Ollama ready — install/pull now, point at an
+   * already-running server, or skip entirely (daemon starts degraded).
+   * Interactive-only; non-interactive mode has no concept of this and keeps
+   * the legacy always-attempt-pull behavior. */
+  ollamaMode?: 'install' | 'url' | 'skip';
+  /** Base URL of an existing Ollama server — set when ollamaMode === 'url',
+   * or via the non-interactive env override. */
+  ollamaBaseUrl?: string;
 }
 
 // ─── Gather answers (interactive path) ───────────────────────────────────────
@@ -117,14 +199,36 @@ async function gatherInteractive(): Promise<WizardAnswers> {
     'ollama'
   )) as 'ollama' | 'azure-openai';
 
-  const llmProvider = (await promptSelect(
+  // codex-subscription is only offered when a Codex CLI login is already
+  // present — there is nothing useful to configure otherwise, and offering
+  // it unconditionally would just lead every user into a `codex login` dead
+  // end before they've even heard of the Codex CLI.
+  const codexAuthPath = defaultCodexAuthPath();
+  const codexLoginDetected = existsSync(codexAuthPath);
+
+  // Shared cloud-provider choice list — also reused below by the
+  // extraction-model tier picker's "BYO cloud" pivot, so that pivot lands on
+  // the same full provider set (azure-openai / openai-compatible /
+  // codex-subscription) rather than hard-coding azure-openai.
+  const cloudLlmChoices: { name: string; value: string }[] = [
+    { name: 'azure-openai (gpt-4.1)', value: 'azure-openai' },
+    { name: 'openai-compatible (OpenAI API, Groq, vLLM, ...)', value: 'openai-compatible' },
+  ];
+  if (codexLoginDetected) {
+    cloudLlmChoices.push({
+      name: 'Use your ChatGPT/Codex login (experimental — uses your ChatGPT subscription quota)',
+      value: 'codex-subscription',
+    });
+  }
+
+  // Mutable: the extraction-model tier picker below offers a "BYO cloud"
+  // option that pivots this from 'ollama' to whichever cloud provider the
+  // user then picks (see promptOllamaModelTier / OLLAMA_TIER_BYO_CLOUD).
+  let llmProvider = (await promptSelect(
     'LLM provider:',
-    [
-      { name: 'ollama (qwen2.5-coder:7b)', value: 'ollama' },
-      { name: 'azure-openai (gpt-4.1)', value: 'azure-openai' },
-    ],
+    [{ name: 'ollama (qwen2.5:7b)', value: 'ollama' }, ...cloudLlmChoices],
     'ollama'
-  )) as 'ollama' | 'azure-openai';
+  )) as LlmProviderChoice;
 
   const dataDir = await promptInput('Data directory:', defaultDataDir());
   const portStr = await promptInput('Daemon port:', '7777');
@@ -141,7 +245,24 @@ async function gatherInteractive(): Promise<WizardAnswers> {
     installService,
   };
 
-  // Azure-specific prompts
+  // Extraction/compaction model tier — only when the LLM stages are on
+  // Ollama. One of the choices is "BYO cloud", which pivots llmProvider into
+  // the same full cloud-provider choice offered above (azure-openai /
+  // openai-compatible / codex-subscription) instead of picking a local
+  // model tag — handled before the Azure-prompt block below so a pivot here
+  // still gets its credentials gathered in the normal place.
+  if (llmProvider === 'ollama') {
+    const tierChoice = await promptOllamaModelTier();
+    if (tierChoice === OLLAMA_TIER_BYO_CLOUD) {
+      llmProvider = (await promptSelect('Cloud LLM provider:', cloudLlmChoices, 'azure-openai')) as LlmProviderChoice;
+      answers.llmProvider = llmProvider;
+    } else {
+      answers.ollamaModelTag = tierChoice;
+    }
+  }
+
+  // Azure-specific prompts — gathered whenever azure ends up needed for
+  // either stage, including a BYO-cloud pivot from the tier picker above.
   if (embedProvider === 'azure-openai' || llmProvider === 'azure-openai') {
     answers.azureEndpoint = await promptInput(
       'Azure OpenAI endpoint (https://your-resource.openai.azure.com):',
@@ -154,7 +275,121 @@ async function gatherInteractive(): Promise<WizardAnswers> {
     answers.azureApiKey = await promptPassword('Azure OpenAI API key:');
   }
 
+  // openai-compatible-specific prompts
+  if (llmProvider === 'openai-compatible') {
+    answers.openaiCompatBaseUrl = await promptInput(
+      'OpenAI-compatible base URL (e.g. https://api.openai.com/v1, http://localhost:8000/v1):',
+      'https://api.openai.com/v1'
+    );
+    answers.openaiCompatApiKey = await promptPassword(
+      'API key (leave blank if the endpoint needs none, e.g. local vLLM):'
+    );
+  }
+
+  // codex-subscription: no further prompts needed — auth.json is already
+  // present (that's why this choice was offered). Just surface the
+  // experimental/ToS warning up front so it isn't buried in a log line.
+  if (llmProvider === 'codex-subscription') {
+    console.log(
+      '\n  codex-subscription is EXPERIMENTAL: extraction/compaction traffic will transit your\n' +
+        '  ChatGPT subscription via an unofficial endpoint and may carry ToS risk for your OpenAI\n' +
+        '  account. See docs/providers.md before relying on this in production.\n'
+    );
+    answers.codexAuthPath = codexAuthPath;
+  }
+
+  // Ollama is now ON-DEMAND, not hard-required: whenever either provider
+  // selection (post-pivot) implies Ollama, ask how the user wants to get it
+  // ready rather than silently assuming a local install/pull is wanted.
+  if (llmProvider === 'ollama' || embedProvider === 'ollama') {
+    const setup = await promptOllamaSetup();
+    answers.ollamaMode = setup.mode;
+    answers.ollamaBaseUrl = setup.baseUrl;
+  }
+
   return answers;
+}
+
+/**
+ * Extraction/compaction model tier picker (item 2, amended 2026-07-08 after
+ * the extraction benchmark) — offered only when the LLM provider is Ollama.
+ * Four choices: two curated local tiers with F1/latency figures from the
+ * benchmark so the choice is informed, a "BYO cloud" pivot to the existing
+ * cloud provider option (best type-accuracy, no local resource cost), and a
+ * free-text custom tag. Returns either a model tag or OLLAMA_TIER_BYO_CLOUD.
+ */
+async function promptOllamaModelTier(): Promise<string> {
+  const choices = [
+    ...OLLAMA_EXTRACTION_TIERS.map((t) => ({
+      name: `${t.value} — ${t.label} (${t.size} download, ${t.ram} RAM recommended; ${t.stats})`,
+      value: t.value,
+    })),
+    { name: 'BYO cloud (azure-openai — best type-accuracy, no local resource cost)', value: OLLAMA_TIER_BYO_CLOUD },
+    { name: 'custom (enter your own Ollama model tag)', value: OLLAMA_TIER_CUSTOM },
+  ];
+  // Recommended tier ("llama3.1:8b") is the pre-highlighted choice; the
+  // config-level DEFAULT_OLLAMA_LLM_MODEL fallback (used when nothing is
+  // chosen at all, e.g. non-interactive mode) stays qwen2.5:7b.
+  const choice = await promptSelect('Extraction model (Ollama):', choices, 'llama3.1:8b');
+  if (choice === OLLAMA_TIER_CUSTOM) {
+    return promptInput('Custom Ollama model tag:', DEFAULT_OLLAMA_LLM_MODEL);
+  }
+  return choice;
+}
+
+/** Ollama on-demand setup picker (item 1) — three paths: install/pull now,
+ * point at an already-running server, or skip (daemon starts degraded). */
+async function promptOllamaSetup(): Promise<{ mode: 'install' | 'url' | 'skip'; baseUrl?: string }> {
+  const mode = (await promptSelect(
+    'Ollama setup:',
+    [
+      { name: 'Install/pull the required model(s) now', value: 'install' },
+      { name: 'Point at an existing Ollama server (already running elsewhere)', value: 'url' },
+      { name: 'Skip for now — daemon starts degraded until Ollama is available', value: 'skip' },
+    ],
+    'install'
+  )) as 'install' | 'url' | 'skip';
+
+  if (mode === 'url') {
+    const baseUrl = await promptInput('Ollama base URL:', 'http://127.0.0.1:11434');
+    return { mode, baseUrl };
+  }
+  return { mode };
+}
+
+/** Per-OS Ollama install guidance — shown when the wizard needs to prompt
+ * about a missing `ollama` binary (checkOllama) instead of burying it in a
+ * console.warn the user might not notice. */
+function ollamaInstallGuidance(): string {
+  switch (process.platform) {
+    case 'darwin':
+      return '  macOS: brew install ollama   (or download from https://ollama.com)';
+    case 'linux':
+      return '  Linux: curl -fsSL https://ollama.com/install.sh | sh';
+    case 'win32':
+      return '  Windows: download OllamaSetup.exe from https://ollama.com/download/windows';
+    default:
+      return '  Install from https://ollama.com';
+  }
+}
+
+/** Describes size/RAM guidance for a single model tag, falling back to an
+ * "unknown — custom tag" note for anything outside the curated tiers. */
+function describeOllamaModel(model: string): string {
+  const info = OLLAMA_MODEL_INFO[model];
+  return info
+    ? `    - ${model}  (${info.size} download, ~${info.ram} RAM recommended)`
+    : `    - ${model}  (size unknown — custom tag; check \`ollama show ${model}\` once installed)`;
+}
+
+/** Pre-pull notice + confirmation for the "install/pull now" Ollama-setup
+ * path (item 1): shows per-model download size and the "first run may take
+ * 10-30 min" warning BEFORE any network activity, then asks to proceed. */
+async function confirmOllamaDownload(models: string[]): Promise<boolean> {
+  console.log('\n  Ollama will download the following model(s):\n');
+  for (const m of models) console.log(describeOllamaModel(m));
+  console.log('\n  First run may take 10-30 min depending on connection speed and model size.\n');
+  return promptConfirm('Proceed with download now?', true);
 }
 
 // ─── Gather answers (non-interactive / test path) ─────────────────────────────
@@ -162,13 +397,22 @@ async function gatherInteractive(): Promise<WizardAnswers> {
 function gatherNonInteractive(): WizardAnswers {
   const vector = (process.env[NON_INTERACTIVE_ENV.vector] ?? 'sqlite-vec') as 'sqlite-vec' | 'lancedb';
   const embedProvider = (process.env[NON_INTERACTIVE_ENV.embedProvider] ?? 'ollama') as 'ollama' | 'azure-openai';
-  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'ollama') as 'ollama' | 'azure-openai';
+  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'ollama') as LlmProviderChoice;
   const dataDir = process.env[NON_INTERACTIVE_ENV.dataDir] ?? defaultDataDir();
   const port = parseInt(process.env[NON_INTERACTIVE_ENV.port] ?? '7777', 10) || 7777;
   const budget = parseFloat(process.env[NON_INTERACTIVE_ENV.budget] ?? '10') || 10;
   const installService = (process.env[NON_INTERACTIVE_ENV.installService] ?? 'false') === 'true';
+  const openaiCompatBaseUrl = process.env[NON_INTERACTIVE_ENV.openaiCompatBaseUrl];
+  const openaiCompatApiKey = process.env[NON_INTERACTIVE_ENV.openaiCompatApiKey];
+  const codexAuthPath = process.env[NON_INTERACTIVE_ENV.codexAuthPath];
+  const ollamaModelTag = process.env[NON_INTERACTIVE_ENV.ollamaModelTag];
+  const ollamaBaseUrl = process.env[NON_INTERACTIVE_ENV.ollamaBaseUrl];
 
-  return { vector, embedProvider, llmProvider, dataDir, port, budget, installService };
+  return {
+    vector, embedProvider, llmProvider, dataDir, port, budget, installService,
+    openaiCompatBaseUrl, openaiCompatApiKey, codexAuthPath,
+    ollamaModelTag, ollamaBaseUrl,
+  };
 }
 
 // ─── Conditional provider checks ─────────────────────────────────────────────
@@ -192,16 +436,46 @@ async function isOllamaModelPresent(model: string): Promise<boolean> {
   }
 }
 
-export async function checkOllama(llmModel: string, embedModel: string, nonInteractive: boolean): Promise<void> {
+/**
+ * @param llmModel undefined when the LLM provider isn't actually Ollama —
+ *   only pass a value for the slot(s) assigned to the ollama provider, so a
+ *   mixed setup (e.g. llmProvider=azure-openai, embedProvider=ollama) never
+ *   ends up trying to `ollama pull gpt-4.1`.
+ * @param confirmMissingBinary injection point for the missing-binary prompt
+ *   (default: a real inquirer confirm) — lets tests exercise both the
+ *   "user declines, init aborts" and "user continues, degraded" branches
+ *   without invoking a live TTY prompt.
+ */
+export async function checkOllama(
+  llmModel: string | undefined,
+  embedModel: string | undefined,
+  nonInteractive: boolean,
+  confirmMissingBinary: (message: string) => Promise<boolean> = (msg) => promptConfirm(msg, false),
+): Promise<void> {
   if (nonInteractive) return; // skip live HTTP in test mode
 
-  // Check ollama binary
+  // Check ollama binary. Previously this silently warned and "sailed on" —
+  // now it's an explicit prompt (with per-OS install guidance) so a missing
+  // Ollama install is a deliberate choice, not a buried warn the user might
+  // scroll past. Degraded start is still the fallback if they choose to
+  // continue — same /health degraded behavior as any other missing provider.
   let ollamaFound = false;
   try {
     execSync('ollama --version', { stdio: 'ignore' });
     ollamaFound = true;
   } catch {
-    console.warn('\n  Warning: `ollama` binary not found. Install from https://ollama.com\n');
+    console.log(`\n  Ollama is not installed, but is required for the selected provider.\n${ollamaInstallGuidance()}\n`);
+    const proceed = await confirmMissingBinary(
+      'Continue without it? (the daemon will start degraded until Ollama is installed and reachable)'
+    );
+    if (!proceed) {
+      throw new Error(
+        'Ollama is not installed.\n' +
+          `${ollamaInstallGuidance()}\n` +
+          '  Install it and re-run `astramem-local init`, or choose a different provider.'
+      );
+    }
+    console.log('  · Continuing without Ollama — daemon will start degraded until Ollama is installed.\n');
     return;
   }
 
@@ -209,7 +483,9 @@ export async function checkOllama(llmModel: string, embedModel: string, nonInter
 
   // Check models present — auto-pull anything missing so the daemon
   // doesn't fail later at embed/LLM preflight with a 404 "model not found".
-  const modelsToCheck = [...new Set([llmModel, embedModel])];
+  // Callers pass undefined for whichever slot (llm/embed) isn't actually
+  // assigned to the ollama provider — only check the ones that are.
+  const modelsToCheck = [...new Set([llmModel, embedModel].filter((m): m is string => Boolean(m)))];
   for (const model of modelsToCheck) {
     let found: boolean;
     try {
@@ -287,11 +563,27 @@ async function checkAzure(endpoint: string, deployment: string, apiKey: string, 
 
 // ─── Build config from answers ────────────────────────────────────────────────
 
+/** Default model per LLM provider choice — mirrors the equivalent switch in
+ * the `init()` flow's Ollama-model-check block below. */
+function defaultLlmModelFor(provider: LlmProviderChoice): string {
+  switch (provider) {
+    case 'azure-openai': return 'gpt-4.1';
+    case 'openai-compatible': return 'gpt-4o-mini';
+    case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
+    case 'ollama': default: return 'qwen2.5:7b';
+  }
+}
+
 function buildConfig(answers: WizardAnswers): Config {
   const base = defaultConfig();
 
-  const llmModel = answers.llmProvider === 'azure-openai' ? 'gpt-4.1' : 'qwen2.5-coder:7b';
-  const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'mxbai-embed-large';
+  // Ollama picks up the user's tier choice (or the default tier); every
+  // other provider (azure-openai / openai-compatible / codex-subscription)
+  // uses its fixed per-provider default model.
+  const llmModel = answers.llmProvider === 'ollama'
+    ? (answers.ollamaModelTag ?? DEFAULT_OLLAMA_LLM_MODEL)
+    : defaultLlmModelFor(answers.llmProvider);
+  const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : DEFAULT_OLLAMA_EMBED_MODEL;
 
   return {
     ...base,
@@ -311,10 +603,22 @@ function buildConfig(answers: WizardAnswers): Config {
     },
     vector: { store: answers.vector === 'lancedb' ? 'sqlite-vec' : answers.vector },
     budget: { daily_usd: answers.budget },
+    ollama: {
+      ...base.ollama,
+      baseUrl: answers.ollamaBaseUrl ?? base.ollama.baseUrl,
+    },
     azure: {
       ...base.azure,
       endpoint: answers.azureEndpoint,
       deployment: answers.azureDeployment,
+    },
+    openaiCompatible: {
+      ...base.openaiCompatible,
+      baseUrl: answers.openaiCompatBaseUrl,
+    },
+    codexSubscription: {
+      ...base.codexSubscription,
+      authPath: answers.codexAuthPath,
     },
   };
 }
@@ -358,10 +662,40 @@ export async function init(argv: string[] = []): Promise<void> {
   }
 
   // 3. Provider checks
+  // Only check/pull the models actually assigned to the ollama provider —
+  // with 4 possible llmProvider values now (previously 2), computing
+  // llmModel unconditionally here would try to `ollama pull` a non-Ollama
+  // model name (e.g. 'gpt-4.1' or 'gpt-5.4-mini') whenever
+  // embedProvider=ollama but llmProvider is something else, aborting init.
+  //
+  // Ollama is also ON-DEMAND, not hard-required (item 1): route through
+  // whichever of the three setup paths the user picked interactively
+  // (install now / point at an existing URL / skip — daemon starts
+  // degraded). Non-interactive mode has no "setup mode" concept and keeps
+  // the legacy always-attempt-pull-if-missing behavior unchanged.
   if (answers.llmProvider === 'ollama' || answers.embedProvider === 'ollama') {
-    const llmModel = answers.llmProvider === 'azure-openai' ? 'gpt-4.1' : 'qwen2.5-coder:7b';
-    const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'mxbai-embed-large';
-    await checkOllama(llmModel, embedModel, nonInteractive);
+    const llmModel = answers.llmProvider === 'ollama' ? (answers.ollamaModelTag ?? DEFAULT_OLLAMA_LLM_MODEL) : undefined;
+    const embedModel = answers.embedProvider === 'ollama' ? DEFAULT_OLLAMA_EMBED_MODEL : undefined;
+    const models = [llmModel, embedModel].filter((m): m is string => Boolean(m));
+
+    if (nonInteractive) {
+      await checkOllama(llmModel, embedModel, nonInteractive);
+    } else if (answers.ollamaMode === 'skip') {
+      console.log('\n  Skipping Ollama setup — daemon will start degraded until Ollama is reachable.');
+      console.log('  Run `astramem-local doctor` after installing Ollama, or pull manually:');
+      for (const m of models) console.log(`    ollama pull ${m}`);
+      console.log('');
+    } else if (answers.ollamaMode === 'url') {
+      console.log(`\n  Using existing Ollama server at ${answers.ollamaBaseUrl} — skipping local install/pull checks.\n`);
+    } else {
+      // 'install' (also the default if ollamaMode is somehow unset)
+      const proceed = await confirmOllamaDownload(models);
+      if (proceed) {
+        await checkOllama(llmModel, embedModel, nonInteractive);
+      } else {
+        console.log('\n  Skipping model pull — daemon will start degraded until Ollama models are available.\n');
+      }
+    }
   }
 
   if (answers.azureApiKey || answers.azureEndpoint) {
@@ -393,6 +727,8 @@ export async function init(argv: string[] = []): Promise<void> {
       azureKey: answers.azureApiKey,
       azureEndpoint: answers.azureEndpoint,
       azureDeployment: answers.azureDeployment,
+      openaiCompatApiKey: answers.openaiCompatApiKey,
+      openaiCompatApiKeyEnv: cfg.openaiCompatible.apiKeyEnv,
     },
     secretsPath
   );

@@ -336,8 +336,9 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
   });
 
   // ---- wire_version regex tighten (FEAT-4a / v0.2.1 hotfix Finding 3) ----
-  // Regex: /^v(?:0|[1-9][0-9]*)\.[0-9]+$/ — mirrors plugin wire.ts:106 and SaaS DTO.
-  // Leading-zero major, negative major, and Unicode digits all must be rejected.
+  // Regex: /^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/ — mirrors plugin wire.ts:106 and SaaS DTO
+  // (IngestTranscriptRequest.cs:65). Leading-zero major/minor, negative major, and Unicode
+  // digits all must be rejected.
 
   it('canonical wire_version "v01.0" (leading zero on major) returns 400', async () => {
     const { app } = makeApp();
@@ -376,6 +377,29 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('invalid');
+  });
+
+  it('canonical wire_version "v1.01" (leading zero on minor) returns 400', async () => {
+    const { app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, wire_version: 'v1.01' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('invalid');
+  });
+
+  it.each(['v1.0', 'v0.0', 'v10.10'])('canonical wire_version %s is accepted', async (wire_version) => {
+    const { app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, wire_version, session_id: `sess-wire-${wire_version}` },
+    });
+    expect(res.statusCode).toBe(200);
   });
 
   // ---- Canonical envelope: empty turns ----

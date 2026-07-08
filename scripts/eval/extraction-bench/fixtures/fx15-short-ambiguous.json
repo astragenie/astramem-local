@@ -1,0 +1,13 @@
+{
+  "id": "fx15-short-ambiguous",
+  "title": "Vague, unprioritized musing about caching",
+  "difficulty": "ambiguous",
+  "notes": "Very short, low-confidence, no clear decision. Tests confidence calibration and restraint (should NOT be inflated into a firm decision atom). Intentionally has only one plausible gold atom.",
+  "turns": [
+    { "role": "user", "text": "I think maybe we should look into caching search results at some point? Not sure it's worth it though, could be overkill for now." },
+    { "role": "assistant", "text": "Worth keeping in mind — most searches are probably already fast enough given the corpus sizes we're seeing, but if that changes it's an easy win later. I wouldn't prioritize it now." }
+  ],
+  "gold_atoms": [
+    { "type": "note", "text": "Caching search results was raised as a possible future optimization, but not prioritized — considered likely overkill given current corpus sizes and search speed." }
+  ]
+}

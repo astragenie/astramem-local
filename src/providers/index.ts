@@ -3,6 +3,8 @@ import type { EmbedProvider } from '../contracts/embed.js';
 import type { Config } from '../config/config.js';
 import { OllamaLLMProvider } from './llm/ollama.js';
 import { AzureOpenAILLMProvider } from './llm/azure-openai.js';
+import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
+import { CodexSubscriptionLLMProvider } from './llm/codex-subscription.js';
 import { OllamaEmbedProvider } from './embed/ollama.js';
 import { AzureOpenAIEmbedProvider } from './embed/azure-openai.js';
 
@@ -30,12 +32,33 @@ function resolveAzureApiKey(): string {
 }
 
 function buildLLMProvider(
-  providerName: 'ollama' | 'azure-openai',
+  providerName: Config['llm']['compaction']['provider'],
   model: string,
   config: Config,
 ): LLMProvider {
   if (providerName === 'ollama') {
     return new OllamaLLMProvider({ baseUrl: config.ollama.baseUrl, model });
+  }
+
+  if (providerName === 'openai-compatible') {
+    const baseUrl = config.openaiCompatible.baseUrl;
+    if (!baseUrl) {
+      throw new Error(
+        'openai-compatible LLM provider selected but no base_url configured. ' +
+          'Set config.openaiCompatible.baseUrl.',
+      );
+    }
+    const apiKeyEnv = config.openaiCompatible.apiKeyEnv || 'OPENAI_COMPAT_API_KEY';
+    const apiKey = process.env[apiKeyEnv] || undefined;
+    return new OpenAICompatibleLLMProvider({ baseUrl, model, apiKey });
+  }
+
+  if (providerName === 'codex-subscription') {
+    // No construction-time throw here — auth.json is loaded lazily on first
+    // chat()/health() call (see codex-subscription.ts's ensureAuthLoaded doc
+    // comment) so selecting this provider without having run `codex login`
+    // yet doesn't crash daemon boot the way a missing Azure endpoint does.
+    return new CodexSubscriptionLLMProvider({ model, authPath: config.codexSubscription.authPath });
   }
 
   const endpoint = config.azure.endpoint ?? process.env.AZURE_OPENAI_ENDPOINT;

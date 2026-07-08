@@ -22,3 +22,6 @@ secrets.env
 
 # crew/runner agent worktrees (ephemeral)
 .claude/worktrees/
+
+# LongMemEval benchmark data (large, fetched — see docs/eval/longmemeval-plan.md)
+.eval-data/

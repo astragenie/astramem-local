@@ -1,0 +1,22 @@
+{
+  "id": "fx01-clean-decision",
+  "title": "Storage stack decision (SQLite / sqlite-vec / mxbai-embed-large)",
+  "difficulty": "clean",
+  "notes": "Clean, short, decision-dense session. No noise. Baseline case every extractor should do well on.",
+  "turns": [
+    { "role": "user", "text": "We need to pick a database for astramemory-local. It has to run fully offline on a laptop, no server process. What do you recommend?" },
+    { "role": "assistant", "text": "For a local-first, single-process daemon, SQLite is the right choice over Postgres — no server to manage, ships as a single file, and better-sqlite3 gives synchronous fast access from Node. Postgres would require the user to run a separate server, which conflicts with the 'local-first' goal." },
+    { "role": "user", "text": "Good, let's go with SQLite then. What about vector search for memory recall?" },
+    { "role": "assistant", "text": "sqlite-vec is a good fit — it's a SQLite extension for vector similarity search, no separate vector DB needed, and it embeds into the same file as everything else." },
+    { "role": "user", "text": "Perfect, use sqlite-vec. One more thing — what embedding model should we default to?" },
+    { "role": "assistant", "text": "mxbai-embed-large via Ollama — it's a 1024-dim embedding model that runs locally, matching our fully-offline requirement." },
+    { "role": "user", "text": "Sounds good, go ahead and wire that up as the default." },
+    { "role": "assistant", "text": "Done. I've set the default embed provider to Ollama with mxbai-embed-large and the vector store to sqlite-vec backed by better-sqlite3." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Use SQLite (via better-sqlite3), not Postgres, for astramemory-local's storage — a local-first daemon should not require a separate server process." },
+    { "type": "decision", "text": "Use sqlite-vec for vector similarity search instead of a separate vector database." },
+    { "type": "decision", "text": "Default embedding model is mxbai-embed-large via Ollama (1024-dim), to keep embedding fully local/offline." },
+    { "type": "fact", "text": "mxbai-embed-large produces 1024-dimensional embeddings." }
+  ]
+}

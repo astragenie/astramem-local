@@ -82,6 +82,7 @@ afterEach(() => {
   }
   tmpDirs = [];
   __setEntryCtorForTests(undefined); // restore real Entry after any stubbing
+  delete process.env.ASTRA_MEMORY_ISOLATED;
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -201,5 +202,71 @@ describe('resolveBearerToken: one-way promotion from secrets.env', () => {
     writeSecretsEnvBearer(baseDir, 'file-only-token-2');
     const result = resolveBearerToken({ secretsDirs: [baseDir] });
     expect(result).toEqual({ token: 'file-only-token-2', source: 'secrets-env' });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// resolveBearerToken: ASTRA_MEMORY_ISOLATED=1 gate
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('resolveBearerToken: ASTRA_MEMORY_ISOLATED=1', () => {
+  it('ignores a bearer planted in secrets.env (even when secretsDirs points straight at it)', () => {
+    process.env.ASTRA_MEMORY_ISOLATED = '1';
+    stubWorkingCredentialStore();
+    const baseDir = mkTmpDir('astramem-bearer-isolated-secrets-');
+    writeSecretsEnvBearer(baseDir, 'real-dir-planted-token');
+
+    const result = resolveBearerToken({ secretsDirs: [baseDir] });
+
+    expect(result.source).toBe('ephemeral');
+    expect(result.token).not.toBe('real-dir-planted-token');
+  });
+
+  it('ignores a bearer already present in the (stubbed) OS credential store', () => {
+    process.env.ASTRA_MEMORY_ISOLATED = '1';
+    const store = stubWorkingCredentialStore();
+    store.set('astramem-local:bearer', 'store-token');
+
+    const result = resolveBearerToken({});
+
+    expect(result.source).toBe('ephemeral');
+    expect(result.token).not.toBe('store-token');
+  });
+
+  it('never promotes into the credential store while isolated', () => {
+    process.env.ASTRA_MEMORY_ISOLATED = '1';
+    const store = stubWorkingCredentialStore();
+    const baseDir = mkTmpDir('astramem-bearer-isolated-no-promote-');
+    writeSecretsEnvBearer(baseDir, 'file-only-token');
+
+    resolveBearerToken({ secretsDirs: [baseDir] });
+
+    expect(store.get('astramem-local:bearer')).toBeUndefined();
+  });
+
+  it('generates a fresh, high-entropy ephemeral token distinct across calls', () => {
+    process.env.ASTRA_MEMORY_ISOLATED = '1';
+    stubWorkingCredentialStore();
+
+    const first = resolveBearerToken({});
+    const second = resolveBearerToken({});
+
+    expect(first.source).toBe('ephemeral');
+    expect(second.source).toBe('ephemeral');
+    expect(first.token).toHaveLength(64);
+    expect(first.token).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.token).not.toBe(second.token);
+  });
+
+  it('CLI flag still beats isolation', () => {
+    process.env.ASTRA_MEMORY_ISOLATED = '1';
+    const result = resolveBearerToken({ cliToken: 'cli-token' });
+    expect(result).toEqual({ token: 'cli-token', source: 'cli' });
+  });
+
+  it('env var still beats isolation', () => {
+    process.env.ASTRA_MEMORY_ISOLATED = '1';
+    const result = resolveBearerToken({ envToken: 'env-token' });
+    expect(result).toEqual({ token: 'env-token', source: 'env' });
   });
 });

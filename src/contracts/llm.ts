@@ -28,7 +28,7 @@ export interface LLMHealth {
 }
 
 export interface LLMProvider {
-  readonly name: 'ollama' | 'azure-openai';
+  readonly name: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
   readonly model: string;
   chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult>;
   health(): Promise<LLMHealth>;

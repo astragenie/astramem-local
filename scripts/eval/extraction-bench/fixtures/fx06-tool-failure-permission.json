@@ -1,0 +1,23 @@
+{
+  "id": "fx06-tool-failure-permission",
+  "title": "Non-elevated install failing on scheduled task registration",
+  "difficulty": "clean",
+  "notes": "Tool failure -> root cause -> fix -> verification -> a second related gap found.",
+  "turns": [
+    { "role": "user", "text": "The service install step is failing on this machine with 'Access is denied' when it tries to register the scheduled task." },
+    { "role": "assistant", "text": "That's schtasks requiring elevation for some task configurations. Let me check what our install script actually needs..." },
+    { "role": "user", "text": "We specifically wanted this to work non-elevated per the hardening work." },
+    { "role": "assistant", "text": "Right, I see — the XML task definition had <RunLevel>HighestAvailable</RunLevel>, which forces elevation even for a per-user task. Removing that (or setting it to LeastPrivilege) lets a per-user logon-trigger task register without admin rights." },
+    { "role": "user", "text": "Test that on a non-admin account." },
+    { "role": "assistant", "text": "Tested on a standard (non-admin) Windows account: node dist/cli/index.js reinstall completed successfully, task registered, daemon started. No elevation prompt." },
+    { "role": "user", "text": "Good — any other place we still assume elevation?" },
+    { "role": "assistant", "text": "One more: the uninstall path calls schtasks /delete without /F, which prompts for interactive confirmation — that would hang in a non-interactive script. I'll add /F there too." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "The XML scheduled-task definition's <RunLevel>HighestAvailable</RunLevel> forces elevation even for a per-user task, breaking non-elevated install." },
+    { "type": "decision", "text": "Set the scheduled task's RunLevel to LeastPrivilege so a per-user logon-trigger task can register without admin rights." },
+    { "type": "event", "text": "Verified node dist/cli/index.js reinstall completes successfully with no elevation prompt on a standard non-admin Windows account." },
+    { "type": "lesson", "text": "The uninstall path's schtasks /delete (without /F) prompts for interactive confirmation, which would hang in a non-interactive script." },
+    { "type": "decision", "text": "Add the /F flag to the uninstall path's schtasks /delete call to avoid the interactive confirmation prompt." }
+  ]
+}

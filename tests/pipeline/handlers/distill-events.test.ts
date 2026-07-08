@@ -76,12 +76,24 @@ interface StoredEvent {
   occurred_at?: number;
 }
 
-/** Inserts a transcript row shaped exactly as the events-kind ingest path writes it. */
-function insertEventsTranscript(db: DB, id: string, sessionId: string, events: StoredEvent[], source = 'runner-plugin-events'): void {
+/**
+ * Inserts a transcript row shaped exactly as the events-kind ingest path
+ * writes it. `capturedAtMs` mirrors what POST /ingest/transcript stores from
+ * the envelope's `captured_at` field — null (default) reproduces the column
+ * being unset.
+ */
+function insertEventsTranscript(
+  db: DB,
+  id: string,
+  sessionId: string,
+  events: StoredEvent[],
+  source = 'runner-plugin-events',
+  capturedAtMs: number | null = null,
+): void {
   db.prepare(`
-    INSERT INTO transcripts (id, session_id, source, content, ingested_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(id, sessionId, source, JSON.stringify(events), Date.now());
+    INSERT INTO transcripts (id, session_id, source, content, ingested_at, captured_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(id, sessionId, source, JSON.stringify(events), Date.now(), capturedAtMs);
 }
 
 describe('distillEventsHandler', () => {
@@ -231,6 +243,41 @@ describe('distillEventsHandler', () => {
     ).rejects.toThrow(/does not match the events shape/);
   });
 
+  it('BUG FIX: captured_at threads into memories.valid_from (parity with distillHandler)', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    const capturedAtMs = Date.parse('2023-06-01T00:00:00.000Z');
+    insertSession(db, sessionId);
+    insertEventsTranscript(db, transcriptId, sessionId, [
+      { type: 'note', text: 'captured_at plumbing parity check' },
+    ], 'runner-plugin-events', capturedAtMs);
+
+    await distillEventsHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+
+    const memories = db.prepare('SELECT valid_from FROM memories').all() as { valid_from: number }[];
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.valid_from).toBe(capturedAtMs);
+  });
+
+  it('legacy/no captured_at: valid_from falls back to wall-clock ingest time', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    const beforeInsert = Date.now();
+    insertSession(db, sessionId);
+    // capturedAtMs omitted (defaults to null).
+    insertEventsTranscript(db, transcriptId, sessionId, [
+      { type: 'note', text: 'no captured_at fallback check' },
+    ]);
+
+    await distillEventsHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+    const afterInsert = Date.now();
+
+    const memories = db.prepare('SELECT valid_from FROM memories').all() as { valid_from: number }[];
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.valid_from).toBeGreaterThanOrEqual(beforeInsert);
+    expect(memories[0]!.valid_from).toBeLessThanOrEqual(afterInsert);
+  });
+
   it('does not crash and is a no-op when no providers are present in ctx', async () => {
     const sessionId = randomUUID();
     const transcriptId = randomUUID();
@@ -299,5 +346,11 @@ describe('distillEventsHandler — e2e-ish (ingest -> job -> handler -> searchab
     const hits = new MemoryRepo(db).searchFts('coverage', 10);
     expect(hits.length).toBeGreaterThanOrEqual(1);
     expect(hits.some(h => h.text.includes('distill-events e2e coverage'))).toBe(true);
+
+    // BUG FIX coverage: valid_from must be the envelope's captured_at
+    // (2026-07-02T10:00:00.000Z), not the wall-clock instant this test ran.
+    const memories = db.prepare('SELECT valid_from FROM memories').all() as { valid_from: number }[];
+    expect(memories).toHaveLength(1);
+    expect(memories[0]!.valid_from).toBe(Date.parse('2026-07-02T10:00:00.000Z'));
   });
 });

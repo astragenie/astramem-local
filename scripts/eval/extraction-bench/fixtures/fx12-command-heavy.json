@@ -1,0 +1,26 @@
+{
+  "id": "fx12-command-heavy",
+  "title": "Release flow command walkthrough",
+  "difficulty": "command-heavy",
+  "notes": "Session dominated by shell commands. Tests command-type atom recall and whether multi-step command sequences are captured faithfully.",
+  "turns": [
+    { "role": "user", "text": "I keep forgetting the right commands for this repo's release flow. Can you write them down as we go through a release?" },
+    { "role": "assistant", "text": "Sure. Step 1, run the full test suite: bun run test. Step 2, build: bun run build. Step 3, validate contracts: bun run contracts:validate." },
+    { "role": "user", "text": "Then what, just npm publish?" },
+    { "role": "assistant", "text": "Not quite — first bump the version and tag: npm version 0.9.0 --no-git-tag-version then git tag v0.9.0 && git push origin v0.9.0. The version-tag-parity CI gate checks package.json.version matches the pushed tag, so they have to move together in the same PR." },
+    { "role": "user", "text": "And the actual publish?" },
+    { "role": "assistant", "text": "npm publish --access public once CI is green on the tag." },
+    { "role": "user", "text": "What about rolling back if publish goes wrong?" },
+    { "role": "assistant", "text": "npm deprecate @astragenie/astramemory-local@0.9.0 \"broken release, use 0.8.1\" — npm doesn't support unpublishing after 72 hours, so deprecate-and-reissue is the real rollback path." }
+  ],
+  "gold_atoms": [
+    { "type": "command", "text": "bun run test" },
+    { "type": "command", "text": "bun run build" },
+    { "type": "command", "text": "bun run contracts:validate" },
+    { "type": "command", "text": "npm version 0.9.0 --no-git-tag-version && git tag v0.9.0 && git push origin v0.9.0" },
+    { "type": "fact", "text": "The version-tag-parity CI gate checks that package.json's version matches the pushed git tag, so both must move together in the same PR." },
+    { "type": "command", "text": "npm publish --access public" },
+    { "type": "command", "text": "npm deprecate @astragenie/astramemory-local@0.9.0 \"broken release, use 0.8.1\"" },
+    { "type": "lesson", "text": "npm does not support unpublishing a package after 72 hours, so deprecate-and-reissue is the real rollback path for a broken release." }
+  ]
+}

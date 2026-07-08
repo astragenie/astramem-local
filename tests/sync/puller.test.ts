@@ -17,7 +17,7 @@ import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
-import { pullOnce, drainPull, getPullWatermark, type PullFetcher, type RemotePullEvent } from '../../src/sync/puller.js';
+import { pullOnce, drainPull, getPullWatermark, httpPullFetcher, type PullFetcher, type RemotePullEvent } from '../../src/sync/puller.js';
 
 let tmpDirs: string[] = [];
 function mkTmp(): string {
@@ -231,5 +231,38 @@ describe('AC-5 — two-device simulation: B pulls what A pushed and holds an ide
     expect(memoryB).toBeDefined();
     expect(memoryB!.hash).toBe(memoryA.hash); // identical content hash (AC-5)
     expect(memoryB!.text).toBe(memoryA.text);
+  });
+});
+
+describe('httpPullFetcher — real-transport error path (astramem-local#81)', () => {
+  function fakeFetch(status: number, bodyText: string): typeof fetch {
+    return (async () => ({
+      ok: status < 400,
+      status,
+      text: async () => bodyText,
+      json: async () => JSON.parse(bodyText || '{}'),
+    })) as unknown as typeof fetch;
+  }
+
+  it('a non-2xx response throws with the cloud error body included, not just the status', async () => {
+    const fetcher = httpPullFetcher('https://cloud.example', 'tok', fakeFetch(403, '{"error":"sync_disabled"}'));
+    await expect(fetcher(null, 100)).rejects.toThrow('sync pull failed: HTTP 403 {"error":"sync_disabled"}');
+  });
+
+  it('omits the trailing space when the failure response has no body', async () => {
+    const fetcher = httpPullFetcher('https://cloud.example', 'tok', fakeFetch(500, ''));
+    let caught: Error | undefined;
+    try {
+      await fetcher(null, 100);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toBe('sync pull failed: HTTP 500');
+  });
+
+  it('a 2xx response with events[] still parses normally', async () => {
+    const fetcher = httpPullFetcher('https://cloud.example', 'tok', fakeFetch(200, '{"events":[],"next_cursor":null}'));
+    const batch = await fetcher(null, 100);
+    expect(batch).toEqual({ events: [], next_cursor: null });
   });
 });

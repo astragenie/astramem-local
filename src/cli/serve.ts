@@ -42,7 +42,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // canonical precedence (CLI > ASTRA_MEMORY_DATADIR > config.yaml > default).
   // doctor/backup/reinstall use the same resolver so diagnostics always look
   // at the same files as the daemon.
-  const { cfg, port, dataDir } = resolveRuntimeConfig({ port: opts.port, dataDir: opts.dataDir });
+  const { cfg, port, dataDir, isolated } = resolveRuntimeConfig({ port: opts.port, dataDir: opts.dataDir });
   // SEC-10: CLI flag > env var > OS credential store > secrets.env
   // (canonical dir, then legacy dir) > 'devtok' default. A secrets.env-only
   // bearer is opportunistically promoted into the credential store.
@@ -222,8 +222,12 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
   // Requires explicit opt-in + url + workspace + device token; private
   // atoms never ship regardless (scope filter inside the shipper).
+  // `!isolated` is a second, independent guard on top of resolveRuntimeConfig
+  // already forcing cfg.sync.enabled=false under ASTRA_MEMORY_ISOLATED=1 — a
+  // synthetic/eval daemon must never start the shipper even if some future
+  // code path re-derives cfg.sync from elsewhere.
   let shipper: ShipperHandle | null = null;
-  if (cfg.sync.enabled && dataDir !== ':memory:') {
+  if (cfg.sync.enabled && dataDir !== ':memory:' && !isolated) {
     const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
     if (!cfg.sync.url || !cfg.sync.workspaceId || !syncToken) {
       console.warn(

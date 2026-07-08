@@ -47,9 +47,9 @@ describe('migration 012-entities schema (AC-2)', () => {
     expect(indexes.some(i => (i.sql ?? '').includes('entity_id'))).toBe(true);
   });
 
-  it('DB max schema version is 17 after migration', () => {
+  it('DB max schema version is 20 after migration', () => {
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(17);
+    expect(row.v).toBe(20);
   });
 });
 

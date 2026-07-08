@@ -24,6 +24,10 @@ import type { EmbedProvider } from '../contracts/embed.js';
 import { llmChatProbe } from './probes/llm-chat-probe.js';
 import { embedProbe } from './probes/embed-probe.js';
 import { pluginCoexistenceProbe } from './probes/plugin-coexistence.js';
+import { openAICompatibleReachabilityProbe } from './probes/openai-compatible-probe.js';
+import { codexAuthProbe } from './probes/codex-subscription-probe.js';
+import { OpenAICompatibleLLMProvider } from '../providers/llm/openai-compatible.js';
+import { CodexSubscriptionLLMProvider } from '../providers/llm/codex-subscription.js';
 import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
 import { shimPaths, type ShimPointer } from '../service/shim.js';
 import { releaseIdFromEntryJs } from '../service/release.js';
@@ -538,6 +542,26 @@ function checkEmbed(provider: EmbedProvider): Check {
   };
 }
 
+// ─── Check: openai-compatible reachability / codex-subscription auth ────────
+
+function checkOpenAICompatibleReachable(provider: OpenAICompatibleLLMProvider, label: string): Check {
+  return {
+    name: `OpenAI-compatible reachability (${label})`,
+    async run(): Promise<CheckResult> {
+      return openAICompatibleReachabilityProbe(provider.baseUrl);
+    },
+  };
+}
+
+function checkCodexAuth(provider: CodexSubscriptionLLMProvider, label: string): Check {
+  return {
+    name: `Codex auth (${label})`,
+    async run(): Promise<CheckResult> {
+      return codexAuthProbe(provider.authPath);
+    },
+  };
+}
+
 // ─── Check 11: Plugin coexistence ────────────────────────────────────────────
 
 function checkPluginCoexistence(port: number): Check {
@@ -789,6 +813,20 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
       compaction.name === extraction.name && compaction.model === extraction.model;
     if (!sameProvider) {
       checks.push(checkLLMChat(extraction, 'extraction'));
+    }
+
+    // Provider-specific supplementary checks (openai-compatible reachability,
+    // codex-subscription auth.json presence/expiry) — additive to, not a
+    // replacement for, the generic chat probe above.
+    for (const [provider, label] of (
+      sameProvider ? [[compaction, 'compaction'] as const] : [[compaction, 'compaction'] as const, [extraction, 'extraction'] as const]
+    )) {
+      if (provider instanceof OpenAICompatibleLLMProvider) {
+        checks.push(checkOpenAICompatibleReachable(provider, label));
+      }
+      if (provider instanceof CodexSubscriptionLLMProvider) {
+        checks.push(checkCodexAuth(provider, label));
+      }
     }
   }
 

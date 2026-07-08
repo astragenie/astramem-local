@@ -1,0 +1,23 @@
+{
+  "id": "fx11-todo-heavy",
+  "title": "Release punch-list session",
+  "difficulty": "todo-heavy",
+  "notes": "Session dominated by pending work items with a late-session reprioritization. Tests todo-type recall breadth and whether reprioritization is captured.",
+  "turns": [
+    { "role": "user", "text": "Let's do a punch-list session — what's left before we can cut the v0.9.0 release?" },
+    { "role": "assistant", "text": "Sure, from the tracking doc, remaining items are: (1) write migration docs for the new archival tiers feature, (2) add a doctor check for the new tag-hygiene tier2 flag, (3) backfill CHANGELOG entries for the last 3 merged PRs, (4) verify the Windows service uninstall path on a clean VM, (5) bump package.json version to 0.9.0 and tag." },
+    { "role": "user", "text": "Add one more: we still need to decide whether archival defaults to enabled or stays opt-in for existing installs." },
+    { "role": "assistant", "text": "Added as item 6: decide archival.enabled default for upgrades (currently opt-in/false) before the release, since flipping it silently could archive memories users didn't expect to lose." },
+    { "role": "user", "text": "Good catch — flag that one as higher priority than the doc items." },
+    { "role": "assistant", "text": "Noted — reordered so the archival-default decision and the Windows uninstall verification are top priority; docs and CHANGELOG backfill can slip a day if needed." }
+  ],
+  "gold_atoms": [
+    { "type": "todo", "text": "Write migration docs for the new archival tiers feature before the v0.9.0 release." },
+    { "type": "todo", "text": "Add a doctor check for the new tag-hygiene tier2 flag before the v0.9.0 release." },
+    { "type": "todo", "text": "Backfill CHANGELOG entries for the last 3 merged PRs before the v0.9.0 release." },
+    { "type": "todo", "text": "Verify the Windows service uninstall path on a clean VM before the v0.9.0 release." },
+    { "type": "todo", "text": "Bump package.json version to 0.9.0 and tag for release." },
+    { "type": "todo", "text": "Decide whether archival.enabled defaults to true or stays opt-in (false) for existing installs before the release — flipping it silently could archive memories users didn't expect to lose." },
+    { "type": "note", "text": "The archival-default decision and the Windows uninstall verification were reprioritized above the docs/CHANGELOG backfill items, which can slip a day if needed." }
+  ]
+}

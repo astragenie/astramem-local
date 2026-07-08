@@ -14,6 +14,30 @@ export interface AzureOpenAILLMConfig {
   model?: string;
 }
 
+// ─── Reasoning-model detection ───────────────────────────────────────────────
+//
+// Azure OpenAI's "reasoning" model family — the o-series (o1, o1-mini,
+// o1-preview, o1-pro, o3, o3-mini, o3-pro, o4-mini, ...) plus gpt-5* — rejects
+// the classic Chat Completions `temperature` and `max_tokens` parameters
+// outright with HTTP 400 (e.g. gpt-5-mini: "Unsupported parameter:
+// 'max_tokens' is not supported with this model. Use 'max_completion_tokens'
+// instead."). These models don't take a sampling-temperature knob at all, so
+// `temperature` is simply omitted rather than mapped to anything.
+// Non-reasoning models (gpt-4*, gpt-3.5*, ...) are unaffected and keep the
+// classic parameters unchanged.
+//
+// Matched by model-name prefix (case-insensitive). The check runs against
+// `this.model`, which defaults to the Azure deployment name when no explicit
+// `model` override is passed to the constructor — so a deployment whose name
+// doesn't start with one of these prefixes (e.g. a custom deployment name for
+// an o-series model) must pass `model` explicitly for detection to work.
+const REASONING_MODEL_PREFIXES = [/^o1(?:-|$)/i, /^o3(?:-|$)/i, /^o4(?:-|$)/i, /^gpt-5/i];
+
+/** Is `model` one of Azure OpenAI's reasoning models (o-series / gpt-5*)? */
+export function isReasoningModel(model: string): boolean {
+  return REASONING_MODEL_PREFIXES.some((re) => re.test(model));
+}
+
 interface AzureChatResponse {
   choices?: Array<{ message?: { content?: string | null } }>;
   usage?: {
@@ -76,11 +100,21 @@ export class AzureOpenAILLMProvider implements LLMProvider {
     const log = childLogger({ provider: this.name, model: this.model });
     const t0 = Date.now();
     const useJson = opts?.json ?? true;
+    const reasoning = isReasoningModel(this.model);
     const body = {
       messages,
       ...(useJson ? { response_format: { type: 'json_object' } } : {}),
-      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      // Reasoning models (gpt-5*/o-series) reject `temperature` outright —
+      // they have no sampling-temperature knob — so it's omitted entirely
+      // rather than sent with any value.
+      ...(!reasoning && opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      // Reasoning models take `max_completion_tokens` instead of
+      // `max_tokens` — sending the classic name gets a hard HTTP 400.
+      ...(opts?.maxTokens !== undefined
+        ? reasoning
+          ? { max_completion_tokens: opts.maxTokens }
+          : { max_tokens: opts.maxTokens }
+        : {}),
     };
 
     const res = await fetchWithRetry(
@@ -134,10 +168,12 @@ export class AzureOpenAILLMProvider implements LLMProvider {
 
   async health(): Promise<LLMHealth> {
     const t0 = Date.now();
-    // Ping with a minimal 1-token completion
+    // Ping with a minimal 1-token completion. Reasoning models reject
+    // `max_tokens` (HTTP 400) just like in chat() — same detection, same
+    // `max_completion_tokens` substitution.
     const body = {
       messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 1,
+      ...(isReasoningModel(this.model) ? { max_completion_tokens: 1 } : { max_tokens: 1 }),
     };
     try {
       const res = await fetch(this.chatUrl, {
