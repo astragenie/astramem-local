@@ -30,7 +30,7 @@
     "perf:baseline": "bun scripts/perf/seed.mts && bun scripts/perf/bench.mts && node scripts/perf/fusion-profile.mts && bun scripts/perf/embed-cost.mts"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "trustedDependencies": [
     "@napi-rs/keyring",
