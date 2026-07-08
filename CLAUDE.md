@@ -22,7 +22,7 @@ Prereqs the wizard checks: Node 20+, Ollama running with `mxbai-embed-large` (10
 
 One command fixes/installs/repairs everything — idempotent, non-elevated OK:
 ```powershell
-node dist/cli/index.js reinstall     # stop → shim → XML task → start → verify version
+node dist/cli/index.js reinstall     # materialize release → stop → shim → XML task → start → verify version
 ```
 Upgrade flow: `git pull && bun install && bun run build && node dist/cli/index.js reinstall`.
 
@@ -31,6 +31,23 @@ Architecture: schtasks task `AstraMemoryD` points at a STABLE shim
 Upgrades rewrite the pointer only; schtasks is never re-touched. Task registered via
 XML: no 72h ExecutionTimeLimit, logon trigger + PT5M repetition = keepalive watchdog
 (dead daemon restarts ≤5min; healthy re-runs exit <100ms via `daemon.lock` instance lock).
+
+`reinstall` materializes an immutable release under `%LOCALAPPDATA%\Astramem\releases\<pkgversion>+<gitsha>\`
+before ever touching the running daemon (FEAT-438) and repoints `current.json` at it —
+the mutable checkout's `dist/` is never served directly, closing the 2026-07-07
+stale-dist outage class. Every successful `reinstall` also prunes old releases,
+keeping the newest 2 (the just-verified one is always protected, even if older).
+
+`reinstall --rollback` repoints at the previous release with no new
+materialization and no schtasks re-registration (task registration happens
+exactly once, at first install) — fails loudly with a non-zero exit and
+leaves `current.json` untouched if there is no older release on disk.
+
+`reinstall --dev` is the escape hatch back to pre-FEAT-438 behavior: pins the
+service straight at the checkout's own `dist/cli/index.js` (mutable — dev
+churn can restrand the daemon again) and prints a loud warning every time.
+`doctor` flags a dev-pinned install with a WARN row; run plain `reinstall`
+(no `--dev`) to return to a pinned release.
 
 **Do NOT use bare `astramem-local`** — global bun install is v0.3.4 (plain
 better-sqlite3, no cipher) and throws `SQLITE_NOTADB` on the encrypted DB. Registry

@@ -1,4 +1,5 @@
 import { ReembedPayloadSchema } from '../../contracts/index.js';
+import { ts } from '../../log/logger.js';
 import type { JobHandler, HandlerCtx } from '../handler.js';
 import { isExtendedCtx } from '../handler-ctx-ext.js';
 
@@ -25,7 +26,7 @@ export const reembedHandler: JobHandler = {
     const { memory_id } = parsed.data;
     const memory = ctx.memoryRepo.get(memory_id);
     if (!memory) {
-      console.log(`[reembed] memory ${memory_id} no longer exists — skipping`);
+      console.log(`${ts()} [reembed] memory ${memory_id} no longer exists — skipping`);
       return;
     }
 

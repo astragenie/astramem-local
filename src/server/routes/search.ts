@@ -29,11 +29,12 @@ import { redactIfEnabled } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
 import { contentHash } from '../../storage/content-hash.js';
 import { clampScores } from '../lib/score-contract.js';
-import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../../contracts/recall-filters.js';
-// FEAT-429: project/agent/entity parsing for both the GET query-string and
-// the POST JSON body now derives from the shared filter-descriptor registry
-// instead of three hand-rolled `if (params.x) filters.x = ...` blocks per
-// surface — see src/contracts/filter-registry.ts.
+import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema, RepoFilterSchema, SinceFilterSchema } from '../../contracts/recall-filters.js';
+// FEAT-429: project/agent/entity/repo/since parsing for both the GET
+// query-string and the POST JSON body now derives from the shared
+// filter-descriptor registry instead of hand-rolled
+// `if (params.x) filters.x = ...` blocks per surface — see
+// src/contracts/filter-registry.ts.
 import { assignQueryFilterValues, assignStructuredFilterValues } from '../../contracts/filter-registry.js';
 // #112 (U3-local, AC-1): consume the single source of truth for the memory
 // type union instead of re-declaring a hand-copied list here. Once #111 lands
@@ -59,7 +60,8 @@ const RecallBodySchema = z.object({
     // an out-of-union value now fails validation with a 400 naming the
     // field, instead of silently passing through as a free-form string.
     type: z.array(MemoryTypeEnum).optional(),
-    repo: z.string().optional(),
+    /** FEAT-429: scalar exact match on memories.repo — registry-driven (canonical contract). */
+    repo: RepoFilterSchema,
     /** FEAT-423/FEAT-424: single project or a list (OR-semantics) — canonical contract. */
     project: ProjectFilterSchema,
     /** FEAT-423/FEAT-424: single agent or a list; exact match on provenance agent/agent_type — canonical contract. */
@@ -67,7 +69,8 @@ const RecallBodySchema = z.object({
     /** FEAT-426: 'filter' (default, omitted) = current hard-filter behavior;
      *  'boost' = agent stays a ranking preference, non-matches are not excluded. */
     agentMode: z.enum(['filter', 'boost']).optional(),
-    since: z.number().optional(),
+    /** FEAT-429: epoch-ms lower bound on memories.created_at — registry-driven (canonical contract). */
+    since: SinceFilterSchema,
     /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
     as_of: z.string().optional(),
     /** FEAT-402 slice 2 AC-4/FEAT-424: entity name — resolved via the AC-9 normalize seam — canonical contract. */
@@ -128,17 +131,10 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         }
         filters.type = parsedTypes.data;
       }
-      if (params.repo) filters.repo = params.repo;
-      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      // FEAT-429: project/agent/entity/repo/since — registry-driven (was 5
+      // hand-rolled blocks; see src/contracts/filter-registry.ts).
       assignQueryFilterValues(params, filters as unknown as Record<string, unknown>);
       if (params.agentMode === 'filter' || params.agentMode === 'boost') filters.agentMode = params.agentMode;
-      if (params.since) {
-        // Accept epoch ms directly or duration strings like "7d", "24h"
-        const sinceNum = Number(params.since);
-        if (!isNaN(sinceNum)) {
-          filters.since = sinceNum;
-        }
-      }
       if (params.as_of) {
         try {
           filters.as_of = parseAsOf(params.as_of);
@@ -176,11 +172,10 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       const { filters: rawFilters } = parsed.data;
       const filters: SearchFilters = {};
       if (rawFilters?.type) filters.type = rawFilters.type;
-      if (rawFilters?.repo) filters.repo = rawFilters.repo;
-      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      // FEAT-429: project/agent/entity/repo/since — registry-driven (was 5
+      // hand-rolled lines; see src/contracts/filter-registry.ts).
       assignStructuredFilterValues(rawFilters, filters as unknown as Record<string, unknown>);
       if (rawFilters?.agentMode) filters.agentMode = rawFilters.agentMode;
-      if (rawFilters?.since !== undefined) filters.since = rawFilters.since;
       if (rawFilters?.as_of !== undefined) {
         try {
           filters.as_of = parseAsOf(rawFilters.as_of);

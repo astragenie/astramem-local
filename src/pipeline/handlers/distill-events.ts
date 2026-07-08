@@ -14,6 +14,7 @@
 
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
+import { ts } from '../../log/logger.js';
 import type { JobHandler } from '../handler.js';
 import { isExtendedCtx } from '../handler-ctx-ext.js';
 import { reduce } from '../../distill/stages/06-reduce.js';
@@ -124,7 +125,7 @@ export const distillEventsHandler: JobHandler = {
     if (!isExtendedCtx(ctx)) {
       // Fallback: no providers available (e.g. in unit tests without providers)
       console.warn(
-        `[distill-events] no providers in ctx — transcript ${transcript_id} logged but not distilled. ` +
+        `${ts()} [distill-events] no providers in ctx — transcript ${transcript_id} logged but not distilled. ` +
           'Ensure ExtendedHandlerCtx is passed when providers are configured.',
       );
       return;
@@ -164,7 +165,7 @@ export const distillEventsHandler: JobHandler = {
     pipeLog.info({ stage: 'embed-index', memories_created: created, memories_deduped: deduped }, 'stage complete');
 
     console.log(
-      `[distill-events] transcript=${transcript_id} events=${events.length} atoms=${atoms.length} ` +
+      `${ts()} [distill-events] transcript=${transcript_id} events=${events.length} atoms=${atoms.length} ` +
         `created=${created} deduped=${deduped}`,
     );
 
