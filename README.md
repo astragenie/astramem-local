@@ -71,6 +71,17 @@ export MEMORY_BEARER=$(node dist/cli/index.js token print)
 Restart Claude Code. All plugin hooks (PreCompact, SessionEnd, SubagentStop) now post to the
 local daemon. No other plugin changes needed.
 
+### Try it first — no install, no Ollama
+
+`astramem-local demo` boots an in-memory daemon (nothing written to disk), seeds a handful of
+example memories through a deterministic mock embed/LLM path, runs one sample recall, and keeps
+serving in the foreground until you hit Ctrl+C — a 30-second way to see the product work before
+installing Ollama or running `init`:
+
+```bash
+astramem-local demo
+```
+
 ---
 
 ## Architecture
@@ -227,6 +238,24 @@ Claude Code discovers and calls the tools below automatically when configured in
 
 Set `MEMORY_API_URL=http://127.0.0.1:7777` and `MEMORY_BEARER` to your token
 (printed by `astramem-local token print`).
+
+**Automated wiring:** `astramem-local mcp install --client <name>` writes the above for you —
+resolves the daemon's URL/port and Bearer token the same way `serve` does, and updates the
+target client's config in place (idempotent, backs up the existing file to `.bak` first).
+
+| `--client` | Target file | Written automatically? |
+|---|---|---|
+| `claude-code` | `.mcp.json` (project root) | Yes |
+| `cursor` | `~/.cursor/mcp.json` | Yes |
+| `claude` | Claude Desktop's `claude_desktop_config.json` (per-OS path) | Yes |
+| `windsurf` | `~/.codeium/windsurf/mcp_config.json` | No — prints a manual snippet |
+| `vscode` | `.vscode/mcp.json` | No — prints a manual snippet |
+
+```bash
+astramem-local mcp install --client claude-code       # writes .mcp.json in the current project
+astramem-local mcp install --client cursor --dry-run  # preview only, no write
+astramem-local mcp install --client claude --url http://127.0.0.1:7777
+```
 
 ---
 
@@ -388,6 +417,8 @@ secret.
 | `astramem-local budget --reset`              | Clear today's spend counter (override, logged)     |
 | `astramem-local token print`                 | Print the current Bearer token                     |
 | `astramem-local token rotate`                | Generate new token, invalidate the old one         |
+| `astramem-local mcp install --client <name>` | Write/update an MCP client's config to point at this daemon's `POST /mcp` (see [MCP tools](#mcp-tools-claude-code-auto-discovery)) |
+| `astramem-local demo`                        | 30s zero-dependency trial: in-memory daemon, seeded example memories, one sample recall, no Ollama required |
 
 ---
 
