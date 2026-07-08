@@ -20,6 +20,15 @@
 import pino from 'pino';
 import { isSensitiveKey } from './scrub.js';
 
+/**
+ * ISO-8601 UTC timestamp for RAW console.* lines emitted during daemon
+ * runtime (server, pipeline handlers, job worker, sync shipper/puller).
+ * pino `logger.*` calls already carry a `time` field — this helper is only
+ * for the raw console.log/warn/error lines that bypass pino. Shared so every
+ * runtime call site stamps identically instead of re-declaring a local dup.
+ */
+export const ts = (): string => new Date().toISOString();
+
 const level = process.env['LOG_LEVEL'] ?? 'info';
 
 /**

@@ -2,15 +2,15 @@
  * FEAT-429: filter-descriptor registry.
  *
  * Proves (a) the shared RECALL_FILTER_REGISTRY drives parsing + SQL for all
- * three migrated filters (project, agent, entity-schema-only) identically to
- * the pre-registry hand-rolled behavior, and (b) a descriptor-only addition
- * — one new entry in a descriptors array, touching none of the functions
- * below — drives query parsing, structured-body parsing, and SQL WHERE
- * building end-to-end. (b) is exercised with a synthetic descriptor local to
- * this test file rather than a change to the production registry, since the
- * production surface set (project/agent/entity) is fixed by FEAT-424; the
- * point is that the *mechanism* requires no code change, not that a new
- * production filter exists yet.
+ * five migrated filters (project, agent, entity-schema-only, repo, since)
+ * identically to the pre-registry hand-rolled behavior, and (b) a
+ * descriptor-only addition — one new entry in a descriptors array, touching
+ * none of the functions below — drives query parsing, structured-body
+ * parsing, and SQL WHERE building end-to-end. (b) is exercised with a
+ * synthetic descriptor local to this test file rather than a change to the
+ * production registry, since the production surface set is fixed by
+ * FEAT-424/FEAT-429; the point is that the *mechanism* requires no code
+ * change, not that a new production filter exists yet.
  */
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
@@ -21,30 +21,40 @@ import {
   assignStructuredFilterValues,
   assignQueryFilterValues,
   applySqlColumnFilters,
+  applySqlRangeFilters,
   type FilterDescriptor,
 } from '../../src/contracts/filter-registry.js';
 import {
   ProjectFilterSchema,
   AgentFilterSchema,
   EntityFilterSchema,
+  RepoFilterSchema,
+  SinceFilterSchema,
   RecallFilterFieldsSchema,
 } from '../../src/contracts/recall-filters.js';
 
 describe('RECALL_FILTER_REGISTRY — shape', () => {
-  it('enumerates exactly project, agent, entity', () => {
-    expect(RECALL_FILTER_REGISTRY.map(d => d.name).sort()).toEqual(['agent', 'entity', 'project']);
+  it('enumerates exactly project, agent, entity, repo, since', () => {
+    expect(RECALL_FILTER_REGISTRY.map(d => d.name).sort()).toEqual(['agent', 'entity', 'project', 'repo', 'since']);
   });
 
-  it('project/agent are sqlColumn descriptors on their own column name', () => {
+  it('project/agent/repo are sqlColumn descriptors on their own column name', () => {
     const project = RECALL_FILTER_REGISTRY.find(d => d.name === 'project')!;
     const agent = RECALL_FILTER_REGISTRY.find(d => d.name === 'agent')!;
+    const repo = RECALL_FILTER_REGISTRY.find(d => d.name === 'repo')!;
     expect(project.apply).toEqual({ kind: 'sqlColumn', column: 'project' });
     expect(agent.apply).toEqual({ kind: 'sqlColumn', column: 'agent' });
+    expect(repo.apply).toEqual({ kind: 'sqlColumn', column: 'repo' });
   });
 
   it('entity is a custom (non-SQL-column) descriptor', () => {
     const entity = RECALL_FILTER_REGISTRY.find(d => d.name === 'entity')!;
     expect(entity.apply).toEqual({ kind: 'custom' });
+  });
+
+  it('since is a sqlRangeColumn descriptor on created_at with op gte', () => {
+    const since = RECALL_FILTER_REGISTRY.find(d => d.name === 'since')!;
+    expect(since.apply).toEqual({ kind: 'sqlRangeColumn', column: 'created_at', op: 'gte' });
   });
 
   it('every descriptor AND-composes', () => {
@@ -53,17 +63,21 @@ describe('RECALL_FILTER_REGISTRY — shape', () => {
 });
 
 describe('registry -> recall-filters.ts re-exports stay identical', () => {
-  it('ProjectFilterSchema/AgentFilterSchema/EntityFilterSchema are literally the registry schemas', () => {
+  it('ProjectFilterSchema/AgentFilterSchema/EntityFilterSchema/RepoFilterSchema/SinceFilterSchema are literally the registry schemas', () => {
     expect(ProjectFilterSchema).toBe(getFilterSchema('project'));
     expect(AgentFilterSchema).toBe(getFilterSchema('agent'));
     expect(EntityFilterSchema).toBe(getFilterSchema('entity'));
+    expect(RepoFilterSchema).toBe(getFilterSchema('repo'));
+    expect(SinceFilterSchema).toBe(getFilterSchema('since'));
   });
 
   it('RecallFilterFieldsSchema built from the registry accepts the same shape as before', () => {
-    const value = { project: ['a', 'b'], agent: 'bot', entity: 'postgres' };
+    const value = { project: ['a', 'b'], agent: 'bot', entity: 'postgres', repo: 'myrepo', since: 1700000000000 };
     expect(RecallFilterFieldsSchema.safeParse(value).success).toBe(true);
     expect(RecallFilterFieldsSchema.safeParse({}).success).toBe(true);
     expect(RecallFilterFieldsSchema.safeParse({ project: 123 }).success).toBe(false);
+    expect(RecallFilterFieldsSchema.safeParse({ repo: 123 }).success).toBe(false);
+    expect(RecallFilterFieldsSchema.safeParse({ since: 'not-a-number' }).success).toBe(false);
   });
 });
 
@@ -97,6 +111,24 @@ describe('assignQueryFilterValues — GET query-string surface, registry-driven'
     assignQueryFilterValues({ project: '', agent: undefined }, target);
     expect(target).toEqual({});
   });
+
+  it('repo is forwarded verbatim (scalar, no CSV split)', () => {
+    const target: Record<string, unknown> = {};
+    assignQueryFilterValues({ repo: 'my-repo,other' }, target);
+    expect(target.repo).toBe('my-repo,other');
+  });
+
+  it('since parses a numeric epoch-ms string', () => {
+    const target: Record<string, unknown> = {};
+    assignQueryFilterValues({ since: '1700000000000' }, target);
+    expect(target.since).toBe(1700000000000);
+  });
+
+  it('since drops an unparseable (NaN) value instead of throwing', () => {
+    const target: Record<string, unknown> = {};
+    assignQueryFilterValues({ since: '7d' }, target);
+    expect(target).toEqual({});
+  });
 });
 
 describe('assignStructuredFilterValues — JSON body / MCP args surface, registry-driven', () => {
@@ -122,6 +154,18 @@ describe('assignStructuredFilterValues — JSON body / MCP args surface, registr
     const target: Record<string, unknown> = {};
     assignStructuredFilterValues({ project: ['x', 'y'] }, target);
     expect(target.project).toEqual(['x', 'y']);
+  });
+
+  it('repo uses a truthy presence check (empty string is "absent"), like project/agent', () => {
+    const target: Record<string, unknown> = {};
+    assignStructuredFilterValues({ repo: '' }, target);
+    expect(target).toEqual({});
+  });
+
+  it('since uses a !== undefined presence check (0 is a legitimate lower bound, not "absent")', () => {
+    const target: Record<string, unknown> = {};
+    assignStructuredFilterValues({ since: 0 }, target);
+    expect(target).toEqual({ since: 0 });
   });
 });
 
@@ -158,6 +202,44 @@ describe('applySqlColumnFilters — WHERE-clause builder, registry-driven', () =
 
   it('an absent filter key emits nothing', () => {
     const { clauses, params } = applySqlColumnFilters({});
+    expect(clauses).toEqual([]);
+    expect(params).toEqual([]);
+  });
+
+  it('a repo value produces `repo = ?` (scalar, never IN)', () => {
+    const { clauses, params } = applySqlColumnFilters({ repo: 'myrepo' });
+    expect(clauses).toEqual(['repo = ?']);
+    expect(params).toEqual(['myrepo']);
+  });
+
+  it('since (a sqlRangeColumn-kind descriptor) is never turned into an sqlColumn clause', () => {
+    const { clauses, params } = applySqlColumnFilters({ since: 1700000000000 });
+    expect(clauses).toEqual([]);
+    expect(params).toEqual([]);
+  });
+});
+
+describe('applySqlRangeFilters — numeric lower-bound WHERE-clause builder, registry-driven', () => {
+  it('since produces `created_at >= ?`', () => {
+    const { clauses, params } = applySqlRangeFilters({ since: 1700000000000 });
+    expect(clauses).toEqual(['created_at >= ?']);
+    expect(params).toEqual([1700000000000]);
+  });
+
+  it('an absent since key emits nothing', () => {
+    const { clauses, params } = applySqlRangeFilters({});
+    expect(clauses).toEqual([]);
+    expect(params).toEqual([]);
+  });
+
+  it('since = 0 still emits a clause (0 is a legitimate lower bound)', () => {
+    const { clauses, params } = applySqlRangeFilters({ since: 0 });
+    expect(clauses).toEqual(['created_at >= ?']);
+    expect(params).toEqual([0]);
+  });
+
+  it('a project value (a sqlColumn-kind descriptor) is never turned into a range clause', () => {
+    const { clauses, params } = applySqlRangeFilters({ project: 'p1' });
     expect(clauses).toEqual([]);
     expect(params).toEqual([]);
   });

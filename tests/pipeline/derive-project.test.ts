@@ -44,4 +44,33 @@ describe('deriveProject', () => {
   it('falls back to repo when cwd is empty/root-only', () => {
     expect(deriveProject('/', 'fallback-repo')).toBe('fallback-repo');
   });
+
+  // FEAT-425: worktree-safe cwd-basename fallback (no repo signal at all).
+  it('resolves a worktree-shaped cwd to the base repo name when repo is absent (POSIX)', () => {
+    expect(deriveProject('/home/user/my-repo-worktrees/wt-foo', null)).toBe('my-repo');
+  });
+
+  it('resolves a worktree-shaped cwd to the base repo name when repo is absent (Windows)', () => {
+    expect(
+      deriveProject('C:\\work\\mega\\astramemory-local-worktrees\\wt-423b', null),
+    ).toBe('astramemory-local');
+  });
+
+  it('resolves a worktree-shaped cwd whose subdir is not "wt-"-prefixed (e.g. a branch/feature name)', () => {
+    expect(
+      deriveProject(
+        'C:\\work\\mega\\astramemory-local-worktrees\\425-project-identity',
+        null,
+      ),
+    ).toBe('astramemory-local');
+  });
+
+  it('leaves a non-worktree cwd unaffected (AC-2 regression guard)', () => {
+    expect(deriveProject('/home/user/my-repo', null)).toBe('my-repo');
+    expect(deriveProject('C:\\work\\my-repo', null)).toBe('my-repo');
+  });
+
+  it('strips the "-worktrees" parent even with only two path segments total', () => {
+    expect(deriveProject('/repo-worktrees/sub', null)).toBe('repo');
+  });
 });

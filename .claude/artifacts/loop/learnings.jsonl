@@ -1,0 +1,2 @@
+{"kind":"failure","ts":"2026-07-07T10:00:48.121Z","agent":"reviewer-lite","severity":"high","tags":["review-result"],"summary":"scope exceeded: 5 files changed (light path caps at 2), and diff includes a new bash script with subprocess/jq logic and stdout-contract-critical branching (semantic complexity) — escalate to full reviewer","source":"review_fail"}
+{"kind":"failure","ts":"2026-07-07T12:50:38.607Z","agent":"reviewer","severity":"high","tags":["review-result"],"summary":"🔴:0,🟡:1,❓:0","source":"review_fail"}

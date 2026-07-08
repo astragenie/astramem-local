@@ -1,4 +1,5 @@
 import { CleanupPayloadSchema } from '../../contracts/index.js';
+import { ts } from '../../log/logger.js';
 import type { JobHandler, HandlerCtx } from '../handler.js';
 import { runArchivalPass } from '../../storage/archival.js';
 import { pruneIngestIdempotency } from '../../storage/ingest-idempotency.js';
@@ -49,14 +50,14 @@ export const cleanupHandler: JobHandler = {
     `).run(poisonCutoffMs);
 
     console.log(
-      `[cleanup] pruned ${result.changes} completed job(s) older than ${older_than_days} day(s), ` +
+      `${ts()} [cleanup] pruned ${result.changes} completed job(s) older than ${older_than_days} day(s), ` +
       `${poisonResult.changes} poison job(s) older than ${POISON_RETENTION_DAYS} day(s)`,
     );
 
     const archival = runArchivalPass(ctx.db, ctx.config);
     if (archival.candidates > 0) {
       console.log(
-        `[cleanup] archival pass: ${archival.archived}/${archival.candidates} stale low-usefulness ` +
+        `${ts()} [cleanup] archival pass: ${archival.archived}/${archival.candidates} stale low-usefulness ` +
         `memories archived`,
       );
     }
@@ -64,7 +65,7 @@ export const cleanupHandler: JobHandler = {
     const idempotency = pruneIngestIdempotency(ctx.db, ctx.config);
     if (idempotency.pruned > 0) {
       console.log(
-        `[cleanup] pruned ${idempotency.pruned} ingest_idempotency row(s) older than ` +
+        `${ts()} [cleanup] pruned ${idempotency.pruned} ingest_idempotency row(s) older than ` +
         `${ctx.config.ingestIdempotency.retentionDays} day(s)`,
       );
     }

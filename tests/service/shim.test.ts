@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeShim, shimPaths } from '../../src/service/shim.js';
+import { writeShim, shimPaths, writePointer } from '../../src/service/shim.js';
 import { buildTaskXml } from '../../src/service/task-xml.js';
 
 describe('service shim', () => {
@@ -57,6 +57,45 @@ describe('service shim', () => {
     const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
     expect(res.status).toBe(0);
     expect(JSON.parse(res.stdout.trim())).toEqual(['serve', '--port', '4242']);
+  });
+
+  it('writePointer (FEAT-438 SLICE-417 AC-4) writes current.json via tmp+rename and leaves no stray tmp file', () => {
+    const paths = shimPaths(dir);
+    writePointer({ nodeBin: 'node', entryJs: 'C:\\releases\\1.0.0+abc\\dist\\cli\\index.js', port: 7777 }, paths.pointerPath);
+    const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr).toEqual({ nodeBin: 'node', entryJs: 'C:\\releases\\1.0.0+abc\\dist\\cli\\index.js', port: 7777 });
+
+    const fs = require('node:fs') as typeof import('node:fs');
+    const entries: string[] = fs.readdirSync(paths.binDir);
+    expect(entries.some(e => e.includes('.tmp'))).toBe(false);
+  });
+
+  it('writePointer round-trips devPinned (FEAT-438 SLICE-418 AC-4)', () => {
+    const paths = shimPaths(dir);
+    writePointer({ nodeBin: 'node', entryJs: 'C:\\repo\\dist\\cli\\index.js', port: 7777, devPinned: true }, paths.pointerPath);
+    const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr.devPinned).toBe(true);
+  });
+
+  it('writePointer omits devPinned when not set (release-pinned pointers stay unmarked)', () => {
+    const paths = shimPaths(dir);
+    writePointer({ nodeBin: 'node', entryJs: 'C:\\releases\\1.0.0+abc\\dist\\cli\\index.js', port: 7777 }, paths.pointerPath);
+    const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr.devPinned).toBeUndefined();
+  });
+
+  it('writePointer overwrites an existing pointer atomically (repoint), and writeShim still round-trips through it', () => {
+    const paths = shimPaths(dir);
+    writePointer({ nodeBin: 'node', entryJs: 'old-entry.js', port: 1 }, paths.pointerPath);
+    writePointer({ nodeBin: 'node', entryJs: 'new-release-entry.js', port: 1 }, paths.pointerPath);
+    const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr.entryJs).toBe('new-release-entry.js');
+
+    // writeShim (used by install-flow) delegates its pointer write through
+    // the same helper — still produces a valid round-trippable pointer.
+    writeShim({ nodeBin: 'node', entryJs: 'shim-written-entry.js', port: 2 }, paths);
+    const ptr2 = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr2).toEqual({ nodeBin: 'node', entryJs: 'shim-written-entry.js', port: 2 });
   });
 });
 
