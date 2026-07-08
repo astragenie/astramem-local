@@ -208,7 +208,8 @@ Claude Code discovers and calls the tools below automatically when configured in
 | `supersede_memory` | Replace an old memory with a new one, linked via `memory_events` | `POST /memory/:id/supersede` |
 | `promote_memory` | Promote a memory's scope: personal → team → org | `POST /memory/:id/promote` |
 | `memory_history` | Full `memory_events` log for a memory | `GET /memory/:id/history` |
-| `mark_memory_used` | Explicit recall-usefulness signal — "this memory mattered" | `POST /memory/:id/used` |
+| `submit_feedback` | Explicit recall-usefulness signal — "this memory mattered" (U5 canonical name, shared with cloud) | `POST /memory/:id/used` |
+| `mark_memory_used` | **DEPRECATED** one-release alias for `submit_feedback` (same handler) — migrate now | `POST /memory/:id/used` |
 
 **Plugin `.mcp.json` wiring:**
 
@@ -333,9 +334,10 @@ recalled fact or decision can be traced back to its source.
 ## Usefulness metric
 
 The daemon tracks a **recall-usefulness rate**: of the memories served by a search/recall/pack call,
-how many were later marked as actually used (`POST /memory/:id/used`, MCP `mark_memory_used`, or the
-REST twin). The rate is `distinct atoms used / distinct atoms served` in a given time window,
-computed per memory type and per surface (`mcp` / `rest` / `cli`).
+how many were later marked as actually used (`POST /memory/:id/used`, MCP `submit_feedback` — or its
+deprecated one-release alias `mark_memory_used` — or the REST twin). The rate is
+`distinct atoms used / distinct atoms served` in a given time window, computed per memory type and
+per surface (`mcp` / `rest` / `cli`).
 
 This is a **v1 measure-only signal** — it does not yet feed ranking (see ADR-010). Query text is
 never stored; only a truncated SHA-256 digest of the query is kept alongside the served/used events,

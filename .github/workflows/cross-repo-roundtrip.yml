@@ -127,6 +127,37 @@ jobs:
             sleep 5
           done
 
+      # issue #93 / devops#75: better-sqlite3-multiple-ciphers is a bun-workspace
+      # dependency HOISTED to the repo-root node_modules
+      # (astramem-local/node_modules/...), which is where `test:smoke` resolves
+      # it from — NOT plugin/ or daemon/. `bun install` produces no node-ABI
+      # native build, and the plugin `bun install` above re-materialises the
+      # hoisted package, wiping any .node the earlier daemon rebuild produced.
+      # So `test:smoke` (vitest under node ABI v127) intermittently fails "Could
+      # not locate the bindings file", passing only when a prior job left the
+      # root addon compiled on the self-hosted runner. Rebuild the ROOT addon
+      # here — after the last bun install, before the smoke test — so the ABI is
+      # satisfied deterministically. Runs at the repo root (no working-directory).
+      - name: Rebuild root SQLCipher addon for the smoke test's node ABI
+        env:
+          NODE_ENV: development
+        run: |
+          set -e
+          if node -e "require('better-sqlite3-multiple-ciphers')" 2>addon-check.log; then
+            echo "root native addon present and loadable"
+          else
+            echo "root native addon missing/broken on this runner — forcing rebuild:"
+            cat addon-check.log
+            npm rebuild better-sqlite3-multiple-ciphers --build-from-source || bun install --force
+            if node -e "require('better-sqlite3-multiple-ciphers')"; then
+              echo "root native addon rebuilt successfully"
+            else
+              echo "::error::better-sqlite3-multiple-ciphers could not be built on this runner after a forced rebuild — a real toolchain gap (check python3/make/g++ on this runner image), not a flake."
+              exit 1
+            fi
+          fi
+          rm -f addon-check.log
+
       # AC-1/AC-2: ASTRAMEM_LOCAL_DIST_PATH must be the daemon REPO ROOT
       # (containing dist/cli/index.js after build), not the dist/ dir itself —
       # see tests/e2e/plugin-daemon-roundtrip.test.ts gating comment in the

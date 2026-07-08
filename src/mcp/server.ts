@@ -2,11 +2,12 @@
  * MCP server instance for astramemory-local.
  *
  * Canonical tool-name SoT: contracts/manifests/mcp-tools.v1.json (U5,
- * astragenie/memory#671) — cross-repo cross-check lives in
- * tests/contracts/mcp-tool-manifest-parity.test.ts. The list below is a
- * human-readable summary kept in sync by that test, not a second SoT.
+ * astragenie/memory#671, astragenie/astramem-local#120) — cross-repo
+ * cross-check lives in tests/contracts/mcp-tool-manifest-parity.test.ts. The
+ * list below is a human-readable summary kept in sync by that test, not a
+ * second SoT.
  *
- * Exposes 15 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 16 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert
@@ -18,7 +19,8 @@
  *   - promote_memory     — lifecycle: upward-only scope promotion (ADR-009)
  *   - restore_memory     — lifecycle: un-archive a memory archived by the W4.4 TTL policy (FEAT-416)
  *   - memory_history     — lifecycle: full event log for a memory (supersession chain)
- *   - mark_memory_used   — ADR-010 explicit recall-used signal for a served memory
+ *   - submit_feedback    — ADR-010 explicit recall-used signal for a served memory (U5 canonical name)
+ *   - mark_memory_used   — DEPRECATED one-release alias for submit_feedback (U5 collapse), same handler
  *   - erase_memory       — erasure v1 (ADR-006): hard-delete + tombstone
  *   - list_consolidation_proposals / resolve_consolidation_proposal — stage-9 propose-only queue (ADR-004)
  *
@@ -630,32 +632,57 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     }
   );
 
-  // ---- mark_memory_used -----------------------------------------------------
+  // ---- submit_feedback (canonical) + mark_memory_used (DEPRECATED alias) ----
+  // U5 collapse (astragenie/memory#671, astragenie/astramem-local#120):
+  // local's ADR-010 explicit recall-used signal collapses onto cloud's
+  // `submit_feedback` wire name. `mark_memory_used` is retained for one
+  // release as a deprecated alias — same handler — so existing consumers
+  // don't break on this rename. Cloud's submit_feedback carries a +1/-1
+  // score; local always records signal="explicit" (no score dimension
+  // stored locally today — see contracts/manifests/mcp-tools.v1.json).
+  const feedbackInputSchema = z.object({
+    id: z.string().min(1).describe('Memory id that was useful'),
+    note: z.string().optional().describe('Optional free-text note (not persisted — reserved for future use)'),
+  });
+
+  const handleSubmitFeedback = async (args: { id: string; note?: string }) => {
+    const memRepo = new MemoryRepo(db);
+    const memory = memRepo.get(args.id);
+    if (!memory) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
+        isError: true,
+      };
+    }
+    recordRecallUsed(db, { atomId: args.id, surface: 'mcp', signal: 'explicit' });
+    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, id: args.id }) }] };
+  };
+
+  server.registerTool(
+    'submit_feedback',
+    {
+      description:
+        'ADR-010 explicit recall-used signal: tell astramemory a previously-served memory actually ' +
+        'mattered in this turn. Canonical cross-repo wire name (U5, astragenie/memory#671) — shared ' +
+        'with cloud, which also accepts a +1/-1 score; local always records signal="explicit". ' +
+        'This is the explicit feedback channel — heuristic client-side detection (content referenced ' +
+        'in a later turn) is separate adapter work, out of scope here. v1: feeds the recall-usefulness ' +
+        'rate on doctor/dashboard/health only, does not affect ranking.',
+      inputSchema: feedbackInputSchema,
+    },
+    handleSubmitFeedback
+  );
+
   server.registerTool(
     'mark_memory_used',
     {
       description:
-        'ADR-010 explicit recall-used signal: tell astramemory a previously-served memory actually ' +
-        'mattered in this turn. This is the explicit feedback channel — heuristic client-side ' +
-        'detection (content referenced in a later turn) is separate adapter work, out of scope here. ' +
-        'v1: feeds the recall-usefulness rate on doctor/dashboard/health only, does not affect ranking.',
-      inputSchema: z.object({
-        id: z.string().min(1).describe('Memory id that was useful'),
-        note: z.string().optional().describe('Optional free-text note (not persisted — reserved for future use)'),
-      }),
+        'DEPRECATED — one-release alias for submit_feedback (U5 rename, astragenie/memory#671, ' +
+        'astragenie/astramem-local#120). Same handler and behavior; prefer submit_feedback — this name ' +
+        'will be removed in a future release.',
+      inputSchema: feedbackInputSchema,
     },
-    async (args) => {
-      const memRepo = new MemoryRepo(db);
-      const memory = memRepo.get(args.id);
-      if (!memory) {
-        return {
-          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', id: args.id }) }],
-          isError: true,
-        };
-      }
-      recordRecallUsed(db, { atomId: args.id, surface: 'mcp', signal: 'explicit' });
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, id: args.id }) }] };
-    }
+    handleSubmitFeedback
   );
 
   // ---- erase_memory ---------------------------------------------------------

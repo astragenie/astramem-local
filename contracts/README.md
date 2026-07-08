@@ -27,6 +27,12 @@ contracts/
                                 every fixtures/valid/* passes and every
                                 fixtures/invalid/* fails. No deps beyond ajv +
                                 ajv-formats (installed at the repo root).
+  wire.ts                    — hand-written wire-protocol constants (WIRE_VERSION,
+                                WIRE_VERSION_PATTERN, WIRE_VERSIONS_SUPPORTED,
+                                SYNC_PROTOCOL), see "Wire-protocol constants" below.
+  manifests/
+    mcp-tools.v1.json         — canonical MCP verb_noun tool-name manifest (U5),
+                                see "MCP tool-name manifest" below.
   schemas/
     atom.v1.schema.json               — astramem/atom@1 (ADR-001)
     retrieval-query.v1.schema.json    — astramem-retrieval@1 query envelope (ADR-005)
@@ -101,6 +107,45 @@ validator — Zod is a TypeScript-consumer convenience only.
 > `schemas/capture-envelope.v1.schema.json` directly. `atom.v1`, `retrieval-query.v1`,
 > `retrieval-result.v1`, `sync-envelope.v1` have no conditionals and generate
 > faithful Zod.
+
+## Wire-protocol constants (`wire.ts`)
+
+Some cross-repo wire agreements aren't a JSON Schema shape — they're small,
+stable literals (a version string, a compiled regex, a protocol name) that
+still need to be bit-for-bit identical across astramem-local, astramem cloud
+(.NET), and astramem-plugin. `wire.ts` is a **hand-written** module for
+exactly these (never touched by `generate-types.mjs` / `generate-zod.mjs`),
+importable as `@astragenie/astramem-contracts/wire`:
+
+```ts
+import { WIRE_VERSION, WIRE_VERSION_PATTERN, WIRE_VERSIONS_SUPPORTED, SYNC_PROTOCOL } from '@astragenie/astramem-contracts/wire';
+```
+
+- **`WIRE_VERSION`** (`'v1.0'`) — the capture-protocol `wire_version` value
+  this package's `capture-envelope.v1` schema targets for new writers.
+- **`WIRE_VERSION_PATTERN`** — the M-R7 **tightened** `wire_version` regex,
+  `^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$`: ASCII digits only, leading
+  zeros disallowed in *both* the major and minor component (so `"v01.0"`
+  and `"v1.01"` are both rejected). Byte-for-byte the same pattern as
+  `capture-envelope.v1.schema.json`'s `wire_version.pattern` (this change
+  tightened that schema to match — see changelog below) and cloud's
+  `IngestTranscriptRequest.cs:65` `RegularExpression` attribute.
+  **Not yet adopted** by astramem-local's own
+  `src/server/routes/ingest.ts` (`wire_version` Zod `.regex()`), which still
+  uses the older, looser pattern (`^v(?:0|[1-9][0-9]*)\.[0-9]+$`, permits a
+  leading-zero minor) — adopting this constant there is a follow-up.
+- **`WIRE_VERSIONS_SUPPORTED`** — the domain@gen vocabulary
+  (`['atom@1', 'retrieval@1', 'sync@1', 'capture@1']`), mirroring
+  `WIRE_VERSIONS_SUPPORTED` in `src/server/lib/wire-meta.ts` (derived there
+  from a hand-mirrored `SCHEMA_FILE_TO_DOMAIN` map, for the same `rootDir`
+  reason described under [MCP tool-name manifest](#mcp-tool-name-manifest-u5)
+  below). This is a separate axis from the capture protocol's per-request
+  `wire_version` field above — don't conflate the two.
+- **`SYNC_PROTOCOL`** (`'astramem-sync@1'`) — mirrors `SYNC_PROTOCOL` in
+  `src/sync/shipper.ts`.
+
+Like the Zod barrel, this is a TypeScript-consumer convenience — cloud
+(.NET) has its own literal constants and doesn't consume this file.
 
 ## Memory atom `type` registry (U4, ADR D4)
 
@@ -381,6 +426,33 @@ rename to strictly match `verb_noun` (mirroring `get_health`'s shape) is
 deferred to a coordinated SLICE-B, gated on the cross-repo #671 naming call
 — this manifest is additive-only and renames nothing.
 
+**Naming decision (SLICE-B, U5, astragenie/astramem-local#120)**: the
+cross-repo call landed as follows:
+
+- **`memory_history`** — grandfathered exact-match noun_verb name on both
+  backends (cloud adopted local's name rather than renaming to
+  `get_memory_history` — see the shipped `src/AstraMemory.Mcp/canonical-tool-manifest.json`
+  in the cloud repo). Not renamed here either.
+- **`session_digest`** — also grandfathered, **not** renamed to
+  `get_session_digest`. Unlike `memory_history`, cloud has no MCP tool with
+  this name at all, so there is no cross-repo naming collision forcing a
+  decision — renaming a local-only tool for `verb_noun` purity alone, with
+  no unification benefit, was judged not worth the alias-churn cost. Follows
+  the same grandfather precedent set for `memory_history`.
+- **`mark_memory_used` → `submit_feedback`** — this *is* a real cross-repo
+  collision (two different signal types under two different names: local's
+  ADR-010 implicit "recall was used" vs. cloud's explicit +1/-1 score) and
+  is collapsed onto cloud's `submit_feedback` wire name. `mark_memory_used`
+  is retained as a one-release **deprecated** alias (same handler) rather
+  than a clean break, since D2's "no alias needed" reasoning was written
+  for tools nobody calls yet — `mark_memory_used` predates U5 and may
+  already have callers.
+- This adds the 18 cloud-only tools (`owner: "cloud"`) from the actual
+  shipped cloud manifest, giving 34 total entries (16 `local`/`both` +
+  18 `cloud`). `get_health` stays `owner: "local"` — cloud exposes an
+  equivalent only as a REST `/health` endpoint, not an MCP tool, per the
+  cloud manifest's own notes.
+
 Parity is enforced locally by
 `tests/contracts/mcp-tool-manifest-parity.test.ts`, which builds the real
 `McpServer` (mock deps, no live Ollama/network) and asserts its registered
@@ -416,3 +488,22 @@ forces at least a package **major** bump, but the reverse is not true — most
 package releases will be minor/patch schema-package hygiene, not protocol
 changes. CI on the consuming side should gate on `wire_version` compatibility
 explicitly (point 4 above), not infer it from the npm package's semver.
+
+## Changelog
+
+- **1.3.0** — `wire.ts` hand-written module (`WIRE_VERSION`,
+  `WIRE_VERSION_PATTERN`, `WIRE_VERSIONS_SUPPORTED`, `SYNC_PROTOCOL`),
+  exported as `@astragenie/astramem-contracts/wire`; see "Wire-protocol
+  constants" above. `capture-envelope.v1.schema.json`'s `wire_version`
+  pattern **tightened** (M-R7) from `^v(?:0|[1-9][0-9]*)\.[0-9]+$` to
+  `^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$` to match cloud's
+  `IngestTranscriptRequest.cs:65` — a `"v1.01"`-style leading-zero minor
+  component is now rejected. Types/Zod regenerated for the schema change;
+  added `fixtures/invalid/capture-envelope-v1-wire-version-leading-zero-minor.json`
+  to cover it. Additive/tightening-only for a field that was already
+  required — no schema major bump. Not yet adopted by
+  `src/server/routes/ingest.ts` (still the looser pattern) — daemon-side
+  and cloud-side adoption of `WIRE_VERSION_PATTERN` are follow-ups, out of
+  scope for this package-only change.
+- **1.2.0** — `manifests/mcp-tools.v1.json` MCP tool-name manifest (U5-local
+  SLICE-A/B); see "MCP tool-name manifest" above.

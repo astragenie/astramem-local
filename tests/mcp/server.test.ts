@@ -94,7 +94,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 15 tools', async () => {
+  it('initialize + tools/list returns 16 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -107,13 +107,16 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(15);
+    expect(tools.length).toBe(16);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'erase_memory',
       'get_health',
       'invalidate_memory',
       'list_consolidation_proposals',
+      // U5 rename (astragenie/memory#671, astragenie/astramem-local#120):
+      // mark_memory_used is now a DEPRECATED one-release alias of
+      // submit_feedback — both are registered, same handler.
       'mark_memory_used',
       'memory_history',
       'promote_memory',
@@ -123,6 +126,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
       'restore_memory',
       'search_memory',
       'session_digest',
+      'submit_feedback',
       'supersede_memory',
       'why_memory',
     ]);
@@ -912,10 +916,11 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   });
 
   // -------------------------------------------------------------------------
-  // mark_memory_used (ADR-010, 2e)
+  // submit_feedback (ADR-010, 2e) — canonical U5 name
+  // (astragenie/memory#671, astragenie/astramem-local#120)
   // -------------------------------------------------------------------------
 
-  it('tools/call mark_memory_used records a recall_used usefulness event', async () => {
+  it('tools/call submit_feedback records a recall_used usefulness event', async () => {
     const id = new MemoryRepo(db).insert({
       type: 'fact', text: 'served then used', normalized_text: 'served then used',
       repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
@@ -925,7 +930,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const resp = await mcpPost(baseUrl, {
       jsonrpc: '2.0',
       method: 'tools/call',
-      params: { name: 'mark_memory_used', arguments: { id, note: 'this helped' } },
+      params: { name: 'submit_feedback', arguments: { id, note: 'this helped' } },
       id: 51,
     }) as { result?: { content?: Array<{ type: string; text: string }> } };
 
@@ -939,12 +944,53 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     expect(payload).toEqual({ family: 'recall_used', surface: 'mcp', signal: 'explicit' });
   });
 
-  it('tools/call mark_memory_used with unknown id returns isError', async () => {
+  it('tools/call submit_feedback with unknown id returns isError', async () => {
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'submit_feedback', arguments: { id: 'nope' } },
+      id: 52,
+    }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
+
+    expect(resp.result?.isError).toBe(true);
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ error: 'not found', id: 'nope' });
+  });
+
+  // -------------------------------------------------------------------------
+  // mark_memory_used — DEPRECATED one-release alias of submit_feedback (U5)
+  // -------------------------------------------------------------------------
+
+  it('tools/call mark_memory_used (deprecated alias) records the same usefulness event as submit_feedback', async () => {
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'served then used via deprecated alias', normalized_text: 'served then used via deprecated alias',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: null, hash: 'h-mcp-used-alias-1', source_hash: null,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: { name: 'mark_memory_used', arguments: { id, note: 'this helped' } },
+      id: 61,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text = resp.result?.content?.[0]?.text ?? '';
+    expect(JSON.parse(text)).toEqual({ ok: true, id });
+
+    const events = new MemoryEventRepo(db).listForAtom(id).filter(e => e.event_type === 'usefulness');
+    expect(events).toHaveLength(1);
+    const payload = JSON.parse(events[0]?.payload_json ?? '{}');
+    expect(payload).toEqual({ family: 'recall_used', surface: 'mcp', signal: 'explicit' });
+  });
+
+  it('tools/call mark_memory_used (deprecated alias) with unknown id returns isError', async () => {
     const resp = await mcpPost(baseUrl, {
       jsonrpc: '2.0',
       method: 'tools/call',
       params: { name: 'mark_memory_used', arguments: { id: 'nope' } },
-      id: 52,
+      id: 62,
     }) as { result?: { isError?: boolean; content?: Array<{ type: string; text: string }> } };
 
     expect(resp.result?.isError).toBe(true);
