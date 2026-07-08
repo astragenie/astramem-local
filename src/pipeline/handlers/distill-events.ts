@@ -56,6 +56,8 @@ interface TranscriptRow {
   session_id: string;
   content: string;
   source: string;
+  /** Canonical envelope's captured_at (epoch ms), NULL for legacy v0.0 ingests. */
+  captured_at: number | null;
 }
 
 interface SessionRow {
@@ -85,7 +87,7 @@ export const distillEventsHandler: JobHandler = {
     // Fetch the transcript row the ingest route wrote (content = JSON of
     // redacted events, source = `<tool>-events` or 'events').
     const transcript = ctx.db
-      .prepare('SELECT id, session_id, content, source FROM transcripts WHERE id = ?')
+      .prepare('SELECT id, session_id, content, source, captured_at FROM transcripts WHERE id = ?')
       .get(transcript_id) as TranscriptRow | undefined;
 
     if (!transcript) {
@@ -158,6 +160,11 @@ export const distillEventsHandler: JobHandler = {
       branch: session?.branch ?? null,
       agent: session?.agent ?? null,
       sourceHash,
+      // BUG FIX (mirrors distill.ts): captured_at was stored on the
+      // transcripts row but never read back for valid_from. NULL for legacy
+      // envelopes (events kind is canonical-only in practice, but the column
+      // is nullable so guard anyway).
+      capturedAtMs: transcript.captured_at ?? null,
     });
 
     const created = indexResults.filter(r => r.created).length;

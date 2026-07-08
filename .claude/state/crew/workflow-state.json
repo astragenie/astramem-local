@@ -1,6 +1,37 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-01-01T00:00:00.000Z",
-  "currentRun": null,
+  "updatedAt": "2026-07-07T09:16:27.718Z",
+  "currentRun": {
+    "title": "FEAT438 SLICE416: Release dir materialization (dist + prod node_modules) + AC-5 failure guard",
+    "goal": "`current.json.entryJs` points at `C:/work/mega/astramemory-local/dist/cli/index.js`",
+    "mode": "autonomous",
+    "status": "active",
+    "startedAt": "2026-07-07T09:16:27.717Z",
+    "updatedAt": "2026-07-07T09:16:27.717Z",
+    "next": "Begin implementation",
+    "gates": {
+      "review": null,
+      "validation": null,
+      "deployment": {
+        "dev": null,
+        "prod": null
+      },
+      "blocked": null,
+      "escalation": null,
+      "incident": null
+    },
+    "artifacts": {
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260707T091627Z-run-brief-feat438-slice416-release-dir-materialization-dist-prod-node-.md",
+      "handoffs": [],
+      "reviewResult": null,
+      "validationPlan": null,
+      "validationResult": null,
+      "deploymentChecks": {
+        "dev": null,
+        "prod": null
+      },
+      "finalSynthesis": null
+    }
+  },
   "recentRuns": []
 }

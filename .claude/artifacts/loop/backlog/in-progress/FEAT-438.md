@@ -35,7 +35,6 @@ proposed_slices:
 reasoning: "P0 via formula: impact 0.90>=0.8 AND technical_risk 0.80>=0.8 (alternate P0 condition; category is 'feature' not 'bugfix'). technical_risk at the 0.6-0.8 ceiling: cross-module reach (install/CLI/service/doctor/docs) plus an unresolved architect design decision (install-into-release vs copy) — kept at 0.80 not 0.9+ because the pointer-repoint mechanism reuses the already-proven atomic tmp-file+rename pattern (FEAT-433). autonomous_safe false mechanically on BOTH effort (0.65>0.6) and risk (0.80>0.6). pm_effort_points=8 trips the FEAT-168 decomposition gate — satisfied via proposed_slices (3 slices, 13 pts)."
 triage_notes: "Root fix for the 2026-07-07 8h outage: the OS service points current.json at the dev checkout's dist/, so every merge/worktree-agent mutation can strand the running service (schema drift guard fired: dist said 15, DB said 16). Pin the served artifact to an immutable versioned copy; dev tree churn stops affecting the service."
 started_at: 2026-07-07
-slices_complete: [SLICE-416, SLICE-417]
 ---
 # FEAT-438: release-pinned install — service runs an immutable versioned copy, not the dev tree
 

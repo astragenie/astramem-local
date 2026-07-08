@@ -1,0 +1,19 @@
+{
+  "id": "fx10-contradiction-correction",
+  "title": "Mid-session correction of a fusion weight decision (0.3 -> 0.1)",
+  "difficulty": "contradiction",
+  "notes": "Tests update/correction handling: the FIRST proposed value (epsilon=0.3) is explicitly reverted within the same session. A good extractor captures the FINAL value (0.1) as the standing decision, ideally also captures the correction itself as a lesson, and should NOT emit epsilon=0.3 as a standing/current decision.",
+  "turns": [
+    { "role": "user", "text": "For the search ranking fusion weights, let's set epsilon (usefulness) to 0.3 — I want the used-memory signal to matter a lot." },
+    { "role": "assistant", "text": "Set epsilon to 0.3. Note the governance ceiling on individual component weights is 1.0 by default, so 0.3 is well within bounds." },
+    { "role": "user", "text": "Actually wait, hold on — 0.3 is too aggressive, I ran the numbers wrong. With epsilon that high, a memory used once early on could permanently outrank a much more relevant fresh result. Let's use 0.1 instead, matching the original ADR-010 default." },
+    { "role": "assistant", "text": "Understood — reverting epsilon to 0.1, the ADR-010 default. 0.3 would have let early usefulness signal dominate over relevance for the reasons you described." },
+    { "role": "user", "text": "Right. And to be clear, going forward 0.1 is the value, not 0.3 — don't let that first number confuse anyone reading this thread later." },
+    { "role": "assistant", "text": "Confirmed: epsilon = 0.1 is final. I'll make sure any docs generated from this session reflect 0.1, not the earlier 0.3 that was reverted." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Set the search fusion epsilon (usefulness) weight to 0.1, matching the original ADR-010 default — NOT the initially proposed 0.3, which was reverted." },
+    { "type": "lesson", "text": "An epsilon (usefulness weight) as high as 0.3 would let a memory used once early on permanently outrank a more relevant fresh result — too aggressive." },
+    { "type": "fact", "text": "The fusion governance ceiling on individual component weights defaults to 1.0." }
+  ]
+}

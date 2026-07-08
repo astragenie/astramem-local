@@ -186,8 +186,8 @@ describe.sequential('Encrypted-DB restart smoke suite (FEAT-415)', () => {
 
     // No graceful shutdown — exercises stale-lock steal + WAL recovery on the
     // next boot against the encrypted file, not the clean SIGTERM path.
-    await killDaemon(daemon, 'SIGKILL', 5_000);
-    expect(daemon.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
+    await killDaemon(daemon!, 'SIGKILL', 5_000);
+    expect(daemon!.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
 
     daemon = await spawnDaemon({ port: 0, token: TOKEN, env: isolated.env });
     PORT = daemon.port;

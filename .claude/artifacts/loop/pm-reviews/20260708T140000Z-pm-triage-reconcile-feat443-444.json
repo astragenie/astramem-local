@@ -1,0 +1,46 @@
+[
+  {
+    "featureId": "FEAT-443",
+    "scores": {
+      "customer_impact": 0.55,
+      "effort_estimate": 0.65,
+      "strategic_alignment": 0.55,
+      "technical_risk": 0.55,
+      "dependency_depth": 0.15
+    },
+    "compositePriority": "P2",
+    "autonomousSafe": false,
+    "demandEvidence": "Unchanged from my prior entry (20260708T134432Z-pm-triage-batch-feat442-446.json) — see that artifact for full sourcing.",
+    "scopeNotes": "RECONCILIATION PASS: a concurrent duplicate PM dispatch (peer session 'intake-pm', results file .claude/artifacts/loop/pm-reviews/pm-results-2026-07-08-feat-442-446.json) ran its own pm-apply against these same 5 FEATs BEFORE my original pm-apply call, moving all 5 pending -> triaged with its own scores. My subsequent pm-apply run then overwrote frontmatter (last-write-wins) but pm-apply.mts's appendProposedSlicesSection skips re-appending body content once the '## Proposed slices' heading already exists — so FEAT-443.md was left with the PEER's body prose ('SLICE-1: Systemd/launchd pointer-indirection + rollback port (5 pts)' / 'SLICE-2: Hang-watchdog equivalent (sd_notify/WatchdogSec + launchd analog) (5 pts)') while the frontmatter's machine-readable `proposed_slices:` YAML showed MY per-platform split (8pts/5pts). This entry replaces the proposedSlices value with the peer's already-rendered body content verbatim so the frontmatter YAML (which is what FEAT-168's assertSized/parseProposedSlices actually reads) matches what a human reads in the body — I cannot edit the body directly (PM boundary: no Edit on backlog files) so matching frontmatter to the immutable-from-here body is the correct fix. My own by-platform split (isolating the no-Mac-hardware test risk to one slice) remains recorded as a dissenting alternative in the original 20260708T134432Z artifact and in my final report to the operator — I am not silently discarding it, just not letting it stay inconsistent with what's on disk. All other scoring (impact/effort/alignment/risk/dependency, composite_priority=P2, autonomous_safe=false) is UNCHANGED from my original entry.",
+    "risks": [
+      "Process risk (new finding, not about the FEAT itself): two independent PM dispatches ran pm-apply against the same 5 pending FEATs concurrently with no lock/conflict detection — frontmatter is last-write-wins and body-section appends are skip-if-exists-only, which together can silently produce a file whose frontmatter and body disagree (exactly what happened here) with no error surfaced by the tool. Recommend the operator treat concurrent /runner:intake or /runner:triage dispatches against the same backlog files as unsafe until pm-apply gains a conflict check.",
+      "Unchanged from my prior entry for the FEAT-443 subject matter itself: no-Mac-hardware testing gap, sd_notify new-territory risk, and the pointer/rollback-port-vs-watchdog cascade risk (see 20260708T134432Z-pm-triage-batch-feat442-446.json for full text)."
+    ],
+    "reasoning": "Reconciliation entry only — scores, composite_priority, and autonomous_safe are unchanged from my original 20260708T134432Z analysis (see that artifact for the full formula walkthrough). The only change is proposedSlices, updated to match the peer session's already-rendered body content (5pts pointer/rollback-port slice + 5pts watchdog slice, sum=10 >= effort_points=8) instead of my originally-submitted per-platform split, to eliminate a frontmatter/body inconsistency neither PM run could have anticipated without knowing about the other's concurrent write.",
+    "proposedSlices": [
+      { "id_suffix": "-SLICE-1", "title": "Systemd/launchd pointer-indirection + rollback port", "points": 5 },
+      { "id_suffix": "-SLICE-2", "title": "Hang-watchdog equivalent (sd_notify/WatchdogSec + launchd analog)", "points": 5 }
+    ]
+  },
+  {
+    "featureId": "FEAT-444",
+    "scores": {
+      "customer_impact": 0.65,
+      "effort_estimate": 0.25,
+      "strategic_alignment": 0.8,
+      "technical_risk": 0.15,
+      "dependency_depth": 0.15
+    },
+    "compositePriority": "P1",
+    "autonomousSafe": true,
+    "demandEvidence": "Adopting the peer session's demand evidence verbatim (2026-07-08 research CTO rec #1, productizing the audit methodology that exposed Mem0's 97.8% junk rate) — same underlying source I independently found and cited in my own original entry, just weighted differently on customer_impact (peer: 0.65, treating the low delivery cost + strategic case as impact-relevant; mine: 0.50, treating it as strategic-but-not-user-demanded). Both readings are defensible; see reasoning for why I am adopting the peer's here.",
+    "scopeNotes": "RECONCILIATION PASS, same race condition described in the FEAT-443 entry above: the peer session's pm-apply ran first, scored FEAT-444 as P1 (autonomousSafe=true), and — per FEAT-277 — drafted 5 Given-When-Then ACs inline into the body ('## Acceptance criteria (Given-When-Then)', AC-1 through AC-5, citing real files: src/doctor/types.ts CheckResultWithName, src/server/routes/health.ts, a new CLI 'memory health' command). My subsequent pm-apply run then overwrote the frontmatter with MY independent P2/autonomousSafe=false/no-ACs determination (effort_estimate 0.45 vs. their 0.25 — I scored the 3-surface touch, i.e. doctor+health-route+CLI, as more scope than they did), leaving the file in a genuinely broken state: frontmatter said 'P2, no AC required' while the body already contained 5 concrete, well-grounded P1-quality ACs. I cannot remove those ACs from the body (PM boundary: no Edit on backlog files; pm-apply itself only appends, never removes), so the responsible reconciliation is NOT to re-submit my own P2/no-AC view again (which would leave the same inconsistency), but to review the peer's ACs on their merits and, since they hold up (concrete file/type citations I can verify are real, happy-path + wire-compat-preservation + CLI-exit-code + zero-memories-edge-case + LLM-judge-opt-in-default-off all covered), adopt their P1 determination so frontmatter and body agree. I independently re-checked AC-2's wire-compat claim: src/server/routes/health.ts is a real, existing route file per my own earlier read of the repo's route layout — plausible. My own dissenting view (effort_estimate 0.45, P2) remains on record in my original 20260708T134432Z artifact and in my final report to the operator for the human record; I am not asserting the peer was objectively 'more right,' only that adopting their already-consistent, already-AC-complete analysis is better than leaving orphaned ACs contradicting a P2/no-AC frontmatter.",
+    "risks": [
+      "Process risk (same as FEAT-443 entry): concurrent PM dispatches against the same backlog files produced a frontmatter/body inconsistency with no tool-level warning — flagging this to the operator as a gap in pm-apply's concurrency handling.",
+      "Pre-mortem (mandatory, compositePriority now P1 — adopting peer's language verbatim since I concur with the substance): most likely two-weeks-later failure cause is a division-by-zero/NaN in the rate calculations on a small or freshly-initialized store with few or zero memories — AC-4 targets this directly.",
+      "Pre-mortem: rollback is a plain git revert — read-only feature over existing tables, no schema/migration, so removing the new doctor row / health block / CLI command fully undoes it with no state cleanup.",
+      "Pre-mortem: no existing doctor/health test currently asserts on the numeric correctness of a health-metric block (existing tests check status wiring, e.g. the starting|ok|degraded state in src/server/routes/health.ts, not junk/duplication/staleness math) — that is the coverage gap the new ACs (already in the body) must close with a fixture-DB-based unit test."
+    ],
+    "reasoning": "Reconciliation entry: adopting the peer session's P1/autonomousSafe=true determination and its 5 already-rendered ACs, since re-asserting my own P2/no-AC view a second time would leave the file's body (already containing 5 concrete P1-quality ACs I cannot remove) permanently inconsistent with its frontmatter. On the merits, effort_estimate 0.25 vs. my 0.45 is a genuine, defensible PM judgment call (read-only, reuses existing types/patterns, 3 surfaces but each additive) — I do not consider the peer's estimate wrong, just more optimistic than mine; both fall within reasonable range for this FEAT. Formula check on the adopted values: impact 0.65 < 0.70 so the first P1 clause fails, but alignment 0.80 >= 0.80 AND effort 0.25 <= 0.40 satisfies the second P1 clause — P1 confirmed. autonomous_safe=true confirmed: risk 0.15, effort 0.25, dependency 0.15 all <= 0.6, and hasAcceptanceCriteria=true (5 ACs present in body). composite_score=0.745 (recomputed: 0.65*0.35 + 0.80*0.30 + (1-0.25)*0.20 + (1-0.15)*0.10 + (1-0.15)*0.05 = 0.2275+0.24+0.15+0.085+0.0425). My original (superseded) P2/0.45-effort view remains preserved in 20260708T134432Z-pm-triage-batch-feat442-446.json and is reported to the operator as a dissenting read for the human record."
+  }
+]

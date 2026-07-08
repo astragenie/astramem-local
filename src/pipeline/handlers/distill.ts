@@ -32,6 +32,8 @@ interface TranscriptRow {
   session_id: string;
   content: string;
   source: string;
+  /** Canonical envelope's captured_at (epoch ms), NULL for legacy v0.0 ingests. */
+  captured_at: number | null;
 }
 
 interface SessionRow {
@@ -56,7 +58,7 @@ export const distillHandler: JobHandler = {
 
     // Fetch transcript content
     const transcript = ctx.db
-      .prepare('SELECT id, session_id, content, source FROM transcripts WHERE id = ?')
+      .prepare('SELECT id, session_id, content, source, captured_at FROM transcripts WHERE id = ?')
       .get(transcript_id) as TranscriptRow | undefined;
 
     if (!transcript) {
@@ -103,6 +105,12 @@ export const distillHandler: JobHandler = {
       branch: session?.branch ?? null,
       agent: session?.agent ?? null,
       sourceHash,
+      // BUG FIX: as_of previously filtered on wall-clock ingest time only —
+      // captured_at was stored on the transcripts row (ingest.ts) but never
+      // read back here, so bitemporal valid_from always defaulted to "now".
+      // NULL for legacy v0.0 envelopes, which have no captured_at and keep
+      // the wall-clock default (see EmbedIndexContext.capturedAtMs).
+      capturedAtMs: transcript.captured_at ?? null,
     };
 
     try {

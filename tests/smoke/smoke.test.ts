@@ -250,9 +250,20 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     expect(asOfFuture.status).toBe(200);
     expect(((await asOfFuture.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
 
-    // &as_of= at the fixture's (fake, far past) captured_at -> excluded —
-    // the real memory's valid_from is wall-clock "now" (test run time).
-    const pastAsOf = await fetch(`${BASE_URL}/search?q=sqlite&as_of=${encodeURIComponent(FIXTURE.captured_at)}&limit=20`, { headers: AUTH });
+    // BUG FIX coverage: valid_from is now the envelope's captured_at, not
+    // ingest wall-clock time. &as_of= AT the fixture's captured_at instant ->
+    // included (half-open interval [valid_from, valid_to) is inclusive of
+    // its own start).
+    const atCapturedAt = await fetch(`${BASE_URL}/search?q=sqlite&as_of=${encodeURIComponent(FIXTURE.captured_at)}&limit=20`, { headers: AUTH });
+    expect(atCapturedAt.status).toBe(200);
+    expect(((await atCapturedAt.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
+
+    // &as_of= strictly BEFORE the fixture's captured_at -> excluded — this is
+    // the case that was broken pre-fix (valid_from used to be wall-clock
+    // ingest time, which is always after any dataset-authored past date, so
+    // this case could never actually exercise the exclusion path).
+    const beforeCapturedAt = new Date(Date.parse(FIXTURE.captured_at) - 60_000).toISOString();
+    const pastAsOf = await fetch(`${BASE_URL}/search?q=sqlite&as_of=${encodeURIComponent(beforeCapturedAt)}&limit=20`, { headers: AUTH });
     expect(pastAsOf.status).toBe(200);
     expect(((await pastAsOf.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(false);
 
@@ -407,8 +418,8 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     // No graceful shutdown — exercises stale-lock steal (instance-lock.ts
     // pidAlive() false path) + WAL recovery on the next boot, not the clean
     // SIGTERM path.
-    await killDaemon(daemon, 'SIGKILL', 5_000);
-    expect(daemon.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
+    await killDaemon(daemon!, 'SIGKILL', 5_000);
+    expect(daemon!.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
 
     daemon = await spawnDaemon({ port: 0, token: TOKEN, env: isolated.env });
     PORT = daemon.port;

@@ -13,8 +13,8 @@ export interface Config {
    * Bearer token). */
   network: { host: string };
   llm: {
-    compaction: { provider: 'ollama' | 'azure-openai'; model: string };
-    extraction: { provider: 'ollama' | 'azure-openai'; model: string };
+    compaction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
+    extraction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
   };
   embedding: {
     provider: 'ollama' | 'azure-openai';
@@ -30,6 +30,17 @@ export interface Config {
   budget: { daily_usd: number };
   ollama: { baseUrl: string };
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
+  /** Generic OpenAI-`/v1/chat/completions`-compatible provider (OpenAI API,
+   * Groq, vLLM, LM Studio, ...). `apiKeyEnv` names the env var read for the
+   * key (secrets.env-style, mirrors AZURE_OPENAI_API_KEY) — left unset it
+   * defaults to OPENAI_COMPAT_API_KEY. Some self-hosted endpoints need no
+   * key at all; in that case leave the env var unset and no Authorization
+   * header is sent (see providers/llm/openai-compatible.ts). */
+  openaiCompatible: { baseUrl?: string; apiKeyEnv: string };
+  /** EXPERIMENTAL — reuses the user's `codex login` ("Sign in with ChatGPT")
+   * session instead of an API key. See providers/llm/codex-subscription.ts
+   * and docs/providers.md for the ToS-gray-zone warning before enabling. */
+  codexSubscription: { authPath?: string };
   /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
    * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed
    * ranking; atoms with no signal score a neutral 0.5, so ε never reshuffles
@@ -169,6 +180,27 @@ export interface Config {
      * any realistic client retry window — see rationale above. */
     retentionDays: number;
   };
+  /** Distill-job worker pool (FEAT throughput hardening). A single serial
+   * claim-execute loop was the daemon's throughput ceiling under parallel
+   * ingest (measured 45-60s/session serial). `concurrency` controls how many
+   * independent claim-execute lanes `startWorker` (src/pipeline/worker.ts)
+   * runs; every lane shares the same atomic pending→running claim
+   * (`JobRepo.claimPending`), so raising this is safe from double-execution
+   * by construction — see that method's doc comment.
+   *
+   * Default 1 is BYTE-IDENTICAL to pre-concurrency behavior (a single lane
+   * is exactly the old single-loop worker). Clamped to [1, 8] wherever it is
+   * consumed (`resolveWorkerConcurrency` in worker.ts) — never fatal, a bad
+   * config value must not block daemon boot.
+   *
+   * WARNING: concurrency > 1 multiplies local Ollama load (each lane can
+   * have an in-flight LLM/embed call simultaneously) — pair with
+   * `OLLAMA_NUM_PARALLEL` (Ollama server env var) set to at least this value,
+   * or lanes will simply queue behind Ollama's own single-slot default and
+   * you will not see the expected throughput gain. */
+  pipeline: {
+    concurrency: number;
+  };
 }
 
 export function defaultConfig(): Config {
@@ -177,14 +209,16 @@ export function defaultConfig(): Config {
     dataDir: defaultDataDir(),
     network: { host: '127.0.0.1' },
     llm: {
-      compaction: { provider: 'ollama', model: 'qwen2.5-coder:7b' },
-      extraction: { provider: 'ollama', model: 'qwen2.5-coder:7b' }
+      compaction: { provider: 'ollama', model: 'qwen2.5:7b' },
+      extraction: { provider: 'ollama', model: 'qwen2.5:7b' }
     },
     embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
     vector: { store: 'sqlite-vec' },
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
+    openaiCompatible: { apiKeyEnv: 'OPENAI_COMPAT_API_KEY' },
+    codexSubscription: {},
     search: {
       alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0,
       governance: { maxComponentWeight: 1.0 },
@@ -202,7 +236,8 @@ export function defaultConfig(): Config {
     },
     tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
-    ingestIdempotency: { retentionDays: 7 }
+    ingestIdempotency: { retentionDays: 7 },
+    pipeline: { concurrency: 1 }
   };
 }
 

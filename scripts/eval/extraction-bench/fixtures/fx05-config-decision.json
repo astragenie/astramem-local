@@ -1,0 +1,22 @@
+{
+  "id": "fx05-config-decision",
+  "title": "Budget cap investigation — misconfiguration, not sizing",
+  "difficulty": "clean",
+  "notes": "Tests whether the extractor captures a 'decided NOT to change X' outcome correctly, rather than inventing a config change that didn't happen.",
+  "turns": [
+    { "role": "user", "text": "The daily LLM budget cap is $10 by default. A few users are hitting it during heavy onboarding-day usage and going into paused state. Should we raise it?" },
+    { "role": "assistant", "text": "Let's look at what's actually driving spend... on a typical onboarding day a user ingests maybe 30-40 sessions, and at $0.02-0.05 per extraction call on Azure that's roughly $1-2, well under $10 even on a heavy day. The users hitting the cap are the ones on Ollama who have azure-openai misconfigured as a fallback and it's silently double-billing." },
+    { "role": "user", "text": "So it's not really a budget sizing problem?" },
+    { "role": "assistant", "text": "Right — I don't think we should raise the default cap. The actual fix is that the compaction/extraction provider selection shouldn't allow both stages to point at azure-openai by accident with no local Ollama fallback configured; that's a config validation gap." },
+    { "role": "user", "text": "OK, don't change the default. What should we do instead?" },
+    { "role": "assistant", "text": "I'll add a warning at boot: if both llm.compaction.provider and llm.extraction.provider are azure-openai AND embedding.provider is also azure-openai, log a WARN suggesting the user probably meant to run at least the embed step on local Ollama." },
+    { "role": "user", "text": "Good, and file a follow-up to actually validate this instead of just warning." },
+    { "role": "assistant", "text": "Filed — will add a stricter validation pass in a later release; for now it's a WARN only so we don't break anyone's intentionally all-cloud config." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "A typical onboarding day (30-40 sessions ingested) costs roughly $1-2 in Azure extraction spend, well under the $10 daily budget cap." },
+    { "type": "decision", "text": "Do not raise the default daily budget cap ($10) — users hitting it were caused by an all-azure-openai misconfiguration, not genuine budget sizing." },
+    { "type": "decision", "text": "Add a boot-time WARN when compaction, extraction, AND embedding providers are all azure-openai with no local Ollama step configured, since that's likely unintentional." },
+    { "type": "todo", "text": "Add a stricter validation pass for the all-azure-openai-provider misconfiguration in a later release (currently only a WARN)." }
+  ]
+}

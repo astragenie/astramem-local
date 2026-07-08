@@ -49,10 +49,13 @@ churn can restrand the daemon again) and prints a loud warning every time.
 `doctor` flags a dev-pinned install with a WARN row; run plain `reinstall`
 (no `--dev`) to return to a pinned release.
 
-**Do NOT use bare `astramem-local`** — global bun install is v0.3.4 (plain
-better-sqlite3, no cipher) and throws `SQLITE_NOTADB` on the encrypted DB. Registry
-maxes at 0.4.0. Always `node dist/cli/index.js <cmd>` from the repo. `reinstall`
-asserts served version == build version to catch this shadowing.
+**Package name: `astramem-local` on npmjs** — first published 2026-07-08 as v0.9.0
+(this repo, SQLCipher-capable). The OLD stale 0.4.0 lives under the scoped name
+`@astragenie/astramemory-local` on GitHub Packages (scope-mapped in ~/.npmrc) —
+never install that one (plain better-sqlite3, `SQLITE_NOTADB` on encrypted DBs).
+For dev work still prefer `node dist/cli/index.js <cmd>` from the repo; a stale
+GLOBAL install can shadow dev expectations, and `reinstall` asserts served
+version == build version to catch exactly that.
 
 Boot is degraded-start: port binds immediately, embed probe retries in background
 (`/health.status`: starting|ok|degraded). `--strict-preflight` restores fail-fast.

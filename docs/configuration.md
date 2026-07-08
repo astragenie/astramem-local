@@ -118,9 +118,27 @@ All config.yaml fields can be overridden at launch via environment variables usi
 | `ASTRA_MEMORY_TOKEN`          | bearer token (dev only)    |
 | `ASTRA_MEMORY_DAILY_USD`      | `budget.daily_usd`         |
 | `ASTRA_MEMORY_OLLAMA_URL`     | `ollama.baseUrl`           |
+| `ASTRA_MEMORY_ISOLATED`       | ignores the OS config dir entirely + hard-disables sync (see below) |
 
 The `MEMORY_API_URL` and `MEMORY_BEARER` variables are consumed by the **plugin hooks**, not the
 daemon itself. The daemon reads `ASTRA_MEMORY_*` for its own settings.
+
+---
+
+## Isolated mode (testing)
+
+Setting `ASTRA_MEMORY_ISOLATED=1` makes `resolveRuntimeConfig` skip the real OS config dir
+entirely — no `config.yaml` merge, no `sync.json` pairing merge — so a throwaway daemon started
+with only `ASTRA_MEMORY_DATADIR` overridden (e.g. a test harness or eval script) can never inherit
+whatever is sitting in `%APPDATA%\Astramem` on the machine that happens to run it, including a
+`sync.json` paired to a real cloud tenant. Sync is force-disabled in this mode regardless of any
+config value, as a second guard on top of that (the shipper's own start-guard also checks the flag
+directly). This is a belt-and-suspenders complement to — not a replacement for — the existing
+technique of redirecting `APPDATA`/`HOME`/`XDG_CONFIG_HOME` to a sandbox directory before spawning
+a test daemon (see `tests/smoke/helpers/daemon.ts` and
+`scripts/eval/longmemeval/lib/spawn-daemon.ts`); use both together for CI/eval daemons that must
+never touch production. The daemon logs one INFO line at boot when this mode is active
+(`isolated mode: OS config ignored, sync disabled`). Not intended for normal `init`/`serve` usage.
 
 ---
 

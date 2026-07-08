@@ -1,6 +1,6 @@
 {
-  "name": "@astragenie/astramemory-local",
-  "version": "0.8.1",
+  "name": "astramem-local",
+  "version": "0.9.1",
   "type": "module",
   "bin": {
     "astramem-local": "dist/cli/index.js"
@@ -15,13 +15,19 @@
   "scripts": {
     "build": "tsc -p .",
     "dev": "tsc -w -p .",
+    "typecheck:tests": "tsc -p tsconfig.tests.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:smoke": "vitest run tests/smoke",
     "contracts:generate": "node contracts/generate-types.mjs && node contracts/generate-zod.mjs",
     "contracts:validate": "node contracts/validate.mjs",
     "contracts:build": "node contracts/generate-types.mjs && node contracts/generate-zod.mjs && node contracts/validate.mjs",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "eval:longmemeval:sample": "bun scripts/eval/longmemeval/sample.mts",
+    "eval:longmemeval:smoke": "bun scripts/eval/longmemeval/run-smoke.mts",
+    "eval:longmemeval:judge": "bun scripts/eval/longmemeval/judge.mts",
+    "eval:extraction-bench": "bun scripts/eval/extraction-bench/run-bench.mts",
+    "perf:baseline": "bun scripts/perf/seed.mts && bun scripts/perf/bench.mts && node scripts/perf/fusion-profile.mts && bun scripts/perf/embed-cost.mts"
   },
   "engines": {
     "node": ">=20"
@@ -53,5 +59,13 @@
   "overrides": {
     "zod": "^4.4.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astragenie/astramemory-local.git"
+  },
+  "homepage": "https://github.com/astragenie/astramemory-local#readme",
+  "bugs": {
+    "url": "https://github.com/astragenie/astramemory-local/issues"
+  }
 }

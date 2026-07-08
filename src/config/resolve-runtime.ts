@@ -13,11 +13,14 @@
  * producing false "file is not a database" doctor failures and backups of
  * the wrong database.
  */
+import { join } from 'node:path';
 import { loadConfigFromDisk } from './loader.js';
 import { defaultConfigDir, defaultDataDir } from './datadir.js';
 import { readSyncSettings } from './sync-settings.js';
 import { migrateLegacyDirsIfPresent } from './migrate-dirs.js';
-import type { Config } from './config.js';
+import { defaultConfig, type Config } from './config.js';
+import { isIsolatedMode } from './isolated-mode.js';
+import { ts } from '../log/logger.js';
 
 export type ValueSource = 'cli' | 'env' | 'config.yaml' | 'default';
 
@@ -29,6 +32,10 @@ export interface RuntimeConfig {
   /** Where each resolved value came from — surfaced by `reinstall` so users
    *  can see WHY the daemon is using a given directory/port. */
   sources: { port: ValueSource; dataDir: ValueSource };
+  /** True when ASTRA_MEMORY_ISOLATED=1 gated this resolution. Surfaced so
+   *  callers (serve.ts) can enforce a second, independent sync-disable guard
+   *  on top of cfg.sync.enabled. */
+  isolated: boolean;
 }
 
 export interface RuntimeOverrides {
@@ -36,19 +43,59 @@ export interface RuntimeOverrides {
   dataDir?: string;
 }
 
+/**
+ * ASTRA_MEMORY_ISOLATED=1 — testing/eval isolation switch (see
+ * scripts/eval/longmemeval/README.md's "Isolation" section for the hazard
+ * this closes: a daemon spawned with only ASTRA_MEMORY_DATADIR overridden
+ * still inherited the real %APPDATA%\Astramem config dir, including a
+ * `sync.json` paired to a live production tenant, and would have
+ * sync-shipped synthetic data there).
+ *
+ * When set, resolution below never reads the real OS config dir at all — no
+ * config.yaml merge, no sync.json pairing merge — and sync is forced off
+ * regardless of any value either of those files would otherwise have
+ * carried. This is a SECOND, independent guard alongside the existing
+ * technique of redirecting APPDATA/HOME/XDG_*_HOME to a sandbox
+ * (tests/smoke/helpers/daemon.ts, scripts/eval/longmemeval/lib/spawn-daemon.ts)
+ * — it protects a caller that sets only ASTRA_MEMORY_DATADIR and forgets (or
+ * cannot, e.g. a shared box) to also redirect the OS dirs.
+ */
 export function resolveRuntimeConfig(overrides: RuntimeOverrides = {}): RuntimeConfig {
-  // Legacy Windows dir rename (AstraMemory → Astramem) must run before any
-  // config read so the canonical config.yaml is the one we load. Idempotent.
-  migrateLegacyDirsIfPresent();
+  const isolated = isIsolatedMode();
 
-  const configDir = defaultConfigDir();
-  const cfg = loadConfigFromDisk(configDir);
+  let cfg: Config;
+  let configDir = '';
 
-  // `astramem-local pair` persists sync settings to sync.json — merge them
-  // over config.yaml so pairing survives restarts.
-  const pairedSync = readSyncSettings(configDir);
-  if (pairedSync) {
-    cfg.sync = { ...cfg.sync, enabled: pairedSync.enabled, url: pairedSync.url, workspaceId: pairedSync.workspaceId };
+  if (isolated) {
+    // No migrateLegacyDirsIfPresent(), no loadConfigFromDisk(), no
+    // readSyncSettings() — none of those touch anything but the real OS
+    // config dir, which isolated mode must never read. cfg is defaults only;
+    // env-var overrides (ASTRA_MEMORY_PORT, ASTRA_MEMORY_DATADIR) still apply
+    // below, same as any other mode.
+    cfg = defaultConfig();
+  } else {
+    // Legacy Windows dir rename (AstraMemory → Astramem) must run before any
+    // config read so the canonical config.yaml is the one we load. Idempotent.
+    migrateLegacyDirsIfPresent();
+
+    configDir = defaultConfigDir();
+    cfg = loadConfigFromDisk(configDir);
+
+    // `astramem-local pair` persists sync settings to sync.json — merge them
+    // over config.yaml so pairing survives restarts.
+    const pairedSync = readSyncSettings(configDir);
+    if (pairedSync) {
+      cfg.sync = { ...cfg.sync, enabled: pairedSync.enabled, url: pairedSync.url, workspaceId: pairedSync.workspaceId };
+    }
+  }
+
+  if (isolated) {
+    // Hard-disable regardless of any config value — the whole point of this
+    // mode is that a synthetic/eval daemon must never ship to a real cloud
+    // tenant, even if some future code path grows another source of
+    // cfg.sync. Nothing merges a nonzero value into it above, but this stays
+    // correct if that ever changes.
+    cfg = { ...cfg, sync: { ...cfg.sync, enabled: false } };
   }
 
   // ASTRA_MEMORY_PORT sits between the CLI flag and config.yaml — the
@@ -71,5 +118,15 @@ export function resolveRuntimeConfig(overrides: RuntimeOverrides = {}): RuntimeC
     dataDirSource = cfg.dataDir === defaultDataDir() ? 'default' : 'config.yaml';
   }
 
-  return { cfg, port, dataDir, configDir, sources: { port: portSource, dataDir: dataDirSource } };
+  if (isolated) {
+    // Adjacent-to-data config path, per the task's "if present" allowance —
+    // nothing reads a config.yaml/sync.json from here today (isolated mode
+    // skips that merge entirely above), but configDir must still point
+    // somewhere sandboxed rather than the real OS dir for callers that
+    // report or probe it (e.g. doctor, reinstall).
+    configDir = dataDir === ':memory:' ? dataDir : join(dataDir, 'config');
+    console.log(`${ts()} [astramem-local] isolated mode: OS config ignored, sync disabled`);
+  }
+
+  return { cfg, port, dataDir, configDir, sources: { port: portSource, dataDir: dataDirSource }, isolated };
 }

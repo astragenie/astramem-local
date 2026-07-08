@@ -6,6 +6,7 @@ import { distillHandler } from '../../../src/pipeline/handlers/distill.js';
 import { defaultConfig } from '../../../src/config/config.js';
 import { MemoryRepo } from '../../../src/storage/memories.js';
 import { SqliteVecStore } from '../../../src/vector/sqlite-vec.js';
+import { search } from '../../../src/search/search.js';
 import type { ExtendedHandlerCtx } from '../../../src/pipeline/handler-ctx-ext.js';
 import type { DB } from '../../../src/storage/db.js';
 import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth, EmbedHealth } from '../../../src/contracts/index.js';
@@ -72,12 +73,23 @@ function insertSessionWithCwd(db: DB, id: string, cwd: string): void {
   `).run(id, cwd, Date.now());
 }
 
-/** Inserts a transcript row shaped exactly as the canonical ingest path writes it (JSON.stringify(turns)). */
-function insertCanonicalTranscript(db: DB, id: string, sessionId: string, turns: Array<{ role: string; text: string }>): void {
+/**
+ * Inserts a transcript row shaped exactly as the canonical ingest path writes it
+ * (JSON.stringify(turns)). `capturedAtMs` mirrors what POST /ingest/transcript
+ * stores from the envelope's `captured_at` field — null reproduces a legacy
+ * v0.0 ingest (no captured_at column value).
+ */
+function insertCanonicalTranscript(
+  db: DB,
+  id: string,
+  sessionId: string,
+  turns: Array<{ role: string; text: string }>,
+  capturedAtMs: number | null = null,
+): void {
   db.prepare(`
-    INSERT INTO transcripts (id, session_id, source, content, ingested_at)
-    VALUES (?, ?, 'claude-code-pre_compact', ?, ?)
-  `).run(id, sessionId, JSON.stringify(turns), Date.now());
+    INSERT INTO transcripts (id, session_id, source, content, ingested_at, captured_at)
+    VALUES (?, ?, 'claude-code-pre_compact', ?, ?, ?)
+  `).run(id, sessionId, JSON.stringify(turns), Date.now(), capturedAtMs);
 }
 
 /** Inserts an ingest_idempotency row exactly as POST /ingest/transcript does at insert time: summary_memory_id === transcript id. */
@@ -200,5 +212,67 @@ describe('distillHandler', () => {
 
     const memories = db.prepare('SELECT id FROM memories').all();
     expect(memories).toHaveLength(0);
+  });
+
+  // BUG FIX: as_of was keyed on ingest wall-clock time because captured_at
+  // (stored on the transcripts row by the ingest route) was never read back
+  // and threaded into the atom's valid_from at distill time. This proves the
+  // full plumb: canonical envelope captured_at -> transcripts.captured_at ->
+  // distillHandler -> PipelineContext.capturedAtMs -> embedAndIndex ->
+  // memories.valid_from -> as_of bitemporal search.
+  const SEARCH_WEIGHTS = { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 };
+
+  it('BUG FIX: captured_at threads into memories.valid_from, driving as_of correctly', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    const capturedAtMs = Date.parse('2023-06-01T00:00:00.000Z');
+    insertSession(db, sessionId);
+    insertCanonicalTranscript(db, transcriptId, sessionId, [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ], capturedAtMs);
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+
+    const memories = db.prepare('SELECT id, valid_from FROM memories').all() as { id: string; valid_from: number }[];
+    expect(memories.length).toBeGreaterThanOrEqual(1);
+    // valid_from must be the captured_at instant, not "now" (Date.now() at
+    // distill time would be many years later than 2023-06-01).
+    for (const m of memories) {
+      expect(m.valid_from).toBe(capturedAtMs);
+    }
+
+    const searchOpts = { db, embed: ctx.providers.embed, weights: SEARCH_WEIGHTS };
+
+    // as_of before captured_at: the memory is not yet valid at that instant.
+    const before = await search('sqlite-vec vector storage', { as_of: Date.parse('2023-01-01T00:00:00.000Z') }, 10, searchOpts);
+    expect(before.map(h => h.id)).not.toContain(memories[0]!.id);
+
+    // as_of after captured_at: the memory is valid at that instant and is found.
+    const after = await search('sqlite-vec vector storage', { as_of: Date.parse('2023-12-01T00:00:00.000Z') }, 10, searchOpts);
+    expect(after.map(h => h.id)).toContain(memories[0]!.id);
+  });
+
+  it('legacy v0.0 envelope (no captured_at): valid_from falls back to wall-clock ingest time', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    const beforeInsert = Date.now();
+    insertSession(db, sessionId);
+    // capturedAtMs omitted (defaults to null) — reproduces a legacy ingest,
+    // which never wrote transcripts.captured_at.
+    insertCanonicalTranscript(db, transcriptId, sessionId, [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ]);
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+    const afterInsert = Date.now();
+
+    const memories = db.prepare('SELECT id, valid_from FROM memories').all() as { id: string; valid_from: number }[];
+    expect(memories.length).toBeGreaterThanOrEqual(1);
+    for (const m of memories) {
+      expect(m.valid_from).toBeGreaterThanOrEqual(beforeInsert);
+      expect(m.valid_from).toBeLessThanOrEqual(afterInsert);
+    }
   });
 });

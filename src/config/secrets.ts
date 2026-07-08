@@ -23,6 +23,13 @@ export interface SecretsPayload {
   azureEndpoint?: string;
   /** Azure deployment name, if azure provider selected. */
   azureDeployment?: string;
+  /** openai-compatible API key. Written under the config-referenced env var
+   * name (config.openaiCompatible.apiKeyEnv, default OPENAI_COMPAT_API_KEY)
+   * — omit when the target endpoint needs no auth (local vLLM, etc.). */
+  openaiCompatApiKey?: string;
+  /** Env var name to write openaiCompatApiKey under — defaults to
+   * OPENAI_COMPAT_API_KEY, mirrors config.openaiCompatible.apiKeyEnv. */
+  openaiCompatApiKeyEnv?: string;
 }
 
 /**
@@ -39,6 +46,9 @@ export function writeSecrets(payload: SecretsPayload, path: string): void {
   if (payload.azureKey) lines.push(`AZURE_OPENAI_API_KEY=${payload.azureKey}`);
   if (payload.azureEndpoint) lines.push(`AZURE_OPENAI_ENDPOINT=${payload.azureEndpoint}`);
   if (payload.azureDeployment) lines.push(`AZURE_OPENAI_DEPLOYMENT=${payload.azureDeployment}`);
+  if (payload.openaiCompatApiKey) {
+    lines.push(`${payload.openaiCompatApiKeyEnv ?? 'OPENAI_COMPAT_API_KEY'}=${payload.openaiCompatApiKey}`);
+  }
   lines.push(''); // trailing newline
 
   writeFileSync(path, lines.join('\n'), { encoding: 'utf8' });

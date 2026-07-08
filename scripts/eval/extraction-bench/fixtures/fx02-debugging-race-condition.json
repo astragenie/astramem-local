@@ -1,0 +1,23 @@
+{
+  "id": "fx02-debugging-race-condition",
+  "title": "Debugging a check-then-act idempotency race condition",
+  "difficulty": "clean",
+  "notes": "Typical debugging session: symptom -> root cause -> fix -> verification -> pending follow-up.",
+  "turns": [
+    { "role": "user", "text": "Ingest requests are occasionally creating two transcript rows for the same session_id when the client retries fast. Can you look into it?" },
+    { "role": "assistant", "text": "Looking at the ingest route... I see the idempotency check does a SELECT then an INSERT in two separate steps — if two requests race, both can pass the SELECT before either INSERT commits. That's a classic check-then-act race condition." },
+    { "role": "user", "text": "How do we fix it?" },
+    { "role": "assistant", "text": "I'll switch to an atomic 'INSERT ... ON CONFLICT DO NOTHING' inside a transaction, then read back whichever row won. That way concurrent requests can no longer both slip through." },
+    { "role": "user", "text": "Let's test it — fire 20 concurrent requests with the same idempotency key." },
+    { "role": "assistant", "text": "Ran a script with 20 concurrent POSTs, same Idempotency-Key, against the ingest endpoint. Before the fix: 3 duplicate rows. After the fix: exactly 1 row, the other 19 correctly got a 200 idempotent replay." },
+    { "role": "user", "text": "Great, ship it. Also we should add a regression test for this — can you do that next?" },
+    { "role": "assistant", "text": "Noted — I'll add a concurrency regression test (fire N parallel requests with the same idempotency key, assert exactly one row created) in the next session; ran out of time this session." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "The ingest idempotency check had a check-then-act race condition: SELECT then INSERT as separate steps let two concurrent requests both pass the SELECT before either INSERT committed, producing duplicate transcript rows." },
+    { "type": "decision", "text": "Fix duplicate transcript rows by using an atomic INSERT ... ON CONFLICT DO NOTHING inside a transaction, then reading back the winning row." },
+    { "type": "event", "text": "Verified the fix by firing 20 concurrent POSTs with the same Idempotency-Key against the ingest endpoint." },
+    { "type": "fact", "text": "Before the fix, 20 concurrent requests with the same Idempotency-Key produced 3 duplicate rows; after the fix, exactly 1 row was created and the other 19 got a 200 idempotent replay." },
+    { "type": "todo", "text": "Add a regression test that fires N concurrent requests with the same idempotency key and asserts exactly one row is created." }
+  ]
+}

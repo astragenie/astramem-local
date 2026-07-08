@@ -1,0 +1,22 @@
+-- 018: partial expression index for the digest poison/pending queries
+-- (src/server/queries/provenance.ts buildSessionDigest) — both the
+-- active-job lookup and the poison-count lookup scan
+-- `jobs WHERE kind='distill' AND ... AND json_extract(payload_json,
+-- '$.session_id') = ?`, an unindexed full scan of every distill job ever
+-- enqueued. The one existing jobs index (idx_jobs_state, 001-init.sql) is
+-- keyed on (state, created_at) and cannot help a query filtered by a value
+-- buried inside payload_json.
+--
+-- Partial (WHERE kind = 'distill') because that is the only kind these two
+-- queries ever filter on — keeps the index small and leaves the write path
+-- for every other job kind (reembed, consolidate, cleanup, ...) untouched.
+--
+-- SQLite has supported indexes on expressions since 3.9.0 and partial
+-- indexes since 3.8.0; the JSON1 extension (json_extract) is bundled and
+-- already relied upon at read time by this exact query
+-- (provenance.ts:111-122) and by migration 016's payload_json rewrite — so
+-- nothing here exercises a capability the codebase doesn't already depend
+-- on. better-sqlite3-multiple-ciphers (^12.11.1) ships a SQLite well past
+-- both thresholds.
+CREATE INDEX idx_jobs_distill_session ON jobs(json_extract(payload_json, '$.session_id'))
+  WHERE kind = 'distill';

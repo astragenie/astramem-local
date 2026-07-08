@@ -51,6 +51,47 @@ describe('GET /sessions/:id/digest (KF-C)', () => {
     expect(res.json().status).toBe('pending');
   });
 
+  it('poison distill job, no active job → status partial + poison_jobs count', async () => {
+    seedSession(db, 's3');
+    db.prepare(
+      'INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at) VALUES (?, ?, ?, ?, 3, ?, ?)'
+    ).run('j2', 'distill', JSON.stringify({ transcript_id: 't2', session_id: 's3' }), 'poison', Date.now(), Date.now());
+
+    const app = await buildApp({ db, token: 't' });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s3/digest',
+      headers: { authorization: 'Bearer t' } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.status).toBe('partial');
+    expect(body.poison_jobs).toBe(1);
+  });
+
+  it('active job takes priority over an unrelated poison job → status pending', async () => {
+    seedSession(db, 's4');
+    db.prepare(
+      'INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?)'
+    ).run('j3', 'distill', JSON.stringify({ transcript_id: 't3', session_id: 's4' }), 'pending', Date.now(), Date.now());
+
+    const app = await buildApp({ db, token: 't' });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s4/digest',
+      headers: { authorization: 'Bearer t' } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.status).toBe('pending');
+    expect(body.poison_jobs).toBe(0);
+  });
+
+  it('no jobs at all → status ready + poison_jobs 0 (backward-compatible default path)', async () => {
+    seedSession(db, 's5');
+    const app = await buildApp({ db, token: 't' });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s5/digest',
+      headers: { authorization: 'Bearer t' } });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.status).toBe('ready');
+    expect(body.poison_jobs).toBe(0);
+  });
+
   it('unknown session → 404', async () => {
     const app = await buildApp({ db, token: 't' });
     const res = await app.inject({ method: 'GET', url: '/sessions/nope/digest',

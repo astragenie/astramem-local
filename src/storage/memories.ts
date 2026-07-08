@@ -22,6 +22,16 @@ export interface InsertInput {
   evidence?: string | null;
   /** ADR-009 scope. Defaults to 'private'. */
   scope?: MemoryScope;
+  /**
+   * Bitemporal validity start (epoch ms). Defaults to insertion wall-clock
+   * time (`now`) when omitted — the pre-existing behavior. Callers that know
+   * the canonical envelope's `captured_at` (distill pipeline, ingest-sourced
+   * atoms) should pass it here so `as_of` queries key off when the content
+   * was actually true, not when it happened to be (re-)ingested. Direct
+   * `/remember` inserts have no `captured_at` and correctly fall back to
+   * wall-clock by omitting this field.
+   */
+  valid_from?: number;
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
@@ -98,7 +108,7 @@ export class MemoryRepo {
       input.repo, input.project, input.branch, input.agent, input.session_id,
       input.importance ?? 0.5, input.confidence ?? 0.5, input.hash,
       input.embedding_provider ?? null, input.embedding_model ?? null, input.embedding_dim ?? null,
-      now, now, input.source_hash, input.evidence ?? null, now, input.scope ?? 'private'
+      now, now, input.source_hash, input.evidence ?? null, input.valid_from ?? now, input.scope ?? 'private'
     );
     return id;
   }

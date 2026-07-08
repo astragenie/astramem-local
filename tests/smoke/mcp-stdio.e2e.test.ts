@@ -31,10 +31,11 @@ import {
   type IsolatedDaemonEnv,
 } from './helpers/daemon.js';
 
-// Same 16-tool pin as tests/mcp/server.test.ts — the stdio transport must
+// Same 17-tool pin as tests/mcp/server.test.ts — the stdio transport must
 // advertise the identical tool set as the HTTP transport (both are built
 // from the same buildMcpServer()).
 const EXPECTED_TOOL_NAMES = [
+  'agent_profile',
   'erase_memory',
   'get_health',
   'invalidate_memory',

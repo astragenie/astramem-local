@@ -3,7 +3,7 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { extractChunk, extract, BudgetExceeded } from '../../src/distill/stages/05-extract.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
-import { DeterministicError } from '../../src/pipeline/errors.js';
+import { TransientError } from '../../src/pipeline/errors.js';
 import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../../src/contracts/index.js';
 
 const VALID_EXTRACTION_JSON = JSON.stringify({
@@ -69,11 +69,13 @@ describe('extract stage', () => {
     expect(result.retried).toBe(false);
   });
 
-  it('throws DeterministicError immediately on invalid JSON (no retry in stage)', async () => {
+  it('throws TransientError on invalid JSON (no inline retry — worker owns retry policy)', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
-    // Only one response queued — stage must NOT issue a second LLM call
+    // Only one response queued — the stage itself must NOT issue a second
+    // LLM call; retrying a parse failure is the worker's job (it classifies
+    // TransientError and retries up to its attempt cap before poisoning).
     let callCount = 0;
     const llm: LLMProvider = {
       name: 'ollama' as const,
@@ -89,10 +91,28 @@ describe('extract stage', () => {
 
     await expect(
       extractChunk(0, 'chunk text', llm, budget, 10.0),
-    ).rejects.toBeInstanceOf(DeterministicError);
+    ).rejects.toBeInstanceOf(TransientError);
 
-    // Exactly one LLM call — no inline retry budget waste
+    // Exactly one LLM call per invocation — no inline retry budget waste
     expect(callCount).toBe(1);
+  });
+
+  it('a retried call (as the worker performs on TransientError) succeeds once the LLM returns valid JSON', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    // extractChunk itself does not retry inline (see prior test) — this
+    // reproduces what the worker does across two separate job attempts:
+    // call extractChunk again after a TransientError, same chunk, LLM
+    // recovers on the next sample (stochastic JSON output).
+    const llm = makeMockLLM([INVALID_JSON, SECOND_ATTEMPT_VALID]);
+
+    await expect(extractChunk(0, 'chunk text', llm, budget, 10.0)).rejects.toBeInstanceOf(TransientError);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0].type).toBe('lesson');
+    expect(result.atoms[0].text).toContain('better-sqlite3');
   });
 
   it('returns empty atoms without LLM call for empty chunk', async () => {

@@ -107,9 +107,10 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(16);
+    expect(tools.length).toBe(17);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
+      'agent_profile',
       'erase_memory',
       'get_health',
       'invalidate_memory',
