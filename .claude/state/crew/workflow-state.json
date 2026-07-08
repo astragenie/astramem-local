@@ -1,7 +1,44 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-08T00:00:00.000Z",
-  "currentRun": null,
+  "updatedAt": "2026-07-08T23:08:45.454Z",
+  "currentRun": {
+    "title": "memory SaaS: why demo dashboard user sees no data",
+    "goal": "",
+    "mode": "",
+    "status": "active",
+    "startedAt": "2026-07-08T22:42:05.755Z",
+    "updatedAt": "2026-07-08T23:08:45.454Z",
+    "next": "Query astramemory.users WHERE clerk_sub = '<demo user's Clerk sub>' to confirm its tenant_id != 3e970d7f (or the row is missing entirely, which 401s via 'JWT sub {Sub} has no provisioned tenant row'). If confirmed, either re-associate the demo user's row to tenant 3e970d7f, or pair the demo user's own device/tenant with real data.",
+    "gates": {
+      "review": {
+        "status": "passed",
+        "updatedAt": "2026-07-08T23:08:45.454Z",
+        "note": "starting investigation"
+      },
+      "validation": null,
+      "deployment": {
+        "dev": null,
+        "prod": null
+      },
+      "blocked": null,
+      "escalation": null,
+      "incident": null
+    },
+    "artifacts": {
+      "runBrief": null,
+      "handoffs": [
+        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
+      ],
+      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T230845Z-review-result-fix-service-install-reliability-review.md",
+      "validationPlan": null,
+      "validationResult": null,
+      "deploymentChecks": {
+        "dev": null,
+        "prod": null
+      },
+      "finalSynthesis": null
+    }
+  },
   "recentRuns": [
     {
       "title": "FEAT438 SLICE416: Release dir materialization (dist + prod node_modules) + AC-5 failure guard",

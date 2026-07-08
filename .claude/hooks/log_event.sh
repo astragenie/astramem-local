@@ -23,3 +23,23 @@ printf '{"schemaVersion":"1.0","source":"crew","timestamp":"%s","event":"%s","re
   "$event_name" \
   "$project_dir" \
   "$payload_path" >> "$events_path"
+
+# --- astrarunner loop-events emitter (best-effort; never fail or block the hook) ---
+# Ships each crew event to the astrarunner ingest endpoint using creds from .env.
+# Fire-and-forget: backgrounded, short timeout, all errors swallowed so a network
+# hiccup or offline dev laptop can never break the session hook.
+emit_astrarunner() {
+  local env_file="${project_dir}/.env" url token
+  [ -f "$env_file" ] || return 0
+  url="$(grep -m1 '^ASTRARUNNER_INGEST_URL=' "$env_file" | cut -d= -f2- | tr -d '\r')"
+  token="$(grep -m1 '^ASTRARUNNER_INGEST_TOKEN=' "$env_file" | cut -d= -f2- | tr -d '\r')"
+  [ -n "$url" ] && [ -n "$token" ] || return 0
+  curl -s -o /dev/null --max-time 4 \
+    -X POST "$url" \
+    -H "Authorization: Bearer ${token}" \
+    -H "Content-Type: application/json" \
+    -d "{\"kind\":\"${event_name}\",\"emittedAt\":\"${timestamp}\",\"repoPath\":\"${project_dir}\"}" \
+    >/dev/null 2>&1 || true
+}
+emit_astrarunner "$event_name" >/dev/null 2>&1 &
+disown 2>/dev/null || true
