@@ -209,8 +209,8 @@ export function defaultConfig(): Config {
     dataDir: defaultDataDir(),
     network: { host: '127.0.0.1' },
     llm: {
-      compaction: { provider: 'ollama', model: 'qwen2.5-coder:7b' },
-      extraction: { provider: 'ollama', model: 'qwen2.5-coder:7b' }
+      compaction: { provider: 'ollama', model: 'qwen2.5:7b' },
+      extraction: { provider: 'ollama', model: 'qwen2.5:7b' }
     },
     embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
     vector: { store: 'sqlite-vec' },

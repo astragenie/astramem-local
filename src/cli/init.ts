@@ -63,8 +63,12 @@ function defaultCodexAuthPath(): string {
   return join(homedir(), '.codex', 'auth.json');
 }
 
-/** Default Ollama extraction/compaction model — used when no tier is chosen. */
-const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5-coder:7b';
+/** Default Ollama extraction/compaction model — used when no tier is chosen.
+ * Swapped from qwen2.5-coder:7b after the 2026-07-08 A/B benchmark: the
+ * instruct sibling scores F1 67% / precision 99% / junk 1% vs the coder
+ * variant's 59%/90%/8% on the extraction task (prompt v2), at ~21.6s vs
+ * ~8.7s per session — quality-per-watt winner for a background daemon. */
+const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5:7b';
 
 /** Default Ollama embedding model (fixed — the wizard doesn't offer a tier
  * picker for embeddings, only for the extraction/compaction LLM). */
@@ -76,18 +80,17 @@ const DEFAULT_OLLAMA_EMBED_MODEL = 'mxbai-embed-large';
  * guidance surfaced to the user before any pull happens (see
  * `confirmOllamaDownload` below) — not enforced, just informative.
  *
- * F1/latency figures are from the internal extraction benchmark (2026-07-08)
- * comparing local Ollama models on the extraction task. `qwen2.5-coder:14b`
- * was dropped from the curated tiers entirely after that benchmark showed a
- * 20% permanent-failure (poison) rate and 72.7s/session — a strictly worse
- * pick than either remaining local tier on every axis. `llama3.1:8b` is the
- * recommended default: best local-model quality (F1 66% vs 57%) at a
- * comparable download size, at the cost of ~3x the latency (~30s/session
- * vs ~9.9s/session for qwen2.5-coder:7b).
+ * F1/latency figures are from the internal extraction A/B benchmark
+ * (2026-07-08, prompt v2 — scripts/eval/extraction-bench/results/
+ * ab-run-2026-07-08/). `qwen2.5-coder:14b` was dropped entirely (20%
+ * permanent-failure/poison rate, 72.7s/session); `llama3.1:8b` was dropped
+ * per operator decision (~3x latency for results the instruct sibling now
+ * beats). `qwen2.5:7b` is the recommended default: F1 67%, precision 99%,
+ * junk 1% at ~21.6s/session vs the coder variant's F1 59% at ~8.7s.
  */
 const OLLAMA_EXTRACTION_TIERS: { value: string; label: string; size: string; ram: string; stats: string }[] = [
-  { value: 'qwen2.5-coder:7b', label: 'fast/default', size: '~5 GB', ram: '16 GB', stats: 'F1 57%, ~9.9s/session' },
-  { value: 'llama3.1:8b', label: 'balanced — RECOMMENDED', size: '~4.9 GB', ram: '16 GB', stats: 'F1 66%, best local quality, ~30s/session' },
+  { value: 'qwen2.5:7b', label: 'RECOMMENDED (default)', size: '~4.7 GB', ram: '16 GB', stats: 'F1 67%, precision 99%, ~21.6s/session' },
+  { value: 'qwen2.5-coder:7b', label: 'fastest', size: '~5 GB', ram: '16 GB', stats: 'F1 59%, ~8.7s/session' },
 ];
 
 /** Sentinel values for the non-model tier-picker choices (item 3/4). One of
@@ -223,7 +226,7 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   // user then picks (see promptOllamaModelTier / OLLAMA_TIER_BYO_CLOUD).
   let llmProvider = (await promptSelect(
     'LLM provider:',
-    [{ name: 'ollama (qwen2.5-coder:7b)', value: 'ollama' }, ...cloudLlmChoices],
+    [{ name: 'ollama (qwen2.5:7b)', value: 'ollama' }, ...cloudLlmChoices],
     'ollama'
   )) as LlmProviderChoice;
 
@@ -326,7 +329,7 @@ async function promptOllamaModelTier(): Promise<string> {
   ];
   // Recommended tier ("llama3.1:8b") is the pre-highlighted choice; the
   // config-level DEFAULT_OLLAMA_LLM_MODEL fallback (used when nothing is
-  // chosen at all, e.g. non-interactive mode) stays qwen2.5-coder:7b.
+  // chosen at all, e.g. non-interactive mode) stays qwen2.5:7b.
   const choice = await promptSelect('Extraction model (Ollama):', choices, 'llama3.1:8b');
   if (choice === OLLAMA_TIER_CUSTOM) {
     return promptInput('Custom Ollama model tag:', DEFAULT_OLLAMA_LLM_MODEL);
@@ -567,7 +570,7 @@ function defaultLlmModelFor(provider: LlmProviderChoice): string {
     case 'azure-openai': return 'gpt-4.1';
     case 'openai-compatible': return 'gpt-4o-mini';
     case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
-    case 'ollama': default: return 'qwen2.5-coder:7b';
+    case 'ollama': default: return 'qwen2.5:7b';
   }
 }
 

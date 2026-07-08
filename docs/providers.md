@@ -51,7 +51,7 @@ systemctl --user enable --now ollama
 For LLM (compaction + extraction):
 
 ```bash
-ollama pull qwen2.5-coder:7b
+ollama pull qwen2.5:7b
 ```
 
 For embedding:
@@ -70,7 +70,7 @@ Expected output includes:
 
 ```
 NAME                            ID              SIZE
-qwen2.5-coder:7b                ...             4.7 GB
+qwen2.5:7b                     ...             4.7 GB
 mxbai-embed-large               ...             670 MB
 ```
 
@@ -82,10 +82,10 @@ In `config.yaml`:
 llm:
   compaction:
     provider: ollama
-    model: qwen2.5-coder:7b
+    model: qwen2.5:7b
   extraction:
     provider: ollama
-    model: qwen2.5-coder:7b
+    model: qwen2.5:7b
 
 embedding:
   provider: ollama
@@ -105,7 +105,7 @@ astramem-local providers test ollama
 Expected:
 
 ```
-  LLM (ollama / qwen2.5-coder:7b)    ok   latency=1234ms
+  LLM (ollama / qwen2.5:7b)    ok   latency=1234ms
   Embed (ollama / mxbai-embed-large)  ok   dim=1024
 ```
 
@@ -144,13 +144,13 @@ prompts. Two extra env vars are available for scripted installs:
 ### Extraction/compaction model tiers
 
 When the LLM provider is Ollama, `init` offers a tier picker for the extraction/compaction model
-instead of hard-coding `qwen2.5-coder:7b`. F1/latency figures are from the internal extraction
+instead of hard-coding `qwen2.5:7b`. F1/latency figures are from the internal extraction
 benchmark (2026-07-08) so the choice is informed rather than a guess:
 
 | Tier                          | Model                | Download | RAM recommended | Benchmark                                    |
 |--------------------------------|-----------------------|----------|------------------|-----------------------------------------------|
-| Fast/default                   | `qwen2.5-coder:7b`    | ~5 GB    | 16 GB            | F1 57%, ~9.9s/session                         |
-| Balanced — **RECOMMENDED**     | `llama3.1:8b`         | ~4.9 GB  | 16 GB            | F1 66%, best local quality, ~30s/session      |
+| RECOMMENDED (default)          | `qwen2.5:7b`          | ~4.7 GB  | 16 GB            | F1 67%, precision 99%, ~21.6s/session          |
+| Fastest                        | `qwen2.5-coder:7b`    | ~5 GB    | 16 GB            | F1 59%, ~8.7s/session                         |
 | BYO cloud                      | azure-openai (pivots the wizard to the existing cloud provider option) | n/a — no local download | n/a | best type-accuracy of any option |
 | Custom                          | (free-text model tag) | varies — check `ollama show <model>` | varies | not benchmarked |
 
@@ -172,7 +172,7 @@ You can substitute any Ollama model that supports JSON mode for extraction:
 
 | Use case   | Alternative model          | Notes                               |
 |------------|----------------------------|-------------------------------------|
-| LLM        | `llama3.1:8b`              | Stronger reasoning, ~5GB            |
+| LLM        | `qwen2.5-coder:7b`        | Fastest extraction, ~5GB            |
 | LLM        | `mistral:7b`               | Fast, good JSON mode                |
 | LLM        | `phi4:14b`                 | Best quality, ~9GB, needs 16GB RAM  |
 | Embedding  | `all-minilm`               | 384-dim — needs a dim migration first |
@@ -481,7 +481,7 @@ embedding (free):
 llm:
   compaction:
     provider: ollama
-    model: qwen2.5-coder:7b    # free
+    model: qwen2.5:7b    # free
   extraction:
     provider: azure-openai
     model: gpt-4-1              # more reliable JSON mode

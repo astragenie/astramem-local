@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.1] — 2026-07-08
+
+### Changed
+- **Default extraction/compaction model: `qwen2.5:7b`** (was `qwen2.5-coder:7b`). A/B benchmark (prompt v2, 15 gold fixtures): F1 67% / precision 99% / junk 1% vs the coder variant's 59% / 90% / 8%, at ~21.6s vs ~8.7s per session — quality wins for a background daemon. Existing installs keep their configured model; the wizard's tier picker offers `qwen2.5-coder:7b` as the "fastest" tier.
+- **Extraction prompt v2**: type decision-tree, contrastive few-shot examples, recall directive; compaction now preserves unresolved tool failures and per-topic coverage. Moved the API-reference model from F1 67% to 81% on the same fixtures — full results in `scripts/eval/extraction-bench/results/ab-run-2026-07-08/`.
+
+### Added
+- One-line installers (`install.sh` / `install.ps1`) and the "Retrieval quality gates" README section with `docs/eval/methodology.md`.
+- Sync failures now include the HTTP response body (`sync ship failed: HTTP 403 {"error":"sync_disabled"}`).
+- Migration 018: index for session digest poison-job lookups.
+- `ASTRA_MEMORY_ISOLATED=1` now also isolates bearer-token resolution (ephemeral token; OS credential store and secrets.env untouched).
+
+### Fixed
+- `demo` command works with isolated-mode ephemeral tokens (server/client token mismatch).
+
+---
+
 ## [0.9.0] — 2026-07-08
 
 Package renamed to `astramem-local` on npm (was `@astragenie/astramemory-local`, deprecated at 0.4.0).

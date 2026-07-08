@@ -61,7 +61,7 @@ describe('configToYaml', () => {
     const yaml = configToYaml(cfg);
     expect(yaml).toContain('compaction:');
     expect(yaml).toContain('extraction:');
-    expect(yaml).toMatch(/model: ['"]?qwen2\.5-coder:7b['"]?/);
+    expect(yaml).toMatch(/model: ['"]?qwen2\.5:7b['"]?/);
   });
 });
 

@@ -97,7 +97,7 @@ export MEMORY_BEARER=$(node dist/cli/index.js token print)
 ```
 
 > **First run takes 10-30 minutes if Ollama isn't installed yet.** The wizard's default Ollama
-> tier pulls `qwen2.5-coder:7b` (~4.7 GB) plus `mxbai-embed-large` (~670 MB) — about **5.4 GB**
+> tier pulls `qwen2.5:7b` (~4.7 GB) plus `mxbai-embed-large` (~670 MB) — about **5.4 GB**
 > total — with no separate confirmation prompt. Install and start Ollama first
 > (see [docs/providers.md](docs/providers.md)) if you'd rather not wait mid-wizard.
 
@@ -196,8 +196,8 @@ but does not yet produce.
 
 | Concern         | Ollama (local, free)                     | Azure OpenAI (cloud)                         |
 |-----------------|------------------------------------------|----------------------------------------------|
-| LLM compaction  | qwen2.5-coder:7b (default)              | gpt-4.1 or any deployment                   |
-| LLM extraction  | qwen2.5-coder:7b (default)              | gpt-4.1 or any deployment                   |
+| LLM compaction  | qwen2.5:7b (default)              | gpt-4.1 or any deployment                   |
+| LLM extraction  | qwen2.5:7b (default)              | gpt-4.1 or any deployment                   |
 | Embedding       | mxbai-embed-large (1024-dim)             | text-embedding-3-small (1024 via dimensions) |
 | Cost            | $0 (local inference)                     | ~$0.02/1K tokens + $0.0001/1K embed tokens  |
 | Setup           | `ollama serve` + `ollama pull <model>`   | Azure portal + endpoint + deployment name    |

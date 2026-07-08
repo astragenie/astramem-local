@@ -60,7 +60,7 @@ export class OllamaLLMProvider implements LLMProvider {
 
   constructor(config: OllamaLLMConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
-    this.model = config.model ?? 'qwen2.5-coder:7b';
+    this.model = config.model ?? 'qwen2.5:7b';
   }
 
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
