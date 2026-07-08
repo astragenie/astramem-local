@@ -24,7 +24,7 @@ local daemon instead.
 ## Step 1 — Install the local package
 
 ```bash
-npm install -g @astragenie/astramemory-local
+npm install -g astramem-local
 ```
 
 Verify the CLI is on your PATH:

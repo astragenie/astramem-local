@@ -1,6 +1,6 @@
 {
-  "name": "@astragenie/astramemory-local",
-  "version": "0.8.1",
+  "name": "astramem-local",
+  "version": "0.9.0",
   "type": "module",
   "bin": {
     "astramem-local": "dist/cli/index.js"
@@ -57,5 +57,13 @@
   "overrides": {
     "zod": "^4.4.3"
   },
-  "license": "MIT"
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astragenie/astramemory-local.git"
+  },
+  "homepage": "https://github.com/astragenie/astramemory-local#readme",
+  "bugs": {
+    "url": "https://github.com/astragenie/astramemory-local/issues"
+  }
 }

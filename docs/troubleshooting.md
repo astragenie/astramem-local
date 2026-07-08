@@ -27,7 +27,7 @@ causes the load to fail.
 **Fix 1 — Reinstall the package:**
 
 ```bash
-npm install -g @astragenie/astramemory-local --force
+npm install -g astramem-local --force
 ```
 
 This re-downloads the correct prebuilt for the current Node version.
@@ -39,13 +39,13 @@ switch:
 
 ```bash
 nvm install 22 && nvm use 22
-npm install -g @astragenie/astramemory-local
+npm install -g astramem-local
 ```
 
 **Fix 3 — Build from source (Linux arm64, Alpine, musl):**
 
 ```bash
-npm install -g @astragenie/astramemory-local --build-from-source
+npm install -g astramem-local --build-from-source
 ```
 
 Requires a C/C++ build toolchain (`build-essential` on Debian/Ubuntu, `base-devel` on Arch).
