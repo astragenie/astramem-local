@@ -3,7 +3,10 @@
  * seed.mts) as a warm daemon, runs each endpoint for warmup+iterations
  * requests, reports p50/p95/max/mean (warmup excluded).
  *
- * Usage: bun scripts/perf/bench.mts [--sizes 1000,10000,100000] [--iterations 150] [--warmup 5]
+ * Usage: bun scripts/perf/bench.mts [--sizes 1000,10000,100000] [--iterations 150] [--warmup 5] [--endpoints health,agent-profile]
+ * `--endpoints` filters by a case-insensitive substring match against each
+ * endpoint's label (e.g. 'health' matches "GET /health", 'agent-profile' or
+ * just 'agent' matches "GET /agents/:agent/profile") — omit for all 7.
  */
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,6 +27,9 @@ const get = (flag: string): string | undefined => {
 const sizes = (get('--sizes') ?? '1000,10000,100000').split(',').map(Number);
 const iterations = Number(get('--iterations') ?? '150');
 const warmup = Number(get('--warmup') ?? '5');
+const endpointFilters = get('--endpoints')?.split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const endpointSelected = (label: string): boolean =>
+  !endpointFilters || endpointFilters.some(f => label.toLowerCase().includes(f));
 
 const PERF_DATA_ROOT = join('.eval-data', 'perf');
 
@@ -69,31 +75,31 @@ async function benchSize(n: number): Promise<BenchResult | null> {
     await waitForHealthStatus(daemon.baseUrl, ['ok'], 60_000);
     console.log(`  daemon up at ${daemon.baseUrl}, running ${warmup}+${iterations} iterations per endpoint...`);
 
-    endpoints.push({
+    if (endpointSelected('GET /search')) endpoints.push({
       endpoint: 'GET /search',
       stats: await timeIterations(() => search(client, nextQuery(), 10), { iterations, warmup }),
     });
-    endpoints.push({
+    if (endpointSelected('POST /recall (k=5)')) endpoints.push({
       endpoint: 'POST /recall (k=5)',
       stats: await timeIterations(() => recall(client, nextQuery(), 5), { iterations, warmup }),
     });
-    endpoints.push({
+    if (endpointSelected('POST /recall/pack')) endpoints.push({
       endpoint: 'POST /recall/pack',
       stats: await timeIterations(() => recallPack(client, manifest.sampleRepo), { iterations, warmup }),
     });
-    endpoints.push({
+    if (endpointSelected('GET /agents/:agent/profile')) endpoints.push({
       endpoint: 'GET /agents/:agent/profile',
       stats: await timeIterations(() => agentProfile(client, manifest.sampleAgent), { iterations, warmup }),
     });
-    endpoints.push({
+    if (endpointSelected('GET /sessions/:id/digest')) endpoints.push({
       endpoint: 'GET /sessions/:id/digest',
       stats: await timeIterations(() => sessionDigest(client, manifest.sampleSessionId), { iterations, warmup }),
     });
-    endpoints.push({
+    if (endpointSelected('GET /memory/:id/why')) endpoints.push({
       endpoint: 'GET /memory/:id/why',
       stats: await timeIterations(() => memoryWhy(client, manifest.sampleMemoryId), { iterations, warmup }),
     });
-    endpoints.push({
+    if (endpointSelected('GET /health')) endpoints.push({
       endpoint: 'GET /health',
       stats: await timeIterations(() => health(client), { iterations, warmup }),
     });
@@ -108,7 +114,11 @@ async function benchSize(n: number): Promise<BenchResult | null> {
 
   const result: BenchResult = { n: manifest.n, iterations, warmup, endpoints, measuredAt: new Date().toISOString() };
   mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, 'bench-results.json'), JSON.stringify(result, null, 2));
+  // A filtered run only covers a subset of endpoints — write it alongside
+  // the full baseline file rather than overwriting it (bench-results.json
+  // is the complete-7-endpoint artifact other tooling/docs may reference).
+  const resultsFile = endpointFilters ? 'bench-results.filtered.json' : 'bench-results.json';
+  writeFileSync(join(dir, resultsFile), JSON.stringify(result, null, 2));
   return result;
 }
 

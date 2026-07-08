@@ -1,0 +1,34 @@
+-- 020: follow-up to migration 019 -- fixes a join-order regression that
+-- idx_memories_agent (019) introduced in buildAgentProfile's queryCorrections
+-- query (src/server/queries/agent-profile.ts):
+--
+--   SELECT ... FROM memory_events e JOIN memories m ON m.id = e.atom_id
+--   WHERE m.agent = ? AND e.event_type IN ('invalidate', 'supersede')
+--   ORDER BY e.created_at DESC LIMIT 5
+--
+-- Before 019, memories had no agent index, so SQLite's planner drove this
+-- join from memory_events (event_type IN (...) first) -- cheap whenever an
+-- agent has few or zero corrections, which is the common case. After 019,
+-- idx_memories_agent made "SEARCH memories USING INDEX idx_memories_agent
+-- (agent=?)" look cheap enough that the planner switched to drive from
+-- memories instead, then probe memory_events per candidate row via the
+-- existing (atom_id, seq) index -- one probe per ACTIVE memory the agent
+-- owns, regardless of how many (if any) actually have a correction event.
+-- Measured on the 100k perf corpus (agent with 20,202 memories, 0
+-- correction events in the whole DB): queryCorrections alone went from
+-- effectively free to ~215ms, making /agents/:agent/profile's own p50
+-- *worse* post-019 (267ms) than pre-019 (237ms) -- the opposite of the
+-- intended fix.
+--
+-- Mitigation: an index that makes "drive from memory_events, filtered by
+-- event_type, already in created_at DESC order" cheap enough that the
+-- planner prefers it again regardless of how large idx_memories_agent's
+-- per-agent row count is. (event_type, created_at DESC, atom_id) is
+-- covering for this query's own SELECT list off the index side of the join
+-- (event_type, created_at, atom_id are all read pre-join) and satisfies the
+-- ORDER BY without a separate sort. EXPLAIN QUERY PLAN confirms the planner
+-- now drives from memory_events again ("SEARCH e USING INDEX
+-- idx_memory_events_correction_type (event_type=?)") and the join is a
+-- single by-PK memories lookup per event, not the reverse.
+CREATE INDEX idx_memory_events_correction_type ON memory_events(event_type, created_at DESC, atom_id)
+  WHERE event_type IN ('invalidate', 'supersede');

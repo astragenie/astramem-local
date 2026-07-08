@@ -28,12 +28,14 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    // 18 migration files (001-017: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
+    // 20 migration files (001-017: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
     // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities, 013 = FEAT-404 archival,
     // 014 = FEAT-434 sync_ship_state, 015 = astramem-local#84 canonical content_hash,
     // 016 = astramem-local#110 scope personal->private rename, 017 = U4-local #111/#112
-    // widen memories.type CHECK 7->10, 018 = jobs distill-session expression index).
-    expect(versions.n).toBe(18);
+    // widen memories.type CHECK 7->10, 018 = jobs distill-session expression index,
+    // 019 = memory_events usefulness + memories.agent perf indexes, 020 = follow-up
+    // memory_events corrections-join index fixing a regression 019 introduced).
+    expect(versions.n).toBe(20);
   });
 
   it('enables WAL mode', () => {
@@ -88,7 +90,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(18);
+    expect(versions.n).toBe(20);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -164,7 +166,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(18);
+    expect(versions.v).toBe(20);
   });
 
   it('allows inserting type note after migration', () => {
@@ -522,7 +524,7 @@ describe('migration 017-widen-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(18);
+    expect(versions.v).toBe(20);
   });
 
   it('accepts all 3 new canonical types (preference, task_result, summary)', () => {
@@ -640,7 +642,7 @@ describe('migration 018-jobs-distill-session-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(18);
+    expect(versions.v).toBe(20);
   });
 
   it('creates the partial expression index on jobs', () => {
@@ -699,6 +701,176 @@ describe('migration 018-jobs-distill-session-index', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 019 — memory_events usefulness partial indexes + memories.agent
+// covering index (perf baseline 2026-07-08, candidates #2/#3)
+// ---------------------------------------------------------------------------
+
+describe('migration 019-health-agent-profile-indexes', () => {
+  it('applies cleanly on a fresh DB', () => {
+    const db = openDb(':memory:');
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(versions.v).toBe(20);
+  });
+
+  it('creates both partial expression indexes on memory_events', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memory_events'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_memory_events_usefulness_served');
+    expect(names).toContain('idx_memory_events_usefulness_used');
+
+    const served = idx.find(i => i.name === 'idx_memory_events_usefulness_served')!;
+    expect(served.sql).toContain("json_extract(payload_json, '$.family') = 'recall_served'");
+    expect(served.sql).toContain("event_type = 'usefulness'");
+
+    const used = idx.find(i => i.name === 'idx_memory_events_usefulness_used')!;
+    expect(used.sql).toContain("json_extract(payload_json, '$.family') = 'recall_used'");
+    expect(used.sql).toContain("event_type = 'usefulness'");
+  });
+
+  it('creates the covering index on memories(agent, valid_to, archived, type, created_at)', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memories'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_memories_agent');
+    const agentIdx = idx.find(i => i.name === 'idx_memories_agent')!;
+    expect(agentIdx.sql).toContain('agent');
+    expect(agentIdx.sql).toContain('valid_to');
+    expect(agentIdx.sql).toContain('archived');
+    expect(agentIdx.sql).toContain('type');
+    expect(agentIdx.sql).toContain('created_at');
+  });
+
+  it('the usefulness-served index actually serves usefulnessRate()\'s served query — EXPLAIN QUERY PLAN shows the index name', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'recall_served', surface: 'rest' }), 100);
+    // A different family sharing the same event_type must not match the
+    // 'served' partial index — proves both the index and the query scope on
+    // family, not just event_type.
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'recall_used', surface: 'rest' }), 200);
+
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT COUNT(DISTINCT atom_id) AS n
+      FROM memory_events
+      WHERE event_type = 'usefulness'
+        AND json_extract(payload_json, '$.family') = 'recall_served'
+        AND created_at >= ?
+    `).all(0) as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);
+  });
+
+  it('the memories.agent index actually serves the agent-profile ACTIVE_CLAUSE query — EXPLAIN QUERY PLAN shows the index name', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(
+      `INSERT INTO memories (id, type, text, normalized_text, agent, importance, confidence, hash, valid_to, archived, created_at, updated_at)
+       VALUES ('mem-1', 'lesson', 'x', 'x', 'agent-a', 0.5, 0.5, 'h1', NULL, 0, 1, 1)`
+    ).run();
+
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT id, text, importance, created_at
+      FROM memories
+      WHERE agent = ? AND valid_to IS NULL AND archived = 0 AND type = 'lesson'
+    `).all('agent-a') as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memories_agent'))).toBe(true);
+  });
+
+  it('is idempotent — re-running after 019 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 19').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 020 — memory_events corrections-join index (follow-up to 019;
+// fixes a query-planner join-order regression 019 introduced in
+// buildAgentProfile's queryCorrections — see migration 020 file header)
+// ---------------------------------------------------------------------------
+
+describe('migration 020-agent-profile-corrections-index', () => {
+  it('applies cleanly on a fresh DB', () => {
+    const db = openDb(':memory:');
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(versions.v).toBe(20);
+  });
+
+  it('creates the partial expression index on memory_events for invalidate/supersede', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memory_events'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_memory_events_correction_type');
+    const correctionIdx = idx.find(i => i.name === 'idx_memory_events_correction_type')!;
+    expect(correctionIdx.sql).toContain("event_type IN ('invalidate', 'supersede')");
+  });
+
+  it('restores the memory_events-driven join order for the agent-profile corrections query — EXPLAIN QUERY PLAN drives from memory_events, not memories', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(
+      `INSERT INTO memories (id, type, text, normalized_text, agent, importance, confidence, hash, valid_to, archived, created_at, updated_at)
+       VALUES ('mem-1', 'lesson', 'x', 'x', 'agent-a', 0.5, 0.5, 'h1', NULL, 0, 1, 1)`
+    ).run();
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('invalidate', 'mem-1', '{}', 5)"
+    ).run();
+
+    const rows = db.prepare(`
+      SELECT e.event_type, m.id
+      FROM memory_events e JOIN memories m ON m.id = e.atom_id
+      WHERE m.agent = ? AND e.event_type IN ('invalidate', 'supersede')
+      ORDER BY e.created_at DESC LIMIT 5
+    `).all('agent-a') as { event_type: string; id: string }[];
+    expect(rows).toEqual([{ event_type: 'invalidate', id: 'mem-1' }]);
+
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT e.event_type, m.id
+      FROM memory_events e JOIN memories m ON m.id = e.atom_id
+      WHERE m.agent = ? AND e.event_type IN ('invalidate', 'supersede')
+      ORDER BY e.created_at DESC LIMIT 5
+    `).all('agent-a') as { detail: string }[];
+    // The join must be driven from memory_events (via the new index), with
+    // memories probed second by its PK — the reverse of what 019 alone
+    // produced, which drove from idx_memories_agent and nested-loop-probed
+    // memory_events per candidate row.
+    expect(plan.some(p => /SEARCH e USING (COVERING )?INDEX idx_memory_events_correction_type/.test(p.detail))).toBe(true);
+    expect(plan.some(p => /SEARCH m USING/.test(p.detail) && p.detail.includes('idx_memories_agent'))).toBe(false);
+  });
+
+  it('is idempotent — re-running after 020 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 20').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
 // ---------------------------------------------------------------------------
@@ -735,7 +907,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 18/,
+      /Schema-version constant drift: wire-meta says 999, DB says 20/,
     );
   });
 });

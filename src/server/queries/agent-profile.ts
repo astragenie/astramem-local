@@ -157,6 +157,22 @@ function queryRecentDecisions(db: DB, agent: string): AgentProfileDecision[] {
   `).all(agent, RECENT_DECISIONS_CAP) as ActiveDecisionRow[];
 }
 
+// Perf note (migrations 019/020, 2026-07-08 baseline candidate #3): this
+// query's join order is sensitive to which side has the cheaper index. The
+// memories.agent covering index (019) alone made the planner prefer driving
+// from memories (agent=?) and nested-loop-probing memory_events per
+// candidate row via the pre-existing (atom_id, seq) index — cheap for an
+// agent with few memories, but O(agent's memory count) regardless of how
+// many corrections actually exist, which regressed this query at 100k scale
+// (measured ~215ms for an agent with 20k memories and zero corrections).
+// Migration 020 adds a partial index on memory_events(event_type,
+// created_at DESC, atom_id) so the planner again prefers driving from
+// memory_events (filtered by event_type first, already in ORDER BY order)
+// and probing memories by PK per matching event — the direction that's
+// cheap precisely when corrections are rare, which is the common case. Do
+// not add further indexes on memories.agent without re-checking this query's
+// EXPLAIN QUERY PLAN — the two indexes' relative attractiveness to the
+// planner is exactly what keeps this fast.
 function queryCorrections(db: DB, agent: string): AgentProfileCorrection[] {
   const rows = db.prepare(`
     SELECT

@@ -83,5 +83,14 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 // 016 = scope 'personal' -> 'private' rename, U7-local astramem-local#110;
 // 017 = widen memories.type CHECK 7 -> 10, U4-local #111/#112 ADR D4;
 // 018 = partial expression index on jobs(json_extract(payload_json,
-//       '$.session_id')) WHERE kind='distill', hygiene batch 2026-07-08).
-export const SCHEMA_VERSION = 18 as const;
+//       '$.session_id')) WHERE kind='distill', hygiene batch 2026-07-08;
+// 019 = partial expression indexes on memory_events(created_at, atom_id) for
+//       the two usefulness families + covering index on memories(agent,
+//       valid_to, archived, type, created_at DESC), perf baseline
+//       2026-07-08 candidates #2/#3;
+// 020 = follow-up to 019 -- partial index on memory_events(event_type,
+//       created_at DESC, atom_id) restoring the cheap join order for
+//       buildAgentProfile's corrections query, which 019's memories.agent
+//       index had regressed (see migration 020 file header for the measured
+//       before/after).
+export const SCHEMA_VERSION = 20 as const;
