@@ -31,6 +31,9 @@ export type CaptureEnvelopeV1 = {
   client_scrub_hits_by_label?: {
     [k: string]: number;
   };
+  /**
+   * M-R7 tightened pattern (astragenie/memory IngestTranscriptRequest.cs:65): ASCII digits only, no leading zeros in either the major or minor component, so "v01.0" / "v1.01" are both rejected. Mirrors WIRE_VERSION_PATTERN in contracts/wire.ts.
+   */
   wire_version: string;
   /**
    * @minItems 1
