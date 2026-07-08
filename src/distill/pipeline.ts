@@ -39,6 +39,8 @@ export interface PipelineContext {
   branch: string | null;
   agent: string | null;
   sourceHash: string | null;
+  /** See EmbedIndexContext.capturedAtMs — plumbed from the canonical envelope via distillHandler. */
+  capturedAtMs?: number | null;
 }
 
 export interface PipelineResult {
@@ -137,6 +139,7 @@ export async function runPipeline(
     branch: ctx.branch,
     agent: ctx.agent,
     sourceHash: ctx.sourceHash,
+    capturedAtMs: ctx.capturedAtMs,
   });
 
   const created = indexResults.filter(r => r.created).length;

@@ -30,6 +30,16 @@ export interface EmbedIndexContext {
   branch: string | null;
   agent: string | null;
   sourceHash: string | null;
+  /**
+   * Canonical envelope's `captured_at` (epoch ms), when the ingest route
+   * received one (v1.0 envelope only — legacy v0.0 has no such field).
+   * Becomes each new memory's `valid_from` so bitemporal `as_of` queries key
+   * off when the content was true, not when this distill job happened to
+   * run. `null`/omitted falls back to MemoryRepo's insert-time wall-clock
+   * default — the pre-existing behavior for legacy envelopes and any
+   * pre-fix rows (no migration backfills those; see distill.ts/distill-events.ts).
+   */
+  capturedAtMs?: number | null;
 }
 
 /**
@@ -89,6 +99,7 @@ export async function embedAndIndex(
       embedding_dim: ctx.embed.dim,
       evidence: mem.evidence ?? null,
       scope: 'private',
+      valid_from: ctx.capturedAtMs ?? undefined,
     }, eventsRepo);
 
     // FEAT-402 AC-1: link entities emitted in the same extraction call.
