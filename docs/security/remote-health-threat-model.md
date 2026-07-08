@@ -66,6 +66,18 @@ bind also fails to flip the auth requirement (both read `cfg.network.host` toget
   reverse proxy) for transport security; the Bearer token only proves *who*, not that the wire is
   encrypted.
 
+## Verifying a bearer works: `GET /whoami` (issue #129)
+
+`/health` and `/version` being public on a loopback bind means neither can be used to confirm
+`MEMORY_BEARER` is actually valid — a `connect` flow gets `200` from `/health` whether or not it
+sent a (correct) token. `GET /whoami` closes that gap: it is **never** added to the loopback
+public-path exemption in `src/server/app.ts`, so it always requires
+`Authorization: Bearer <MEMORY_BEARER>`, on every bind including the default loopback one. A
+missing or wrong token gets `401` from the same `preHandler` hook (and the same `safeBearerEqual`
+constant-time compare) as every other authenticated route; a valid token gets `200` with a
+minimal, non-sensitive identity echo (`{authenticated, service, version}` — no token, no secrets).
+Use it as the token-verification probe; use `/health` for liveness/operational state.
+
 ## Operator guidance
 
 Leave `network.host: 127.0.0.1` (the default) unless a fleet dashboard genuinely needs to scrape
