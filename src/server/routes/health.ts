@@ -10,6 +10,7 @@ import type { DB } from '../../storage/db.js';
 import type { HealthState } from '../health-state.js';
 import { usefulnessRate } from '../../storage/usefulness.js';
 import { queryJobStates } from '../queries/dashboard.js';
+import { buildMemoryHealthCheap, type MemoryHealthReport } from '../queries/memory-health.js';
 import { statfsSync } from 'node:fs';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -59,7 +60,9 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
                 attempts: healthState.embed.attempts,
               },
               worker: workerBlock(healthState),
-              ...(db ? { queue: queueCounts(db), pending_proposals: pendingProposals(db) } : {}),
+              ...(db
+                ? { queue: queueCounts(db), pending_proposals: pendingProposals(db), memory_health: memoryHealthBlock(db) }
+                : {}),
               ...(healthState.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
             }
           : {}),
@@ -104,6 +107,26 @@ function pendingProposals(db: DB): number {
     ).get() as { n: number }).n;
   } catch {
     return 0; // table absent (pre-008 schema in bare test DBs)
+  }
+}
+
+/**
+ * FEAT-444 AC-2: `memory_health` detail block — CHEAP TIER ONLY
+ * (buildMemoryHealthCheap, src/server/queries/memory-health.ts). Every query
+ * it runs is index-backed (idx_memories_archival_candidates, migration
+ * 019/020's partial indexes, idx_jobs_state) — no full table scan, no
+ * similarity computation. This is deliberate: docs/perf/2026-07-08-baseline.md
+ * found `/health` was an accidental O(N) full scan once already this week
+ * (fixed by migration 019); this block must never repeat that on the same
+ * endpoint. The heavier byType/byScope/staleness breakdown and the deep
+ * (near-duplicate/junk) metrics are reserved for `doctor` and the
+ * `memory health` CLI report — see that module's file header.
+ */
+function memoryHealthBlock(db: DB): MemoryHealthReport | Record<string, never> {
+  try {
+    return buildMemoryHealthCheap(db);
+  } catch {
+    return {}; // never let a health-metric query 500 the liveness endpoint.
   }
 }
 
