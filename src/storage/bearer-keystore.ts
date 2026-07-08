@@ -16,13 +16,25 @@
  * migration, best-effort, and the secrets.env file itself is left
  * untouched (no destructive rewrite of a file that might also carry Azure
  * keys).
+ *
+ * ASTRA_MEMORY_ISOLATED=1 (same gate as config/resolve-runtime.ts): steps 3
+ * and 4 above are skipped entirely — an isolated/eval daemon must never
+ * read the real OS credential store or the real OS config dir's
+ * secrets.env (identical hazard to the one resolve-runtime.ts closes for
+ * config.yaml/sync.json: a caller that only redirects
+ * ASTRA_MEMORY_DATADIR, not the OS config dirs, would otherwise pick up a
+ * real bearer). Resolution collapses to CLI > env > a freshly generated
+ * ephemeral token — never the shared 'devtok' default, which would let two
+ * isolated daemons on the same box collide on the same bearer.
  */
 import { join } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
+import { isIsolatedMode } from '../config/isolated-mode.js';
 import { storeBearer, readBearer } from './keystore.js';
 
-export type BearerSource = 'cli' | 'env' | 'credential-store' | 'secrets-env' | 'default';
+export type BearerSource = 'cli' | 'env' | 'credential-store' | 'secrets-env' | 'default' | 'ephemeral';
 
 export interface ResolvedBearer {
   token: string;
@@ -84,6 +96,14 @@ export function readBearerFromSecretsFile(secretsDirs?: string[]): string | null
 export function resolveBearerToken(opts: ResolveBearerOpts = {}): ResolvedBearer {
   if (opts.cliToken) return { token: opts.cliToken, source: 'cli' };
   if (opts.envToken) return { token: opts.envToken, source: 'env' };
+
+  if (isIsolatedMode()) {
+    // Never touch the real OS credential store or the real OS config dir's
+    // secrets.env under isolation — see the file-header note. No
+    // `secretsDirs` override rescues this: isolation must hold even if a
+    // caller forgot to pass one.
+    return { token: randomBytes(32).toString('hex'), source: 'ephemeral' };
+  }
 
   const stored = readBearer();
   if (stored) return { token: stored, source: 'credential-store' };

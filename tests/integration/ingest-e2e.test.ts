@@ -214,7 +214,7 @@ describe('GET /health over real HTTP', () => {
       new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
-    expect(body.schema_version).toBe(17);
+    expect(body.schema_version).toBe(18);
   }, 20_000);
 });
 
@@ -240,7 +240,7 @@ describe('GET /version over real HTTP', () => {
       new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
-    expect(body.schema_version).toBe(17);
+    expect(body.schema_version).toBe(18);
     expect(typeof body.ts).toBe('number');
   }, 20_000);
 

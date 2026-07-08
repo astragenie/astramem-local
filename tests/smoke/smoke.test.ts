@@ -418,8 +418,8 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     // No graceful shutdown — exercises stale-lock steal (instance-lock.ts
     // pidAlive() false path) + WAL recovery on the next boot, not the clean
     // SIGTERM path.
-    await killDaemon(daemon, 'SIGKILL', 5_000);
-    expect(daemon.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
+    await killDaemon(daemon!, 'SIGKILL', 5_000);
+    expect(daemon!.exitInfo().signal, 'daemon should have been force-killed').toBe('SIGKILL');
 
     daemon = await spawnDaemon({ port: 0, token: TOKEN, env: isolated.env });
     PORT = daemon.port;

@@ -28,12 +28,12 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    // 17 migration files (001-017: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
+    // 18 migration files (001-017: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
     // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities, 013 = FEAT-404 archival,
     // 014 = FEAT-434 sync_ship_state, 015 = astramem-local#84 canonical content_hash,
     // 016 = astramem-local#110 scope personal->private rename, 017 = U4-local #111/#112
-    // widen memories.type CHECK 7->10).
-    expect(versions.n).toBe(17);
+    // widen memories.type CHECK 7->10, 018 = jobs distill-session expression index).
+    expect(versions.n).toBe(18);
   });
 
   it('enables WAL mode', () => {
@@ -88,7 +88,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    expect(versions.n).toBe(17);
+    expect(versions.n).toBe(18);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -164,7 +164,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(17);
+    expect(versions.v).toBe(18);
   });
 
   it('allows inserting type note after migration', () => {
@@ -240,7 +240,7 @@ describe('migration 003-expand-memory-types', () => {
       .prepare(`SELECT m.id FROM memories_fts f JOIN memories m ON m.rowid = f.rowid WHERE memories_fts MATCH ?`)
       .all('unique') as { id: string }[];
     expect(hits.length).toBeGreaterThan(0);
-    expect(hits[0].id).toBe('fts-note');
+    expect(hits[0]?.id).toBe('fts-note');
   });
 });
 
@@ -522,7 +522,7 @@ describe('migration 017-widen-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(17);
+    expect(versions.v).toBe(18);
   });
 
   it('accepts all 3 new canonical types (preference, task_result, summary)', () => {
@@ -631,6 +631,74 @@ describe('migration 017-widen-memory-types', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Migration 018 — partial expression index on jobs(json_extract(payload_json,
+// '$.session_id')) WHERE kind='distill' (hygiene batch 2026-07-08)
+// ---------------------------------------------------------------------------
+
+describe('migration 018-jobs-distill-session-index', () => {
+  it('applies cleanly on a fresh DB', () => {
+    const db = openDb(':memory:');
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(versions.v).toBe(18);
+  });
+
+  it('creates the partial expression index on jobs', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'jobs'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_jobs_state');
+    expect(names).toContain('idx_jobs_distill_session');
+    const distillIdx = idx.find(i => i.name === 'idx_jobs_distill_session')!;
+    expect(distillIdx.sql).toContain("json_extract(payload_json, '$.session_id')");
+    expect(distillIdx.sql).toContain("WHERE kind = 'distill'");
+  });
+
+  it('the index actually serves the digest-style query — same rows returned, EXPLAIN QUERY PLAN shows the index name', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(
+      "INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at) VALUES (?, 'distill', ?, 'poison', 3, 1, 1)"
+    ).run('j-poison-1', JSON.stringify({ transcript_id: 't1', session_id: 's-target' }));
+    db.prepare(
+      "INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at) VALUES (?, 'distill', ?, 'poison', 3, 2, 2)"
+    ).run('j-poison-2', JSON.stringify({ transcript_id: 't2', session_id: 's-other' }));
+    // A non-distill job sharing the same session_id must not match — proves
+    // the partial index (and the query) both scope on kind='distill'.
+    db.prepare(
+      "INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at) VALUES (?, 'reembed', ?, 'poison', 3, 3, 3)"
+    ).run('j-other-kind', JSON.stringify({ session_id: 's-target' }));
+
+    const rows = db.prepare(`
+      SELECT id FROM jobs
+      WHERE kind = 'distill' AND state = 'poison'
+        AND json_extract(payload_json, '$.session_id') = ?
+    `).all('s-target') as { id: string }[];
+    expect(rows.map(r => r.id)).toEqual(['j-poison-1']);
+
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT id FROM jobs
+      WHERE kind = 'distill' AND state = 'poison'
+        AND json_extract(payload_json, '$.session_id') = ?
+    `).all('s-target') as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_jobs_distill_session'))).toBe(true);
+  });
+
+  it('is idempotent — re-running after 018 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 18').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
 // ---------------------------------------------------------------------------
@@ -667,7 +735,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 17/,
+      /Schema-version constant drift: wire-meta says 999, DB says 18/,
     );
   });
 });

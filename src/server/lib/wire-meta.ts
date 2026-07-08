@@ -76,10 +76,12 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 // at startup. Bump this whenever a new migration file is added.
 // ---------------------------------------------------------------------------
 
-// Migrations 001-017 (009 = tag hygiene FEAT-403; 010 = sync-pull event_id FEAT-407;
+// Migrations 001-018 (009 = tag hygiene FEAT-403; 010 = sync-pull event_id FEAT-407;
 // 011 = embed-dim FEAT-409; 012 = entities/memory_entities FEAT-402 slice 1;
 // 013 = memory TTL/archival tiers FEAT-404; 014 = sync_ship_state FEAT-434;
 // 015 = canonical 64-char content_hash recompute, astramem-local#84;
 // 016 = scope 'personal' -> 'private' rename, U7-local astramem-local#110;
-// 017 = widen memories.type CHECK 7 -> 10, U4-local #111/#112 ADR D4).
-export const SCHEMA_VERSION = 17 as const;
+// 017 = widen memories.type CHECK 7 -> 10, U4-local #111/#112 ADR D4;
+// 018 = partial expression index on jobs(json_extract(payload_json,
+//       '$.session_id')) WHERE kind='distill', hygiene batch 2026-07-08).
+export const SCHEMA_VERSION = 18 as const;

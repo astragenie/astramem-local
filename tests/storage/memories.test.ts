@@ -51,7 +51,7 @@ describe('MemoryRepo', () => {
     });
     const hits = repo.searchFts('postgres', 10);
     expect(hits.length).toBe(1);
-    expect(hits[0].text).toContain('postgres');
+    expect(hits[0]?.text).toContain('postgres');
   });
 
   it('inserts and reads type note', () => {

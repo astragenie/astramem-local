@@ -19,6 +19,7 @@ import { defaultConfigDir, defaultDataDir } from './datadir.js';
 import { readSyncSettings } from './sync-settings.js';
 import { migrateLegacyDirsIfPresent } from './migrate-dirs.js';
 import { defaultConfig, type Config } from './config.js';
+import { isIsolatedMode } from './isolated-mode.js';
 import { ts } from '../log/logger.js';
 
 export type ValueSource = 'cli' | 'env' | 'config.yaml' | 'default';
@@ -59,12 +60,8 @@ export interface RuntimeOverrides {
  * — it protects a caller that sets only ASTRA_MEMORY_DATADIR and forgets (or
  * cannot, e.g. a shared box) to also redirect the OS dirs.
  */
-function isIsolated(): boolean {
-  return process.env.ASTRA_MEMORY_ISOLATED === '1';
-}
-
 export function resolveRuntimeConfig(overrides: RuntimeOverrides = {}): RuntimeConfig {
-  const isolated = isIsolated();
+  const isolated = isIsolatedMode();
 
   let cfg: Config;
   let configDir = '';

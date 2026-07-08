@@ -42,13 +42,13 @@ function makeEmbed(dim: number): EmbedProvider {
 }
 
 describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
-  it('AC-1: migrates to schema_version 17 with zero data loss — counts + spot-checked ids match manifest', () => {
+  it('AC-1: migrates to the current schema version with zero data loss — counts + spot-checked ids match manifest', () => {
     const dbPath = copyFixtureToTemp();
     const db = openDb(dbPath);
     migrate(db);
 
     const versionRow = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versionRow.v).toBe(17);
+    expect(versionRow.v).toBe(18);
 
     const countOf = (table: string): number =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;

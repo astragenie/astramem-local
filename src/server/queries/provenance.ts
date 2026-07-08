@@ -107,7 +107,11 @@ export interface SessionDigest {
 export function buildSessionDigest(db: DB, sessionId: string): SessionDigest {
   // A distill job for this session still queued or running → pending.
   // json_extract (SQLite JSON1, bundled with better-sqlite3) — exact match,
-  // immune to LIKE-wildcard injection and payload key reordering.
+  // immune to LIKE-wildcard injection and payload key reordering. Both this
+  // query and the poison-count query below are served by the partial
+  // expression index migrations/018-jobs-distill-session-index.sql added
+  // (`idx_jobs_distill_session`, WHERE kind='distill') — without it this was
+  // a full scan of every distill job ever enqueued.
   const activeJob = db.prepare(`
     SELECT id FROM jobs
     WHERE kind = 'distill' AND state IN ('pending', 'running')
