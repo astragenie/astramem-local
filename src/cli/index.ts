@@ -21,6 +21,7 @@ import { reinstallCommand } from './reinstall.js';
 import { reembedDimCommand } from './reembed-dim.js';
 import { entityBackfillCommand } from './entity-backfill.js';
 import { cliMemoryRestore } from './memory.js';
+import { memoryHealthCommand } from './memory-health.js';
 import { mcpStdio } from './mcp-stdio.js';
 import { mcpInstallCommand } from './mcp-install.js';
 import { demoCommand } from './demo.js';
@@ -221,12 +222,15 @@ async function main() {
 
     case 'memory': {
       // astramem-local memory restore <id> — un-archive a memory (FEAT-416)
+      // astramem-local memory health [--json] [--deep] — per-store health report (FEAT-444)
       const [sub, ...subRest] = rest;
       if (sub === 'restore') {
         const id = subRest.find(a => !a.startsWith('-')) ?? '';
         await cliMemoryRestore(id);
+      } else if (sub === 'health') {
+        await memoryHealthCommand(subRest);
       } else {
-        console.error(`memory: unknown subcommand "${sub ?? ''}" (expected: restore <id>)`);
+        console.error(`memory: unknown subcommand "${sub ?? ''}" (expected: restore <id> | health)`);
         process.exit(1);
       }
       break;
@@ -325,6 +329,14 @@ Commands:
                                          migrate, restart service
   memory restore <id>                    Un-archive a memory previously archived
                                          by the W4.4 TTL policy (FEAT-416)
+  memory health [--json] [--deep]        Per-store health report: totals by
+                                         type/scope, staleness distribution,
+                                         usefulness coverage, correction rate,
+                                         poison-distill session count
+                                         (FEAT-444). --deep additionally runs
+                                         a bounded near-duplicate estimate +
+                                         junk heuristic (CLI-only; never run
+                                         by doctor's default pass or /health)
   init [--no-hook]                       Interactive setup wizard (--no-hook skips the
                                          SessionStart memory-pack hook offer)
   token rotate                           Issue new local Bearer token

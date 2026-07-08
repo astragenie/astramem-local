@@ -55,24 +55,21 @@ function hasFlag(args: string[], flag: string): boolean {
  * (unproven) release: install-service throw, start-service throw, the
  * health-check timeout, and a served-version mismatch. Without this, any of
  * those branches would leave current.json pinned to a broken release that
- * the PT5M keepalive then restarts forever — the exact silent-daemon-down
- * outage class this command exists to close (FEAT-438 SLICE-417 review
- * HIGH finding).
+ * the keepalive/restart policy then restarts forever — the exact silent-
+ * daemon-down outage class this command exists to close (FEAT-438 SLICE-417
+ * review HIGH finding).
  *
- * Windows-only: the pointer indirection (current.json under
- * %LOCALAPPDATA%\Astramem\bin) only exists on win32 (see shim.ts /
- * install-flow.ts's `adapter.platform === 'win32'` guard) — on other
- * platforms there is nothing to roll back, so say so plainly instead of
- * implying a restore was attempted and simply found nothing.
+ * Cross-platform since FEAT-443 SLICE-1: the pointer indirection (current.json
+ * under `<defaultDataDir()>/bin`, see shim.ts) now exists on linux/darwin too,
+ * not just win32 — install-flow.ts writes the stable shim unconditionally on
+ * every platform now. The only genuinely-nothing-to-restore case left is a
+ * first install / unreadable current.json (`priorPointer === null`), handled
+ * below — there is no more platform gate.
  */
 export function restorePriorPointer(
   priorPointer: ShimPointer | null,
   pointerPath: string,
-  platform: NodeJS.Platform = process.platform,
 ): string {
-  if (platform !== 'win32') {
-    return 'no rollback pointer on this platform (current.json indirection is Windows-only)';
-  }
   if (!priorPointer) {
     return 'no prior pointer to restore (first install or unreadable current.json)';
   }
@@ -174,11 +171,12 @@ export async function reinstallCommand(args: string[]): Promise<void> {
   }
   const releaseEntryJs = join(releaseDir, 'dist', 'cli', 'index.js');
 
-  // Capture the prior shim pointer (Windows only — current.json lives under
-  // %LOCALAPPDATA%\Astramem\bin) so a post-start served-version mismatch can
-  // restore it (AC-2) instead of leaving current.json pointed at a release
-  // that never proved itself. Best-effort: a missing/corrupt prior pointer
-  // just means there is nothing sane to roll back to (e.g. first install).
+  // Capture the prior shim pointer (current.json lives under
+  // <defaultDataDir()>/bin — see shim.ts; cross-platform since FEAT-443
+  // SLICE-1) so a post-start served-version mismatch can restore it (AC-2)
+  // instead of leaving current.json pointed at a release that never proved
+  // itself. Best-effort: a missing/corrupt prior pointer just means there is
+  // nothing sane to roll back to (e.g. first install).
   const pointerPath = shimPaths().pointerPath;
   let priorPointer: ShimPointer | null = null;
   if (existsSync(pointerPath)) {
@@ -384,10 +382,11 @@ function finish(
 //
 // Both paths repoint current.json and restart WITHOUT ever calling
 // installServiceFlow / adapter.install() — writeShim() only rewrites the
-// cmd/launcher/pointer trio (shim.ts), it never touches schtasks. Task
-// registration happens exactly once, at first install (`service install` /
-// `init` / a plain `reinstall`); this preserves that invariant by construction
-// rather than by a flag threaded through install-flow.ts.
+// cmd/launcher/pointer trio (shim.ts), it never touches the scheduler
+// (schtasks / systemd unit / launchd plist). Task/unit/plist registration
+// happens exactly once, at first install (`service install` / `init` / a
+// plain `reinstall`); this preserves that invariant by construction rather
+// than by a flag threaded through install-flow.ts, on every platform.
 
 interface RepointVerifyOptions {
   jsonMode: boolean;

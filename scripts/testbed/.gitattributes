@@ -1,0 +1,3 @@
+# These scripts are base64-shipped to Linux/macOS boxes and run under bash;
+# CRLF would inject \r and break them. Force LF on every platform/checkout.
+*.sh text eol=lf

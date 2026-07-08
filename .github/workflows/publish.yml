@@ -39,9 +39,11 @@ jobs:
           fi
 
       # Bun baked into runner image (devops#64); setup-node kept for registry-url auth.
+      # node 22 matches the package's engines floor (>=22) and the better-sqlite3-
+      # multiple-ciphers prebuilt matrix (no node-20 prebuilt exists).
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
       - name: Install + build

@@ -134,7 +134,11 @@ export function containment(aText: string, bText: string): 'a-contains-b' | 'b-c
   return null;
 }
 
-function cosine(a: Float32Array, b: Float32Array): number {
+/** Exported for reuse by the memory-health CLI's near-duplicate estimate
+ *  (FEAT-444, deep/CLI-only metric) — same cosine-over-stored-embeddings
+ *  math this module already uses for merge/propose decisions, no second
+ *  implementation. */
+export function cosine(a: Float32Array, b: Float32Array): number {
   let dot = 0, na = 0, nb = 0;
   for (let i = 0; i < a.length; i++) {
     const x = a[i] as number, y = b[i] as number;

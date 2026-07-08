@@ -1,0 +1,55 @@
+# install-smoke.yml — fresh-machine install test for the PUBLISHED package.
+#
+# Installs `astramem-local` globally inside a clean `node:<major>-slim` container
+# with NO build toolchain (no gcc/make/python), then forces the native bindings
+# (SQLCipher DB open + sqlite-vec vec0 table) and a daemon /health reopen. This
+# reproduces a real user's fresh machine and proves the package installs from a
+# PREBUILT binary alone — catching the stale-global-install trap / devops#75 and
+# per-node-major prebuilt-ABI gaps (e.g. no node-v115/node-20 prebuilt exists for
+# better-sqlite3-multiple-ciphers, so node 20 cannot install without a compiler).
+#
+# Docker (not EC2) is the right tool here: an immutable slim image is a pristine
+# userland, fresh every run, and lets us matrix node majors cheaply on the
+# existing self-hosted fleet. EC2 is reserved for perf (needs a quiet box) and
+# macOS (no containers).
+
+name: install-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: astramem-local version to install
+        default: latest
+  schedule:
+    - cron: '0 7 * * 1'   # weekly Mon 07:00 UTC — catch a broken publish early
+
+jobs:
+  clean-install:
+    name: npm -g clean (node ${{ matrix.node }})
+    runs-on: [self-hosted, astragenie, aws]
+    # node 20 has no published prebuilt (ABI v115) -> informational, non-blocking
+    # until engines.node is raised to >=22 or a node-20 prebuilt ships.
+    continue-on-error: ${{ matrix.experimental }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { node: '22', experimental: false }   # prebuilt floor (ABI v127)
+          - { node: '24', experimental: false }    # ABI v147
+          - { node: '20', experimental: true }     # ABI v115 — no prebuilt (documents the gap)
+    container:
+      image: node:${{ matrix.node }}-slim
+    steps:
+      - name: Tooling (curl+git only — NOT a compiler, so install must use a prebuilt)
+        run: |
+          set -e
+          apt-get update -qq
+          apt-get install -y -qq curl ca-certificates git >/dev/null
+          echo "toolchain (expect all MISSING):"
+          for t in gcc g++ make python3; do printf '%s: ' "$t"; command -v "$t" || echo MISSING; done
+
+      - uses: actions/checkout@v7
+
+      - name: install-smoke (npm-global, clean container)
+        run: bash scripts/testbed/remote/install-smoke.sh "${{ github.event.inputs.version || 'latest' }}" npm
