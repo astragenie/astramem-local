@@ -124,6 +124,10 @@ export async function demoCommand(_args: string[]): Promise<void> {
   const port = await getFreePort();
   const baseUrl = `http://127.0.0.1:${port}`;
   const { token } = resolveBearerToken({ envToken: process.env.ASTRA_MEMORY_TOKEN });
+  // Isolated mode issues a FRESH ephemeral token on every resolution
+  // (bearer-keystore.ts) — pin ours into env so serve()'s own resolution
+  // yields the same token, else every demo client call 401s.
+  process.env.ASTRA_MEMORY_TOKEN = token;
 
   console.log('astramem-local demo — starting an in-memory daemon (no Ollama required)...');
   await serve({ port });
