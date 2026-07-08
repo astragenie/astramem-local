@@ -26,7 +26,8 @@
     "eval:longmemeval:sample": "bun scripts/eval/longmemeval/sample.mts",
     "eval:longmemeval:smoke": "bun scripts/eval/longmemeval/run-smoke.mts",
     "eval:longmemeval:judge": "bun scripts/eval/longmemeval/judge.mts",
-    "eval:extraction-bench": "bun scripts/eval/extraction-bench/run-bench.mts"
+    "eval:extraction-bench": "bun scripts/eval/extraction-bench/run-bench.mts",
+    "perf:baseline": "bun scripts/perf/seed.mts && bun scripts/perf/bench.mts && node scripts/perf/fusion-profile.mts && bun scripts/perf/embed-cost.mts"
   },
   "engines": {
     "node": ">=20"
