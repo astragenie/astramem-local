@@ -244,20 +244,23 @@ describe('pruneReleases', () => {
 });
 
 describe('releaseIdFromEntryJs (FEAT-438 SLICE-418 AC-3/AC-4)', () => {
+  // Paths built with join() so separators are native on both win32 and posix
+  // — releaseIdFromEntryJs uses path.relative/isAbsolute, which are
+  // platform-specific, so hardcoded 'C:\\…' literals only parse on Windows.
   it('extracts the release id when entryJs lives under releasesRoot', () => {
-    const releasesRoot = 'C:\\LocalAppData\\Astramem\\releases';
-    const entryJs = 'C:\\LocalAppData\\Astramem\\releases\\1.2.3+abcdef\\dist\\cli\\index.js';
+    const releasesRoot = join('base', 'Astramem', 'releases');
+    const entryJs = join(releasesRoot, '1.2.3+abcdef', 'dist', 'cli', 'index.js');
     expect(releaseIdFromEntryJs(entryJs, releasesRoot)).toBe('1.2.3+abcdef');
   });
 
   it('returns null for a --dev-pinned pointer (checkout dist/, not under releasesRoot)', () => {
-    const releasesRoot = 'C:\\LocalAppData\\Astramem\\releases';
-    const entryJs = 'C:\\work\\mega\\astramemory-local\\dist\\cli\\index.js';
+    const releasesRoot = join('base', 'Astramem', 'releases');
+    const entryJs = join('base', 'checkout', 'astramemory-local', 'dist', 'cli', 'index.js');
     expect(releaseIdFromEntryJs(entryJs, releasesRoot)).toBeNull();
   });
 
   it('returns null for an empty/identical path (entryJs === releasesRoot)', () => {
-    const releasesRoot = 'C:\\LocalAppData\\Astramem\\releases';
+    const releasesRoot = join('base', 'Astramem', 'releases');
     expect(releaseIdFromEntryJs(releasesRoot, releasesRoot)).toBeNull();
   });
 });
