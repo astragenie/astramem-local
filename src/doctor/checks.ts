@@ -15,7 +15,7 @@
  */
 
 import { statfsSync, existsSync, accessSync, constants, mkdirSync, writeFileSync, unlinkSync, readdirSync, statSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir, platform } from 'node:os';
 import { randomUUID } from 'node:crypto';
 import type { Check, CheckResult } from './types.js';
@@ -29,8 +29,10 @@ import { codexAuthProbe } from './probes/codex-subscription-probe.js';
 import { OpenAICompatibleLLMProvider } from '../providers/llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from '../providers/llm/codex-subscription.js';
 import { defaultConfigDir, legacyConfigDir } from '../config/datadir.js';
-import { shimPaths, type ShimPointer } from '../service/shim.js';
-import { releaseIdFromEntryJs } from '../service/release.js';
+import { shimPaths, exitHistoryPaths, type ShimPointer, type ExitHistoryEntry } from '../service/shim.js';
+import { releaseIdFromEntryJs, defaultReleasesRoot } from '../service/release.js';
+import { pathToFileURL } from 'node:url';
+import { SCHEMA_VERSION } from '../server/lib/wire-meta.js';
 import { getOrCreateKey, readBearer } from '../storage/keystore.js';
 import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
 import { usefulnessRate, usefulnessByType } from '../storage/usefulness.js';
@@ -836,6 +838,202 @@ function checkServicePointer(pointerPathOverride?: string, releasesRootOverride?
   };
 }
 
+// ─── Check: Crash loop (FEAT-440 AC-3/AC-5) ──────────────────────────────────
+
+/**
+ * Reads the shim's exit-history.jsonl (see service/shim.ts's
+ * exitHistoryPaths()/appendExitHistory in LAUNCHER_SOURCE) and RED-flags a
+ * crash loop: >= `threshold` consecutive non-zero exits in the tail of the
+ * history. Counting walks backward from the newest entry and stops at the
+ * first exitCode === 0 — a clean run (including the instance lock's healthy
+ * <100ms fast-exit, AC-5) always resets the streak, distinguished from a
+ * real crash purely by exitCode, not durationMs (both exit 0; durationMs is
+ * carried in the record for a human/dashboard to eyeball, not used here as
+ * a gate).
+ */
+function checkCrashLoop(dataDir: string, threshold = 3): Check {
+  return {
+    name: 'Crash loop',
+    async run(): Promise<CheckResult> {
+      const { historyPath, crashLogPath } = exitHistoryPaths(dataDir);
+      if (!existsSync(historyPath)) {
+        return { ok: true, message: 'crash loop: no exit history yet' };
+      }
+
+      let entries: ExitHistoryEntry[];
+      try {
+        entries = readFileSync(historyPath, 'utf8')
+          .split('\n')
+          .filter(Boolean)
+          .map((line): ExitHistoryEntry | null => {
+            try {
+              return JSON.parse(line) as ExitHistoryEntry;
+            } catch {
+              return null;
+            }
+          })
+          .filter((e): e is ExitHistoryEntry => e !== null);
+      } catch (err) {
+        // Informational check — never fail doctor over a corrupt/unreadable
+        // history file; that's its own (non-fatal) signal, not a crash loop.
+        return { ok: true, message: `crash loop check error (non-fatal): ${err}` };
+      }
+
+      if (entries.length === 0) {
+        return { ok: true, message: 'crash loop: no exit history yet' };
+      }
+
+      const streak: ExitHistoryEntry[] = [];
+      for (let i = entries.length - 1; i >= 0; i--) {
+        const entry = entries[i]!;
+        if (entry.exitCode === 0) break;
+        streak.unshift(entry);
+      }
+
+      if (streak.length < threshold) {
+        return {
+          ok: true,
+          message: `crash loop: ${streak.length} consecutive non-zero exit(s) (below threshold of ${threshold})`,
+        };
+      }
+
+      const codes = streak.map(e => e.exitCode).join(', ');
+      const first = streak[0]!.ts;
+      const last = streak[streak.length - 1]!.ts;
+
+      let crashTail = '(crash.log not found)';
+      try {
+        if (existsSync(crashLogPath)) {
+          const raw = readFileSync(crashLogPath, 'utf8');
+          crashTail = raw.length > 2000 ? raw.slice(raw.length - 2000) : raw;
+        }
+      } catch { /* non-fatal — still report the crash-loop finding without the tail */ }
+
+      return {
+        ok: false,
+        message:
+          `crash loop detected: ${streak.length} consecutive non-zero exits [${codes}] ` +
+          `between ${first} and ${last}\n--- crash.log tail ---\n${crashTail}`,
+        fix: 'Fix the underlying error (see crash.log tail above) and restart the service — ' +
+          'a single zero-exit run resets the streak; the next doctor run goes GREEN.',
+      };
+    },
+  };
+}
+
+// ─── Check: Schema drift (FEAT-439 AC-2/AC-5) ────────────────────────────────
+
+interface ServedSchemaVersion {
+  version: number;
+  source: string;
+}
+
+/**
+ * Determine the SCHEMA_VERSION of the release actually being served, per
+ * current.json's pointer — NOT this doctor process's own import, which only
+ * reflects whichever build happens to be running doctor (the repo working
+ * tree, when doctor runs from a checkout). When the pointer resolves to a
+ * real release dir (release-pinned, not --dev-pinned — same distinction
+ * checkServicePointer above makes), dynamically imports THAT release's own
+ * compiled wire-meta.js so the comparison is against what's genuinely
+ * served, not a same-machine coincidence. Falls back to the doctor process's
+ * own SCHEMA_VERSION (source: "repo working tree") whenever the pointer is
+ * absent, dev-pinned, or its release's wire-meta.js can't be read — matching
+ * the FEAT body's third candidate source ("SCHEMA_VERSION of the repo
+ * working tree, when doctor runs from repo").
+ */
+async function resolveServedSchemaVersion(
+  pointerPathOverride?: string,
+  releasesRootOverride?: string,
+): Promise<ServedSchemaVersion> {
+  const pointerPath = pointerPathOverride ?? shimPaths().pointerPath;
+  if (existsSync(pointerPath)) {
+    try {
+      const pointer = JSON.parse(readFileSync(pointerPath, 'utf8')) as ShimPointer;
+      if (!pointer.devPinned) {
+        const id = releaseIdFromEntryJs(pointer.entryJs, releasesRootOverride ?? defaultReleasesRoot());
+        if (id) {
+          const wireMetaPath = join(dirname(pointer.entryJs), '..', 'server', 'lib', 'wire-meta.js');
+          if (existsSync(wireMetaPath)) {
+            const mod = (await import(pathToFileURL(wireMetaPath).href)) as { SCHEMA_VERSION?: unknown };
+            if (typeof mod.SCHEMA_VERSION === 'number') {
+              return { version: mod.SCHEMA_VERSION, source: `release ${id}` };
+            }
+          }
+        }
+      }
+    } catch {
+      // Fall through to the repo-working-tree fallback below — a pointer
+      // read/parse/import failure here is not itself a schema-drift finding.
+    }
+  }
+  return { version: SCHEMA_VERSION, source: 'repo working tree' };
+}
+
+/**
+ * FEAT-439 AC-2/AC-5: compares the served release's SCHEMA_VERSION (see
+ * resolveServedSchemaVersion above) against the live DB's migration counter
+ * (`MAX(version) FROM schema_version`, the same table migrate.ts's own
+ * boot-time drift guard reads — src/storage/migrate.ts:100). Read-only: no
+ * writes to the DB, so re-running immediately after a GREEN result stays
+ * GREEN with no side effects (AC-5).
+ */
+function checkSchemaDrift(
+  dataDir: string,
+  encryptionEnabled: boolean,
+  pointerPathOverride?: string,
+  releasesRootOverride?: string,
+): Check {
+  return {
+    name: 'Schema drift',
+    async run(): Promise<CheckResult> {
+      const dbPath = join(dataDir, 'memory.sqlite');
+      if (!existsSync(dbPath)) {
+        return { ok: true, message: 'schema drift: no DB yet (nothing to compare)' };
+      }
+
+      let dbSchemaVersion: number;
+      try {
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const tableExists = db
+          .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'`)
+          .get();
+        if (!tableExists) {
+          db.close();
+          return { ok: true, message: 'schema drift: DB not migrated yet (no schema_version table)' };
+        }
+        const row = db.prepare('SELECT MAX(version) AS max_version FROM schema_version').get() as
+          | { max_version: number | null }
+          | undefined;
+        db.close();
+        dbSchemaVersion = row?.max_version ?? 0;
+      } catch (err) {
+        // Informational failure mode — never fail doctor over a metric/probe
+        // query error, consistent with the other read-only DB checks above.
+        return { ok: true, message: `schema drift check error (non-fatal): ${err}` };
+      }
+
+      const served = await resolveServedSchemaVersion(pointerPathOverride, releasesRootOverride);
+
+      if (served.version === dbSchemaVersion) {
+        return {
+          ok: true,
+          message: `schema drift: none (served ${served.source} SCHEMA_VERSION=${served.version} == DB migration counter=${dbSchemaVersion})`,
+        };
+      }
+
+      return {
+        ok: false,
+        message:
+          `schema drift: served ${served.source} SCHEMA_VERSION=${served.version} != ` +
+          `live DB migration counter=${dbSchemaVersion} — the served build and the live DB have diverged ` +
+          `(2026-07-07 stale-dist incident class).`,
+        fix: 'astramem-local reinstall',
+      };
+    },
+  };
+}
+
 function coreChecks(opts: DoctorCheckOpts): Check[] {
   const port = opts.port ?? 7777;
   const dataDir = opts.dataDir ?? join(tmpdir(), 'astramem');
@@ -852,6 +1050,8 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkDiskFree(dataDir),
     checkServiceUnit(opts.serviceUnitPath),
     checkServicePointer(opts.servicePointerPath, opts.releasesRoot),
+    checkCrashLoop(dataDir),
+    checkSchemaDrift(dataDir, encryptionEnabled, opts.servicePointerPath, opts.releasesRoot),
     checkBudget(dataDir, dailyBudgetUsd, encryptionEnabled),
     checkConfigDirDivergence(),
     checkRedaction(dataDir, opts.redactionEnabled ?? true, encryptionEnabled),

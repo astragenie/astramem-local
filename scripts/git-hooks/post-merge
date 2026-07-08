@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+// astramem-local post-merge hook (FEAT-439) — migration-merge currency
+// trigger. Enable once per checkout with:
+//
+//   git config core.hooksPath scripts/git-hooks
+//
+// See post-merge-rebuild.mjs (same directory) for the full contract:
+// non-blocking-safe (never fails/reverts the merge), de-duped per HEAD, and
+// only fires when migrations/ or src/storage/ changed.
+import { main } from './post-merge-rebuild.mjs';
+
+main();
