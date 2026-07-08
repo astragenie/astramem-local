@@ -24,8 +24,9 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { restorePriorPointer } from '../../src/cli/reinstall.js';
+import { restorePriorPointer, selectRollbackTarget } from '../../src/cli/reinstall.js';
 import { shimPaths, writePointer, type ShimPointer } from '../../src/service/shim.js';
+import type { ReleaseListEntry } from '../../src/service/release.js';
 
 describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
   let dir: string;
@@ -134,5 +135,45 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
 
     expect(detail).toContain('restore FAILED');
     expect(detail).toContain('fix manually');
+  });
+});
+
+describe('selectRollbackTarget (FEAT-438 SLICE-418 AC-3)', () => {
+  function entry(id: string): ReleaseListEntry {
+    return { id, dir: `/releases/${id}`, createdAt: '2026-01-01T00:00:00.000Z' };
+  }
+
+  it('picks the newest release whose id differs from currentId', () => {
+    // listReleases() ordering is newest-first — selection must just take the
+    // first non-matching entry, not re-sort or search for a "second" newest.
+    const releases = [entry('3.0.0+c'), entry('2.0.0+b'), entry('1.0.0+a')];
+    const target = selectRollbackTarget(releases, '3.0.0+c');
+    expect(target?.id).toBe('2.0.0+b');
+  });
+
+  it('falls back to the newest release overall when currentId is null (dev-pinned / missing pointer)', () => {
+    const releases = [entry('3.0.0+c'), entry('2.0.0+b')];
+    const target = selectRollbackTarget(releases, null);
+    expect(target?.id).toBe('3.0.0+c');
+  });
+
+  it('returns null when the only release present IS the current one', () => {
+    const releases = [entry('1.0.0+only')];
+    const target = selectRollbackTarget(releases, '1.0.0+only');
+    expect(target).toBeNull();
+  });
+
+  it('returns null when there are no releases at all', () => {
+    expect(selectRollbackTarget([], null)).toBeNull();
+    expect(selectRollbackTarget([], '1.0.0+x')).toBeNull();
+  });
+
+  it('skips past a stale/unknown currentId to the newest available release', () => {
+    // currentId doesn't match ANY entry (e.g. current.json points at a
+    // release dir that was since pruned) — every release is a valid
+    // rollback candidate, so the newest wins.
+    const releases = [entry('2.0.0+b'), entry('1.0.0+a')];
+    const target = selectRollbackTarget(releases, '9.9.9+gone');
+    expect(target?.id).toBe('2.0.0+b');
   });
 });

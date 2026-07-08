@@ -262,9 +262,17 @@ Commands:
                                          --strict-preflight restores fail-fast exit 1.
   service install|uninstall|start|stop|status|repair [--port N]
                                          Manage OS service (systemd/launchd/schtasks)
-  reinstall [--json]                     Idempotent service repair: stop -> install
-                                         (stable shim + task) -> start -> verify
-                                         health + version. Run after every upgrade.
+  reinstall [--json]                     Idempotent service repair: materialize release ->
+                                         stop -> install (stable shim + task) -> start ->
+                                         verify health + version. Run after every upgrade.
+                                         Keeps the newest 2 releases (older ones pruned).
+  reinstall --rollback [--json]          Repoint at the previous release (no materialize,
+                                         no schtasks re-registration). Fails loudly if
+                                         there is no older release to roll back to.
+  reinstall --dev [--json]               Escape hatch: pin the service at the checkout's
+                                         own dist/ (mutable, pre-FEAT-438 behavior) instead
+                                         of an immutable release. Prints a loud warning.
+                                         Run plain 'reinstall' afterward to re-pin.
   doctor [--json] [--port N]             Run health checks
   search "query" [--type TYPE] [--repo REPO] [--project P] [--agent A] [--agent-mode filter|boost]
                  [--since 7d|24h] [--as-of DATE] [--entity NAME] [--limit N]

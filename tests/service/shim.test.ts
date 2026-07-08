@@ -70,6 +70,20 @@ describe('service shim', () => {
     expect(entries.some(e => e.includes('.tmp'))).toBe(false);
   });
 
+  it('writePointer round-trips devPinned (FEAT-438 SLICE-418 AC-4)', () => {
+    const paths = shimPaths(dir);
+    writePointer({ nodeBin: 'node', entryJs: 'C:\\repo\\dist\\cli\\index.js', port: 7777, devPinned: true }, paths.pointerPath);
+    const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr.devPinned).toBe(true);
+  });
+
+  it('writePointer omits devPinned when not set (release-pinned pointers stay unmarked)', () => {
+    const paths = shimPaths(dir);
+    writePointer({ nodeBin: 'node', entryJs: 'C:\\releases\\1.0.0+abc\\dist\\cli\\index.js', port: 7777 }, paths.pointerPath);
+    const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr.devPinned).toBeUndefined();
+  });
+
   it('writePointer overwrites an existing pointer atomically (repoint), and writeShim still round-trips through it', () => {
     const paths = shimPaths(dir);
     writePointer({ nodeBin: 'node', entryJs: 'old-entry.js', port: 1 }, paths.pointerPath);

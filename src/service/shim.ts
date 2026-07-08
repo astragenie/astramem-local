@@ -25,6 +25,15 @@ export interface ShimPointer {
   /** When set, the launcher exports ASTRA_LOG_DIR so the daemon rotates its
    *  JSON logs there (service mode) instead of writing to a discarded stdout. */
   logDir?: string;
+  /**
+   * Set true ONLY by `reinstall --dev` (FEAT-438 SLICE-418 AC-4): `entryJs`
+   * points at the mutable checkout's `dist/` instead of an immutable release
+   * dir. writePointer/writeShim round-trip this field like any other — the
+   * doctor pointer check and `reinstall --rollback`'s target-selection logic
+   * both read it back to tell a dev-pinned install apart from a release-
+   * pinned one. Absent/false means release-pinned (the default, safe state).
+   */
+  devPinned?: boolean;
 }
 
 export interface ShimPaths {

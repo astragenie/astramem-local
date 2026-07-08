@@ -51,11 +51,13 @@ import {
   writeFileSync,
   renameSync,
   rmSync,
+  readdirSync,
+  statSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, isAbsolute } from 'node:path';
 import { defaultDataDir } from '../config/datadir.js';
 
 export interface MaterializeReleaseOptions {
@@ -104,6 +106,30 @@ function defaultCheckoutDir(): string {
   return join(here, '..', '..');
 }
 
+/** Default root releases are materialized under / read from:
+ *  `<defaultDataDir()>/releases` (i.e. %LOCALAPPDATA%\Astramem\releases).
+ *  Single-sourced here so materializeRelease/listReleases/pruneReleases and
+ *  callers (reinstall.ts, doctor) never drift on the path. */
+export function defaultReleasesRoot(): string {
+  return join(defaultDataDir(), 'releases');
+}
+
+/**
+ * Given a shim pointer's `entryJs` (e.g.
+ * `<releasesRoot>\1.2.3+abcdef\dist\cli\index.js`), extract the release id
+ * (`1.2.3+abcdef`) if it lives under `releasesRoot` — else `null` (e.g. a
+ * `--dev`-pinned pointer at the mutable checkout's `dist/`, which is not
+ * under releasesRoot at all). Used by `reinstall --rollback` (AC-3) and the
+ * doctor pointer check (AC-4) to identify "the release currently pointed
+ * at" without assuming the pointer is release-pinned.
+ */
+export function releaseIdFromEntryJs(entryJs: string, releasesRoot: string = defaultReleasesRoot()): string | null {
+  const rel = relative(releasesRoot, entryJs);
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null;
+  const [id] = rel.split(/[\\/]/);
+  return id || null;
+}
+
 function runCaptured(cmd: string, args: string[], cwd: string): CapturedRun {
   const res = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
   const stderrParts = [res.stderr ?? ''];
@@ -147,7 +173,7 @@ function quarantine(tmpDir: string): void {
 
 export function materializeRelease(opts: MaterializeReleaseOptions = {}): MaterializeReleaseResult {
   const checkoutDir = opts.checkoutDir ?? defaultCheckoutDir();
-  const releasesRoot = opts.releasesRoot ?? join(defaultDataDir(), 'releases');
+  const releasesRoot = opts.releasesRoot ?? defaultReleasesRoot();
   const nodeBin = opts.nodeBin ?? process.execPath;
   const lockfileName = opts.lockfileName ?? 'bun.lock';
 
@@ -259,4 +285,114 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
     quarantine(tmpDir);
     throw err;
   }
+}
+
+// ─── Retention / rollback support (FEAT-438 SLICE-418 AC-3) ─────────────────
+
+export interface ReleaseListEntry {
+  id: string;
+  dir: string;
+  createdAt: string;
+}
+
+export interface PruneReleasesResult {
+  /** Release ids that were deleted. A delete that failed is still recorded
+   *  here (soft-fail — see pruneReleases doc), annotated with the error so
+   *  the caller can surface it without the run itself throwing. */
+  pruned: string[];
+  /** Release ids retained (newest `keep` + anything in `protectIds`). */
+  kept: string[];
+}
+
+/**
+ * List materialized releases under `releasesRoot`, NEWEST-first (by
+ * `manifest.createdAt`, tie-broken by id descending for determinism).
+ *
+ * Skips anything that isn't a genuine, currently-valid release: in-progress
+ * (`.tmp-*`) and quarantined (`*.failed`) dirs (materializeRelease's own
+ * naming — see module header), non-directories, and any dir whose
+ * `release.json` is missing or fails to parse. A corrupted/partial release
+ * must never crash listing (retention and rollback both depend on this being
+ * safe to call unconditionally) — it just becomes invisible to both, the
+ * same "skip, don't throw" posture materializeRelease itself uses whenever it
+ * discovers a stale on-disk artifact.
+ */
+export function listReleases(releasesRoot: string = defaultReleasesRoot()): ReleaseListEntry[] {
+  if (!existsSync(releasesRoot)) return [];
+
+  let names: string[];
+  try {
+    names = readdirSync(releasesRoot);
+  } catch {
+    return [];
+  }
+
+  const releases: ReleaseListEntry[] = [];
+  for (const name of names) {
+    if (name.startsWith('.tmp-') || name.endsWith('.failed')) continue;
+    const dir = join(releasesRoot, name);
+    try {
+      if (!statSync(dir).isDirectory()) continue;
+    } catch {
+      continue;
+    }
+    const manifestPath = join(dir, 'release.json');
+    if (!existsSync(manifestPath)) continue;
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf8')) as Partial<ReleaseManifest>;
+      if (typeof manifest.id !== 'string' || typeof manifest.createdAt !== 'string') continue;
+      releases.push({ id: manifest.id, dir, createdAt: manifest.createdAt });
+    } catch {
+      continue;
+    }
+  }
+
+  releases.sort((a, b) => {
+    if (a.createdAt !== b.createdAt) return a.createdAt > b.createdAt ? -1 : 1;
+    return a.id > b.id ? -1 : 1;
+  });
+  return releases;
+}
+
+/**
+ * Prune old releases, keeping the newest `keep` (default 2) PLUS any id
+ * listed in `protectIds` — the caller MUST pass the currently-pointed-at
+ * release's id there even if it's older than the retention window, so a
+ * repoint never leaves current.json pointing at a directory this function
+ * just deleted (the exact bug class AC-3 exists to prevent).
+ *
+ * Deletion is best-effort per directory: a failed `rmSync` is recorded in
+ * the returned `pruned` list (annotated with the error) rather than thrown —
+ * retention is a soft cleanup step, never something that should abort a
+ * reinstall that otherwise succeeded.
+ */
+export function pruneReleases(
+  releasesRoot: string = defaultReleasesRoot(),
+  keep = 2,
+  protectIds: string[] = [],
+): PruneReleasesResult {
+  const releases = listReleases(releasesRoot); // newest-first
+  const protectSet = new Set(protectIds);
+  const kept: string[] = [];
+  const toPrune: ReleaseListEntry[] = [];
+
+  releases.forEach((r, i) => {
+    if (i < keep || protectSet.has(r.id)) {
+      kept.push(r.id);
+    } else {
+      toPrune.push(r);
+    }
+  });
+
+  const pruned: string[] = [];
+  for (const r of toPrune) {
+    try {
+      rmSync(r.dir, { recursive: true, force: true });
+      pruned.push(r.id);
+    } catch (err) {
+      pruned.push(`${r.id} (delete failed: ${(err as Error).message})`);
+    }
+  }
+
+  return { pruned, kept };
 }
