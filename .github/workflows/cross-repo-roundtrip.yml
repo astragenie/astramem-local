@@ -127,6 +127,35 @@ jobs:
             sleep 5
           done
 
+      # issue #93 / devops#75: the plugin's better-sqlite3-multiple-ciphers is
+      # installed by `bun install` above, which produces no node-ABI native
+      # build. `test:smoke` runs vitest under node (ABI v127), which needs that
+      # `.node` binary — intermittently absent on a cold runner → the opaque
+      # "Could not locate the bindings file" error from inside the smoke test
+      # (it only passed before when a prior job left the addon compiled on the
+      # runner). Rebuild it here — a mirror of the daemon addon step above — so
+      # the smoke test's ABI is satisfied deterministically, not by luck.
+      - name: Verify plugin native addon (better-sqlite3-multiple-ciphers)
+        working-directory: plugin
+        env:
+          NODE_ENV: development
+        run: |
+          set -e
+          if node -e "require('better-sqlite3-multiple-ciphers')" 2>addon-check.log; then
+            echo "plugin native addon present and loadable"
+          else
+            echo "plugin native addon missing/broken on this runner — forcing rebuild:"
+            cat addon-check.log
+            npm rebuild better-sqlite3-multiple-ciphers --build-from-source || bun install --force
+            if node -e "require('better-sqlite3-multiple-ciphers')"; then
+              echo "plugin native addon rebuilt successfully"
+            else
+              echo "::error::better-sqlite3-multiple-ciphers could not be built for the plugin on this runner after a forced rebuild — a real toolchain gap (check python3/make/g++ on this runner image), not a flake."
+              exit 1
+            fi
+          fi
+          rm -f addon-check.log
+
       # AC-1/AC-2: ASTRAMEM_LOCAL_DIST_PATH must be the daemon REPO ROOT
       # (containing dist/cli/index.js after build), not the dist/ dir itself —
       # see tests/e2e/plugin-daemon-roundtrip.test.ts gating comment in the
