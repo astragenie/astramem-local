@@ -20,6 +20,18 @@ describe('loadConfig', () => {
     expect(cfg.search).toEqual(defaultConfig().search);
     expect(cfg.search.eta).toBe(0);
   });
+
+  // FEAT-442: autonomous consolidation auto-accept defaults OFF.
+  it('consolidation.autoAcceptThreshold defaults to null (OFF)', () => {
+    const cfg = loadConfig(undefined);
+    expect(cfg.consolidation.autoAcceptThreshold).toBeNull();
+    expect(defaultConfig().consolidation.autoAcceptThreshold).toBeNull();
+  });
+
+  it('consolidation.autoAcceptThreshold can be overridden', () => {
+    const cfg = loadConfig({ consolidation: { autoAcceptThreshold: 0.9 } } as any);
+    expect(cfg.consolidation.autoAcceptThreshold).toBe(0.9);
+  });
 });
 
 // FEAT-428: fusion-model governance — component ceiling + η eval-evidence

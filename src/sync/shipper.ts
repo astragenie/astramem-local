@@ -133,6 +133,17 @@ interface UnsyncedRow {
  * (contracts/schemas/sync-envelope.v1.schema.json) also never lists these
  * two types in its event_type enum — shipping one would fail schema
  * validation on the wire, on top of being the wrong policy.
+ *
+ * `unsupersede` (FEAT-442 reversal primitive) is excluded the same way, but
+ * for a different reason: it's local-only by SCOPE DECISION, not by nature
+ * (the supersede event it reverses DOES ship). Multi-device propagation of a
+ * reversal is a real follow-up — a second device would keep believing the
+ * merge until it independently re-derives or is told — but designing that
+ * cross-device semantics is out of scope for the reversal primitive itself
+ * (FEAT-442 design review: "scoped narrowly ... so it doesn't have to solve
+ * reversal for every supersede path in the system"). Excluding it here keeps
+ * today's behavior safe (no wire-schema change, no risk of shipping a type
+ * the cloud doesn't recognize) at the cost of that follow-up gap.
  */
 export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
   return db
@@ -141,7 +152,7 @@ export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
-        AND e.event_type NOT IN ('archive', 'restore')
+        AND e.event_type NOT IN ('archive', 'restore', 'unsupersede')
         AND (
           m.scope IN ('team', 'org')
           OR (
@@ -188,7 +199,7 @@ export function countUnsynced(db: DB): number {
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
-        AND e.event_type NOT IN ('archive', 'restore')
+        AND e.event_type NOT IN ('archive', 'restore', 'unsupersede')
         AND (
           m.scope IN ('team', 'org')
           OR (

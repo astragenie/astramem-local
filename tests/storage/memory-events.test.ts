@@ -294,6 +294,107 @@ describe('MemoryEventRepo.supersede', () => {
 
     expect(entityRepo.listForMemory(newId)).toHaveLength(1);
   });
+
+  // FEAT-442: provenance marker for autonomous-consolidation auto-accept —
+  // additive on the SAME 'supersede' event type (design-review amendment:
+  // least-invasive shape, no new event_type ripple to shipper/wire schema).
+  it('provenance param adds auto_accepted/threshold/similarity to the supersede payload', () => {
+    const oldId = insertMem('sup-old-prov-1');
+    const newId = insertMem('sup-new-prov-1');
+
+    events.supersede(oldId, newId, { autoAccepted: true, threshold: 0.88, similarity: 0.91 });
+
+    const supersedeEvent = events.listForAtom(oldId).find(e => e.event_type === 'supersede');
+    expect(JSON.parse(supersedeEvent?.payload_json ?? '{}')).toEqual({
+      superseded_by: newId, auto_accepted: true, threshold: 0.88, similarity: 0.91,
+    });
+  });
+});
+
+describe('MemoryEventRepo.unsupersede', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let events: MemoryEventRepo;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    events = new MemoryEventRepo(db);
+  });
+
+  function insertMem(hash: string, text = 'unsupersede test'): string {
+    return repo.insert({
+      type: 'fact', text, normalized_text: text,
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+      hash, source_hash: null,
+    });
+  }
+
+  it('reopens a superseded atom: valid_to/superseded_by cleared, unsupersede event recorded', () => {
+    const oldId = insertMem('unsup-old-1');
+    const newId = insertMem('unsup-new-1');
+    events.supersede(oldId, newId);
+    expect(repo.get(oldId)?.valid_to).not.toBeNull();
+
+    events.unsupersede(oldId, 'bad merge');
+
+    const reopened = repo.get(oldId);
+    expect(reopened?.valid_to).toBeNull();
+    expect(reopened?.superseded_by).toBeNull();
+
+    const types = events.listForAtom(oldId).map(e => e.event_type);
+    expect(types).toEqual(['supersede', 'usefulness', 'unsupersede']);
+    const unsupEvent = events.listForAtom(oldId).find(e => e.event_type === 'unsupersede');
+    expect(JSON.parse(unsupEvent?.payload_json ?? '{}')).toEqual({
+      reversed_superseded_by: newId, reason: 'bad merge',
+    });
+  });
+
+  it('is un-hiding, not un-merging — the winner is untouched (still valid, lineage intact)', () => {
+    const oldId = insertMem('unsup-old-2');
+    const newId = insertMem('unsup-new-2');
+    events.supersede(oldId, newId);
+    // Simulate the lineage bookkeeping mergeAsSupersede performs.
+    db.prepare('UPDATE memories SET derived_from = ? WHERE id = ?').run(JSON.stringify([oldId]), newId);
+
+    events.unsupersede(oldId);
+
+    const winner = repo.get(newId);
+    expect(winner?.valid_to).toBeNull();
+    expect(winner?.derived_from).toEqual([oldId]); // lineage kept — this is un-hiding, not un-merging
+    expect(repo.get(oldId)?.valid_to).toBeNull(); // both atoms now current simultaneously
+  });
+
+  it('unknown id throws MemoryNotFoundError', () => {
+    expect(() => events.unsupersede('nope')).toThrow(MemoryNotFoundError);
+  });
+
+  it('never-superseded memory throws MemoryConflictError', () => {
+    const id = insertMem('unsup-never-superseded');
+    expect(() => events.unsupersede(id)).toThrow(MemoryConflictError);
+  });
+
+  it('archived (not superseded) memory throws MemoryConflictError — use restore() instead', () => {
+    const id = insertMem('unsup-archived');
+    events.archive(id);
+    expect(() => events.unsupersede(id)).toThrow(MemoryConflictError);
+  });
+
+  it('invalidated (not superseded) memory throws MemoryConflictError', () => {
+    const id = insertMem('unsup-invalidated');
+    events.invalidate(id);
+    expect(() => events.unsupersede(id)).toThrow(MemoryConflictError);
+  });
+
+  it('reason is optional', () => {
+    const oldId = insertMem('unsup-old-3');
+    const newId = insertMem('unsup-new-3');
+    events.supersede(oldId, newId);
+    expect(() => events.unsupersede(oldId)).not.toThrow();
+    const unsupEvent = events.listForAtom(oldId).find(e => e.event_type === 'unsupersede');
+    expect(JSON.parse(unsupEvent?.payload_json ?? '{}')).toMatchObject({ reason: null });
+  });
 });
 
 describe('MemoryEventRepo.promoteScope', () => {

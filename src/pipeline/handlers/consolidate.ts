@@ -21,6 +21,9 @@ export const consolidateHandler: JobHandler = {
     runConsolidation(ctx.db, {
       mergeThreshold: parsed.merge_threshold,
       proposeThreshold: parsed.propose_threshold,
+      // FEAT-442: scheduled/enqueued runs pick up the configured auto-accept
+      // threshold (default null = OFF, byte-identical to pre-FEAT-442).
+      autoAcceptThreshold: ctx.config.consolidation.autoAcceptThreshold,
     });
   },
 };

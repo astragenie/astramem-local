@@ -6,6 +6,7 @@
  */
 
 import type { DB } from '../storage/db.js';
+import type { SupersedeProvenance } from '../storage/memory-events.js';
 import { mergeAsSupersede } from './consolidate.js';
 
 export interface ConsolidationProposal {
@@ -53,11 +54,17 @@ export class ProposalRepo {
     return row ?? null;
   }
 
-  /** Accept: execute the merge, mark accepted — one transaction. */
-  accept(id: string): ConsolidationProposal {
+  /**
+   * Accept: execute the merge, mark accepted — one transaction.
+   * `provenance` (FEAT-442) is forwarded to `mergeAsSupersede` untouched —
+   * pass it only from the autonomous-consolidation auto-accept path;
+   * omitted (the human-accept path — REST/CLI/MCP), the resulting
+   * supersede event carries no `auto_accepted` marker, exactly as before.
+   */
+  accept(id: string, provenance?: SupersedeProvenance): ConsolidationProposal {
     const tx = this.db.transaction((): ConsolidationProposal => {
       const p = this.mustBePending(id);
-      mergeAsSupersede(this.db, p.winner_id, p.loser_id);
+      mergeAsSupersede(this.db, p.winner_id, p.loser_id, provenance);
       return this.resolve(p.id, 'accepted');
     });
     return tx();

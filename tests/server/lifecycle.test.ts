@@ -250,6 +250,118 @@ describe('POST /memory/:id/restore', () => {
   });
 });
 
+describe('POST /memory/:id/unsupersede', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let events: MemoryEventRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    events = new MemoryEventRepo(db);
+    app = await buildApp({ db, token: 'tok' });
+  });
+
+  it('happy path — 200 { ok: true }, superseded memory becomes current again; winner untouched', async () => {
+    const oldId = insertMem(repo, 'lc-unsup-1');
+    const newId = insertMem(repo, 'lc-unsup-new-1');
+    events.supersede(oldId, newId);
+
+    const res = await app.inject({
+      method: 'POST', url: `/memory/${oldId}/unsupersede`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ ok: true });
+
+    const reopened = repo.get(oldId);
+    expect(reopened?.valid_to).toBeNull();
+    expect(reopened?.superseded_by).toBeNull();
+    expect(repo.get(newId)?.valid_to).toBeNull(); // winner still current too
+  });
+
+  it('unknown id -> 404', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/memory/nope/unsupersede',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('never-superseded memory -> 409', async () => {
+    const id = insertMem(repo, 'lc-unsup-2');
+    const res = await app.inject({
+      method: 'POST', url: `/memory/${id}/unsupersede`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('archived memory -> 409 (use restore instead)', async () => {
+    const id = insertMem(repo, 'lc-unsup-3');
+    events.archive(id);
+    const res = await app.inject({
+      method: 'POST', url: `/memory/${id}/unsupersede`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(409);
+  });
+
+  it('requires bearer auth', async () => {
+    const oldId = insertMem(repo, 'lc-unsup-4');
+    const newId = insertMem(repo, 'lc-unsup-new-4');
+    events.supersede(oldId, newId);
+    const res = await app.inject({ method: 'POST', url: `/memory/${oldId}/unsupersede` });
+    expect(res.statusCode).toBe(401);
+  });
+
+  it('unsupersede event is recorded in memory_events, visible via GET /memory/:id/history', async () => {
+    const oldId = insertMem(repo, 'lc-unsup-5');
+    const newId = insertMem(repo, 'lc-unsup-new-5');
+    events.supersede(oldId, newId);
+    await app.inject({
+      method: 'POST', url: `/memory/${oldId}/unsupersede`,
+      headers: { authorization: 'Bearer tok' },
+    });
+
+    const res = await app.inject({
+      method: 'GET', url: `/memory/${oldId}/history`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    const body = res.json() as { history: Array<{ event_type: string }> };
+    expect(body.history.map(e => e.event_type)).toEqual(['supersede', 'usefulness', 'unsupersede']);
+  });
+
+  it('reappears in current-snapshot search after unsupersede', async () => {
+    const oldId = insertMem(repo, 'lc-unsup-6', {
+      text: 'a uniquely findable unsupersede-route phrase',
+      normalized_text: 'a uniquely findable unsupersede-route phrase',
+    });
+    const newId = insertMem(repo, 'lc-unsup-new-6');
+    events.supersede(oldId, newId);
+
+    const before = await app.inject({
+      method: 'GET', url: '/search?q=uniquely+findable+unsupersede-route+phrase',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect((before.json() as { hits: Array<{ id: string }> }).hits.map(h => h.id)).not.toContain(oldId);
+
+    const unsupRes = await app.inject({
+      method: 'POST', url: `/memory/${oldId}/unsupersede`,
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(unsupRes.statusCode).toBe(200);
+
+    const after = await app.inject({
+      method: 'GET', url: '/search?q=uniquely+findable+unsupersede-route+phrase',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect((after.json() as { hits: Array<{ id: string }> }).hits.map(h => h.id)).toContain(oldId);
+  });
+});
+
 describe('POST /memory/:id/promote', () => {
   let db: DB;
   let repo: MemoryRepo;
@@ -429,7 +541,7 @@ describe('lifecycle error-status conformance (FEAT-435)', () => {
 
   // Each verb's not-found/conflict/bad-body/unauthorized request, built
   // lazily so repo/events/app (bound in beforeEach) are always fresh.
-  function getCase(verb: 'invalidate' | 'supersede' | 'promote' | 'restore') {
+  function getCase(verb: 'invalidate' | 'supersede' | 'promote' | 'restore' | 'unsupersede') {
     switch (verb) {
       case 'invalidate':
         return {
@@ -521,10 +633,24 @@ describe('lifecycle error-status conformance (FEAT-435)', () => {
             return app.inject({ method: 'POST', url: `/memory/${id}/restore` });
           },
         };
+      case 'unsupersede':
+        return {
+          notFound: () => app.inject({ method: 'POST', url: `/memory/${UNKNOWN_ID}/unsupersede`, headers: auth }),
+          conflict: () => {
+            const id = insertMem(repo, 'conf-unsup-conflict'); // never superseded
+            return app.inject({ method: 'POST', url: `/memory/${id}/unsupersede`, headers: auth })
+              .then(res => ({ res, id }));
+          },
+          badBody: null, // unsupersede takes no body -> no malformed-body case
+          unauthorized: () => {
+            const id = insertMem(repo, 'conf-unsup-unauth');
+            return app.inject({ method: 'POST', url: `/memory/${id}/unsupersede` });
+          },
+        };
     }
   }
 
-  const verbs = ['invalidate', 'supersede', 'promote', 'restore'] as const;
+  const verbs = ['invalidate', 'supersede', 'promote', 'restore', 'unsupersede'] as const;
 
   it.each(verbs)('%s: nonexistent memory id -> 404 { error: "not found", id }', async (verb) => {
     const res = await getCase(verb).notFound();
