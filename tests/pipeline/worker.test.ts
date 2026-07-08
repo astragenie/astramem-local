@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { JobRepo } from '../../src/pipeline/job-repo.js';
@@ -6,8 +7,13 @@ import { HandlerRegistry } from '../../src/pipeline/registry.js';
 import { startWorker, resolveWorkerConcurrency } from '../../src/pipeline/worker.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { DeterministicError, TransientError } from '../../src/pipeline/errors.js';
+import { distillHandler } from '../../src/pipeline/handlers/distill.js';
+import { MemoryRepo } from '../../src/storage/memories.js';
+import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import type { DB } from '../../src/storage/db.js';
 import type { JobHandler } from '../../src/pipeline/handler.js';
+import type { ExtendedHandlerCtx } from '../../src/pipeline/handler-ctx-ext.js';
+import type { LLMProvider, EmbedProvider, ChatMsg, ChatResult, LLMHealth, EmbedHealth } from '../../src/contracts/index.js';
 
 /** Helper: wait until a condition is true, polling every 20ms, up to maxMs. */
 async function waitFor(pred: () => boolean, maxMs = 2000): Promise<void> {
@@ -385,5 +391,175 @@ describe('Worker concurrency', () => {
     }, 5000);
 
     expect(executionOrder).toEqual(markers);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End-to-end: a real distillHandler run through the worker's retry policy.
+// Exercises the fix where extract.ts's LLM-JSON parse/validation failures
+// are TransientError (retried up to MAX_ATTEMPTS with backoff) instead of
+// poisoning the job on the first flaky sample.
+// ---------------------------------------------------------------------------
+describe('Worker + distillHandler (parse-failure retry policy)', () => {
+  let db: DB;
+  let repo: JobRepo;
+  let registry: HandlerRegistry;
+  let ctx: ExtendedHandlerCtx;
+  let stopWorker: (() => void | Promise<void>) | null = null;
+
+  function insertSession(id: string): void {
+    db.prepare(`
+      INSERT INTO sessions (id, repo, project, branch, agent, started_at)
+      VALUES (?, NULL, NULL, NULL, NULL, ?)
+    `).run(id, Date.now());
+  }
+
+  function insertTranscript(id: string, sessionId: string): void {
+    const turns = [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ];
+    db.prepare(`
+      INSERT INTO transcripts (id, session_id, source, content, ingested_at, captured_at)
+      VALUES (?, ?, 'claude-code-pre_compact', ?, ?, NULL)
+    `).run(id, sessionId, JSON.stringify(turns), Date.now());
+  }
+
+  function makeCompactionLLM(): LLMProvider {
+    return {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(messages: ChatMsg[]): Promise<ChatResult> {
+        const userContent = messages.find(m => m.role === 'user')?.content ?? '';
+        return { text: userContent, usage: { in: 10, out: 10, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+  }
+
+  /**
+   * Extraction provider that returns unparseable text for the first `badCalls`
+   * calls, then a valid single-atom response forever after — reproduces a
+   * stochastic bad JSON sample that self-heals on the very next LLM call.
+   */
+  function makeFlakyExtractionLLM(badCalls: number): { provider: LLMProvider; callCount: () => number } {
+    let calls = 0;
+    const provider: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        calls++;
+        if (calls <= badCalls) {
+          return { text: 'not valid json, sorry!', usage: { in: 10, out: 10, usd: 0 } };
+        }
+        return {
+          text: JSON.stringify({
+            atoms: [{ type: 'decision', text: 'use sqlite-vec for v1 vector storage', importance: 0.9, confidence: 0.9 }],
+          }),
+          usage: { in: 10, out: 10, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+    return { provider, callCount: () => calls };
+  }
+
+  function makeMockEmbed(): EmbedProvider {
+    return {
+      name: 'ollama' as const,
+      model: 'test-embed',
+      dim: 1024 as const,
+      async embed(texts: string[]): Promise<Float32Array[]> {
+        return texts.map((_, i) => {
+          const v = new Float32Array(1024);
+          for (let j = 0; j < 1024; j++) v[j] = Math.sin(i + j * 0.01);
+          return v;
+        });
+      },
+      async health(): Promise<EmbedHealth> { return { ok: true, model: 'test-embed', dim: 1024 }; },
+    };
+  }
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new JobRepo(db);
+    registry = new HandlerRegistry();
+    registry.register(distillHandler);
+  });
+
+  afterEach(async () => {
+    await stopWorker?.();
+    stopWorker = null;
+  });
+
+  it('retries a distill job through a transient extraction parse failure and lands memories without poisoning', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    insertSession(sessionId);
+    insertTranscript(transcriptId, sessionId);
+
+    const { provider: extractionLLM, callCount } = makeFlakyExtractionLLM(1); // fails once, then succeeds
+    ctx = {
+      db,
+      config: defaultConfig(),
+      providers: { llm: { compaction: makeCompactionLLM(), extraction: extractionLLM }, embed: makeMockEmbed() },
+      memoryRepo: new MemoryRepo(db),
+      vecStore: new SqliteVecStore(db),
+    };
+
+    const id = repo.enqueue('distill', { transcript_id: transcriptId, session_id: sessionId });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig(), ctx });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id) as { state: string } | undefined;
+      return job?.state === 'completed' || job?.state === 'poison';
+    }, 10_000);
+
+    const job = db.prepare('SELECT state, attempts FROM jobs WHERE id = ?').get(id) as {
+      state: string; attempts: number;
+    };
+    expect(job.state).toBe('completed');
+    expect(job.attempts).toBe(1); // one transient failure, then success
+    expect(callCount()).toBeGreaterThanOrEqual(2); // bad sample, then a good one
+
+    const memories = db.prepare('SELECT id, text FROM memories').all() as { id: string; text: string }[];
+    expect(memories.length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('poisons a distill job after exhausting retries on a persistently bad extraction response (no memories created)', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    insertSession(sessionId);
+    insertTranscript(transcriptId, sessionId);
+
+    const { provider: extractionLLM, callCount } = makeFlakyExtractionLLM(Number.MAX_SAFE_INTEGER); // always bad
+    ctx = {
+      db,
+      config: defaultConfig(),
+      providers: { llm: { compaction: makeCompactionLLM(), extraction: extractionLLM }, embed: makeMockEmbed() },
+      memoryRepo: new MemoryRepo(db),
+      vecStore: new SqliteVecStore(db),
+    };
+
+    const id = repo.enqueue('distill', { transcript_id: transcriptId, session_id: sessionId });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig(), ctx });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id) as { state: string } | undefined;
+      return job?.state === 'poison';
+    }, 15_000);
+
+    const job = db.prepare('SELECT state, attempts FROM jobs WHERE id = ?').get(id) as {
+      state: string; attempts: number;
+    };
+    expect(job.state).toBe('poison');
+    expect(job.attempts).toBe(3); // MAX_ATTEMPTS transient retries exhausted
+    expect(callCount()).toBe(3);
+
+    const memories = db.prepare('SELECT id FROM memories').all();
+    expect(memories).toHaveLength(0);
   });
 });

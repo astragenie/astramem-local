@@ -2,10 +2,15 @@
  * Typed pipeline errors for failure classification.
  *
  * Throw TransientError for recoverable conditions (network failures, rate limits,
- * server-side 5xx) where retrying has a meaningful chance of success.
+ * server-side 5xx) where retrying has a meaningful chance of success. This also
+ * covers LLM JSON-output parse/validation failures (see 05-extract.ts) — LLM
+ * output is stochastic, so one malformed response is not proof the next call
+ * will fail too; those get retried up to the normal attempt cap before the
+ * job is poisoned.
  *
- * Throw DeterministicError for conditions that will not self-heal (bad schema,
- * parse failure, 4xx auth/validation) where retrying wastes LLM budget.
+ * Throw DeterministicError for conditions that will not self-heal (malformed
+ * request/job payload, missing required input, unsupported job kind, 4xx auth)
+ * where retrying wastes LLM budget.
  */
 
 export class TransientError extends Error {

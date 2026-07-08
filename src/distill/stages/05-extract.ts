@@ -2,8 +2,11 @@
  * Stage 5 — Extract (LLM JSON-mode per chunk)
  *
  * Emits typed atoms {type, text, importance, confidence, evidence}.
- * Zod-validates the JSON response. Retries once with a stricter prompt
- * on parse failure. Throws BudgetExceeded if over cap.
+ * Zod-validates the JSON response. A parse/validation failure throws
+ * TransientError — LLM JSON output is stochastic, so the worker retries
+ * (with backoff, up to its normal attempt cap) before poisoning the job,
+ * rather than dropping a whole session's memories on one bad sample.
+ * Throws BudgetExceeded if over cap.
  */
 
 import { z } from 'zod';
@@ -14,7 +17,7 @@ import {
   type Atom,
 } from '../prompts/extract.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
-import { DeterministicError } from '../../pipeline/errors.js';
+import { TransientError } from '../../pipeline/errors.js';
 
 /**
  * Lenient wrapper: accepts any objects in the atoms array so that individual
@@ -36,10 +39,16 @@ export interface ExtractResult {
 /**
  * Extract atoms from a single compacted chunk.
  *
- * Parse / Zod validation failure → throws DeterministicError immediately.
- * The worker catches this, poisons the job after a single attempt, and does not
- * issue a second LLM call. This prevents burning budget on a malformed transcript
- * that will never produce valid JSON regardless of how many times we retry.
+ * Parse / Zod validation failure → throws TransientError. The worker
+ * classifies this as transient and retries (with backoff) up to its normal
+ * attempt cap before poisoning the job — LLM JSON output is stochastic (the
+ * same chunk can parse cleanly on the very next call), so a single flaky
+ * sample must not permanently drop a session's memories.
+ *
+ * Follow-up (not yet wired): EXTRACTION_STRICT_PROMPT already exists as a
+ * stricter variant, but no attempt number is threaded from the worker's
+ * retry count down into this function, so retries currently reuse the base
+ * prompt rather than escalating to it.
  */
 export async function extractChunk(
   chunkIndex: number,
@@ -65,8 +74,10 @@ export async function extractChunk(
     return { chunkIndex, atoms: parsed, usageUsd: result.usageUsd, retried: false };
   }
 
-  // Parse / schema failure — deterministic. Let the worker decide retry policy.
-  throw new DeterministicError(
+  // Parse / schema failure — LLM JSON output is stochastic, so treat it as
+  // transient and let the worker retry (up to its attempt cap) instead of
+  // poisoning on a single bad sample.
+  throw new TransientError(
     `[extract] chunk ${chunkIndex}: Zod/JSON parse failed — raw: ${result.text.slice(0, 200)}`,
   );
 }
@@ -99,7 +110,8 @@ async function callExtract(
  * are silently dropped via AtomSchema filtering).
  *
  * Returns null only when the raw text is not parseable JSON or is missing the
- * top-level `atoms` key — this is the signal for a DeterministicError.
+ * top-level `atoms` key — this is the signal for a TransientError (see
+ * extractChunk above).
  */
 function tryParseAtoms(raw: string): Atom[] | null {
   try {

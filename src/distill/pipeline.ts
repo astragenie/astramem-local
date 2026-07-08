@@ -6,7 +6,8 @@
  * 2. normalize   — deterministic
  * 3. chunk       — deterministic
  * 4. compact     — LLM call (budget-gated)
- * 5. extract     — LLM call, JSON-mode (budget-gated, Zod-validated, retry once)
+ * 5. extract     — LLM call, JSON-mode (budget-gated, Zod-validated; parse
+ *                   failures are transient and retried by the worker)
  * 6. reduce      — deterministic
  * 7. memory-normalize — deterministic
  * 8. embed + index    — provider call + DB writes
@@ -99,7 +100,9 @@ export async function runPipeline(
     throw err;
   }
 
-  // Stage 5: Extract (LLM JSON-mode, budget-gated, retry on parse fail)
+  // Stage 5: Extract (LLM JSON-mode, budget-gated; parse failures throw
+  // TransientError, so a job-level retry re-runs this stage rather than
+  // poisoning on one bad sample — see 05-extract.ts)
   pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length }, 'stage start');
   let extractResults;
   try {
