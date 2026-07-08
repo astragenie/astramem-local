@@ -2,6 +2,12 @@
   "version": "1",
   "tools": [
     {
+      "name": "agent_profile",
+      "owner": "local",
+      "description": "Read-time synthesized per-agent profile: top lessons (ranked by the ADR-010 usefulness signal, then importance), recent decisions, prior corrections (invalidated/superseded memories), and per-type counts.",
+      "status": "stable"
+    },
+    {
       "name": "count_memories",
       "owner": "cloud",
       "description": "Count active memories in workspace.",

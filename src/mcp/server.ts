@@ -7,13 +7,14 @@
  * list below is a human-readable summary kept in sync by that test, not a
  * second SoT.
  *
- * Exposes 16 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 17 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert
  *   - get_health         — daemon health probe
  *   - why_memory         — provenance receipt (evidence, session, transcript ref)
  *   - session_digest     — per-session "what I learned" summary (derived at read time)
+ *   - agent_profile      — per-agent "what has this agent learned" summary (derived at read time)
  *   - invalidate_memory  — lifecycle: mark a memory invalid (ADR-002 memory_events log)
  *   - supersede_memory   — lifecycle: replace one memory with another
  *   - promote_memory     — lifecycle: upward-only scope promotion (ADR-009)
@@ -55,6 +56,7 @@ import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../c
 import { assignStructuredFilterValues } from '../contracts/filter-registry.js';
 import { contentHash } from '../storage/content-hash.js';
 import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
+import { buildAgentProfile } from '../server/queries/agent-profile.js';
 import {
   ProposalRepo,
   ProposalNotFoundError,
@@ -463,6 +465,31 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       }
       const digest = buildSessionDigest(db, sessionId);
       return { content: [{ type: 'text' as const, text: JSON.stringify(digest) }] };
+    }
+  );
+
+  // ---- agent_profile ---------------------------------------------------------
+  server.registerTool(
+    'agent_profile',
+    {
+      description:
+        'Read-time synthesized per-agent profile — "what has this agent learned": top lessons ' +
+        '(ranked by the ADR-010 usefulness signal, then importance), recent decisions, prior ' +
+        'corrections (memories this agent wrote that were later invalidated/superseded), and ' +
+        'per-type memory counts. Every entry carries a memory id that composes with why_memory.',
+      inputSchema: z.object({
+        agent: z.string().min(1).describe('Agent value to look up (memories.agent)'),
+      }),
+    },
+    async (args) => {
+      const profile = buildAgentProfile(db, args.agent);
+      if (!profile) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', agent: args.agent }) }],
+          isError: true,
+        };
+      }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(profile) }] };
     }
   );
 
