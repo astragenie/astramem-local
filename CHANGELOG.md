@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.9.0] — 2026-07-08
+
+Package renamed to `astramem-local` on npm (was `@astragenie/astramemory-local`, deprecated at 0.4.0).
+
+### Added
+- `openai-compatible` LLM provider — BYO key for any `/v1/chat/completions` endpoint (vLLM, Groq, OpenAI).
+- `codex-subscription` LLM provider (EXPERIMENTAL) — extraction on your ChatGPT subscription via the Codex CLI login; live-verified (SSE streaming, token refresh). See docs/providers.md for the ToS/quota warning.
+- `astramem-local mcp install --client claude-code|cursor|claude` — writes the client's MCP config automatically (idempotent, with backup).
+- `astramem-local demo` — 30-second in-memory trial, no Ollama required.
+- Agent profile: `GET /agents/:agent/profile` + `agent_profile` MCP tool — usefulness-ranked lessons, recent decisions, and correction warnings per agent.
+- `pipeline.concurrency` (1–8) — concurrent distill workers (default 1, unchanged behavior).
+- `ASTRA_MEMORY_ISOLATED=1` — test/eval isolation: OS config dir ignored, sync hard-disabled.
+- Init wizard: Ollama installed/pulled on demand only (explicit size + time notices); extraction-model tier picker; BYO-cloud pivot into the full provider set.
+- Shared contracts: `@astragenie/astramem-contracts/wire` constants module (wire version, pattern, protocols).
+- LICENSE (MIT), SECURITY.md, CONTRIBUTING.md.
+
+### Fixed
+- `as_of` bitemporal filtering now keyed on the envelope's `captured_at`, not ingest wall-clock time — backfilled/re-ingested content dates correctly.
+- Session digest reports `status: partial` + `poison_jobs` when a distill job permanently failed (was silently `ready`).
+- Azure OpenAI provider works with reasoning models (gpt-5*/o-series): sends `max_completion_tokens`, omits `temperature`.
+- `wire_version` minor-version regex now byte-matches the SaaS backend (rejects `v1.01`).
+- Wizard no longer attempts `ollama pull` of non-Ollama model names in mixed-provider setups.
+
+---
+
 ## [0.8.1] — 2026-07-06
 
 ### Added
