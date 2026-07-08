@@ -1,11 +1,11 @@
 ---
 id: FEAT-438
-status: in-progress
+status: done
 priority: P0
 category: platform
 target_release: null
 created: 2026-07-07
-updated: 2026-07-07
+updated: 2026-07-08
 depends_on: []
 slices: [SLICE-416, SLICE-417, SLICE-418]
 derived_from: ops-incident-2026-07-07-stale-dist-outage

@@ -1,0 +1,30 @@
+{
+  "session_id": "96f61c34-ad65-43b2-aedc-32b1a1f7731c",
+  "first_seen": "2026-07-08T15:10:56.007Z",
+  "last_seen": "2026-07-08T15:11:14.621Z",
+  "total_bytes": 0,
+  "entries": {
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\loop\\backlog\\in-progress\\FEAT-438.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-08T15:10:56.007Z",
+      "last_read_at": "2026-07-08T15:10:56.007Z",
+      "mtime_at_last_read": "2026-07-08T15:10:55.835Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-08T15:10:56.007Z",
+      "mtime_at_last_edit": "2026-07-08T15:10:55.835Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\state\\crew\\workflow-state.json": {
+      "read_count": 1,
+      "first_read_at": "2026-07-08T15:11:06.679Z",
+      "last_read_at": "2026-07-08T15:11:06.679Z",
+      "mtime_at_last_read": "2026-07-08T14:02:18.244Z",
+      "size_at_last_read": 1170,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-08T15:11:14.621Z",
+      "mtime_at_last_edit": "2026-07-08T15:11:14.479Z"
+    }
+  }
+}
