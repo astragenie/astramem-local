@@ -76,36 +76,6 @@ jobs:
           done
           bun run build
 
-      # issue #93: on some self-hosted runners the node-gyp compile of the
-      # native better-sqlite3-multiple-ciphers addon is skipped or silently
-      # fails during `bun install` (stale/incomplete toolchain state on that
-      # runner), leaving no `.node` binary present. Left unchecked this
-      # surfaces steps later as an opaque "Could not locate the bindings
-      # file" error from inside the roundtrip smoke test. Verify the addon
-      # loads right after install; if it doesn't, force a rebuild and
-      # re-verify, so a genuine toolchain gap fails here with a clear message
-      # instead of a confusing downstream test error.
-      - name: Verify native addon (better-sqlite3-multiple-ciphers)
-        working-directory: daemon
-        env:
-          NODE_ENV: development
-        run: |
-          set -e
-          if node -e "require('better-sqlite3-multiple-ciphers')" 2>addon-check.log; then
-            echo "native addon present and loadable"
-          else
-            echo "native addon missing/broken on this runner — forcing rebuild:"
-            cat addon-check.log
-            npm rebuild better-sqlite3-multiple-ciphers --build-from-source || bun install --force
-            if node -e "require('better-sqlite3-multiple-ciphers')"; then
-              echo "native addon rebuilt successfully"
-            else
-              echo "::error::better-sqlite3-multiple-ciphers could not be built on this runner after a forced rebuild — this is a real toolchain gap (check python3/make/g++ on this runner image), not a flake."
-              exit 1
-            fi
-          fi
-          rm -f addon-check.log
-
       # Self-hosted runner may inherit NODE_ENV=production from prior jobs,
       # which makes bun install skip devDependencies (vitest) — force dev deps.
       # Same ETXTBSY/cache-race retry guard as the daemon install above.
@@ -127,36 +97,65 @@ jobs:
             sleep 5
           done
 
-      # issue #93 / devops#75: better-sqlite3-multiple-ciphers is a bun-workspace
-      # dependency HOISTED to the repo-root node_modules
-      # (astramem-local/node_modules/...), which is where `test:smoke` resolves
-      # it from — NOT plugin/ or daemon/. `bun install` produces no node-ABI
-      # native build, and the plugin `bun install` above re-materialises the
-      # hoisted package, wiping any .node the earlier daemon rebuild produced.
-      # So `test:smoke` (vitest under node ABI v127) intermittently fails "Could
-      # not locate the bindings file", passing only when a prior job left the
-      # root addon compiled on the self-hosted runner. Rebuild the ROOT addon
-      # here — after the last bun install, before the smoke test — so the ABI is
-      # satisfied deterministically. Runs at the repo root (no working-directory).
-      - name: Rebuild root SQLCipher addon for the smoke test's node ABI
+      # devops#75: fetch a PREBUILT better-sqlite3-multiple-ciphers binary for the
+      # node ABI the smoke actually runs under (node v22 -> ABI v127) instead of
+      # compiling it on the runner.
+      #
+      # Why: the addon is a bun-workspace dependency hoisted to the repo-root
+      # node_modules, which is where the spawned daemon (and test:smoke) resolves
+      # it from. `bun install` skips the package's `install` script
+      # (`prebuild-install || node-gyp rebuild`), so no .node is produced, and the
+      # plugin `bun install` above re-materialises the hoisted package. #127
+      # patched this with an on-runner `npm rebuild`, but the node-gyp compile
+      # RACES across the 5 co-located self-hosted runners (shared ~/.bun store +
+      # hoist re-materialisation, cf. #69/#93) and its load-guard was a TOCTOU: a
+      # stale .node that passed the guard could be wiped by a concurrent job
+      # before test:smoke ran. A prebuilt removes the compile entirely ->
+      # deterministic on every runner, no toolchain dependency, no race.
+      #
+      # Must run under NODE (ABI v127) -- bun reports ABI v137 and would fetch the
+      # wrong binary. A node-v127-linux-x64 prebuilt is published for 12.11.1
+      # (github.com/m4heshd/better-sqlite3-multiple-ciphers releases). Runs AFTER
+      # the plugin install, and resolves the package location via node so it
+      # targets whichever node_modules the addon is actually hoisted to.
+      #
+      # Supply-chain hardening: rather than let `prebuild-install` pull an
+      # unverified binary, download the exact release asset and check it against a
+      # PINNED sha256 before extracting. The three coordinates below (package
+      # version, node ABI, platform) and the SHA move together — if the lockfile
+      # bumps the package, or the runner's node ABI changes, the download's hash
+      # will not match and this step fails LOUDLY, forcing an intentional re-pin
+      # (recompute: curl -fsSL "$URL" | sha256sum). Do not "fix" a hash mismatch
+      # by relaxing the check -- verify the new asset first.
+      - name: Fetch + verify prebuilt SQLCipher addon for the smoke's node ABI
         env:
           NODE_ENV: development
+          PKG_VERSION: '12.11.1'
+          NODE_ABI: 'v127'
+          PLATFORM: 'linux-x64'
+          SHA256: '46a4933d6962aa75cee61657b99931dd23cc040fc81094a3ec33b3b09328cdea'
         run: |
-          set -e
-          if node -e "require('better-sqlite3-multiple-ciphers')" 2>addon-check.log; then
-            echo "root native addon present and loadable"
-          else
-            echo "root native addon missing/broken on this runner — forcing rebuild:"
-            cat addon-check.log
-            npm rebuild better-sqlite3-multiple-ciphers --build-from-source || bun install --force
-            if node -e "require('better-sqlite3-multiple-ciphers')"; then
-              echo "root native addon rebuilt successfully"
-            else
-              echo "::error::better-sqlite3-multiple-ciphers could not be built on this runner after a forced rebuild — a real toolchain gap (check python3/make/g++ on this runner image), not a flake."
-              exit 1
-            fi
+          set -euo pipefail
+          # Fail early if the runner's actual node ABI drifts from the pinned one.
+          actual_abi="v$(node -e 'process.stdout.write(process.versions.modules)')"
+          if [ "$actual_abi" != "$NODE_ABI" ]; then
+            echo "::error::runner node ABI is $actual_abi but this step is pinned to $NODE_ABI — bump NODE_ABI + SHA256 together for the matching prebuilt."
+            exit 1
           fi
-          rm -f addon-check.log
+          pkg_dir="$(node -e "process.stdout.write(require('path').dirname(require.resolve('better-sqlite3-multiple-ciphers/package.json')))")"
+          echo "cipher package resolves to: $pkg_dir"
+          asset="better-sqlite3-multiple-ciphers-v${PKG_VERSION}-node-${NODE_ABI}-${PLATFORM}.tar.gz"
+          url="https://github.com/m4heshd/better-sqlite3-multiple-ciphers/releases/download/v${PKG_VERSION}/${asset}"
+          tmp="$(mktemp)"
+          echo "downloading $url"
+          curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$tmp"
+          echo "${SHA256}  ${tmp}" | sha256sum -c -
+          # Prebuilt tarball layout is build/Release/better_sqlite3.node — extract
+          # straight into the resolved package dir (no node-gyp, no compile race).
+          tar -xzf "$tmp" -C "$pkg_dir"
+          rm -f "$tmp"
+          # Verify under node -- the runtime the spawned daemon actually uses.
+          node -e "require('better-sqlite3-multiple-ciphers'); console.log('verified prebuilt addon loads under node ABI', process.versions.modules)"
 
       # AC-1/AC-2: ASTRAMEM_LOCAL_DIST_PATH must be the daemon REPO ROOT
       # (containing dist/cli/index.js after build), not the dist/ dir itself —

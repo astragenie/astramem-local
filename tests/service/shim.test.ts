@@ -99,6 +99,92 @@ describe('service shim', () => {
   });
 });
 
+describe('service shim — cross-platform (FEAT-443 SLICE-1)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-shim-xplat-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('shimPaths defaults to a data-adjacent bin dir (no more LOCALAPPDATA-only base)', () => {
+    // Base dir override still works (test seam) — the bin dir is now just
+    // "<base>/bin", not "<base>/Astramem/bin": on win32 that segment is
+    // already baked into defaultDataDir(), so production paths are
+    // byte-identical, but a raw override no longer double-applies it.
+    const paths = shimPaths(dir);
+    expect(paths.binDir).toBe(join(dir, 'bin'));
+  });
+
+  it('win32: cmdPath is astramemd.cmd (unchanged)', () => {
+    const paths = shimPaths(dir, 'win32');
+    expect(paths.cmdPath.endsWith('astramemd.cmd')).toBe(true);
+  });
+
+  it('linux: cmdPath is astramemd.sh, and writeShim emits a POSIX shell wrapper', () => {
+    const paths = shimPaths(dir, 'linux');
+    expect(paths.cmdPath.endsWith('astramemd.sh')).toBe(true);
+
+    writeShim({ nodeBin: '/usr/bin/node', entryJs: '/opt/astramem/dist/cli/index.js', port: 7777 }, paths);
+    expect(existsSync(paths.cmdPath)).toBe(true);
+    const cmd = readFileSync(paths.cmdPath, 'utf8');
+    expect(cmd.startsWith('#!/bin/sh\n')).toBe(true);
+    expect(cmd).toContain('exec "/usr/bin/node"');
+    expect(cmd).toContain(paths.launcherPath);
+    // Must NOT contain the Windows batch preamble.
+    expect(cmd).not.toContain('@echo off');
+
+    const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
+    expect(ptr).toEqual({ nodeBin: '/usr/bin/node', entryJs: '/opt/astramem/dist/cli/index.js', port: 7777 });
+  });
+
+  it('darwin: cmdPath is astramemd.sh, and writeShim emits the same POSIX shell wrapper as linux', () => {
+    const paths = shimPaths(dir, 'darwin');
+    expect(paths.cmdPath.endsWith('astramemd.sh')).toBe(true);
+
+    writeShim({ nodeBin: '/usr/local/bin/node', entryJs: '/opt/astramem/dist/cli/index.js', port: 8888 }, paths);
+    const cmd = readFileSync(paths.cmdPath, 'utf8');
+    expect(cmd.startsWith('#!/bin/sh\n')).toBe(true);
+    expect(cmd).toContain('exec "/usr/local/bin/node"');
+    expect(cmd).not.toContain('@echo off');
+  });
+
+  it('posix shim launcher execs the pointed-at entry with serve --port (same launch.cjs as win32)', () => {
+    const paths = shimPaths(dir, 'linux');
+    const fakeEntry = join(dir, 'fake-entry.cjs');
+    const fs = require('node:fs') as typeof import('node:fs');
+    fs.writeFileSync(fakeEntry, 'console.log(JSON.stringify(process.argv.slice(2)));');
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 5151 }, paths);
+    // Exercised via node directly (spawning the .sh wrapper itself requires a
+    // POSIX shell not guaranteed present on every CI host) — this still
+    // proves launch.cjs, the piece writeShim actually varies per platform
+    // around, behaves identically regardless of which wrapper called it.
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(0);
+    expect(JSON.parse(res.stdout.trim())).toEqual(['serve', '--port', '5151']);
+  });
+
+  it('writeShim overwriting a win32 pointer with a posix one at the same binDir replaces cmdPath cleanly', () => {
+    // Simulates re-running writeShim with paths built for a different
+    // platformOverride against the same base dir — not a real-world upgrade
+    // path (a host's platform doesn't change), but confirms writeShim's
+    // format decision is entirely driven by the paths it's given, not stale
+    // state.
+    const winPaths = shimPaths(dir, 'win32');
+    writeShim({ nodeBin: 'node', entryJs: 'a.js', port: 1 }, winPaths);
+    expect(existsSync(winPaths.cmdPath)).toBe(true);
+
+    const posixPaths = shimPaths(dir, 'linux');
+    writeShim({ nodeBin: 'node', entryJs: 'b.js', port: 2 }, posixPaths);
+    expect(existsSync(posixPaths.cmdPath)).toBe(true);
+    const cmd = readFileSync(posixPaths.cmdPath, 'utf8');
+    expect(cmd.startsWith('#!/bin/sh\n')).toBe(true);
+  });
+});
+
 describe('task XML', () => {
   it('encodes the settings that make the task survive (PT0S, PT5M, IgnoreNew, StartWhenAvailable)', () => {
     const xml = buildTaskXml({ command: 'C:\\bin\\astramemd.cmd', userId: 'HOST\\serge' });

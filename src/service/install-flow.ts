@@ -2,11 +2,15 @@
  * install-flow.ts — the ONE service-install code path (D4).
  *
  * Used by `service install`, `init`, and `reinstall` so there is exactly one
- * implementation of: resolve the current build → (Windows) write the stable
- * shim → register with the OS scheduler.
+ * implementation of: resolve the current build → write the stable shim →
+ * register with the OS scheduler.
  *
- * On Windows the scheduler is pointed at the STABLE shim path, never at the
- * build directly — upgrades only rewrite the shim pointer (see shim.ts).
+ * On ALL platforms (FEAT-443 SLICE-1 — previously Windows-only) the
+ * scheduler is pointed at the STABLE shim path, never at the build directly
+ * — upgrades only rewrite the shim pointer (see shim.ts). The unit/plist
+ * (systemd/launchd) or scheduled task (schtasks) is written exactly once, at
+ * first install; a subsequent `reinstall` repoints `current.json` and never
+ * re-registers with the scheduler.
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -36,7 +40,7 @@ export interface InstallFlowOutcome {
   result: InstallResult;
   adapter: ServiceAdapter;
   build: ResolvedBuild;
-  /** What the scheduler actually points at (shim on Windows). */
+  /** What the scheduler actually points at — the stable shim, on every platform. */
   taskExecPath: string;
 }
 
@@ -70,18 +74,20 @@ export async function installServiceFlow(port: number, opts: InstallFlowOptions 
     );
   }
 
-  let taskExecPath: string;
-  if (adapter.platform === 'win32') {
-    // Service logs rotate under the data dir (see logger.ts ASTRA_LOG_DIR).
-    const { dataDir } = resolveRuntimeConfig({ port });
-    const logDir = join(dataDir, 'logs');
-    const paths = writeShim({ nodeBin: build.nodeBin, entryJs: build.entryJs, port, logDir }, shimPaths());
-    console.log(`  · shim written: ${paths.cmdPath}`);
-    console.log(`  · pointer     : ${paths.pointerPath} → ${build.entryJs}`);
-    taskExecPath = `"${paths.cmdPath}"`;
-  } else {
-    taskExecPath = build.rawExecPath;
-  }
+  // Service logs rotate under the data dir (see logger.ts ASTRA_LOG_DIR).
+  const { dataDir } = resolveRuntimeConfig({ port });
+  const logDir = join(dataDir, 'logs');
+  // Shim format (batch vs. POSIX shell) is driven by the adapter we already
+  // resolved, not a second independent platform() probe inside shimPaths() —
+  // one source of truth for "which platform is this install for", and it
+  // makes the shim format trivially test-mockable via getServiceAdapter().
+  const paths = writeShim({ nodeBin: build.nodeBin, entryJs: build.entryJs, port, logDir }, shimPaths(undefined, adapter.platform));
+  console.log(`  · shim written: ${paths.cmdPath}`);
+  console.log(`  · pointer     : ${paths.pointerPath} → ${build.entryJs}`);
+  // Quoted on every platform: matches the pre-existing Windows convention and
+  // is what LaunchdAdapter's arg-tokenizer (`/"([^"]+)"|(\S+)/g`) expects; a
+  // quoted single path is also valid systemd ExecStart= syntax.
+  const taskExecPath = `"${paths.cmdPath}"`;
 
   const result = await adapter.install(taskExecPath, port);
   return { result, adapter, build, taskExecPath };
