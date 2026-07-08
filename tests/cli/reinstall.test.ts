@@ -6,19 +6,27 @@
  * itself healthy. Every failure branch that can occur after that repoint
  * (install-service throw, start-service throw, health-check timeout, a
  * served-version mismatch, and a /version fetch throw) MUST restore the
- * prior pointer — otherwise the PT5M keepalive restarts against a broken
- * pointer forever (the exact silent-daemon-down outage class this command
- * exists to close).
+ * prior pointer — otherwise the keepalive/restart policy restarts against a
+ * broken pointer forever (the exact silent-daemon-down outage class this
+ * command exists to close).
  *
  * `reinstallCommand` itself is not practically unit-testable in isolation
- * (it drives real installServiceFlow/schtasks, real fetch, real process
- * exit) — per the review's own note, the fix is to extract the one piece
- * that IS the restore *decision*: `restorePriorPointer(priorPointer,
- * pointerPath, platform)`. Every failure branch in reinstallCommand now
- * calls this exact function (see src/cli/reinstall.ts), so exhaustively
- * testing its behavior here covers the restore outcome for all five
- * failure branches — they differ only in *which* trigger fired, never in
- * what "restore" means once triggered.
+ * (it drives real installServiceFlow/the OS scheduler, real fetch, real
+ * process exit) — per the review's own note, the fix is to extract the one
+ * piece that IS the restore *decision*: `restorePriorPointer(priorPointer,
+ * pointerPath)`. Every failure branch in reinstallCommand now calls this
+ * exact function (see src/cli/reinstall.ts), so exhaustively testing its
+ * behavior here covers the restore outcome for all five failure branches —
+ * they differ only in *which* trigger fired, never in what "restore" means
+ * once triggered.
+ *
+ * FEAT-443 SLICE-1: `restorePriorPointer` used to early-return on non-win32
+ * (current.json indirection was Windows-only). It is now cross-platform —
+ * the function no longer takes a `platform` parameter at all, and restores
+ * identically regardless of host OS. The win32-labeled scenarios below are
+ * unchanged in behavior/messages (byte-identical); the former
+ * "non-Windows platform: no-op" test is replaced with linux/darwin restore
+ * scenarios that now mirror the win32 ones.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
@@ -39,7 +47,7 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('version-mismatch scenario: a valid prior pointer is restored on win32', () => {
+  it('version-mismatch scenario: a valid prior pointer is restored (win32-shaped paths)', () => {
     const paths = shimPaths(dir);
     const prior: ShimPointer = { nodeBin: 'node', entryJs: 'C:\\releases\\1.0.0+abc\\dist\\cli\\index.js', port: 7777 };
     writePointer(prior, paths.pointerPath);
@@ -47,7 +55,7 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
     // (unproven) release before the version check ran.
     writePointer({ nodeBin: 'node', entryJs: 'C:\\releases\\2.0.0+def\\dist\\cli\\index.js', port: 7777 }, paths.pointerPath);
 
-    const detail = restorePriorPointer(prior, paths.pointerPath, 'win32');
+    const detail = restorePriorPointer(prior, paths.pointerPath);
 
     expect(detail).toContain('prior pointer restored');
     expect(detail).toContain(prior.entryJs);
@@ -61,7 +69,7 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
     writePointer(prior, paths.pointerPath);
     writePointer({ nodeBin: 'node', entryJs: 'new-entry.js', port: 1 }, paths.pointerPath);
 
-    const detail = restorePriorPointer(prior, paths.pointerPath, 'win32');
+    const detail = restorePriorPointer(prior, paths.pointerPath);
 
     expect(detail).toContain('prior pointer restored → old-entry.js');
     const restored = JSON.parse(readFileSync(paths.pointerPath, 'utf8')) as ShimPointer;
@@ -74,7 +82,7 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
     writePointer(prior, paths.pointerPath);
     writePointer({ nodeBin: 'node', entryJs: 'unverified.js', port: 2 }, paths.pointerPath);
 
-    const detail = restorePriorPointer(prior, paths.pointerPath, 'win32');
+    const detail = restorePriorPointer(prior, paths.pointerPath);
 
     expect(detail).toContain('prior pointer restored → known-good.js');
     const restored = JSON.parse(readFileSync(paths.pointerPath, 'utf8')) as ShimPointer;
@@ -87,38 +95,51 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
     writePointer(prior, paths.pointerPath);
     writePointer({ nodeBin: 'node', entryJs: 'never-answered.js', port: 3 }, paths.pointerPath);
 
-    const detail = restorePriorPointer(prior, paths.pointerPath, 'win32');
+    const detail = restorePriorPointer(prior, paths.pointerPath);
 
     expect(detail).toContain('prior pointer restored → last-healthy.js');
     const restored = JSON.parse(readFileSync(paths.pointerPath, 'utf8')) as ShimPointer;
     expect(restored.entryJs).toBe('last-healthy.js');
   });
 
-  it('no-prior-pointer (first install) scenario on win32: no-ops cleanly and reports honestly', () => {
+  it('no-prior-pointer (first install) scenario: no-ops cleanly and reports honestly', () => {
     const paths = shimPaths(dir);
     // Nothing was ever written — pointerPath does not exist.
     expect(existsSync(paths.pointerPath)).toBe(false);
 
-    const detail = restorePriorPointer(null, paths.pointerPath, 'win32');
+    const detail = restorePriorPointer(null, paths.pointerPath);
 
     expect(detail).toBe('no prior pointer to restore (first install or unreadable current.json)');
     // Must not have fabricated a pointer file as a side effect.
     expect(existsSync(paths.pointerPath)).toBe(false);
   });
 
-  it('non-Windows platform: message does not claim a restore was attempted (review MEDIUM accuracy fix)', () => {
+  it('linux-shaped paths: prior pointer is restored identically to the win32 scenarios (FEAT-443 SLICE-1)', () => {
     const paths = shimPaths(dir);
-    const prior: ShimPointer = { nodeBin: 'node', entryJs: '/opt/astramem/dist/cli/index.js', port: 7777 };
+    const prior: ShimPointer = { nodeBin: '/usr/bin/node', entryJs: '/home/user/.local/share/astra-memory/releases/1.0.0+abc/dist/cli/index.js', port: 7777 };
+    writePointer(prior, paths.pointerPath);
+    writePointer({ nodeBin: '/usr/bin/node', entryJs: '/home/user/.local/share/astra-memory/releases/2.0.0+def/dist/cli/index.js', port: 7777 }, paths.pointerPath);
 
-    // Even if a caller somehow had a non-null priorPointer, non-win32 must
-    // not claim to have restored anything — there is no pointer indirection
-    // on that platform to begin with.
-    const detail = restorePriorPointer(prior, paths.pointerPath, 'linux');
+    const detail = restorePriorPointer(prior, paths.pointerPath);
 
-    expect(detail).toBe('no rollback pointer on this platform (current.json indirection is Windows-only)');
-    expect(detail).not.toContain('restored');
-    // Confirms it is a true no-op: no file was written.
-    expect(existsSync(paths.pointerPath)).toBe(false);
+    expect(detail).toContain('prior pointer restored');
+    expect(detail).toContain(prior.entryJs);
+    const restored = JSON.parse(readFileSync(paths.pointerPath, 'utf8')) as ShimPointer;
+    expect(restored).toEqual(prior);
+  });
+
+  it('darwin-shaped paths: prior pointer is restored identically to the win32 scenarios (FEAT-443 SLICE-1)', () => {
+    const paths = shimPaths(dir);
+    const prior: ShimPointer = { nodeBin: '/usr/local/bin/node', entryJs: '/Users/jane/Library/Application Support/astra-memory/releases/1.0.0+abc/dist/cli/index.js', port: 7777 };
+    writePointer(prior, paths.pointerPath);
+    writePointer({ nodeBin: '/usr/local/bin/node', entryJs: '/Users/jane/Library/Application Support/astra-memory/releases/2.0.0+def/dist/cli/index.js', port: 7777 }, paths.pointerPath);
+
+    const detail = restorePriorPointer(prior, paths.pointerPath);
+
+    expect(detail).toContain('prior pointer restored');
+    expect(detail).toContain(prior.entryJs);
+    const restored = JSON.parse(readFileSync(paths.pointerPath, 'utf8')) as ShimPointer;
+    expect(restored).toEqual(prior);
   });
 
   it('restore-failure path: a writePointer error is surfaced, not swallowed', () => {
@@ -131,7 +152,7 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
     writeFileSync(blockerFile, 'not a directory', 'utf8');
     const unwritablePointerPath = join(blockerFile, 'nested', 'current.json');
 
-    const detail = restorePriorPointer(prior, unwritablePointerPath, 'win32');
+    const detail = restorePriorPointer(prior, unwritablePointerPath);
 
     expect(detail).toContain('restore FAILED');
     expect(detail).toContain('fix manually');
