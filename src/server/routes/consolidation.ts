@@ -13,6 +13,7 @@
 import { z } from 'zod';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { DB } from '../../storage/db.js';
+import type { Config } from '../../config/config.js';
 import { runConsolidation } from '../../consolidate/consolidate.js';
 import {
   ProposalRepo,
@@ -34,7 +35,7 @@ const ListQuerySchema = z.object({
   status: z.enum(['pending', 'accepted', 'rejected']).optional(),
 });
 
-export function consolidationRoutes(db: DB) {
+export function consolidationRoutes(db: DB, config: Config) {
   return async (app: FastifyInstance) => {
     const proposals = new ProposalRepo(db);
 
@@ -46,6 +47,9 @@ export function consolidationRoutes(db: DB) {
       return runConsolidation(db, {
         mergeThreshold: parsed.data.merge_threshold,
         proposeThreshold: parsed.data.propose_threshold,
+        // FEAT-442: on-demand runs pick up the configured auto-accept
+        // threshold too (default null = OFF), same as the scheduled job.
+        autoAcceptThreshold: config.consolidation.autoAcceptThreshold,
       });
     });
 

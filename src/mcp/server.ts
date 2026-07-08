@@ -25,6 +25,13 @@
  *   - erase_memory       — erasure v1 (ADR-006): hard-delete + tombstone
  *   - list_consolidation_proposals / resolve_consolidation_proposal — stage-9 propose-only queue (ADR-004)
  *
+ * FEAT-442 (autonomous consolidation auto-accept + reversal primitive) ships
+ * REST-only this slice: `POST /memory/:id/unsupersede`
+ * (src/server/routes/lifecycle.ts). No MCP tool is added here — this
+ * manifest is a parity-CI-gated SoT (see header above), so a new tool name
+ * is a bigger-than-trivial change; mirroring `unsupersede` to MCP is a
+ * follow-up, not dropped scope.
+ *
  * No HTTP self-calls: all tools call the internal service layer directly.
  * Auth is enforced at the Fastify route level via the existing preHandler.
  */

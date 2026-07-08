@@ -137,6 +137,12 @@ export function configToYaml(cfg: Config): string {
     line(0, 'pipeline'),
     line(1, 'concurrency', cfg.pipeline.concurrency),
     '',
+    // Autonomous consolidation auto-accept (FEAT-442) — null (default) is
+    // OFF, byte-identical to pre-FEAT-442 propose/accept. See
+    // Config['consolidation'] doc comment before setting a value.
+    line(0, 'consolidation'),
+    line(1, 'autoAcceptThreshold', cfg.consolidation.autoAcceptThreshold),
+    '',
   ];
   return lines.join('\n');
 }

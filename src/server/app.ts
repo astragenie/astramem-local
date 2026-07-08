@@ -163,7 +163,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(dashboardSearchRoute(opts.db, embed, opts.token));
   await app.register(dashboardApiRoute(opts.token));
   await app.register(memoryToolRoute(opts.db, config));
-  await app.register(consolidationRoutes(opts.db));
+  await app.register(consolidationRoutes(opts.db, config));
   await app.register(entitiesRoute(opts.db));
   await app.register(syncStatusRoute(opts.db, config));
 

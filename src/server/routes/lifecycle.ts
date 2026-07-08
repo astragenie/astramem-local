@@ -4,6 +4,7 @@
  *   POST /memory/:id/supersede  { new_id }  -> 200 { ok: true } | 400 | 401 | 404 | 409
  *   POST /memory/:id/promote    { scope }   -> 200 { ok: true } | 400 | 401 | 404 | 409
  *   POST /memory/:id/restore                -> 200 { ok: true } | 401 | 404 | 409   (FEAT-416, un-archive)
+ *   POST /memory/:id/unsupersede             -> 200 { ok: true } | 401 | 404 | 409   (FEAT-442, un-supersede)
  *   GET  /memory/:id/history                -> { id, history: MemoryEvent[] } | 401 | 404
  *   POST /memory/:id/used                   -> 200 { ok: true } | 401 | 404
  *   DELETE /memory/:id                      -> 200 { ok: true } | 401 | 404   (erasure v1, ADR-006 W5)
@@ -16,6 +17,11 @@
  * (src/storage/archival.ts) or by a manual `archive` event — mirrors
  * `invalidate`'s 404/409 semantics exactly (MemoryEventRepo.restore() already
  * throws MemoryNotFoundError/MemoryConflictError for the same two cases).
+ * `unsupersede` (FEAT-442 reversal primitive) is the analogous un-do for
+ * `supersede` — most commonly used to reverse an autonomous-consolidation
+ * auto-accept, but works for any supersede (manual or auto). Un-hides the
+ * LOSER; the winner is untouched (see MemoryEventRepo.unsupersede()'s doc
+ * comment for exact semantics). Same 404/409 mapping.
  *
  * Error-class -> status mapping is centralized in `mapLifecycleError` below
  * (FEAT-435 conformance): MemoryNotFoundError always -> 404, and both
@@ -135,6 +141,20 @@ export function lifecycleRoutes(db: DB) {
       const { id } = req.params as { id: string };
       try {
         events.restore(id);
+        return { ok: true };
+      } catch (err) {
+        return mapLifecycleError(err, id, reply);
+      }
+    });
+
+    // FEAT-442 reversal primitive: un-hide a memory previously superseded
+    // (manual accept, containment auto-merge, or autonomous-consolidation
+    // auto-accept). The winner is untouched — see
+    // MemoryEventRepo.unsupersede()'s doc comment for exact semantics.
+    app.post('/memory/:id/unsupersede', async (req, reply) => {
+      const { id } = req.params as { id: string };
+      try {
+        events.unsupersede(id);
         return { ok: true };
       } catch (err) {
         return mapLifecycleError(err, id, reply);

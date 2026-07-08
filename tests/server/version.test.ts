@@ -50,9 +50,9 @@ describe('GET /version', () => {
     expect(res.json().contract_schema_version).toBe('1');
   });
 
-  it('schema_version is 20', async () => {
+  it('schema_version is 21', async () => {
     const res = await app.inject({ method: 'GET', url: '/version' });
-    expect(res.json().schema_version).toBe(20);
+    expect(res.json().schema_version).toBe(21);
   });
 
   it('ts is a number', async () => {
@@ -90,7 +90,7 @@ describe('GET /health (wire metadata)', () => {
       new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
-    expect(body.schema_version).toBe(20);
+    expect(body.schema_version).toBe(21);
   });
 
   it('includes security.redaction — true by default', async () => {

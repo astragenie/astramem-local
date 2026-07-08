@@ -63,6 +63,21 @@ describe('configToYaml', () => {
     expect(yaml).toContain('extraction:');
     expect(yaml).toMatch(/model: ['"]?qwen2\.5:7b['"]?/);
   });
+
+  // FEAT-442: autonomous consolidation auto-accept — default null (OFF) round-trips.
+  it('emits consolidation.autoAcceptThreshold: null by default', () => {
+    const cfg = defaultConfig();
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain('consolidation:');
+    expect(yaml).toContain('autoAcceptThreshold: null');
+  });
+
+  it('emits a configured consolidation.autoAcceptThreshold value', () => {
+    const cfg = defaultConfig();
+    cfg.consolidation.autoAcceptThreshold = 0.9;
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain('autoAcceptThreshold: 0.9');
+  });
 });
 
 describe('writeConfig', () => {

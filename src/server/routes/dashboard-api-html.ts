@@ -66,6 +66,7 @@ const ENDPOINTS: Endpoint[] = [
   { method: 'POST', path: '/memory/:id/promote', auth: true, desc: 'Promote memory importance' },
   { method: 'POST', path: '/memory/:id/invalidate', auth: true, desc: 'Invalidate (soft-close validity interval)' },
   { method: 'POST', path: '/memory/:id/supersede', auth: true, desc: 'Supersede with a corrected memory', example: '{"text":"corrected fact"}' },
+  { method: 'POST', path: '/memory/:id/unsupersede', auth: true, desc: 'Reverse a supersede — un-hides the loser (FEAT-442); the merge winner is untouched' },
   { method: 'DELETE', path: '/memory/:id', auth: true, desc: 'Erase a memory' },
   { method: 'POST', path: '/consolidation/run', auth: true, desc: 'Run consolidation pass now (optional merge_threshold, propose_threshold)', example: '{}' },
   { method: 'POST', path: '/consolidation/proposals/:id/accept', auth: true, desc: 'Accept a merge proposal' },

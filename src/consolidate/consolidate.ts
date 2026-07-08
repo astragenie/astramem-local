@@ -9,7 +9,15 @@
  *    loser's id — bitemporal history keeps the original readable forever.
  *  - proposeThreshold <= similarity < mergeThreshold → propose-only row in
  *    consolidation_proposals; the user confirms via REST. Nothing changes
- *    until they do (strategy Pass 6 A4).
+ *    until they do (strategy Pass 6 A4) — UNLESS `autoAcceptThreshold`
+ *    (FEAT-442, `consolidation.autoAcceptThreshold` config, default null =
+ *    OFF) is set and similarity clears that bar too, in which case the
+ *    proposal is created then immediately accepted via the same code path a
+ *    human accept uses, with an `auto_accepted` provenance marker on the
+ *    resulting supersede event. Reversible via
+ *    `MemoryEventRepo.unsupersede()` / `POST /memory/:id/unsupersede` — see
+ *    that method's doc comment for exact semantics (un-hides the loser; the
+ *    winner is untouched).
  *
  * v1 is deterministic: similarity is cosine over the stored embeddings, no
  * LLM call. The second-order abstraction + contradiction detection passes
@@ -21,7 +29,7 @@
 
 import { randomUUID } from 'node:crypto';
 import type { DB } from '../storage/db.js';
-import { MemoryEventRepo } from '../storage/memory-events.js';
+import { MemoryEventRepo, type SupersedeProvenance } from '../storage/memory-events.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
 
@@ -42,6 +50,28 @@ export interface ConsolidateOpts {
    * in the winner's. Default true.
    */
   autoMergeContained?: boolean;
+  /**
+   * FEAT-442 autonomous consolidation: cosine similarity at/above which a
+   * propose-tier pair (proposeThreshold <= similarity < mergeThreshold) is
+   * accepted immediately — via the exact same path a human accept uses
+   * (ProposalRepo.accept, i.e. proposal row created THEN resolved, so the
+   * audit trail is identical to a manual accept plus a provenance marker)
+   * — instead of sitting in the manual queue. Reversible via
+   * `MemoryEventRepo.unsupersede()`.
+   *
+   * Must satisfy `proposeThreshold <= autoAcceptThreshold <= 1`; an
+   * out-of-range value disables auto-accept for THIS run only (logged via
+   * `log`, never fatal — matches this config layer's "never block a run on
+   * a bad value" pattern, e.g. `applyFusionGovernance`).
+   *
+   * Default `null`/`undefined` = OFF. With no value set, behavior is
+   * byte-identical to pre-FEAT-442 propose/accept: every propose-tier pair
+   * becomes (and stays) a pending `consolidation_proposals` row until a
+   * human resolves it.
+   */
+  autoAcceptThreshold?: number | null;
+  /** Injectable logger seam for tests; defaults to `console.warn`. */
+  log?: (message: string) => void;
 }
 
 export interface ConsolidateSummary {
@@ -53,6 +83,16 @@ export interface ConsolidateSummary {
   autoAcceptedProposals: string[];
   /** Pending proposal ids auto-rejected as stale (an atom no longer valid). */
   staleRejectedProposals: string[];
+  /**
+   * FEAT-442: propose-tier pairs accepted immediately this run because
+   * their similarity met `autoAcceptThreshold` — distinct from `merged`
+   * (mergeThreshold/containment auto-merges, which never create a proposal
+   * row at all) and from `proposed` (still pending). Each entry's
+   * `proposalId` is the now-`accepted` `consolidation_proposals` row —
+   * findable via `GET /consolidation/proposals?status=accepted` — and
+   * reversible via `POST /memory/:id/unsupersede` on `loser`.
+   */
+  autoAccepted: Array<{ winner: string; loser: string; similarity: number; proposalId: string }>;
 }
 
 interface AtomRow {
@@ -112,11 +152,18 @@ export function cosine(a: Float32Array, b: Float32Array): number {
  * Merge-as-supersede: loser superseded by winner (event log + valid_to +
  * memory_corrected usefulness signal, all via MemoryEventRepo.supersede),
  * plus lineage — winner.derived_from gains the loser id. One transaction.
+ *
+ * `provenance` (FEAT-442) is forwarded to `MemoryEventRepo.supersede()`
+ * untouched — see that method and {@link SupersedeProvenance}. Omitted by
+ * every pre-existing caller (containment auto-merge, human
+ * `ProposalRepo.accept`), so their payload shape is unchanged.
  */
-export function mergeAsSupersede(db: DB, winnerId: string, loserId: string): void {
+export function mergeAsSupersede(
+  db: DB, winnerId: string, loserId: string, provenance?: SupersedeProvenance,
+): void {
   const events = new MemoryEventRepo(db);
   const tx = db.transaction(() => {
-    events.supersede(loserId, winnerId);
+    events.supersede(loserId, winnerId, provenance);
     const row = db.prepare('SELECT derived_from FROM memories WHERE id = ?')
       .get(winnerId) as { derived_from: string | null };
     const lineage = row.derived_from ? (JSON.parse(row.derived_from) as string[]) : [];
@@ -186,6 +233,28 @@ function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: s
   return { accepted, staleRejected };
 }
 
+/**
+ * FEAT-442: resolve+validate the configured autoAcceptThreshold against the
+ * proposeThreshold in effect for THIS run. Never fatal — an out-of-range
+ * value disables auto-accept for the run (logged) rather than throwing, so
+ * a bad config value can't block a scheduled consolidation pass.
+ */
+function resolveAutoAcceptThreshold(
+  raw: number | null | undefined,
+  proposeThreshold: number,
+  log: (message: string) => void,
+): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (raw < proposeThreshold || raw > 1) {
+    log(
+      `[consolidate] autoAcceptThreshold=${raw} is invalid (must be >= proposeThreshold=` +
+      `${proposeThreshold} and <= 1) — auto-accept disabled for this run.`,
+    );
+    return null;
+  }
+  return raw;
+}
+
 export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): ConsolidateSummary {
   // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
   // reliably same-fact paraphrases, while 0.90–0.92 still contains
@@ -195,10 +264,12 @@ export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Consolidat
   const proposeThreshold = opts.proposeThreshold ?? 0.85;
   const maxGroupSize = opts.maxGroupSize ?? 500;
   const autoMergeContained = opts.autoMergeContained ?? true;
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const autoAcceptThreshold = resolveAutoAcceptThreshold(opts.autoAcceptThreshold, proposeThreshold, log);
 
   const summary: ConsolidateSummary = {
     groupsScanned: 0, groupsSkipped: [], merged: [], proposed: [],
-    autoAcceptedProposals: [], staleRejectedProposals: [],
+    autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
   };
 
   if (autoMergeContained) {
@@ -227,6 +298,7 @@ export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Consolidat
   const getEmbedding = db.prepare('SELECT embedding FROM memories_vec WHERE rowid = ?');
   const usefulness = usefulnessScores(db, atoms.map(a => a.id));
   const invalidatedThisRun = new Set<string>();
+  const proposalRepo = new ProposalRepo(db);
 
   for (const group of groups.values()) {
     if (group.length < 2) continue;
@@ -286,6 +358,7 @@ export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Consolidat
           invalidatedThisRun.add(loser.id);
           summary.merged.push({ winner: winner.id, loser: loser.id, similarity: sim });
         } else {
+          const proposalId = randomUUID();
           const inserted = db.prepare(`
             INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at)
             SELECT ?, 'merge', ?, ?, ?, 'pending', ?
@@ -296,11 +369,21 @@ export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Consolidat
                 AND MAX(winner_id, loser_id) = MAX(?, ?)
             )
           `).run(
-            randomUUID(), winner.id, loser.id, sim, Date.now(),
+            proposalId, winner.id, loser.id, sim, Date.now(),
             winner.id, loser.id, winner.id, loser.id,
           );
           if (inserted.changes > 0) {
-            summary.proposed.push({ winner: winner.id, loser: loser.id, similarity: sim });
+            // FEAT-442: proposal-tier pair that clears the auto-accept bar —
+            // resolve it the same instant via the human-accept code path
+            // (proposal row created THEN accepted, same audit trail as a
+            // manual accept) instead of leaving it pending.
+            if (autoAcceptThreshold !== null && sim >= autoAcceptThreshold) {
+              proposalRepo.accept(proposalId, { autoAccepted: true, threshold: autoAcceptThreshold, similarity: sim });
+              invalidatedThisRun.add(loser.id);
+              summary.autoAccepted.push({ winner: winner.id, loser: loser.id, similarity: sim, proposalId });
+            } else {
+              summary.proposed.push({ winner: winner.id, loser: loser.id, similarity: sim });
+            }
           }
         }
       }

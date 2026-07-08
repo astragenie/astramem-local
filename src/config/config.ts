@@ -201,6 +201,25 @@ export interface Config {
   pipeline: {
     concurrency: number;
   };
+  /** Autonomous consolidation auto-accept (FEAT-442). `null` (default) is
+   * OFF — the current propose/accept human-gate behavior in
+   * `src/consolidate/consolidate.ts` is byte-identical to pre-FEAT-442 when
+   * unset. When set, a propose-tier pair (proposeThreshold <= similarity <
+   * mergeThreshold) whose similarity is ALSO >= this value is accepted
+   * immediately via the same code path a human accept uses
+   * (`ProposalRepo.accept`), with an `auto_accepted` provenance marker on
+   * the resulting `supersede` event so the merge stays auditable — findable
+   * via `GET /consolidation/proposals?status=accepted` — and reversible via
+   * `MemoryEventRepo.unsupersede()` / `POST /memory/:id/unsupersede`.
+   *
+   * Must be >= the `proposeThreshold` in effect for a given run and <= 1;
+   * an out-of-range value is treated as unset for that run (logged,
+   * non-fatal — matches the "never block a run on a bad config value"
+   * governance pattern this repo already uses for search weights, see
+   * `applyFusionGovernance`). */
+  consolidation: {
+    autoAcceptThreshold: number | null;
+  };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
    *  with `enabled: false` (default), `estimateLlmJudgedJunk()`
@@ -251,6 +270,7 @@ export function defaultConfig(): Config {
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
     ingestIdempotency: { retentionDays: 7 },
     pipeline: { concurrency: 1 },
+    consolidation: { autoAcceptThreshold: null },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } }
   };
 }

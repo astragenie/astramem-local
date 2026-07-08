@@ -268,6 +268,107 @@ describe('containment auto-merge (FEAT-410 follow-up)', () => {
   });
 });
 
+describe('runConsolidation autoAcceptThreshold (FEAT-442)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('default (unset) is byte-identical to pre-FEAT-442 behavior — still just a pending proposal', async () => {
+    const a = await seedEmbedded(db, 'deploys run at midnight', 'h-aa-1', vecAt(0));
+    const b = await seedEmbedded(db, 'deploys run nightly', 'h-aa-2', vecAt(0, 0.45));
+
+    const summary = runConsolidation(db);
+    expect(summary.merged).toHaveLength(0);
+    expect(summary.proposed).toHaveLength(1);
+    expect(summary.autoAccepted).toHaveLength(0);
+    void a; void b;
+  });
+
+  it('similarity >= autoAcceptThreshold accepts immediately via the human-accept path, with provenance', async () => {
+    const a = await seedEmbedded(db, 'deploys run at midnight', 'h-aa-3', vecAt(0));
+    const b = await seedEmbedded(db, 'deploys run nightly', 'h-aa-4', vecAt(0, 0.45));
+
+    const summary = runConsolidation(db, { autoAcceptThreshold: 0.85 }); // <= proposeThreshold default (0.85)
+    expect(summary.proposed).toHaveLength(0);
+    expect(summary.merged).toHaveLength(0); // not a mergeThreshold/containment merge
+    expect(summary.autoAccepted).toHaveLength(1);
+    const entry = summary.autoAccepted[0]!;
+    expect([entry.winner, entry.loser].sort()).toEqual([a, b].sort());
+
+    const proposal = new ProposalRepo(db).get(entry.proposalId)!;
+    expect(proposal.status).toBe('accepted');
+
+    const loser = new MemoryRepo(db).get(entry.loser)!;
+    expect(loser.superseded_by).toBe(entry.winner);
+    expect(loser.valid_to).not.toBeNull();
+
+    const supersedeEvent = new MemoryEventRepo(db).listForAtom(entry.loser)
+      .find(e => e.event_type === 'supersede')!;
+    const payload = JSON.parse(supersedeEvent.payload_json ?? '{}');
+    expect(payload).toMatchObject({ auto_accepted: true, threshold: 0.85, similarity: entry.similarity });
+  });
+
+  it('similarity below autoAcceptThreshold is unaffected — still a pending proposal', async () => {
+    const a = await seedEmbedded(db, 'deploys run at midnight', 'h-aa-5', vecAt(0));
+    const b = await seedEmbedded(db, 'deploys run nightly', 'h-aa-6', vecAt(0, 0.45));
+
+    const summary = runConsolidation(db, { autoAcceptThreshold: 0.95 });
+    expect(summary.autoAccepted).toHaveLength(0);
+    expect(summary.proposed).toHaveLength(1);
+    expect(new MemoryRepo(db).get(a)!.valid_to).toBeNull();
+    expect(new MemoryRepo(db).get(b)!.valid_to).toBeNull();
+  });
+
+  it('autoAcceptThreshold below proposeThreshold is invalid — disabled for the run (logged, non-fatal)', async () => {
+    const a = await seedEmbedded(db, 'deploys run at midnight', 'h-aa-7', vecAt(0));
+    const b = await seedEmbedded(db, 'deploys run nightly', 'h-aa-8', vecAt(0, 0.45));
+    const logs: string[] = [];
+
+    const summary = runConsolidation(db, { autoAcceptThreshold: 0.5, log: (m) => logs.push(m) });
+    expect(summary.autoAccepted).toHaveLength(0);
+    expect(summary.proposed).toHaveLength(1);
+    expect(logs.some(m => m.includes('autoAcceptThreshold'))).toBe(true);
+    void a; void b;
+  });
+
+  it('autoAcceptThreshold > 1 is invalid — disabled for the run (logged, non-fatal)', async () => {
+    const a = await seedEmbedded(db, 'deploys run at midnight', 'h-aa-9', vecAt(0));
+    const b = await seedEmbedded(db, 'deploys run nightly', 'h-aa-10', vecAt(0, 0.45));
+    const logs: string[] = [];
+
+    const summary = runConsolidation(db, { autoAcceptThreshold: 1.5, log: (m) => logs.push(m) });
+    expect(summary.autoAccepted).toHaveLength(0);
+    expect(summary.proposed).toHaveLength(1);
+    expect(logs.length).toBeGreaterThan(0);
+    void a; void b;
+  });
+
+  it('reversal round-trip: unsupersede after an auto-accept restores the loser; proposal stays accepted', async () => {
+    const a = await seedEmbedded(db, 'deploys run at midnight', 'h-aa-11', vecAt(0));
+    const b = await seedEmbedded(db, 'deploys run nightly', 'h-aa-12', vecAt(0, 0.45));
+
+    const summary = runConsolidation(db, { autoAcceptThreshold: 0.85 });
+    const entry = summary.autoAccepted[0]!;
+
+    const events = new MemoryEventRepo(db);
+    events.unsupersede(entry.loser, 'threshold was miscalibrated');
+
+    const mems = new MemoryRepo(db);
+    expect(mems.get(entry.loser)!.valid_to).toBeNull();
+    expect(mems.get(entry.loser)!.superseded_by).toBeNull();
+    expect(mems.get(entry.winner)!.valid_to).toBeNull(); // winner untouched — un-hiding, not un-merging
+
+    // The consolidation_proposals audit trail is unaffected by the reversal —
+    // it stays 'accepted' (the proposal WAS accepted; unsupersede reverses
+    // the atom's currency, not the historical proposal record).
+    expect(new ProposalRepo(db).get(entry.proposalId)!.status).toBe('accepted');
+    void a; void b;
+  });
+});
+
 describe('stale-proposal sweep (FEAT-410 follow-up)', () => {
   let db: DB;
 

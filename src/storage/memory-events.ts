@@ -18,7 +18,16 @@ export type MemoryEventType =
   | 'erase_request'
   | 'usefulness'
   | 'archive'
-  | 'restore';
+  | 'restore'
+  /**
+   * FEAT-442 reversal primitive: compensating event for `unsupersede()`,
+   * un-hiding an atom that was previously superseded (via supersede() or
+   * mergeAsSupersede()) — most commonly to reverse an autonomous
+   * consolidation auto-accept, but works for any supersede. Local-only,
+   * like 'archive'/'restore' — see MemoryEventRepo.unsupersede() and
+   * src/sync/shipper.ts's exclusion list for why this never ships.
+   */
+  | 'unsupersede';
 
 export interface MemoryEvent {
   seq: number;
@@ -90,6 +99,35 @@ interface MemoryArchivalRow {
   id: string;
   valid_to: number | null;
   archived: number;
+}
+
+interface MemoryUnsupersedeRow {
+  id: string;
+  valid_to: number | null;
+  superseded_by: string | null;
+  archived: number;
+}
+
+/**
+ * FEAT-442 provenance marker for a `supersede()` caused by autonomous
+ * consolidation auto-accept (similarity >= `consolidation.autoAcceptThreshold`),
+ * as opposed to a human-initiated accept (ProposalRepo.accept with no
+ * provenance) or the containment auto-merge path. Recorded on the
+ * `supersede` event's payload (reuses the existing event type — see the
+ * design-review amendment this satisfies: least-invasive shape that keeps
+ * every existing `event_type` consumer, e.g. history/why/corrections
+ * queries, working unchanged) rather than a distinct event type, so
+ * `unsupersede()`/`memory_history`/`why_memory` can show why a merge
+ * happened without a human in the loop, and an operator can distinguish an
+ * auto-accepted row from a manual one in the consolidation_proposals
+ * listing's history.
+ */
+export interface SupersedeProvenance {
+  autoAccepted: true;
+  /** The `consolidation.autoAcceptThreshold` in effect for the run that made this call. */
+  threshold: number;
+  /** Cosine similarity of the winner/loser pair that triggered auto-accept. */
+  similarity: number;
 }
 
 export class MemoryEventRepo {
@@ -169,8 +207,13 @@ export class MemoryEventRepo {
    * ON DELETE CASCADE — it's explicit here instead. A superseded memory's
    * facts should stop counting as current evidence for an entity even
    * though the row survives for audit.
+   *
+   * `provenance` is optional and additive (FEAT-442): omitted, the payload is
+   * byte-identical to pre-FEAT-442 behavior (`{ superseded_by: newId }`).
+   * Passed, it merges in `auto_accepted: true` + `threshold` + `similarity`
+   * — see {@link SupersedeProvenance}. Reversible via `unsupersede()`.
    */
-  supersede(oldId: string, newId: string): void {
+  supersede(oldId: string, newId: string, provenance?: SupersedeProvenance): void {
     const tx = this.db.transaction(() => {
       const oldRow = this.db
         .prepare('SELECT id, valid_to FROM memories WHERE id = ?')
@@ -199,7 +242,13 @@ export class MemoryEventRepo {
       // FEAT-402 AC-3: zero orphan links — the superseded memory no longer
       // contributes to "everything about entity X".
       this.db.prepare('DELETE FROM memory_entities WHERE memory_id = ?').run(oldId);
-      this.append({ event_type: 'supersede', atom_id: oldId, payload: { superseded_by: newId }, created_at: now });
+      const payload: Record<string, unknown> = { superseded_by: newId };
+      if (provenance) {
+        payload.auto_accepted = true;
+        payload.threshold = provenance.threshold;
+        payload.similarity = provenance.similarity;
+      }
+      this.append({ event_type: 'supersede', atom_id: oldId, payload, created_at: now });
       // ADR-010: negative usefulness signal — same tx as the state change.
       // Payload shape documented in src/storage/usefulness.ts (memory_corrected family).
       this.append({
@@ -273,6 +322,63 @@ export class MemoryEventRepo {
         .prepare('UPDATE memories SET valid_to = NULL, archived = 0, archived_at = NULL, updated_at = ? WHERE id = ?')
         .run(now, atomId);
       this.append({ event_type: 'restore', atom_id: atomId, created_at: now });
+    });
+    tx();
+  }
+
+  /**
+   * Reverse a supersede (FEAT-442 reversal primitive): un-hides a memory
+   * that was superseded — clears `valid_to`/`superseded_by` via a
+   * compensating `unsupersede` event (never a destructive row edit outside
+   * a transaction that also appends the event, matching every other
+   * lifecycle op in this file), restoring it to "current" status.
+   *
+   * Semantics — this is UN-HIDING, not UN-MERGING: it reverses the LOSER's
+   * currency only. The WINNER (and the `derived_from` lineage it gained via
+   * `mergeAsSupersede`) is untouched — the merge relationship stays on
+   * record, and after this call BOTH atoms are simply valid/current again.
+   * Nothing here removes the loser id from the winner's lineage, and
+   * `memory_entities` links deleted by `supersede()`'s AC-3 cleanup are NOT
+   * recomputed (that requires re-running entity extraction, not a
+   * mechanical reversal) — a restored atom's entity links are a known
+   * follow-up gap, not silently pretended-fixed here. If consolidation runs
+   * again, the pair may be re-proposed or re-merged like any other similar
+   * pair; this method does not suppress that.
+   *
+   * Exists primarily to undo an autonomous-consolidation auto-accept
+   * (FEAT-442 `consolidation.autoAcceptThreshold`) that turns out to be a
+   * bad merge, but it works for ANY supersede (manual accept, containment
+   * auto-merge, or auto-accept) — scoped by state, not by cause.
+   *
+   * Throws MemoryNotFoundError if the id doesn't exist. Throws
+   * MemoryConflictError if the memory is archived (archived === 1 — use
+   * `restore()` instead, the two primitives never overlap) or was never
+   * superseded (`superseded_by` is null — e.g. it is currently valid, or it
+   * was invalidated/erased/archived through a different path).
+   */
+  unsupersede(atomId: string, reason?: string): void {
+    const tx = this.db.transaction(() => {
+      const row = this.db
+        .prepare('SELECT id, valid_to, superseded_by, archived FROM memories WHERE id = ?')
+        .get(atomId) as MemoryUnsupersedeRow | undefined;
+      if (!row) throw new MemoryNotFoundError(atomId);
+      if (row.archived === 1) {
+        throw new MemoryConflictError(`memory ${atomId} is archived, not superseded — use restore() instead`);
+      }
+      if (row.superseded_by === null) {
+        throw new MemoryConflictError(`memory ${atomId} was not superseded`);
+      }
+      const previousWinner = row.superseded_by;
+      const now = Date.now();
+      this.db
+        .prepare('UPDATE memories SET valid_to = NULL, superseded_by = NULL, updated_at = ? WHERE id = ?')
+        .run(now, atomId);
+      this.append({
+        event_type: 'unsupersede',
+        atom_id: atomId,
+        payload: { reversed_superseded_by: previousWinner, reason: reason ?? null },
+        created_at: now,
+      });
     });
     tx();
   }
