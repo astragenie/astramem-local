@@ -10,7 +10,8 @@
  *
  * `history` also backs the Wave 2c MCP `memory_history` tool.
  * `used` is the ADR-010 (2e) explicit recall-used signal — REST twin of the
- * MCP `mark_memory_used` tool (src/mcp/server.ts).
+ * MCP `submit_feedback` tool (src/mcp/server.ts; U5 canonical name — the
+ * former `mark_memory_used` is now a one-release deprecated alias).
  * `restore` un-archives a memory previously archived by the W4.4 TTL policy
  * (src/storage/archival.ts) or by a manual `archive` event — mirrors
  * `invalidate`'s 404/409 semantics exactly (MemoryEventRepo.restore() already

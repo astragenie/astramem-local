@@ -13,6 +13,10 @@
  * get_health, against fixture memories seeded directly into the temp datadir
  * before the child spawns (same isolated-sandbox pattern as smoke.test.ts —
  * mock providers, no Ollama, zero-residue teardown).
+ *
+ * Tool count is 16 as of U5 (astragenie/memory#671, astragenie/astramem-local#120):
+ * mark_memory_used was collapsed onto the canonical submit_feedback name,
+ * with mark_memory_used kept as a one-release deprecated alias (same handler).
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -27,7 +31,7 @@ import {
   type IsolatedDaemonEnv,
 } from './helpers/daemon.js';
 
-// Same 15-tool pin as tests/mcp/server.test.ts — the stdio transport must
+// Same 16-tool pin as tests/mcp/server.test.ts — the stdio transport must
 // advertise the identical tool set as the HTTP transport (both are built
 // from the same buildMcpServer()).
 const EXPECTED_TOOL_NAMES = [
@@ -44,6 +48,7 @@ const EXPECTED_TOOL_NAMES = [
   'restore_memory',
   'search_memory',
   'session_digest',
+  'submit_feedback',
   'supersede_memory',
   'why_memory',
 ].sort();

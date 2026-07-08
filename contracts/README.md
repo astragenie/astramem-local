@@ -381,6 +381,33 @@ rename to strictly match `verb_noun` (mirroring `get_health`'s shape) is
 deferred to a coordinated SLICE-B, gated on the cross-repo #671 naming call
 — this manifest is additive-only and renames nothing.
 
+**Naming decision (SLICE-B, U5, astragenie/astramem-local#120)**: the
+cross-repo call landed as follows:
+
+- **`memory_history`** — grandfathered exact-match noun_verb name on both
+  backends (cloud adopted local's name rather than renaming to
+  `get_memory_history` — see the shipped `src/AstraMemory.Mcp/canonical-tool-manifest.json`
+  in the cloud repo). Not renamed here either.
+- **`session_digest`** — also grandfathered, **not** renamed to
+  `get_session_digest`. Unlike `memory_history`, cloud has no MCP tool with
+  this name at all, so there is no cross-repo naming collision forcing a
+  decision — renaming a local-only tool for `verb_noun` purity alone, with
+  no unification benefit, was judged not worth the alias-churn cost. Follows
+  the same grandfather precedent set for `memory_history`.
+- **`mark_memory_used` → `submit_feedback`** — this *is* a real cross-repo
+  collision (two different signal types under two different names: local's
+  ADR-010 implicit "recall was used" vs. cloud's explicit +1/-1 score) and
+  is collapsed onto cloud's `submit_feedback` wire name. `mark_memory_used`
+  is retained as a one-release **deprecated** alias (same handler) rather
+  than a clean break, since D2's "no alias needed" reasoning was written
+  for tools nobody calls yet — `mark_memory_used` predates U5 and may
+  already have callers.
+- This adds the 18 cloud-only tools (`owner: "cloud"`) from the actual
+  shipped cloud manifest, giving 34 total entries (16 `local`/`both` +
+  18 `cloud`). `get_health` stays `owner: "local"` — cloud exposes an
+  equivalent only as a REST `/health` endpoint, not an MCP tool, per the
+  cloud manifest's own notes.
+
 Parity is enforced locally by
 `tests/contracts/mcp-tool-manifest-parity.test.ts`, which builds the real
 `McpServer` (mock deps, no live Ollama/network) and asserts its registered
