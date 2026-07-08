@@ -1,9 +1,6 @@
 # AstraMemory Local
 
-Local-first memory daemon for AI coding agents — wire-compatible with `memory-plugin` (v0.2.0+).
-
-> **v0.2.0 closes the schema gap**  
-> Daemon v0.2.0 now accepts the SaaS-canonical wire envelope: `{event, turns[], wire_version (required), scrub metadata, client_version, captured_at, project_id, cwd}` alongside backward-compatible `{session_id, source, content}`. The daemon and SaaS backend now share a wire contract. See the [astramemory-plugin FEAT 4a spec](https://github.com/astragenie/astramemory-plugin/blob/main/docs/superpowers/specs/2026-06-29-hooks-provider-migration-4a.md) for the unified wire contract and migration timeline.
+Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.8.1.
 
 ## Wire compatibility
 
@@ -52,16 +49,24 @@ the local daemon instead of the SaaS endpoint through a single environment varia
 
 ---
 
-## Quick start (5 commands)
+## Quick start
 
 ```bash
-bun add -g @astragenie/astramemory-local
-astra-memory init
+git clone https://github.com/astragenie/astramemory-local.git
+cd astramemory-local
+bun install
+bun run build
+node dist/cli/index.js init
 # follow the wizard — picks Ollama or Azure, writes config.yaml + secrets.env
-astra-memory service install
+node dist/cli/index.js service install
 export MEMORY_API_URL=http://127.0.0.1:7777
-export MEMORY_BEARER=$(astra-memory token print)
+export MEMORY_BEARER=$(node dist/cli/index.js token print)
 ```
+
+> **First run takes 10-30 minutes if Ollama isn't installed yet.** The wizard's default Ollama
+> tier pulls `qwen2.5-coder:7b` (~4.7 GB) plus `mxbai-embed-large` (~670 MB) — about **5.4 GB**
+> total — with no separate confirmation prompt. Install and start Ollama first
+> (see [docs/providers.md](docs/providers.md)) if you'd rather not wait mid-wizard.
 
 Restart Claude Code. All plugin hooks (PreCompact, SessionEnd, SubagentStop) now post to the
 local daemon. No other plugin changes needed.
@@ -149,12 +154,12 @@ but does not yet produce.
 |-----------------|------------------------------------------|----------------------------------------------|
 | LLM compaction  | qwen2.5-coder:7b (default)              | gpt-4.1 or any deployment                   |
 | LLM extraction  | qwen2.5-coder:7b (default)              | gpt-4.1 or any deployment                   |
-| Embedding       | nomic-embed-text-v2-moe (1024-dim)      | text-embedding-3-small (1024 via dimensions) |
+| Embedding       | mxbai-embed-large (1024-dim)             | text-embedding-3-small (1024 via dimensions) |
 | Cost            | $0 (local inference)                     | ~$0.02/1K tokens + $0.0001/1K embed tokens  |
 | Setup           | `ollama serve` + `ollama pull <model>`   | Azure portal + endpoint + deployment name    |
 
 Providers are configurable independently per stage. Embedding provider is system-wide — switching
-requires `astra-memory rebuild --reembed` to re-index all memories in the new model's vector space.
+requires `astramem-local rebuild --reembed` to re-index all memories in the new model's vector space.
 
 See [docs/providers.md](docs/providers.md) for full setup instructions.
 
@@ -220,7 +225,7 @@ Claude Code discovers and calls the tools below automatically when configured in
 ```
 
 Set `MEMORY_API_URL=http://127.0.0.1:7777` and `MEMORY_BEARER` to your token
-(printed by `astra-memory token print`).
+(printed by `astramem-local token print`).
 
 ---
 
@@ -231,8 +236,8 @@ The daily LLM spend cap (default: **$10 USD**) is enforced before each LLM call.
 - Ollama always reports `$0` cost — the cap only applies to Azure usage.
 - When the cap is reached, pending distillation jobs move to `paused` state. Ingest continues
   to accept transcripts (no data loss). Distillation resumes the next UTC day automatically.
-- Override: `astra-memory budget --reset` (logged).
-- Check current spend: `astra-memory budget`.
+- Override: `astramem-local budget --reset` (logged).
+- Check current spend: `astramem-local budget`.
 
 ---
 
@@ -255,7 +260,7 @@ plaintext file is preserved at `memory.sqlite.pre-encryption.bak` — nothing is
 is idempotent; an already-encrypted file is a no-op.
 
 Disabling encryption (`security.encryption.enabled: false`) is a deliberate trust trade-off — the
-daemon logs a prominent WARN at startup, and `astra-memory doctor` reports
+daemon logs a prominent WARN at startup, and `astramem-local doctor` reports
 `encryption: OFF — memory.sqlite is stored in PLAINTEXT`.
 
 ### Stage-0 secret redaction
@@ -274,7 +279,7 @@ three passes:
 Matches are replaced with a placeholder — `[REDACTED:<type>:<hash8>]`, where `hash8` is the first 8
 hex chars of `SHA-256(secret value)` — so the same secret always redacts to the same placeholder
 (dedup-safe) while the raw value is **never stored or logged**. Only counts are persisted, in the
-`redaction_log` table (`type`, `count`, `session_id`, `created_at`) — `astra-memory doctor` surfaces
+`redaction_log` table (`type`, `count`, `session_id`, `created_at`) — `astramem-local doctor` surfaces
 a 7-day breakdown, e.g. `redaction: on — 12 secrets redacted (3 aws_access_key, 9 generic_credential) in last 7d`.
 Toggle with `security.redaction.enabled` (default `true`).
 
@@ -359,28 +364,28 @@ secret.
 
 | Command                                    | What it does                                       |
 |--------------------------------------------|----------------------------------------------------|
-| `astra-memory init [--no-hook]`            | Interactive wizard — writes config + secrets, runs migrations, installs service, offers the SessionStart memory-pack hook |
-| `astra-memory serve [--port N]`            | Start daemon in foreground (dev/debug)             |
-| `astra-memory service install`             | Register daemon as a user-scope OS service         |
-| `astra-memory service status`              | Show service state                                 |
-| `astra-memory service start`               | Start the service                                  |
-| `astra-memory service stop`                | Stop the service                                   |
-| `astra-memory service uninstall`           | Remove the service unit                            |
-| `astra-memory doctor`                      | Run all health checks, print table                 |
-| `astra-memory doctor --json`               | Machine-readable health check output               |
-| `astra-memory search "<query>"`            | Hybrid search, print results table                 |
-| `astra-memory search "<query>" --type decision` | Filter by memory type                       |
-| `astra-memory recall "<question>"`         | Top-5 semantic recall (alias for search k=5)       |
-| `astra-memory remember "<text>" [--type]`  | Direct insert, bypasses distillation pipeline      |
-| `astra-memory queue`                       | Show pending/failed jobs                           |
-| `astra-memory queue --state failed`        | Show only failed jobs                              |
-| `astra-memory rebuild [--reembed]`         | Rebuild derived indexes; --reembed re-vectors all  |
-| `astra-memory providers list`              | List configured providers and their health         |
-| `astra-memory providers test [name]`       | Ping provider, print latency + dim                 |
-| `astra-memory budget`                      | Show today and month spend vs cap                  |
-| `astra-memory budget --reset`              | Clear today's spend counter (override, logged)     |
-| `astra-memory token print`                 | Print the current Bearer token                     |
-| `astra-memory token rotate`                | Generate new token, invalidate the old one         |
+| `astramem-local init [--no-hook]`            | Interactive wizard — writes config + secrets, runs migrations, installs service, offers the SessionStart memory-pack hook |
+| `astramem-local serve [--port N]`            | Start daemon in foreground (dev/debug)             |
+| `astramem-local service install`             | Register daemon as a user-scope OS service         |
+| `astramem-local service status`              | Show service state                                 |
+| `astramem-local service start`               | Start the service                                  |
+| `astramem-local service stop`                | Stop the service                                   |
+| `astramem-local service uninstall`           | Remove the service unit                            |
+| `astramem-local doctor`                      | Run all health checks, print table                 |
+| `astramem-local doctor --json`               | Machine-readable health check output               |
+| `astramem-local search "<query>"`            | Hybrid search, print results table                 |
+| `astramem-local search "<query>" --type decision` | Filter by memory type                       |
+| `astramem-local recall "<question>"`         | Top-5 semantic recall (alias for search k=5)       |
+| `astramem-local remember "<text>" [--type]`  | Direct insert, bypasses distillation pipeline      |
+| `astramem-local queue`                       | Show pending/failed jobs                           |
+| `astramem-local queue --state failed`        | Show only failed jobs                              |
+| `astramem-local rebuild [--reembed]`         | Rebuild derived indexes; --reembed re-vectors all  |
+| `astramem-local providers list`              | List configured providers and their health         |
+| `astramem-local providers test [name]`       | Ping provider, print latency + dim                 |
+| `astramem-local budget`                      | Show today and month spend vs cap                  |
+| `astramem-local budget --reset`              | Clear today's spend counter (override, logged)     |
+| `astramem-local token print`                 | Print the current Bearer token                     |
+| `astramem-local token rotate`                | Generate new token, invalidate the old one         |
 
 ---
 
@@ -407,25 +412,17 @@ bun run build        # compile TypeScript → dist/
 bun run test         # run the vitest suite
 ```
 
-**Publishing** (maintainers only):
-
-```bash
-bun publish          # publishes to GitHub Packages via .npmrc (same token as npm publish)
-```
-
-> **Why Bun?** Faster installs, a single binary, and `bun publish` works natively with the existing
-> `.npmrc` / GH Packages setup. Tests still run through vitest (`bun run test`) because the vitest
-> suite uses `better-sqlite3` native bindings which are not yet compatible with Bun's own test runner.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for build/test/PR conventions, including the maintainer
+publishing flow.
 
 ---
 
 ## Status
 
-**v0.1.0** — Waves 1-4 of the implementation plan completed.
+**v0.8.1** — local-first memory daemon with 17 migrations, a 15-tool MCP surface, hybrid
+BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
+promote) with full provenance (`why_memory`), consolidation proposals, and local↔SaaS sync
+(shipper/puller/conflict-resolve). CI-gated retrieval eval (ADR-005) runs recall@10 ≥ 0.9 /
+NDCG@10 ≥ 0.7 floors on every push.
 
-- Wave 1: SQLite schema, migration runner, FTS5, sqlite-vec, ingest endpoint, Fastify server, CLI skeleton.
-- Wave 2: Job worker loop, hybrid search, service install adapters, Ollama + Azure providers.
-- Wave 3: 8-stage distillation pipeline, budget tracker, Zod-validated extraction.
-- Wave 4: Install wizard, cross-OS CI matrix, E2E plugin integration test, this documentation.
-
-Spec: [astramemory-plugin/docs/superpowers/specs/2026-06-27-astramemory-local-v1-design.md](../astramemory-plugin/docs/superpowers/specs/2026-06-27-astramemory-local-v1-design.md)
+Companion plugin: [github.com/astragenie/astramem-plugin](https://github.com/astragenie/astramem-plugin)

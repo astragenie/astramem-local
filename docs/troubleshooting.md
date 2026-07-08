@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Common issues and how to fix them. Run `astra-memory doctor` first — it checks most of these
+Common issues and how to fix them. Run `astramem-local doctor` first — it checks most of these
 automatically and prints actionable fix hints.
 
 ---
@@ -57,7 +57,7 @@ Download and install the latest [Microsoft Visual C++ Redistributable](https://l
 **Verify:**
 
 ```bash
-astra-memory doctor
+astramem-local doctor
 # Expected:  ok  FTS5 + sqlite-vec loaded
 ```
 
@@ -68,7 +68,7 @@ astra-memory doctor
 **Symptom:**
 
 ```
-astra-memory providers test ollama
+astramem-local providers test ollama
   FAIL  LLM (ollama / qwen2.5-coder:7b)  error: connect ECONNREFUSED 127.0.0.1:11434
 ```
 
@@ -127,13 +127,13 @@ ollama:
 ```bash
 ollama list    # check what is installed
 ollama pull qwen2.5-coder:7b
-ollama pull nomic-embed-text-v2-moe
+ollama pull mxbai-embed-large
 ```
 
 **Verify:**
 
 ```bash
-astra-memory providers test ollama
+astramem-local providers test ollama
 ```
 
 ---
@@ -143,12 +143,12 @@ astra-memory providers test ollama
 **Symptom:**
 
 ```
-astra-memory queue
+astramem-local queue
   5 jobs in state: paused
 ```
 
 ```
-astra-memory doctor
+astramem-local doctor
   WARN  Budget exceeded ($10.03 of $10.00 today) — distillation paused
 ```
 
@@ -168,7 +168,7 @@ transcripts are queued and will distill automatically tomorrow (UTC midnight res
 
 3. **Override now** (logged):
    ```bash
-   astra-memory budget --reset
+   astramem-local budget --reset
    ```
    This clears today's spend counter. The distillation worker resumes immediately.
 
@@ -183,7 +183,7 @@ transcripts are queued and will distill automatically tomorrow (UTC midnight res
 **Check current spend:**
 
 ```bash
-astra-memory budget
+astramem-local budget
 # Today:  $9.87 / $10.00 (98%)
 # Month:  $47.23
 ```
@@ -195,7 +195,7 @@ astra-memory budget
 **Symptom:**
 
 ```
-astra-memory service status
+astramem-local service status
   STOPPED (service unit not found)
 ```
 
@@ -204,8 +204,8 @@ Or the daemon starts in foreground but is gone after a reboot.
 **Fix 1 — (Re-)install the service:**
 
 ```bash
-astra-memory service install
-astra-memory service status
+astramem-local service install
+astramem-local service status
 ```
 
 **Fix 2 — Linux (systemd): enable the user service to survive logout:**
@@ -224,28 +224,30 @@ launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.astragenie.astra-memoryd
 launchctl print gui/$UID/com.astragenie.astra-memoryd
 ```
 
-If the plist is missing, re-run `astra-memory service install`.
+If the plist is missing, re-run `astramem-local service install`.
 
 **Fix 4 — Windows (Task Scheduler): the task was deleted:**
 
 ```powershell
 schtasks /query /tn "AstraMemoryD"
 # If not found:
-astra-memory service install
+astramem-local service install
 ```
 
-**Fix 5 — Node not found in service PATH:**
+**Fix 5 — Service was installed against the wrong `node` (e.g. after switching Node versions via nvm):**
 
-The service inherits a minimal PATH. If `node` is installed via `nvm` or similar, the service
-may not find it. Fix by setting the full path in the unit:
+The service unit captures the Node binary path (`process.execPath`) that was active when you ran
+`install` — it does not resolve `node` fresh from `PATH` at service-start time. If you've since
+switched Node versions, reinstall from the Node you want the service to use:
 
 ```bash
-# Find the node binary
+# Confirm which node the service should use
 which node
 # /home/user/.nvm/versions/node/v22.0.0/bin/node
 
-# Reinstall, passing the node path
-ASTRA_MEMORY_NODE_PATH=$(which node) astra-memory service install
+# Switch to that version, then reinstall so the unit re-captures it
+nvm use 22
+astramem-local service install
 ```
 
 **Check logs:**
@@ -265,7 +267,7 @@ Get-EventLog -LogName Application -Source AstraMemoryD -Newest 20
 
 ## Daemon is running but plugin hooks are not reaching it
 
-**Symptom:** `astra-memory doctor` shows the daemon reachable, but no new jobs appear after
+**Symptom:** `astramem-local doctor` shows the daemon reachable, but no new jobs appear after
 Claude Code sessions.
 
 **Fix 1 — Check MEMORY_API_URL:**
@@ -287,7 +289,7 @@ echo $MEMORY_BEARER
 If empty, run:
 
 ```bash
-export MEMORY_BEARER=$(astra-memory token print)
+export MEMORY_BEARER=$(astramem-local token print)
 ```
 
 Add this to your shell rc and restart Claude Code.
@@ -296,7 +298,7 @@ Add this to your shell rc and restart Claude Code.
 
 ```bash
 curl -v -X POST http://127.0.0.1:7777/ingest/transcript \
-  -H "Authorization: Bearer $(astra-memory token print)" \
+  -H "Authorization: Bearer $(astramem-local token print)" \
   -H "Content-Type: application/json" \
   -d '{"session_id":"debug-1","source":"PreCompact","content":"test"}'
 ```
@@ -322,7 +324,7 @@ Then trigger a PreCompact. Look for a line like:
 **Symptom:**
 
 ```
-  WARN  Embedding mismatch: stored memories use nomic-embed-text-v1, config uses nomic-embed-text-v2-moe
+  WARN  Embedding mismatch: stored memories use mxbai-embed-large, config uses text-embedding-3-small
         Distillation blocked until rebuild --reembed completes
 ```
 
@@ -333,9 +335,9 @@ distances.
 **Fix:**
 
 ```bash
-astra-memory rebuild --reembed
+astramem-local rebuild --reembed
 # Runs as background job; watch progress:
-astra-memory queue
+astramem-local queue
 ```
 
 Keyword search (FTS5) and existing memories remain readable during reindex. Vector search is
@@ -351,12 +353,12 @@ minutes to hours.
 **Cause:** sqlite-vec ANN search is CPU-bound. Heavy embed batching or large transcript ingests
 can spike.
 
-**Fix 1 — Reduce batch size** (not yet configurable in v0.1.0 — file an issue).
+**Fix 1 — Reduce batch size** (embed/distill batch size is not currently configurable — file an issue).
 
 **Fix 2 — Monitor the queue:**
 
 ```bash
-astra-memory queue
+astramem-local queue
 ```
 
 If there are hundreds of `pending` jobs, the worker is under load. They drain sequentially;
@@ -372,6 +374,6 @@ OLLAMA_GPU_LAYERS=35 ollama serve
 
 ## Getting more help
 
-- Run `astra-memory doctor --json` and include the output in any bug report.
+- Run `astramem-local doctor --json` and include the output in any bug report.
 - Check the daemon log: see "Check logs" above for your OS.
 - File issues at [github.com/astragenie/astramemory-local](https://github.com/astragenie/astramemory-local).
