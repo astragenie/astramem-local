@@ -1,0 +1,15 @@
+{
+  "id": "fx09-nothing-worth-remembering",
+  "title": "Trivial small talk, zero durable content",
+  "difficulty": "nothing",
+  "notes": "Deliberately contains no decisions, facts, lessons, commands, todos, or events. Gold atom set is empty on purpose — this fixture scores an extractor's OVER-EXTRACTION rate: any non-empty output here is a false positive / junk atom.",
+  "turns": [
+    { "role": "user", "text": "hey" },
+    { "role": "assistant", "text": "Hey! What can I help you with today?" },
+    { "role": "user", "text": "just checking if you're there" },
+    { "role": "assistant", "text": "Yep, I'm here and ready whenever you are." },
+    { "role": "user", "text": "cool, thanks, that's all for now" },
+    { "role": "assistant", "text": "Sounds good — ping me anytime." }
+  ],
+  "gold_atoms": []
+}

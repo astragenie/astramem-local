@@ -1,0 +1,28 @@
+{
+  "id": "fx08-long-multitopic",
+  "title": "Three unrelated topics in one long session: auth bug, CI split, dependency check",
+  "difficulty": "long",
+  "notes": "Long session spanning three unrelated topics. Tests whether the extractor keeps atoms correctly attributed per-topic instead of conflating them, and captures the 'no action needed' outcome of topic 3 as a fact rather than inventing an upgrade decision.",
+  "turns": [
+    { "role": "user", "text": "Users report getting logged out randomly after ~15 minutes even with 'remember me' checked." },
+    { "role": "assistant", "text": "Found it — the refresh-token cookie was being set with maxAge in seconds but the cookie library expects milliseconds, so it expired 1000x sooner than intended (15 min instead of ~10 days)." },
+    { "role": "user", "text": "Fix it and add a test." },
+    { "role": "assistant", "text": "Fixed: convert days to ms explicitly with a named constant REFRESH_TOKEN_MAX_AGE_MS. Added a test asserting the Set-Cookie header's max-age attribute matches the expected ~10-day value in seconds (browsers read Set-Cookie max-age in seconds, so the two boundaries need separate unit awareness)." },
+    { "role": "user", "text": "Great, that should stop the complaints. Switching topics — can we split the CI pipeline so lint and test run in parallel instead of sequentially?" },
+    { "role": "assistant", "text": "Yes, I'll split the single 'build' job into 'lint' and 'test' jobs that both depend only on 'install', so they run concurrently. Should cut wall-clock CI time roughly in half since lint alone was ~3 minutes of the ~9 minute pipeline." },
+    { "role": "user", "text": "Do it, and make sure a lint failure doesn't block the test job from running (we want both signals even if one fails)." },
+    { "role": "assistant", "text": "Done — both jobs run independent of each other's outcome; only the final 'gate' job requires both to have passed before allowing merge." },
+    { "role": "user", "text": "One more thing — should we upgrade zod from v3 to v4? I see we're already on v4 in package.json actually." },
+    { "role": "assistant", "text": "Correct, already on zod v4.4.3 per the overrides section. Nothing to do there. I did notice fastify is pinned to ^5.9.0 — v5 is the current major, no upgrade needed either." },
+    { "role": "user", "text": "OK, no action needed on either. Thanks." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "The refresh-token cookie's maxAge was set in seconds while the cookie library expected milliseconds, causing it to expire 1000x sooner than intended (about 15 minutes instead of ~10 days) — the reported random logout bug." },
+    { "type": "decision", "text": "Fix the refresh-token expiry bug by converting days to milliseconds explicitly via a named constant REFRESH_TOKEN_MAX_AGE_MS." },
+    { "type": "note", "text": "Added a test asserting the Set-Cookie max-age attribute (read in seconds by browsers) matches the expected ~10-day value — a reminder that ms vs seconds units must be tracked separately at each boundary." },
+    { "type": "decision", "text": "Split the single CI 'build' job into independent 'lint' and 'test' jobs that both depend only on 'install', so they run concurrently." },
+    { "type": "fact", "text": "Lint alone accounted for roughly 3 minutes of the ~9 minute CI pipeline; splitting lint and test to run in parallel should roughly halve wall-clock CI time." },
+    { "type": "decision", "text": "A lint failure must not block the test job from running — both signals should surface even if one fails; only a final 'gate' job requires both to pass before allowing merge." },
+    { "type": "fact", "text": "zod is already on v4.4.3 (via the overrides section) and fastify is already on the current v5.9.0 — no dependency upgrade needed for either." }
+  ]
+}

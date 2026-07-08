@@ -21,7 +21,11 @@
     "contracts:generate": "node contracts/generate-types.mjs && node contracts/generate-zod.mjs",
     "contracts:validate": "node contracts/validate.mjs",
     "contracts:build": "node contracts/generate-types.mjs && node contracts/generate-zod.mjs && node contracts/validate.mjs",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "bun run build",
+    "eval:longmemeval:sample": "bun scripts/eval/longmemeval/sample.mts",
+    "eval:longmemeval:smoke": "bun scripts/eval/longmemeval/run-smoke.mts",
+    "eval:longmemeval:judge": "bun scripts/eval/longmemeval/judge.mts",
+    "eval:extraction-bench": "bun scripts/eval/extraction-bench/run-bench.mts"
   },
   "engines": {
     "node": ">=20"

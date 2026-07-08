@@ -1,0 +1,20 @@
+{
+  "id": "fx13-entity-rich",
+  "title": "Integration briefing — many named products/orgs/people",
+  "difficulty": "entity-rich",
+  "notes": "Session mentioning many named products, technologies, and people. Not scored on entity extraction directly (out of this bench's scope) but exercises whether atom text stays faithful when many named things are in play.",
+  "turns": [
+    { "role": "user", "text": "Quick summary — who and what is this integration touching? I'm trying to brief the team." },
+    { "role": "assistant", "text": "This integration connects astramemory-local to the astramem-plugin (maintained by the same team) and, for cloud sync, to the memory SaaS backend built on ASP.NET Core and PostgreSQL, hosted on Azure. The wire format is versioned and mirrors what Sergey specified in the FEAT-4a design doc." },
+    { "role": "user", "text": "Any external dependency I should flag to the security team?" },
+    { "role": "assistant", "text": "Two: Ollama (local inference, no data leaves the machine) and, only if the user opts into cloud sync, Azure OpenAI (gpt-5-mini) for the SaaS-side judging/answering path. sqlite-vec is a local library dependency, not an external service, so no data-flow concern there." },
+    { "role": "user", "text": "Good. Last thing — did we ever confirm whether Claude Code's own transcript capture counts as a 'client' under our wire contract?" },
+    { "role": "assistant", "text": "Yes — Claude Code is treated as one of several supported agent clients, alongside Cursor and GitHub Copilot, each identified via the agent field on ingest; no special-casing needed since they all speak the same canonical envelope." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "astramemory-local integrates with the astramem-plugin and, for cloud sync, a memory SaaS backend built on ASP.NET Core and PostgreSQL, hosted on Azure." },
+    { "type": "fact", "text": "External dependencies to flag to security: Ollama (local inference, no data leaves the machine) and, only if cloud sync is opted into, Azure OpenAI (gpt-5-mini) for SaaS-side judging/answering." },
+    { "type": "note", "text": "sqlite-vec is a local library dependency, not an external service, so it carries no data-flow concern." },
+    { "type": "fact", "text": "Claude Code, Cursor, and GitHub Copilot are all treated as supported agent clients, identified via the agent field on ingest, all speaking the same canonical envelope — no special-casing needed." }
+  ]
+}

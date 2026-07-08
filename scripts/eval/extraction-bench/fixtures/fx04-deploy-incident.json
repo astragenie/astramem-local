@@ -1,0 +1,23 @@
+{
+  "id": "fx04-deploy-incident",
+  "title": "Production incident: encryption enabled without keystore provisioning",
+  "difficulty": "clean",
+  "notes": "Incident response session: symptom, root cause, rollback, follow-up fixes.",
+  "turns": [
+    { "role": "user", "text": "Production is throwing 500s on /ingest/transcript since the last deploy 10 minutes ago. Can you check?" },
+    { "role": "assistant", "text": "Checking the logs... the new build enabled security.encryption.enabled: true by default, but the deploy script didn't provision an OS keystore entry on this box, so DB open is failing with a keystore error on every request." },
+    { "role": "user", "text": "Roll it back." },
+    { "role": "assistant", "text": "Rolled back to the previous release tag v0.7.3. 500s stopped within 30 seconds of rollback completing." },
+    { "role": "user", "text": "Once it's stable, what's the actual fix so we can redeploy the new version safely?" },
+    { "role": "assistant", "text": "The deploy script needs a pre-flight step that provisions the keystore entry BEFORE flipping encryption.enabled to true, not after. I'll add that as a required step in the deploy runbook." },
+    { "role": "user", "text": "Do that, and add a doctor check that catches this before it ever reaches prod again." },
+    { "role": "assistant", "text": "Added a doctor check: if security.encryption.enabled is true but no keystore entry exists, doctor now fails loudly instead of the daemon crashing on first real request." }
+  ],
+  "gold_atoms": [
+    { "type": "event", "text": "Production incident: /ingest/transcript started returning 500s about 10 minutes after a deploy that enabled security.encryption.enabled by default without provisioning the OS keystore entry first." },
+    { "type": "lesson", "text": "Flipping encryption.enabled to true before the deploy script provisions the OS keystore entry causes DB-open failures on every request in production." },
+    { "type": "decision", "text": "Rolled back production to release tag v0.7.3 to stop the 500s; 500s stopped within 30 seconds of rollback." },
+    { "type": "decision", "text": "The deploy runbook must provision the keystore entry BEFORE flipping encryption.enabled to true, as a required pre-flight step." },
+    { "type": "decision", "text": "Added a doctor check that fails loudly if encryption.enabled is true but no keystore entry exists, instead of the daemon crashing on first real request." }
+  ]
+}
