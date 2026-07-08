@@ -15,6 +15,10 @@ function makeFixtureCheckout(dir: string, opts: { version?: string; brokenPackag
   const version = opts.version ?? '9.9.9';
   mkdirSync(join(dir, 'dist', 'cli'), { recursive: true });
   mkdirSync(join(dir, 'dist', 'tiny-dep'), { recursive: true });
+  // migrations/ must exist in the checkout: materializeRelease copies it to the
+  // release root because serve boot's migrate() reads <releaseRoot>/migrations.
+  mkdirSync(join(dir, 'migrations'), { recursive: true });
+  writeFileSync(join(dir, 'migrations', '001-init.sql'), 'CREATE TABLE IF NOT EXISTS _fixture (id INTEGER);\n', 'utf8');
 
   const entry =
     opts.versionScript ??
@@ -76,6 +80,9 @@ describe('materializeRelease', () => {
 
     expect(releaseDir).toBe(join(releasesRoot, '9.9.9+nogit'));
     expect(existsSync(join(releaseDir, 'dist', 'cli', 'index.js'))).toBe(true);
+    // migrations/ MUST ship — omitting it crashed serve boot's migrate() and
+    // silently forced dev-pin fallback on every reinstall (regression guard).
+    expect(existsSync(join(releaseDir, 'migrations', '001-init.sql'))).toBe(true);
     expect(existsSync(join(releaseDir, 'package.json'))).toBe(true);
     expect(existsSync(join(releaseDir, 'bun.lock'))).toBe(true);
     expect(existsSync(join(releaseDir, 'node_modules'))).toBe(true);
