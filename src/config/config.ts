@@ -180,6 +180,27 @@ export interface Config {
      * any realistic client retry window — see rationale above. */
     retentionDays: number;
   };
+  /** Distill-job worker pool (FEAT throughput hardening). A single serial
+   * claim-execute loop was the daemon's throughput ceiling under parallel
+   * ingest (measured 45-60s/session serial). `concurrency` controls how many
+   * independent claim-execute lanes `startWorker` (src/pipeline/worker.ts)
+   * runs; every lane shares the same atomic pending→running claim
+   * (`JobRepo.claimPending`), so raising this is safe from double-execution
+   * by construction — see that method's doc comment.
+   *
+   * Default 1 is BYTE-IDENTICAL to pre-concurrency behavior (a single lane
+   * is exactly the old single-loop worker). Clamped to [1, 8] wherever it is
+   * consumed (`resolveWorkerConcurrency` in worker.ts) — never fatal, a bad
+   * config value must not block daemon boot.
+   *
+   * WARNING: concurrency > 1 multiplies local Ollama load (each lane can
+   * have an in-flight LLM/embed call simultaneously) — pair with
+   * `OLLAMA_NUM_PARALLEL` (Ollama server env var) set to at least this value,
+   * or lanes will simply queue behind Ollama's own single-slot default and
+   * you will not see the expected throughput gain. */
+  pipeline: {
+    concurrency: number;
+  };
 }
 
 export function defaultConfig(): Config {
@@ -215,7 +236,8 @@ export function defaultConfig(): Config {
     },
     tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
-    ingestIdempotency: { retentionDays: 7 }
+    ingestIdempotency: { retentionDays: 7 },
+    pipeline: { concurrency: 1 }
   };
 }
 

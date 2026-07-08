@@ -3,7 +3,7 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { JobRepo } from '../../src/pipeline/job-repo.js';
 import { HandlerRegistry } from '../../src/pipeline/registry.js';
-import { startWorker } from '../../src/pipeline/worker.js';
+import { startWorker, resolveWorkerConcurrency } from '../../src/pipeline/worker.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { DeterministicError, TransientError } from '../../src/pipeline/errors.js';
 import type { DB } from '../../src/storage/db.js';
@@ -217,5 +217,173 @@ describe('Worker', () => {
     // Wait 200ms — the handler should NOT be called since worker is stopped
     await new Promise(r => setTimeout(r, 200));
     expect(handlerCallCount).toBe(countBefore);
+  });
+});
+
+describe('resolveWorkerConcurrency', () => {
+  it('defaults to 1 when pipeline.concurrency is 1 (default config)', () => {
+    expect(resolveWorkerConcurrency(defaultConfig())).toBe(1);
+  });
+
+  it('passes through values within [1, 8]', () => {
+    const cfg = { ...defaultConfig(), pipeline: { concurrency: 4 } };
+    expect(resolveWorkerConcurrency(cfg)).toBe(4);
+  });
+
+  it('clamps values above 8 down to 8', () => {
+    const cfg = { ...defaultConfig(), pipeline: { concurrency: 20 } };
+    expect(resolveWorkerConcurrency(cfg)).toBe(8);
+  });
+
+  it('clamps values below 1 (zero, negative) up to 1', () => {
+    expect(resolveWorkerConcurrency({ ...defaultConfig(), pipeline: { concurrency: 0 } })).toBe(1);
+    expect(resolveWorkerConcurrency({ ...defaultConfig(), pipeline: { concurrency: -5 } })).toBe(1);
+  });
+
+  it('falls back to 1 for non-finite / non-numeric values rather than throwing', () => {
+    expect(resolveWorkerConcurrency({ ...defaultConfig(), pipeline: { concurrency: NaN } })).toBe(1);
+    expect(resolveWorkerConcurrency({
+      ...defaultConfig(),
+      // Simulates a malformed hand-edited config.yaml value surviving the loader.
+      pipeline: { concurrency: 'four' as unknown as number },
+    })).toBe(1);
+  });
+
+  it('truncates fractional values', () => {
+    expect(resolveWorkerConcurrency({ ...defaultConfig(), pipeline: { concurrency: 3.9 } })).toBe(3);
+  });
+});
+
+describe('Worker concurrency', () => {
+  let db: DB;
+  let repo: JobRepo;
+  let registry: HandlerRegistry;
+  let stopWorker: (() => void | Promise<void>) | null = null;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new JobRepo(db);
+    registry = new HandlerRegistry();
+  });
+
+  afterEach(async () => {
+    await stopWorker?.();
+    stopWorker = null;
+  });
+
+  it('N=2 concurrency: two slow jobs overlap in execution (proven by timestamps)', async () => {
+    const starts: number[] = [];
+    const ends: number[] = [];
+    const SLOW_MS = 150;
+
+    const handler: JobHandler = {
+      kind: 'cleanup',
+      async handle(_payload, _ctx) {
+        starts.push(Date.now());
+        await new Promise((r) => setTimeout(r, SLOW_MS));
+        ends.push(Date.now());
+      },
+    };
+    registry.register(handler);
+
+    const id1 = repo.enqueue('cleanup', { kind: 'cleanup', older_than_days: 30 });
+    const id2 = repo.enqueue('cleanup', { kind: 'cleanup', older_than_days: 30 });
+
+    const config = { ...defaultConfig(), pipeline: { concurrency: 2 } };
+    const { stop } = startWorker({ pollMs: 20, registry, db, config });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const j1 = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id1) as { state: string } | undefined;
+      const j2 = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id2) as { state: string } | undefined;
+      return j1?.state === 'completed' && j2?.state === 'completed';
+    }, 3000);
+
+    expect(starts.length).toBe(2);
+    expect(ends.length).toBe(2);
+
+    // Overlap proof: the second job's start timestamp is strictly before the
+    // first job's end timestamp — i.e. both were mid-flight at the same time.
+    // Under the old single-lane worker this would be physically impossible
+    // (job2 cannot even be claimed until job1 finishes and completes).
+    const sortedStarts = [...starts].sort((a, b) => a - b);
+    const sortedEnds = [...ends].sort((a, b) => a - b);
+    expect(sortedStarts[1]).toBeLessThan(sortedEnds[0] as number);
+
+    // Wall-clock proof: 2 sequential 150ms jobs would take >=300ms; running
+    // concurrently they finish well under that.
+    const totalWall = (sortedEnds[1] as number) - (sortedStarts[0] as number);
+    expect(totalWall).toBeLessThan(SLOW_MS * 2);
+  });
+
+  it('claim-atomicity: N=6 concurrent lanes over 20 jobs — every job executes exactly once', async () => {
+    const executionCounts = new Map<string, number>();
+    const handler: JobHandler = {
+      kind: 'cleanup',
+      async handle(payload, _ctx) {
+        const p = payload as { job_marker: string };
+        executionCounts.set(p.job_marker, (executionCounts.get(p.job_marker) ?? 0) + 1);
+        // Small random-ish delay so lanes genuinely interleave claims instead
+        // of trivially serializing.
+        await new Promise((r) => setTimeout(r, 5));
+      },
+    };
+    registry.register(handler);
+
+    const ids: string[] = [];
+    const JOB_COUNT = 20;
+    for (let i = 0; i < JOB_COUNT; i++) {
+      ids.push(repo.enqueue('cleanup', { kind: 'cleanup', older_than_days: 30, job_marker: `job-${i}` }));
+    }
+
+    const config = { ...defaultConfig(), pipeline: { concurrency: 6 } };
+    const { stop } = startWorker({ pollMs: 10, registry, db, config });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const rows = db.prepare(
+        `SELECT COUNT(*) AS n FROM jobs WHERE id IN (${ids.map(() => '?').join(',')}) AND state = 'completed'`,
+      ).get(...ids) as { n: number };
+      return rows.n === JOB_COUNT;
+    }, 5000);
+
+    // Every job_marker executed exactly once — no double-claim, no dropped job.
+    expect(executionCounts.size).toBe(JOB_COUNT);
+    for (const count of executionCounts.values()) {
+      expect(count).toBe(1);
+    }
+  });
+
+  it('default concurrency (1) preserves strict FIFO execution order', async () => {
+    const executionOrder: string[] = [];
+    const handler: JobHandler = {
+      kind: 'cleanup',
+      async handle(payload, _ctx) {
+        const p = payload as { job_marker: string };
+        executionOrder.push(p.job_marker);
+        await new Promise((r) => setTimeout(r, 10));
+      },
+    };
+    registry.register(handler);
+
+    const markers = ['first', 'second', 'third', 'fourth'];
+    const ids = markers.map((m) =>
+      repo.enqueue('cleanup', { kind: 'cleanup', older_than_days: 30, job_marker: m }),
+    );
+
+    // No `pipeline` override — exercises the real default (concurrency: 1),
+    // byte-identical to pre-concurrency single-lane behavior.
+    const { stop } = startWorker({ pollMs: 20, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const rows = db.prepare(
+        `SELECT COUNT(*) AS n FROM jobs WHERE id IN (${ids.map(() => '?').join(',')}) AND state = 'completed'`,
+      ).get(...ids) as { n: number };
+      return rows.n === markers.length;
+    }, 5000);
+
+    expect(executionOrder).toEqual(markers);
   });
 });
