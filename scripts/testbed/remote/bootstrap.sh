@@ -6,6 +6,9 @@
 # Darwin we install node from the official arm64 tarball instead of brew.
 set -uo pipefail
 NODE_VER="20.18.1"
+# SSM runs as root without HOME set; the bun installer writes to $HOME/.bun and
+# set -u would abort on an unbound HOME. Resolve it from passwd.
+export HOME="${HOME:-$(eval echo "~$(id -un)")}"
 uname_s="$(uname -s)"
 echo "[bootstrap] OS=$uname_s"
 

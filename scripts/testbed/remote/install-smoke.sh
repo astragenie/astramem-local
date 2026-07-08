@@ -15,6 +15,8 @@
 # Arg1: package version (default: latest).
 set -uo pipefail
 VER="${1:-latest}"
+# SSM runs as root without HOME set; resolve it from passwd so set -u is safe.
+export HOME="${HOME:-$(eval echo "~$(id -un)")}"
 export PATH="/usr/local/node20/bin:/usr/local/bin:/var/root/.bun/bin:/root/.bun/bin:$HOME/.bun/bin:$PATH"
 echo "== install-smoke astramem-local@$VER on $(uname -s) =="
 node --version >/dev/null 2>&1 || { echo "FATAL: node missing"; exit 1; }
@@ -56,8 +58,20 @@ smoke_one() {  # $1 = npm|bun ; returns 0 on pass
   fi
   echo "[$mgr] installed (root=$root)"
 
-  # 1) addon load under node
-  if node -e "for(const m of ['better-sqlite3-multiple-ciphers','sqlite-vec']){require(require.resolve(m,{paths:['$root/astramem-local','$root']}))} console.log('[$mgr] native addons load OK')"; then :; else
+  # 1) addons must actually LOAD + EXERCISE their native binding under node.
+  # require() alone only loads the JS wrapper (the .node binds lazily at
+  # DB-open), so it false-passes when the binary is missing — construct a DB
+  # and load sqlite-vec to force both native bindings.
+  if node -e "
+const P=['$root/astramem-local','$root'];
+const Database=require(require.resolve('better-sqlite3-multiple-ciphers',{paths:P}));
+const vec=require(require.resolve('sqlite-vec',{paths:P}));
+const db=new Database(':memory:');
+vec.load(db);
+db.exec('create virtual table _v using vec0(e float[4])');
+db.close();
+console.log('[$mgr] native addons load+exercise OK');
+"; then :; else
     echo "[$mgr] ADDON LOAD FAILED — native binaries missing/broken in the global install"; rc=1
   fi
 

@@ -6,6 +6,8 @@
 # Arg1: presigned URL of a gzip tarball of the repo tree (git archive output).
 set -uo pipefail
 URL="${1:?perf.sh needs a presigned tarball URL}"
+# SSM runs as root without HOME set; resolve it from passwd so set -u is safe.
+export HOME="${HOME:-$(eval echo "~$(id -un)")}"
 export PATH="/usr/local/node20/bin:/usr/local/bin:/var/root/.bun/bin:/root/.bun/bin:$HOME/.bun/bin:$PATH"
 echo "== perf baseline on $(uname -s) ($(node -e 'process.stdout.write(process.arch)')) =="
 
