@@ -201,6 +201,19 @@ export interface Config {
   pipeline: {
     concurrency: number;
   };
+  /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
+   *  memory-health metric that ever calls an LLM — off by default (AC-5):
+   *  with `enabled: false` (default), `estimateLlmJudgedJunk()`
+   *  (server/queries/memory-health-deep.ts) returns immediately with zeros
+   *  and makes no provider call. The heuristic-only junk rate and the rest
+   *  of the memory-health report are computed unconditionally and never
+   *  gated by this flag. CLI-only (`astramem-local memory health --deep`) —
+   *  never consulted by `doctor`'s default pass or `GET /health`. */
+  memoryHealth: {
+    llmJudgedJunkSample: {
+      enabled: boolean;
+    };
+  };
 }
 
 export function defaultConfig(): Config {
@@ -237,7 +250,8 @@ export function defaultConfig(): Config {
     tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
     ingestIdempotency: { retentionDays: 7 },
-    pipeline: { concurrency: 1 }
+    pipeline: { concurrency: 1 },
+    memoryHealth: { llmJudgedJunkSample: { enabled: false } }
   };
 }
 

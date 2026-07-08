@@ -108,6 +108,60 @@ describe('/health hardening fields (P1.3) — additive, wire-safe', () => {
     const body = (await app.inject({ method: 'GET', url: '/health' })).json();
     expect(body.queue).toEqual(expected);
   });
+
+  // FEAT-444 AC-2: memory_health detail block, cheap tier only.
+  describe('memory_health block (FEAT-444 AC-2)', () => {
+    it('present alongside status/embed when healthState + db are wired, every pre-existing field unchanged', async () => {
+      db = openDb(':memory:');
+      migrate(db);
+      const hs = createHealthState();
+      hs.embed.ok = true;
+      app = await buildApp({ db, token: TOKEN, healthState: hs });
+
+      const body = (await app.inject({ method: 'GET', url: '/health' })).json();
+      // Pre-existing fields untouched (wire-compat).
+      expect(body.ok).toBe(true);
+      expect(body.version).toBeDefined();
+      expect(body.status).toBe('ok');
+      expect(body.embed.ok).toBe(true);
+      expect(body.worker).toBeDefined();
+      // Additive block.
+      expect(body.memory_health).toBeDefined();
+      expect(body.memory_health.activeCount).toBe(0);
+      expect(body.memory_health.archivedCount).toBe(0);
+      expect(body.memory_health.usefulness).toEqual({ served: 0, used: 0, coverageRate: null });
+      expect(body.memory_health.corrections).toEqual({ corrected: 0, rate: null });
+      expect(body.memory_health.poisonDistillSessions).toBe(0);
+      // Cheap tier only — no byType/byScope/staleness breakdown on /health.
+      expect(body.memory_health.counts).toBeNull();
+      expect(body.memory_health.staleness).toBeNull();
+    });
+
+    it('reflects real counts when memories exist', async () => {
+      db = openDb(':memory:');
+      migrate(db);
+      const { MemoryRepo } = await import('../../src/storage/memories.js');
+      new MemoryRepo(db).insert({
+        type: 'fact', text: 'a fact', normalized_text: 'a fact',
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+        hash: 'h-health-1', source_hash: null,
+      });
+      const hs = createHealthState();
+      app = await buildApp({ db, token: TOKEN, healthState: hs });
+
+      const body = (await app.inject({ method: 'GET', url: '/health' })).json();
+      expect(body.memory_health.activeCount).toBe(1);
+    });
+
+    it('absent without healthState (legacy shape only — matches queue/pending_proposals precedent)', async () => {
+      db = openDb(':memory:');
+      migrate(db);
+      app = await buildApp({ db, token: TOKEN });
+
+      const body = (await app.inject({ method: 'GET', url: '/health' })).json();
+      expect(body.memory_health).toBeUndefined();
+    });
+  });
 });
 
 describe('Fastify hardening (P1.6)', () => {
