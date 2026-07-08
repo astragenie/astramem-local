@@ -49,4 +49,18 @@ describe('deriveWorktreeSafeBasename', () => {
       'nested',
     );
   });
+
+  it('KNOWN LIMITATION (FEAT-425 coincidence case): mis-derives a real, non-worktree subdirectory whose parent merely ends in "-worktrees"', () => {
+    // The heuristic is string-only by design (no git/fs calls — see the impl's
+    // doc comment) and only ever checks the immediate PARENT segment's name.
+    // It cannot distinguish an actual git worktree checkout from any other
+    // ordinary subdirectory that happens to live under a `<repo>-worktrees`
+    // parent. `some-real-subdir` below is a legitimate, non-worktree directory
+    // (e.g. a scratch folder someone created next to the real worktrees), but
+    // it still gets collapsed to the captured repo name — this is the
+    // documented coincidence-case limitation, not a bug fix target here.
+    expect(
+      deriveWorktreeSafeBasename('/home/user/my-repo-worktrees/some-real-subdir'),
+    ).toBe('my-repo');
+  });
 });

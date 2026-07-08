@@ -122,11 +122,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     async (args) => {
       const filters: SearchFilters = {};
       if (args.type) filters.type = args.type;
-      if (args.repo) filters.repo = args.repo;
-      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      // FEAT-429: project/agent/entity/repo/since — registry-driven (was 5 hand-rolled lines).
       assignStructuredFilterValues(args, filters as unknown as Record<string, unknown>);
       if (args.agentMode) filters.agentMode = args.agentMode;
-      if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
         try {
           filters.as_of = parseAsOf(args.as_of);
@@ -202,11 +200,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     async (args) => {
       const filters: SearchFilters = {};
       if (args.type) filters.type = args.type;
-      if (args.repo) filters.repo = args.repo;
-      // FEAT-429: project/agent/entity — registry-driven (was 3 hand-rolled lines).
+      // FEAT-429: project/agent/entity/repo/since — registry-driven (was 5 hand-rolled lines).
       assignStructuredFilterValues(args, filters as unknown as Record<string, unknown>);
       if (args.agentMode) filters.agentMode = args.agentMode;
-      if (args.since !== undefined) filters.since = args.since;
       if (args.as_of !== undefined) {
         try {
           filters.as_of = parseAsOf(args.as_of);
