@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeShim, shimPaths, writePointer } from '../../src/service/shim.js';
+import { writeShim, shimPaths, writePointer, exitHistoryPaths } from '../../src/service/shim.js';
 import { buildTaskXml } from '../../src/service/task-xml.js';
 
 describe('service shim', () => {
@@ -182,6 +182,96 @@ describe('service shim — cross-platform (FEAT-443 SLICE-1)', () => {
     expect(existsSync(posixPaths.cmdPath)).toBe(true);
     const cmd = readFileSync(posixPaths.cmdPath, 'utf8');
     expect(cmd.startsWith('#!/bin/sh\n')).toBe(true);
+  });
+});
+
+describe('service shim — crash-loop visibility (FEAT-440)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-shim-crashloop-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records a zero-exit run in exit-history.jsonl and writes no crash.log (AC-1)', () => {
+    const paths = shimPaths(dir);
+    const { historyPath, crashLogPath } = exitHistoryPaths(dir);
+    const fakeEntry = join(dir, 'healthy-entry.cjs');
+    writeFileSync(fakeEntry, 'process.exit(0);');
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(0);
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.exitCode).toBe(0);
+    expect(typeof entry.durationMs).toBe('number');
+    expect(typeof entry.ts).toBe('string');
+    expect(existsSync(crashLogPath)).toBe(false);
+  });
+
+  it('captures crash stderr verbatim to crash.log and records the non-zero exit (AC-2)', () => {
+    const paths = shimPaths(dir);
+    const { historyPath, crashLogPath } = exitHistoryPaths(dir);
+    const fakeEntry = join(dir, 'crash-entry.cjs');
+    writeFileSync(fakeEntry, "console.error('BOOM: schema-version drift'); process.exit(7);");
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(7);
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    const last = JSON.parse(lines[lines.length - 1]!);
+    expect(last.exitCode).toBe(7);
+
+    const crashLog = readFileSync(crashLogPath, 'utf8');
+    expect(crashLog).toContain('BOOM: schema-version drift');
+    expect(crashLog).toContain('exit=7');
+  });
+
+  it('ring-buffers exit-history.jsonl to the last 50 entries', () => {
+    const paths = shimPaths(dir);
+    const { historyPath, logsDir } = exitHistoryPaths(dir);
+    mkdirSync(logsDir, { recursive: true });
+    const seedLines = Array.from({ length: 50 }, (_, i) =>
+      JSON.stringify({ ts: `seed-${i}`, exitCode: 0, durationMs: 1 }),
+    );
+    writeFileSync(historyPath, seedLines.join('\n') + '\n', 'utf8');
+
+    const fakeEntry = join(dir, 'fake-entry.cjs');
+    writeFileSync(fakeEntry, 'process.exit(0);');
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+    spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    expect(lines.length).toBe(50);
+    // Oldest seed entry ('seed-0') must have been dropped to make room.
+    expect(lines.some(l => l.includes('"seed-0"'))).toBe(false);
+    const newest = JSON.parse(lines[lines.length - 1]!);
+    expect(newest.exitCode).toBe(0);
+  });
+
+  it('never throws when the logs dir cannot be created — daemon spawn proceeds unaffected (AC-4)', () => {
+    const paths = shimPaths(dir);
+    const { logsDir } = exitHistoryPaths(dir);
+    // Force mkdirSync(logsDir) inside launch.cjs to fail: pre-create the
+    // logs path as a plain FILE instead of a directory, simulating a
+    // locked/unwritable logs dir without relying on OS ACL behavior that
+    // differs across platforms.
+    writeFileSync(logsDir, 'not a directory', 'utf8');
+
+    const fakeEntry = join(dir, 'fake-entry.cjs');
+    writeFileSync(fakeEntry, "console.log('ran ok'); process.exit(0);");
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('ran ok');
   });
 });
 
