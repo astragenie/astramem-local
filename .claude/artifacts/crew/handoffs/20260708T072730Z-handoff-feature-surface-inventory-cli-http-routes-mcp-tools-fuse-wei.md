@@ -1,0 +1,31 @@
+# Task Handoff: Feature-surface inventory: CLI, HTTP routes, MCP tools, fuse weights, lifecycle, consolidation, sync
+
+- Created: 2026-07-08T07:27:30.056Z
+- From: researcher
+- To: dispatcher
+- Objective: Exhaustive enumeration completed with file:line citations; MCP manifest has 15 tools (not the README's claimed 16), all with matching handlers in src/mcp/server.ts.
+- Allowed Scope:
+  - Read-only enumeration of src/cli/index.ts
+  - src/server/routes/*
+  - contracts/manifests/mcp-tools.v1.json
+  - src/mcp/server.ts
+  - src/search/fuse.ts
+  - src/config/config.ts
+  - src/server/routes/lifecycle.ts
+  - src/consolidate/consolidate.ts
+  - src/sync/*.ts
+- Forbidden Scope: -
+- Deliverable: Structured findings returned inline to dispatcher: 25 CLI commands, 24 HTTP routes, 15 MCP tools (parity confirmed, count mismatch vs README flagged), fuse.ts 7-component weighted formula with config.ts defaults, lifecycle 7 verbs with typed-error->HTTP mapping, consolidation two-threshold auto-merge/propose flow, sync surface (pair/shipper/puller/conflict-resolve) with no TODO/stub markers found.
+- Changed Files:
+  - src/cli/index.ts
+  - src/server/routes/*.ts
+  - contracts/manifests/mcp-tools.v1.json
+  - src/mcp/server.ts
+  - src/search/fuse.ts
+  - src/config/config.ts
+  - src/consolidate/consolidate.ts
+  - src/sync/*.ts
+- Confidence: high
+- Risks: Auth-guard (Bearer vs public) inferred from CLAUDE.md's documented rule, not individually re-verified per-route middleware this pass. CLI handler flag lists taken from index.ts inline comments (authoritative, match --help text) not the full handler bodies in every case file. Sync internals only grep'd for TODO/stub markers, not fully traced line-by-line.
+- Suggested Next Handoff: Follow-up researcher pass on src/sync/*.ts internals + per-route auth middleware if the competitive matrix needs that depth.
+

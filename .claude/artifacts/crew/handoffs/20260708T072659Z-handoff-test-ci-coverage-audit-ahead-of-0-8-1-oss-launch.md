@@ -1,0 +1,34 @@
+# Task Handoff: Test/CI coverage audit ahead of 0.8.1 OSS launch
+
+- Created: 2026-07-08T07:26:59.472Z
+- From: researcher
+- To: dispatcher
+- Objective: 150 test files with strong unit/integration coverage and a real ADR-005 retrieval-eval gate, but single-OS CI (linux self-hosted only) leaves Windows/macOS service paths (schtasks/launchd) and the init wizard untested on a real OS, and there is no coverage-threshold tooling.
+- Allowed Scope:
+  - Read-only: tests/**/*.test.ts inventory
+  - .github/workflows/*.yml full read
+  - skip/todo grep
+  - tests/smoke and tests/eval content
+  - vitest.config.ts
+  - package.json scripts
+- Forbidden Scope: -
+- Deliverable: Inventory + CI table + gap list with severities returned inline to dispatcher (see chat message)
+- Changed Files:
+  - tests/**/*.test.ts (150 files)
+  - .github/workflows/test.yml
+  - lint.yml
+  - audit.yml
+  - nightly-live.yml
+  - publish.yml
+  - version-tag-parity.yml
+  - contracts-publish.yml
+  - cross-repo-roundtrip.yml
+  - tests/eval/retrieval-eval.test.ts
+  - tests/smoke/*.test.ts
+  - tests/cli/init.test.ts
+  - vitest.config.ts
+  - package.json
+- Confidence: medium
+- Risks: Did not exhaustively read all 150 test files (spot-checked service/init/smoke/mcp/encryption); MCP 16-tool manifest parity test not located by name search, may exist under a different filename; did not confirm branch-protection settings live in GitHub (only inferred intent from workflow structure)
+- Suggested Next Handoff: crew:qa-expert or crew:test-automator to scope a Windows/macOS CI matrix addition and a real init-wizard E2E smoke test before the 2026-07-15 launch date
+

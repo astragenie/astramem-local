@@ -1,0 +1,33 @@
+# Task Handoff: Pre-launch security audit — auth, secrets, bind, CORS, deps
+
+- Created: 2026-07-08T07:26:38.462Z
+- From: researcher
+- To: dispatcher
+- Objective: Auth timing-safety, key/secrets file perms, and loopback-bind auth boundary are already resolved and verified in code; new finding: dashboard bootstrap token travels in URL query string (log/history leak risk), plus no rate limiting on the bearer check (low severity, local-only threat model).
+- Allowed Scope:
+  - src/server (app.ts
+  - routes/dashboard.ts
+  - lib/secure-compare.ts)
+  - src/storage/keystore.ts
+  - src/config (writer.ts
+  - secrets.ts
+  - config.ts)
+  - .gitignore
+  - git ls-files
+  - package.json deps
+- Forbidden Scope: -
+- Deliverable: Findings list with file:line evidence, severity, S/M/L effort; distinguishes confirmed-resolved vs new
+- Changed Files:
+  - src/server/app.ts
+  - src/server/lib/secure-compare.ts
+  - src/server/routes/dashboard.ts
+  - src/storage/keystore.ts
+  - src/config/writer.ts
+  - src/config/secrets.ts
+  - src/config/config.ts
+  - .gitignore
+  - package.json
+- Confidence: high
+- Risks: Did not exhaustively audit MCP routes (mcp.ts) or memory-tool.ts auth paths individually; did not run full SCA/npm audit; dashboard cookie/query-token flow deserves a closer manual trace of access-log redaction on the bootstrap path
+- Suggested Next Handoff: If launch-blocking, consider crew:fix for dashboard query-token exposure (strip from access logs / short TTL) — otherwise document as known v1 limitation
+

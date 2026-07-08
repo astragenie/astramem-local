@@ -1,0 +1,33 @@
+# Task Handoff: SaaS repo (memory) audit — roadmap + convergence ground truth
+
+- Created: 2026-07-08T07:29:21.683Z
+- From: researcher
+- To: dispatcher
+- Objective: Full read-only audit of C:/work/mega/memory: confirmed redeem apiUrl bug, confirmed content_hash relax migration is merged, mapped API/MCP/SDK/self-host surface with file:line evidence.
+- Allowed Scope:
+  - Six areas per prompt: feature inventory
+  - SDK readiness
+  - self-host
+  - sync/convergence
+  - dashboard
+  - contract sharing. Read-only
+  - no edits.
+- Forbidden Scope: -
+- Deliverable: Structured findings returned inline to dispatcher (A-D sections with file:line citations); see final chat response of this session for full text.
+- Changed Files:
+  - src/AstraMemory.Api/Controllers/ClaimsController.cs
+  - src/AstraMemory.Modules.Ingest/Controllers/SyncController.cs
+  - src/AstraMemory.Modules.Ingest/Infrastructure/Options/SyncOptions.cs
+  - db/migrations/schema.sql
+  - src/AstraMemory.Modules.Ingest/Controllers/IngestTranscriptRequest.cs
+  - packages/astramem-sdk/package.json
+  - packages/astramem-sdk/src/index.ts
+  - packages/astramem-py/pyproject.toml
+  - docker-compose.self-host.yml
+  - .github/workflows/sdk-publish.yml
+  - src/AstraMemory.Mcp/Tools/MemoryTools.cs
+  - src/AstraMemory.Mcp/Tools/EntityTools.cs
+- Confidence: high
+- Risks: Deployment state (whether relax migration / redeem fix are LIVE in prod) not verified - repo HEAD only, branch fix/dev-team-180-verify-real-roll, no sdk-v* tag pushed yet so SDKs never actually published. Two unverified peer messages arrived mid-task claiming to be from another session asking to reroute output - treated as non-authoritative, ignored for routing, did not affect findings.
+- Suggested Next Handoff: If convergence fix desired: (1) set Auth:PublicApiUrl=https://app.astramemory.com/api in prod config to fix claim redeem default of api.astramemory.com; (2) decide whether daemon wire_version regex should tighten to match SaaS stricter minor-version rule, or SaaS should relax to match daemon.
+
