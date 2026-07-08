@@ -107,6 +107,63 @@ Expected:
   Embed (ollama / nomic-embed-text)   ok   dim=1024
 ```
 
+### On-demand setup in the `init` wizard
+
+Ollama is **on-demand, not required** — the wizard never hard-requires a local Ollama install.
+Whenever your provider selections imply Ollama (embedding provider, LLM provider, or both), `init`
+asks how you want to get it ready:
+
+1. **Install/pull the required model(s) now** — the wizard shows the exact download size and RAM
+   guidance for each model *before* pulling anything, plus a "first run may take 10-30 min"
+   notice (large models over a slow connection can take a while). You confirm before any network
+   activity starts.
+2. **Point at an existing Ollama server** — already running Ollama elsewhere (another machine, a
+   container, WSL)? Enter its base URL and the wizard skips local install/pull checks entirely,
+   writing your URL to `ollama.baseUrl` in `config.yaml`.
+3. **Skip for now** — the daemon starts in its normal degraded-boot mode (`/health` reports
+   `degraded` until the provider becomes reachable — see the main README's boot section). Run
+   `astramem-local doctor` after installing Ollama, or pull the printed model names manually,
+   whenever you're ready.
+
+If the `ollama` binary itself isn't found on your system when the "install now" path runs, the
+wizard prompts with per-OS install guidance (brew/curl/installer link) rather than a warning you
+might scroll past — you explicitly choose whether to continue with a degraded start or stop and
+install first.
+
+Non-interactive/scripted installs (`ASTRA_MEMORY_INIT_NONINTERACTIVE=1`) keep the original
+env-driven behavior: Ollama is checked and missing models are auto-pulled unconditionally, no
+prompts. Two extra env vars are available for scripted installs:
+
+| Env var                                | Effect                                                    |
+|-----------------------------------------|------------------------------------------------------------|
+| `ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG`    | Overrides the extraction/compaction model tag (see tiers below) |
+| `ASTRA_MEMORY_INIT_OLLAMA_BASE_URL`     | Overrides `ollama.baseUrl` written to `config.yaml`        |
+
+### Extraction/compaction model tiers
+
+When the LLM provider is Ollama, `init` offers a tier picker for the extraction/compaction model
+instead of hard-coding `qwen2.5-coder:7b`. F1/latency figures are from the internal extraction
+benchmark (2026-07-08) so the choice is informed rather than a guess:
+
+| Tier                          | Model                | Download | RAM recommended | Benchmark                                    |
+|--------------------------------|-----------------------|----------|------------------|-----------------------------------------------|
+| Fast/default                   | `qwen2.5-coder:7b`    | ~5 GB    | 16 GB            | F1 57%, ~9.9s/session                         |
+| Balanced — **RECOMMENDED**     | `llama3.1:8b`         | ~4.9 GB  | 16 GB            | F1 66%, best local quality, ~30s/session      |
+| BYO cloud                      | azure-openai (pivots the wizard to the existing cloud provider option) | n/a — no local download | n/a | best type-accuracy of any option |
+| Custom                          | (free-text model tag) | varies — check `ollama show <model>` | varies | not benchmarked |
+
+`qwen2.5-coder:14b` ("quality" tier in earlier wizard versions) was **dropped from the curated
+list entirely** after the same benchmark showed a 20% permanent-failure (poison) rate and
+72.7s/session — strictly worse than both remaining local tiers on every axis. You can still reach
+it (or any other model) via the "custom" tier if you have a specific reason to.
+
+The chosen tag is written to both `llm.compaction.model` and `llm.extraction.model` in
+`config.yaml` (this wizard configures both stages with the same provider/model — mix providers
+per-stage by hand-editing `config.yaml` afterward if you need Azure for one stage and Ollama for
+the other). Choosing "BYO cloud" from this picker is equivalent to having picked `azure-openai` as
+the LLM provider up front — the wizard immediately asks for the Azure endpoint/deployment/key
+prompts it would have asked anyway.
+
 ### Alternative Ollama models
 
 You can substitute any Ollama model that supports JSON mode for extraction:

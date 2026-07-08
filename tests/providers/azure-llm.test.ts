@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { AzureOpenAILLMProvider } from '../../src/providers/llm/azure-openai.js';
+import { AzureOpenAILLMProvider, isReasoningModel } from '../../src/providers/llm/azure-openai.js';
 import { runLLMContractSuite } from './_contract-suite.js';
 
 // ---------------------------------------------------------------------------
@@ -165,6 +165,88 @@ describe('azure-llm', () => {
       const res = await p.chat([{ role: 'user', content: 'x' }]);
       // 1M in * 0.15 + 1M out * 0.60 = 0.75
       expect(res.usage.usd).toBeCloseTo(0.75, 6);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reasoning models (gpt-5*/o-series) — max_completion_tokens, no temperature
+  // ---------------------------------------------------------------------------
+  describe('isReasoningModel()', () => {
+    it.each([
+      ['gpt-5-mini', true],
+      ['gpt-5', true],
+      ['gpt-5-nano', true],
+      ['o1', true],
+      ['o1-mini', true],
+      ['o1-preview', true],
+      ['o3', true],
+      ['o3-mini', true],
+      ['o4-mini', true],
+      ['gpt-4.1', false],
+      ['gpt-4.1-mini', false],
+      ['gpt-4o', false],
+      ['gpt-3.5-turbo', false],
+      ['unknown-model-xyz', false],
+    ])('%s -> %s', (model, expected) => {
+      expect(isReasoningModel(model)).toBe(expected);
+    });
+  });
+
+  describe('chat() — reasoning-model request shape', () => {
+    it('sends max_completion_tokens (not max_tokens) and omits temperature for gpt-5-mini', async () => {
+      let captured: Record<string, unknown> = {};
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(azureChatResponse('{}').body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new AzureOpenAILLMProvider({ ...FAKE_CREDS, deployment: 'gpt-5-mini', model: 'gpt-5-mini' });
+      await p.chat([{ role: 'user', content: 'x' }], { temperature: 0.7, maxTokens: 256, json: true });
+
+      expect(captured.max_completion_tokens).toBe(256);
+      expect(captured).not.toHaveProperty('max_tokens');
+      expect(captured).not.toHaveProperty('temperature');
+      // response_format is unaffected by reasoning-model detection
+      expect(captured.response_format).toEqual({ type: 'json_object' });
+    });
+
+    it('non-reasoning model (gpt-4.1) keeps sending max_tokens + temperature unchanged', async () => {
+      let captured: Record<string, unknown> = {};
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(azureChatResponse('{}').body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new AzureOpenAILLMProvider({ ...FAKE_CREDS, model: 'gpt-4.1' });
+      await p.chat([{ role: 'user', content: 'x' }], { temperature: 0.7, maxTokens: 256 });
+
+      expect(captured.max_tokens).toBe(256);
+      expect(captured.temperature).toBe(0.7);
+      expect(captured).not.toHaveProperty('max_completion_tokens');
+    });
+
+    it('health() pings gpt-5-mini with max_completion_tokens instead of max_tokens', async () => {
+      let captured: Record<string, unknown> = {};
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(azureChatResponse('pong', 1, 1).body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new AzureOpenAILLMProvider({ ...FAKE_CREDS, deployment: 'gpt-5-mini', model: 'gpt-5-mini' });
+      const h = await p.health();
+
+      expect(h.ok).toBe(true);
+      expect(captured.max_completion_tokens).toBe(1);
+      expect(captured).not.toHaveProperty('max_tokens');
     });
   });
 

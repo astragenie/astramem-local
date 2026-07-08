@@ -272,6 +272,63 @@ describe('init wizard — non-TTY mode', () => {
     expect(names).toContain('sessions');
     expect(names).toContain('jobs');
   });
+
+  // ─── Ollama on-demand overrides (item 2 model tier + item 1 base URL) ───────
+
+  it('ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG overrides compaction/extraction model in config.yaml', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17790',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+      ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG: 'llama3.1:8b',
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    await withEnv(envPatch, async () => { await init(); });
+
+    const configPath = findFile(cfgDir, 'config.yaml');
+    expect(configPath, 'config.yaml must exist').toBeDefined();
+    const content = readFileSync(configPath!, 'utf8');
+    // writer.ts's yamlScalar quotes any string containing ':' (model tags
+    // with a version suffix included).
+    expect(content).toContain("model: 'llama3.1:8b'");
+  });
+
+  it('ASTRA_MEMORY_INIT_OLLAMA_BASE_URL overrides ollama.baseUrl in config.yaml', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17791',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+      ASTRA_MEMORY_INIT_OLLAMA_BASE_URL: 'http://10.0.0.5:11434',
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    await withEnv(envPatch, async () => { await init(); });
+
+    const configPath = findFile(cfgDir, 'config.yaml');
+    expect(configPath, 'config.yaml must exist').toBeDefined();
+    const content = readFileSync(configPath!, 'utf8');
+    // writer.ts's yamlScalar quotes any string containing ':' (URLs included).
+    expect(content).toContain("baseUrl: 'http://10.0.0.5:11434'");
+  });
 });
 
 // ─── checkOllama — auto-pull missing models (interactive path) ───────────────
@@ -355,20 +412,70 @@ describe('checkOllama — auto-install missing models', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it('ollama binary missing: warns and returns without attempting a pull', async () => {
+  it('ollama binary missing: prompts with per-OS install guidance instead of a buried warn', async () => {
     execSyncMock.mockImplementation(() => {
       throw new Error('command not found: ollama');
     });
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const confirmMissingBinary = vi.fn().mockResolvedValue(true);
 
-    await checkOllama('qwen2.5-coder:7b', 'mxbai-embed-large', false);
+    await checkOllama('qwen2.5-coder:7b', 'mxbai-embed-large', false, confirmMissingBinary);
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(execFileSyncMock).not.toHaveBeenCalled();
-    expect(warnSpy.mock.calls.some(([msg]) => String(msg).includes('binary not found'))).toBe(true);
-    warnSpy.mockRestore();
+    expect(confirmMissingBinary).toHaveBeenCalledTimes(1);
+    expect(logSpy.mock.calls.some(([msg]) => String(msg).includes('Ollama is not installed'))).toBe(true);
+    logSpy.mockRestore();
+  });
+
+  it('ollama binary missing + user declines to continue: rejects with an actionable install error', async () => {
+    execSyncMock.mockImplementation(() => {
+      throw new Error('command not found: ollama');
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const confirmMissingBinary = vi.fn().mockResolvedValue(false);
+
+    await expect(
+      checkOllama('qwen2.5-coder:7b', 'mxbai-embed-large', false, confirmMissingBinary)
+    ).rejects.toThrow(/Ollama is not installed/);
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('ollama binary missing + user continues anyway: resolves without pulling (degraded start)', async () => {
+    execSyncMock.mockImplementation(() => {
+      throw new Error('command not found: ollama');
+    });
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const confirmMissingBinary = vi.fn().mockResolvedValue(true);
+
+    await expect(
+      checkOllama('qwen2.5-coder:7b', 'mxbai-embed-large', false, confirmMissingBinary)
+    ).resolves.toBeUndefined();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+  });
+
+  it('undefined llmModel/embedModel slots are skipped (mixed-provider correctness)', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockTagsResponse(['mxbai-embed-large']));
+    vi.stubGlobal('fetch', fetchMock);
+
+    // llmProvider is azure-openai in this scenario — only embedModel is
+    // actually assigned to ollama, so llmModel is undefined and must not
+    // be looked up or pulled (previously this would try `ollama pull
+    // gpt-4.1` and similar non-Ollama model names).
+    await checkOllama(undefined, 'mxbai-embed-large', false);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(execFileSyncMock).not.toHaveBeenCalled();
   });
 });
 
