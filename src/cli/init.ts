@@ -15,6 +15,7 @@
 
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { defaultConfig, type Config } from '../config/config.js';
 import { defaultConfigDir, defaultDataDir } from '../config/datadir.js';
@@ -43,7 +44,17 @@ const NON_INTERACTIVE_ENV = {
   budget: 'ASTRA_MEMORY_INIT_BUDGET',
   installService: 'ASTRA_MEMORY_INIT_INSTALL_SERVICE',
   installHook: 'ASTRA_MEMORY_INIT_INSTALL_HOOK',
+  openaiCompatBaseUrl: 'ASTRA_MEMORY_INIT_OPENAI_COMPAT_BASE_URL',
+  openaiCompatApiKey: 'ASTRA_MEMORY_INIT_OPENAI_COMPAT_API_KEY',
+  codexAuthPath: 'ASTRA_MEMORY_INIT_CODEX_AUTH_PATH',
 } as const;
+
+/** LLM provider values the wizard can select for compaction/extraction. */
+type LlmProviderChoice = 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+
+function defaultCodexAuthPath(): string {
+  return join(homedir(), '.codex', 'auth.json');
+}
 
 /** Test-only injection point for the hook install target (see hook-install.ts). */
 const SETTINGS_PATH_ENV = 'ASTRA_MEMORY_INIT_SETTINGS_PATH';
@@ -83,7 +94,7 @@ async function promptConfirm(message: string, defaultValue: boolean): Promise<bo
 interface WizardAnswers {
   vector: 'sqlite-vec' | 'lancedb';
   embedProvider: 'ollama' | 'azure-openai';
-  llmProvider: 'ollama' | 'azure-openai';
+  llmProvider: LlmProviderChoice;
   dataDir: string;
   port: number;
   budget: number;
@@ -92,6 +103,11 @@ interface WizardAnswers {
   azureEndpoint?: string;
   azureDeployment?: string;
   azureApiKey?: string;
+  // openai-compatible-only
+  openaiCompatBaseUrl?: string;
+  openaiCompatApiKey?: string;
+  // codex-subscription-only (EXPERIMENTAL)
+  codexAuthPath?: string;
 }
 
 // ─── Gather answers (interactive path) ───────────────────────────────────────
@@ -117,14 +133,26 @@ async function gatherInteractive(): Promise<WizardAnswers> {
     'ollama'
   )) as 'ollama' | 'azure-openai';
 
-  const llmProvider = (await promptSelect(
-    'LLM provider:',
-    [
-      { name: 'ollama (qwen2.5-coder:7b)', value: 'ollama' },
-      { name: 'azure-openai (gpt-4.1)', value: 'azure-openai' },
-    ],
-    'ollama'
-  )) as 'ollama' | 'azure-openai';
+  // codex-subscription is only offered when a Codex CLI login is already
+  // present — there is nothing useful to configure otherwise, and offering
+  // it unconditionally would just lead every user into a `codex login` dead
+  // end before they've even heard of the Codex CLI.
+  const codexAuthPath = defaultCodexAuthPath();
+  const codexLoginDetected = existsSync(codexAuthPath);
+
+  const llmChoices: { name: string; value: string }[] = [
+    { name: 'ollama (qwen2.5-coder:7b)', value: 'ollama' },
+    { name: 'azure-openai (gpt-4.1)', value: 'azure-openai' },
+    { name: 'openai-compatible (OpenAI API, Groq, vLLM, ...)', value: 'openai-compatible' },
+  ];
+  if (codexLoginDetected) {
+    llmChoices.push({
+      name: 'Use your ChatGPT/Codex login (experimental — uses your ChatGPT subscription quota)',
+      value: 'codex-subscription',
+    });
+  }
+
+  const llmProvider = (await promptSelect('LLM provider:', llmChoices, 'ollama')) as LlmProviderChoice;
 
   const dataDir = await promptInput('Data directory:', defaultDataDir());
   const portStr = await promptInput('Daemon port:', '7777');
@@ -154,6 +182,29 @@ async function gatherInteractive(): Promise<WizardAnswers> {
     answers.azureApiKey = await promptPassword('Azure OpenAI API key:');
   }
 
+  // openai-compatible-specific prompts
+  if (llmProvider === 'openai-compatible') {
+    answers.openaiCompatBaseUrl = await promptInput(
+      'OpenAI-compatible base URL (e.g. https://api.openai.com/v1, http://localhost:8000/v1):',
+      'https://api.openai.com/v1'
+    );
+    answers.openaiCompatApiKey = await promptPassword(
+      'API key (leave blank if the endpoint needs none, e.g. local vLLM):'
+    );
+  }
+
+  // codex-subscription: no further prompts needed — auth.json is already
+  // present (that's why this choice was offered). Just surface the
+  // experimental/ToS warning up front so it isn't buried in a log line.
+  if (llmProvider === 'codex-subscription') {
+    console.log(
+      '\n  codex-subscription is EXPERIMENTAL: extraction/compaction traffic will transit your\n' +
+        '  ChatGPT subscription via an unofficial endpoint and may carry ToS risk for your OpenAI\n' +
+        '  account. See docs/providers.md before relying on this in production.\n'
+    );
+    answers.codexAuthPath = codexAuthPath;
+  }
+
   return answers;
 }
 
@@ -162,13 +213,19 @@ async function gatherInteractive(): Promise<WizardAnswers> {
 function gatherNonInteractive(): WizardAnswers {
   const vector = (process.env[NON_INTERACTIVE_ENV.vector] ?? 'sqlite-vec') as 'sqlite-vec' | 'lancedb';
   const embedProvider = (process.env[NON_INTERACTIVE_ENV.embedProvider] ?? 'ollama') as 'ollama' | 'azure-openai';
-  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'ollama') as 'ollama' | 'azure-openai';
+  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'ollama') as LlmProviderChoice;
   const dataDir = process.env[NON_INTERACTIVE_ENV.dataDir] ?? defaultDataDir();
   const port = parseInt(process.env[NON_INTERACTIVE_ENV.port] ?? '7777', 10) || 7777;
   const budget = parseFloat(process.env[NON_INTERACTIVE_ENV.budget] ?? '10') || 10;
   const installService = (process.env[NON_INTERACTIVE_ENV.installService] ?? 'false') === 'true';
+  const openaiCompatBaseUrl = process.env[NON_INTERACTIVE_ENV.openaiCompatBaseUrl];
+  const openaiCompatApiKey = process.env[NON_INTERACTIVE_ENV.openaiCompatApiKey];
+  const codexAuthPath = process.env[NON_INTERACTIVE_ENV.codexAuthPath];
 
-  return { vector, embedProvider, llmProvider, dataDir, port, budget, installService };
+  return {
+    vector, embedProvider, llmProvider, dataDir, port, budget, installService,
+    openaiCompatBaseUrl, openaiCompatApiKey, codexAuthPath,
+  };
 }
 
 // ─── Conditional provider checks ─────────────────────────────────────────────
@@ -192,7 +249,11 @@ async function isOllamaModelPresent(model: string): Promise<boolean> {
   }
 }
 
-export async function checkOllama(llmModel: string, embedModel: string, nonInteractive: boolean): Promise<void> {
+export async function checkOllama(
+  llmModel: string | undefined,
+  embedModel: string | undefined,
+  nonInteractive: boolean,
+): Promise<void> {
   if (nonInteractive) return; // skip live HTTP in test mode
 
   // Check ollama binary
@@ -209,7 +270,9 @@ export async function checkOllama(llmModel: string, embedModel: string, nonInter
 
   // Check models present — auto-pull anything missing so the daemon
   // doesn't fail later at embed/LLM preflight with a 404 "model not found".
-  const modelsToCheck = [...new Set([llmModel, embedModel])];
+  // Callers pass undefined for whichever slot (llm/embed) isn't actually
+  // assigned to the ollama provider — only check the ones that are.
+  const modelsToCheck = [...new Set([llmModel, embedModel].filter((m): m is string => Boolean(m)))];
   for (const model of modelsToCheck) {
     let found: boolean;
     try {
@@ -287,10 +350,21 @@ async function checkAzure(endpoint: string, deployment: string, apiKey: string, 
 
 // ─── Build config from answers ────────────────────────────────────────────────
 
+/** Default model per LLM provider choice — mirrors the equivalent switch in
+ * the `init()` flow's Ollama-model-check block below. */
+function defaultLlmModelFor(provider: LlmProviderChoice): string {
+  switch (provider) {
+    case 'azure-openai': return 'gpt-4.1';
+    case 'openai-compatible': return 'gpt-4o-mini';
+    case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
+    case 'ollama': default: return 'qwen2.5-coder:7b';
+  }
+}
+
 function buildConfig(answers: WizardAnswers): Config {
   const base = defaultConfig();
 
-  const llmModel = answers.llmProvider === 'azure-openai' ? 'gpt-4.1' : 'qwen2.5-coder:7b';
+  const llmModel = defaultLlmModelFor(answers.llmProvider);
   const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'mxbai-embed-large';
 
   return {
@@ -315,6 +389,14 @@ function buildConfig(answers: WizardAnswers): Config {
       ...base.azure,
       endpoint: answers.azureEndpoint,
       deployment: answers.azureDeployment,
+    },
+    openaiCompatible: {
+      ...base.openaiCompatible,
+      baseUrl: answers.openaiCompatBaseUrl,
+    },
+    codexSubscription: {
+      ...base.codexSubscription,
+      authPath: answers.codexAuthPath,
     },
   };
 }
@@ -358,9 +440,14 @@ export async function init(argv: string[] = []): Promise<void> {
   }
 
   // 3. Provider checks
+  // Only check/pull the models actually assigned to the ollama provider —
+  // with 4 possible llmProvider values now (previously 2), computing
+  // llmModel unconditionally here would try to `ollama pull` a non-Ollama
+  // model name (e.g. 'gpt-4.1' or 'gpt-5.4-mini') whenever
+  // embedProvider=ollama but llmProvider is something else, aborting init.
   if (answers.llmProvider === 'ollama' || answers.embedProvider === 'ollama') {
-    const llmModel = answers.llmProvider === 'azure-openai' ? 'gpt-4.1' : 'qwen2.5-coder:7b';
-    const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : 'mxbai-embed-large';
+    const llmModel = answers.llmProvider === 'ollama' ? defaultLlmModelFor(answers.llmProvider) : undefined;
+    const embedModel = answers.embedProvider === 'ollama' ? 'mxbai-embed-large' : undefined;
     await checkOllama(llmModel, embedModel, nonInteractive);
   }
 
@@ -393,6 +480,8 @@ export async function init(argv: string[] = []): Promise<void> {
       azureKey: answers.azureApiKey,
       azureEndpoint: answers.azureEndpoint,
       azureDeployment: answers.azureDeployment,
+      openaiCompatApiKey: answers.openaiCompatApiKey,
+      openaiCompatApiKeyEnv: cfg.openaiCompatible.apiKeyEnv,
     },
     secretsPath
   );

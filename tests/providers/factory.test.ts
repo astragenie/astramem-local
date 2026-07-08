@@ -6,6 +6,8 @@ import { OllamaLLMProvider } from '../../src/providers/llm/ollama.js';
 import { OllamaEmbedProvider } from '../../src/providers/embed/ollama.js';
 import { AzureOpenAILLMProvider } from '../../src/providers/llm/azure-openai.js';
 import { AzureOpenAIEmbedProvider } from '../../src/providers/embed/azure-openai.js';
+import { OpenAICompatibleLLMProvider } from '../../src/providers/llm/openai-compatible.js';
+import { CodexSubscriptionLLMProvider } from '../../src/providers/llm/codex-subscription.js';
 
 function azureConfig(overrides: Partial<Config> = {}): Config {
   const base = defaultConfig();
@@ -117,6 +119,38 @@ describe('getProviders factory', () => {
     cfg.llm.compaction.model = 'gpt-4.1';
     delete process.env.AZURE_OPENAI_ENDPOINT;
     expect(() => getProviders(cfg)).toThrow(/endpoint/i);
+  });
+
+  it('returns OpenAICompatibleLLMProvider for compaction when config.llm.compaction.provider=openai-compatible', () => {
+    const cfg = defaultConfig();
+    cfg.openaiCompatible.baseUrl = 'https://api.openai.com/v1';
+    cfg.llm.compaction.provider = 'openai-compatible';
+    cfg.llm.compaction.model = 'gpt-4o-mini';
+    const { llm } = getProviders(cfg);
+    expect(llm.compaction).toBeInstanceOf(OpenAICompatibleLLMProvider);
+    expect(llm.compaction.model).toBe('gpt-4o-mini');
+  });
+
+  it('throws when openai-compatible selected but no base_url configured', () => {
+    const cfg = defaultConfig();
+    cfg.llm.compaction.provider = 'openai-compatible';
+    expect(() => getProviders(cfg)).toThrow(/base_url/i);
+  });
+
+  it('returns CodexSubscriptionLLMProvider for extraction when config.llm.extraction.provider=codex-subscription', () => {
+    const cfg = defaultConfig();
+    cfg.llm.extraction.provider = 'codex-subscription';
+    cfg.llm.extraction.model = 'gpt-5.4-mini';
+    const { llm } = getProviders(cfg);
+    expect(llm.extraction).toBeInstanceOf(CodexSubscriptionLLMProvider);
+    expect(llm.extraction.model).toBe('gpt-5.4-mini');
+  });
+
+  it('does not throw at construction time for codex-subscription even without ~/.codex/auth.json (lazy load)', () => {
+    const cfg = defaultConfig();
+    cfg.llm.compaction.provider = 'codex-subscription';
+    cfg.codexSubscription.authPath = '/nonexistent/path/auth.json';
+    expect(() => getProviders(cfg)).not.toThrow();
   });
 
   it('embed dim is 1024 regardless of provider', () => {

@@ -13,8 +13,8 @@ export interface Config {
    * Bearer token). */
   network: { host: string };
   llm: {
-    compaction: { provider: 'ollama' | 'azure-openai'; model: string };
-    extraction: { provider: 'ollama' | 'azure-openai'; model: string };
+    compaction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
+    extraction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
   };
   embedding: {
     provider: 'ollama' | 'azure-openai';
@@ -30,6 +30,17 @@ export interface Config {
   budget: { daily_usd: number };
   ollama: { baseUrl: string };
   azure: { endpoint?: string; deployment?: string; apiVersion: string };
+  /** Generic OpenAI-`/v1/chat/completions`-compatible provider (OpenAI API,
+   * Groq, vLLM, LM Studio, ...). `apiKeyEnv` names the env var read for the
+   * key (secrets.env-style, mirrors AZURE_OPENAI_API_KEY) — left unset it
+   * defaults to OPENAI_COMPAT_API_KEY. Some self-hosted endpoints need no
+   * key at all; in that case leave the env var unset and no Authorization
+   * header is sent (see providers/llm/openai-compatible.ts). */
+  openaiCompatible: { baseUrl?: string; apiKeyEnv: string };
+  /** EXPERIMENTAL — reuses the user's `codex login` ("Sign in with ChatGPT")
+   * session instead of an API key. See providers/llm/codex-subscription.ts
+   * and docs/providers.md for the ToS-gray-zone warning before enabling. */
+  codexSubscription: { authPath?: string };
   /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
    * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed
    * ranking; atoms with no signal score a neutral 0.5, so ε never reshuffles
@@ -185,6 +196,8 @@ export function defaultConfig(): Config {
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },
     azure: { apiVersion: '2024-10-21' },
+    openaiCompatible: { apiKeyEnv: 'OPENAI_COMPAT_API_KEY' },
+    codexSubscription: {},
     search: {
       alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0,
       governance: { maxComponentWeight: 1.0 },

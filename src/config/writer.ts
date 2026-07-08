@@ -83,6 +83,16 @@ export function configToYaml(cfg: Config): string {
     ...(cfg.azure.endpoint ? [line(1, 'endpoint', cfg.azure.endpoint)] : []),
     ...(cfg.azure.deployment ? [line(1, 'deployment', cfg.azure.deployment)] : []),
     '',
+    line(0, 'openaiCompatible'),
+    line(1, 'apiKeyEnv', cfg.openaiCompatible.apiKeyEnv),
+    ...(cfg.openaiCompatible.baseUrl ? [line(1, 'baseUrl', cfg.openaiCompatible.baseUrl)] : []),
+    '',
+    // EXPERIMENTAL (docs/providers.md) — authPath is the only non-secret
+    // setting; the OAuth tokens themselves live in ~/.codex/auth.json,
+    // never in config.yaml or secrets.env.
+    line(0, 'codexSubscription'),
+    ...(cfg.codexSubscription.authPath ? [line(1, 'authPath', cfg.codexSubscription.authPath)] : []),
+    '',
     line(0, 'search'),
     line(1, 'alpha', cfg.search.alpha),
     line(1, 'beta', cfg.search.beta),
