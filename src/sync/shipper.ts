@@ -75,6 +75,25 @@ export interface ShipperHandle {
 const DEFAULT_BATCH = 200;
 const DEFAULT_INTERVAL_MS = 30_000;
 const BACKOFF_CAP_MS = 15 * 60_000;
+const MAX_ERROR_BODY_LEN = 500;
+
+/**
+ * Read a failed response's body (bounded to ~500 chars) for inclusion in the
+ * thrown error message. A bare "HTTP 403" told us nothing about *why* — the
+ * cloud's error JSON (e.g. `{"error":"sync_disabled"}`) is what actually
+ * explains the failure, and swallowing it cost hours of debugging on a real
+ * incident (astramem-local#81). Never throws itself — a body read failure
+ * must not mask the original HTTP error.
+ */
+export async function readErrorBody(res: Response): Promise<string> {
+  try {
+    const text = await res.text();
+    if (!text) return '';
+    return text.length > MAX_ERROR_BODY_LEN ? `${text.slice(0, MAX_ERROR_BODY_LEN)}…` : text;
+  } catch {
+    return '';
+  }
+}
 
 /**
  * Stable per-install device id, persisted as a plain file in the config dir
@@ -239,7 +258,8 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
     signal: AbortSignal.timeout(60_000),
   });
   if (!res.ok) {
-    throw new Error(`sync ship failed: HTTP ${res.status}`);
+    const bodyText = await readErrorBody(res);
+    throw new Error(`sync ship failed: HTTP ${res.status}${bodyText ? ` ${bodyText}` : ''}`);
   }
   const body = (await res.json()) as { acked_seq?: number };
   const ackedSeq = typeof body.acked_seq === 'number' ? body.acked_seq : -1;

@@ -26,6 +26,7 @@ import {
   getShipAttemptState,
   sanitizeShipError,
   startShipper,
+  readErrorBody,
 } from '../../src/sync/shipper.js';
 
 function seedMemory(db: DB, scope: 'private' | 'team' | 'org', hash: string): string {
@@ -172,15 +173,17 @@ describe('shipOnce — ack cursor semantics', () => {
     for (const id of teamIds) events.append({ event_type: 'create', atom_id: id });
   });
 
-  function fakeFetch(response: { status?: number; body?: unknown } | 'network-error') {
+  function fakeFetch(response: { status?: number; body?: unknown; bodyText?: string } | 'network-error') {
     const calls: Array<{ url: string; body: unknown; headers: Record<string, string> }> = [];
     const impl = (async (url: unknown, init?: RequestInit) => {
       if (response === 'network-error') throw new Error('ECONNREFUSED');
       calls.push({ url: String(url), body: JSON.parse(String(init?.body)), headers: (init?.headers ?? {}) as Record<string, string> });
+      const bodyText = response.bodyText ?? JSON.stringify(response.body ?? {});
       return {
         ok: (response.status ?? 200) < 400,
         status: response.status ?? 200,
         json: async () => response.body ?? {},
+        text: async () => bodyText,
       } as Response;
     }) as typeof fetch;
     return { impl, calls };
@@ -221,6 +224,32 @@ describe('shipOnce — ack cursor semantics', () => {
     expect(listUnsynced(db, 100)).toHaveLength(3);
   });
 
+  // astramem-local#81: a bare "HTTP 403" swallowed the cloud's error JSON and
+  // cost hours of debugging — the response body must ride along in the thrown
+  // error so `sync ship failed: HTTP 403 {"error":"sync_disabled"}` is visible
+  // in the daemon log without extra instrumentation.
+  it('HTTP failure includes the response body in the thrown error', async () => {
+    const { impl } = fakeFetch({ status: 403, bodyText: '{"error":"sync_disabled"}' });
+    await expect(shipOnce(baseOpts(impl))).rejects.toThrow('sync ship failed: HTTP 403 {"error":"sync_disabled"}');
+  });
+
+  it('bounds an oversized error body to ~500 chars', async () => {
+    const huge = 'x'.repeat(2000);
+    const { impl } = fakeFetch({ status: 500, bodyText: huge });
+    await expect(shipOnce(baseOpts(impl))).rejects.toThrow(/x{500}…$/);
+  });
+
+  it('omits the trailing space when the failure response has no body', async () => {
+    const { impl } = fakeFetch({ status: 500, bodyText: '' });
+    let caught: Error | undefined;
+    try {
+      await shipOnce(baseOpts(impl));
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught?.message).toBe('sync ship failed: HTTP 500');
+  });
+
   it('network failure leaves everything unsynced', async () => {
     const { impl } = fakeFetch('network-error');
     await expect(shipOnce(baseOpts(impl))).rejects.toThrow('ECONNREFUSED');
@@ -233,6 +262,25 @@ describe('shipOnce — ack cursor semantics', () => {
     const result = await shipOnce(baseOpts(impl));
     expect(result.idle).toBe(true);
     expect(calls).toHaveLength(0);
+  });
+});
+
+describe('readErrorBody', () => {
+  it('reads and returns the response text verbatim when short', async () => {
+    const res = { text: async () => '{"error":"sync_disabled"}' } as Response;
+    expect(await readErrorBody(res)).toBe('{"error":"sync_disabled"}');
+  });
+
+  it('truncates with an ellipsis past ~500 chars', async () => {
+    const huge = 'y'.repeat(600);
+    const res = { text: async () => huge } as Response;
+    const out = await readErrorBody(res);
+    expect(out).toBe(`${'y'.repeat(500)}…`);
+  });
+
+  it('never throws — a body-read failure resolves to empty string', async () => {
+    const res = { text: async () => { throw new Error('stream already consumed'); } } as unknown as Response;
+    expect(await readErrorBody(res)).toBe('');
   });
 });
 

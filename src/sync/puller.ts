@@ -33,7 +33,7 @@
 
 import type { DB } from '../storage/db.js';
 import type { MemoryScope, MemoryType } from '../contracts/memory.js';
-import type { WireSyncEvent } from './shipper.js';
+import { readErrorBody, type WireSyncEvent } from './shipper.js';
 import { recomputeProjection } from './conflict-resolve.js';
 
 /** Minimal atom body needed to materialize a brand-new `memories` row on pull. See file header caveat. */
@@ -246,7 +246,8 @@ export function httpPullFetcher(url: string, token: string, fetchImpl: typeof fe
       signal: AbortSignal.timeout(10_000),
     });
     if (!res.ok) {
-      throw new Error(`sync pull failed: HTTP ${res.status}`);
+      const bodyText = await readErrorBody(res);
+      throw new Error(`sync pull failed: HTTP ${res.status}${bodyText ? ` ${bodyText}` : ''}`);
     }
     const body = (await res.json()) as Partial<PullBatch>;
     if (!Array.isArray(body.events)) {
