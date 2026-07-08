@@ -1,6 +1,7 @@
 import { getServiceAdapter } from '../service/index.js';
 import { installServiceFlow } from '../service/install-flow.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
+import { stopLockHolder } from '../service/instance-lock.js';
 import { reinstallCommand } from './reinstall.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -76,13 +77,27 @@ export async function serviceCommand(args: string[]): Promise<void> {
 
     case 'stop': {
       console.log('Stopping AstraMemory service...');
+      // Best-effort: end the scheduler's own task/unit first so its
+      // keepalive repetition trigger doesn't relaunch what we're about to
+      // kill below. Not fatal on its own — e.g. schtasks errors when the
+      // task isn't currently "running" — the PID-based stop is the real,
+      // idempotent success signal.
       try {
         await adapter.stop();
-        console.log('Service stopped.');
-      } catch (err) {
-        console.error((err as Error).message);
+      } catch { /* see comment above */ }
+
+      // adapter.stop() only ends the scheduler's own launcher process — the
+      // shim spawns the actual daemon as a detached child (launch.cjs reads
+      // current.json and spawnSync()s it), which can keep running — and keep
+      // answering /health — after the task is reported "ended". Terminate
+      // whatever is actually holding daemon.lock, directly.
+      const { port, dataDir } = resolveRuntimeConfig();
+      const stopResult = await stopLockHolder(dataDir, port);
+      if (!stopResult.ok) {
+        console.error(`Service stop failed: ${stopResult.detail}`);
         process.exit(1);
       }
+      console.log(`Service stopped. (${stopResult.detail})`);
       break;
     }
 

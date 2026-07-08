@@ -85,6 +85,74 @@ export function readLockInfo(dataDir: string): LockInfo | null {
   return readLock(lockPath(dataDir));
 }
 
+export interface StopLockHolderResult {
+  ok: boolean;
+  detail: string;
+}
+
+export interface StopLockHolderOptions {
+  /** Injectable signal sender — tests substitute a spy instead of really killing a PID. */
+  signal?: (pid: number, signal: NodeJS.Signals | number) => void;
+  /** Injectable liveness probe — tests substitute a stub instead of real fetch. */
+  healthProbe?: (port: number) => Promise<boolean>;
+  /** Total time to wait for /health to stop answering after signaling. Default 5000ms. */
+  waitMs?: number;
+}
+
+/**
+ * Terminate whichever process actually holds `dataDir`'s daemon.lock, by PID
+ * — not by asking the OS service manager to stop.
+ *
+ * Needed because the scheduler-level stop (schtasks `/end`, `systemctl
+ * stop`, `launchctl unload`) only ends the launcher process it directly
+ * started; `launch.cjs` (shim.ts) spawns the real daemon as a child via
+ * `spawnSync`, and that child can keep running — still holding the port and
+ * this lock — after the launcher/task is reported "stopped". `service stop`
+ * used to report success while `/health` kept answering because of exactly
+ * this gap.
+ *
+ * Idempotent: no lock, or a lock whose PID is already dead, both return
+ * `ok: true` with no error. Cross-platform: `process.kill(pid, 'SIGTERM')`
+ * force-terminates on Windows (no handler runs — same as the existing
+ * `reinstall` stop path) and delivers a real, gracefully-handled SIGTERM on
+ * POSIX (`serve.ts` has a `process.on('SIGTERM', shutdown)` handler).
+ */
+export async function stopLockHolder(
+  dataDir: string,
+  port: number,
+  opts: StopLockHolderOptions = {},
+): Promise<StopLockHolderResult> {
+  const holder = readLockInfo(dataDir);
+  if (!holder) return { ok: true, detail: 'no daemon.lock — nothing to stop' };
+
+  const sendSignal = opts.signal ?? ((pid, sig) => process.kill(pid, sig));
+  const probe = opts.healthProbe ?? healthOk;
+
+  let alive = true;
+  try {
+    process.kill(holder.pid, 0);
+  } catch {
+    alive = false;
+  }
+  if (!alive) return { ok: true, detail: `stale lock (pid ${holder.pid} already dead)` };
+
+  try {
+    sendSignal(holder.pid, 'SIGTERM');
+  } catch (err) {
+    return { ok: false, detail: `kill pid ${holder.pid} failed: ${(err as Error).message}` };
+  }
+
+  const waitMs = opts.waitMs ?? 5000;
+  const targetPort = holder.port ?? port;
+  const deadline = Date.now() + waitMs;
+  while (Date.now() < deadline) {
+    const healthy = await probe(targetPort);
+    if (!healthy) return { ok: true, detail: `stopped pid ${holder.pid}` };
+    await new Promise(r => setTimeout(r, 250));
+  }
+  return { ok: false, detail: `pid ${holder.pid} still serving after ${waitMs}ms` };
+}
+
 function readLock(path: string): LockInfo | null {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<LockInfo>;
