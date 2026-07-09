@@ -27,17 +27,23 @@ export const ENTITY_ONLY_SYSTEM_PROMPT = `You identify named things mentioned in
 Output STRICT JSON matching:
 {
   "entities": [
-    { "name": "<named thing mentioned>", "kind": "product" | "tech" | "person" | "org" | "repo" | "concept" }
+    { "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }
   ]
 }
 
 kind is one of:
+- actor: a named human OR AI agent — set subtype to "human" or "ai" when you can tell which; omit subtype when unsure
+- team: a named team or squad within an organization
+- org: a company or organization (e.g. "Anthropic", "Astragenie")
+- project: a named codebase/repo/workspace the work belongs to (e.g. "astramem-local")
 - product: a named product or app (e.g. "AstraMemory", "GitHub Copilot")
-- tech: a language/framework/library/tool/protocol (e.g. "Postgres", "TypeScript", "sqlite-vec")
-- person: a named individual
-- org: a company or organization
-- repo: a named git repository or codebase
-- concept: a named pattern, architecture, or idea (e.g. "bitemporal model", "CRDT")
+- workitem: a FEAT/PR/issue/ticket id (e.g. "FEAT-402", "#145")
+- decision: a DEC/ADR reference (e.g. "DEC-048", "ADR-001")
+- tech: a language/framework/library/protocol (e.g. "Postgres", "TypeScript", "sqlite-vec")
+- tool: a CLI/dev tool used to do the work (e.g. "vitest", "Docker")
+- concept: a named pattern, architecture, or idea — only RECURRING technical concepts worth remembering across sessions (e.g. "bitemporal model", "CRDT")
+- event: a named happening at a point in time (e.g. "the 2026-07-08 incident")
+- other: doesn't fit any kind above but is still a specific named thing
 
 List every specific named thing the text is ABOUT — not every word. If nothing specific is named, return {"entities": []}.`;
 

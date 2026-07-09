@@ -18,16 +18,20 @@ export interface RetrievalResultV1 {
   };
   hits: {
     id: string;
-    type: 'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event';
+    /**
+     * Same 10-value union as atom.v1/v2 `type` (ADR D4). Widened from the original 7 (2026-07-09): preference/task_result/summary were missing even though cloud already returns them — a conformant hit from a real cloud response used to fail this schema.
+     */
+    type:
+      'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event' | 'preference' | 'task_result' | 'summary';
     text: string;
     /**
      * Final fused score.
      */
     score: number;
     /**
-     * ADR-009 memory scope. private is the default (renamed from 'personal', U7-local astramem-local#110, DEC-048); 'personal' is additively accepted for one release. TODO(remove-personal-alias): drop 'personal' from this enum in the release AFTER this one (tracked in astramem-local#115).
+     * ADR-009 memory scope. private|team|org only. atom@2 cut (2026-07-09): the 'personal' alias tracked as TODO(remove-personal-alias) (astramem-local#115) is dropped from this result enum in the same breaking window.
      */
-    scope?: 'private' | 'team' | 'org' | 'personal';
+    scope?: 'private' | 'team' | 'org';
     /**
      * ScoreExplanation (ADR-005): per-signal raw score, weight, and contribution to the final score.
      */

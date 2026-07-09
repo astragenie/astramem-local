@@ -100,6 +100,12 @@ export async function embedAndIndex(
       evidence: mem.evidence ?? null,
       scope: 'private',
       valid_from: ctx.capturedAtMs ?? undefined,
+      // atom@2: stage 5 always runs entity extraction as part of this same
+      // atom's LLM call, so every atom from this pipeline has "declared"
+      // entities even when it found none — default to [] (not undefined)
+      // so the sync payload signals "tried, found nothing" rather than
+      // "extraction never ran" (see InsertInput.entities doc).
+      entities: mem.entities ?? [],
     }, eventsRepo);
 
     // FEAT-402 AC-1: link entities emitted in the same extraction call.

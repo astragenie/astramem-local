@@ -57,13 +57,17 @@ function buildMockEmbed(): EmbedProvider {
   };
 }
 
+// atom@2 repo/project consolidation (plan 20260709): the /recall/pack tests
+// below call selectPack, which now filters on `project` — real ingest
+// always derives `project` from `repo` (src/pipeline/derive-project.ts), so
+// this fixture mirrors that instead of leaving `project` null.
 function seedMemory(repo: MemoryRepo, text: string, type = 'decision', importance = 0.5) {
   return repo.insert({
     type: type as 'decision' | 'fact' | 'lesson' | 'command' | 'todo',
     text,
     normalized_text: text.toLowerCase(),
     repo: 'myrepo',
-    project: null,
+    project: 'myrepo',
     branch: null,
     agent: null,
     session_id: null,

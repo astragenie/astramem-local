@@ -1,0 +1,29 @@
+{
+  "schema": "astramem/atom@2",
+  "id": "00000000-0000-4000-8000-000000000101",
+  "type": "decision",
+  "text": "Adopt the 12-kind entity registry for atom@2 (actor/team/org/project/product/workitem/decision/tech/tool/concept/event/other).",
+  "evidence": "ADR-001 amendment (2026-07-09): atom@2 entities are typed objects, not strings.",
+  "confidence": 0.9,
+  "importance": 0.8,
+  "provenance": {
+    "tool": "claude-code",
+    "session_id": "sess-atom-v2-entities",
+    "project": "astramem",
+    "extractor": "astramem-local@0.7.0"
+  },
+  "valid_from": "2026-07-09T00:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "team",
+  "content_hash": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+  "entities": [
+    { "name": "Priya Nair", "kind": "actor", "subtype": "human" },
+    { "name": "crew:reviewer", "kind": "actor", "subtype": "ai" },
+    { "name": "astramem-local", "kind": "product" },
+    { "name": "PostgreSQL", "kind": "tech" }
+  ],
+  "created_at": "2026-07-09T00:00:00.000Z",
+  "updated_at": "2026-07-09T00:00:00.000Z"
+}

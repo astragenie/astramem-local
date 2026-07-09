@@ -8,10 +8,15 @@ import { buildApp } from '../../src/server/app.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
+// atom@2 repo/project consolidation (plan 20260709): selectPack now filters
+// on `project`, not `repo` — real ingest always derives `project` from
+// `repo` when one is given (src/pipeline/derive-project.ts), so this test
+// double mirrors that instead of leaving `project` null the way raw
+// MemoryRepo.insert callers legally can.
 function seed(db: DB, type: string, text: string, importance: number, repo = 'r1') {
   new MemoryRepo(db).insert({
     type: type as never, text, normalized_text: text.toLowerCase(),
-    repo, project: null, branch: null, agent: null, session_id: null,
+    repo, project: repo, branch: null, agent: null, session_id: null,
     hash: `h-${type}-${text.slice(0, 24)}`, source_hash: null, importance,
   });
 }
@@ -33,6 +38,33 @@ describe('selectPack (KF-B)', () => {
     expect(pack).toHaveLength(2);
     expect(pack[0]?.type).toBe('decision');   // type weight 1.0 beats command 0.6
     expect(pack.every(m => m.text !== 'other repo decision')).toBe(true);
+  });
+
+  // atom@2 repo/project consolidation AC (plan 20260709): "pack recall
+  // returns same rows for repo==project data; divergent worktree rows
+  // follow project semantics (intended change, documented)".
+  it('repo==project data: identical results whether selectPack is called with only repo or only project', () => {
+    seed(db, 'decision', 'Use SQLite not Postgres', 0.8);
+    const byRepo = selectPack(db, { repo: 'r1', now: Date.now() });
+    const byProject = selectPack(db, { repo: 'unused-fallback', project: 'r1', now: Date.now() });
+    expect(byRepo).toHaveLength(1);
+    expect(byProject).toHaveLength(1);
+    expect(byProject[0]?.id).toBe(byRepo[0]?.id);
+  });
+
+  it('divergent worktree data: an explicit project wins over repo (worktree-scoped grouping, not the old repo-column behavior)', () => {
+    // Simulates a git worktree: ingest recorded the canonical repo name but
+    // a distinct derived project (worktree dir basename).
+    new MemoryRepo(db).insert({
+      type: 'decision', text: 'worktree-scoped decision', normalized_text: 'worktree-scoped decision',
+      repo: 'memory', project: 'memory-worktree-atom2', branch: null, agent: null, session_id: null,
+      hash: 'h-worktree-1', source_hash: null, importance: 0.8,
+    });
+
+    // Old repo-column behavior would have matched on repo='memory'; the new
+    // project-column behavior requires the worktree-specific project value.
+    expect(selectPack(db, { repo: 'memory', now: Date.now() })).toHaveLength(0);
+    expect(selectPack(db, { repo: 'memory', project: 'memory-worktree-atom2', now: Date.now() })).toHaveLength(1);
   });
 
   it('respects the token budget (keeps best, drops overflow)', () => {

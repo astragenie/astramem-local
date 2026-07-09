@@ -51,11 +51,48 @@ export const WIRE_VERSION_PATTERN = /^v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)$/;
  * `src/server/lib/wire-meta.ts` — that file can't `import` this package
  * directly (`tsconfig.json` scopes `rootDir` to `src/`, TS6059), so it holds
  * its own hand-mirrored copy, held honest by
- * `tests/contracts/wire-version-map-parity.test.ts`. This is a SEPARATE axis
+ * `tests/contracts/wire-version-map-parity.test.ts`. That mirror is scoped to
+ * `*.v1.schema.json` files only, so it is UNAFFECTED by the `atom@2` addition
+ * below — `atom@2` cutover on the daemon/cloud side is separate follow-up
+ * work, not part of authoring this contract package. This is a SEPARATE axis
  * from `WIRE_VERSION`/`WIRE_VERSION_PATTERN` above (the capture protocol's
  * per-request `wire_version` field) — do not conflate the two.
  */
-export const WIRE_VERSIONS_SUPPORTED = ['atom@1', 'retrieval@1', 'sync@1', 'capture@1'] as const;
+export const WIRE_VERSIONS_SUPPORTED = ['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1'] as const;
+
+// ---------------------------------------------------------------------------
+// Entity kind registry (atom@2) — shared across atom.v2.schema.json
+// `entities[].kind`/`entities[].subtype`, held in sync by
+// tests/contracts/entity-kind-parity.test.ts.
+// ---------------------------------------------------------------------------
+
+/**
+ * Canonical 12-value entity-kind registry (atom@2). `actor` covers both
+ * humans and AI agents (see `ACTOR_KINDS` + the optional `subtype` field on
+ * each entity item) — there is no separate person/agent kind. `repo` was cut
+ * as its own kind: repo/project identity is owned by the structural
+ * `provenance.project` field, and cross-repo mentions land in `product`.
+ */
+export const ENTITY_KINDS = [
+  'actor',
+  'team',
+  'org',
+  'project',
+  'product',
+  'workitem',
+  'decision',
+  'tech',
+  'tool',
+  'concept',
+  'event',
+  'other',
+] as const;
+
+/**
+ * The subset of `ENTITY_KINDS` for which `entities[].subtype`
+ * (`'human' | 'ai'`) is a meaningful refinement.
+ */
+export const ACTOR_KINDS = ['actor', 'team', 'org'] as const;
 
 // ---------------------------------------------------------------------------
 // Sync protocol (ADR-003)

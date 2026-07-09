@@ -25,10 +25,17 @@ import { applyRerank, type RerankOpts } from './rerank.js';
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
 // src/contracts/filter-registry.ts.
-import { applySqlColumnFilters, applySqlRangeFilters } from '../contracts/filter-registry.js';
+import { applySqlColumnFilters, applySqlRangeFilters, mergeRepoAlias } from '../contracts/filter-registry.js';
 
 export interface SearchFilters {
   type?: string[];
+  /**
+   * atom@2 repo/project consolidation (plan 20260709): UX-alias input only —
+   * GET /search?repo=, POST /recall filters.repo, and the MCP tools still
+   * accept it for back-compat, but it is folded into `project`'s OR-list at
+   * the SQL boundary below (mergeRepoAlias), never queried as its own
+   * `memories.repo` column. A caller that sends both gets the union.
+   */
   repo?: string;
   /**
    * Project filter (FEAT-423). Exact match on `memories.project`. A single
@@ -384,19 +391,24 @@ export async function search(
     filterClauses.push(`type IN (${ph})`);
     filterParams.push(...filters.type);
   }
-  // FEAT-429: repo/project/agent hard-column filters (single value ->
-  // `col = ?`, list -> `col IN (...)`, OR-semantics like `type[]`, empty
-  // list -> no constraint) and the since numeric lower-bound filter
-  // (`created_at >= ?`) are now derived from the registry's
-  // `applySqlColumnFilters`/`applySqlRangeFilters` instead of hand-rolled
-  // clauses. `agent` is only handed in when `agentMode === 'filter'`
-  // (FEAT-426: the default, byte-identical to pre-FEAT-426 behavior) — in
-  // 'boost' mode it is omitted here entirely so no SQL filter is applied;
-  // non-matches stay in the result set and are instead re-ranked via the η
-  // agentBonus computed above.
+  // FEAT-429: project/agent hard-column filters (single value -> `col = ?`,
+  // list -> `col IN (...)`, OR-semantics like `type[]`, empty list -> no
+  // constraint) and the since numeric lower-bound filter (`created_at >= ?`)
+  // are derived from the registry's `applySqlColumnFilters`/
+  // `applySqlRangeFilters` instead of hand-rolled clauses. `agent` is only
+  // handed in when `agentMode === 'filter'` (FEAT-426: the default,
+  // byte-identical to pre-FEAT-426 behavior) — in 'boost' mode it is omitted
+  // here entirely so no SQL filter is applied; non-matches stay in the
+  // result set and are instead re-ranked via the η agentBonus computed above.
   const registrySqlInput: Record<string, unknown> = {};
-  if (filters.repo !== undefined) registrySqlInput.repo = filters.repo;
-  if (filters.project !== undefined) registrySqlInput.project = filters.project;
+  // atom@2 repo/project consolidation (plan 20260709): `repo` is a UX-alias
+  // input (see SearchFilters.repo doc) — it is never its own SQL column
+  // anymore. Fold it into `project`'s OR-list here, the single point every
+  // surface (GET /search, POST /recall, MCP search_memory/recall_memory)
+  // funnels through, before the registry builds the `project = ?`/`project
+  // IN (...)` clause below.
+  const mergedProject = mergeRepoAlias(filters.repo, filters.project);
+  if (mergedProject !== undefined) registrySqlInput.project = mergedProject;
   if (filters.agent !== undefined && agentMode === 'filter') registrySqlInput.agent = filters.agent;
   if (filters.since !== undefined) registrySqlInput.since = filters.since;
   const { clauses: registryClauses, params: registryParams } = applySqlColumnFilters(registrySqlInput);

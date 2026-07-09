@@ -1,0 +1,26 @@
+{
+  "schema": "astramem/atom@2",
+  "id": "00000000-0000-4000-8000-000000000102",
+  "type": "fact",
+  "text": "provenance.repo is deleted in atom@2 — project is the single canonical field.",
+  "evidence": [
+    { "transcript_id": "transcript-atom-v2-001", "span": [0, 40] }
+  ],
+  "confidence": 0.85,
+  "importance": 0.5,
+  "provenance": {
+    "tool": "claude-code",
+    "session_id": "sess-atom-v2-provenance",
+    "project": "astramem",
+    "extractor": "astramem-local@0.7.0"
+  },
+  "valid_from": "2026-07-09T00:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "org",
+  "content_hash": "2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a",
+  "entities": [],
+  "created_at": "2026-07-09T00:00:00.000Z",
+  "updated_at": "2026-07-09T00:00:00.000Z"
+}

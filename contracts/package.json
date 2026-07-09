@@ -1,7 +1,7 @@
 {
   "name": "@astragenie/astramem-contracts",
-  "version": "1.3.0",
-  "description": "Canonical JSON Schemas + golden fixtures + generated TypeScript types + Zod validators for the AstraMem cross-repo wire contracts (atom@1, retrieval@1, sync@1, capture@1). Source of truth consumed by astramem-local, astramem cloud, and astramem-plugin.",
+  "version": "2.0.0",
+  "description": "Canonical JSON Schemas + golden fixtures + generated TypeScript types + Zod validators for the AstraMem cross-repo wire contracts (atom@1, atom@2, retrieval@1, sync@1, capture@1). Source of truth consumed by astramem-local, astramem cloud, and astramem-plugin.",
   "type": "module",
   "license": "MIT",
   "repository": {

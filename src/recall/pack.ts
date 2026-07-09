@@ -8,6 +8,9 @@
 import type { DB } from '../storage/db.js';
 
 export interface PackOptions {
+  /** UX-alias input (SessionStart hook only ever sends this) — merged into
+   *  the `project` SQL filter, never queried as its own column. See
+   *  selectPack's projectFilter comment for the repo/project precedence. */
   repo: string;
   project?: string | null;
   branch?: string | null;
@@ -53,15 +56,30 @@ export function selectPack(db: DB, opts: PackOptions): PackMemory[] {
   const budget = opts.budgetTokens ?? DEFAULT_BUDGET_TOKENS;
   const weights = opts.typeWeights ?? DEFAULT_TYPE_WEIGHTS;
 
+  // atom@2 repo/project consolidation (plan 20260709): `project` is the
+  // single canonical field memories are keyed on; `repo` (PackOptions.repo,
+  // still required — the SessionStart hook only ever sends `repo`, see
+  // src/cli/hook-install.ts) is a UX-alias input, never its own SQL column.
+  // An explicit `project` wins; otherwise fall back to `repo`, matching the
+  // same precedence src/pipeline/derive-project.ts uses at write time — for
+  // ordinary (non-worktree) usage `memories.project` was written equal to
+  // `repo`, so this is a same-rows swap. In a git worktree, `repo` (the
+  // canonical repo name, explicit at ingest) and `project` (derived from
+  // cwd basename when no explicit project was set) can diverge; filtering
+  // on `project` here is the intended behavior change — worktree-scoped
+  // memories now group with their worktree rather than bleeding across
+  // every worktree of the same repo.
+  const projectFilter = opts.project ?? opts.repo;
+
   // Atom v3 (ADR-001): invalidated memories (valid_to set) are excluded from
   // the injected pack — a superseded/dead memory must not surface in recall.
   const rows = db.prepare(`
     SELECT id, type, text, importance, created_at
     FROM memories
-    WHERE repo = ? AND valid_to IS NULL
+    WHERE project = ? AND valid_to IS NULL
     ORDER BY created_at DESC
     LIMIT ?
-  `).all(opts.repo, CANDIDATE_LIMIT) as Row[];
+  `).all(projectFilter, CANDIDATE_LIMIT) as Row[];
 
   const scored: PackMemory[] = rows.map(r => {
     const ageDays = (now - r.created_at) / (24 * 60 * 60 * 1000);

@@ -18,10 +18,9 @@ export interface RetrievalQueryV1 {
       'decision' | 'fact' | 'lesson' | 'command' | 'todo' | 'note' | 'event' | 'preference' | 'task_result' | 'summary'
     )[];
     /**
-     * ADR-009 memory scope. private is the default (renamed from 'personal', U7-local astramem-local#110, DEC-048); 'personal' is additively accepted for one release. TODO(remove-personal-alias): drop 'personal' from this enum in the release AFTER this one (tracked in astramem-local#115).
+     * ADR-009 memory scope. private|team|org only. atom@2 cut (2026-07-09): the 'personal' alias tracked as TODO(remove-personal-alias) (astramem-local#115) is dropped from this filter enum in the same breaking window.
      */
-    scope?: ('private' | 'team' | 'org' | 'personal')[];
-    repo?: string;
+    scope?: ('private' | 'team' | 'org')[];
     /**
      * FEAT-424 canonical project filter: exact match. A single string is `= ?`; a string[] is `IN (...)` (OR-semantics). An empty array is 'no constraint', never match-nothing.
      */

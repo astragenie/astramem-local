@@ -211,7 +211,7 @@ describe('GET /health over real HTTP', () => {
     };
     expect(body.ok).toBe(true);
     expect(new Set(body.wire_versions_supported)).toEqual(
-      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+      new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBe(21);
@@ -237,7 +237,7 @@ describe('GET /version over real HTTP', () => {
     expect(body.name).toBe('astramemory-local');
     expect(body.version).toMatch(/^\d+\.\d+\.\d+/);
     expect(new Set(body.wire_versions_supported)).toEqual(
-      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+      new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBe(21);

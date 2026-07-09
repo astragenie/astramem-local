@@ -35,11 +35,11 @@ describe('GET /version', () => {
   // wire-contract vocabulary — the plugin's live wire-probe reads this exact
   // field name. See src/server/lib/wire-meta.ts for the hand-mirrored map +
   // tests/contracts/wire-version-map-parity.test.ts for the coverage gate.
-  it('wire_versions_supported is the domain@gen vocabulary (atom@1, retrieval@1, sync@1, capture@1)', async () => {
+  it('wire_versions_supported is the domain@gen vocabulary (atom@1, atom@2, retrieval@1, sync@1, capture@1)', async () => {
     const res = await app.inject({ method: 'GET', url: '/version' });
     const { wire_versions_supported } = res.json() as { wire_versions_supported: string[] };
     expect(new Set(wire_versions_supported)).toEqual(
-      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+      new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
   });
 
@@ -87,7 +87,7 @@ describe('GET /health (wire metadata)', () => {
     };
     expect(body.ok).toBe(true);
     expect(new Set(body.wire_versions_supported)).toEqual(
-      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+      new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBe(21);

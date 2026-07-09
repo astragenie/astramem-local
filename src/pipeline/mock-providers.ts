@@ -54,7 +54,7 @@ class MockLLMProvider implements LLMProvider {
       const lower = userContent.toLowerCase();
       const atoms: Array<{
         type: string; text: string; importance: number; confidence: number;
-        evidence?: string; entities?: Array<{ name: string; kind: string }>;
+        evidence?: string; entities?: Array<{ name: string; kind: string; subtype?: 'human' | 'ai' }>;
       }> = [];
 
       for (const rule of MOCK_EXTRACTION_VOCAB) {
