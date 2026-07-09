@@ -354,9 +354,23 @@ observation) pace regardless of how fast you post. Raising `--concurrency`
 past what's needed to keep the queue non-empty does not speed up distill —
 only the plan doc's §4 multi-daemon sharding does.
 
-## CRITICAL daemon-side gap: `as_of` does not use `captured_at` — it uses real ingest wall-clock time
+## RESOLVED (historical): `as_of` used real ingest wall-clock time instead of `captured_at`
 
-**This is the single most important finding from building this adapter.**
+> **STATUS UPDATE (2026-07-09): FIXED in v0.9.0 — this section is a
+> historical record.** The population-side fix landed in the same PR wave
+> (#135) that added this README: distill now threads the envelope's
+> `captured_at` through to `valid_from` (`src/pipeline/handlers/distill.ts:108-113`,
+> mirrored in the events/spool path, terminal write `src/storage/memories.ts:130`;
+> CHANGELOG 0.9.0 "Fixed"). The "verified live" bisection below was run against
+> a daemon binary that predated the fix — the fix commit (`079117c`) was
+> authored 31 seconds before the README commit, and the running service had
+> not been rebuilt/reinstalled at measurement time. Before a scored temporal
+> run, re-verify the bisection table below once against a freshly-reinstalled
+> ≥0.10.0 daemon; temporal-reasoning/knowledge-update questions are otherwise
+> valid to score. Legacy v0.0 envelopes (no `captured_at`) still fall back to
+> wall-clock by design.
+
+**Original finding (2026-07-08, pre-fix daemon):**
 Verified live (2026-07-08) against a real completed haystack (39 sessions,
 all `captured_at` dated 2023-07 through 2023-12, ingested for real on
 2026-07-08): `POST /recall` with `filters.as_of` set to the question's own
@@ -392,11 +406,10 @@ filtering — **temporal-reasoning (133) + knowledge-update (78) = 211 of
 hits and score as if abstaining, regardless of retrieval quality, for as
 long as this gap exists. `answer.mts` still applies `as_of` for those two
 question types per the plan doc (that part of the adapter is correct and
-unchanged) — this is a daemon-side gap, not an adapter bug, and is
-escalated to the daemon owners rather than fixed here. **Do not attempt a
-real scored run of temporal-reasoning/knowledge-update questions until this
-is resolved on the daemon side** — the number would be a measurement of
-this gap, not of memory quality.
+unchanged) — this was a daemon-side gap, not an adapter bug. **Resolved in v0.9.0 — see
+the status update at the top of this section.** Re-verify the bisection
+table once against a freshly-reinstalled ≥0.10.0 daemon before publishing a
+temporal score.
 
 ## Known daemon-side gap: poison distill jobs report as "ready"
 

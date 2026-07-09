@@ -33,51 +33,90 @@ proposed_slices:
 ---
 ## Description
 
-**Two-stage retrieval: cross-encoder reranking on top of fusion.**
+**Cross-encoder reranking on top of fusion — ALREADY SHIPPED. This FEAT covers the
+remaining follow-on work only.**
 
-Today retrieval is a single-stage weighted fusion score (`src/search/fuse.ts` —
-BM25 + vector + importance + freshness + usefulness epsilon). Add an **optional
-second stage**: take the top-N fused candidates and re-score them with a
-**cross-encoder reranker** (query+passage joint scoring), then return the reranked
-order. This is the single biggest retrieval-quality lever and it is already
-half-scaffolded — `config.search.crossEncoder { enabled, provider:'mock', topK:50,
-timeoutMs:300 }` exists as a stub.
+Cross-encoder rerank is live in both repos today, not a stub to be built:
+- Local: `src/search/rerank.ts` (`MockCrossEncoderProvider` + `HttpCrossEncoderProvider`,
+  TEI-compatible, issue #26, PRs #94/#103), wired post-fusion at
+  `src/search/search.ts:497-522`, eval-gated in
+  `tests/eval/retrieval-eval.test.ts:172-208`, with a runbook at
+  `docs/runbooks/cross-encoder-rerank.md`.
+- Cloud: FEAT-268/SLICE-189, completed 2026-07-04 — `HttpCrossEncoderRanker` with
+  full metrics.
 
-**Why:** Graphiti ships exactly this (RRF → cross-encoder rerank, bge/openai/gemini,
-`search/search.py:24-65`, code-verified). Reranking reliably lifts precision@k on
-hard queries where lexical+vector fusion alone tie-breaks poorly.
+**Why (remaining work):** the shipped implementation has three known gaps worth
+closing:
+
+1. **No separate rerank score field.** `applyRerank` overwrites `hit.score` in
+   place (src/search/rerank.ts:272-282) — there is no distinct `rerank_score` /
+   `reranked` field, so `why_memory` has zero rerank awareness and callers can't
+   tell a fused score from a reranked one. Likely additive via
+   `contracts/schemas/retrieval-result.v1.schema.json`'s open
+   `explanation.signals` map (no major version bump needed).
+2. **No local observability parity with cloud.** Cloud has outcome-tagged
+   counters/histograms for its reranker; local rerank emits none.
+3. **Open product decision:** does the shipped `HttpCrossEncoderProvider` talking
+   to a `127.0.0.1` sidecar already satisfy the "local-only, no-cloud-moat" goal,
+   or is an embedded local model (e.g. bge-reranker-v2-m3 via Ollama/ONNX) actually
+   required? Decide before scoping any provider work.
 
 ### Local scope (astramem-local, TS)
-- Real cross-encoder provider behind the existing config stub: a **local** model
-  (bge-reranker-v2-m3 via Ollama or an ONNX runtime) so we keep the no-cloud moat;
-  keep `mock` for tests and allow an HTTP provider for BYO.
-- New post-fusion stage: fuse → take topK → rerank → merge score into result.
-- Extend the ADR-005 eval gate: prove rerank does not regress recall@10/NDCG@10
-  under the deterministic fake embedder; add a rerank-on vs -off eval column.
-- Expose per-result rerank score in `why_memory` provenance.
-
-### Cloud scope (memory, .NET 10)
-- Consume the shared contract field; call a rerank provider (Azure/local) after
-  its retrieval stage. Reuse the same topK/timeout semantics.
-- Feature-flag per tenant; default off until eval-proven.
+- Add `rerank_score` (and/or a `reranked: bool` flag) as a field distinct from the
+  existing fused `hit.score`, threaded through to `why_memory` provenance.
+- Add outcome-tagged counters/histograms for rerank invocations, matching the
+  cloud pattern.
+- Resolve the embedded-model-vs-sidecar product question above; only scope new
+  provider work if the sidecar is judged insufficient.
 
 ### Shared contract impact (`@astragenie/astramem-contracts`)
-- Add optional `rerank_score` / `reranked: bool` to the retrieval result type and
-  a `rerank` block to the search request. Publish as `contracts-v2.1.0` (additive,
-  non-breaking). Both products consume.
+- Add optional `rerank_score` / `reranked: bool` to the retrieval result type via
+  the existing `explanation.signals` open map in
+  `retrieval-result.v1.schema.json` — additive, no major bump expected.
 
 ### Approximate ETA (1 dev)
-- Contract additive change: ~0.5d
-- Local: provider + stage + eval-gate wiring: **~3–4d**
-- Cloud: rerank call + flag: **~2–3d**
-- **Total ≈ 1.5–2 weeks**; local usable end of week 1.
+- Remaining scope is roughly **1 slice** (score field + observability +
+  product-decision spike), not the original 3-slice/2-week estimate — that
+  estimate assumed rerank didn't exist yet. This FEAT needs PM re-triage with a
+  substantially lower effort/risk score before slicing.
 
 ## Intake notes
-From 2026-07-09 competitor gap analysis (gap #2). Config stub already present —
-lowest-friction of the retrieval features. Unscored; run `/runner:triage`.
+From 2026-07-09 competitor gap analysis (gap #2). Originally intaken as if rerank
+were unbuilt; architecture review found it already shipped in both repos — see
+corrections section. Needs PM re-triage.
 
-## Proposed slices (PM decomposition)
+## Proposed slices (PM decomposition — STALE, see corrections)
+
+The 3-slice breakdown below assumed rerank was unbuilt and no longer reflects
+actual remaining scope (see Architecture review corrections). Retained here
+pending PM re-triage; do not dispatch against it as-is.
 
 - SLICE-1: Contract: additive rerank_score/reranked + rerank request block (2 pts)
 - SLICE-2: Local: cross-encoder provider + post-fusion stage + eval-gate extension (5 pts)
 - SLICE-3: Cloud: rerank call + per-tenant feature flag (3 pts)
+
+## Architecture review corrections (2026-07-09)
+
+**Premise was stale.** Cross-encoder rerank is already shipped, not proposed work:
+- Local: `src/search/rerank.ts` (MockCrossEncoderProvider + HttpCrossEncoderProvider,
+  TEI-compatible, issue #26, PRs #94/#103), wired post-fusion at
+  `src/search/search.ts:497-522`, eval-gated at
+  `tests/eval/retrieval-eval.test.ts:172-208`, runbook at
+  `docs/runbooks/cross-encoder-rerank.md`.
+- Cloud: FEAT-268/SLICE-189 completed 2026-07-04 (HttpCrossEncoderRanker + full
+  metrics).
+
+Rescoped to remaining work only:
+1. Expose `rerank_score`/`reranked` as fields distinct from the in-place-overwritten
+   `hit.score` (src/search/rerank.ts:272-282); wire into `why_memory`.
+2. Local observability parity with cloud's outcome-tagged counters/histograms
+   (local rerank currently has none).
+3. Product decision: is an embedded local model actually needed, or does the
+   already-shipped HTTP sidecar at 127.0.0.1 already satisfy the local-only
+   requirement?
+
+The 3-slice/2-week framing is dropped — remaining scope is ≈ 1 slice. This FEAT
+needs PM re-triage with lower effort/risk before it is dispatched; the
+`pm_effort_estimate: 0.62` / `pm_technical_risk: 0.65` / proposed_slices in this
+file's frontmatter are stale and were left untouched per editing constraints —
+re-triage should supersede them.

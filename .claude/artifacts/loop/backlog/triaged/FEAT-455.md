@@ -43,11 +43,26 @@ local daemon captures them — no separate cloud feature.
 - Design decision (spike first): **MCP passthrough tap** vs **local LLM proxy**
   (OpenAI-compatible `/v1/chat/completions` middleman) vs **enriched hook capture**.
   Proxy = broadest coverage but intercepts model traffic (privacy + latency
-  surface); MCP tap = narrower but safer. Recommend MCP/hook tap first.
-- Debounce + relevance gate so we do not spool every token (reuse the durability
-  gate FEAT-441 signal to drop low-value captures at the source).
+  surface); MCP tap is its own, separate risk tier — see corrections below — not
+  simply "narrower but safer." Ship the hook tap first; treat MCP tap as later,
+  separately-risk-assessed work.
+- Debounce + relevance gate so we do not spool every token. **Cannot reuse the
+  FEAT-441 durability gate as originally proposed** — that gate is a post-distill,
+  store-write choke point (src/distill/durability-gate.ts:1-11) and its own AC-6
+  forbids a second use of its taxonomy elsewhere. This needs a DISTINCT
+  source-side debounce/relevance filter, designed fresh (or FEAT-441 must be
+  formally extended via a mini-ADR that revisits its own AC-6).
 - Strictly opt-in, clearly disclosed (it observes traffic), default OFF; respect
-  private-by-default scope and client scrub flags.
+  private-by-default scope and client scrub flags. **Client-side scrub is not
+  currently implemented** — `src/capture/claude.ts:143-148` ships
+  `client_scrub_applied: false` today — so auto-capture would amplify secret-leak
+  risk through an already-unscrubbed path. This must be closed, or explicitly
+  risk-accepted in the required ADR, before auto-capture ships.
+- Interception must be a strict side-channel: it observes and copies, but never
+  mutates the in-flight agent↔LLM/MCP request or response.
+- Disabling auto-capture must wire through to the existing purge tooling (erase/
+  invalidate of already-captured content) — turning the toggle off must be able to
+  retroactively remove what it already captured, not just stop future capture.
 - Feed the existing durable ingest spool (FEAT-449) → no new storage.
 
 ### Shared contract impact
@@ -57,9 +72,32 @@ local daemon captures them — no separate cloud feature.
 ### Approximate ETA (1 dev)
 - Design spike (pick interception mechanism, privacy review): **~1–2d**
 - Local implementation (tap + debounce + relevance gate + opt-in wiring): **~5–8d**
-- **Total ≈ 1.5–2 weeks, local only.** Gate the spike behind a privacy/security
-  review before building — this feature observes model traffic.
+- **Total ≈ 1.5–2 weeks, local only.** Gate: an ADR plus a dedicated
+  security/privacy spike MUST happen BEFORE any slicing — this feature observes
+  model/tool traffic and, unresolved, would ship through an unscrubbed capture
+  path.
 
 ## Intake notes
 From 2026-07-09 competitor gap analysis (gap #5 in the "cool features" list). Local-only
 by design. Needs a security/privacy review at the spike gate. Unscored; run `/runner:triage`.
+
+## Architecture review corrections (2026-07-09)
+
+1. **Durability-gate reuse is invalid as originally stated.** The gate
+   (src/distill/durability-gate.ts:1-11) is a post-distill, store-write choke
+   point, and its own AC-6 forbids reusing its taxonomy elsewhere. Auto-capture
+   needs a distinct source-side debounce/relevance filter, or a mini-ADR that
+   formally extends FEAT-441.
+2. **Client-side scrub is not implemented.** `src/capture/claude.ts:143-148`
+   ships `client_scrub_applied: false` today. Auto-capture would amplify
+   secret-leak risk through this already-unscrubbed path — close it or explicitly
+   risk-accept it in the required ADR before shipping.
+3. **MCP tap is its own risk tier**, not "the safe option" bundled with hook
+   capture — tool args/results can carry file contents, DB rows, and third-party
+   credentials. Hook-tap ships first; MCP tap gets a separate risk assessment
+   later.
+4. **Added scope:** disabling auto-capture must wire to the existing purge
+   tooling (erase/invalidate of already-captured content); interception must be a
+   strict side-channel that never mutates the in-flight request.
+5. **Gate:** an ADR plus a security/privacy spike must happen BEFORE any slicing
+   begins, not merely before the build phase.
