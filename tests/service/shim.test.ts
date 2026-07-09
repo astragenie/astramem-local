@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { writeShim, shimPaths, writePointer } from '../../src/service/shim.js';
+import { writeShim, shimPaths, writePointer, exitHistoryPaths } from '../../src/service/shim.js';
 import { buildTaskXml } from '../../src/service/task-xml.js';
 
 describe('service shim', () => {
@@ -51,8 +51,7 @@ describe('service shim', () => {
     const paths = shimPaths(dir);
     // Fake daemon entry: prints its argv and exits 0.
     const fakeEntry = join(dir, 'fake-entry.cjs');
-    const fs = require('node:fs') as typeof import('node:fs');
-    fs.writeFileSync(fakeEntry, 'console.log(JSON.stringify(process.argv.slice(2)));');
+    writeFileSync(fakeEntry, 'console.log(JSON.stringify(process.argv.slice(2)));');
     writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 4242 }, paths);
     const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
     expect(res.status).toBe(0);
@@ -65,8 +64,7 @@ describe('service shim', () => {
     const ptr = JSON.parse(readFileSync(paths.pointerPath, 'utf8'));
     expect(ptr).toEqual({ nodeBin: 'node', entryJs: 'C:\\releases\\1.0.0+abc\\dist\\cli\\index.js', port: 7777 });
 
-    const fs = require('node:fs') as typeof import('node:fs');
-    const entries: string[] = fs.readdirSync(paths.binDir);
+    const entries: string[] = readdirSync(paths.binDir);
     expect(entries.some(e => e.includes('.tmp'))).toBe(false);
   });
 
@@ -155,8 +153,7 @@ describe('service shim — cross-platform (FEAT-443 SLICE-1)', () => {
   it('posix shim launcher execs the pointed-at entry with serve --port (same launch.cjs as win32)', () => {
     const paths = shimPaths(dir, 'linux');
     const fakeEntry = join(dir, 'fake-entry.cjs');
-    const fs = require('node:fs') as typeof import('node:fs');
-    fs.writeFileSync(fakeEntry, 'console.log(JSON.stringify(process.argv.slice(2)));');
+    writeFileSync(fakeEntry, 'console.log(JSON.stringify(process.argv.slice(2)));');
     writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 5151 }, paths);
     // Exercised via node directly (spawning the .sh wrapper itself requires a
     // POSIX shell not guaranteed present on every CI host) — this still
@@ -182,6 +179,143 @@ describe('service shim — cross-platform (FEAT-443 SLICE-1)', () => {
     expect(existsSync(posixPaths.cmdPath)).toBe(true);
     const cmd = readFileSync(posixPaths.cmdPath, 'utf8');
     expect(cmd.startsWith('#!/bin/sh\n')).toBe(true);
+  });
+});
+
+describe('service shim — crash-loop visibility (FEAT-440)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-shim-crashloop-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('records a zero-exit run in exit-history.jsonl and writes no crash.log (AC-1)', () => {
+    const paths = shimPaths(dir);
+    const { historyPath, crashLogPath } = exitHistoryPaths(dir);
+    const fakeEntry = join(dir, 'healthy-entry.cjs');
+    writeFileSync(fakeEntry, 'process.exit(0);');
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(0);
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.exitCode).toBe(0);
+    expect(typeof entry.durationMs).toBe('number');
+    expect(typeof entry.ts).toBe('string');
+    expect(existsSync(crashLogPath)).toBe(false);
+  });
+
+  it('captures crash stderr verbatim to crash.log and records the non-zero exit (AC-2)', () => {
+    const paths = shimPaths(dir);
+    const { historyPath, crashLogPath } = exitHistoryPaths(dir);
+    const fakeEntry = join(dir, 'crash-entry.cjs');
+    writeFileSync(fakeEntry, "console.error('BOOM: schema-version drift'); process.exit(7);");
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(7);
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    const last = JSON.parse(lines[lines.length - 1]!);
+    expect(last.exitCode).toBe(7);
+
+    const crashLog = readFileSync(crashLogPath, 'utf8');
+    expect(crashLog).toContain('BOOM: schema-version drift');
+    expect(crashLog).toContain('exit=7');
+  });
+
+  it('a daemon emitting >1MB cumulative stderr is NOT killed, and crash.log still captures the tail (observability-probes fix)', () => {
+    // Regression test: the launcher used to pipe the child's stderr and hold
+    // it ALL in process memory for spawnSync's maxBuffer check. Node's
+    // default maxBuffer is 1MB — once a long-running daemon's cumulative
+    // stderr crossed that, spawnSync SIGTERM-killed an otherwise-healthy
+    // daemon (res.status === null, res.error.code === 'ENOBUFS') and the
+    // launcher misrecorded the kill as a generic crash. The fix redirects
+    // the child's stderr straight to a scratch file via a real fd instead,
+    // so no in-process buffer exists to overflow. This test writes well
+    // over 1MB of stderr from the fake daemon and asserts the launcher still
+    // observes the daemon's REAL exit code (not a kill), while the rolling
+    // crash.log stays bounded and still contains the tail.
+    const paths = shimPaths(dir);
+    const { historyPath, crashLogPath } = exitHistoryPaths(dir);
+    const fakeEntry = join(dir, 'big-stderr-entry.cjs');
+    writeFileSync(
+      fakeEntry,
+      [
+        "const chunk = 'A'.repeat(1024 * 1024);", // 1MB
+        'process.stderr.write(chunk);',
+        'process.stderr.write(chunk);', // 2MB cumulative — past the 1MB default maxBuffer
+        "process.stderr.write('TAIL_MARKER_12345\\n');",
+        'process.exit(3);',
+      ].join('\n'),
+    );
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    // Proves no ENOBUFS kill: the launcher propagates the daemon's REAL exit
+    // code (3), not the null-status/misrecorded-as-1 a maxBuffer kill would
+    // have produced.
+    expect(res.status).toBe(3);
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    const last = JSON.parse(lines[lines.length - 1]!);
+    expect(last.exitCode).toBe(3);
+
+    const crashLog = readFileSync(crashLogPath, 'utf8');
+    // Tail is present...
+    expect(crashLog).toContain('TAIL_MARKER_12345');
+    expect(crashLog).toContain('exit=3');
+    // ...but the log is bounded to the rolling ~64KB window, nowhere near
+    // the 2MB actually written — proving capture happened via a bounded
+    // file read, not an in-memory buffer of the full stream.
+    expect(Buffer.byteLength(crashLog, 'utf8')).toBeLessThan(70 * 1024);
+  });
+
+  it('ring-buffers exit-history.jsonl to the last 50 entries', () => {
+    const paths = shimPaths(dir);
+    const { historyPath, logsDir } = exitHistoryPaths(dir);
+    mkdirSync(logsDir, { recursive: true });
+    const seedLines = Array.from({ length: 50 }, (_, i) =>
+      JSON.stringify({ ts: `seed-${i}`, exitCode: 0, durationMs: 1 }),
+    );
+    writeFileSync(historyPath, seedLines.join('\n') + '\n', 'utf8');
+
+    const fakeEntry = join(dir, 'fake-entry.cjs');
+    writeFileSync(fakeEntry, 'process.exit(0);');
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+    spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    expect(lines.length).toBe(50);
+    // Oldest seed entry ('seed-0') must have been dropped to make room.
+    expect(lines.some(l => l.includes('"seed-0"'))).toBe(false);
+    const newest = JSON.parse(lines[lines.length - 1]!);
+    expect(newest.exitCode).toBe(0);
+  });
+
+  it('never throws when the logs dir cannot be created — daemon spawn proceeds unaffected (AC-4)', () => {
+    const paths = shimPaths(dir);
+    const { logsDir } = exitHistoryPaths(dir);
+    // Force mkdirSync(logsDir) inside launch.cjs to fail: pre-create the
+    // logs path as a plain FILE instead of a directory, simulating a
+    // locked/unwritable logs dir without relying on OS ACL behavior that
+    // differs across platforms.
+    writeFileSync(logsDir, 'not a directory', 'utf8');
+
+    const fakeEntry = join(dir, 'fake-entry.cjs');
+    writeFileSync(fakeEntry, "console.log('ran ok'); process.exit(0);");
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(0);
+    expect(res.stdout).toContain('ran ok');
   });
 });
 

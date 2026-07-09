@@ -12,6 +12,7 @@
  *
  *   %LOCALAPPDATA%\Astramem\releases\<pkgversion>+<gitsha>\
  *     dist/            (copied from the checkout's build output)
+ *     migrations/      (copied — serve boot's migrate() reads these at release root)
  *     package.json     (copied)
  *     bun.lock         (copied — makes the install below deterministic)
  *     node_modules/     (bun install --production --frozen-lockfile, run
@@ -180,6 +181,7 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
   const distSrc = join(checkoutDir, 'dist');
   const pkgSrc = join(checkoutDir, 'package.json');
   const lockSrc = join(checkoutDir, lockfileName);
+  const migrationsSrc = join(checkoutDir, 'migrations');
 
   // Pre-flight guards: an incomplete checkout never gets a tmp dir at all —
   // there is nothing to quarantine because nothing was created.
@@ -194,6 +196,14 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
       `materializeRelease: lockfile not found at ${lockSrc} (expected '${lockfileName}') — required for --frozen-lockfile`,
     );
   }
+  // migrations/ MUST ship in the release: serve boot runs migrate()
+  // (src/storage/migrate.ts resolves <releaseRoot>/migrations), which
+  // readdirSync's this dir and crashes the daemon on boot if it is absent.
+  // The `--version` boot-verify below exits before migrate() runs, so it
+  // cannot catch this — hence the explicit pre-flight guard + copy.
+  if (!existsSync(migrationsSrc)) {
+    throw new Error(`materializeRelease: migrations/ not found at ${migrationsSrc} — serve boot's migrate() would crash without it`);
+  }
 
   mkdirSync(releasesRoot, { recursive: true });
   const tmpDir = join(releasesRoot, `.tmp-${randomUUID()}`);
@@ -201,6 +211,7 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
   try {
     mkdirSync(tmpDir, { recursive: true });
     cpSync(distSrc, join(tmpDir, 'dist'), { recursive: true });
+    cpSync(migrationsSrc, join(tmpDir, 'migrations'), { recursive: true });
     copyFileSync(pkgSrc, join(tmpDir, 'package.json'));
     copyFileSync(lockSrc, join(tmpDir, lockfileName));
 

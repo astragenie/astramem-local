@@ -42,69 +42,97 @@ export async function syncCommand(args: string[]): Promise<void> {
       if (rest.includes('--reship')) {
         const reshipScope = scopeArg === 'team' || scopeArg === 'org' ? scopeArg : undefined;
         const { db } = openRuntimeDb();
-        const plan = planReship(db, { scope: reshipScope, project });
+        try {
+          const plan = planReship(db, { scope: reshipScope, project });
 
-        console.log(`sync backfill --reship — ${apply ? 'APPLY' : 'DRY RUN'}${project ? ` (project=${project})` : ''}`);
-        console.log(`  scope                                    : ${plan.scope}`);
-        console.log(`  create events to backfill+reship (null payload, already-synced team/org): ${plan.createEventsToBackfillAndReship}`);
+          console.log(`sync backfill --reship — ${apply ? 'APPLY' : 'DRY RUN'}${project ? ` (project=${project})` : ''}`);
+          console.log(`  scope                                    : ${plan.scope}`);
+          console.log(`  create events to backfill+reship (null payload, already-synced team/org): ${plan.createEventsToBackfillAndReship}`);
 
-        if (!apply) {
-          console.log('\nDRY RUN — nothing changed.');
-          console.log('Re-run with --yes to backfill payload + reset synced_at so the shipper re-sends. Stop the daemon first: `node dist/cli/index.js service stop`.');
+          if (!apply) {
+            console.log('\nDRY RUN — nothing changed.');
+            console.log('Re-run with --yes to backfill payload + reset synced_at so the shipper re-sends. Stop the daemon first: `node dist/cli/index.js service stop`.');
+            break;
+          }
+
+          const result = applyReship(db, { scope: reshipScope, project });
+          console.log(`\n✓ backfilled + reset synced_at on ${result.reshipped} create-event payload(s) — shipper will re-send them.`);
+          console.log('Restart the daemon to ship the backlog: `node dist/cli/index.js reinstall`.');
           break;
+        } finally {
+          try { db.close(); } catch { /* already closed or closing — safe to ignore */ }
         }
-
-        const result = applyReship(db, { scope: reshipScope, project });
-        console.log(`\n✓ backfilled + reset synced_at on ${result.reshipped} create-event payload(s) — shipper will re-send them.`);
-        console.log('Restart the daemon to ship the backlog: `node dist/cli/index.js reinstall`.');
-        break;
       }
 
       const scope = scopeArg === 'org' ? 'org' : 'team';
       const { db } = openRuntimeDb();
-      const plan = planBackfill(db, { scope, project });
+      try {
+        const plan = planBackfill(db, { scope, project });
 
-      console.log(`sync backfill — ${apply ? 'APPLY' : 'DRY RUN'}${project ? ` (project=${project})` : ''}`);
-      console.log(`  target scope        : ${scope}  (cloud: ${scope === 'org' ? 'shared' : 'project'})`);
-      console.log(`  private → promote   : ${plan.privateToPromote}`);
-      console.log(`  already team/org    : ${plan.alreadyShareable}`);
-      console.log(`  create events to backfill (null payload, unsynced): ${plan.createEventsToBackfill}`);
+        console.log(`sync backfill — ${apply ? 'APPLY' : 'DRY RUN'}${project ? ` (project=${project})` : ''}`);
+        console.log(`  target scope        : ${scope}  (cloud: ${scope === 'org' ? 'shared' : 'project'})`);
+        console.log(`  private → promote   : ${plan.privateToPromote}`);
+        console.log(`  already team/org    : ${plan.alreadyShareable}`);
+        console.log(`  create events to backfill (null payload, unsynced): ${plan.createEventsToBackfill}`);
 
-      if (!apply) {
-        console.log('\nDRY RUN — nothing changed. IRREVERSIBLE once applied (scope is upward-only).');
-        console.log('Re-run with --yes to promote + backfill and ship to the cloud. Stop the daemon first: `node dist/cli/index.js service stop`.');
+        if (!apply) {
+          console.log('\nDRY RUN — nothing changed. IRREVERSIBLE once applied (scope is upward-only).');
+          console.log('Re-run with --yes to promote + backfill and ship to the cloud. Stop the daemon first: `node dist/cli/index.js service stop`.');
+          break;
+        }
+
+        const result = applyBackfill(db, { scope, project });
+        console.log(`\n✓ promoted ${result.promoted} private → ${scope}; backfilled ${result.backfilled} create-event payload(s).`);
+        console.log('Restart the daemon to ship the backlog: `node dist/cli/index.js reinstall`.');
         break;
+      } finally {
+        try { db.close(); } catch { /* already closed or closing — safe to ignore */ }
       }
-
-      const result = applyBackfill(db, { scope, project });
-      console.log(`\n✓ promoted ${result.promoted} private → ${scope}; backfilled ${result.backfilled} create-event payload(s).`);
-      console.log('Restart the daemon to ship the backlog: `node dist/cli/index.js reinstall`.');
-      break;
     }
 
     case 'pull': {
+      // Close the DB exactly once, on BOTH the success and the error/throw
+      // path — regardless of which branch below returns. Historically this
+      // handler left the DB handle open when the fetcher threw (e.g. a
+      // non-2xx from httpPullFetcher, astramem-local sync-teardown bug): the
+      // uncaught rejection reached main()'s top-level `process.exit(1)` with
+      // the better-sqlite3 handle still live, and forcibly tearing down the
+      // process with an open native handle mid-flight is what produced the
+      // "Assertion failed: !(handle->flags & UV_HANDLE_CLOSING)" crash on
+      // Windows — a hard process.exit() races the handle's own close
+      // teardown. Closing synchronously in `finally`, before the error can
+      // reach that outer exit, removes the handle from the race entirely.
       const { db, cfg } = openRuntimeDb();
-      const token = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
-      if (!cfg.sync.url || !cfg.sync.workspaceId || !token) {
-        console.error('sync pull: sync.enabled url/workspaceId/device-token incomplete — run `astramem-local pair` first.');
-        process.exit(1);
+      try {
+        const token = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
+        if (!cfg.sync.url || !cfg.sync.workspaceId || !token) {
+          console.error('sync pull: sync.enabled url/workspaceId/device-token incomplete — run `astramem-local pair` first.');
+          process.exitCode = 1;
+          break;
+        }
+        const fetcher = httpPullFetcher(cfg.sync.url, token as string);
+        const result = await drainPull({ db, fetcher, batchSize: cfg.sync.batchSize });
+        if (jsonMode) {
+          console.log(JSON.stringify(result));
+        } else {
+          console.log(`Pull complete: ${result.rounds} round(s), ${result.totalFetched} event(s) fetched, ${result.totalInserted} new.`);
+          console.log(`Watermark: ${result.cursor ?? '(none)'}`);
+        }
+        break;
+      } finally {
+        try { db.close(); } catch { /* already closed or closing — safe to ignore */ }
       }
-      const fetcher = httpPullFetcher(cfg.sync.url, token as string);
-      const result = await drainPull({ db, fetcher, batchSize: cfg.sync.batchSize });
-      if (jsonMode) {
-        console.log(JSON.stringify(result));
-      } else {
-        console.log(`Pull complete: ${result.rounds} round(s), ${result.totalFetched} event(s) fetched, ${result.totalInserted} new.`);
-        console.log(`Watermark: ${result.cursor ?? '(none)'}`);
-      }
-      break;
     }
 
     case 'watermark': {
       const { db } = openRuntimeDb();
-      const watermark = getPullWatermark(db);
-      console.log(jsonMode ? JSON.stringify({ watermark }) : `Pull watermark: ${watermark ?? '(none — pull has never run)'}`);
-      break;
+      try {
+        const watermark = getPullWatermark(db);
+        console.log(jsonMode ? JSON.stringify({ watermark }) : `Pull watermark: ${watermark ?? '(none — pull has never run)'}`);
+        break;
+      } finally {
+        try { db.close(); } catch { /* already closed or closing — safe to ignore */ }
+      }
     }
 
     default:

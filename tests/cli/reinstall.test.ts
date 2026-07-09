@@ -32,7 +32,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { restorePriorPointer, selectRollbackTarget } from '../../src/cli/reinstall.js';
+import { restorePriorPointer, selectRollbackTarget, healthTimeoutMs } from '../../src/cli/reinstall.js';
 import { shimPaths, writePointer, type ShimPointer } from '../../src/service/shim.js';
 import type { ReleaseListEntry } from '../../src/service/release.js';
 
@@ -156,6 +156,38 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
 
     expect(detail).toContain('restore FAILED');
     expect(detail).toContain('fix manually');
+  });
+});
+
+describe('healthTimeoutMs (bug #2: configurable verify-health budget)', () => {
+  const ENV_KEY = 'ASTRA_MEMORY_REINSTALL_HEALTH_TIMEOUT_MS';
+  const original = process.env[ENV_KEY];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
+  it('defaults to 90s when unset', () => {
+    delete process.env[ENV_KEY];
+    expect(healthTimeoutMs()).toBe(90_000);
+  });
+
+  it('honors a valid positive override', () => {
+    process.env[ENV_KEY] = '120000';
+    expect(healthTimeoutMs()).toBe(120_000);
+  });
+
+  it('falls back to the default on a non-numeric override', () => {
+    process.env[ENV_KEY] = 'not-a-number';
+    expect(healthTimeoutMs()).toBe(90_000);
+  });
+
+  it('falls back to the default on a zero/negative override', () => {
+    process.env[ENV_KEY] = '0';
+    expect(healthTimeoutMs()).toBe(90_000);
+    process.env[ENV_KEY] = '-5000';
+    expect(healthTimeoutMs()).toBe(90_000);
   });
 });
 
