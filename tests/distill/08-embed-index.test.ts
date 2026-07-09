@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { embedAndIndex } from '../../src/distill/stages/08-embed-index.js';
@@ -6,6 +6,24 @@ import type { NormalizedMemory } from '../../src/distill/stages/07-memory-normal
 import type { EmbedProvider, EmbedHealth } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
 import { EntityRepo } from '../../src/storage/entities.js';
+import { defaultConfig } from '../../src/config/config.js';
+
+// AC-7: capture what the gate actually logs (via a mocked childLogger)
+// instead of asserting on source-code shape — proves the redacted text, not
+// the raw candidate, is what reaches the (mocked) log sink.
+const { warnCalls } = vi.hoisted(() => ({
+  warnCalls: [] as Array<{ fields: Record<string, unknown>; msg: string }>,
+}));
+vi.mock('../../src/log/logger.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/log/logger.js')>();
+  return {
+    ...actual,
+    childLogger: () => ({
+      warn: (fields: Record<string, unknown>, msg: string) => { warnCalls.push({ fields, msg }); },
+      info: () => {},
+    }),
+  };
+});
 
 function makeVec(seed: number): Float32Array {
   const v = new Float32Array(1024);
@@ -180,5 +198,185 @@ describe('embedAndIndex stage', () => {
 
     const count = (db.prepare('SELECT COUNT(*) AS n FROM entities').get() as any).n;
     expect(count).toBe(1);
+  });
+
+  // FEAT-441: durability quality gate wired as a second continue-style filter
+  // at the real persist site, same ordering position as the ADR-006
+  // erasure-replay filter immediately above it in 08-embed-index.ts.
+  describe('durability gate (FEAT-441)', () => {
+    // memory#659 evidence set: 6 low-durability atoms (one extra
+    // ephemeral_state sample, per AC-1's "plus one more of the same class")
+    // + 1 durable decision-with-rationale atom.
+    const EVIDENCE_SET: Array<{ text: string; hashSeed: string; expectedReason: string | null }> = [
+      { text: 'Trunk status is green.', hashSeed: 'k1', expectedReason: 'ephemeral_state' },
+      { text: 'A task is currently running.', hashSeed: 'k2', expectedReason: 'ephemeral_state' },
+      { text: 'Commit a589551 fixed the prod tag deploy blocker.', hashSeed: 'k3', expectedReason: 'git_derivable' },
+      { text: 'No token handling identified in the auth module.', hashSeed: 'k4', expectedReason: 'vacuous_negative' },
+      { text: 'Run memory test', hashSeed: 'k5', expectedReason: 'bare_todo' },
+      { text: 'src/distill/stages/08-embed-index.ts:84', hashSeed: 'k6', expectedReason: 'path_fragment' },
+      {
+        text: 'Chose PostgreSQL over MongoDB as the canonical store because of team ACID familiarity and existing tooling — mirrors ADR-001.',
+        hashSeed: 'k7',
+        expectedReason: null,
+      },
+    ];
+
+    function evidenceSetMems(): NormalizedMemory[] {
+      return EVIDENCE_SET.map(e => normalizedMem(e.text, e.hashSeed.repeat(64).slice(0, 64)));
+    }
+
+    // AC-1: strict mode gates the 6 low-durability atoms (each with the
+    // correct gatedReason) and persists the 1 durable atom with a real id.
+    it('AC-1: strict mode gates 6/7 evidence-set atoms with correct reasons, persists the 1 durable atom', async () => {
+      const embed = makeMockEmbed();
+      const gatedOutCounter = { count: 0 };
+      const results = await embedAndIndex(evidenceSetMems(), {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        durabilityGateMode: 'strict',
+        gatedOutCounter,
+      });
+
+      expect(gatedOutCounter.count).toBe(6);
+      expect(results).toHaveLength(1);
+      expect(typeof results[0].memoryId).toBe('string');
+
+      const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(results[0].memoryId) as any;
+      expect(row.text).toContain('Chose PostgreSQL over MongoDB');
+
+      // Every gated atom's row must be absent from the store entirely.
+      const count = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as any).n;
+      expect(count).toBe(1);
+    });
+
+    // AC-2: gate off (the shipped default, including when the field is
+    // simply omitted) is byte-identical — all 7 atoms persist, no atom is
+    // ever classified/gated.
+    it('AC-2: gate off (default) persists all 7 atoms — byte-identical to pre-FEAT-441', async () => {
+      const embed = makeMockEmbed();
+      const gatedOutCounter = { count: 0 };
+      const results = await embedAndIndex(evidenceSetMems(), {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        durabilityGateMode: 'off',
+        gatedOutCounter,
+      });
+
+      expect(gatedOutCounter.count).toBe(0);
+      expect(results).toHaveLength(7);
+      const count = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as any).n;
+      expect(count).toBe(7);
+    });
+
+    it('AC-2: omitting durabilityGateMode entirely behaves exactly like "off"', async () => {
+      const embed = makeMockEmbed();
+      const results = await embedAndIndex(evidenceSetMems(), {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        // durabilityGateMode intentionally omitted
+      });
+
+      expect(results).toHaveLength(7);
+    });
+
+    // AC-2 (normalizedText/finalHash parity): the gate only decides whether
+    // an atom reaches insertWithCreateEvent — it must never mutate the
+    // normalize/hash stage's output. Compare the persisted row's
+    // normalized_text/hash against the input NormalizedMemory field values
+    // for the one atom common to both an off-run and a strict-run (the
+    // durable atom, which persists in both).
+    it('AC-2: normalizedText/finalHash for a persisted atom are identical whether the gate is on or off', async () => {
+      const embed = makeMockEmbed();
+      const durableMem = normalizedMem(
+        'Chose PostgreSQL over MongoDB as the canonical store because of team ACID familiarity and existing tooling — mirrors ADR-001.',
+        'z'.repeat(64),
+      );
+
+      const dbOff = openDb(':memory:');
+      migrate(dbOff);
+      const offResults = await embedAndIndex([durableMem], {
+        db: dbOff, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        durabilityGateMode: 'off',
+      });
+      const offRow = dbOff.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(offResults[0].memoryId) as any;
+
+      const dbStrict = openDb(':memory:');
+      migrate(dbStrict);
+      const strictResults = await embedAndIndex([durableMem], {
+        db: dbStrict, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        durabilityGateMode: 'strict',
+      });
+      const strictRow = dbStrict.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(strictResults[0].memoryId) as any;
+
+      expect(strictRow.normalized_text).toBe(offRow.normalized_text);
+      expect(strictRow.hash).toBe(offRow.hash);
+      expect(strictRow.normalized_text).toBe(durableMem.normalizedText);
+      expect(strictRow.hash).toBe(durableMem.finalHash);
+    });
+
+    // AC-7: the logged text for a gated atom has already passed through the
+    // same Stage-0 redaction path /remember and ingest use — a secret
+    // matching a configured custom pattern must never reach the log sink
+    // in the clear, even though the atom itself is never persisted.
+    it('AC-7: a gated atom containing a secret is redacted before it reaches the log sink', async () => {
+      warnCalls.length = 0;
+      const embed = makeMockEmbed();
+      const secretText = 'Run memory test TESTSECRET-99999'; // bare_todo shape (imperative, <=8 words, no rationale)
+      const mem = normalizedMem(secretText, 'm'.repeat(64));
+      const redactConfig = {
+        ...defaultConfig(),
+        security: {
+          ...defaultConfig().security,
+          redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: ['TESTSECRET-\\d+'] },
+        },
+      };
+
+      const results = await embedAndIndex([mem], {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        durabilityGateMode: 'strict',
+        redactConfig,
+      });
+
+      expect(results).toHaveLength(0); // gated, never persisted
+      expect(warnCalls).toHaveLength(1);
+      expect(warnCalls[0].fields.gatedReason).toBe('bare_todo');
+      const loggedText = warnCalls[0].fields.text as string;
+      expect(loggedText).not.toContain('TESTSECRET-99999');
+      expect(loggedText).toContain('[REDACTED:custom:');
+    });
+
+    it('AC-7: redaction falls back to defaultConfig() (redaction ON) when redactConfig is omitted', async () => {
+      warnCalls.length = 0;
+      const embed = makeMockEmbed();
+      const mem = normalizedMem('Run memory test', 'n'.repeat(64));
+
+      await embedAndIndex([mem], {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        durabilityGateMode: 'strict',
+        // redactConfig intentionally omitted
+      });
+
+      expect(warnCalls).toHaveLength(1);
+      expect(warnCalls[0].fields.gatedReason).toBe('bare_todo');
+    });
+
+    // AC-4: gatedOutCounter is the observability out-param the caller
+    // (distill/pipeline.ts) reads back to populate gatedOutCount in both
+    // the structured job log and the PipelineResult digest.
+    it('AC-4: gatedOutCounter accumulates once per gated atom, unaffected by dedup/erasure skips', async () => {
+      const embed = makeMockEmbed();
+      const gatedOutCounter = { count: 0 };
+      const mems = [
+        normalizedMem('Run memory test', 'p'.repeat(64)),
+        normalizedMem('Trunk status is green.', 'q'.repeat(64)),
+        normalizedMem('a durable fact about the architecture', 'r'.repeat(64)),
+      ];
+
+      const results = await embedAndIndex(mems, {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+        durabilityGateMode: 'strict',
+        gatedOutCounter,
+      });
+
+      expect(gatedOutCounter.count).toBe(2);
+      expect(results).toHaveLength(1);
+    });
   });
 });

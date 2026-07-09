@@ -37,7 +37,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type Config, defaultConfig, applyFusionGovernance } from './config.js';
+import { type Config, defaultConfig, applyFusionGovernance, applyDurabilityGateGovernance } from './config.js';
 
 type PlainObject = Record<string, unknown>;
 
@@ -146,7 +146,11 @@ function readConfigFileWithRetry(
  */
 export function loadConfigFromDisk(configDir: string, reader?: (path: string) => string): Config {
   const cfg = loadConfigFromDiskRaw(configDir, reader);
-  return { ...cfg, search: applyFusionGovernance(cfg.search) };
+  return {
+    ...cfg,
+    search: applyFusionGovernance(cfg.search),
+    distill: applyDurabilityGateGovernance(cfg.distill),
+  };
 }
 
 /** Un-governed disk load — every return path funnels through the exported

@@ -38,6 +38,7 @@ import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
 import { usefulnessRate, usefulnessByType } from '../storage/usefulness.js';
 import { buildMemoryHealthFull } from '../server/queries/memory-health.js';
 import type { DB } from '../storage/db.js';
+import type { DurabilityGateMode } from '../distill/durability-gate.js';
 
 export type { Check, CheckResult };
 
@@ -111,6 +112,9 @@ export interface DoctorCheckOpts {
    * Test-only seam — production callers should never need to set this.
    */
   releasesRoot?: string;
+  /** FEAT-441 AC-8: current `distill.durabilityGate` mode. Defaults to
+   * 'off' (the shipped default) when not supplied. */
+  durabilityGateMode?: DurabilityGateMode;
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
@@ -921,6 +925,26 @@ function checkCrashLoop(dataDir: string, threshold = 3): Check {
   };
 }
 
+// ─── Check: Durability gate mode (FEAT-441 AC-8) ─────────────────────────────
+
+/**
+ * Informational row reporting the current `distill.durabilityGate` mode —
+ * never a WARN in any mode ('off'/'lenient'/'strict' all report ok: true).
+ * 'strict' is opt-in (not the shipped default), so surfacing it here is
+ * about operational visibility, not flagging a misconfiguration.
+ */
+function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
+  return {
+    name: 'Distill durability gate',
+    async run(): Promise<CheckResult> {
+      if (mode === 'off') {
+        return { ok: true, message: 'durability gate: off (default — no atoms are gated at persist time)' };
+      }
+      return { ok: true, message: `durability gate: ${mode} (see FEAT-441 / src/distill/durability-gate.ts)` };
+    },
+  };
+}
+
 // ─── Check: Schema drift (FEAT-439 AC-2/AC-5) ────────────────────────────────
 
 interface ServedSchemaVersion {
@@ -1059,6 +1083,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkBearerLocation(),
     checkUsefulness(dataDir, encryptionEnabled),
     checkMemoryHealth(dataDir, encryptionEnabled),
+    checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
