@@ -1,16 +1,16 @@
 # Configuration reference
 
-AstraMemory Local is configured via `config.yaml` written by `astra-memory init`. The file lives
+AstraMemory Local is configured via `config.yaml` written by `astramem-local init`. The file lives
 at:
 
 | OS      | Default path                                          |
 |---------|-------------------------------------------------------|
 | Linux   | `~/.config/astra-memory/config.yaml`                 |
 | macOS   | `~/Library/Application Support/astra-memory/config.yaml` |
-| Windows | `%APPDATA%\AstraMemory\config.yaml`                  |
+| Windows | `%APPDATA%\Astramem\config.yaml`                     |
 
-Edit the file directly and restart the daemon (`astra-memory service stop && astra-memory service start`).
-Use `astra-memory doctor` after changes to validate the new configuration.
+Edit the file directly and restart the daemon (`astramem-local service stop && astramem-local service start`).
+Use `astramem-local doctor` after changes to validate the new configuration.
 
 ---
 
@@ -27,7 +27,7 @@ port: 7777
 # The daemon creates this directory on first start if it does not exist.
 dataDir: ~/.local/share/astra-memory    # Linux default
 # dataDir: ~/Library/Application Support/astra-memory   # macOS default
-# dataDir: C:\Users\<name>\AppData\Local\AstraMemory     # Windows default
+# dataDir: C:\Users\<name>\AppData\Local\Astramem         # Windows default
 
 # LLM providers used by the distillation pipeline.
 # compaction and extraction may use different providers/models.
@@ -41,7 +41,7 @@ llm:
     model: qwen2.5-coder:7b
 
 # Embedding provider — system-wide.
-# Changing provider or model at the SAME dim requires: astra-memory rebuild
+# Changing provider or model at the SAME dim requires: astramem-local rebuild
 # Changing dim against an EXISTING database requires the resumable
 # `reembed-dim` procedure — see docs/embed-dim-migration.md. A fresh
 # install can just set `dim` before the first `init`/`serve` run.
@@ -177,10 +177,10 @@ Type: `{ provider, model, dim: number }`.
 System-wide embedding configuration. `dim` defaults to 1024 (matching `mxbai-embed-large` /
 Azure `text-embedding-3-*`) but is a plain config value, not a fixed literal (FEAT-409) — the
 sqlite-vec index is created as `FLOAT[dim]` from whatever value was configured at DB-creation
-time. Changing `provider` or `model` at the same dim without running `astra-memory rebuild`
+time. Changing `provider` or `model` at the same dim without running `astramem-local rebuild`
 will cause a mismatch between stored embeddings and new embeddings; the doctor will detect this
 mismatch and block the distillation worker until reindex completes. Changing `dim` against an
-EXISTING database (not a fresh install) requires the resumable `astra-memory reembed-dim`
+EXISTING database (not a fresh install) requires the resumable `astramem-local reembed-dim`
 procedure — see docs/embed-dim-migration.md.
 
 ### `budget.daily_usd`

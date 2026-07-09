@@ -1,7 +1,7 @@
 {
   "session_id": "34764d70-90c7-4e1b-80ea-abcbfe9a898a",
   "first_seen": "2026-07-08T21:43:56.699Z",
-  "last_seen": "2026-07-09T14:45:00.755Z",
+  "last_seen": "2026-07-09T18:29:34.872Z",
   "total_bytes": 0,
   "entries": {
     "C:\\work\\mega\\astramemory-local\\.claude\\hooks\\log_event.sh": {
@@ -1296,6 +1296,105 @@
       "content": null,
       "last_edit_at": "2026-07-09T14:45:00.751Z",
       "mtime_at_last_edit": "2026-07-09T14:45:00.441Z"
+    },
+    "C:\\Users\\serge\\AppData\\Roaming\\Astramem\\config.yaml": {
+      "read_count": 0,
+      "first_read_at": "2026-07-09T15:09:55.545Z",
+      "last_read_at": "2026-07-09T15:09:55.545Z",
+      "mtime_at_last_read": "2026-07-09T15:09:55.167Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T17:32:21.721Z",
+      "mtime_at_last_edit": "2026-07-09T17:32:21.407Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\qwen3-8b-breaks-distill-extract.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-09T15:14:08.617Z",
+      "last_read_at": "2026-07-09T15:14:08.617Z",
+      "mtime_at_last_read": "2026-07-09T15:14:08.411Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T15:56:20.013Z",
+      "mtime_at_last_edit": "2026-07-09T15:56:19.141Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\MEMORY.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-09T15:14:19.639Z",
+      "last_read_at": "2026-07-09T15:14:19.639Z",
+      "mtime_at_last_read": "2026-07-09T15:14:19.424Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T15:14:19.639Z",
+      "mtime_at_last_edit": "2026-07-09T15:14:19.424Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\providers\\llm\\ollama.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-09T15:33:07.048Z",
+      "last_read_at": "2026-07-09T15:33:07.048Z",
+      "mtime_at_last_read": "2026-07-08T14:02:04.134Z",
+      "size_at_last_read": 4703,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T15:33:49.892Z",
+      "mtime_at_last_edit": "2026-07-09T15:33:49.625Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\scripts\\eval\\extraction-bench\\run-bench.mts": {
+      "read_count": 2,
+      "first_read_at": "2026-07-09T16:00:23.226Z",
+      "last_read_at": "2026-07-09T17:28:42.007Z",
+      "mtime_at_last_read": "2026-07-09T16:07:31.577Z",
+      "size_at_last_read": 17690,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T16:07:32.503Z",
+      "mtime_at_last_edit": "2026-07-09T16:07:31.577Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\providers\\llm\\codex-subscription.ts": {
+      "read_count": 0,
+      "first_read_at": "2026-07-09T16:57:29.298Z",
+      "last_read_at": "2026-07-09T16:57:29.298Z",
+      "mtime_at_last_read": "2026-07-09T16:57:28.868Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T16:58:27.512Z",
+      "mtime_at_last_edit": "2026-07-09T16:58:26.535Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\distill\\prompts\\extract.ts": {
+      "read_count": 2,
+      "first_read_at": "2026-07-09T17:10:01.289Z",
+      "last_read_at": "2026-07-09T17:17:36.606Z",
+      "mtime_at_last_read": "2026-07-09T15:02:16.722Z",
+      "size_at_last_read": 8067,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T17:55:00.127Z",
+      "mtime_at_last_edit": "2026-07-09T17:54:59.842Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\src\\distill\\stages\\05-extract.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-09T17:19:04.520Z",
+      "last_read_at": "2026-07-09T17:19:04.520Z",
+      "mtime_at_last_read": "2026-07-08T14:02:04.105Z",
+      "size_at_last_read": 5489,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T18:12:12.955Z",
+      "mtime_at_last_edit": "2026-07-09T18:12:12.679Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\loop\\backlog\\pending\\FEAT-450.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-09T18:29:34.850Z",
+      "last_read_at": "2026-07-09T18:29:34.850Z",
+      "mtime_at_last_read": "2026-07-09T18:29:33.279Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-09T18:29:34.850Z",
+      "mtime_at_last_edit": "2026-07-09T18:29:33.279Z"
     }
   }
 }

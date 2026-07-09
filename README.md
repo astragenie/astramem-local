@@ -1,6 +1,10 @@
 # AstraMemory Local
 
-Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.8.1.
+[![npm version](https://img.shields.io/npm/v/astramem-local.svg)](https://www.npmjs.com/package/astramem-local)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Test](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml/badge.svg)](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml)
+
+Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.10.0.
 
 ## Wire compatibility
 
@@ -248,12 +252,17 @@ Claude Code discovers and calls the tools below automatically when configured in
 | `get_health` | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` | `GET /health` |
 | `why_memory` | Provenance receipt — extraction evidence + confidence for a memory | `GET /memory/:id/why` |
 | `session_digest` | Session summary digest | `GET /sessions/:id/digest` |
+| `agent_profile` | Read-time per-agent "what has this agent learned" profile — top lessons, recent decisions, prior corrections | `GET /agents/:agent/profile` |
 | `invalidate_memory` | Soft-delete a memory (lifecycle op) | `POST /memory/:id/invalidate` |
 | `supersede_memory` | Replace an old memory with a new one, linked via `memory_events` | `POST /memory/:id/supersede` |
 | `promote_memory` | Promote a memory's scope: personal → team → org | `POST /memory/:id/promote` |
+| `restore_memory` | Un-archive a memory previously archived by the W4.4 TTL policy or a manual archive event | `POST /memory/:id/restore` |
 | `memory_history` | Full `memory_events` log for a memory | `GET /memory/:id/history` |
 | `submit_feedback` | Explicit recall-usefulness signal — "this memory mattered" (U5 canonical name, shared with cloud) | `POST /memory/:id/used` |
 | `mark_memory_used` | **DEPRECATED** one-release alias for `submit_feedback` (same handler) — migrate now | `POST /memory/:id/used` |
+| `erase_memory` | Erasure v1 (ADR-006): permanently hard-delete a memory, leaving only a tombstone event | `DELETE /memory/:id` |
+| `list_consolidation_proposals` | Pending (or resolved) stage-9 consolidation proposals awaiting a merge/keep decision (ADR-004) | `GET /consolidation/proposals` |
+| `resolve_consolidation_proposal` | Accept or reject a pending consolidation proposal | `POST /consolidation/proposals/:id/accept` / `.../reject` |
 
 **Plugin `.mcp.json` wiring:**
 
@@ -505,7 +514,7 @@ publishing flow.
 
 ## Status
 
-**v0.8.1** — local-first memory daemon with 17 migrations, a 15-tool MCP surface, hybrid
+**v0.10.0** — local-first memory daemon with 21 migrations, a 17-tool MCP surface, hybrid
 BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
 promote) with full provenance (`why_memory`), consolidation proposals, and local↔SaaS sync
 (shipper/puller/conflict-resolve). CI-gated retrieval eval (ADR-005) runs recall@10 ≥ 0.9 /
