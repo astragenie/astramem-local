@@ -224,8 +224,8 @@ All endpoints require Bearer token authentication except `GET /version` and `GET
 | `GET /health` | — | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` |
 | `GET /version` | — | Version discovery: `{ name, version, wire_versions_supported, schema_version, ts }` |
 | `POST /ingest/transcript` | Bearer | Capture protocol endpoint — accepts `transcript` and `events` kinds; idempotency via `Idempotency-Key` header. See [docs/capture-protocol.md](docs/capture-protocol.md). |
-| `GET /search` | Bearer | Hybrid search with type/repo/project/since filters |
-| `POST /recall` | Bearer | Top-K semantic recall (alias: `search` with k=5) |
+| `GET /search` | Bearer | Hybrid search with type/repo/project/since filters + named `preset` routing. See [docs/retrieval-presets.md](docs/retrieval-presets.md). |
+| `POST /recall` | Bearer | Top-K semantic recall (alias: `search` with k=5) + named `preset` routing |
 | `POST /recall/pack` | Bearer | Token-budgeted memory pack for a repo/project/branch — powers the SessionStart hook |
 | `POST /remember` | Bearer | Direct memory insert, bypasses distillation |
 | `GET /memory/:id` | Bearer | Single memory lookup |
@@ -246,8 +246,8 @@ Claude Code discovers and calls the tools below automatically when configured in
 
 | Tool | Description | Maps to |
 |---|---|---|
-| `search_memory` | Hybrid FTS + vector search with optional type/repo/project/since filters | `GET /search` |
-| `recall_memory` | Top-K semantic recall (default k=5) | `POST /recall` |
+| `search_memory` | Hybrid FTS + vector search with optional type/repo/project/since filters + named `preset` routing | `GET /search` |
+| `recall_memory` | Top-K semantic recall (default k=5) + named `preset` routing | `POST /recall` |
 | `remember` | Direct memory insert, bypasses distillation | `POST /remember` |
 | `get_health` | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` | `GET /health` |
 | `why_memory` | Provenance receipt — extraction evidence + confidence for a memory | `GET /memory/:id/why` |
@@ -466,6 +466,7 @@ secret.
 
 ## Further reading
 
+- [docs/retrieval-presets.md](docs/retrieval-presets.md) — named retrieval presets (`preset=default|recent|exact|entity|temporal`)
 - [docs/migration-from-saas.md](docs/migration-from-saas.md) — switch the plugin from remote SaaS to local daemon
 - [docs/configuration.md](docs/configuration.md) — full config.yaml reference
 - [docs/providers.md](docs/providers.md) — Ollama and Azure OpenAI setup

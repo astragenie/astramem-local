@@ -23,6 +23,7 @@ import {
 } from '../../src/eval/harness.js';
 import { recallAtK, ndcgAtK } from '../../src/eval/metrics.js';
 import { MockCrossEncoderProvider, resolveRerankOpts, type RerankOpts } from '../../src/search/rerank.js';
+import { resolvePresetWeights } from '../../src/search/presets.js';
 
 const fixturesDir = join(__dirname, '..', '..', 'contracts', 'fixtures', 'eval');
 const corpus = JSON.parse(readFileSync(join(fixturesDir, 'corpus.json'), 'utf8')) as EvalCorpus;
@@ -160,6 +161,44 @@ describe('AC-6: zeta=0 ranking snapshot', () => {
 
   it('zeta defaults to 0 in defaultConfig().search (AC-6 default OFF)', () => {
     expect(defaultConfig().search.zeta).toBe(0);
+  });
+});
+
+// FEAT-454 AC-1: with `preset` absent (the pre-FEAT-454 shape) vs
+// `preset: 'default'` explicitly resolved through `resolvePresetWeights`,
+// ranking is byte-identical — proven the same way the AC-6 zeta=0 snapshot
+// above is: run the exact same ADR-005 corpus + query set through two
+// independently-seeded DBs, one with the raw `defaultConfig().search` (the
+// pre-FEAT-454 caller shape — no preset concept at all) and one with the
+// weights `resolvePresetWeights('default', defaultConfig().search)` actually
+// produces (the shape every route now derives per-request, see
+// src/server/routes/search.ts / src/mcp/server.ts). If routing through the
+// preset seam ever stopped being a true no-op for 'default', this snapshot
+// would catch it immediately.
+describe("FEAT-454 AC-1: preset='default' byte-identical ranking snapshot", () => {
+  it('every query\'s ranked order is identical with preset=default weights vs no preset concept at all', async () => {
+    const dbNoPreset = openDb(':memory:');
+    migrate(dbNoPreset);
+    const reportNoPreset = await runRetrievalEval(
+      dbNoPreset, fakeEmbed, defaultConfig().search, corpus, querySet,
+    );
+
+    const dbPresetDefault = openDb(':memory:');
+    migrate(dbPresetDefault);
+    const presetDefaultWeights = resolvePresetWeights('default', defaultConfig().search);
+    const reportPresetDefault = await runRetrievalEval(
+      dbPresetDefault, fakeEmbed, presetDefaultWeights, corpus, querySet,
+    );
+
+    expect(reportPresetDefault.perQuery.map(r => r.rankedAtomIds))
+      .toEqual(reportNoPreset.perQuery.map(r => r.rankedAtomIds));
+    expect(reportPresetDefault.meanRecall).toBe(reportNoPreset.meanRecall);
+    expect(reportPresetDefault.meanNdcg).toBe(reportNoPreset.meanNdcg);
+  });
+
+  it('resolvePresetWeights("default", ...) returns weights equal to the unresolved base (structural no-op)', () => {
+    const base = defaultConfig().search;
+    expect(resolvePresetWeights('default', base)).toEqual(base);
   });
 });
 

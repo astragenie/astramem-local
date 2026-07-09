@@ -188,3 +188,6 @@ table.
   cross-repo follow-up (see "Cross-repo follow-up" above).
 - Deferred: write-side project auto-derive + null-project backfill; agent
   soft-boost (FEAT-219 role-scoped recall).
+- FEAT-454: named retrieval presets (`preset=entity`/`preset=temporal` route
+  to the `entity`/`as_of` filters documented here) — see
+  [docs/retrieval-presets.md](retrieval-presets.md).
