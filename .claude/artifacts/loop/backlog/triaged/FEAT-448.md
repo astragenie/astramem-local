@@ -1,6 +1,6 @@
 ---
 id: FEAT-448
-status: pending
+status: triaged
 priority: P2
 category: platform
 target_release: null
@@ -10,8 +10,17 @@ blocks: ["FEAT-441 default-on (distill.durabilityGate: lenient|strict)"]
 slices: []
 derived_from: SLICE-419 grade FF-1 (durability-gate re-review MEDIUM)
 autonomous_safe: true
-tags: [concern:recall, concern:quality, surface:distill, stack:typescript, followup:FEAT-441]
-triage_notes: "Fast-follow from SLICE-419 (FEAT-441). The durability gate's RATIONALE_MARKER_RE is a bare keyword-presence check — `since`/`because`/`reason`/`--` anywhere in an atom exempts it from gating, so junk with an incidental marker slips through (false-negative). Inert today (gate defaults off) and in the SAFE direction per PM under-gate>over-gate bias, but this MUST be tightened before distill.durabilityGate is ever defaulted to lenient|strict in any environment, else the gate silently under-performs. Bounded regex + test change, reversible, well-covered by existing both-directions test harness — autonomous_safe."
+tags: ["concern:recall", "concern:quality", "surface:distill", "stack:typescript", "followup:FEAT-441"]
+triage_notes: "technical_risk 0.15 sits in the 0.0-0.2 band (single existing file, known regex-tightening pattern, git-revertable, already covered by a both-directions test harness). Inert today (gate defaults off) so not urgent, but cheap and well-specified -- P2, autonomous-safe matching the FEAT's own pre-existing triage_notes classification."
+pm_customer_impact: 0.35
+pm_effort_estimate: 0.18
+pm_strategic_alignment: 0.5
+pm_technical_risk: 0.15
+pm_dependency_depth: 0.15
+pm_composite_priority: P2
+pm_autonomous_safe: true
+pm_reviewed: 2026-07-09
+updated: 2026-07-09
 ---
 
 # FEAT-448: tighten RATIONALE_MARKER_RE — require causal proximity, not bare keyword presence

@@ -1,7 +1,7 @@
 ---
 id: FEAT-455
-status: pending
-priority: null
+status: triaged
+priority: P2
 category: feature
 target_release: null
 created: 2026-07-09
@@ -10,6 +10,16 @@ depends_on: []
 slices: []
 derived_from: docs/research/2026-07-09-competitor-gap-analysis.md
 cross_product: [astramem-local]
+pm_customer_impact: 0.45
+pm_effort_estimate: 0.52
+pm_strategic_alignment: 0.55
+pm_technical_risk: 0.9
+pm_dependency_depth: 0.2
+pm_composite_priority: P2
+pm_autonomous_safe: false
+pm_reviewed: 2026-07-09
+autonomous_safe: false
+triage_notes: "technical_risk 0.9 sits in the top band (0.9-1.0: 'unknowns needing a spike') because the FEAT body itself mandates a pre-build design spike to choose the interception mechanism, and the mechanism observes live agent<->LLM/MCP traffic -- a privacy-sensitive, hard-to-fully-reverse trust surface even though the code path itself is revertable. Real adoption-driver value but explicitly gated -- P2, autonomous_safe FALSE per the operator's direction pending a dedicated security/privacy review before any build dispatch."
 ---
 ## Description
 

@@ -1,7 +1,7 @@
 ---
 id: FEAT-454
-status: pending
-priority: null
+status: triaged
+priority: P3
 category: feature
 target_release: null
 created: 2026-07-09
@@ -10,6 +10,16 @@ depends_on: []
 slices: []
 derived_from: docs/research/2026-07-09-competitor-gap-analysis.md
 cross_product: [astramem-local, memory]
+pm_customer_impact: 0.3
+pm_effort_estimate: 0.32
+pm_strategic_alignment: 0.5
+pm_technical_risk: 0.3
+pm_dependency_depth: 0.15
+pm_composite_priority: P3
+pm_autonomous_safe: true
+pm_reviewed: 2026-07-09
+autonomous_safe: true
+triage_notes: "technical_risk 0.3 sits at the low end of the 0.3-0.5 band (new pattern -- a mode-routing layer plus an additive contract enum across two codebases -- but no scoring-logic changes and no schema change, per the FEAT's own scope). Cheapest and least differentiated of the six competitor-gap FEATs -- P3, autonomous-safe given the small, additive, well-bounded blast radius."
 ---
 ## Description
 

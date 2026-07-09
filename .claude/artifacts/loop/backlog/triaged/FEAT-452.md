@@ -1,7 +1,7 @@
 ---
 id: FEAT-452
-status: pending
-priority: null
+status: triaged
+priority: P2
 category: feature
 target_release: null
 created: 2026-07-09
@@ -10,6 +10,26 @@ depends_on: []
 slices: []
 derived_from: docs/research/2026-07-09-competitor-gap-analysis.md
 cross_product: [astramem-local, memory]
+pm_customer_impact: 0.5
+pm_effort_estimate: 0.62
+pm_strategic_alignment: 0.7
+pm_technical_risk: 0.65
+pm_dependency_depth: 0.15
+pm_composite_priority: P2
+pm_autonomous_safe: false
+pm_reviewed: 2026-07-09
+autonomous_safe: false
+triage_notes: "technical_risk 0.65 sits in the 0.6-0.8 band (new external dependency -- a local cross-encoder model runtime -- plus cross-module retrieval-pipeline reach and cross-service coordination; rollback needs a coordinated flag state, not schema migration, keeping it below the 0.9+ band). Strong strategic fit ('single biggest retrieval-quality lever,' half-scaffolded) but large multi-week cross-service effort and nothing broken today -- P2, not inflated to P1 per the batch's own 'do not inflate' guidance; autonomous_safe false given the new dependency + decomposition requirement."
+proposed_slices:
+  - id_suffix: -SLICE-1
+    title: "Contract: additive rerank_score/reranked + rerank request block"
+    points: 2
+  - id_suffix: -SLICE-2
+    title: "Local: cross-encoder provider + post-fusion stage + eval-gate extension"
+    points: 5
+  - id_suffix: -SLICE-3
+    title: "Cloud: rerank call + per-tenant feature flag"
+    points: 3
 ---
 ## Description
 
@@ -55,3 +75,9 @@ hard queries where lexical+vector fusion alone tie-breaks poorly.
 ## Intake notes
 From 2026-07-09 competitor gap analysis (gap #2). Config stub already present —
 lowest-friction of the retrieval features. Unscored; run `/runner:triage`.
+
+## Proposed slices (PM decomposition)
+
+- SLICE-1: Contract: additive rerank_score/reranked + rerank request block (2 pts)
+- SLICE-2: Local: cross-encoder provider + post-fusion stage + eval-gate extension (5 pts)
+- SLICE-3: Cloud: rerank call + per-tenant feature flag (3 pts)

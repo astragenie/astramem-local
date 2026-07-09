@@ -1,7 +1,7 @@
 ---
 id: FEAT-456
-status: pending
-priority: null
+status: triaged
+priority: P2
 category: feature
 target_release: null
 created: 2026-07-09
@@ -10,6 +10,26 @@ depends_on: []
 slices: []
 derived_from: docs/research/2026-07-09-competitor-gap-analysis.md
 cross_product: [astramem-local, memory]
+pm_customer_impact: 0.45
+pm_effort_estimate: 0.62
+pm_strategic_alignment: 0.6
+pm_technical_risk: 0.6
+pm_dependency_depth: 0.3
+pm_composite_priority: P2
+pm_autonomous_safe: false
+pm_reviewed: 2026-07-09
+autonomous_safe: false
+triage_notes: "technical_risk 0.6 sits at the entry of the 0.6-0.8 band (cross-module pairing+judge+write-path reach, plus cross-service mirroring; no schema change since it reuses the existing supersede event type, and the design is reversible-by-construction via restore, which keeps it at the low end of the band rather than higher). Reinforces FEAT-451/453 but is itself effort-heavy and touches the same entity-lifecycle surface those slices touch -- P2, autonomous_safe false given the state-mutation cascade risk and decomposition requirement; recommend sequencing after FEAT-453 per the FEAT's own note."
+proposed_slices:
+  - id_suffix: -SLICE-1
+    title: "Contract: auto_contradiction supersede-reason discriminator"
+    points: 2
+  - id_suffix: -SLICE-2
+    title: "Local: pairing + judge + auto-supersede + guard rails"
+    points: 5
+  - id_suffix: -SLICE-3
+    title: "Cloud: mirror contradiction-detection stage + event parity"
+    points: 3
 ---
 ## Description
 
@@ -62,3 +82,9 @@ consistent) and FEAT-453 (fact-level validity).
 ## Intake notes
 From 2026-07-09 competitor gap analysis (gap #6). Applies to BOTH products. Reversible
 by construction (event-sourced supersede). Unscored; run `/runner:triage`.
+
+## Proposed slices (PM decomposition)
+
+- SLICE-1: Contract: auto_contradiction supersede-reason discriminator (2 pts)
+- SLICE-2: Local: pairing + judge + auto-supersede + guard rails (5 pts)
+- SLICE-3: Cloud: mirror contradiction-detection stage + event parity (3 pts)
