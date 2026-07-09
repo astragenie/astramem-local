@@ -27,6 +27,7 @@ import type { ProviderSet } from '../providers/index.js';
 import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
 import { MemoryRepo } from '../storage/memories.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
+import { drainIngestSpool } from '../ingest/spool-drain.js';
 
 export interface ServeOpts {
   port?: number;
@@ -311,6 +312,36 @@ export async function serve(opts: ServeOpts): Promise<void> {
     cleanupTimer.unref();
   }
 
+  // Ingest-spool drain cadence (FEAT-449): called directly on a timer (not
+  // enqueued through the jobs table like consolidate/cleanup above) because
+  // draining is filesystem-driven — it lists ingest-spool/*.json rather than
+  // reacting to an event. Runs at boot (AC-8: drains anything captured while
+  // the daemon was down) and every 30s thereafter; each tick is normally a
+  // few filesystem stats plus, at most, whatever synchronous DB work
+  // `ingestCanonicalTranscript` does for genuinely new spool files, so a
+  // short interval costs nothing on the (usual) empty-spool tick.
+  let spoolDrainTimer: NodeJS.Timeout | null = null;
+  if (dataDir !== ':memory:') {
+    const SPOOL_DRAIN_INTERVAL_MS = 30_000;
+    const runSpoolDrain = () => {
+      try {
+        const res = drainIngestSpool(db, cfg, dataDir);
+        // Backlog remains (hit the per-tick cap) — re-arm in 1s instead of
+        // waiting the full 30s interval, so a large spool drains over quick
+        // BOUNDED ticks rather than one long synchronous stall at boot.
+        if (res.pending > 0) {
+          const t = setTimeout(runSpoolDrain, 1_000);
+          t.unref();
+        }
+      } catch (err) {
+        console.warn(`${ts()} [astramem-local] ingest-spool drain failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    runSpoolDrain(); // boot pass — see AC-8 above
+    spoolDrainTimer = setInterval(runSpoolDrain, SPOOL_DRAIN_INTERVAL_MS);
+    spoolDrainTimer.unref();
+  }
+
   // WAL discipline (W1.5): with synchronous=NORMAL a hard crash loses the
   // un-checkpointed WAL tail. Truncate hourly so the at-risk window stays
   // small, and once more on graceful shutdown. Timer unref'd — never holds
@@ -334,6 +365,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       if (walTimer) clearInterval(walTimer);
       if (consolidateTimer) clearInterval(consolidateTimer);
       if (cleanupTimer) clearInterval(cleanupTimer);
+      if (spoolDrainTimer) clearInterval(spoolDrainTimer);
       if (shipper) await shipper.stop();
       await worker.stop();         // drain in-flight tick before closing DB
       try {

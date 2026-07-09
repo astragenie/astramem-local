@@ -114,6 +114,196 @@ function isCanonical(data: ParsedIngest): data is z.infer<typeof CanonicalIngest
 }
 
 // ---------------------------------------------------------------------------
+// FEAT-449 — shared canonical-transcript ingest path. Extracted so the
+// durable ingest-spool drain worker (src/ingest/spool-drain.ts) can run
+// spooled Claude-capture envelopes through the EXACT SAME redact -> session
+// upsert -> transcript insert -> distill-job-enqueue -> idempotency logic the
+// HTTP route below uses, in-process, without re-POSTing to itself over the
+// network. The route's transcript-kind branch is now a thin wrapper: call
+// this, map the result (or a thrown sentinel error) to an HTTP response.
+// Handles the transcript-kind canonical envelope only — events-kind stays
+// inline in the route (captures never produce it).
+// ---------------------------------------------------------------------------
+
+export class IdempotentReplayError extends Error {
+  constructor(public readonly replayId: string) {
+    super('idempotent_replay');
+    this.name = 'IdempotentReplayError';
+  }
+}
+
+export class IdempotencyConflictError extends Error {
+  constructor(public readonly idempotencyKey: string) {
+    super('idempotency_conflict');
+    this.name = 'IdempotencyConflictError';
+  }
+}
+
+export interface CanonicalTranscriptIngestResult {
+  transcriptId: string;
+  jobId: string;
+  /** Server-side redaction hit count (SEC-3/5) — surfaced in the HTTP
+   *  response's scrub_hits.server field. */
+  serverRedactionHits: number;
+}
+
+/**
+ * Insert one canonical transcript-kind envelope: stage-0 redact -> session
+ * upsert -> transcripts insert -> distill job enqueue, honoring the same
+ * Idempotency-Key semantics `POST /ingest/transcript` applies (D-B1/B2/B3).
+ *
+ * Throws `IdempotentReplayError` when `idempotencyKey` already resolved to a
+ * still-live transcript/memory with a matching body hash (valid replay), and
+ * `IdempotencyConflictError` when the same key was reused with a DIFFERENT
+ * body. Callers decide how to surface those — the HTTP route maps them to
+ * 200/409; the spool drain worker (src/ingest/spool-drain.ts) treats a
+ * replay as a successful drain (delete the spool file, move on) and a
+ * conflict as a quarantine reason (a spooled envelope's key is a content
+ * hash, so a genuine conflict means the row was independently created with a
+ * different body under the same key — not self-healing via retry).
+ *
+ * Statements are prepared per call rather than hoisted like the route's
+ * factory-scoped ones (D-B6) — this path runs once per HTTP request (already
+ * dominated by redaction + a DB transaction) or once per spool-drain tick
+ * (seconds-scale cadence), never in a tight loop, so the prepare cost is
+ * immaterial; the SQL text below is a direct mirror of the route's own
+ * statements (single source of truth for the shape).
+ */
+export function ingestCanonicalTranscript(
+  db: DB,
+  config: Config,
+  data: z.infer<typeof CanonicalIngestSchema>,
+  idempotencyKey: string | null,
+): CanonicalTranscriptIngestResult {
+  if (data.kind === 'events' || !data.turns || data.turns.length === 0) {
+    throw new Error('ingestCanonicalTranscript: requires a non-empty `turns` array (transcript kind only)');
+  }
+
+  const stmtSelectIdempotency = db.prepare<[string], { body_hash: string; summary_memory_id: string | null }>(
+    'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
+  );
+  const stmtUpsertSession = db.prepare<[string, string | null, string | null, string | null, string | null, number]>(`
+    INSERT INTO sessions (id, repo, project, branch, agent, cwd, started_at)
+    VALUES (?, ?, ?, NULL, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      repo    = COALESCE(excluded.repo, repo),
+      project = COALESCE(excluded.project, project),
+      agent   = COALESCE(excluded.agent, agent),
+      cwd     = COALESCE(excluded.cwd, cwd)
+  `);
+  const stmtInsertTranscript = db.prepare<[
+    string, string, string, string, number,
+    string, number, number, number,
+    string | null, string | null,
+    string | null, string,
+  ]>(`
+    INSERT INTO transcripts (
+      id, session_id, source, content, ingested_at,
+      event, captured_at, client_scrub_applied, client_scrub_hits,
+      client_scrub_version, client_scrub_hits_by_label_json,
+      client_version, wire_version
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const stmtInsertJob = db.prepare<[string, string, number, number]>(`
+    INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
+    VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
+  `);
+  const stmtInsertIdempotency = db.prepare<[string, string, string, number]>(`
+    INSERT INTO ingest_idempotency (key, body_hash, summary_memory_id, created_at)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(key) DO NOTHING
+  `);
+  const stmtCheckTranscriptExists = db.prepare<[string], { id: string } | undefined>(
+    'SELECT id FROM transcripts WHERE id = ?',
+  );
+  const stmtCheckMemoryExists = db.prepare<[string], { id: string } | undefined>(
+    'SELECT id FROM memories WHERE id = ?',
+  );
+  const stmtDeleteIdempotency = db.prepare<[string]>(
+    'DELETE FROM ingest_idempotency WHERE key = ?',
+  );
+
+  const turns = data.turns;
+  const redactionEvents: RedactionEvent[] = [];
+  const redactedTurns = turns.map(turn => {
+    const { text, events } = redactIfEnabled(turn.text, config);
+    redactionEvents.push(...events);
+    return { ...turn, text };
+  });
+
+  const bodyHash = createHash('sha256').update(stableStringify(data)).digest('hex');
+  const now = Date.now();
+  const capturedAtMs = new Date(data.captured_at).getTime();
+
+  let transcriptId!: string;
+  let jobId!: string;
+
+  const tx = db.transaction(() => {
+    if (idempotencyKey !== null) {
+      stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
+      const existing = stmtSelectIdempotency.get(idempotencyKey);
+
+      if (existing && existing.summary_memory_id !== '__pending__') {
+        if (existing.body_hash !== bodyHash) {
+          throw new IdempotencyConflictError(idempotencyKey);
+        }
+
+        const stillExists = existing.summary_memory_id != null
+          ? (stmtCheckTranscriptExists.get(existing.summary_memory_id)
+              ?? stmtCheckMemoryExists.get(existing.summary_memory_id))
+          : undefined;
+        if (!stillExists) {
+          stmtDeleteIdempotency.run(idempotencyKey);
+          stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
+        } else {
+          throw new IdempotentReplayError(String(existing.summary_memory_id));
+        }
+      }
+    }
+
+    stmtUpsertSession.run(data.session_id, deriveRepoFromCwd(data.cwd), data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
+
+    transcriptId = randomUUID();
+    stmtInsertTranscript.run(
+      transcriptId,
+      data.session_id,
+      `claude-code-${data.event}`,
+      JSON.stringify(redactedTurns),
+      now,
+      data.event,
+      capturedAtMs,
+      data.client_scrub_applied ? 1 : 0,
+      data.client_scrub_hits ?? 0,
+      data.client_scrub_version ?? null,
+      data.client_scrub_hits_by_label != null
+        ? JSON.stringify(data.client_scrub_hits_by_label)
+        : null,
+      data.client_version ?? null,
+      data.wire_version,
+    );
+
+    recordRedactionEvents(db, redactionEvents, data.session_id);
+
+    jobId = randomUUID();
+    stmtInsertJob.run(
+      jobId,
+      JSON.stringify({ transcript_id: transcriptId, session_id: data.session_id }),
+      now,
+      now,
+    );
+
+    if (idempotencyKey !== null) {
+      stmtDeleteIdempotency.run(idempotencyKey);
+      stmtInsertIdempotency.run(idempotencyKey, bodyHash, transcriptId, now);
+    }
+  });
+
+  tx();
+
+  return { transcriptId, jobId, serverRedactionHits: redactionEvents.length };
+}
+
+// ---------------------------------------------------------------------------
 // Route factory — prepared statements hoisted to factory scope (D-B6)
 // All db.prepare() calls happen ONCE per server start, not per request.
 // ---------------------------------------------------------------------------
@@ -412,131 +602,55 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
           });
         }
 
-        // ---- Stage-0 secret redaction (SEC-3/5) — BEFORE the transcripts INSERT.
-        //      Downstream pipeline stages inherit the redacted turns.
-        const turns = data.turns!; // superRefine guarantees non-empty when kind !== 'events'
-        const redactionEvents: RedactionEvent[] = [];
-        const redactedTurns = turns.map(turn => {
-          const { text, events } = redactIfEnabled(turn.text, config);
-          redactionEvents.push(...events);
-          return { ...turn, text };
-        });
-
         // ---- Idempotency-key handling ----
-        // D-B1: use stableStringify on the Zod-parsed object so key order
-        //        differences between clients don't produce different hashes.
+        // D-B1: ingestCanonicalTranscript uses stableStringify on the
+        //        Zod-parsed object so key order differences between clients
+        //        don't produce different body hashes.
         const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? null;
-        const bodyHash = createHash('sha256').update(stableStringify(data)).digest('hex');
 
-        const now = Date.now();
-        const capturedAtMs = new Date(data.captured_at).getTime();
-
-        let transcriptId!: string;
-        let jobId!: string;
-
-        // D-B2: move idempotency SELECT inside the transaction and use
-        //        INSERT … ON CONFLICT DO NOTHING to make concurrent posts safe.
-        //        The UNIQUE constraint can no longer leak a 500 to the caller.
+        // D-B2/D-B3/FEAT-449: the claim -> insert -> finalize sequence (and
+        // the dangling-row / replay / conflict semantics) now live in the
+        // shared ingestCanonicalTranscript — this route is a thin wrapper
+        // that maps its result or thrown sentinel error to an HTTP response.
         try {
-          const tx = db.transaction(() => {
-            // --- Idempotency check (inside transaction — race-safe) ---
-            if (idempotencyKey !== null) {
-              // Attempt to claim the idempotency slot atomically.
-              // stmtInsertIdempotency uses ON CONFLICT DO NOTHING, so concurrent
-              // posts with the same key will silently no-op; we then read back
-              // the winner row and either replay or conflict.
-              stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
+          const result = ingestCanonicalTranscript(db, config, data, idempotencyKey);
 
-              // Read the winner row (may have been written by a concurrent request)
-              const existing = stmtSelectIdempotency.get(idempotencyKey);
+          log.info(
+            { job_id: result.jobId, transcript_id: result.transcriptId, wire_version: data.wire_version, event: data.event },
+            'canonical transcript ingested, distill job enqueued',
+          );
 
-              if (existing && existing.summary_memory_id !== '__pending__') {
-                // Another request already completed this key
-                if (existing.body_hash !== bodyHash) {
-                  // Different body — conflict (throw so tx rolls back the DO NOTHING insert)
-                  throw Object.assign(new Error('idempotency_conflict'), { _isIdempotencyConflict: true });
-                }
-
-                // D-B3: guard against a dangling row. summary_memory_id may
-                // point at either a transcript (pre-distillation) or a
-                // memory (post-D-DEF2-backfill) — check both.
-                const transcriptExists = existing.summary_memory_id != null
-                  ? (stmtCheckTranscriptExists.get(existing.summary_memory_id)
-                      ?? stmtCheckMemoryExists.get(existing.summary_memory_id))
-                  : undefined;
-                if (!transcriptExists) {
-                  // Dangling row — invalidate and fall through to fresh insert
-                  stmtDeleteIdempotency.run(idempotencyKey);
-                  // Re-insert placeholder so the fresh insert below can update it
-                  stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
-                } else {
-                  // Valid replay — signal via special throw to exit tx and return early
-                  throw Object.assign(new Error('idempotent_replay'), {
-                    _isReplay: true,
-                    _replayId: existing.summary_memory_id,
-                  });
-                }
-              }
-            }
-
-            // --- Real insert ---
-            stmtUpsertSession.run(data.session_id, deriveRepoFromCwd(data.cwd), data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
-
-            transcriptId = randomUUID();
-            stmtInsertTranscript.run(
-              transcriptId,
-              data.session_id,
-              `claude-code-${data.event}`,
-              JSON.stringify(redactedTurns),
-              now,
-              data.event,
-              capturedAtMs,
-              data.client_scrub_applied ? 1 : 0,
-              data.client_scrub_hits ?? 0,
-              data.client_scrub_version ?? null,
-              data.client_scrub_hits_by_label != null
-                ? JSON.stringify(data.client_scrub_hits_by_label)
-                : null,
-              data.client_version ?? null,
-              data.wire_version,
-            );
-
-            // SEC-6: one redaction_log row per distinct type found in this ingest.
-            recordRedactionEvents(db, redactionEvents, data.session_id);
-
-            jobId = randomUUID();
-            stmtInsertJob.run(
-              jobId,
-              JSON.stringify({ transcript_id: transcriptId, session_id: data.session_id }),
-              now,
-              now,
-            );
-
-            // Update the idempotency placeholder with the real transcript id
-            if (idempotencyKey !== null) {
-              stmtDeleteIdempotency.run(idempotencyKey);
-              stmtInsertIdempotency.run(idempotencyKey, bodyHash, transcriptId, now);
-            }
+          return reply.code(200).send({
+            ok: true,
+            summary_memory_id: result.transcriptId,
+            session_id: data.session_id,
+            idempotent: false,
+            extraction_job_id: result.jobId,
+            // Extraction runs asynchronously off the job queue (distillHandler,
+            // stages 4-5 LLM extraction) — not yet run at response time, so
+            // these are stubbed per CHANGELOG v0.2.0 ("full job queue in
+            // v0.3.0+"). Not fabricated: the real values genuinely don't
+            // exist yet when this response is built.
+            extracted_count: 0,
+            failed_atom_count: 0,
+            scrub_hits: { client: data.client_scrub_hits, server: result.serverRedactionHits },
+            // Full LLM extraction hasn't run yet, so which types will actually
+            // be produced is unknown — report the full candidate registry the
+            // distill pipeline can emit (see ALL_ATOM_TYPES above).
+            queued_extraction_types: ALL_ATOM_TYPES,
           });
-
-          tx();
         } catch (err) {
-          // Belt-and-suspenders: catch SQLite UNIQUE constraint errors that
-          // weren't handled by ON CONFLICT DO NOTHING (shouldn't happen, but
-          // guard just in case).
-          const e = err as Record<string, unknown>;
-
-          if (e['_isReplay'] === true) {
+          if (err instanceof IdempotentReplayError) {
             log.info({ idempotency_key: idempotencyKey }, 'idempotent replay');
             return reply.code(200).send({
               ok: true,
-              summary_memory_id: e['_replayId'],
+              summary_memory_id: err.replayId,
               session_id: data.session_id,
               idempotent: true,
             });
           }
 
-          if (e['_isIdempotencyConflict'] === true) {
+          if (err instanceof IdempotencyConflictError) {
             log.warn({ idempotency_key: idempotencyKey }, 'idempotency key reused with different body');
             return reply.code(409).send({
               error: 'idempotency_conflict',
@@ -545,7 +659,10 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
             });
           }
 
-          // SQLite UNIQUE constraint (belt+suspenders)
+          // Belt-and-suspenders: catch SQLite UNIQUE constraint errors that
+          // weren't handled by ON CONFLICT DO NOTHING (shouldn't happen, but
+          // guard just in case).
+          const e = err as Record<string, unknown>;
           if (
             typeof e['code'] === 'string' &&
             (e['code'] === 'SQLITE_CONSTRAINT_PRIMARYKEY' || e['code'] === 'SQLITE_CONSTRAINT_UNIQUE')
@@ -562,31 +679,6 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
 
           throw err;
         }
-
-        log.info(
-          { job_id: jobId, transcript_id: transcriptId, wire_version: data.wire_version, event: data.event },
-          'canonical transcript ingested, distill job enqueued',
-        );
-
-        return reply.code(200).send({
-          ok: true,
-          summary_memory_id: transcriptId,
-          session_id: data.session_id,
-          idempotent: false,
-          extraction_job_id: jobId,
-          // Extraction runs asynchronously off the job queue (distillHandler,
-          // stages 4-5 LLM extraction) — not yet run at response time, so
-          // these are stubbed per CHANGELOG v0.2.0 ("full job queue in
-          // v0.3.0+"). Not fabricated: the real values genuinely don't
-          // exist yet when this response is built.
-          extracted_count: 0,
-          failed_atom_count: 0,
-          scrub_hits: { client: data.client_scrub_hits, server: redactionEvents.length },
-          // Full LLM extraction hasn't run yet, so which types will actually
-          // be produced is unknown — report the full candidate registry the
-          // distill pipeline can emit (see ALL_ATOM_TYPES above).
-          queued_extraction_types: ALL_ATOM_TYPES,
-        });
       }
 
       // ------------------------------------------------------------------

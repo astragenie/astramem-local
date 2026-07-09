@@ -233,6 +233,19 @@ export interface Config {
       enabled: boolean;
     };
   };
+  /** Durable ingest spool (FEAT-449). `capture claude` writes captured
+   * transcript CONTENT here at close time (tmp+rename, keyed by a content
+   * hash) so the daemon's spool-drain worker (src/ingest/spool-drain.ts) can
+   * run it through the same ingest->distill path `/ingest/transcript` uses,
+   * decoupled from the client read racing worktree/subagent cleanup — see
+   * FEAT-449 for the starvation this closes. */
+  ingest: {
+    /** A spool file larger than this is quarantined unread rather than
+     * parsed — guards the drain worker against OOM on a runaway transcript.
+     * Default 32MB comfortably exceeds the measured p99 main-session size
+     * (28.9MB, FEAT-449 triage). */
+    spoolMaxBytes: number;
+  };
 }
 
 export function defaultConfig(): Config {
@@ -271,7 +284,8 @@ export function defaultConfig(): Config {
     ingestIdempotency: { retentionDays: 7 },
     pipeline: { concurrency: 1 },
     consolidation: { autoAcceptThreshold: null },
-    memoryHealth: { llmJudgedJunkSample: { enabled: false } }
+    memoryHealth: { llmJudgedJunkSample: { enabled: false } },
+    ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
   };
 }
 

@@ -19,6 +19,13 @@ import {
   codexIdempotencyKey,
   type CaptureState,
 } from '../capture/codex.js';
+import {
+  readAndParseClaudeTranscript,
+  buildClaudeEnvelope,
+  claudeIdempotencyKey,
+  type ClaudeCaptureEvent,
+} from '../capture/claude.js';
+import { writeToSpool } from '../ingest/spool.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -37,10 +44,83 @@ function loadState(path: string): CaptureState {
   }
 }
 
+/**
+ * `astramem-local capture claude <transcript-path> [--event subagent_stop|
+ * session_end] [--json]` (FEAT-449). Reads the Claude Code `.jsonl`
+ * transcript AT INVOCATION — the hook calls this synchronously at
+ * agent/session close, while the file is still guaranteed live — and writes
+ * the resulting envelope to the durable ingest spool (never blocks on the
+ * network; the daemon's spool-drain worker ingests it asynchronously,
+ * including while the daemon was down at capture time — AC-8).
+ *
+ * AC-3: a missing/unreadable transcript (already cleaned up by the time a
+ * DEFERRED reader would have gotten to it — the exact starvation this slice
+ * closes) must fail SOFT: exactly one warning, nothing written, non-zero
+ * `process.exitCode`, and a clean return — never `process.exit()` mid-flight
+ * (Windows UV_HANDLE_CLOSING risk with in-flight stdout) and never an
+ * uncaught throw.
+ */
+async function runCaptureClaudeOnce(args: string[]): Promise<void> {
+  const transcriptPath = args.find(a => !a.startsWith('--'));
+  const asJson = args.includes('--json');
+  const eventArg = parseArg(args, '--event');
+  const event: ClaudeCaptureEvent = eventArg === 'session_end' ? 'session_end' : 'subagent_stop';
+
+  if (!transcriptPath) {
+    console.error('capture claude: missing <transcript-path> argument');
+    process.exitCode = 1;
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = readAndParseClaudeTranscript(transcriptPath);
+  } catch (err) {
+    console.warn(
+      `capture claude: transcript not readable, skipping: ${transcriptPath} ` +
+      `(${err instanceof Error ? err.message : String(err)})`,
+    );
+    process.exitCode = 1;
+    return;
+  }
+
+  if (parsed.turns.length === 0) {
+    // Not an error — a transcript that never got a real exchange (e.g. a
+    // subagent that was killed before responding) distills to noise.
+    if (asJson) {
+      console.log(JSON.stringify({ transcript: transcriptPath, status: 'no-turns' }, null, 2));
+    } else {
+      console.log(`capture claude: no usable turns in ${transcriptPath} — nothing spooled`);
+    }
+    return;
+  }
+
+  const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? defaultDataDir();
+  const envelope = buildClaudeEnvelope(parsed, event, PKG_VERSION);
+  const key = claudeIdempotencyKey(envelope);
+  const spooledPath = writeToSpool(dataDir, key, envelope);
+
+  if (asJson) {
+    console.log(JSON.stringify({
+      transcript: transcriptPath,
+      session_id: envelope.session_id,
+      turns: envelope.turns.length,
+      spooled: spooledPath,
+      idempotency_key: key,
+    }, null, 2));
+  } else {
+    console.log(`spooled  ${envelope.session_id}  (${envelope.turns.length} turns)  -> ${spooledPath}`);
+  }
+}
+
 export async function captureCommand(args: string[]): Promise<void> {
   const source = args[0];
+  if (source === 'claude') {
+    await runCaptureClaudeOnce(args.slice(1));
+    return;
+  }
   if (source !== 'codex') {
-    console.error(`capture: unknown source '${source ?? ''}' — supported: codex`);
+    console.error(`capture: unknown source '${source ?? ''}' — supported: codex, claude`);
     process.exit(1);
   }
 

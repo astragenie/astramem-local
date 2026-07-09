@@ -1,21 +1,25 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-08T23:27:24.998Z",
+  "updatedAt": "2026-07-09T14:43:01.409Z",
   "currentRun": {
-    "title": "memory SaaS: why demo dashboard user sees no data",
+    "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
     "goal": "",
-    "mode": "",
+    "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-08T22:42:05.755Z",
-    "updatedAt": "2026-07-08T23:27:24.998Z",
-    "next": "Optional: add a timeout-path test for scripts/git-hooks/post-merge-rebuild.mjs (SPAWN_TIMEOUT_MS) if that hook's reliability under a hung install ever becomes a concern; not blocking for this fix.",
+    "startedAt": "2026-07-09T13:47:22.481Z",
+    "updatedAt": "2026-07-09T14:43:01.409Z",
+    "next": "Optional follow-up (non-blocking): cap or yield the boot-time spool drain pass so a large backlog can't stall request handling at startup; consider whether ingestCanonicalTranscript should accept pre-hoisted statements from the caller to restore the D-B6 optimization on the HTTP hot path. Neither blocks merge.",
     "gates": {
       "review": {
         "status": "passed",
-        "updatedAt": "2026-07-08T23:27:24.998Z",
-        "note": "HIGH (daemon-kill vector) is fully closed: stderr now goes through an OS fd to a scratch file with no in-process buffer, so neither the ENOBUFS-kill nor an unbounded memory leak can occur; build and all 170 tests (19 files) pass clean."
+        "updatedAt": "2026-07-09T14:34:04.533Z",
+        "note": "FEAT-449 durable ingest spool is correct and closes the ingest outage; no data-loss path found and the ingest.ts refactor is byte-identical HTTP behavior, but two MEDIUM perf/design notes (synchronous unbounded boot-time drain, dropped D-B6 prepared-statement hoisting on the hot path) warrant a low-risk follow-up."
       },
-      "validation": null,
+      "validation": {
+        "status": "passed",
+        "updatedAt": "2026-07-09T14:43:01.409Z",
+        "note": "Final readiness mode: build + full targeted + full suite all green; all 8 ACs exercised with evidence; both folded review fixes spot-checked live."
+      },
       "deployment": {
         "dev": null,
         "prod": null
@@ -25,13 +29,11 @@
       "incident": null
     },
     "artifacts": {
-      "runBrief": null,
-      "handoffs": [
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
-      ],
-      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T232541Z-review-result-feat-observability-probes-shim-ts-high-re-review.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
+      "handoffs": [],
+      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
       "validationPlan": null,
-      "validationResult": null,
+      "validationResult": ".claude/artifacts/crew/validations/20260709T144053Z-validation-result-slice-419-ingest-spool-validation.md",
       "deploymentChecks": {
         "dev": null,
         "prod": null
@@ -40,6 +42,45 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "memory SaaS: why demo dashboard user sees no data",
+      "goal": "",
+      "mode": "",
+      "status": "active",
+      "startedAt": "2026-07-08T22:42:05.755Z",
+      "updatedAt": "2026-07-08T23:27:24.998Z",
+      "completedAt": "2026-07-08T23:27:24.998Z",
+      "next": "Optional: add a timeout-path test for scripts/git-hooks/post-merge-rebuild.mjs (SPAWN_TIMEOUT_MS) if that hook's reliability under a hung install ever becomes a concern; not blocking for this fix.",
+      "gates": {
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-08T23:27:24.998Z",
+          "note": "HIGH (daemon-kill vector) is fully closed: stderr now goes through an OS fd to a scratch file with no in-process buffer, so neither the ENOBUFS-kill nor an unbounded memory leak can occur; build and all 170 tests (19 files) pass clean."
+        },
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null
+      },
+      "artifacts": {
+        "runBrief": null,
+        "handoffs": [
+          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
+        ],
+        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T232541Z-review-result-feat-observability-probes-shim-ts-high-re-review.md",
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT438 SLICE416: Release dir materialization (dist + prod node_modules) + AC-5 failure guard",
       "goal": "`current.json.entryJs` points at an immutable versioned release, not the dev checkout",
