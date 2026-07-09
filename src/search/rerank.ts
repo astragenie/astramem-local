@@ -22,6 +22,11 @@
  *    fused order for the WHOLE call (never a partial reorder) — degrades
  *    quality, never availability, matching the cloud engine's fallback
  *    contract from issue #26.
+ *  - FEAT-452: a hit the stage actually reorders gains `reranked`/
+ *    `rerank_score`/`explanation` (see `RerankFields` below) rather than
+ *    having its `score` overwritten in place — `score` always stays the
+ *    original fused value, so a caller can tell a fused score from a
+ *    reranked one instead of losing the fused value the moment rerank runs.
  */
 
 import type { Config } from '../config/config.js';
@@ -238,9 +243,14 @@ export function resolveRerankOpts(config: Config): RerankOpts | undefined {
   };
 }
 
+/** Thrown by `withTimeout` — distinguished from a provider-thrown `Error` so
+ * the outcome-tagged observability log below (FEAT-452) can tell "sidecar
+ * too slow" (`timeout`) apart from "sidecar errored" (`error`). */
+class RerankTimeoutError extends Error {}
+
 function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`cross-encoder rerank timed out after ${ms}ms`)), ms);
+    const timer = setTimeout(() => reject(new RerankTimeoutError(`cross-encoder rerank timed out after ${ms}ms`)), ms);
     promise.then(
       (v) => { clearTimeout(timer); resolve(v); },
       (e) => { clearTimeout(timer); reject(e); },
@@ -249,21 +259,68 @@ function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 }
 
 /**
+ * ADR-005 `ScoreExplanation.signals[name]` shape
+ * (contracts/schemas/retrieval-result.v1.schema.json), reused here so a
+ * reranked hit's cross-encoder provenance is additive to — and validates
+ * against — the shared retrieval-result contract's open signals map (FEAT-452).
+ */
+export interface RerankSignal {
+  /** Fused score this hit carried into the cross-encoder call — same value as `score`. */
+  raw: number;
+  /** Rerank fully determines a reranked hit's position within `topK`, no blending with other signals — always 1. */
+  weight: number;
+  /** Clamped cross-encoder score — same value as the flat `rerank_score` below. */
+  final: number;
+}
+
+/**
+ * Rerank provenance a hit gains once the cross-encoder stage actually scores
+ * it (FEAT-452). Present + `reranked: true` only on hits the stage scored
+ * this call — i.e. within `opts.topK`, and the call didn't hit the
+ * whole-call timeout/error fallback; absent everywhere else (not just
+ * `false`), so an un-reranked hit's shape is identical to before this field
+ * existed. `score` is left untouched by `applyRerank` regardless — it always
+ * stays the original fused value.
+ */
+export interface RerankFields {
+  reranked: true;
+  rerank_score: number;
+  explanation: { signals: { cross_encoder: RerankSignal } };
+}
+
+/**
  * Apply the rerank stage to an already-fused, already-ordered hit list.
  * Reorders only the first `opts.topK` hits by cross-encoder score; hits
  * beyond that position are appended unchanged, in their original relative
  * order. On timeout or provider error, returns `hits` completely unchanged
  * (whole-call fallback, not a partial reorder) — availability over quality.
+ *
+ * FEAT-452: reordered hits gain `RerankFields` (see above) rather than
+ * having `score` overwritten with the cross-encoder value — `score` stays
+ * the fused score, `rerank_score`/`explanation` carry the cross-encoder's
+ * verdict as a distinct, additive signal.
  */
 export async function applyRerank<T extends { id: string; text: string; score: number }>(
   query: string,
   hits: T[],
   opts: RerankOpts,
-): Promise<T[]> {
+): Promise<Array<T & Partial<RerankFields>>> {
   if (hits.length === 0) return hits;
 
   const head = hits.slice(0, opts.topK);
   const tail = hits.slice(opts.topK);
+
+  // Local observability parity (FEAT-452): mirrors the cloud engine's
+  // outcome-tagged counters/histograms for its reranker. This repo has no
+  // separate metrics registry — every stage that talks to a provider
+  // (providers/llm/*, providers/embed/ollama.ts, this file's own
+  // HttpCrossEncoderProvider.score() above) reports via structured
+  // `latency_ms` + outcome pino log lines instead, which is the pattern
+  // followed here: a log aggregator turns these into counters/histograms
+  // the same way it would for the ~10 other call sites using this shape.
+  const log = childLogger({ stage: 'rerank', provider: opts.provider.name });
+  const t0 = Date.now();
+  log.info({ topK: opts.topK, candidates: head.length }, 'rerank stage start');
 
   try {
     const candidates: CrossEncoderCandidate[] = head.map(h => ({ id: h.id, text: h.text, fusedScore: h.score }));
@@ -274,15 +331,28 @@ export async function applyRerank<T extends { id: string; text: string; score: n
         const raw = scored.get(h.id);
         // Missing id or non-finite score: fall back to the fused score for
         // this hit rather than let one bad entry corrupt the sort.
-        const score = raw === undefined || !Number.isFinite(raw) ? h.score : Math.min(1, Math.max(0, raw));
-        return { ...h, score };
+        const rerank_score = raw === undefined || !Number.isFinite(raw) ? h.score : Math.min(1, Math.max(0, raw));
+        return {
+          ...h,
+          reranked: true as const,
+          rerank_score,
+          explanation: { signals: { cross_encoder: { raw: h.score, weight: 1, final: rerank_score } } },
+        };
       })
-      .sort((a, b) => b.score - a.score);
+      .sort((a, b) => b.rerank_score - a.rerank_score);
 
+    log.info({ outcome: 'ok', latency_ms: Date.now() - t0, candidates: head.length }, 'rerank stage complete');
     return [...reranked, ...tail];
-  } catch {
+  } catch (err) {
     // Timeout or provider failure: degrade to un-reranked order, never block
-    // the request (mirrors cloud's fallback contract from issue #26).
+    // the request (mirrors cloud's fallback contract from issue #26). No
+    // hit in this path gains RerankFields — the whole call is untouched, not
+    // just the missing-score fallback inside the try block above.
+    const outcome = err instanceof RerankTimeoutError ? 'timeout' : 'error';
+    log.warn(
+      { outcome, latency_ms: Date.now() - t0, error_message: err instanceof Error ? err.message : String(err) },
+      'rerank stage fallback to un-reranked order',
+    );
     return hits;
   }
 }

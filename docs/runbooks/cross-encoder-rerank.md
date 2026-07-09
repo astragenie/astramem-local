@@ -46,6 +46,65 @@ Two providers are implemented:
   output always reflects the pre-rerank fusion breakdown, which is its whole purpose (explaining
   fusion, not the rerank layer on top of it).
 
+## Rerank provenance (FEAT-452)
+
+Before FEAT-452, `applyRerank` overwrote a reranked hit's `score` in place with the
+cross-encoder's own value, destroying the fused score — a caller had no way to tell a
+fused-only hit from a reranked one, or to recover what fusion originally produced.
+
+Now a hit the stage actually reorders gains three additive fields instead, and `score`
+is left untouched (always the original fused value):
+
+- `reranked: true`
+- `rerank_score: number` — the clamped `[0,1]` cross-encoder score
+- `explanation.signals.cross_encoder: { raw, weight, final }` — the same value, shaped
+  to match ADR-005's `ScoreExplanation.signals` open map
+  (`contracts/schemas/retrieval-result.v1.schema.json`), so it validates as just another
+  signal in that contract without a schema change
+
+All three are absent (not `false`/`0`) on a hit the stage never touched — rerank
+disabled, the hit fell beyond `opts.rerank.topK`, or the whole-call timeout/error
+fallback fired — so an un-reranked hit's shape is unchanged from before this field
+existed. Surfaced on `GET /search` and `POST /recall` (the two routes that resolve
+`config.crossEncoder` into `SearchOpts.rerank` — see "Where it's wired" above); MCP
+`search_memory`/`recall_memory` inherit it for free since they call the same `search()`.
+
+**`why_memory` is deliberately NOT rerank-aware.** `why_memory` (`GET
+/memory/:id/why`, `src/server/queries/provenance.ts`) answers "what do we know about
+this stored atom", keyed only by memory id — it has no notion of *which search request*
+served that atom, so there is no stored per-request linkage to say "this atom was
+reranked when it was returned for query Q". Recording that would mean persisting
+per-serve rerank state that doesn't exist today (and isn't proposed here) purely to
+answer a question the receipt was never designed to answer. Rerank provenance is
+therefore scoped to what's honestly derivable: the search/recall response itself,
+per the fields above. If a future FEAT wants `why_memory` to answer "was I ever served
+via a reranked result," that requires a new stored linkage (e.g. an event logged at
+serve time) as its own, separately-scoped change — not an extension of the existing
+receipt query.
+
+## Local observability (FEAT-452)
+
+The rerank stage has no dedicated metrics registry (this repo doesn't have one anywhere
+— see e.g. `src/providers/llm/ollama.ts`, `src/providers/embed/ollama.ts`,
+`src/pipeline/handlers/distill-events.ts`): every provider-facing stage reports via
+structured pino log lines with `latency_ms` + an outcome field instead, and a log
+aggregator turns those into counters/histograms. `applyRerank` (`src/search/rerank.ts`)
+follows the same pattern:
+
+- `'rerank stage start'` (info) — `{ topK, candidates, provider }` before calling the
+  provider.
+- `'rerank stage complete'` (info) — `{ outcome: 'ok', latency_ms, candidates }` when
+  the provider call succeeds within budget.
+- `'rerank stage fallback to un-reranked order'` (warn) — `{ outcome: 'timeout' |
+  'error', latency_ms, error_message }` when the whole-call fallback fires (see
+  "Cost / latency tradeoff" below for what triggers each).
+
+There is no `outcome: 'disabled'` log line: when `crossEncoder.enabled` is `false`
+(the default), `SearchOpts.rerank` is `undefined` and `applyRerank` is never called —
+by design, matching the "search() takes zero extra branches" guarantee this stage has
+always had. A search request with no rerank log line at all *is* the disabled case;
+there is nothing to count per-request when the stage doesn't run.
+
 ## Config to enable
 
 `config.yaml` — mock provider (no network dependency, no semantic signal):
@@ -153,6 +212,21 @@ are operator/deployment decisions outside this repo's code.
 - **`topK` controls the tradeoff directly:** only the top `topK` fused candidates are reranked, not
   the full candidate pool, so both latency and sidecar compute cost scale with `topK`, not corpus
   size — and, for the HTTP provider, `texts` payload size scales with `topK` too.
+
+## Sidecar vs. embedded model (FEAT-452 decision)
+
+FEAT-452 raised an open product question: does the already-shipped `HttpCrossEncoderProvider`
+talking to a `127.0.0.1` sidecar actually satisfy astramem-local's "local-only, no-cloud-moat"
+goal, or is an embedded in-process model (e.g. `bge-reranker-v2-m3` run directly via
+Ollama/ONNX, no separate process) required? **Decision: the `127.0.0.1` HTTP sidecar already
+satisfies the local-only requirement — all inference stays on the operator's own machine, no
+network hop ever leaves `localhost`, and nothing about "local-only" implies "same process as the
+daemon."** An embedded in-process model is explicitly **deferred, not planned**: it would trade a
+one-time sidecar setup (documented above under "Running a sidecar") for daemon binary size,
+model-loading startup cost on every daemon boot, and CPU contention with the daemon's own event
+loop, for zero improvement to the actual constraint (data never leaving the local machine) that
+motivated the "local-only" goal in the first place. Revisit only if a concrete operator pain point
+with running a separate sidecar process ever surfaces — none has today.
 
 ## Rollback
 

@@ -301,8 +301,13 @@ describe('applyRerank', () => {
     const result = await applyRerank('query', hits, opts);
     const a = result.find(h => h.id === 'a')!;
     const b = result.find(h => h.id === 'b')!;
-    expect(a.score).toBe(1);
-    expect(b.score).toBe(0);
+    // FEAT-452: `score` stays the original fused value — only `rerank_score`
+    // (and the mirrored explanation.signals.cross_encoder.final) carries the
+    // clamped cross-encoder verdict.
+    expect(a.score).toBe(0.1);
+    expect(b.score).toBe(0.2);
+    expect(a.rerank_score).toBe(1);
+    expect(b.rerank_score).toBe(0);
   });
 
   it('falls back to the original fused score for a candidate id missing from the provider result', async () => {
@@ -318,5 +323,64 @@ describe('applyRerank', () => {
     const result = await applyRerank('query', hits, opts);
     const b = result.find(h => h.id === 'b')!;
     expect(b.score).toBe(0.5); // unchanged — original fused score preserved
+    expect(b.rerank_score).toBe(0.5); // fallback: rerank_score defaults to the fused score too
+  });
+
+  it('FEAT-452: a reranked hit carries reranked/rerank_score/explanation distinct from the untouched fused score', async () => {
+    const provider: CrossEncoderProvider = {
+      name: 'mock',
+      score: async () => new Map([['a', 0.77]]),
+    };
+    const hits: Hit[] = [{ id: 'a', text: 'a', score: 0.33 }];
+    const opts: RerankOpts = { topK: 10, timeoutMs: 300, provider };
+
+    const [hit] = await applyRerank('query', hits, opts);
+
+    expect(hit!.score).toBe(0.33); // fused score, untouched
+    expect(hit!.reranked).toBe(true);
+    expect(hit!.rerank_score).toBe(0.77);
+    expect(hit!.explanation).toEqual({
+      signals: { cross_encoder: { raw: 0.33, weight: 1, final: 0.77 } },
+    });
+  });
+
+  it('FEAT-452: rerank off (no opts.rerank call at all) leaves plain hits with no rerank fields', async () => {
+    // applyRerank is never invoked when rerank is disabled — this asserts
+    // the shape of an ordinary (never-reranked) hit has none of the
+    // additive fields, i.e. there is nothing to distinguish it from
+    // pre-FEAT-452 output.
+    const hit: Hit = { id: 'a', text: 'a', score: 0.5 };
+    expect('reranked' in hit).toBe(false);
+    expect('rerank_score' in hit).toBe(false);
+    expect('explanation' in hit).toBe(false);
+  });
+
+  it('FEAT-452: hits beyond topK (untouched tail) carry no rerank fields either', async () => {
+    const provider: CrossEncoderProvider = {
+      name: 'mock',
+      score: async () => new Map([['h1', 0.9]]),
+    };
+    const hits: Hit[] = [
+      { id: 'h1', text: 'a', score: 0.5 },
+      { id: 'tail', text: 'b', score: 0.4 },
+    ];
+    const opts: RerankOpts = { topK: 1, timeoutMs: 300, provider };
+    const result = await applyRerank('query', hits, opts);
+    const tail = result.find(h => h.id === 'tail')!;
+    expect(tail.reranked).toBeUndefined();
+    expect(tail.rerank_score).toBeUndefined();
+    expect(tail.explanation).toBeUndefined();
+  });
+
+  it('FEAT-452: whole-call timeout fallback leaves hits completely unchanged — no rerank fields anywhere', async () => {
+    const slowProvider: CrossEncoderProvider = {
+      name: 'mock',
+      score: () => new Promise(resolve => setTimeout(() => resolve(new Map([['a', 1]])), 50)),
+    };
+    const hits: Hit[] = [{ id: 'a', text: 'a', score: 0.1 }];
+    const opts: RerankOpts = { topK: 10, timeoutMs: 5, provider: slowProvider };
+    const result = await applyRerank('query', hits, opts);
+    expect(result).toEqual(hits);
+    expect(result[0]!.reranked).toBeUndefined();
   });
 });
