@@ -1,6 +1,6 @@
 ---
 id: FEAT-449
-status: in-progress
+status: done
 priority: P1
 category: platform
 target_release: null
@@ -14,6 +14,8 @@ tags: ["concern:ingest", "concern:reliability", "surface:capture", "surface:inge
 triage_notes: "Root-caused 2026-07-09: the whole ingest pipeline is starved — `%APPDATA%\Astramem\ingest.log` shows 0 successful ingests and 786 `transcript file not found`, 455 of them `\subagents\agent-*.jsonl` across every repo in the mega folder. The ingest hook reads Claude transcript files LATER (a deferred sweep), racing worktree/subagent cleanup; by read time the .jsonl is gone → nothing ingested → nothing distilled → no new memories → nothing to sync. The daemon's /ingest/transcript accepts CONTENT (never a path), so the failure is client-side. Fix = capture the CONTENT at close to a durable local spool; daemon drains async. Sizes measured: subagent transcripts median 219KB / p95 811KB / max 5.7MB; main sessions to 28.9MB — so at-close read is ~20-150ms typical, ~1-2s worst; distill stays async. Store's core function (accumulating memory) is broken in prod until this lands. See memory: distill-broken-is-ingest-starvation."
 started_at: 2026-07-09
 updated: 2026-07-09
+slices_complete: [SLICE-419]
+completed_at: 2026-07-09
 ---
 
 # FEAT-449: durable ingest spool — capture transcript content at close, daemon drains async

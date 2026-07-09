@@ -1,7 +1,7 @@
 ---
 id: SLICE-419
 title: "durable ingest spool — capture transcript content at close, daemon drains async"
-status: pending
+status: completed
 feature: FEAT-449
 phase: null
 priority: P1
@@ -10,6 +10,7 @@ requires_validation: true
 risk: medium
 created: 2026-07-09
 updated: 2026-07-09
+completed_at: 2026-07-09
 ---
 # SLICE-419: durable ingest spool — capture transcript content at close, daemon drains async
 

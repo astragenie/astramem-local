@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-09T14:34:04.533Z",
+  "updatedAt": "2026-07-09T14:43:01.409Z",
   "currentRun": {
     "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
     "goal": "",
     "mode": "autonomous",
     "status": "active",
     "startedAt": "2026-07-09T13:47:22.481Z",
-    "updatedAt": "2026-07-09T14:34:04.533Z",
+    "updatedAt": "2026-07-09T14:43:01.409Z",
     "next": "Optional follow-up (non-blocking): cap or yield the boot-time spool drain pass so a large backlog can't stall request handling at startup; consider whether ingestCanonicalTranscript should accept pre-hoisted statements from the caller to restore the D-B6 optimization on the HTTP hot path. Neither blocks merge.",
     "gates": {
       "review": {
@@ -15,7 +15,11 @@
         "updatedAt": "2026-07-09T14:34:04.533Z",
         "note": "FEAT-449 durable ingest spool is correct and closes the ingest outage; no data-loss path found and the ingest.ts refactor is byte-identical HTTP behavior, but two MEDIUM perf/design notes (synchronous unbounded boot-time drain, dropped D-B6 prepared-statement hoisting on the hot path) warrant a low-risk follow-up."
       },
-      "validation": null,
+      "validation": {
+        "status": "passed",
+        "updatedAt": "2026-07-09T14:43:01.409Z",
+        "note": "Final readiness mode: build + full targeted + full suite all green; all 8 ACs exercised with evidence; both folded review fixes spot-checked live."
+      },
       "deployment": {
         "dev": null,
         "prod": null
@@ -29,7 +33,7 @@
       "handoffs": [],
       "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
       "validationPlan": null,
-      "validationResult": null,
+      "validationResult": ".claude/artifacts/crew/validations/20260709T144053Z-validation-result-slice-419-ingest-spool-validation.md",
       "deploymentChecks": {
         "dev": null,
         "prod": null
