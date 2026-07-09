@@ -1,0 +1,18 @@
+{
+  "id": "fx32-contradiction-port-number",
+  "title": "Service port set to one value then corrected to another",
+  "difficulty": "contradiction",
+  "notes": "Tests update/correction handling: the FIRST proposed port (8080) is explicitly reverted within the same session in favor of 7777, which conflicts with another service. Gold captures ONLY the final value plus a lesson about the correction, mirroring fx10's structure.",
+  "turns": [
+    { "role": "user", "text": "Let's have the new metrics-exporter service listen on port 8080." },
+    { "role": "assistant", "text": "Setting metrics-exporter to listen on port 8080." },
+    { "role": "user", "text": "Wait, actually hold on — 8080 is already used by the admin-console service on the same box, that'll conflict. Let's use 7777 instead." },
+    { "role": "assistant", "text": "Good catch — switching metrics-exporter to port 7777 instead of 8080, since 8080 is already bound by admin-console on the same host and would fail to start." },
+    { "role": "user", "text": "Right, and just to be clear for anyone reading this later — 7777 is final, 8080 was a mistake we caught before it shipped." },
+    { "role": "assistant", "text": "Confirmed: metrics-exporter listens on port 7777. I'll make sure the config and docs reflect 7777, not the earlier 8080 that was never actually deployed." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "metrics-exporter listens on port 7777 — NOT the initially proposed port 8080, which was reverted before shipping." },
+    { "type": "lesson", "text": "Port 8080 was already bound by the admin-console service on the same host, so assigning it to metrics-exporter as well would have caused a startup conflict." }
+  ]
+}

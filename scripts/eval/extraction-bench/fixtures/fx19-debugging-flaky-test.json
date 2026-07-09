@@ -1,0 +1,25 @@
+{
+  "id": "fx19-debugging-flaky-test",
+  "title": "Flaky CI test traced to a shared mutable fixture",
+  "difficulty": "clean",
+  "notes": "Debugging session for test flakiness caused by a shared mutable fixture object between test cases, with a follow-up todo to audit similar tests.",
+  "turns": [
+    { "role": "user", "text": "tests/orders.test.ts is flaky in CI — passes locally every time but fails maybe 1 in 10 runs in CI, always on the third test in the file." },
+    { "role": "assistant", "text": "That pattern — passes in isolation, fails in a suite, always the same later test — usually points to shared state leaking between tests. Let me look at the fixture setup." },
+    { "role": "user", "text": "What did you find?" },
+    { "role": "assistant", "text": "Found it: all three tests in the file import and mutate the same module-level `baseOrder` object instead of each getting a fresh copy. Test 1 and 2 both push items onto baseOrder.items, so by the time test 3 runs its assertion on items.length, the count depends on whichever CI worker/order the tests happened to run in." },
+    { "role": "user", "text": "Why does it only show up in CI and not locally?" },
+    { "role": "assistant", "text": "Locally the tests likely run in the same order every time (file order, single worker), so the leak is consistent and the assertion happens to still pass. CI runs with test-file parallelism and occasionally different in-file ordering, which exposes the shared-state dependency." },
+    { "role": "user", "text": "Fix it, please." },
+    { "role": "assistant", "text": "Fixed: each test now calls a structuredClone(baseOrder) helper (or builds its own order object) instead of mutating the shared module-level one. Ran the suite 50 times locally with randomized order and it stayed green." },
+    { "role": "user", "text": "Good. Are there other test files that might have the same shared-fixture problem?" },
+    { "role": "assistant", "text": "Likely — I only checked orders.test.ts. Worth auditing the other test files for module-level fixture objects that get mutated instead of cloned; I'd add that as a follow-up rather than doing a full sweep right now." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "tests/orders.test.ts was flaky in CI because all three tests mutated the same module-level baseOrder object instead of each getting a fresh copy, making the third test's assertion depend on execution order." },
+    { "type": "fact", "text": "The flakiness only showed up in CI (not locally) because CI runs with test-file parallelism and occasionally different in-file test ordering, exposing the shared-state dependency that local sequential runs masked." },
+    { "type": "decision", "text": "Fix the flaky test by having each test clone baseOrder (e.g. via structuredClone) or build its own order object, instead of mutating the shared module-level fixture." },
+    { "type": "event", "text": "Verified the fix by running the test suite 50 times locally with randomized test order; it stayed green." },
+    { "type": "todo", "text": "Audit other test files for module-level fixture objects that get mutated instead of cloned, since orders.test.ts had this problem." }
+  ]
+}

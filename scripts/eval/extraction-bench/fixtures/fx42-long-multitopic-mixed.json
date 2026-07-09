@@ -1,0 +1,25 @@
+{
+  "id": "fx42-long-multitopic-mixed",
+  "title": "Three unrelated topics: a typo fix, a real perf optimization, and a postponed feature request",
+  "difficulty": "long",
+  "notes": "Long session spanning three unrelated topics: a trivial typo-fix decision, a real performance optimization decision, and a postponed feature request explicitly deferred, not built. Tests per-topic attribution and correct handling of a deferred item.",
+  "turns": [
+    { "role": "user", "text": "Small thing first — the button on the settings page says 'Save Prefrences', missing the 'e'. Fix that?" },
+    { "role": "assistant", "text": "Fixed the typo — 'Save Prefrences' is now 'Save Preferences' in the settings page component." },
+    { "role": "user", "text": "Thanks. Bigger thing — the /api/search endpoint is doing a full table scan on every request because there's no index on the searchable `title` column. It's the slowest endpoint we have, averaging 1.8s." },
+    { "role": "assistant", "text": "Confirmed via EXPLAIN ANALYZE — full sequential scan on a 2.1M-row table for every search. Adding a GIN index on a to_tsvector(title) expression would let Postgres use full-text search instead of scanning every row, and should bring average latency down substantially since it turns an O(n) scan into an index lookup." },
+    { "role": "user", "text": "Do it, and switch the query to use it." },
+    { "role": "assistant", "text": "Added the GIN index and rewrote the query to use to_tsvector(title) @@ to_tsquery(...) via the new index. Re-ran the same search queries: average latency dropped from 1.8s to about 90ms." },
+    { "role": "user", "text": "Great. Unrelated — a few users have asked if they can export their search history as CSV. Worth building now?" },
+    { "role": "assistant", "text": "I wouldn't build it now — it's a nice-to-have with only a handful of requests so far, and there's no urgent business need driving it. I'd log it as a feature request and revisit if demand grows, rather than spending time on it in this session." },
+    { "role": "user", "text": "Agreed, park it for now." },
+    { "role": "assistant", "text": "Logged as a deferred feature request: CSV export of search history, not being built at this time." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Fixed a typo on the settings page: the button text 'Save Prefrences' was corrected to 'Save Preferences'." },
+    { "type": "lesson", "text": "The /api/search endpoint was doing a full sequential scan on a 2.1M-row table on every request because there was no index on the searchable title column, averaging 1.8s per request." },
+    { "type": "decision", "text": "Add a GIN index on a to_tsvector(title) expression and rewrite the search query to use Postgres full-text search via that index, instead of a full table scan." },
+    { "type": "event", "text": "After adding the GIN index, average /api/search latency dropped from 1.8s to about 90ms." },
+    { "type": "note", "text": "CSV export of search history was requested by a few users but explicitly deferred, not built, due to low demand and no urgent business need — logged as a feature request to revisit if demand grows." }
+  ]
+}

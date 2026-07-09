@@ -1,0 +1,21 @@
+{
+  "id": "fx27-noisy-repeated-health-checks",
+  "title": "Repeated health-check polling output buries a real incident finding",
+  "difficulty": "noisy",
+  "notes": "Long runs of near-identical health-check polling output bury a real incident finding (a downstream dependency intermittently failing health checks). Tests junk resistance.",
+  "turns": [
+    { "role": "user", "text": "Can you poll the health endpoint for the notifications-service every few seconds for a bit and see if it's stable? Support says users are seeing intermittent notification delays." },
+    { "role": "assistant", "text": "Polling GET /health every 3 seconds now..." },
+    { "role": "user", "text": "{\"status\":\"ok\",\"uptime\":841}\n{\"status\":\"ok\",\"uptime\":844}\n{\"status\":\"ok\",\"uptime\":847}\n{\"status\":\"ok\",\"uptime\":850}\n{\"status\":\"ok\",\"uptime\":853}\n{\"status\":\"ok\",\"uptime\":856}\n{\"status\":\"ok\",\"uptime\":859}\n{\"status\":\"degraded\",\"uptime\":862,\"reason\":\"queue-consumer-lag\"}\n{\"status\":\"ok\",\"uptime\":865}\n{\"status\":\"ok\",\"uptime\":868}\n{\"status\":\"ok\",\"uptime\":871}\n{\"status\":\"ok\",\"uptime\":874}\n{\"status\":\"degraded\",\"uptime\":877,\"reason\":\"queue-consumer-lag\"}\n{\"status\":\"ok\",\"uptime\":880}\n{\"status\":\"ok\",\"uptime\":883}\n{\"status\":\"ok\",\"uptime\":886}" },
+    { "role": "assistant", "text": "Interesting — the service reports 'ok' most of the time, but flips to 'degraded' with reason 'queue-consumer-lag' roughly every 15 polls, i.e. roughly every 45 seconds, for a single poll cycle each time. That intermittent pattern matches the delay complaints — it's not down, it's periodically backing up." },
+    { "role": "user", "text": "What's causing the queue-consumer-lag specifically?" },
+    { "role": "assistant", "text": "I'd need to check the consumer's own metrics next, but the periodic ~45-second cadence suggests something batch-like is running on that interval and briefly starving the notification consumer of CPU or DB connections — worth checking for a scheduled job on roughly that period." },
+    { "role": "user", "text": "OK, log that finding and I'll have the notifications team dig into what's running every 45 seconds." },
+    { "role": "assistant", "text": "Logged. Recommending the notifications team check for a scheduled job with a roughly 45-second period that could be starving the queue consumer of CPU or DB connections during those windows." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "notifications-service health checks reported 'degraded' with reason 'queue-consumer-lag' roughly every 45 seconds (about every 15 polls at a 3-second poll interval), otherwise reporting 'ok' — matching the intermittent notification-delay complaints from support." },
+    { "type": "lesson", "text": "The periodic ~45-second degraded cadence suggests a batch-like scheduled job running on that interval is briefly starving the notifications queue consumer of CPU or DB connections." },
+    { "type": "todo", "text": "Have the notifications team investigate whether a scheduled job runs on a roughly 45-second period and could be starving the queue consumer during degraded windows." }
+  ]
+}

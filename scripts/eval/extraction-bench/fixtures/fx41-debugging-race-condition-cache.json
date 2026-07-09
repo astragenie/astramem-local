@@ -1,0 +1,22 @@
+{
+  "id": "fx41-debugging-race-condition-cache",
+  "title": "Cache-stampede race condition on concurrent requests",
+  "difficulty": "clean",
+  "notes": "Debugging session for a cache-stampede race condition: many concurrent requests miss cache simultaneously and all hit the DB, fixed with a single-flight lock, with a follow-up todo.",
+  "turns": [
+    { "role": "user", "text": "Every time the homepage-stats cache entry expires, we get a huge DB CPU spike for a couple seconds, then it settles. It's happening every 10 minutes exactly, matching the cache TTL." },
+    { "role": "assistant", "text": "That pattern is a classic cache stampede — when the cached entry expires, potentially hundreds of concurrent requests all miss the cache at nearly the same instant and each independently recomputes the same expensive query against the DB, instead of one request recomputing it and the rest waiting for that result." },
+    { "role": "user", "text": "How do we fix that?" },
+    { "role": "assistant", "text": "Add a single-flight lock around the recompute: the first request to miss the cache acquires an in-process lock and does the actual DB query; any other concurrent requests that miss during that window wait on the same in-flight promise instead of starting their own query, then all receive the same result once it resolves." },
+    { "role": "user", "text": "Does that work across multiple server instances, or just within one process?" },
+    { "role": "assistant", "text": "Good question — an in-process lock only dedupes within a single instance; with multiple instances behind a load balancer, each instance could still independently stampede the DB. For full protection we'd need a distributed lock (e.g. a short Redis SETNX lock), but since we only run 3 instances and the in-process fix already cuts concurrent DB hits by roughly 100x, I'd ship the in-process version now and treat the distributed lock as a follow-up if the remaining 3x spike still matters." },
+    { "role": "user", "text": "Fine, ship the in-process fix now, and add the distributed-lock follow-up as a todo." },
+    { "role": "assistant", "text": "Implemented the in-process single-flight lock for homepage-stats. Added a todo to evaluate a distributed Redis-based lock if the remaining per-instance stampede (up to 3x, one per server instance) still causes a noticeable DB spike." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "The homepage-stats DB CPU spike every 10 minutes was a cache-stampede: when the cache entry expired, hundreds of concurrent requests all missed at nearly the same instant and each independently recomputed the same expensive query against the DB." },
+    { "type": "decision", "text": "Add an in-process single-flight lock around the homepage-stats cache recompute, so only the first request that misses the cache queries the DB while concurrent requests wait on that same in-flight result." },
+    { "type": "fact", "text": "An in-process single-flight lock only dedupes within a single server instance; with multiple instances behind a load balancer, each instance can still independently stampede the DB, though the in-process fix already cuts concurrent DB hits by roughly 100x." },
+    { "type": "todo", "text": "Evaluate a distributed Redis-based lock (e.g. SETNX) for homepage-stats if the remaining per-instance cache stampede (up to 3x, one per server instance) still causes a noticeable DB spike." }
+  ]
+}

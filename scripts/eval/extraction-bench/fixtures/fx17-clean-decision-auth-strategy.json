@@ -1,0 +1,22 @@
+{
+  "id": "fx17-clean-decision-auth-strategy",
+  "title": "Session cookies vs JWT for a new internal service",
+  "difficulty": "clean",
+  "notes": "Clean decision session weighing two auth strategies and landing on one with explicit reasoning.",
+  "turns": [
+    { "role": "user", "text": "For the new billing-service, should we do session cookies or JWTs for auth? It only talks to our own frontend, nothing cross-domain." },
+    { "role": "assistant", "text": "Since it's same-origin and only serves our own frontend, session cookies are the simpler and safer choice — httpOnly, Secure, SameSite=Strict cookies avoid the need to think about token storage in localStorage/sessionStorage, which is vulnerable to XSS exfiltration." },
+    { "role": "user", "text": "What about revocation? I've heard JWTs are hard to revoke." },
+    { "role": "assistant", "text": "That's actually another point in favor of sessions here — with server-side session storage, revocation is just deleting the session row, immediate and simple. Stateless JWTs would need a blocklist or short expiry plus refresh complexity to get the same effect." },
+    { "role": "user", "text": "Any downside to sessions we should note for later?" },
+    { "role": "assistant", "text": "The main one is horizontal scaling — session storage needs to be shared (e.g. Redis) across instances, whereas JWTs are self-contained. Not a concern at our current single-region, low-instance-count scale, but worth revisiting if billing-service ever needs to scale out significantly." },
+    { "role": "user", "text": "Fine, let's go with cookies then." },
+    { "role": "assistant", "text": "Going with httpOnly, Secure, SameSite=Strict session cookies backed by server-side session storage for billing-service." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Use httpOnly, Secure, SameSite=Strict session cookies (not JWTs) for billing-service auth, since it's same-origin and only serves the team's own frontend." },
+    { "type": "lesson", "text": "Session cookies avoid the need to store tokens in localStorage/sessionStorage, which is vulnerable to XSS exfiltration." },
+    { "type": "fact", "text": "With server-side session storage, revoking access is as simple as deleting the session row; stateless JWTs would need a blocklist or short expiry plus refresh complexity to achieve the same effect." },
+    { "type": "note", "text": "Session storage needs to be shared (e.g. Redis) across instances to scale horizontally, unlike self-contained JWTs — not a concern at the current single-region, low-instance-count scale, but worth revisiting if billing-service scales out significantly." }
+  ]
+}

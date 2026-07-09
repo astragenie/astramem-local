@@ -1,0 +1,22 @@
+{
+  "id": "fx24-decision-logging-library",
+  "title": "Adopting a structured logging library over ad-hoc console.log",
+  "difficulty": "clean",
+  "notes": "Clean architecture decision session choosing a structured logging library, with reasoning about queryability and log levels.",
+  "turns": [
+    { "role": "user", "text": "Our logs are just scattered console.log() calls with no consistent format. It's painful to search production logs when something breaks. Should we adopt a real logging library?" },
+    { "role": "assistant", "text": "Yes, I'd recommend pino — it emits structured JSON logs by default, which makes them queryable in whatever log aggregator we're using, and it's one of the fastest Node logging libraries so it won't add meaningful overhead on hot paths." },
+    { "role": "user", "text": "How's that different from just JSON.stringify-ing our console.log calls?" },
+    { "role": "assistant", "text": "Mainly log levels and context propagation — pino gives us debug/info/warn/error levels we can filter by per-environment, and child loggers that carry request-scoped context (like requestId) automatically into every log line without threading it through manually." },
+    { "role": "user", "text": "Any concern about migration effort?" },
+    { "role": "assistant", "text": "It's incremental-friendly — we can wrap it so existing console.log call sites keep working during migration, then replace them file-by-file with logger.info/error calls that include structured fields. No need for a big-bang rewrite." },
+    { "role": "user", "text": "OK, let's go with pino." },
+    { "role": "assistant", "text": "Adding pino as the logging library, with a request-scoped child logger attaching requestId to every log line, and log level configurable per environment via LOG_LEVEL." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Adopt pino as the structured logging library, replacing ad-hoc console.log calls, because it emits queryable JSON logs by default and adds minimal overhead." },
+    { "type": "decision", "text": "Use pino child loggers to propagate request-scoped context (such as requestId) automatically into every log line, instead of threading it through manually." },
+    { "type": "decision", "text": "Migrate to pino incrementally, file-by-file, rather than a big-bang rewrite, keeping existing console.log call sites working during the transition." },
+    { "type": "fact", "text": "Log level will be configurable per environment via the LOG_LEVEL variable." }
+  ]
+}

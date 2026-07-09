@@ -1,0 +1,15 @@
+{
+  "id": "fx30-nothing-smalltalk-weather",
+  "title": "Trivial off-topic chit-chat about weather",
+  "difficulty": "nothing",
+  "notes": "Deliberately contains no decisions, facts, lessons, commands, todos, or events — off-topic small talk about the weather. Gold atom set is empty on purpose, scoring over-extraction rate.",
+  "turns": [
+    { "role": "user", "text": "man it is pouring outside right now" },
+    { "role": "assistant", "text": "Sounds rough — hopefully it clears up before you have to head out." },
+    { "role": "user", "text": "yeah supposed to rain all week apparently" },
+    { "role": "assistant", "text": "Well, good excuse to stay in and get things done I suppose. Anyway, let me know when you want to get back to the task." },
+    { "role": "user", "text": "haha true. not right now, just needed a break" },
+    { "role": "assistant", "text": "No worries, take your time — I'll be here when you're ready." }
+  ],
+  "gold_atoms": []
+}

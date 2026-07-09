@@ -1,0 +1,25 @@
+{
+  "id": "fx29-long-multitopic-review",
+  "title": "Code review session covering a naming decision, a security fix, and a deferred nice-to-have",
+  "difficulty": "long",
+  "notes": "Long session spanning three unrelated topics in one code-review pass: a naming decision, a security fix, and a deferred nice-to-have that is explicitly deprioritized, not actioned.",
+  "turns": [
+    { "role": "user", "text": "Reviewing your PR now. First thing — you named the new function getUsrPrefs(), can we spell out 'User' fully? Abbreviations like that make grepping harder later." },
+    { "role": "assistant", "text": "Fair, renaming to getUserPreferences() across the three call sites — 'Usr' isn't used consistently elsewhere in the codebase anyway, so this brings it in line with existing naming conventions." },
+    { "role": "user", "text": "Thanks. Bigger issue — the new /api/export endpoint doesn't check that the requesting user owns the account being exported, just that they're authenticated at all. Anyone logged in could export anyone else's data by ID." },
+    { "role": "assistant", "text": "Good catch, that's a real authorization bug (IDOR). Adding an ownership check: the endpoint now verifies req.user.id matches the accountId being exported, returning 403 if not, before any export logic runs." },
+    { "role": "user", "text": "Please add a regression test for that too, this class of bug is exactly what we don't want to reintroduce." },
+    { "role": "assistant", "text": "Added a test asserting a 403 when userA requests userB's export, plus the existing happy-path test for exporting your own account." },
+    { "role": "user", "text": "One more thought, lower priority — could the export also support a CSV format, not just JSON? Some users have asked for that." },
+    { "role": "assistant", "text": "Technically straightforward to add, but I'd defer it — it's not related to this PR's scope and there's no urgent need yet, just occasional user requests. I'll leave it as a nice-to-have for a future PR rather than scope-creeping this one." },
+    { "role": "user", "text": "Agreed, not now. Approve the rest once the rename and the auth fix are in." },
+    { "role": "assistant", "text": "Pushed both fixes — renamed function and the ownership check with its regression test. Ready for re-review." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Rename getUsrPrefs() to getUserPreferences() across its call sites, to avoid non-standard abbreviations and match existing codebase naming conventions." },
+    { "type": "lesson", "text": "The /api/export endpoint only checked that the requester was authenticated, not that they owned the account being exported — an IDOR bug letting any logged-in user export any other user's data by ID." },
+    { "type": "decision", "text": "Add an ownership check to /api/export verifying req.user.id matches the accountId being exported, returning 403 otherwise, before running any export logic." },
+    { "type": "decision", "text": "Add a regression test asserting a 403 when userA requests userB's export, alongside the existing happy-path self-export test." },
+    { "type": "note", "text": "Adding CSV export format support (in addition to JSON) was raised as a user-requested nice-to-have but explicitly deferred to a future PR, out of scope for this one." }
+  ]
+}

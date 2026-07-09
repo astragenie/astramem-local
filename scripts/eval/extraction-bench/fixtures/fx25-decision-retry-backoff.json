@@ -1,0 +1,22 @@
+{
+  "id": "fx25-decision-retry-backoff",
+  "title": "Exponential backoff with jitter for an external payments API client",
+  "difficulty": "clean",
+  "notes": "Clean decision session on retry strategy for an external API client, including a max-retry cap and reasoning about thundering herd.",
+  "turns": [
+    { "role": "user", "text": "The payments-provider client just retries immediately on a failed request, three times. We're seeing bursts where that makes an outage worse. What should we do instead?" },
+    { "role": "assistant", "text": "Switch to exponential backoff with jitter — base delay of 200ms, doubling each retry (200ms, 400ms, 800ms...), with randomized jitter of up to 100ms added to each delay so that if many requests fail at once, their retries don't all land in the same instant and hammer the provider again." },
+    { "role": "user", "text": "How many retries total?" },
+    { "role": "assistant", "text": "Cap it at 5 retries. Past that, the provider is very likely genuinely down rather than transiently overloaded, and we should surface the failure to the caller instead of continuing to retry — at 5 retries with the backoff schedule above, total retry time is already around 3-4 seconds, which is close to our upstream timeout budget." },
+    { "role": "user", "text": "Should every kind of error be retried, or just some?" },
+    { "role": "assistant", "text": "Only retry on 5xx responses and network-level errors (timeout, connection reset) — 4xx responses mean the request itself is invalid (bad auth, malformed payload) and retrying won't help, it'll just waste time and could duplicate a charge attempt if the 4xx was actually a validation rejection after partial processing." },
+    { "role": "user", "text": "Good call on not retrying 4xx. Implement this." },
+    { "role": "assistant", "text": "Implemented: exponential backoff (200ms base, doubling, up to 100ms jitter), max 5 retries, retry only on 5xx and network errors, immediate failure surfaced to the caller on 4xx or after retries are exhausted." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Use exponential backoff with jitter for the payments-provider client's retries: 200ms base delay, doubling each retry, plus up to 100ms randomized jitter, to avoid retries from a failure burst all landing at the same instant." },
+    { "type": "decision", "text": "Cap retries at 5 attempts for the payments-provider client — beyond that the provider is likely genuinely down and the failure should surface to the caller rather than keep retrying." },
+    { "type": "decision", "text": "Only retry on 5xx responses and network-level errors (timeout, connection reset); do not retry on 4xx responses, since those indicate an invalid request that retrying won't fix and could risk a duplicate charge attempt." },
+    { "type": "fact", "text": "With the chosen backoff schedule, 5 retries take roughly 3-4 seconds total, close to the service's upstream timeout budget." }
+  ]
+}

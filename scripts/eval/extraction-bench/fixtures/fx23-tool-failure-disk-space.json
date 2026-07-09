@@ -1,0 +1,23 @@
+{
+  "id": "fx23-tool-failure-disk-space",
+  "title": "Build tool failing from disk space exhaustion caused by unrotated logs",
+  "difficulty": "clean",
+  "notes": "Tool failure -> root cause (log rotation not configured) -> fix -> verification, mirroring the fx06 tool-failure shape with a different scenario.",
+  "turns": [
+    { "role": "user", "text": "The build server is failing every job now with 'ENOSPC: no space left on device' during the compile step." },
+    { "role": "assistant", "text": "Let me check disk usage on the build box... /var/log is at 94GB, almost entirely build-agent.log which has been growing unbounded since the agent was installed 8 months ago — log rotation was never configured for it." },
+    { "role": "user", "text": "Can we just delete the old log to unblock builds right now?" },
+    { "role": "assistant", "text": "Yes, truncating build-agent.log now to free space immediately — that should unblock builds right away while we fix rotation properly." },
+    { "role": "user", "text": "Do the proper fix too." },
+    { "role": "assistant", "text": "Added a logrotate config for build-agent.log: daily rotation, compress, keep 14 days, so it can never grow unbounded again. Also added a disk-space check to the build agent's health check so future exhaustion fails loudly with a clear message instead of a cryptic ENOSPC mid-build." },
+    { "role": "user", "text": "Confirm builds are working again." },
+    { "role": "assistant", "text": "Ran three consecutive build jobs after the fix — all completed successfully, and disk usage on /var/log dropped to under 2GB after truncation and stayed flat across the three runs." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "build-agent.log had grown unbounded to 94GB over 8 months because log rotation was never configured for it, eventually exhausting disk space and failing every build with ENOSPC." },
+    { "type": "decision", "text": "Truncate build-agent.log immediately to free disk space and unblock builds." },
+    { "type": "decision", "text": "Add a logrotate config for build-agent.log (daily rotation, compress, keep 14 days) so it cannot grow unbounded again." },
+    { "type": "decision", "text": "Add a disk-space check to the build agent's health check so future exhaustion fails loudly with a clear message instead of a cryptic mid-build ENOSPC." },
+    { "type": "event", "text": "Verified the fix by running three consecutive build jobs successfully; /var/log usage dropped to under 2GB and stayed flat across the runs." }
+  ]
+}

@@ -1,0 +1,24 @@
+{
+  "id": "fx22-config-decision-connection-pool",
+  "title": "DB connection exhaustion traced to a leak, not undersized pool",
+  "difficulty": "clean",
+  "notes": "Investigation ends in a decision NOT to raise the connection pool size, because the real bug was a connection leak; tests whether the extractor captures a negative/restraint decision correctly.",
+  "turns": [
+    { "role": "user", "text": "We're seeing 'connection pool exhausted, timed out waiting for a connection' errors during peak traffic. Should we just raise the pool size from 20 to 50?" },
+    { "role": "assistant", "text": "Before bumping the number, let me check whether connections are actually being returned to the pool — exhaustion under moderate load often means a leak, not undersizing. Checking active connection counts now..." },
+    { "role": "user", "text": "What do you see?" },
+    { "role": "assistant", "text": "Active connections climb steadily through the day and never drop back down, even overnight when traffic is near zero. That's consistent with a leak, not legitimate concurrent demand — a correctly sized pool under real load should oscillate, not monotonically climb." },
+    { "role": "user", "text": "Where's the leak?" },
+    { "role": "assistant", "text": "Found it — the reportGeneration() code path acquires a connection but returns early on a validation error without releasing it back to the pool. Every failed report request permanently consumes one connection." },
+    { "role": "user", "text": "So should we still raise the pool size as a stopgap?" },
+    { "role": "assistant", "text": "No — raising it would just delay exhaustion, not prevent it, and would mask the leak longer before someone notices. Better to fix the leak (wrap the connection acquire/release in a try/finally) and leave the pool size at 20, which is enough for real concurrent demand once connections are actually being returned." },
+    { "role": "user", "text": "Agreed, do the finally-block fix and leave pool size alone." },
+    { "role": "assistant", "text": "Fixed reportGeneration() to release the connection in a finally block regardless of validation outcome. Pool size stays at 20." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "reportGeneration() acquired a DB connection but returned early on a validation error without releasing it, so every failed report request permanently consumed one pool connection, eventually exhausting the pool." },
+    { "type": "fact", "text": "Active connection count climbed steadily through the day and never dropped even overnight near-zero traffic, which indicated a connection leak rather than legitimate concurrent demand." },
+    { "type": "decision", "text": "Do NOT raise the connection pool size from 20 to 50 — raising it would only delay exhaustion and mask the underlying leak; instead fix the leak and keep pool size at 20." },
+    { "type": "decision", "text": "Fix reportGeneration() to release its DB connection in a try/finally block regardless of validation outcome." }
+  ]
+}
