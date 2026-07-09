@@ -30,7 +30,7 @@ describe('/health hardening fields (P1.3) — additive, wire-safe', () => {
     // wire-safe, and contract_schema_version rides alongside it.
     expect(body.wire_versions_supported).toBeDefined();
     expect(new Set(body.wire_versions_supported)).toEqual(
-      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+      new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
     expect(body.schema_version).toBeDefined();

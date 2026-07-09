@@ -10,22 +10,27 @@ import {
 // ---------------------------------------------------------------------------
 // U6 wire-version unification (astramem-local#106).
 //
-// src/server/lib/wire-meta.ts hand-mirrors contracts/schemas/*.v1.schema.json
+// src/server/lib/wire-meta.ts hand-mirrors contracts/schemas/*.v{N}.schema.json
 // -> un-prefixed domain@gen id (TS6059 blocks importing contracts/ from src/,
 // same constraint as tests/contracts/recall-filter-parity.test.ts). This is
 // the regression gate for that mirror: it readdirSync's the real schemas
-// directory and asserts SCHEMA_FILE_TO_DOMAIN covers every *.v1.schema.json
+// directory and asserts SCHEMA_FILE_TO_DOMAIN covers every *.v{N}.schema.json
 // file present — fails the build if a schema is added/removed without a
 // matching map update, per the architect's binding decision (explicit map,
 // not derived from schema `title` strings, which are internally
 // inconsistent: atom uses `astramem/`, the rest use `astramem-`).
+//
+// atom@2 (2026-07-09): widened from a `.v1.schema.json`-only glob to every
+// `.v{N}.schema.json` generation once atom.v2.schema.json joined atom.v1 in
+// contracts/schemas/ (dual-read window, ADR-001 amendment) — atom is now the
+// one domain with two schema-file generations mapped at once.
 // ---------------------------------------------------------------------------
 
 const SCHEMAS_DIR = join(__dirname, '../../contracts/schemas');
-const schemaFiles = readdirSync(SCHEMAS_DIR).filter(f => f.endsWith('.v1.schema.json')).sort();
+const schemaFiles = readdirSync(SCHEMAS_DIR).filter(f => /\.v\d+\.schema\.json$/.test(f)).sort();
 
-describe('wire-version domain@gen map parity — src/server/lib/wire-meta.ts vs contracts/schemas/*.v1.schema.json', () => {
-  it('contracts/schemas/ has at least one .v1.schema.json file (sanity — map has something to cover)', () => {
+describe('wire-version domain@gen map parity — src/server/lib/wire-meta.ts vs contracts/schemas/*.v{N}.schema.json', () => {
+  it('contracts/schemas/ has at least one .v{N}.schema.json file (sanity — map has something to cover)', () => {
     expect(schemaFiles.length).toBeGreaterThan(0);
   });
 
@@ -57,14 +62,14 @@ describe('wire-version domain@gen map parity — src/server/lib/wire-meta.ts vs 
     expect(SCHEMA_FILE_TO_DOMAIN['retrieval-result.v1.schema.json']).toBe('retrieval@1');
   });
 
-  it('WIRE_VERSIONS_SUPPORTED is the deduped domain@gen list — exactly 4 entries for the 5 current schema files', () => {
-    expect(WIRE_VERSIONS_SUPPORTED).toHaveLength(4);
+  it('WIRE_VERSIONS_SUPPORTED is the deduped domain@gen list — exactly 5 entries for the 6 current schema files', () => {
+    expect(WIRE_VERSIONS_SUPPORTED).toHaveLength(5);
     expect(new Set(WIRE_VERSIONS_SUPPORTED).size).toBe(WIRE_VERSIONS_SUPPORTED.length);
   });
 
-  it('WIRE_VERSIONS_SUPPORTED contains exactly the 4 expected domain@gen ids (order-independent)', () => {
+  it('WIRE_VERSIONS_SUPPORTED contains exactly the 5 expected domain@gen ids (order-independent)', () => {
     expect(new Set(WIRE_VERSIONS_SUPPORTED)).toEqual(
-      new Set(['atom@1', 'retrieval@1', 'sync@1', 'capture@1']),
+      new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
   });
 
