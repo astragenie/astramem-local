@@ -4,6 +4,7 @@
  * Regenerate: node contracts/generate-zod.mjs
  */
 export { AtomV1Schema, type AtomV1 } from './atom.v1.js';
+export { AtomV2Schema, type AtomV2 } from './atom.v2.js';
 export { CaptureEnvelopeV1Schema, type CaptureEnvelopeV1 } from './capture-envelope.v1.js';
 export { RetrievalQueryV1Schema, type RetrievalQueryV1 } from './retrieval-query.v1.js';
 export { RetrievalResultV1Schema, type RetrievalResultV1 } from './retrieval-result.v1.js';
