@@ -25,3 +25,6 @@ secrets.env
 
 # LongMemEval benchmark data (large, fetched — see docs/eval/longmemeval-plan.md)
 .eval-data/
+
+# Playwright MCP runtime
+.playwright-mcp/
