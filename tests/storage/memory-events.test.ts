@@ -173,14 +173,18 @@ describe('MemoryEventRepo.invalidate', () => {
   });
 
   it('invalidated memory is excluded from selectPack and search', async () => {
+    // atom@2 repo/project consolidation (plan 20260709): selectPack now
+    // filters on `project`, not `repo` — real ingest always derives
+    // `project` from `repo` (src/pipeline/derive-project.ts), so this
+    // fixture mirrors that instead of leaving `project` null.
     const aliveId = repo.insert({
       type: 'decision', text: 'still valid decision', normalized_text: 'still valid decision',
-      repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+      repo: 'r1', project: 'r1', branch: null, agent: null, session_id: null,
       hash: 'inv-pack-alive', source_hash: null, importance: 0.9,
     });
     const deadId = repo.insert({
       type: 'decision', text: 'invalidated decision lifecycle test', normalized_text: 'invalidated decision lifecycle test',
-      repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+      repo: 'r1', project: 'r1', branch: null, agent: null, session_id: null,
       hash: 'inv-pack-dead', source_hash: null, importance: 0.9,
     });
 

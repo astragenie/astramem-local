@@ -8,10 +8,14 @@ import { decideInjection, shrinkBudgetForPrompt } from '../../src/recall/policy.
 import { defaultConfig, type Config } from '../../src/config/config.js';
 import { buildApp } from '../../src/server/app.js';
 
+// atom@2 repo/project consolidation (plan 20260709): selectPack (called by
+// decideInjection) now filters on `project`, not `repo` — real ingest
+// always derives `project` from `repo` when one is given
+// (src/pipeline/derive-project.ts), so this test double mirrors that.
 function seed(db: DB, text: string, importance: number, hash: string): string {
   return new MemoryRepo(db).insert({
     type: 'decision', text, normalized_text: text.toLowerCase(),
-    repo: 'r1', project: null, branch: null, agent: null,
+    repo: 'r1', project: 'r1', branch: null, agent: null,
     session_id: null, hash, source_hash: null, importance,
   });
 }
