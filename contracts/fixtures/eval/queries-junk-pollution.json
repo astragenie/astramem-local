@@ -1,0 +1,15 @@
+{
+  "schema": "astramem-retrieval-eval-queries@1",
+  "description": "FEAT-441 AC-3 junk-pollution fixture query set — companion to corpus-junk-pollution.json. Single query whose terms overlap heavily with the 12 ephemeral_state junk atoms (by design), so the durable atom (atom-1) is graded relevant but the junk atoms are graded 0 (not relevant) despite winning on raw lexical overlap.",
+  "queries": [
+    {
+      "id": "jq1",
+      "text": "daemon health status running check",
+      "mode": "hybrid",
+      "filters": {},
+      "graded_relevant": [
+        { "atom_id": "20000000-0000-4000-8000-000000000001", "grade": 3 }
+      ]
+    }
+  ]
+}

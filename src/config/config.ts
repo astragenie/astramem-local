@@ -220,6 +220,18 @@ export interface Config {
   consolidation: {
     autoAcceptThreshold: number | null;
   };
+  /** Distillation durability quality gate (FEAT-441). `off` (default) is
+   * BYTE-IDENTICAL to pre-FEAT-441 behavior — the gate
+   * (`src/distill/durability-gate.ts`) is never even evaluated at the
+   * persist call site (`src/distill/stages/08-embed-index.ts`). `strict`
+   * gates all 5 low-durability taxonomy reasons; `lenient` gates only the
+   * 3 lowest-false-positive-risk reasons (see durability-gate.ts doc
+   * comment). Opt-in only until eval'd — do not change this default. Read
+   * once at boot like every other config value (CLAUDE.md "Config reload"
+   * section) — no hot reload. */
+  distill: {
+    durabilityGate: 'strict' | 'lenient' | 'off';
+  };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
    *  with `enabled: false` (default), `estimateLlmJudgedJunk()`
@@ -286,6 +298,7 @@ export function defaultConfig(): Config {
     consolidation: { autoAcceptThreshold: null },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
+    distill: { durabilityGate: 'off' },
   };
 }
 
@@ -355,8 +368,43 @@ export function applyFusionGovernance(
   return governed;
 }
 
+/**
+ * FEAT-441 fix pass (2026-07-09 review MEDIUM): `distill.durabilityGate` is
+ * a closed 3-value enum, but config.yaml is hand-parsed scalars with no
+ * schema (see loader.ts's doc comment) — an invalid/typo'd value (e.g.
+ * 'strcit') would otherwise pass straight through `deepMerge` unchecked.
+ * That is not a silent no-op: `gateDurability`'s `mode === 'off'` /
+ * `mode === 'strict'` checks fall through to the `lenient` branch for ANY
+ * other string, so a typo would silently start gating atoms under lenient
+ * rules instead of falling back to the documented 'off' default. Validated
+ * here, mirroring `applyFusionGovernance`'s "never throw, degrade + log"
+ * shape exactly — never fatal, config.yaml validity must never block boot.
+ */
+const VALID_DURABILITY_GATE_MODES: ReadonlySet<Config['distill']['durabilityGate']> =
+  new Set(['strict', 'lenient', 'off']);
+
+export function applyDurabilityGateGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  if (!VALID_DURABILITY_GATE_MODES.has(distill.durabilityGate)) {
+    log(
+      `[durability-gate-governance] distill.durabilityGate=${JSON.stringify(distill.durabilityGate)} is not one ` +
+      "of 'strict'|'lenient'|'off' — falling back to 'off' (the documented default). " +
+      'See FEAT-441 / src/distill/durability-gate.ts.',
+    );
+    return { ...distill, durabilityGate: 'off' };
+  }
+  return distill;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
-  return { ...merged, search: applyFusionGovernance(merged.search) };
+  return {
+    ...merged,
+    search: applyFusionGovernance(merged.search),
+    distill: applyDurabilityGateGovernance(merged.distill),
+  };
 }

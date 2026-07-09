@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { loadConfig, defaultConfig, applyFusionGovernance } from '../../src/config/config.js';
+import { loadConfig, defaultConfig, applyFusionGovernance, applyDurabilityGateGovernance } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
   it('returns defaults when no file present', () => {
@@ -121,5 +121,37 @@ describe('applyFusionGovernance', () => {
       search: { ...defaultConfig().search, zeta: 3 },
     } as any);
     expect(cfg.search.zeta).toBe(cfg.search.governance.maxComponentWeight);
+  });
+});
+
+// FEAT-441 fix pass (2026-07-09 review MEDIUM): distill.durabilityGate is a
+// closed 3-value enum but config.yaml has no schema — an invalid/typo value
+// must fall back to the documented 'off' default with a WARN, not silently
+// behave as 'lenient' (see gateDurability's mode fallthrough).
+describe('applyDurabilityGateGovernance', () => {
+  it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
+    for (const mode of ['strict', 'lenient', 'off'] as const) {
+      const distill = { durabilityGate: mode };
+      expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
+    }
+  });
+
+  it('falls back to off and logs why on an invalid/typo value', () => {
+    const distill = { durabilityGate: 'strcit' as any };
+    const logs: string[] = [];
+    const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
+
+    expect(governed.durabilityGate).toBe('off');
+    expect(logs.some(m => m.includes('durabilityGate') && m.includes('strcit'))).toBe(true);
+  });
+
+  it('loadConfig wires applyDurabilityGateGovernance in: an invalid override comes back "off"', () => {
+    const cfg = loadConfig({ distill: { durabilityGate: 'bogus' as any } } as any);
+    expect(cfg.distill.durabilityGate).toBe('off');
+  });
+
+  it('loadConfig leaves a valid distill.durabilityGate untouched', () => {
+    const cfg = loadConfig({ distill: { durabilityGate: 'strict' } } as any);
+    expect(cfg.distill.durabilityGate).toBe('strict');
   });
 });

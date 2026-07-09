@@ -15,6 +15,11 @@ import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { EntityRepo } from '../../storage/entities.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import type { DB } from '../../storage/db.js';
+import type { Config } from '../../config/config.js';
+import { defaultConfig } from '../../config/config.js';
+import { redactIfEnabled } from '../../redact/index.js';
+import { childLogger } from '../../log/logger.js';
+import { gateDurability, type DurabilityGateMode, type GatedReason } from '../durability-gate.js';
 
 export interface IndexResult {
   memoryId: string;
@@ -40,6 +45,31 @@ export interface EmbedIndexContext {
    * pre-fix rows (no migration backfills those; see distill.ts/distill-events.ts).
    */
   capturedAtMs?: number | null;
+  /**
+   * FEAT-441: durability quality gate mode. Undefined/omitted behaves as
+   * 'off' — every pre-FEAT-441 caller (and the existing test suite) that
+   * never sets this field is byte-identical (AC-2): `gateDurability` short
+   * circuits to `null` for 'off' without even running the classifier.
+   */
+  durabilityGateMode?: DurabilityGateMode;
+  /**
+   * Config used to redact a gated atom's text before it reaches the log
+   * sink (AC-7 — same Stage-0 `redactIfEnabled` choke point `/remember`
+   * and ingest use). Only consulted when a gate actually fires (mode !==
+   * 'off' and a candidate matches); falls back to `defaultConfig()`
+   * (redaction ON by default) if omitted so a caller that turns the gate on
+   * without also threading its config still redacts rather than silently
+   * skipping redaction.
+   */
+  redactConfig?: Config;
+  /**
+   * FEAT-441 AC-4 observability out-param: when provided, `.count` is
+   * incremented once per atom gated out during this call. Mutated in place
+   * (rather than folded into the return value) so the `IndexResult[]`
+   * return contract every existing caller already depends on stays
+   * unchanged — callers read `.count` back after the call resolves.
+   */
+  gatedOutCounter?: { count: number };
 }
 
 /**
@@ -78,6 +108,50 @@ export async function embedAndIndex(
     // Erasure replay filter (ADR-006 W5): an erased content hash must never
     // be resurrected by re-distillation — erasure wins over replay.
     if (eventsRepo.isErasedHash(mem.finalHash)) continue;
+
+    // Durability quality gate (FEAT-441): second continue-style filter, same
+    // ordering position as the erasure-replay filter above — a second "last
+    // line of defense" check every producer's atoms pass through before
+    // insertWithCreateEvent. 'off' (the shipped default) never calls the
+    // classifier at all (AC-2 byte-identical guarantee).
+    //
+    // The whole classify→redact→log block is wrapped so a classifier (or
+    // redaction/logging) error FAILS OPEN rather than poisoning the whole
+    // distill job or silently dropping an atom that was never actually
+    // judged low-durability (2026-07-09 review MEDIUM fix — the generic
+    // catch in distill.ts would otherwise turn a durability-gate bug into a
+    // job-level failure). `gatedForReason` is only ever set after the log
+    // line below has been emitted, so `gatedOutCounter` and the
+    // persisted-atom-count stay consistent even when a mid-block throw
+    // forces a fail-open persist.
+    let gatedForReason: GatedReason | null = null;
+    try {
+      const reason = gateDurability(mem.text, ctx.durabilityGateMode ?? 'off');
+      if (reason) {
+        // AC-7: rejected-candidate text passes through the same Stage-0
+        // redaction choke point as /remember and ingest before it reaches
+        // any log sink, and rides the existing pino/ingest.log 10MB
+        // rotation policy rather than an unbounded or separately-retained
+        // sink — a single structured log line, no side table.
+        const { text: redactedText } = redactIfEnabled(mem.text, ctx.redactConfig ?? defaultConfig());
+        childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+          { gatedReason: reason, atom_type: mem.type, text: redactedText.slice(0, 500) },
+          'durability gate: atom rejected — never passed to insertWithCreateEvent',
+        );
+        gatedForReason = reason;
+      }
+    } catch (err) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err) },
+        'durability gate: classifier/redaction/log error — failing open, atom will be persisted',
+      );
+      gatedForReason = null;
+    }
+
+    if (gatedForReason) {
+      if (ctx.gatedOutCounter) ctx.gatedOutCounter.count += 1;
+      continue;
+    }
 
     // Insert + append a 'create' memory_event (ADR-002) in one transaction.
     // Dedup-aware: `created` is false when this hash already existed.

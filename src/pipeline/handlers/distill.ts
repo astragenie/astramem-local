@@ -111,13 +111,18 @@ export const distillHandler: JobHandler = {
       // NULL for legacy v0.0 envelopes, which have no captured_at and keep
       // the wall-clock default (see EmbedIndexContext.capturedAtMs).
       capturedAtMs: transcript.captured_at ?? null,
+      // FEAT-441: durability gate mode + config threaded straight from the
+      // running config — undefined durabilityGateMode falls back to 'off'
+      // deep in embedAndIndex (AC-2 byte-identical default).
+      durabilityGateMode: ctx.config.distill.durabilityGate,
+      config: ctx.config,
     };
 
     try {
       const result = await runPipeline(transcriptText, pipelineCtx);
       console.log(
         `${ts()} [distill] transcript=${transcript_id} chunks=${result.chunksProcessed} atoms=${result.atomsExtracted} ` +
-          `created=${result.memoriesCreated} deduped=${result.memoriesDeduped}`,
+          `created=${result.memoriesCreated} deduped=${result.memoriesDeduped} gatedOut=${result.gatedOutCount}`,
       );
 
       // D-DEF2: backfill ingest_idempotency.summary_memory_id (currently the

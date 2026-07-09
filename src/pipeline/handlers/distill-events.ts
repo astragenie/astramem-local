@@ -151,6 +151,7 @@ export const distillEventsHandler: JobHandler = {
     const sourceHash = createHash('sha256').update(transcript.content, 'utf8').digest('hex');
 
     pipeLog.info({ stage: 'embed-index', memories: normalizedMemories.length }, 'stage start');
+    const gatedOutCounter = { count: 0 };
     const indexResults = await embedAndIndex(normalizedMemories, {
       db: ctx.db,
       embed: ctx.providers.embed,
@@ -165,15 +166,22 @@ export const distillEventsHandler: JobHandler = {
       // envelopes (events kind is canonical-only in practice, but the column
       // is nullable so guard anyway).
       capturedAtMs: transcript.captured_at ?? null,
+      // FEAT-441: same gate wiring as the transcript path (distill.ts).
+      durabilityGateMode: ctx.config.distill.durabilityGate,
+      redactConfig: ctx.config,
+      gatedOutCounter,
     });
 
     const created = indexResults.filter(r => r.created).length;
     const deduped = indexResults.filter(r => !r.created).length;
-    pipeLog.info({ stage: 'embed-index', memories_created: created, memories_deduped: deduped }, 'stage complete');
+    pipeLog.info(
+      { stage: 'embed-index', memories_created: created, memories_deduped: deduped, gatedOutCount: gatedOutCounter.count },
+      'stage complete',
+    );
 
     console.log(
       `${ts()} [distill-events] transcript=${transcript_id} events=${events.length} atoms=${atoms.length} ` +
-        `created=${created} deduped=${deduped}`,
+        `created=${created} deduped=${deduped} gatedOut=${gatedOutCounter.count}`,
     );
 
     // D-DEF2 parity: backfill ingest_idempotency.summary_memory_id from the
