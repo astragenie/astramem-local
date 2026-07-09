@@ -35,6 +35,8 @@ contracts/
                                 see "MCP tool-name manifest" below.
   schemas/
     atom.v1.schema.json               — astramem/atom@1 (ADR-001)
+    atom.v2.schema.json               — astramem/atom@2 (ADR-001 amendment, 2026-07-09) — see
+                                          "Memory atom v2 (atom@2 breaking cut)" below
     retrieval-query.v1.schema.json    — astramem-retrieval@1 query envelope (ADR-005)
     retrieval-result.v1.schema.json   — astramem-retrieval@1 result envelope + ScoreExplanation (ADR-005)
     sync-envelope.v1.schema.json      — astramem-sync@1 envelope (ADR-003)
@@ -135,14 +137,24 @@ import { WIRE_VERSION, WIRE_VERSION_PATTERN, WIRE_VERSIONS_SUPPORTED, SYNC_PROTO
   uses the older, looser pattern (`^v(?:0|[1-9][0-9]*)\.[0-9]+$`, permits a
   leading-zero minor) — adopting this constant there is a follow-up.
 - **`WIRE_VERSIONS_SUPPORTED`** — the domain@gen vocabulary
-  (`['atom@1', 'retrieval@1', 'sync@1', 'capture@1']`), mirroring
-  `WIRE_VERSIONS_SUPPORTED` in `src/server/lib/wire-meta.ts` (derived there
-  from a hand-mirrored `SCHEMA_FILE_TO_DOMAIN` map, for the same `rootDir`
-  reason described under [MCP tool-name manifest](#mcp-tool-name-manifest-u5)
-  below). This is a separate axis from the capture protocol's per-request
-  `wire_version` field above — don't conflate the two.
+  (`['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']`) this package's
+  schemas correspond to. `atom@2`'s addition here is package-level bookkeeping
+  only — `src/server/lib/wire-meta.ts`'s hand-mirrored `WIRE_VERSIONS_SUPPORTED`
+  (derived from `SCHEMA_FILE_TO_DOMAIN`, for the same `rootDir` reason
+  described under [MCP tool-name manifest](#mcp-tool-name-manifest-u5) below)
+  is scoped to `*.v1.schema.json` files only and is therefore untouched by
+  this addition; wiring the daemon/cloud reader to actually accept `atom@2` on
+  the wire is separate follow-up work (see "Memory atom v2" below). This is a
+  separate axis from the capture protocol's per-request `wire_version` field
+  above — don't conflate the two.
 - **`SYNC_PROTOCOL`** (`'astramem-sync@1'`) — mirrors `SYNC_PROTOCOL` in
   `src/sync/shipper.ts`.
+- **`ENTITY_KINDS`** (12 values: `actor, team, org, project, product,
+  workitem, decision, tech, tool, concept, event, other`) and **`ACTOR_KINDS`**
+  (`['actor', 'team', 'org']`, the subset for which `entities[].subtype` is a
+  meaningful refinement) — the canonical entity-kind registry `atom.v2.schema.json`
+  `entities[].kind` enforces. Kept in sync with the schema by
+  `tests/contracts/entity-kind-parity.test.ts`. See "Memory atom v2" below.
 
 Like the Zod barrel, this is a TypeScript-consumer convenience — cloud
 (.NET) has its own literal constants and doesn't consume this file.
@@ -179,6 +191,72 @@ read paths like search/sync/eval) IS reconciled to the full 10 here, since
 those paths must be able to represent an atom of any canonical type (e.g. one
 pulled from cloud via `src/sync/puller.ts`) even before local gains its own
 writer for it.
+
+## Memory atom v2 (atom@2 breaking cut, 2026-07-09)
+
+`atom.v2.schema.json` is the first `@2` bump under the "Versioning rules"
+below — a deliberate, zero-customers-only breaking cut across three warts
+identified in `atom.v1.schema.json`, done in one window rather than three
+separate additive-then-deprecate cycles. Full rationale: ADR-001 amendment
+(`docs/adr/ADR-001-canonical-memory-atom.md`).
+
+`atom.v1.schema.json` is **not deleted or modified** by this change — it
+still validates `'personal'`-scoped, `repo`-carrying, flat-`entities: string[]`
+atoms exactly as before, so existing atom@1 producers/consumers are
+unaffected until they explicitly migrate. The two schemas are shipped
+side-by-side for a **cloud-reader dual-accept window**: cloud accepts both
+`atom@1` and `atom@2` on ingest during rollout (reusing the `content ?? text`
+fallback idiom from #618), astramem-local's writer + offline sync queue
+migrate to `atom@2`, then a follow-up chore commit removes the `atom@1`
+fallback and flips `/sync/capabilities` to `atom@2`-only. None of that
+daemon/cloud wiring is part of this package-only change — see the plan doc
+referenced in the ADR-001 amendment for the cutover task breakdown.
+
+The three breaking changes, all scoped to `atom.v2.schema.json` only (except
+where noted):
+
+1. **`entities` is now a typed object array**, not `string[]`:
+   `[{ name: string(1..256), kind: <12-value enum>, subtype?: "human"|"ai" }]`.
+   The flat string shape was lossy in practice — astramem-local's own
+   `harness.ts:137` already re-synthesizes a fake kind for every entity
+   string it reads back, which is the concrete evidence that downstream
+   consumers need `kind`, not just a name. The 12-value `kind` registry
+   (`actor, team, org, project, product, workitem, decision, tech, tool,
+   concept, event, other`) and the `actor, team, org` subset for which
+   `subtype` (`human`/`ai`) is meaningful are exported from `wire.ts` as
+   `ENTITY_KINDS`/`ACTOR_KINDS` (see "Wire-protocol constants" above).
+   `actor` covers both humans and AI agents — there is no separate
+   person/agent kind. `repo` was deliberately cut as an entity *kind*: a
+   repo/project identity is owned by the structural `provenance.project`
+   field (point 2 below), and cross-repo mentions land in `product` instead.
+2. **`provenance.repo` is deleted.** `provenance.project` is the single
+   canonical field going forward — cloud already collapses `project_id ??
+   repo` onto one `WorkspaceProjectId` column, so a still-populated `repo`
+   value under atom@1 could silently diverge from what cloud actually keys
+   on. Writers that only ever had a repo value should send it as `project`.
+   `retrieval-query.v1.schema.json`'s `filters.repo` is dropped in the same
+   cut (see its own changelog entry below) — that file stays `v1` (no
+   `retrieval@2`) because, unlike the sync-envelope wire, retrieval is a
+   synchronous request/response surface with no durable offline queue
+   forcing a dual-accept window; the four named `repo`→`project` consumer
+   call sites are daemon-side follow-up work, not part of this package.
+3. **The `'personal'` scope alias is dropped.** `atom.v1.schema.json` kept
+   `'personal'` as a one-release dual-read accommodation for the
+   `personal`→`private` rename (U7-local astramem-local#110, DEC-048),
+   tracked as `TODO(remove-personal-alias)` (astramem-local#115) — this is
+   the release that removes it. `atom.v2.schema.json`'s `scope` enum is
+   `private | team | org` only. `retrieval-query.v1.schema.json`'s
+   `filters.scope` and `retrieval-result.v1.schema.json`'s `hits[].scope`
+   drop `'personal'` in the same cut (both stay `v1` — same reasoning as
+   point 2: synchronous surfaces, no offline-queue dual-accept need).
+
+**Also bundled in this release, additive (no version bump needed on their
+own schema)**: `retrieval-result.v1.schema.json`'s `hits[].type` enum widens
+from the original 7 values to the full canonical 10 (adds `preference`,
+`task_result`, `summary`) — cloud already returns these types, so a
+conformant hit from a real cloud response used to fail this schema. Per the
+"Memory atom `type` registry" section above, widening an already-open
+registry enum is additive, not breaking.
 
 ## Fixture naming convention (load-bearing)
 
@@ -491,6 +569,27 @@ explicitly (point 4 above), not infer it from the npm package's semver.
 
 ## Changelog
 
+- **2.0.0** — `atom.v2.schema.json` added (breaking; `atom.v1.schema.json`
+  kept, unmodified, for the dual-read window) — see "Memory atom v2" above
+  for the full rationale. Package major bump per the "Versioning rules"
+  above: a `wire_version` bump always forces at least a package major.
+  Summary of the wire-visible changes in this release:
+  - `atom.v2.schema.json`: `entities` is now `[{name, kind, subtype?}]`
+    instead of `string[]`; `provenance.repo` deleted (`project` is
+    canonical); `scope` enum narrowed to `private|team|org` (`'personal'`
+    dropped).
+  - `retrieval-query.v1.schema.json` (in place, still `v1`): `filters.repo`
+    deleted; `filters.scope` narrowed to `private|team|org`.
+  - `retrieval-result.v1.schema.json` (in place, still `v1`): `hits[].scope`
+    narrowed to `private|team|org`; `hits[].type` widened 7→10 values
+    (additive — `preference`, `task_result`, `summary` added).
+  - `wire.ts`: `WIRE_VERSIONS_SUPPORTED` gains `'atom@2'` (both `atom@1` and
+    `atom@2` listed during the dual-accept window); new `ENTITY_KINDS`
+    (12-value registry) and `ACTOR_KINDS` (`actor|team|org`) exports.
+  - New fixtures for every change above (typed entities, unknown-kind
+    rejection, `repo`/`personal` rejection on the affected schemas, the
+    widened `hits[].type` set) plus `tests/contracts/entity-kind-parity.test.ts`.
+  - ADR-001 amended in place with the atom@2 decision record.
 - **1.3.0** — `wire.ts` hand-written module (`WIRE_VERSION`,
   `WIRE_VERSION_PATTERN`, `WIRE_VERSIONS_SUPPORTED`, `SYNC_PROTOCOL`),
   exported as `@astragenie/astramem-contracts/wire`; see "Wire-protocol
