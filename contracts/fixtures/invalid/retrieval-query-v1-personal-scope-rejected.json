@@ -1,0 +1,7 @@
+{
+  "text": "old-style personal-scope filter",
+  "mode": "keyword",
+  "filters": {
+    "scope": ["personal"]
+  }
+}

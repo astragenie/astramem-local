@@ -1,0 +1,16 @@
+{
+  "schema": "astramem-retrieval-result@1",
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-000000000002",
+      "type": "fact",
+      "text": "'personal' was dropped from the result scope enum in the atom@2 cut.",
+      "score": 0.5,
+      "scope": "personal",
+      "explanation": {
+        "final": 0.5,
+        "signals": {}
+      }
+    }
+  ]
+}
