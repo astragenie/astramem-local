@@ -1,19 +1,19 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-08T23:08:45.454Z",
+  "updatedAt": "2026-07-08T23:27:24.998Z",
   "currentRun": {
     "title": "memory SaaS: why demo dashboard user sees no data",
     "goal": "",
     "mode": "",
     "status": "active",
     "startedAt": "2026-07-08T22:42:05.755Z",
-    "updatedAt": "2026-07-08T23:08:45.454Z",
-    "next": "Query astramemory.users WHERE clerk_sub = '<demo user's Clerk sub>' to confirm its tenant_id != 3e970d7f (or the row is missing entirely, which 401s via 'JWT sub {Sub} has no provisioned tenant row'). If confirmed, either re-associate the demo user's row to tenant 3e970d7f, or pair the demo user's own device/tenant with real data.",
+    "updatedAt": "2026-07-08T23:27:24.998Z",
+    "next": "Optional: add a timeout-path test for scripts/git-hooks/post-merge-rebuild.mjs (SPAWN_TIMEOUT_MS) if that hook's reliability under a hung install ever becomes a concern; not blocking for this fix.",
     "gates": {
       "review": {
         "status": "passed",
-        "updatedAt": "2026-07-08T23:08:45.454Z",
-        "note": "starting investigation"
+        "updatedAt": "2026-07-08T23:27:24.998Z",
+        "note": "HIGH (daemon-kill vector) is fully closed: stderr now goes through an OS fd to a scratch file with no in-process buffer, so neither the ENOBUFS-kill nor an unbounded memory leak can occur; build and all 170 tests (19 files) pass clean."
       },
       "validation": null,
       "deployment": {
@@ -29,7 +29,7 @@
       "handoffs": [
         "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
       ],
-      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T230845Z-review-result-fix-service-install-reliability-review.md",
+      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T232541Z-review-result-feat-observability-probes-shim-ts-high-re-review.md",
       "validationPlan": null,
       "validationResult": null,
       "deploymentChecks": {
