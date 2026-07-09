@@ -14,10 +14,27 @@ import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import {
   AtomSchema,
   EXTRACTION_SYSTEM_PROMPT,
+  EXTRACTION_SYSTEM_PROMPT_V2,
   type Atom,
 } from '../prompts/extract.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { TransientError } from '../../pipeline/errors.js';
+
+// a/b-selectable extraction prompt: `ASTRA_EXTRACT_PROMPT=v2` swaps in the v2
+// candidate; anything else (incl. unset) keeps v1 (EXTRACTION_SYSTEM_PROMPT) —
+// the shipped default. Resolved once at module load; the bench sets the env
+// per variant to a/b the two prompts on a fixed model.
+const ACTIVE_EXTRACTION_PROMPT =
+  process.env.ASTRA_EXTRACT_PROMPT === 'v2' ? EXTRACTION_SYSTEM_PROMPT_V2 : EXTRACTION_SYSTEM_PROMPT;
+
+// Extraction sampling temperature. Default 0.1; `ASTRA_EXTRACT_TEMP=0` makes
+// JSON output fully deterministic (a/b lever — may reduce stochastic parse
+// failures). Invalid values fall back to 0.1.
+const EXTRACT_TEMPERATURE = (() => {
+  const raw = process.env.ASTRA_EXTRACT_TEMP;
+  const n = raw !== undefined ? Number(raw) : NaN;
+  return Number.isFinite(n) ? n : 0.1;
+})();
 
 /**
  * Lenient wrapper: accepts any objects in the atoms array so that individual
@@ -61,12 +78,12 @@ export async function extractChunk(
     return { chunkIndex, atoms: [], usageUsd: 0, retried: false };
   }
 
-  const promptChars = EXTRACTION_SYSTEM_PROMPT.length + text.length;
+  const promptChars = ACTIVE_EXTRACTION_PROMPT.length + text.length;
   const estimateUsd = BudgetTracker.estimateUsd(promptChars, 0.000002, 0.000002);
 
   budget.assertCanSpend(estimateUsd, capUsd);
 
-  const result = await callExtract(text, EXTRACTION_SYSTEM_PROMPT, provider);
+  const result = await callExtract(text, ACTIVE_EXTRACTION_PROMPT, provider);
   budget.record(result.usageUsd);
 
   const parsed = tryParseAtoms(result.text);
@@ -93,7 +110,7 @@ async function callExtract(
   ];
 
   const result = await provider.chat(messages, {
-    temperature: 0.1,
+    temperature: EXTRACT_TEMPERATURE,
     json: true,
     maxTokens: 1500,
   });
