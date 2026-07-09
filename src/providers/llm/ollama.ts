@@ -8,10 +8,17 @@ const HEALTH_TIMEOUT_MS = 10_000;
 export interface OllamaLLMConfig {
   baseUrl?: string;
   model?: string;
+  /** Ollama `think` flag for hybrid reasoning models (qwen3, deepseek-r1, …).
+   *  Left undefined -> ollama's per-model default (thinking ON for qwen3),
+   *  which conflicts with `format:json` extraction (reasoning consumes the
+   *  turn and `message.content` comes back empty -> parse fail/poison). We
+   *  therefore default it to `false` for qwen3* below. Set explicitly to
+   *  override. */
+  think?: boolean;
 }
 
 interface OllamaChatResponse {
-  message?: { content?: string };
+  message?: { content?: string; thinking?: string };
   prompt_eval_count?: number;
   eval_count?: number;
 }
@@ -57,10 +64,15 @@ export class OllamaLLMProvider implements LLMProvider {
   readonly name = 'ollama' as const;
   readonly model: string;
   private readonly baseUrl: string;
+  private readonly think?: boolean;
 
   constructor(config: OllamaLLMConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
     this.model = config.model ?? 'qwen2.5:7b';
+    // Disable thinking for qwen3* by default (see OllamaLLMConfig.think) so
+    // structured `format:json` extraction gets JSON in message.content instead
+    // of an empty body. Explicit config.think wins.
+    this.think = config.think ?? (/^qwen3/i.test(this.model) ? false : undefined);
   }
 
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
@@ -72,6 +84,7 @@ export class OllamaLLMProvider implements LLMProvider {
       messages,
       stream: false,
       ...(useJson ? { format: 'json' } : {}),
+      ...(this.think !== undefined ? { think: this.think } : {}),
       ...(opts?.temperature !== undefined ? { options: { temperature: opts.temperature } } : {}),
       ...(opts?.maxTokens !== undefined ? { options: { num_predict: opts.maxTokens } } : {}),
     };

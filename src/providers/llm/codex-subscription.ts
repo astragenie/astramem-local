@@ -401,6 +401,21 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
     const instructions = systemMsgs.length > 0 ? systemMsgs.join('\n\n') : 'You are a helpful assistant.';
     const input = rest.map((m) => ({ role: m.role, content: m.content }));
 
+    // The Responses API rejects `text.format.json_object` with HTTP 400
+    // ("input messages must contain the word 'json' …") unless the literal
+    // word "json" appears in the INPUT items (instructions do NOT count).
+    // Append a minimal hint to the last input item when json mode is on and
+    // it's otherwise absent, so extraction prompts that don't happen to say
+    // "json" still work on this backend.
+    if (opts?.json === true && !input.some((m) => /json/i.test(String(m.content)))) {
+      if (input.length > 0) {
+        const last = input[input.length - 1]!;
+        input[input.length - 1] = { role: last.role, content: `${last.content}\n\nRespond with valid JSON only.` };
+      } else {
+        input.push({ role: 'user', content: 'Respond with valid JSON only.' });
+      }
+    }
+
     const body: Record<string, unknown> = {
       model: this.model,
       instructions,

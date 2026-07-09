@@ -20,7 +20,7 @@
  * this candidate is judged on an adapted prompt instead of the verbatim one
  * every other candidate gets.
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadFixtures, type GoldFixture } from './lib/fixtures.js';
 import { runOllamaCandidate, type DaemonFixtureResult } from './lib/daemon-runner.js';
@@ -30,6 +30,52 @@ import { NuExtractAdapterProvider } from './lib/nuextract-adapter-provider.js';
 import { judgeFixture, type FixtureScore, type JudgeAtomIn } from './lib/judge.js';
 import { resolveAzureConfig } from '../longmemeval/lib/config.js';
 import { OllamaLLMProvider } from '../../../src/providers/llm/ollama.js';
+import { OpenAICompatibleLLMProvider } from '../../../src/providers/llm/openai-compatible.js';
+import { CodexSubscriptionLLMProvider } from '../../../src/providers/llm/codex-subscription.js';
+import type { LLMProvider } from '../../../src/contracts/llm.js';
+
+// --- bench API keys (gitignored) ---------------------------------------------
+// Load KEY=value lines from .bench-keys.env at the repo root into process.env
+// (without overwriting anything already set) so cloud specs can authenticate.
+const BENCH_KEYS_FILE = '.bench-keys.env';
+if (existsSync(BENCH_KEYS_FILE)) {
+  for (const line of readFileSync(BENCH_KEYS_FILE, 'utf8').split('\n')) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.+?)\s*$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+  }
+}
+
+// OpenAI-compatible cloud aliases: `openai:<alias>:<model>` (e.g.
+// `openai:dashscope:qwen-plus`). Compaction stays local ollama; only
+// extraction hits the cloud endpoint, mirroring the azure: branch.
+const OPENAI_ALIASES: Record<string, { baseUrl: string; envKey: string }> = {
+  dashscope: { baseUrl: process.env.DASHSCOPE_BASE_URL ?? 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', envKey: 'DASHSCOPE_API_KEY' },
+  gemini: { baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai', envKey: 'GEMINI_API_KEY' },
+  groq: { baseUrl: 'https://api.groq.com/openai/v1', envKey: 'GROQ_API_KEY' },
+};
+
+/** Shared per-fixture direct-pipeline loop for cloud/codex extraction specs. */
+async function collectDirect(model: string, llmCompaction: LLMProvider, llmExtraction: LLMProvider, fixtures: GoldFixture[]): Promise<ModelAtomsByFixture> {
+  const perFixture: ModelAtomsByFixture['perFixture'] = {};
+  for (const fixture of fixtures) {
+    process.stdout.write(`  ${fixture.id}... `);
+    try {
+      const result = await runDirectPipeline(fixture.turns, { llmCompaction, llmExtraction });
+      perFixture[fixture.id] = {
+        atoms: result.atoms.map(a => ({ type: a.type, text: a.text })),
+        wallMs: result.wallMs,
+        status: 'ready',
+        poisonJobs: 0,
+        usageUsd: result.usageUsd,
+      };
+      console.log(`${result.atoms.length} atoms in ${result.wallMs}ms ($${result.usageUsd.toFixed(4)})`);
+    } catch (err) {
+      console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
+      perFixture[fixture.id] = { atoms: [], wallMs: 0, status: 'error', poisonJobs: 0, usageUsd: 0 };
+    }
+  }
+  return { model, perFixture, daemonBootMs: null };
+}
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -85,6 +131,31 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
       }
     }
     return { model, perFixture, daemonBootMs: null };
+  }
+
+  if (model.startsWith('openai:')) {
+    // openai:<alias>:<model> — e.g. openai:dashscope:qwen-plus
+    const firstColon = model.indexOf(':');
+    const secondColon = model.indexOf(':', firstColon + 1);
+    const alias = model.slice(firstColon + 1, secondColon);
+    const extractModel = model.slice(secondColon + 1);
+    const a = OPENAI_ALIASES[alias];
+    if (!a) throw new Error(`unknown openai alias '${alias}' — known: ${Object.keys(OPENAI_ALIASES).join(', ')}`);
+    const apiKey = process.env[a.envKey];
+    if (!apiKey) throw new Error(`${a.envKey} not set (add it to .bench-keys.env) — required for ${model}`);
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=openai-compat ${alias}/${extractModel}) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    const llmExtraction = new OpenAICompatibleLLMProvider({ baseUrl: a.baseUrl, model: extractModel, apiKey });
+    return collectDirect(model, llmCompaction, llmExtraction, fixtures);
+  }
+
+  if (model.startsWith('codex:')) {
+    // codex:<model> — uses the machine's existing ~/.codex login (no key).
+    const codexModel = model.slice('codex:'.length);
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=codex-subscription/${codexModel}) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    const llmExtraction = new CodexSubscriptionLLMProvider({ model: codexModel });
+    return collectDirect(model, llmCompaction, llmExtraction, fixtures);
   }
 
   if (model === 'nuextract:adapted') {
