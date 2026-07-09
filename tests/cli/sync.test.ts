@@ -44,8 +44,26 @@ function fakeFetch(status: number, bodyJson: unknown): typeof fetch {
   return (async () => new Response(JSON.stringify(bodyJson), { status })) as unknown as typeof fetch;
 }
 
-const ENV_KEYS = ['APPDATA', 'ASTRA_MEMORY_DATADIR', 'ASTRA_SYNC_TOKEN'] as const;
+// Config-dir isolation MUST cover every platform, not just Windows.
+// defaultConfigDir() only honors APPDATA on win32; on Linux it reads
+// $XDG_CONFIG_HOME (fallback ~/.config) and on macOS ~/Library — so an
+// APPDATA-only override leaks the CI runner's REAL ~/.config/astra-memory/
+// sync.json into the test (a paired runner makes cfg.sync.url non-empty,
+// so the "incomplete config" case below instead reaches a live fetch and
+// dies with "fetch failed"). Override HOME + both XDG roots too so the
+// config/data dirs resolve strictly under our temp dirs on all platforms.
+const ENV_KEYS = ['APPDATA', 'LOCALAPPDATA', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'HOME', 'ASTRA_MEMORY_DATADIR', 'ASTRA_SYNC_TOKEN'] as const;
 type EnvKey = (typeof ENV_KEYS)[number];
+
+/** Point every platform's config + data dir at temp roots under our control. */
+function isolateDirs(configRoot: string, dataRoot: string): void {
+  process.env.APPDATA = configRoot; // win32 config
+  process.env.LOCALAPPDATA = dataRoot; // win32 data
+  process.env.XDG_CONFIG_HOME = configRoot; // linux config
+  process.env.XDG_DATA_HOME = dataRoot; // linux data
+  process.env.HOME = configRoot; // macOS config (~/Library) + linux fallback
+  process.env.ASTRA_MEMORY_DATADIR = dataRoot; // DB path (openRuntimeDb)
+}
 
 describe('syncCommand pull — DB teardown on both the error and success path (sync-teardown assertion)', () => {
   const saved: Partial<Record<EnvKey, string | undefined>> = {};
@@ -56,11 +74,10 @@ describe('syncCommand pull — DB teardown on both the error and success path (s
     const dataDir = mkTmp();
     dirs.push(appDataRoot, dataDir);
     for (const k of ENV_KEYS) saved[k] = process.env[k];
-    process.env.APPDATA = appDataRoot;
-    process.env.ASTRA_MEMORY_DATADIR = dataDir;
+    isolateDirs(appDataRoot, dataDir);
     process.env.ASTRA_SYNC_TOKEN = 'test-device-token';
-    // resolveRuntimeConfig reads sync.json from defaultConfigDir(), which is
-    // APPDATA + "Astramem" — NOT the APPDATA root itself.
+    // resolveRuntimeConfig reads sync.json from defaultConfigDir(), now pinned
+    // under appDataRoot on every platform (see isolateDirs) — NOT the root itself.
     const configDir = defaultConfigDir();
     writeSyncSettings(configDir, { enabled: true, url: 'https://cloud.example', workspaceId: 'w-1', tenantId: 't-1' });
     return { configDir, dataDir, dbPath: join(dataDir, 'memory.sqlite') };
@@ -117,8 +134,7 @@ describe('syncCommand pull — DB teardown on both the error and success path (s
     const dataDir = mkTmp();
     dirs.push(appDataRoot, dataDir);
     for (const k of ENV_KEYS) saved[k] = process.env[k];
-    process.env.APPDATA = appDataRoot;
-    process.env.ASTRA_MEMORY_DATADIR = dataDir;
+    isolateDirs(appDataRoot, dataDir);
     process.env.ASTRA_SYNC_TOKEN = 'test-device-token';
     const dbPath = join(dataDir, 'memory.sqlite');
 
