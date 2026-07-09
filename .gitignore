@@ -23,6 +23,11 @@ secrets.env
 # crew/runner agent worktrees (ephemeral)
 .claude/worktrees/
 
+# per-session harness state (generated, session-scoped)
+.claude/state/checkpoint-cadence/
+.claude/state/cost-hygiene/
+.claude/state/task-update-burst/
+
 # Eval RUN OUTPUTS are tracked (metrics, hypotheses, scores, manifests) so run
 # numbers are versioned and never lost — the root cause of stale-number drift.
 # Ignore ONLY the raw CC BY-NC 4.0 datasets (redistribution-prohibited — see
