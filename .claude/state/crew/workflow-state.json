@@ -1,16 +1,20 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-09T13:47:22.482Z",
+  "updatedAt": "2026-07-09T14:34:04.533Z",
   "currentRun": {
     "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
     "goal": "",
     "mode": "autonomous",
     "status": "active",
     "startedAt": "2026-07-09T13:47:22.481Z",
-    "updatedAt": "2026-07-09T13:47:22.481Z",
-    "next": "Begin implementation",
+    "updatedAt": "2026-07-09T14:34:04.533Z",
+    "next": "Optional follow-up (non-blocking): cap or yield the boot-time spool drain pass so a large backlog can't stall request handling at startup; consider whether ingestCanonicalTranscript should accept pre-hoisted statements from the caller to restore the D-B6 optimization on the HTTP hot path. Neither blocks merge.",
     "gates": {
-      "review": null,
+      "review": {
+        "status": "passed",
+        "updatedAt": "2026-07-09T14:34:04.533Z",
+        "note": "FEAT-449 durable ingest spool is correct and closes the ingest outage; no data-loss path found and the ingest.ts refactor is byte-identical HTTP behavior, but two MEDIUM perf/design notes (synchronous unbounded boot-time drain, dropped D-B6 prepared-statement hoisting on the hot path) warrant a low-risk follow-up."
+      },
       "validation": null,
       "deployment": {
         "dev": null,
@@ -23,7 +27,7 @@
     "artifacts": {
       "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
       "handoffs": [],
-      "reviewResult": null,
+      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
       "validationPlan": null,
       "validationResult": null,
       "deploymentChecks": {

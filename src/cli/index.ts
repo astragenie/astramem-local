@@ -191,6 +191,7 @@ async function main() {
 
     case 'capture': {
       // astramem-local capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
+      // astramem-local capture claude <transcript-path> [--event subagent_stop|session_end] [--json]
       await captureCommand(rest);
       break;
     }
@@ -365,6 +366,10 @@ Commands:
   capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
                                          Ingest new Codex CLI sessions (ADR-008);
                                          --watch polls (default 60s)
+  capture claude <transcript-path> [--event subagent_stop|session_end] [--json]
+                                         Capture a Claude Code transcript's CONTENT
+                                         at invocation time into the durable ingest
+                                         spool (FEAT-449); daemon drains it async
   pair <claim-code> --url <cloud-url>    Pair with AstraMemory cloud (claim code
                                          from dashboard); enables sync shipper
   sync pull [--json]                     Pull + merge events from the cloud since
