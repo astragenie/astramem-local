@@ -1,20 +1,16 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-08T23:27:24.998Z",
+  "updatedAt": "2026-07-09T13:47:22.482Z",
   "currentRun": {
-    "title": "memory SaaS: why demo dashboard user sees no data",
+    "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
     "goal": "",
-    "mode": "",
+    "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-08T22:42:05.755Z",
-    "updatedAt": "2026-07-08T23:27:24.998Z",
-    "next": "Optional: add a timeout-path test for scripts/git-hooks/post-merge-rebuild.mjs (SPAWN_TIMEOUT_MS) if that hook's reliability under a hung install ever becomes a concern; not blocking for this fix.",
+    "startedAt": "2026-07-09T13:47:22.481Z",
+    "updatedAt": "2026-07-09T13:47:22.481Z",
+    "next": "Begin implementation",
     "gates": {
-      "review": {
-        "status": "passed",
-        "updatedAt": "2026-07-08T23:27:24.998Z",
-        "note": "HIGH (daemon-kill vector) is fully closed: stderr now goes through an OS fd to a scratch file with no in-process buffer, so neither the ENOBUFS-kill nor an unbounded memory leak can occur; build and all 170 tests (19 files) pass clean."
-      },
+      "review": null,
       "validation": null,
       "deployment": {
         "dev": null,
@@ -25,11 +21,9 @@
       "incident": null
     },
     "artifacts": {
-      "runBrief": null,
-      "handoffs": [
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
-      ],
-      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T232541Z-review-result-feat-observability-probes-shim-ts-high-re-review.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
+      "handoffs": [],
+      "reviewResult": null,
       "validationPlan": null,
       "validationResult": null,
       "deploymentChecks": {
@@ -40,6 +34,45 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "memory SaaS: why demo dashboard user sees no data",
+      "goal": "",
+      "mode": "",
+      "status": "active",
+      "startedAt": "2026-07-08T22:42:05.755Z",
+      "updatedAt": "2026-07-08T23:27:24.998Z",
+      "completedAt": "2026-07-08T23:27:24.998Z",
+      "next": "Optional: add a timeout-path test for scripts/git-hooks/post-merge-rebuild.mjs (SPAWN_TIMEOUT_MS) if that hook's reliability under a hung install ever becomes a concern; not blocking for this fix.",
+      "gates": {
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-08T23:27:24.998Z",
+          "note": "HIGH (daemon-kill vector) is fully closed: stderr now goes through an OS fd to a scratch file with no in-process buffer, so neither the ENOBUFS-kill nor an unbounded memory leak can occur; build and all 170 tests (19 files) pass clean."
+        },
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null
+      },
+      "artifacts": {
+        "runBrief": null,
+        "handoffs": [
+          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
+        ],
+        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T232541Z-review-result-feat-observability-probes-shim-ts-high-re-review.md",
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT438 SLICE416: Release dir materialization (dist + prod node_modules) + AC-5 failure guard",
       "goal": "`current.json.entryJs` points at an immutable versioned release, not the dev checkout",
