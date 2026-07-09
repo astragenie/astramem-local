@@ -364,11 +364,13 @@ only the plan doc's §4 multi-daemon sharding does.
 > CHANGELOG 0.9.0 "Fixed"). The "verified live" bisection below was run against
 > a daemon binary that predated the fix — the fix commit (`079117c`) was
 > authored 31 seconds before the README commit, and the running service had
-> not been rebuilt/reinstalled at measurement time. Before a scored temporal
-> run, re-verify the bisection table below once against a freshly-reinstalled
-> ≥0.10.0 daemon; temporal-reasoning/knowledge-update questions are otherwise
-> valid to score. Legacy v0.0 envelopes (no `captured_at`) still fall back to
-> wall-clock by design.
+> not been rebuilt/reinstalled at measurement time. **Re-verified 2026-07-09
+> against a fresh v0.10.0 isolated daemon: FIX CONFIRMED** — the critical case
+> (`as_of` after `captured_at`, before real ingest time) returns hits; see
+> `.claude/artifacts/crew/validations/20260709T234200Z-validation-asof-population-fix.md`
+> for the full bisection table. Temporal-reasoning/knowledge-update questions
+> are valid to score. Legacy v0.0 envelopes (no `captured_at`) still fall back
+> to wall-clock by design.
 
 **Original finding (2026-07-08, pre-fix daemon):**
 Verified live (2026-07-08) against a real completed haystack (39 sessions,
