@@ -20,7 +20,7 @@ import { fuseHits, normalizeScores, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
-import { applyRerank, type RerankOpts } from './rerank.js';
+import { applyRerank, type RerankOpts, type RerankSignal } from './rerank.js';
 // FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
@@ -91,6 +91,20 @@ export interface SearchHit {
   text: string;
   score: number;
   source: 'fts' | 'vec' | 'both';
+  /**
+   * FEAT-452: present + `reranked: true` only when the cross-encoder rerank
+   * stage (issue #26, src/search/rerank.ts) actually scored this hit this
+   * call. `score` above always stays the original fused score — it is never
+   * overwritten by rerank; `rerank_score`/`explanation.signals.cross_encoder`
+   * carry the cross-encoder's own verdict as a distinct, additive signal
+   * (ADR-005 `ScoreExplanation.signals` shape — see
+   * docs/runbooks/cross-encoder-rerank.md). Absent (not just `false`) when
+   * rerank is disabled (the default), when this hit fell beyond
+   * `opts.rerank.topK`, or when the whole-call timeout/error fallback fired.
+   */
+  reranked?: true;
+  rerank_score?: number;
+  explanation?: { signals: { cross_encoder: RerankSignal } };
 }
 
 export interface SearchOpts {

@@ -42,6 +42,15 @@ export interface WhyReceipt {
  * source session block (if any), and its lifecycle history. Returns null
  * when the memory does not exist — callers shape the not-found response
  * for their own transport (HTTP 404 vs MCP isError).
+ *
+ * FEAT-452 (deliberately NOT rerank-aware): this receipt is keyed only by
+ * memory id — there is no stored linkage to any particular search/recall
+ * *request* that served this atom, so "was this atom reranked when it was
+ * returned" is not answerable here without inventing new stored state (a
+ * serve-time event log), which is out of scope. Rerank provenance
+ * (`reranked`/`rerank_score`/`explanation.signals.cross_encoder`) is
+ * surfaced only on the search/recall response itself — see "Rerank
+ * provenance (FEAT-452)" in docs/runbooks/cross-encoder-rerank.md.
  */
 export function buildWhyReceipt(db: DB, id: string): WhyReceipt | null {
   const memory = new MemoryRepo(db).get(id);
