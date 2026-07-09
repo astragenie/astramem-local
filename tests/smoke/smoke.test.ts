@@ -18,8 +18,8 @@
  * a config.yaml with encryption disabled — see step 0 and the final
  * real-APPDATA-untouched assertion in step 6.
  *
- * DEVIATION (orchestrator-approved, 2026-07-04): the fixture below seeds a
- * person (Priya Nair), a repo (astramemory-local), a technology
+ * DEVIATION (orchestrator-approved, 2026-07-04): the fixture below seeds an
+ * actor (Priya Nair), a product (astramemory-local), a technology
  * (TypeScript), a todo, and a preference-shaped note, in addition to the
  * sqlite-vec decision. Producing entities/type-diversity from a mocked
  * daemon required extending src/pipeline/mock-providers.ts's MockLLMProvider
@@ -198,8 +198,9 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     expect(((await byType.json()) as { hits: SearchHit[] }).hits.some(h => h.id === firstMemoryId)).toBe(true);
 
     // &entity= — fixture-derived: the "Priya Nair" fact atom carries a
-    // linked person entity (the sqlite-vec decision atom itself carries
-    // none, kept byte-identical to the original mock — see mock-providers.ts).
+    // linked actor entity (atom@2: person -> actor; the sqlite-vec decision
+    // atom itself carries none, kept byte-identical to the original mock —
+    // see mock-extraction-vocab.ts).
     const priyaSearch = await fetch(`${BASE_URL}/search?q=reviewer&entity=${encodeURIComponent('Priya Nair')}&limit=20`, { headers: AUTH });
     expect(priyaSearch.status).toBe(200);
     const priyaHits = ((await priyaSearch.json()) as { hits: SearchHit[] }).hits;
@@ -212,12 +213,12 @@ describe.sequential('Daemon E2E smoke suite (SLICE-SMOKE-1)', () => {
     const entitiesQ = await fetch(`${BASE_URL}/entities?q=Priya`, { headers: AUTH });
     expect(entitiesQ.status).toBe(200);
     const priyaEntities = ((await entitiesQ.json()) as { entities: Array<{ id: string; name: string; kind: string }> }).entities;
-    const priyaEntity = priyaEntities.find(e => e.name === 'priya nair' && e.kind === 'person');
+    const priyaEntity = priyaEntities.find(e => e.name === 'priya nair' && e.kind === 'actor');
     expect(priyaEntity).toBeDefined();
 
     const repoEntitiesRes = await fetch(`${BASE_URL}/entities?q=astramemory`, { headers: AUTH });
     const repoEntities = ((await repoEntitiesRes.json()) as { entities: Array<{ id: string; name: string; kind: string }> }).entities;
-    expect(repoEntities.some(e => e.name === 'astramemory-local' && e.kind === 'repo')).toBe(true);
+    expect(repoEntities.some(e => e.name === 'astramemory-local' && e.kind === 'product')).toBe(true);
 
     const techEntitiesRes = await fetch(`${BASE_URL}/entities?q=TypeScript`, { headers: AUTH });
     const techEntities = ((await techEntitiesRes.json()) as { entities: Array<{ id: string; name: string; kind: string }> }).entities;

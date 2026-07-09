@@ -1,15 +1,26 @@
 import { z } from 'zod';
+import { ENTITY_KINDS } from '../../contracts/entity.js';
 
 // FEAT-402 (W4.2) AC-1/AC-9 — entity kinds emitted alongside each atom, in
 // the SAME extraction LLM call (no extra call/budget spend). Names are
 // normalized at write time via src/entity/normalize.ts, not here — this
 // schema only validates shape.
-export const EntityKindSchema = z.enum(['product', 'tech', 'person', 'org', 'repo', 'concept']);
+//
+// atom@2 (2026-07-09): retagged from the old local-only 6-kind list
+// (product|tech|person|org|repo|concept) to the canonical 12-value
+// ENTITY_KINDS registry shared with cloud/plugin — see
+// src/contracts/entity.ts. `person` -> `actor` (actor covers both humans and
+// AI agents; subtype below distinguishes when known); `repo` -> `product`
+// (repo/project identity is owned by the structural provenance.project
+// field, not an entity kind — cross-repo mentions land in `product`).
+export const EntityKindSchema = z.enum(ENTITY_KINDS);
 export type EntityKind = z.infer<typeof EntityKindSchema>;
 
 export const AtomEntitySchema = z.object({
   name: z.string().min(1).max(100),
   kind: EntityKindSchema,
+  /** Meaningful only for ACTOR_KINDS (actor|team|org) — omitted when unknown. */
+  subtype: z.enum(['human', 'ai']).optional(),
 });
 export type AtomEntity = z.infer<typeof AtomEntitySchema>;
 
@@ -42,7 +53,7 @@ Output STRICT JSON matching:
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
       "evidence": "<optional, short excerpt from source>",
-      "entities": [{ "name": "<named thing mentioned>", "kind": "product" | "tech" | "person" | "org" | "repo" | "concept" }]
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }]
     }
   ]
 }
@@ -60,14 +71,25 @@ For each candidate item, pick type in this order — stop at the first match:
 7. note: opinions, preferences, or style remarks that don't fit above
 
 Entities: list every specific named thing the atom is ABOUT (not every word
-mentioned) — a technology, product, repo, person, or organization. kind is
-one of:
-- product: a named product or app (e.g. "AstraMemory", "GitHub Copilot")
-- tech: a language/framework/library/tool/protocol (e.g. "Postgres", "TypeScript", "sqlite-vec")
-- person: a named individual
-- org: a company or organization
-- repo: a named git repository or codebase
-- concept: a named pattern, architecture, or idea (e.g. "bitemporal model", "CRDT")
+mentioned) — a person, agent, team, technology, product, or piece of work.
+kind is one of:
+- actor: a named human OR AI agent (e.g. "Sergey", "Claude Code", "the reviewer bot") —
+  set subtype to "human" or "ai" when you can tell which; omit subtype when unsure
+- team: a named team or squad within an organization
+- org: a company or organization (e.g. "Anthropic", "Astragenie")
+- project: a named codebase/repo/workspace the work belongs to (e.g. "astramem-local",
+  "memory") — NOT the same as the product it ships; use this for "which repo"
+- product: a named product or app the project builds or depends on as a product
+  (e.g. "AstraMemory", "GitHub Copilot", "Claude Code" the app rather than the agent)
+- workitem: a FEAT/PR/issue/ticket id (e.g. "FEAT-402", "#145")
+- decision: a DEC/ADR reference (e.g. "DEC-048", "ADR-001")
+- tech: a language/framework/library/protocol the stack depends on (e.g. "Postgres",
+  "TypeScript", "sqlite-vec")
+- tool: a CLI/dev tool used to do the work (e.g. "vitest", "Docker")
+- concept: a named pattern, architecture, or idea — only RECURRING technical concepts
+  worth remembering across sessions (e.g. "bitemporal model", "CRDT"), not one-off phrasing
+- event: a named happening at a point in time (e.g. "the 2026-07-08 incident")
+- other: doesn't fit any kind above but is still a specific named thing
 Omit "entities" entirely (or leave it empty) when the atom names nothing specific.
 
 Skip noise: greetings, repeated thinking, false starts, generic AI fluff.
