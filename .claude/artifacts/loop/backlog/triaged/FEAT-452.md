@@ -10,25 +10,19 @@ depends_on: []
 slices: []
 derived_from: docs/research/2026-07-09-competitor-gap-analysis.md
 cross_product: [astramem-local, memory]
-pm_customer_impact: 0.5
-pm_effort_estimate: 0.62
-pm_strategic_alignment: 0.7
-pm_technical_risk: 0.65
-pm_dependency_depth: 0.15
+pm_customer_impact: 0.35
+pm_effort_estimate: 0.3
+pm_strategic_alignment: 0.6
+pm_technical_risk: 0.2
+pm_dependency_depth: 0.1
 pm_composite_priority: P2
-pm_autonomous_safe: false
+pm_autonomous_safe: true
 pm_reviewed: 2026-07-09
-autonomous_safe: false
-triage_notes: "technical_risk 0.65 sits in the 0.6-0.8 band (new external dependency -- a local cross-encoder model runtime -- plus cross-module retrieval-pipeline reach and cross-service coordination; rollback needs a coordinated flag state, not schema migration, keeping it below the 0.9+ band). Strong strategic fit ('single biggest retrieval-quality lever,' half-scaffolded) but large multi-week cross-service effort and nothing broken today -- P2, not inflated to P1 per the batch's own 'do not inflate' guidance; autonomous_safe false given the new dependency + decomposition requirement."
+autonomous_safe: true
+triage_notes: "Effort and technical_risk both collapsed after the architecture-review rewrite confirmed rerank already ships in both repos: remaining scope is an additive field into an already-open, already-schema-anticipated explanation.signals map (contracts/schemas/retrieval-result.v1.schema.json:44-68 literally documents 'including RRF/cross-encoder signals') plus counters/histograms following an established repo pattern (10 existing files) plus a documentation-only product decision -- no new dependency, no cross-service greenfield, 2-3 files, trivially git-revertable, landing technical_risk at 0.20 (low band) vs the prior 0.65. effort_estimate 0.30 -> 3 points (vs prior 0.62 -> 8 points), well clear of the FEAT-168 decomposition gate -- single slice is correct, prior 3-slice/10-point proposed_slices are obsolete and superseded below. compositePriority stays P2 rather than inflating to P1: customer_impact is code-verified but internally-sourced (0.35, below the P1-typical 0.5+ threshold) -- this is explainability/observability polish on a feature that already works today, not a customer-blocking gap, so cheap+safe alone does not earn P1 under this repo's 'do not inflate' posture. autonomousSafe true, contingent on the slice-authoring pass writing GWT ACs that explicitly cover the observability and product_completeness weak dimensions and bound the product-decision item to docs-only scope (detailed in scopeNotes)."
 proposed_slices:
   - id_suffix: -SLICE-1
-    title: "Contract: additive rerank_score/reranked + rerank request block"
-    points: 2
-  - id_suffix: -SLICE-2
-    title: "Local: cross-encoder provider + post-fusion stage + eval-gate extension"
-    points: 5
-  - id_suffix: -SLICE-3
-    title: "Cloud: rerank call + per-tenant feature flag"
+    title: Rerank score field + local observability parity + sidecar-sufficiency decision doc
     points: 3
 ---
 ## Description
