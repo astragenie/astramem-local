@@ -87,6 +87,8 @@ Idempotency via `Idempotency-Key` header: SHA-256 (stable-stringify) body hash. 
 
 `package.json.version` MUST match the git tag. `.github/workflows/version-tag-parity.yml` gates this on tag pushes. Bump package.json + tag same PR when cutting a release.
 
+**Publish runbook: `docs/runbooks/release-publish.md`** (kb mirror: `kb/deployments/astramem-local-npm-publish.md`). `npm publish` auth = an npm **Automation** token in `~/.npmrc` (`//registry.npmjs.org/:_authToken=npm_...`) — Automation-type bypasses 2FA, so publish needs no OTP; a Publish/Granular token fails with `EOTP`. Package `astramem-local` on npmjs, owner account `heroboec`; regenerate token at npmjs.com → settings/heroboec/tokens → Classic → Automation. Token value lives ONLY in `~/.npmrc` (never committed).
+
 ## Recent (2026-07-01)
 
 - v0.2.1 hotfix: swap embed default to `mxbai-embed-large` + boot-time dim preflight; regex tighten; version parity CI. See PR #4.
