@@ -1,0 +1,66 @@
+name: Auto-merge on green
+
+# Hands-off merge policy. Every non-draft PR is armed for auto-merge, so
+# GitHub squash-merges it the instant the branch's required status checks
+# (enforced by the `main` ruleset) pass — no manual review click needed.
+#
+# Escape hatch: add a `hold` or `do-not-merge` label to block a PR; the
+# workflow disarms auto-merge when it sees the label and re-arms when it's
+# removed.
+#
+# Runs on the self-hosted runner so it never consumes GitHub-hosted Actions
+# minutes on this private repo (org runs a $0 hosted-spend budget). Uses
+# actions/github-script (GraphQL) so no `gh` binary is required on the host.
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize, labeled, unlabeled]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: auto-merge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  auto-merge:
+    runs-on: ["self-hosted", "astragenie"]
+    steps:
+      - name: Arm or disarm auto-merge
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const held = pr.labels.some(l => ['hold', 'do-not-merge'].includes(l.name));
+
+            if (pr.draft || held) {
+              core.info(`#${pr.number} is ${pr.draft ? 'draft' : 'held'} — disabling auto-merge.`);
+              try {
+                await github.graphql(
+                  `mutation($id: ID!) {
+                     disablePullRequestAutoMerge(input: { pullRequestId: $id }) { clientMutationId }
+                   }`,
+                  { id: pr.node_id }
+                );
+              } catch (e) {
+                core.info(`disable no-op: ${e.message}`);
+              }
+              return;
+            }
+
+            core.info(`Arming squash auto-merge on #${pr.number}.`);
+            try {
+              await github.graphql(
+                `mutation($id: ID!) {
+                   enablePullRequestAutoMerge(input: { pullRequestId: $id, mergeMethod: SQUASH }) { clientMutationId }
+                 }`,
+                { id: pr.node_id }
+              );
+              core.info('Auto-merge enabled — will merge when required checks pass.');
+            } catch (e) {
+              // Common benign cases: PR already mergeable with no required checks,
+              // or already enabled. Warn, don't fail the run.
+              core.warning(`enable auto-merge failed: ${e.message}`);
+            }
