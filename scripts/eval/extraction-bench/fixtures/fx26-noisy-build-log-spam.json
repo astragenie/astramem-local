@@ -1,0 +1,21 @@
+{
+  "id": "fx26-noisy-build-log-spam",
+  "title": "Lint rule change buried in repeated build/lint output lines",
+  "difficulty": "noisy",
+  "notes": "Long runs of near-identical lint/build output bury one real decision (disabling a noisy lint rule). Tests junk resistance and whether the extractor still finds the one real decision.",
+  "turns": [
+    { "role": "user", "text": "Run the linter across the whole repo and let me know what comes back." },
+    { "role": "assistant", "text": "Running eslint . now..." },
+    { "role": "user", "text": "src/utils/date.ts:12:3 warning no-console\nsrc/utils/date.ts:45:3 warning no-console\nsrc/utils/string.ts:8:3 warning no-console\nsrc/utils/date.ts:12:3 warning no-console\nsrc/utils/date.ts:45:3 warning no-console\nsrc/utils/string.ts:8:3 warning no-console\nsrc/utils/date.ts:12:3 warning no-console\nsrc/utils/date.ts:45:3 warning no-console\nsrc/utils/string.ts:8:3 warning no-console\nsrc/utils/date.ts:12:3 warning no-console\nsrc/utils/date.ts:45:3 warning no-console\nsrc/utils/string.ts:8:3 warning no-console\nsrc/utils/date.ts:12:3 warning no-console\nsrc/utils/date.ts:45:3 warning no-console\nsrc/utils/string.ts:8:3 warning no-console\nsrc/utils/date.ts:12:3 warning no-console\nsrc/utils/date.ts:45:3 warning no-console\nsrc/utils/string.ts:8:3 warning no-console\n\n342 problems (0 errors, 342 warnings)" },
+    { "role": "assistant", "text": "342 warnings, all no-console, no errors. That's a lot of noise for something that's mostly intentional debug logging in CLI-facing utils." },
+    { "role": "user", "text": "Yeah, most of those console.log calls are deliberate CLI output, not debug leftovers. Can we just turn off no-console for the CLI utils folder specifically, but keep it on elsewhere?" },
+    { "role": "assistant", "text": "Good idea — I'll add an eslint overrides block scoped to src/cli/**/*.ts and src/utils/**/*.ts that disables no-console, while leaving it enabled (as a warning) everywhere else in the repo. That should drop the 342 warnings down to near zero without silencing console usage in application code where it's more likely to be a leftover debug statement." },
+    { "role": "user", "text": "Do it and re-run to confirm." },
+    { "role": "assistant", "text": "Added the overrides block and re-ran eslint . — down to 6 warnings total, all outside the CLI/utils scope and worth a look separately." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "The initial lint run reported 342 warnings, all no-console, with 0 errors, mostly from deliberate console.log calls in CLI-facing utils." },
+    { "type": "decision", "text": "Add an eslint overrides block that disables the no-console rule for src/cli/**/*.ts and src/utils/**/*.ts, while keeping it enabled as a warning everywhere else in the repo." },
+    { "type": "event", "text": "After adding the eslint override, re-running eslint . dropped warnings from 342 to 6, all outside the CLI/utils scope." }
+  ]
+}

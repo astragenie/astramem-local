@@ -1,0 +1,27 @@
+{
+  "id": "fx35-command-heavy-db-backup",
+  "title": "Database backup and restore command walkthrough",
+  "difficulty": "command-heavy",
+  "notes": "Session dominated by shell commands for a multi-step DB backup/restore procedure, mirroring fx12's structure and spirit with a different scenario.",
+  "turns": [
+    { "role": "user", "text": "Walk me through the backup and restore process for the Postgres prod DB, I always forget the exact flags." },
+    { "role": "assistant", "text": "Sure. To take a compressed backup: pg_dump -Fc -h prod-db.internal -U backup_user memories_db -f backup_2026_07_09.dump. The -Fc custom format is required for parallel restore later, plain SQL dumps can't do that." },
+    { "role": "user", "text": "Where should that file end up?" },
+    { "role": "assistant", "text": "Upload it to the backup bucket right after: aws s3 cp backup_2026_07_09.dump s3://prod-db-backups/daily/backup_2026_07_09.dump — the daily/ prefix is what the lifecycle policy uses to expire backups after 30 days automatically." },
+    { "role": "user", "text": "And restoring, if we ever need to?" },
+    { "role": "assistant", "text": "First pull it back down: aws s3 cp s3://prod-db-backups/daily/backup_2026_07_09.dump ./restore.dump — then restore into a NEW database, never directly over prod: pg_restore -h prod-db.internal -U backup_user -d memories_db_restore_test -j 4 restore.dump. The -j 4 flag parallelizes the restore across 4 jobs, which only works because we used -Fc on the way out." },
+    { "role": "user", "text": "How do we verify the restore actually worked before trusting it?" },
+    { "role": "assistant", "text": "Run a row-count sanity check against a few key tables: psql -h prod-db.internal -U backup_user -d memories_db_restore_test -c \"SELECT count(*) FROM memories;\" and compare it against the same query run on prod at backup time — they should match closely, allowing for writes that happened between backup and restore." },
+    { "role": "user", "text": "Good, write that whole flow down." },
+    { "role": "assistant", "text": "Documented: dump with -Fc, upload to S3 under the daily/ prefix, restore into a separate test database (never overwrite prod directly) with pg_restore -j 4, then verify with a row-count sanity check against prod." }
+  ],
+  "gold_atoms": [
+    { "type": "command", "text": "pg_dump -Fc -h prod-db.internal -U backup_user memories_db -f backup_2026_07_09.dump" },
+    { "type": "command", "text": "aws s3 cp backup_2026_07_09.dump s3://prod-db-backups/daily/backup_2026_07_09.dump" },
+    { "type": "fact", "text": "The daily/ S3 prefix is what the bucket's lifecycle policy uses to automatically expire backups after 30 days." },
+    { "type": "command", "text": "pg_restore -h prod-db.internal -U backup_user -d memories_db_restore_test -j 4 restore.dump" },
+    { "type": "lesson", "text": "The -j 4 parallel restore flag for pg_restore only works because the backup was taken with pg_dump's -Fc custom format — a plain SQL dump can't be restored in parallel." },
+    { "type": "decision", "text": "Always restore backups into a new, separate database (e.g. memories_db_restore_test), never directly over the production database." },
+    { "type": "command", "text": "psql -h prod-db.internal -U backup_user -d memories_db_restore_test -c \"SELECT count(*) FROM memories;\"" }
+  ]
+}

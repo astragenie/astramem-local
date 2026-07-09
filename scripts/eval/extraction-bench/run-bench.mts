@@ -8,6 +8,7 @@
  * Usage:
  *   bun scripts/eval/extraction-bench/run-bench.mts --models qwen2.5-coder:7b,llama3.1:8b,azure:gpt-5-mini
  *   bun scripts/eval/extraction-bench/run-bench.mts --models phi4-mini --skip-judge   (dry run, no Azure spend)
+ *   bun scripts/eval/extraction-bench/run-bench.mts --models qwen2.5-coder:7b,llama3.1:8b --runs 3   (FEAT-450: mean±stdev + significance gate)
  *
  * Model spec: a bare Ollama tag (e.g. "qwen2.5-coder:7b") runs through the
  * real daemon HTTP path (lib/daemon-runner.ts). "azure:gpt-5-mini" runs the
@@ -19,6 +20,16 @@
  * run) to poison every fixture (0 atoms, template-paradigm mismatch), so
  * this candidate is judged on an adapted prompt instead of the verbatim one
  * every other candidate gets.
+ *
+ * FEAT-450 (multi-run + significance): each config was run ONCE by default,
+ * judged by a single non-deterministic judge call, over 15 fixtures — that
+ * gave a ±14 F1 run-to-run swing on the same model (see
+ * .claude/artifacts/loop/backlog/pending/FEAT-450.md), making prompt/temp/
+ * model tuning impossible. `--runs N` (N>1) now re-runs the full
+ * extract+judge pass N times per model and reports mean±stdev, and the
+ * report labels any cross-model F1 delta smaller than the observed noise
+ * floor "within noise / not significant" instead of ranking it. `--runs 1`
+ * (the default) is byte-for-byte the old single-run report shape (AC-5).
  */
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -27,8 +38,10 @@ import { runOllamaCandidate, type DaemonFixtureResult } from './lib/daemon-runne
 import { runDirectPipeline } from './lib/pipeline-direct.js';
 import { AzureReasoningLLMProvider } from './lib/azure-reasoning-provider.js';
 import { NuExtractAdapterProvider } from './lib/nuextract-adapter-provider.js';
-import { judgeFixture, type FixtureScore, type JudgeAtomIn } from './lib/judge.js';
-import { resolveAzureConfig } from '../longmemeval/lib/config.js';
+import { judgeFixture, judgeSelfAgreement, type FixtureScore, type JudgeAtomIn, type JudgeAgreementReport, type JudgeReasoningEffort } from './lib/judge.js';
+import { aggregateFixtureScores, combineRuns, renderMarkdown, type ModelReport, type SingleRunReport } from './lib/report.js';
+import { formatStatsPct } from './lib/stats.js';
+import { resolveAzureConfig, type AzureConfig } from '../longmemeval/lib/config.js';
 import { OllamaLLMProvider } from '../../../src/providers/llm/ollama.js';
 import { OpenAICompatibleLLMProvider } from '../../../src/providers/llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from '../../../src/providers/llm/codex-subscription.js';
@@ -41,7 +54,7 @@ const BENCH_KEYS_FILE = '.bench-keys.env';
 if (existsSync(BENCH_KEYS_FILE)) {
   for (const line of readFileSync(BENCH_KEYS_FILE, 'utf8').split('\n')) {
     const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.+?)\s*$/);
-    if (m && !process.env[m[1]]) process.env[m[1]] = m[2];
+    if (m && m[1] && m[2] !== undefined && !process.env[m[1]]) process.env[m[1]] = m[2];
   }
 }
 
@@ -86,9 +99,10 @@ const has = (flag: string): boolean => args.includes(flag);
 
 const modelsArg = get('--models');
 if (!modelsArg) {
-  console.error('Usage: bun run-bench.mts --models <comma-separated model specs> [--out-dir <dir>] [--per-session-timeout-ms 180000] [--skip-judge]');
+  console.error('Usage: bun run-bench.mts --models <comma-separated model specs> [--out-dir <dir>] [--per-session-timeout-ms 180000] [--skip-judge] [--runs 1]');
   console.error('  Ollama candidate: bare tag, e.g. qwen2.5-coder:7b');
   console.error('  Azure reference:  azure:<deployment>, e.g. azure:gpt-5-mini');
+  console.error('  --runs N (default 1): re-run extraction+judging N times per model; N>1 reports mean±stdev and a pairwise significance gate (FEAT-450).');
   process.exit(1);
 }
 const models = modelsArg.split(',').map(s => s.trim()).filter(Boolean);
@@ -97,6 +111,13 @@ const skipJudge = has('--skip-judge');
 const fixturesDir = get('--fixtures-dir'); // override for smoke-testing against a subset
 const outDir = get('--out-dir') ?? join(import.meta.dirname, 'results', new Date().toISOString().replace(/[:.]/g, '-'));
 mkdirSync(outDir, { recursive: true });
+
+// FEAT-450 flags.
+const runsCount = Math.max(1, Math.trunc(Number(get('--runs') ?? '1') || 1));
+const judgeReasoningEffort = (get('--judge-reasoning-effort') ?? 'low') as JudgeReasoningEffort;
+const judgeAgreementFixturesN = Math.max(0, Math.trunc(Number(get('--judge-agreement-fixtures') ?? '2') || 0));
+const judgeAgreementRepeats = Math.max(0, Math.trunc(Number(get('--judge-agreement-repeats') ?? '3') || 0));
+const skipJudgeAgreement = has('--skip-judge-agreement');
 
 interface ModelAtomsByFixture {
   model: string;
@@ -201,152 +222,138 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   return { model, perFixture, daemonBootMs: run.daemonBootMs };
 }
 
-interface ModelReport {
-  model: string;
-  daemonBootMs: number | null;
-  fixtures: Array<{
-    fixtureId: string;
-    difficulty: string;
-    status: string;
-    wallMs: number;
-    poisonJobs: number;
-    atoms: JudgeAtomIn[];
-    score: FixtureScore | null;
-  }>;
-  aggregate: {
-    avgRecall: number | null;
-    avgPrecision: number | null;
-    f1: number | null;
-    avgJunkRate: number | null;
-    avgTypeAccuracy: number | null;
-    overExtractionOnNothingFixture: number | null;
-    failedFixtures: number;
-    avgWallMsPerSession: number;
-    totalWallMs: number;
-    azureUsd: number;
-  };
-}
+/**
+ * Run one model through extraction + judging exactly once, returning the
+ * pre-FEAT-450 single-run report shape. `--runs N` calls this N times per
+ * model and combines the results via lib/report.ts's combineRuns.
+ */
+async function runModelOnce(
+  model: string,
+  fixtures: GoldFixture[],
+  azureCfgForJudge: AzureConfig | null,
+  reasoningEffort: JudgeReasoningEffort,
+): Promise<{ report: SingleRunReport; judgeUsd: number }> {
+  const collected = await collectAtomsForModel(model, fixtures);
+  let judgeUsd = 0;
 
-function mean(nums: number[]): number | null {
-  const finite = nums.filter(n => Number.isFinite(n));
-  return finite.length > 0 ? finite.reduce((a, b) => a + b, 0) / finite.length : null;
+  const fixtureReports: SingleRunReport['fixtures'] = [];
+  for (const fixture of fixtures) {
+    const entry = collected.perFixture[fixture.id];
+    if (!entry) continue;
+
+    let score: FixtureScore | null = null;
+    if (azureCfgForJudge) {
+      try {
+        score = await judgeFixture(azureCfgForJudge, fixture.id, fixture.gold_atoms, entry.atoms, reasoningEffort);
+      } catch (err) {
+        // A single flaky/off-schema judge response must never take down the
+        // whole multi-model run (this happened once during development —
+        // see judge.ts's tryParseJudge comment). Leave this fixture unscored
+        // and keep going; results.json still records everything else.
+        console.log(`  [judge] ${model} / ${fixture.id}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // judgeFixture's fast-path (both empty) makes no LLM call, so only
+      // estimate spend when there was actually a call (extractedCount>0 or
+      // goldCount>0 beyond the zero/zero fast path already handled inside
+      // judgeFixture).
+      if (!(fixture.gold_atoms.length === 0 && entry.atoms.length === 0)) {
+        // Rough judge-call cost estimate (gpt-5-mini $0.25/$2.00 per 1M) —
+        // prompt is small (atom lists), so this is a conservative fixed
+        // estimate rather than re-deriving exact token counts here.
+        judgeUsd += 0.001;
+      }
+    }
+
+    fixtureReports.push({
+      fixtureId: fixture.id,
+      difficulty: fixture.difficulty,
+      status: entry.status,
+      wallMs: entry.wallMs,
+      poisonJobs: entry.poisonJobs,
+      atoms: entry.atoms,
+      score,
+    });
+  }
+
+  const azureUsd = Object.values(collected.perFixture).reduce((sum, e) => sum + e.usageUsd, 0);
+  const aggregate = aggregateFixtureScores(fixtureReports, azureUsd);
+
+  return {
+    report: { model, daemonBootMs: collected.daemonBootMs, fixtures: fixtureReports, aggregate },
+    judgeUsd,
+  };
 }
 
 async function main(): Promise<void> {
   const fixtures = fixturesDir ? loadFixtures(fixturesDir) : loadFixtures();
   console.log(`Loaded ${fixtures.length} gold fixtures.`);
   console.log(`Models under test: ${models.join(', ')}`);
+  if (runsCount > 1) console.log(`Runs per model: ${runsCount} (multi-run variance mode — FEAT-450)`);
 
   const azureCfgForJudge = skipJudge ? null : resolveAzureConfig({ answererDeployment: 'gpt-5-mini' });
   const reports: ModelReport[] = [];
   let totalAzureJudgeUsd = 0;
+  let firstModelFirstRunFixtures: SingleRunReport['fixtures'] | null = null;
 
   for (const model of models) {
-    const collected = await collectAtomsForModel(model, fixtures);
-
-    const fixtureReports: ModelReport['fixtures'] = [];
-    for (const fixture of fixtures) {
-      const entry = collected.perFixture[fixture.id];
-      if (!entry) continue;
-
-      let score: FixtureScore | null = null;
-      if (!skipJudge && azureCfgForJudge) {
-        try {
-          score = await judgeFixture(azureCfgForJudge, fixture.id, fixture.gold_atoms, entry.atoms);
-        } catch (err) {
-          // A single flaky/off-schema judge response must never take down the
-          // whole multi-model run (this happened once during development —
-          // see judge.ts's tryParseJudge comment). Leave this fixture unscored
-          // and keep going; results.json still records everything else.
-          console.log(`  [judge] ${model} / ${fixture.id}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
-        }
-        // judgeFixture's fast-path (both empty) makes no LLM call, so only
-        // estimate spend when there was actually a call (extractedCount>0 or goldCount>0
-        // beyond the zero/zero fast path already handled inside judgeFixture).
-        if (!(fixture.gold_atoms.length === 0 && entry.atoms.length === 0)) {
-          // Rough judge-call cost estimate (gpt-5-mini $0.25/$2.00 per 1M) —
-          // prompt is small (atom lists), so this is a conservative fixed estimate
-          // rather than re-deriving exact token counts here.
-          totalAzureJudgeUsd += 0.001;
-        }
-      }
-
-      fixtureReports.push({
-        fixtureId: fixture.id,
-        difficulty: fixture.difficulty,
-        status: entry.status,
-        wallMs: entry.wallMs,
-        poisonJobs: entry.poisonJobs,
-        atoms: entry.atoms,
-        score,
-      });
+    const runReports: SingleRunReport[] = [];
+    for (let runIdx = 0; runIdx < runsCount; runIdx++) {
+      if (runsCount > 1) console.log(`\n### ${model} — run ${runIdx + 1}/${runsCount} ###`);
+      const { report: runReport, judgeUsd } = await runModelOnce(model, fixtures, azureCfgForJudge, judgeReasoningEffort);
+      totalAzureJudgeUsd += judgeUsd;
+      runReports.push(runReport);
+      if (firstModelFirstRunFixtures === null) firstModelFirstRunFixtures = runReport.fixtures;
     }
 
-    const scored = fixtureReports.filter(f => f.score !== null).map(f => f.score as FixtureScore);
-    const recalls = scored.map(s => s.recall).filter((r): r is number => r !== null);
-    const precisions = scored.map(s => s.precision).filter((p): p is number => p !== null);
-    const junkRates = scored.map(s => s.junkRate).filter((j): j is number => j !== null);
-    const typeAccs = scored.map(s => s.typeAccuracy).filter((t): t is number => t !== null);
-    const avgRecall = mean(recalls);
-    const avgPrecision = mean(precisions);
-    const f1 = avgRecall !== null && avgPrecision !== null && (avgRecall + avgPrecision) > 0
-      ? (2 * avgRecall * avgPrecision) / (avgRecall + avgPrecision)
-      : null;
-    const nothingFixtureScore = scored.find(s => s.fixtureId === 'fx09-nothing-worth-remembering');
-
-    const wallTimes = fixtureReports.filter(f => f.status !== 'error').map(f => f.wallMs);
-    const failedFixtures = fixtureReports.filter(f => f.status === 'error' || f.status === 'timeout' || f.status === 'partial').length;
-    const azureUsd = Object.values(collected.perFixture).reduce((sum, e) => sum + e.usageUsd, 0);
-
-    reports.push({
-      model,
-      daemonBootMs: collected.daemonBootMs,
-      fixtures: fixtureReports,
-      aggregate: {
-        avgRecall,
-        avgPrecision,
-        f1,
-        avgJunkRate: mean(junkRates),
-        avgTypeAccuracy: mean(typeAccs),
-        overExtractionOnNothingFixture: nothingFixtureScore?.overExtractionCount ?? null,
-        failedFixtures,
-        avgWallMsPerSession: mean(wallTimes) ?? 0,
-        totalWallMs: wallTimes.reduce((a, b) => a + b, 0),
-        azureUsd,
-      },
-    });
+    const combined = combineRuns(runReports);
+    reports.push(combined);
 
     // Write after EVERY model, not just at the end — a crash or a flaky
     // judge call partway through a later model must never lose an
     // already-completed model's results (this happened once during
     // development: an uncaught judge parse error crashed the whole 4-model
     // run and discarded a fully-scored model that was never persisted).
+    // Shape: always the plain array of ModelReport (AC-5) — judge
+    // self-agreement (computed once, after every model has run) is written
+    // to a separate judge-agreement.json below so this file's top-level
+    // shape never changes.
     writeFileSync(join(outDir, 'results.json'), JSON.stringify(reports, null, 2));
-    writeFileSync(join(outDir, 'report.md'), renderMarkdown(reports, totalAzureJudgeUsd));
+    writeFileSync(join(outDir, 'report.md'), renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort }));
   }
 
-  const md = renderMarkdown(reports, totalAzureJudgeUsd);
+  // AC-4: judge self-agreement. Re-judges the SAME (model, fixture)
+  // extracted-atom set `judgeAgreementRepeats` times so the variance
+  // observed is judge noise specifically, not model/extraction noise.
+  // Uses the first model's first-run atoms for the first
+  // `judgeAgreementFixturesN` fixtures (deterministic, cheap, bounded —
+  // independent of --runs and of how many models are under test).
+  let agreement: JudgeAgreementReport[] = [];
+  if (azureCfgForJudge && !skipJudgeAgreement && firstModelFirstRunFixtures && judgeAgreementRepeats >= 2 && judgeAgreementFixturesN > 0) {
+    const subset = firstModelFirstRunFixtures.slice(0, judgeAgreementFixturesN);
+    console.log(`\nMeasuring judge self-agreement on ${subset.length} fixture(s), ${judgeAgreementRepeats} repeats each (same atoms, re-judged)...`);
+    for (const f of subset) {
+      const goldAtoms = fixtures.find(fx => fx.id === f.fixtureId)?.gold_atoms ?? [];
+      try {
+        const rep = await judgeSelfAgreement(azureCfgForJudge, f.fixtureId, goldAtoms, f.atoms, judgeAgreementRepeats, judgeReasoningEffort);
+        agreement.push(rep);
+        totalAzureJudgeUsd += 0.001 * judgeAgreementRepeats;
+        console.log(`  ${f.fixtureId}: F1 ${formatStatsPct(rep.f1)} across ${rep.repeats} repeats`);
+      } catch (err) {
+        console.log(`  ${f.fixtureId}: judge self-agreement FAILED — ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (agreement.length > 0) {
+      writeFileSync(join(outDir, 'judge-agreement.json'), JSON.stringify(agreement, null, 2));
+    }
+  }
+
+  const md = renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort, agreement });
   writeFileSync(join(outDir, 'report.md'), md);
 
   console.log(`\n${md}`);
   console.log(`\nResults -> ${join(outDir, 'results.json')}`);
   console.log(`Report  -> ${join(outDir, 'report.md')}`);
-}
-
-function renderMarkdown(reports: ModelReport[], judgeUsd: number): string {
-  const lines: string[] = [];
-  lines.push('# Extraction-bench results', '');
-  lines.push('| Model | Recall | Precision | F1 | Junk rate | Type acc | Over-extract (nothing fx) | Avg s/session | Failed fixtures | Azure $ |');
-  lines.push('|---|---|---|---|---|---|---|---|---|---|');
-  const fmtPct = (n: number | null) => n === null ? '—' : `${(n * 100).toFixed(0)}%`;
-  for (const r of reports) {
-    const a = r.aggregate;
-    lines.push(
-      `| ${r.model} | ${fmtPct(a.avgRecall)} | ${fmtPct(a.avgPrecision)} | ${fmtPct(a.f1)} | ${fmtPct(a.avgJunkRate)} | ${fmtPct(a.avgTypeAccuracy)} | ${a.overExtractionOnNothingFixture ?? '—'} | ${(a.avgWallMsPerSession / 1000).toFixed(1)}s | ${a.failedFixtures} | $${a.azureUsd.toFixed(4)} |`,
-    );
-  }
-  lines.push('', `_Judge: Azure gpt-5-mini (reasoning_effort=minimal). Estimated judge spend this run: ~$${judgeUsd.toFixed(3)}._`);
-  return lines.join('\n');
+  if (agreement.length > 0) console.log(`Judge self-agreement -> ${join(outDir, 'judge-agreement.json')}`);
 }
 
 await main();

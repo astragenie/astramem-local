@@ -1,0 +1,21 @@
+{
+  "id": "fx39-clean-decision-api-versioning",
+  "title": "URL-path API versioning over header-based versioning",
+  "difficulty": "clean",
+  "notes": "Clean decision session choosing URL-path versioning (/v1/) over header-based versioning for a new public API, with explicit reasoning.",
+  "turns": [
+    { "role": "user", "text": "As we open up the public API, how should we version it — URL path like /v1/orders, or a custom header like Api-Version: 1?" },
+    { "role": "assistant", "text": "I'd recommend URL-path versioning, /v1/orders — it's immediately visible in logs, browser address bars, and API docs without needing to inspect headers, which makes debugging and onboarding external developers noticeably easier." },
+    { "role": "user", "text": "Isn't header-based considered more 'RESTfully pure' by some people?" },
+    { "role": "assistant", "text": "Some argue that, but the practical tradeoffs favor URL-path here: it's cacheable per-version by CDNs and reverse proxies without special Vary-header configuration, and it's much harder for a client to accidentally omit (a missing header silently falling back to a default version has caused real incidents at other companies when clients forgot to set it)." },
+    { "role": "user", "text": "Good point about caching. What happens when we eventually need v2?" },
+    { "role": "assistant", "text": "v1 keeps running unchanged at /v1/, v2 launches at /v2/, and we deprecate v1 on its own timeline once clients have migrated — no shared-route version-negotiation logic to maintain, each version is just its own route tree." },
+    { "role": "user", "text": "Alright, let's lock that in." },
+    { "role": "assistant", "text": "Confirmed: public API uses URL-path versioning starting at /v1/, with future versions living at their own /vN/ path root." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Use URL-path versioning (/v1/orders) for the public API, not header-based versioning (e.g. Api-Version header)." },
+    { "type": "lesson", "text": "URL-path versioning is cacheable per-version by CDNs and reverse proxies without special Vary-header configuration, and is harder for a client to accidentally omit than a header, which has caused real incidents elsewhere when clients forgot to set the version header." },
+    { "type": "decision", "text": "Future API versions will each live at their own /vN/ path root (e.g. /v2/), with the prior version continuing to run unchanged until deprecated on its own timeline — no shared version-negotiation logic." }
+  ]
+}

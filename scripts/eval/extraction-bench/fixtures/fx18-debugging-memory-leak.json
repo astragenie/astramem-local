@@ -1,0 +1,22 @@
+{
+  "id": "fx18-debugging-memory-leak",
+  "title": "Growing RSS traced to an event listener never removed",
+  "difficulty": "clean",
+  "notes": "Debugging session: symptom (growing RSS) to root cause (leaked event listener) to fix to lesson.",
+  "turns": [
+    { "role": "user", "text": "The worker process's RSS climbs steadily from 150MB to over 1.2GB over about 6 hours, then we restart it. Something's leaking." },
+    { "role": "assistant", "text": "Let me take a heap snapshot diff across two points in time... I see a large and growing number of retained 'jobCompleted' listener closures on the shared EventEmitter, way more than the number of active jobs." },
+    { "role": "user", "text": "Where's that coming from?" },
+    { "role": "assistant", "text": "Found it — processJob() calls emitter.on('jobCompleted', handler) at the start of every job but nothing ever calls emitter.off() for that specific handler afterward, so each job leaves its listener attached to the shared emitter forever." },
+    { "role": "user", "text": "Fix it." },
+    { "role": "assistant", "text": "Fixed: switched to emitter.once('jobCompleted', handler) since each handler should only ever fire once per job anyway, so Node removes it automatically after invocation. Also added an explicit emitter.off() in the job's error path so a job that never completes doesn't leak its listener either." },
+    { "role": "user", "text": "Did that actually fix the growth? Let it run a while and check." },
+    { "role": "assistant", "text": "Ran it for 6 hours under the same load — RSS stayed flat around 160-180MB the whole time, versus climbing to 1.2GB before. Confirmed fixed." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "processJob() attached a 'jobCompleted' listener via emitter.on() on every job but never called emitter.off() for it, so each job left its listener attached to the shared EventEmitter forever, causing steadily growing RSS." },
+    { "type": "decision", "text": "Switch from emitter.on() to emitter.once() for the 'jobCompleted' handler so Node auto-removes it after firing, and add an explicit emitter.off() in the job's error path to cover jobs that never complete." },
+    { "type": "fact", "text": "Worker RSS previously climbed from 150MB to over 1.2GB over about 6 hours before a restart was needed." },
+    { "type": "event", "text": "After the fix, RSS was verified flat around 160-180MB over a 6-hour run under the same load, confirming the leak was resolved." }
+  ]
+}

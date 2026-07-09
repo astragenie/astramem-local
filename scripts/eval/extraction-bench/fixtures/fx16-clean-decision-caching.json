@@ -1,0 +1,22 @@
+{
+  "id": "fx16-clean-decision-caching",
+  "title": "LRU cache layer in front of a slow catalog query",
+  "difficulty": "clean",
+  "notes": "Clean, decision-dense session about adding a bounded in-memory cache with an explicit eviction policy and size cap.",
+  "turns": [
+    { "role": "user", "text": "The getCatalogItem query is taking 400-600ms under load and it's the same handful of items being requested over and over. Can we cache it?" },
+    { "role": "assistant", "text": "Yes — an in-process LRU cache in front of that query is a good fit since the hot set is small and reads dominate writes. I'd cap it at 500 entries, which should comfortably cover the hot set based on the access logs you shared." },
+    { "role": "user", "text": "What eviction policy — plain LRU or something smarter like LFU?" },
+    { "role": "assistant", "text": "Plain LRU is the right call here — the access pattern is recency-biased (recently viewed items get viewed again soon), not frequency-biased, so LFU would add complexity without a real benefit." },
+    { "role": "user", "text": "Do we need a TTL too, or is size-based eviction enough?" },
+    { "role": "assistant", "text": "Add a 5-minute TTL as a safety net for staleness, even though size-based eviction will handle most turnover — catalog items can be edited by admins and we don't want a stale entry surviving indefinitely just because it stays in the hot set." },
+    { "role": "user", "text": "Sounds good, implement it that way." },
+    { "role": "assistant", "text": "Implemented: LRU cache, 500-entry cap, 5-minute TTL, wrapping getCatalogItem. Cache misses fall through to the original query unchanged." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Add an in-process LRU cache in front of the getCatalogItem query, capped at 500 entries, to reduce repeated 400-600ms queries for a small hot set of items." },
+    { "type": "decision", "text": "Use plain LRU eviction rather than LFU, because the access pattern is recency-biased (recently viewed items are viewed again soon) rather than frequency-biased." },
+    { "type": "decision", "text": "Add a 5-minute TTL to the cache as a staleness safety net, since catalog items can be edited by admins and shouldn't survive indefinitely in the hot set." },
+    { "type": "fact", "text": "The getCatalogItem query was taking 400-600ms under load before caching was added." }
+  ]
+}

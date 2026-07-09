@@ -1,0 +1,27 @@
+{
+  "id": "fx28-long-threetopics-infra",
+  "title": "Three unrelated infra topics: Redis eviction fix, new alerting rule, dependency check",
+  "difficulty": "long",
+  "notes": "Long session spanning three unrelated topics, mirroring fx08's structure: a Redis eviction-policy fix, a new alerting rule, and a 'no action needed' dependency check. Tests per-topic attribution.",
+  "turns": [
+    { "role": "user", "text": "We're seeing random cache misses on session data even though sessions should live for 24 hours. Redis isn't out of memory as far as I can tell." },
+    { "role": "assistant", "text": "Checked the Redis config — maxmemory-policy is set to allkeys-lru, which evicts ANY key (including your session keys) once maxmemory is hit, regardless of TTL. Since the cache is shared with a much larger, unbounded analytics-events keyspace, those keys are likely crowding out your session keys under memory pressure." },
+    { "role": "user", "text": "We do want analytics-events to be evictable, just not sessions. What's the fix?" },
+    { "role": "assistant", "text": "Switch maxmemory-policy to volatile-lru, which only evicts keys that have a TTL set, combined with making sure analytics-events keys always get a TTL set on write (they don't need to survive forever anyway) — sessions with their 24h TTL will only be evicted if literally every key with a TTL is gone, which shouldn't happen in practice." },
+    { "role": "user", "text": "Do it." },
+    { "role": "assistant", "text": "Changed maxmemory-policy to volatile-lru and added a default 7-day TTL to analytics-events writes that were previously untimed. Session eviction under memory pressure should now be effectively eliminated." },
+    { "role": "user", "text": "Switching gears — can we get an alert if the daily backup job fails? We had no idea it silently failed for 4 days last month." },
+    { "role": "assistant", "text": "Yes, I'll add a PagerDuty alert that fires if the backup-job's completion marker in the metrics store hasn't been updated within 25 hours (giving an hour of slack past the expected 24h cadence), rather than alerting on job exit code alone, since a silent failure might not even produce a normal exit." },
+    { "role": "user", "text": "Good, set that up. One more thing — are we still on the old version of the aws-sdk, or did that get bumped already?" },
+    { "role": "assistant", "text": "Checked package.json — aws-sdk was replaced with @aws-sdk/client-s3 (the v3 modular SDK) back in the March dependency sweep. Nothing outstanding there, already current." },
+    { "role": "user", "text": "Great, nothing to do on that one then." },
+    { "role": "assistant", "text": "Correct, no action needed for the SDK. Redis policy change and the backup-job alert are both done." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "Redis maxmemory-policy allkeys-lru evicts any key including session keys once maxmemory is hit, regardless of TTL — a shared unbounded analytics-events keyspace was crowding out session keys under memory pressure." },
+    { "type": "decision", "text": "Switch Redis maxmemory-policy from allkeys-lru to volatile-lru, and add a default 7-day TTL to analytics-events writes, so only TTL'd keys are evicted under memory pressure and sessions are effectively protected." },
+    { "type": "event", "text": "The daily backup job silently failed for 4 days last month with no alert." },
+    { "type": "decision", "text": "Add a PagerDuty alert that fires if the backup job's completion marker in the metrics store hasn't been updated within 25 hours, rather than alerting on job exit code alone, since a silent failure might not produce a normal exit." },
+    { "type": "fact", "text": "aws-sdk was already replaced with @aws-sdk/client-s3 (v3 modular SDK) in the March dependency sweep — no upgrade action needed." }
+  ]
+}

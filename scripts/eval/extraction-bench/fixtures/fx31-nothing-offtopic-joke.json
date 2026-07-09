@@ -1,0 +1,15 @@
+{
+  "id": "fx31-nothing-offtopic-joke",
+  "title": "User makes a joke, no technical content",
+  "difficulty": "nothing",
+  "notes": "Deliberately contains no decisions, facts, lessons, commands, todos, or events — a joke and light banter with zero durable technical content. Gold atom set is empty on purpose.",
+  "turns": [
+    { "role": "user", "text": "why do programmers prefer dark mode? because light attracts bugs" },
+    { "role": "assistant", "text": "Ha, that one never gets old. Solid choice of coping mechanism for the day." },
+    { "role": "user", "text": "lol yeah I've heard it a hundred times but it still gets me" },
+    { "role": "assistant", "text": "It's a classic for a reason. Let me know whenever you want to dive back into actual work." },
+    { "role": "user", "text": "will do, just needed a laugh first" },
+    { "role": "assistant", "text": "Anytime. I'm here whenever you're ready." }
+  ],
+  "gold_atoms": []
+}

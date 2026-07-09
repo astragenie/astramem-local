@@ -1,0 +1,13 @@
+{
+  "id": "fx38-ambiguous-vague-monitoring-idea",
+  "title": "Vague, unprioritized musing about more monitoring someday",
+  "difficulty": "ambiguous",
+  "notes": "Very short, low-confidence, no clear decision. Tests confidence calibration and restraint, mirroring fx15's brevity. Intentionally has only one plausible gold atom.",
+  "turns": [
+    { "role": "user", "text": "We should probably have more monitoring on the background jobs at some point, right? Not urgent, just a thought." },
+    { "role": "assistant", "text": "Could be useful eventually, but the jobs haven't caused any incidents so far and the current logging has been enough to debug the couple of issues we've had. I wouldn't prioritize building out dedicated monitoring for them right now." }
+  ],
+  "gold_atoms": [
+    { "type": "note", "text": "Adding dedicated monitoring for background jobs was raised as a possible future improvement, but not prioritized — current logging has been sufficient for the few issues encountered so far." }
+  ]
+}
