@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.10.0] — 2026-07-09
+
+### Changed
+- **BREAKING — atom@2 contract cut.** Retrieval/sync entities are now typed across 12 `ENTITY_KINDS`; the `repo`/`personal` scope fields are dropped in favour of `project`, and result types are widened. Local extraction retags to atom@2, the sync create-event payload embeds typed entities, and the daemon advertises `atom@2` in `WIRE_VERSIONS_SUPPORTED`. Contracts published as `contracts-v2.0.0`. Clients on the v1 entity shape must upgrade.
+- **`engines.node` floor raised to `>=22`** to match the SQLCipher prebuilt matrix.
+
+### Added
+- **Durable ingest spool (FEAT-449)** — transcript content is captured at session close and the daemon drains the spool asynchronously, closing the ephemeral-worktree-transcript starvation class where paths were deleted before async ingest could read them.
+- **Distiller durability quality gate (FEAT-441)** — `distill.durabilityGate` (`off` | `lenient` | `strict`, default `off`) skips low-signal atoms at the store layer; `/remember` bypasses the gate by construction. Ships inert (`off`) — byte-identical to prior behaviour until opted in.
+- **Memory-health score (FEAT-444)** — surfaced in `doctor`, `GET /health`, and the CLI.
+- **Consolidation auto-accept (FEAT-442)** — opt-in auto-accept above a confidence threshold, plus un-supersede reversal.
+- **Release-pinned service pointer + rollback for systemd/launchd (FEAT-443)** — parity with the Windows release-pinning model.
+- **Crash-loop visibility + schema-drift probe (FEAT-440, FEAT-439)** — doctor reports crash-loop state; post-merge migration-currency probe and rebuild.
+- Authed `GET /whoami` bearer-verification probe.
+- Extraction eval infrastructure: codex/qwen3 provider fixes, prompt/temperature A/B harness, cloud benchmark specs, junk-pollution eval fixtures.
+
+### Fixed
+- **Release-pinning was silently broken** — `migrations/` is now materialized into the pinned release (previously omitted, so pinned releases could run against a stale schema).
+- Service reliability: `reinstall` stops the actual daemon PID (not just the scheduler task) and widens the verify-health budget to 90s; `pidAlive` treats `EPERM` as alive; daemon stderr is redirected to an fd instead of buffered in memory.
+- Sync CLI closes its DB handle exactly once per subcommand on both success and error paths.
+- CI: fetch the pinned prebuilt SQLCipher addon instead of compiling.
+
+---
+
 ## [0.9.1] — 2026-07-08
 
 ### Changed

@@ -1,6 +1,6 @@
 {
   "name": "astramem-local",
-  "version": "0.9.1",
+  "version": "0.10.0",
   "type": "module",
   "bin": {
     "astramem-local": "dist/cli/index.js"
