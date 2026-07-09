@@ -22,6 +22,7 @@ import {
   assignQueryFilterValues,
   applySqlColumnFilters,
   applySqlRangeFilters,
+  mergeRepoAlias,
   type FilterDescriptor,
 } from '../../src/contracts/filter-registry.js';
 import {
@@ -38,18 +39,18 @@ describe('RECALL_FILTER_REGISTRY — shape', () => {
     expect(RECALL_FILTER_REGISTRY.map(d => d.name).sort()).toEqual(['agent', 'entity', 'project', 'repo', 'since']);
   });
 
-  it('project/agent/repo are sqlColumn descriptors on their own column name', () => {
+  it('project/agent are sqlColumn descriptors on their own column name', () => {
     const project = RECALL_FILTER_REGISTRY.find(d => d.name === 'project')!;
     const agent = RECALL_FILTER_REGISTRY.find(d => d.name === 'agent')!;
-    const repo = RECALL_FILTER_REGISTRY.find(d => d.name === 'repo')!;
     expect(project.apply).toEqual({ kind: 'sqlColumn', column: 'project' });
     expect(agent.apply).toEqual({ kind: 'sqlColumn', column: 'agent' });
-    expect(repo.apply).toEqual({ kind: 'sqlColumn', column: 'repo' });
   });
 
-  it('entity is a custom (non-SQL-column) descriptor', () => {
+  it('entity/repo are custom (non-SQL-column) descriptors — repo (atom@2 repo/project consolidation) folds into project at the src/search/search.ts SQL boundary via mergeRepoAlias, never its own column', () => {
     const entity = RECALL_FILTER_REGISTRY.find(d => d.name === 'entity')!;
+    const repo = RECALL_FILTER_REGISTRY.find(d => d.name === 'repo')!;
     expect(entity.apply).toEqual({ kind: 'custom' });
+    expect(repo.apply).toEqual({ kind: 'custom' });
   });
 
   it('since is a sqlRangeColumn descriptor on created_at with op gte', () => {
@@ -206,16 +207,50 @@ describe('applySqlColumnFilters — WHERE-clause builder, registry-driven', () =
     expect(params).toEqual([]);
   });
 
-  it('a repo value produces `repo = ?` (scalar, never IN)', () => {
+  it('a repo value (a "custom"-kind descriptor, atom@2 repo/project consolidation) is never turned into its own SQL clause here — callers fold it into project via mergeRepoAlias first', () => {
     const { clauses, params } = applySqlColumnFilters({ repo: 'myrepo' });
-    expect(clauses).toEqual(['repo = ?']);
-    expect(params).toEqual(['myrepo']);
+    expect(clauses).toEqual([]);
+    expect(params).toEqual([]);
   });
 
   it('since (a sqlRangeColumn-kind descriptor) is never turned into an sqlColumn clause', () => {
     const { clauses, params } = applySqlColumnFilters({ since: 1700000000000 });
     expect(clauses).toEqual([]);
     expect(params).toEqual([]);
+  });
+});
+
+describe('mergeRepoAlias — atom@2 repo/project consolidation fold-in', () => {
+  it('both absent -> undefined (no constraint)', () => {
+    expect(mergeRepoAlias(undefined, undefined)).toBeUndefined();
+  });
+
+  it('repo only -> that scalar', () => {
+    expect(mergeRepoAlias('myrepo', undefined)).toBe('myrepo');
+  });
+
+  it('project only -> unchanged (scalar)', () => {
+    expect(mergeRepoAlias(undefined, 'myproj')).toBe('myproj');
+  });
+
+  it('project only -> unchanged (list)', () => {
+    expect(mergeRepoAlias(undefined, ['a', 'b'])).toEqual(['a', 'b']);
+  });
+
+  it('both present, distinct, project scalar -> deduped union as a list', () => {
+    expect(mergeRepoAlias('myrepo', 'myproj')).toEqual(['myproj', 'myrepo']);
+  });
+
+  it('both present, distinct, project list -> repo appended', () => {
+    expect(mergeRepoAlias('c', ['a', 'b'])).toEqual(['a', 'b', 'c']);
+  });
+
+  it('both present, repo already in the project list -> no duplicate', () => {
+    expect(mergeRepoAlias('a', ['a', 'b'])).toEqual(['a', 'b']);
+  });
+
+  it('both present, repo equals the scalar project -> no duplicate (result is a single-element list, functionally identical to the scalar for SQL IN/= purposes)', () => {
+    expect(mergeRepoAlias('myproj', 'myproj')).toEqual(['myproj']);
   });
 });
 

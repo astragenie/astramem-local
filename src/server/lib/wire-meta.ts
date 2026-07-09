@@ -36,8 +36,8 @@ export const PKG_VERSION: string = _PkgSchema.parse(
 // with trailing words like "envelope"/"query"/"result").
 //
 // `tests/contracts/wire-version-map-parity.test.ts` is the regression gate:
-// it `readdirSync`s contracts/schemas/*.v1.schema.json and fails the build if
-// a schema file is added/removed without a matching update here.
+// it `readdirSync`s contracts/schemas/*.v{N}.schema.json and fails the build
+// if a schema file is added/removed without a matching update here.
 //
 // WIRE_VERSIONS_SUPPORTED is REPURPOSED from the old flat envelope-negotiation
 // list (`['v0.0', 'v1.0']`) to this domain@gen vocabulary — the plugin's live
@@ -45,18 +45,30 @@ export const PKG_VERSION: string = _PkgSchema.parse(
 // negotiation on POST /ingest/transcript (src/server/routes/ingest.ts, regex
 // `^v(?:0|[1-9][0-9]*)\.[0-9]+$`) is a SEPARATE axis and does not read this
 // constant or this map.
+//
+// atom@2 (2026-07-09, local writer adoption slice): `atom.v2.schema.json`
+// was added to contracts/schemas/ alongside atom.v1 for a time-boxed dual-
+// read window (ADR-001 amendment) — this map now carries BOTH atom@1 and
+// atom@2 entries (the only domain with two generations live at once; the
+// contracts package's own contracts/wire.ts WIRE_VERSIONS_SUPPORTED already
+// listed atom@2 from the moment the schema was authored — see that file's
+// comment explaining the daemon-side wiring was deliberately deferred to
+// this slice). atom@1 stays advertised/mapped until the dual-read window
+// closes (TODO: drop the atom.v1.schema.json entry + atom@1 reader support
+// together, tracked alongside TODO(remove-personal-alias)).
 // ---------------------------------------------------------------------------
 
 export const SCHEMA_FILE_TO_DOMAIN = {
   'atom.v1.schema.json': 'atom@1',
+  'atom.v2.schema.json': 'atom@2',
   'retrieval-query.v1.schema.json': 'retrieval@1',
   'retrieval-result.v1.schema.json': 'retrieval@1',
   'sync-envelope.v1.schema.json': 'sync@1',
   'capture-envelope.v1.schema.json': 'capture@1',
 } as const satisfies Record<string, string>;
 
-// Deduped, first-seen-order derivation from the map above (5 schema files ->
-// 4 domains: retrieval-query + retrieval-result both collapse to `retrieval@1`).
+// Deduped, first-seen-order derivation from the map above (6 schema files ->
+// 5 domains: retrieval-query + retrieval-result both collapse to `retrieval@1`).
 export const WIRE_VERSIONS_SUPPORTED = Array.from(
   new Set(Object.values(SCHEMA_FILE_TO_DOMAIN)),
 ) as readonly string[];

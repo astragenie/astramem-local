@@ -162,14 +162,18 @@ describe('Atom v3 — recall exclusion of invalidated memories', () => {
   });
 
   it('selectPack excludes a memory whose valid_to is set', () => {
+    // atom@2 repo/project consolidation (plan 20260709): selectPack now
+    // filters on `project`, not `repo` — real ingest always derives
+    // `project` from `repo` (src/pipeline/derive-project.ts), so this
+    // fixture mirrors that instead of leaving `project` null.
     const aliveId = repo.insert({
       type: 'decision', text: 'still valid decision', normalized_text: 'still valid decision',
-      repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+      repo: 'r1', project: 'r1', branch: null, agent: null, session_id: null,
       hash: 'pack-alive', source_hash: null, importance: 0.9,
     });
     const deadId = repo.insert({
       type: 'decision', text: 'superseded decision', normalized_text: 'superseded decision',
-      repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+      repo: 'r1', project: 'r1', branch: null, agent: null, session_id: null,
       hash: 'pack-dead', source_hash: null, importance: 0.9,
     });
     db.prepare('UPDATE memories SET valid_to = ? WHERE id = ?').run(Date.now(), deadId);

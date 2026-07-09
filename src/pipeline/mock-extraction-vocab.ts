@@ -24,7 +24,7 @@ export interface MockExtractionAtom {
   importance: number;
   confidence: number;
   evidence?: string;
-  entities?: Array<{ name: string; kind: string }>;
+  entities?: Array<{ name: string; kind: string; subtype?: 'human' | 'ai' }>;
 }
 
 export interface MockExtractionRule {
@@ -65,7 +65,8 @@ export const MOCK_EXTRACTION_VOCAB: readonly MockExtractionRule[] = [
       text: 'Priya Nair is the designated reviewer for this work',
       importance: 0.5,
       confidence: 0.8,
-      entities: [{ name: 'Priya Nair', kind: 'person' }],
+      // atom@2: person -> actor (subtype: human) — see src/contracts/entity.ts.
+      entities: [{ name: 'Priya Nair', kind: 'actor', subtype: 'human' }],
     },
   },
   {
@@ -76,7 +77,9 @@ export const MOCK_EXTRACTION_VOCAB: readonly MockExtractionRule[] = [
       text: 'This work belongs to the astramemory-local repo',
       importance: 0.5,
       confidence: 0.8,
-      entities: [{ name: 'astramemory-local', kind: 'repo' }],
+      // atom@2: repo -> product (repo/project identity is owned by the
+      // structural provenance.project field, not an entity kind).
+      entities: [{ name: 'astramemory-local', kind: 'product' }],
     },
   },
   {

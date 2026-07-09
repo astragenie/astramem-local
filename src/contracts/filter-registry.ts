@@ -122,19 +122,22 @@ function scalarCustomFilter(opts: { name: string; description: string }): Filter
 }
 
 /**
- * Descriptor factory for a scalar-string `col = ?` filter (repo, ...) —
- * structurally identical to `stringOrListColumnFilter` except the wire value
- * is always a single string, never a CSV-parsed list (FEAT-429 SLICE-A: repo
- * has no OR-list semantics today). Presence check mirrors project/agent's
- * truthy check (an explicit `''` is "absent"), matching repo's pre-registry
- * hand-rolled `if (params.repo) ...` / `if (rawFilters?.repo) ...` gates.
+ * Descriptor factory for a scalar-string UX-alias filter resolved via custom
+ * (non-column) logic, using project/agent's truthy presence check (an
+ * explicit `''` is "absent") rather than `scalarCustomFilter`'s `!==
+ * undefined` check — used by `repo` (atom@2 repo/project consolidation:
+ * folded into `project`'s OR-list at the SQL boundary, see
+ * src/search/search.ts's `mergeRepoAlias` call site, never its own SQL
+ * column). Distinct from `scalarCustomFilter` (entity) only in the presence
+ * predicate, preserving repo's pre-existing truthy-gate behavior
+ * (FEAT-429 SLICE-A's `if (params.repo) ...` / `if (rawFilters?.repo) ...`).
  */
-function scalarColumnFilter(opts: { name: string; column: string; description: string }): FilterDescriptor {
+function scalarCustomFilterTruthy(opts: { name: string; description: string }): FilterDescriptor {
   return {
     name: opts.name,
     valueShape: 'scalarString',
     schema: z.string().optional(),
-    apply: { kind: 'sqlColumn', column: opts.column },
+    apply: { kind: 'custom' },
     compose: 'AND',
     description: opts.description,
     presentInStructured: (value) => Boolean(value),
@@ -189,10 +192,10 @@ export const RECALL_FILTER_REGISTRY: readonly FilterDescriptor[] = [
     description:
       'Entity name filter (FEAT-402); resolved via the normalize seam (case/whitespace-insensitive, exact match then substring fallback). Unresolvable names yield zero results.',
   }),
-  scalarColumnFilter({
+  scalarCustomFilterTruthy({
     name: 'repo',
-    column: 'repo',
-    description: 'Filter by repo name — scalar exact match (no OR-list)',
+    description:
+      'UX-alias for project (atom@2 repo/project consolidation) — folded into the project OR-list at the SQL boundary, never queried as its own column. Scalar exact match.',
   }),
   numericRangeColumnFilter({
     name: 'since',
@@ -276,6 +279,31 @@ export function assignQueryFilterValues(
  * constraint" (skipped), never "match nothing" — mirrors FEAT-423's
  * `type[]` / `project`/`agent` semantics exactly.
  */
+/**
+ * Fold a legacy scalar `repo` value into `project`'s OR-list shape (atom@2
+ * repo/project consolidation, plan 20260709) — `repo` is accepted as a
+ * UX-alias input on every surface (GET /search, POST /recall, MCP
+ * search_memory/recall_memory) but is never applied as its own SQL column
+ * (see the `repo` descriptor's `apply: { kind: 'custom' }` above). Callers
+ * apply this once, at the single point every surface funnels through
+ * (src/search/search.ts), before building `project`'s SQL clause:
+ *   - both absent -> `undefined` (no constraint)
+ *   - `repo` only -> that scalar (exact match on `project`)
+ *   - `project` only -> unchanged
+ *   - both present -> deduped union as a string[] (OR-semantics) — never an
+ *     impossible AND of two structurally-different columns, which is what
+ *     the pre-atom@2 registry did when both were sent.
+ */
+export function mergeRepoAlias(
+  repo: string | undefined,
+  project: string | string[] | undefined
+): string | string[] | undefined {
+  if (repo === undefined) return project;
+  if (project === undefined) return repo;
+  const list = Array.isArray(project) ? project : [project];
+  return list.includes(repo) ? list : [...list, repo];
+}
+
 export function applySqlColumnFilters(
   filters: Record<string, unknown>,
   descriptors: readonly FilterDescriptor[] = RECALL_FILTER_REGISTRY

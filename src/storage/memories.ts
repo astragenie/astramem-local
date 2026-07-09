@@ -32,6 +32,17 @@ export interface InsertInput {
    * wall-clock by omitting this field.
    */
   valid_from?: number;
+  /**
+   * atom@2 typed entities (contracts/schemas/atom.v2.schema.json
+   * `entities[]`) declared by the caller for THIS atom, embedded verbatim in
+   * the create-event sync payload (see insertWithCreateEvent below) — never
+   * persisted on the `memories` row itself (entity persistence stays in
+   * EntityRepo/memory_entities, unaffected by this field). `undefined` means
+   * "this write path never ran entity extraction" (e.g. direct /remember);
+   * an empty array means "extraction ran and found nothing" — the distinction
+   * matters for a future cloud enrichment pass deciding whether to extract.
+   */
+  entities?: Array<{ name: string; kind: string; subtype?: 'human' | 'ai' }>;
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
@@ -75,6 +86,13 @@ export class MemoryRepo {
       // atoms never ship (the shipper scope-filters), so this only leaves
       // the machine for team/org scope. valid_from is omitted — the cloud
       // falls back to the event's created_at.
+      //
+      // atom@2: `entities` (typed {name, kind, subtype?} objects — see
+      // InsertInput.entities doc) is embedded only when the caller declared
+      // it, so cloud can distinguish "declared, possibly empty" from "never
+      // extracted" (the field is entirely absent from payload_json in the
+      // latter case, matching the atom@2 dual-read/enrichment-cursor
+      // architecture). shipper.ts ships this payload verbatim.
       events.append({
         event_type: 'create',
         atom_id: id,
@@ -86,6 +104,7 @@ export class MemoryRepo {
           importance: input.importance ?? 0.5,
           confidence: input.confidence ?? 0.5,
           repo: input.repo ?? input.project ?? '',
+          ...(input.entities !== undefined ? { entities: input.entities } : {}),
         },
       });
       return { id, created: true };

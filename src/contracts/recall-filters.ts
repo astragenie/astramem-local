@@ -84,9 +84,12 @@ export const AgentFilterSchema = getFilterSchema('agent') as z.ZodOptional<
 export const EntityFilterSchema = getFilterSchema('entity') as z.ZodOptional<z.ZodString>;
 
 /**
- * `filters.repo` — exact match on `memories.repo`. Scalar string only (no
- * OR-list semantics, unlike project/agent). Absent -> all repos (FEAT-429
- * SLICE-A).
+ * `filters.repo` — atom@2 repo/project consolidation (plan 20260709):
+ * accepted as a UX-alias input only (CLI/MCP/API back-compat) and folded
+ * into `project`'s OR-list at the SQL boundary (src/search/search.ts's
+ * `mergeRepoAlias` call site) — never its own `memories.repo` SQL column.
+ * Scalar string only (no OR-list semantics on the input side). Absent ->
+ * no additional constraint beyond whatever `project` already carries.
  */
 export const RepoFilterSchema = getFilterSchema('repo') as z.ZodOptional<z.ZodString>;
 
