@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://astramem.dev/contracts/atom.v2.schema.json",
+  "title": "astramem/atom@2",
+  "description": "Canonical Memory Atom v2 (ADR-001 amendment, 2026-07-09). Breaking major bump from atom@1 — zero-customers window used to fix three warts in one cut rather than carry additive debt: (1) entities is now a typed object array instead of string[]; (2) provenance.repo is deleted (project is the single canonical field); (3) the 'personal' scope alias is dropped (private|team|org only). Shipped alongside atom.v1.schema.json for a time-boxed dual-read window on the cloud reader (see contracts/README.md 'Versioning rules' and the ADR-001 amendment) — atom@1 is NOT deleted by this change.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "astramem/atom@2"
+    },
+    "id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "type": {
+      "type": "string",
+      "description": "Registry-extensible, closed by default. Same 10-value union as atom@1 (ADR D4) — unaffected by the atom@2 cut: decision, fact, lesson, command, todo, note, event, preference, task_result, summary.",
+      "enum": ["decision", "fact", "lesson", "command", "todo", "note", "event", "preference", "task_result", "summary"]
+    },
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Canonical normalized text."
+    },
+    "evidence": {
+      "description": "Receipts — never optional. Unchanged from atom@1; see contracts/README.md 'Evidence reconciliation'.",
+      "anyOf": [
+        {
+          "type": "string",
+          "minLength": 1,
+          "description": "Local v1 form: a short free-text excerpt supporting the atom."
+        },
+        {
+          "type": "array",
+          "minItems": 1,
+          "description": "ADR-001 canonical form: structured receipts pointing at source transcript spans.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["transcript_id"],
+            "properties": {
+              "transcript_id": { "type": "string", "minLength": 1 },
+              "span": {
+                "type": "array",
+                "items": { "type": "integer", "minimum": 0 },
+                "minItems": 2,
+                "maxItems": 2
+              }
+            }
+          }
+        }
+      ]
+    },
+    "confidence": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1,
+      "description": "Extractor confidence."
+    },
+    "importance": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where this atom came from. atom@2 BREAKING CHANGE: 'repo' is deleted — 'project' is the single canonical field (cloud already collapses project_id ?? repo onto one WorkspaceProjectId column; a still-populated repo filter could return false negatives under atom@1). Writers that only had a repo value should send it as 'project'.",
+      "properties": {
+        "tool": {
+          "type": ["string", "null"],
+          "description": "e.g. claude-code | codex | cursor | runner-plugin"
+        },
+        "session_id": { "type": ["string", "null"] },
+        "project": { "type": ["string", "null"] },
+        "extractor": {
+          "type": ["string", "null"],
+          "description": "name@version of the extractor that produced this atom."
+        }
+      }
+    },
+    "valid_from": {
+      "type": "string",
+      "format": "date-time",
+      "description": "Bitemporal valid-time start."
+    },
+    "valid_to": {
+      "type": ["string", "null"],
+      "format": "date-time",
+      "description": "Bitemporal valid-time end. null = currently valid."
+    },
+    "superseded_by": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "derived_from": {
+      "type": ["array", "null"],
+      "description": "Consolidation lineage (ADR-004 stage 9).",
+      "items": { "type": "string", "format": "uuid" }
+    },
+    "scope": {
+      "type": "string",
+      "description": "ADR-009 memory scope. atom@2 BREAKING CHANGE: the 'personal' alias (kept in atom@1 as a one-release dual-read accommodation, U7-local astramem-local#110, DEC-048, tracked as TODO(remove-personal-alias) astramem-local#115) is dropped. 'private' is the only low-rank value; new AND existing writers on atom@2 must emit private|team|org.",
+      "enum": ["private", "team", "org"]
+    },
+    "content_hash": {
+      "type": "string",
+      "description": "sha256 hex digest — dedup + sync idempotency (ADR-003).",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "entities": {
+      "type": "array",
+      "description": "atom@2 BREAKING CHANGE: typed entity objects instead of atom@1's flat string[]. The flat shape was lossy — astramem-local's own harness.ts:137 already re-synthesized a fake kind for every string, proving downstream consumers need kind. See ENTITY_KINDS (12-value registry) / ACTOR_KINDS in contracts/wire.ts.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "kind"],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 256
+          },
+          "kind": {
+            "type": "string",
+            "description": "12-value canonical entity-kind registry. Mirrors ENTITY_KINDS in contracts/wire.ts (kept in sync by tests/contracts/entity-kind-parity.test.ts).",
+            "enum": ["actor", "team", "org", "project", "product", "workitem", "decision", "tech", "tool", "concept", "event", "other"]
+          },
+          "subtype": {
+            "type": "string",
+            "description": "Optional refinement, meaningful for actor-family kinds (see ACTOR_KINDS in contracts/wire.ts): human or AI agent.",
+            "enum": ["human", "ai"]
+          }
+        }
+      }
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "updated_at": {
+      "type": "string",
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "schema",
+    "id",
+    "type",
+    "text",
+    "evidence",
+    "confidence",
+    "importance",
+    "provenance",
+    "valid_from",
+    "valid_to",
+    "scope",
+    "content_hash",
+    "created_at",
+    "updated_at"
+  ]
+}

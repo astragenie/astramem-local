@@ -56,3 +56,61 @@ both implementations validate against it in CI.
   dual-read window.
 - Rejected-alternative debt: if graph traversal becomes a paid need, edges derive FROM atoms
   (materialized), never replace them.
+
+## Amendment (2026-07-09): atom@2 — entities, provenance, scope breaking cut
+
+**Status:** accepted · **Confidence:** High · Ratified as part of the entity-extraction
+unification plan (`.claude/artifacts/crew/runs/20260709-entity-extraction-unification-plan.md`
+V3 §6, sign-off "A1 wart-sweep").
+
+**Context:** three warts accumulated in `atom.v1.schema.json` since this ADR was written:
+`entities` is a flat `string[]` even though every real consumer (astramem-local's own
+`harness.ts:137`) already needs a kind, not just a name; `provenance` carries both `repo` and
+`project` when cloud only ever keys on one collapsed field; and `scope` still carries the
+`'personal'` alias a full release after the `personal`→`private` rename (DEC-048) was supposed to
+retire it. Normally each of these would be an additive-then-deprecate cycle per this ADR's own
+"Consequences" versioning rule. **This repo currently has zero customers** — the only window
+where a breaking bump costs nothing — so the decision is to fix all three in one `atom@2` cut
+instead of paying three separate rounds of deprecated-field debt.
+
+**Decision:** ship `astramem/atom@2` as a new major schema, **alongside** (not replacing)
+`astramem/atom@1`:
+
+```jsonc
+{
+  "schema": "astramem/atom@2",
+  // ...unchanged fields (id, type, text, evidence, confidence, importance,
+  // valid_from, valid_to, superseded_by, derived_from, content_hash,
+  // created_at, updated_at) — see atom.v1 shape above...
+  "provenance": { "tool": "…", "session_id": "…", "project": "…", "extractor": "…" },  // repo DELETED
+  "scope": "private | team | org",   // 'personal' alias DELETED
+  "entities": [{ "name": "…", "kind": "actor|team|org|project|product|workitem|decision|tech|tool|concept|event|other", "subtype": "human|ai" }]  // was string[]
+}
+```
+
+Cutover is **not simultaneous** across the three consuming repos: cloud's sync ingest reader
+dual-accepts `atom@1` and `atom@2` during rollout (mirrors the `content ?? text` fallback idiom
+from #618), because astramem-local's shipper has a durable offline queue (events with
+`synced_at IS NULL`, 15-min backoff, no pre-flight capabilities check) that can deliver
+atom@1-shaped events after cloud has already upgraded. Once astramem-local's writer + queue have
+drained onto `atom@2`, a follow-up chore commit removes the `atom@1` fallback and flips
+`GET /sync/capabilities` to `atom@2`-only; `atom.v1.schema.json` is deleted from this package at
+that point, not before. See `contracts/README.md` "Memory atom v2" for the full fixture/test
+inventory this cut shipped with.
+
+`retrieval-query.v1.schema.json`'s `filters.repo`/`filters.scope` and
+`retrieval-result.v1.schema.json`'s `hits[].scope` get the same `repo`-deletion and
+`personal`-alias-deletion treatment in the same commit, **in place** (no `retrieval@2`) — those
+are synchronous request/response surfaces with no durable offline queue, so there is no
+dual-accept window to coordinate; the daemon/cloud call sites that read `filters.repo` today are
+follow-up work tracked in the unification plan, not this schema change.
+
+**Consequences:**
+- No SQLite historical migration and no cloud backfill for pre-atom@2 rows — old data is
+  disposable in this window (explicit user constraint, not an oversight).
+- The `wire.ts` `ENTITY_KINDS`/`ACTOR_KINDS` constants become the canonical entity-kind
+  vocabulary cross-repo (cloud gets a mirrored C# constant + parity test as daemon/cloud
+  follow-up work, not part of this package change).
+- `repo` is retired as both a `provenance` field and an entity `kind` — repo/project identity is
+  owned solely by the structural `provenance.project` field; cross-repo mentions land in the
+  `product` entity kind instead.

@@ -4,7 +4,6 @@
   "filters": {
     "type": ["decision", "fact"],
     "scope": ["team", "org"],
-    "repo": "astramem-local",
     "project": "astramem",
     "since": "2026-01-01T00:00:00.000Z"
   },

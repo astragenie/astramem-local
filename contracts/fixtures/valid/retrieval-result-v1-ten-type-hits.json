@@ -1,0 +1,31 @@
+{
+  "schema": "astramem-retrieval-result@1",
+  "query": { "text": "cloud-only atom types", "mode": "hybrid" },
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-000000000010",
+      "type": "preference",
+      "text": "User prefers dark mode in the dashboard.",
+      "score": 0.6,
+      "scope": "private",
+      "explanation": { "final": 0.6, "signals": {} }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000011",
+      "type": "task_result",
+      "text": "FEAT-402 slice 2 shipped entity filter coverage.",
+      "score": 0.55,
+      "scope": "team",
+      "explanation": { "final": 0.55, "signals": {} }
+    },
+    {
+      "id": "00000000-0000-4000-8000-000000000012",
+      "type": "summary",
+      "text": "Session summary: unified the retrieval contract's type registry to 10 values.",
+      "score": 0.5,
+      "scope": "org",
+      "explanation": { "final": 0.5, "signals": {} }
+    }
+  ],
+  "total": 3
+}

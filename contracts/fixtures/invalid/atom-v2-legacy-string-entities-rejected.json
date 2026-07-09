@@ -1,0 +1,19 @@
+{
+  "schema": "astramem/atom@2",
+  "id": "00000000-0000-4000-8000-000000000107",
+  "type": "fact",
+  "text": "atom@1's flat entities: string[] shape no longer validates against atom@2's typed object array.",
+  "evidence": "n/a",
+  "confidence": 0.5,
+  "importance": 0.5,
+  "provenance": { "tool": "claude-code", "session_id": null, "project": null, "extractor": null },
+  "valid_from": "2026-07-09T00:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "private",
+  "content_hash": "708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f",
+  "entities": ["PostgreSQL"],
+  "created_at": "2026-07-09T00:00:00.000Z",
+  "updated_at": "2026-07-09T00:00:00.000Z"
+}

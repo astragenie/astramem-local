@@ -7,7 +7,7 @@
       "type": "fact",
       "text": "sqlite-vec ships prebuilt binaries for linux-x64, darwin-arm64, darwin-x64, win32-x64.",
       "score": 0.82,
-      "scope": "personal",
+      "scope": "private",
       "explanation": {
         "final": 0.82,
         "signals": {
