@@ -1,7 +1,7 @@
 ---
 id: SLICE-422
 title: Implement FEAT-465
-status: pending
+status: completed
 feature: FEAT-465
 phase: null
 priority: P2
@@ -10,6 +10,7 @@ requires_validation: true
 risk: medium
 created: 2026-07-10
 updated: 2026-07-10
+completed_at: 2026-07-10
 ---
 # SLICE-422: Implement FEAT-465
 

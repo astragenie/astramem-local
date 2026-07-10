@@ -1,6 +1,6 @@
 ---
 id: FEAT-465
-status: in-progress
+status: done
 priority: P2
 category: bug
 target_release: null
@@ -22,6 +22,8 @@ pm_reviewed: 2026-07-10
 autonomous_safe: true
 triage_notes: "P2 via formula (default branch): impact 0.45 < 0.70 so the (impact>=0.7 AND alignment>=0.6) P1 branch does not fire; alignment 0.5 < 0.80 so the (alignment>=0.8 AND effort<=0.4) P1 branch does not fire either; effort 0.3 < 0.70 so P3 (effort>=0.7 AND impact<=0.3) does not fire. composite_score = 0.45*0.35 + 0.5*0.30 + (1-0.3)*0.20 + (1-0.4)*0.10 + (1-0.15)*0.05 = 0.55. Customer impact scored moderate: a real silent-corruption bug (SLICE-420 review reproduced it directly: 'hash #tag no leading space' round-trips as '[\"hash'), but reachable only when a config scalar's value contains a whitespace-preceded '#' — narrow blast radius today, though newly exercised by security.redaction.customPatterns (FEAT-461) where users write arbitrary regex source and '#' is common. technical_risk banded at 0.4: confined to one file (src/config/loader.ts), no schema/migration, git-revertible, but the 'preserve quotes / treat # inside [...] as content' parsing logic is genuinely delicate on edge cases (nested flow sequences, escaped inner quotes) — same risk class as FEAT-463's own quote-preserving redaction fix. autonomous_safe=true: all three mechanical thresholds pass (risk 0.4, effort 0.3, dependency 0.15, all <=0.6) and this triage pass drafts concrete Given-When-Then ACs below (quote-aware stripping, flow-sequence entries, real-trailing-comment regression, existing-suite regression, CHANGELOG caveat removal) satisfying the AC-exists gate."
 started_at: 2026-07-10
+slices_complete: [SLICE-422]
+completed_at: 2026-07-10
 ---
 ## Description
 
