@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Test](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml/badge.svg)](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml)
 
-Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.12.0.
+Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.12.1.
 
 ## Wire compatibility
 

@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.1] — 2026-07-10
+
+### Fixed
+- **Stage-0 redaction hardening (FEAT-459, security)** — compound credential labels are now detected: `INTERNAL_SECRET=`, `OPENAI_API_KEY=`, and leading/middle-keyword forms like `SECRET_KEY=` / `DJANGO_SECRET_KEY=` / `secret_key_base:` (previously all silently unredacted). Two-tier precision design: high-confidence keywords (`secret`, `password`, `passwd`, `pwd`) match in any label segment with a numeric/boolean value guard (`PASSWORD_MIN_LENGTH=8` stays untouched); ambiguous keywords (`token`, `api_key`) remain trailing-only (`TOKEN_LIMIT=4096` never matches). Labeled short secrets are redacted regardless of length; the entropy detector's length floor still applies to unlabeled matches only. Perf smoke added — no hot-path regression.
+- Distill no longer drops an entire atom when one extracted entity has an out-of-enum `kind` — the entity is coerced to `other` (mirrors cloud `EntityKinds.Normalize()`); atoms still drop for genuine schema violations (#152).
+
+---
+
 ## [0.12.0] — 2026-07-10
 
 ### Added
