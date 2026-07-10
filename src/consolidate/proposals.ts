@@ -69,15 +69,22 @@ export class ProposalAlreadyResolvedError extends Error {
 export class ProposalRepo {
   constructor(private db: DB) {}
 
-  list(status?: ConsolidationProposal['status']): ConsolidationProposal[] {
-    if (status) {
-      return this.db.prepare(
-        'SELECT * FROM consolidation_proposals WHERE status = ? ORDER BY created_at ASC',
-      ).all(status) as ConsolidationProposal[];
-    }
+  /**
+   * FEAT-456 SLICE-2: optional `kind` filter, additive alongside `status`.
+   * Needed by §2.4's audit query (`?status=accepted&kind=contradiction`)
+   * and by the MCP/dashboard surfacing work — trivial extra `WHERE`, no
+   * new index (the table is small; both filters are already covered by
+   * the existing `status`/`kind` columns).
+   */
+  list(status?: ConsolidationProposal['status'], kind?: ConsolidationProposal['kind']): ConsolidationProposal[] {
+    const clauses: string[] = [];
+    const params: string[] = [];
+    if (status) { clauses.push('status = ?'); params.push(status); }
+    if (kind) { clauses.push('kind = ?'); params.push(kind); }
+    const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
     return this.db.prepare(
-      'SELECT * FROM consolidation_proposals ORDER BY created_at ASC',
-    ).all() as ConsolidationProposal[];
+      `SELECT * FROM consolidation_proposals${where} ORDER BY created_at ASC`,
+    ).all(...params) as ConsolidationProposal[];
   }
 
   get(id: string): ConsolidationProposal | null {

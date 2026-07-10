@@ -147,6 +147,42 @@ describe('why/digest REST <-> MCP conformance (FEAT-417a)', () => {
     expect(mcpResult.payload).toEqual(restBody);
   });
 
+  // AC-13 (FEAT-456 SLICE-2): pending_contradictions is part of the shared
+  // buildSessionDigest() shape — this locks in that REST and MCP agree on
+  // it too, not just the pre-existing fields.
+  it('digest: pending_contradictions is identical on REST and MCP', async () => {
+    db.prepare(
+      'INSERT INTO sessions (id, repo, project, branch, agent, started_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run('s-conf-3', 'astramem-local', null, 'main', 'claude-code', 1000);
+    const repo = new MemoryRepo(db);
+    const winnerId = repo.insert({
+      type: 'fact', text: 'default port is now 8888', normalized_text: 'default port is now 8888',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-conf-3', hash: 'h-conf-digest-3', source_hash: null,
+    });
+    const loserId = repo.insert({
+      type: 'fact', text: 'default port is 7777', normalized_text: 'default port is 7777',
+      repo: 'astramem-local', project: null, branch: 'main', agent: 'claude-code',
+      session_id: 's-conf-3', hash: 'h-conf-digest-4', source_hash: null,
+    });
+    db.prepare(`
+      INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at)
+      VALUES (?, 'contradiction', ?, ?, ?, 'pending', ?)
+    `).run('prop-conf-1', winnerId, loserId, 0.7, Date.now());
+
+    const restRes = await fetch(`${baseUrl}/sessions/s-conf-3/digest`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    const restBody = await restRes.json() as { pending_contradictions: number };
+
+    const mcpResult = await toolCall(baseUrl, 'session_digest', { session_id: 's-conf-3' });
+
+    expect(restRes.status).toBe(200);
+    expect(restBody.pending_contradictions).toBe(1);
+    expect(mcpResult.isError).toBe(false);
+    expect(mcpResult.payload).toEqual(restBody);
+  });
+
   it('digest: unknown explicit session_id is not-found on both surfaces (FEAT-417a harmonization)', async () => {
     // Pre-fix, the MCP tool did not check whether an explicitly-passed
     // session_id existed and silently returned an empty "ready" digest;

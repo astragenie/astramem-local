@@ -194,6 +194,43 @@ describe('consolidation REST surface', () => {
     const unauthed = await app.inject({ method: 'POST', url: '/consolidation/run', payload: {} });
     expect(unauthed.statusCode).toBe(401);
   });
+
+  // FEAT-456 SLICE-2: `kind` is an optional second filter on the list
+  // route (design §2.4/§9's `?status=accepted&kind=contradiction` audit
+  // query) — additive alongside `status`, no change to existing callers.
+  it('GET /consolidation/proposals?kind= filters by proposal kind', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    await seedEmbedded(db, 'merge winner', 'h-kind-1', vecAt(0));
+    await seedEmbedded(db, 'merge loser', 'h-kind-2', vecAt(0, 0.45));
+    // A different, unrelated pair for the contradiction row — the unique
+    // pending-pair index (idx_consolidation_pair_pending) has no `kind`
+    // predicate, so a contradiction proposal for the SAME pair the merge
+    // run just proposed would collide with it (§2.3).
+    const cw = await seedEmbedded(db, 'default port is now 8888', 'h-kind-3', vecAt(3));
+    const cl = await seedEmbedded(db, 'default port is 7777', 'h-kind-4', vecAt(4));
+    const app = await buildApp({ db, token: 't' });
+    const auth = { authorization: 'Bearer t' };
+    await app.inject({ method: 'POST', url: '/consolidation/run', headers: auth, payload: {} });
+
+    db.prepare(`
+      INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+      VALUES ('prop-kind-contra', 'contradiction', ?, ?, ?, 'pending', ?, ?)
+    `).run(cw, cl, 0.7, Date.now(), JSON.stringify({ verdict: 'contradicts', confidence: 0.9, winner_excerpt: 'x', loser_excerpt: 'y' }));
+
+    const both = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending', headers: auth });
+    expect(both.json().proposals).toHaveLength(2);
+
+    const mergeOnly = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&kind=merge', headers: auth });
+    const mergeList = mergeOnly.json().proposals as Array<{ kind: string }>;
+    expect(mergeList).toHaveLength(1);
+    expect(mergeList[0]!.kind).toBe('merge');
+
+    const contraOnly = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&kind=contradiction', headers: auth });
+    const contraList = contraOnly.json().proposals as Array<{ kind: string }>;
+    expect(contraList).toHaveLength(1);
+    expect(contraList[0]!.kind).toBe('contradiction');
+  });
 });
 
 describe('containment auto-merge (FEAT-410 follow-up)', () => {
