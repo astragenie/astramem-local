@@ -336,3 +336,62 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(yaml).not.toMatch(/^sync:/m);
   });
 });
+
+// FEAT-461 review fix (Finding 1, HIGH): a config.yaml written by this
+// version and later read by an OLDER (pre-FEAT-461) daemon binary — e.g. via
+// `reinstall --rollback`, a first-class supported path per CLAUDE.md — must
+// not crash. The older `parseScalar` has no `[...]` array branch, so an
+// always-emitted `customPatterns: []` would parse back as the literal string
+// "[]" and crash `src/redact/index.ts`'s `.map()` call. The fix: only emit
+// `customPatterns` when the user actually configured a non-empty list.
+describe('FEAT-461 review fix: customPatterns omitted-when-empty (rollback compatibility)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('omits the customPatterns line entirely for a default (empty-array) Config', () => {
+    const yaml = configToYaml(defaultConfig());
+    expect(yaml).not.toContain('customPatterns');
+  });
+
+  it('still emits and round-trips a non-empty customPatterns value', () => {
+    const cfg = defaultConfig();
+    cfg.security.redaction.customPatterns = ['SECRET-\\d+', 'sk-[a-zA-Z0-9]{20,}'];
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain(JSON.stringify(cfg.security.redaction.customPatterns));
+
+    const path = tmpPath();
+    writeConfig(cfg, path);
+    const loaded = loadConfigFromDisk(dirname(path));
+    expect(loaded.security.redaction.customPatterns).toEqual(cfg.security.redaction.customPatterns);
+  });
+
+  it('findMissingConfigKeys stays quiet about the empty-array omission for a default Config', () => {
+    // customPatterns sits two levels deep (security -> redaction ->
+    // customPatterns) — outside findMissingConfigKeys' documented one-level-
+    // of-nesting scope regardless of whether it's emitted, so omitting it
+    // when empty was never going to trip a false positive here. This test
+    // pins that down explicitly rather than relying on the AC-2 tests above
+    // to imply it.
+    const missing = findMissingConfigKeys(defaultConfig(), configToYaml(defaultConfig()));
+    expect(missing).toEqual([]);
+  });
+
+  it('does not warn (AC-3) about the empty-array omission for a default Config', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation((() => {}) as never);
+    configToYaml(defaultConfig());
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  it('a populated customPatterns value is still guarded by the AC-1 exhaustive round-trip', () => {
+    // buildFullyPopulatedConfig() sets a non-empty customPatterns — if a
+    // future change stopped emitting it even when populated, the AC-1
+    // round-trip test above would fail on a deep-equal mismatch. This test
+    // just pins down that the fixture's value is indeed non-empty, so that
+    // guarantee actually holds (an accidentally-emptied fixture would
+    // silently stop testing anything here).
+    const cfg = buildFullyPopulatedConfig();
+    expect(cfg.security.redaction.customPatterns.length).toBeGreaterThan(0);
+    expect(configToYaml(cfg)).toContain(JSON.stringify(cfg.security.redaction.customPatterns));
+  });
+});
