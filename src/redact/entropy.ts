@@ -135,6 +135,17 @@ function isLabelWithSafeValueFollowing(token: string, text: string, end: number,
   return SAFE_VALUE_RE.test(nextValue);
 }
 
+// FEAT-463 final-review note (LOW, documented not fixed here — FEAT-468
+// tracks the real fix): this stage has a numeric-alphabet ceiling. A string
+// drawn uniformly from a 10-symbol alphabet (digits only) tops out at
+// log2(10) ≈ 3.32 bits/char no matter how long or "random" it is, which sits
+// below the 4.0 default `entropyThreshold` — so a purely-numeric secret
+// (e.g. a long numeric PIN, account number, or digit-only API key) is
+// invisible to this detector regardless of length. Digit strings can still
+// be caught upstream by a labeled pattern detector (detectors.ts) or by the
+// config-assignment/label guards above when they carry recognizable context;
+// this ceiling only affects an UNLABELED all-digit token relying on entropy
+// alone.
 /** Shannon entropy in bits/char over the token's character distribution. */
 export function shannonEntropy(token: string): number {
   if (token.length === 0) return 0;

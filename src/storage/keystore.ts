@@ -72,10 +72,16 @@ export interface KeyResult {
  * derives configDir from the single `defaultConfigDir()` function, so this
  * has no effect on current behavior; it only guards a future call site
  * that constructs configDir some other way.
+ *
+ * `platform` is injectable (FEAT-470 quickwin, FEAT-466 re-review LOW) so
+ * the non-win32 (case-preserving) branch has an executable test on every
+ * CI platform, not just whichever OS happens to run the suite — it defaults
+ * to `process.platform` for every real call site, so this has no effect on
+ * actual behavior.
  */
-function normalizeConfigDir(configDir: string): string {
+export function normalizeConfigDir(configDir: string, platform: NodeJS.Platform = process.platform): string {
   const resolved = resolve(configDir);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  return platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
 /**

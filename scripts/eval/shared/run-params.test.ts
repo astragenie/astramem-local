@@ -147,5 +147,20 @@ describe('run-params (FEAT-462 review fix — resume scope guard)', () => {
       expect(result.action).toBe('refuse');
       if (result.action === 'refuse') expect(result.refuseMessage).toContain('datasetHash: original="old-hash", current="new-hash"');
     });
+
+    // FEAT-470 AC-4 (462a re-review nit): a moved-but-identical dataset
+    // (same sha256, different path) still refuses --resume, because
+    // datasetPath is compared verbatim alongside datasetHash — this is
+    // intentional strictness (README's "Resume behavior" section), not a
+    // bug: the guard was never meant to be "only the hash matters."
+    it('refuses on a moved-but-identical dataset (same sha256, different path) -- intentional strictness, not a hash-only check', () => {
+      writeRunParams(runParamsPath, { datasetPath: 'a.json', datasetHash: 'same-hash', seed: 42, n: 50, shards: 1 });
+      const result = evaluateResumeGuard(runParamsPath, true, { datasetPath: 'moved/a.json', datasetHash: 'same-hash', seed: 42, n: 50, shards: 1 });
+      expect(result.action).toBe('refuse');
+      if (result.action === 'refuse') {
+        expect(result.refuseMessage).toContain('datasetPath: original="a.json", current="moved/a.json"');
+        expect(result.refuseMessage).not.toContain('datasetHash:'); // hash matched -- only path differs
+      }
+    });
   });
 });

@@ -20,6 +20,7 @@ import {
   readBearer,
   getBearerIdentity,
   bearerFilePath,
+  normalizeConfigDir,
 } from '../../src/storage/keystore.js';
 import {
   resolveBearerToken,
@@ -546,5 +547,27 @@ describe('review fix-round: configDir normalization (scopedService)', () => {
       expect(readBearer(spelling)).toBe('normalized-token');
     }
     expect(store.size).toBe(1); // only one scoped entry, not five
+  });
+
+  // FEAT-470 AC-5 (FEAT-466 re-review LOW): the Windows-only test above used
+  // to be the ONLY coverage of the case-folding branch, which means the
+  // complementary non-win32 (case-PRESERVING) branch had zero executable
+  // coverage on any CI platform. `normalizeConfigDir` takes an injectable
+  // `platform` param (default `process.platform`) specifically so this test
+  // can force each branch directly, on any host OS, instead of being skipped
+  // outside Windows.
+  it('normalizeConfigDir: non-win32 platforms do NOT case-fold (runs on every host OS via injected platform)', () => {
+    const mixedCase = join(tmpdir(), 'Astramem-MixedCase-Dir');
+    const upper = normalizeConfigDir(mixedCase.toUpperCase(), 'linux');
+    const lower = normalizeConfigDir(mixedCase.toLowerCase(), 'linux');
+    expect(upper).not.toBe(lower); // case-preserving: different casings stay distinct
+    expect(normalizeConfigDir(mixedCase, 'darwin')).toBe(normalizeConfigDir(mixedCase, 'darwin')); // deterministic
+  });
+
+  it('normalizeConfigDir: win32 platform DOES case-fold, verified via the same injected-platform seam', () => {
+    const mixedCase = join(tmpdir(), 'Astramem-MixedCase-Dir');
+    const upper = normalizeConfigDir(mixedCase.toUpperCase(), 'win32');
+    const lower = normalizeConfigDir(mixedCase.toLowerCase(), 'win32');
+    expect(upper).toBe(lower); // case-folding: casing variants collapse to one identity
   });
 });
