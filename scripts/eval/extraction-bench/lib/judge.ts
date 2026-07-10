@@ -10,7 +10,7 @@
 import { azureChatComplete } from '../../shared/azure-client.js';
 import type { AzureConfig } from '../../shared/config.js';
 import type { GoldAtom } from './fixtures.js';
-import { computeStats, type Stats } from './stats.js';
+import { computeStats, type Stats } from '../../shared/stats.js';
 
 export type JudgeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 
