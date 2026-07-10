@@ -93,6 +93,14 @@ export interface SessionDigest {
   poison_jobs: number;
   counts: Record<string, number>;
   memories: DigestMemRow[];
+  /** FEAT-456 SLICE-2: count of pending kind='contradiction' proposals
+   *  touching one of this session's memories (as winner_id or loser_id).
+   *  Additive field, same "documented latency, not a bug" shape as
+   *  poison_jobs: consolidation is an offline/periodic pass (ADR-004 stage
+   *  9), so a digest read immediately after this session's own distill
+   *  will show 0 until a consolidation run has happened since — see
+   *  design doc §6. */
+  pending_contradictions: number;
 }
 
 /**
@@ -147,11 +155,26 @@ export function buildSessionDigest(db: DB, sessionId: string): SessionDigest {
       ? 'partial'
       : 'ready';
 
+  // FEAT-456 SLICE-2: pending contradiction proposals touching any memory
+  // this session produced, either side of the pair. EXISTS-correlated
+  // rather than an IN (SELECT ...) join on `rows` above so this works
+  // even when `rows` is empty (no separate short-circuit needed) and reads
+  // naturally alongside the poisonJobs query's style.
+  const pendingContradictions = (db.prepare(`
+    SELECT COUNT(*) AS n FROM consolidation_proposals cp
+    WHERE cp.kind = 'contradiction' AND cp.status = 'pending'
+      AND (
+        EXISTS (SELECT 1 FROM memories m WHERE m.id = cp.winner_id AND m.session_id = ?)
+        OR EXISTS (SELECT 1 FROM memories m WHERE m.id = cp.loser_id AND m.session_id = ?)
+      )
+  `).get(sessionId, sessionId) as { n: number }).n;
+
   return {
     session_id: sessionId,
     status,
     poison_jobs: poisonJobs,
     counts,
     memories: rows,
+    pending_contradictions: pendingContradictions,
   };
 }

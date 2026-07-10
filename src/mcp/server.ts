@@ -24,7 +24,9 @@
  *   - submit_feedback    — ADR-010 explicit recall-used signal for a served memory (U5 canonical name)
  *   - mark_memory_used   — DEPRECATED one-release alias for submit_feedback (U5 collapse), same handler
  *   - erase_memory       — erasure v1 (ADR-006): hard-delete + tombstone
- *   - list_consolidation_proposals / resolve_consolidation_proposal — stage-9 propose-only queue (ADR-004)
+ *   - list_consolidation_proposals / resolve_consolidation_proposal — stage-9 propose-only queue
+ *     (ADR-004): 'merge' near-duplicates and FEAT-456 judge-flagged 'contradiction' pairs, both
+ *     resolved identically (accept = merge-as-supersede, reject = no-op)
  *
  * FEAT-442 (autonomous consolidation auto-accept + reversal primitive) ships
  * REST-only this slice: `POST /memory/:id/unsupersede`
@@ -79,6 +81,7 @@ import {
   ProposalRepo,
   ProposalNotFoundError,
   ProposalAlreadyResolvedError,
+  parseContradictionMetadata,
 } from '../consolidate/proposals.js';
 // Canonical cross-repo save-contract unification: `remember`'s type enum and
 // the REST POST /remember route (src/server/routes/search.ts) both derive
@@ -503,7 +506,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     'session_digest',
     {
       description:
-        'What I learned this session: per-type counts + texts of memories formed. Defaults to the latest session.',
+        'What I learned this session: per-type counts + texts of memories formed, plus a ' +
+        'pending_contradictions count (FEAT-456) for judge-flagged conflicts touching this session\'s ' +
+        'memories, awaiting resolution via list/resolve_consolidation_proposal. Defaults to the latest session.',
       inputSchema: z.object({
         session_id: z.string().optional().describe('Session id; defaults to most recent session'),
       }),
@@ -846,19 +851,27 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     {
       description:
         'Pending (or resolved) consolidation proposals from the stage-9 pass (ADR-004): borderline ' +
-        'near-duplicate pairs awaiting an explicit merge/keep decision. Nothing is changed until a ' +
-        'proposal is resolved via resolve_consolidation_proposal.',
+        'near-duplicate pairs (kind=merge) awaiting an explicit merge/keep decision, and FEAT-456 ' +
+        'judge-flagged conflicting pairs (kind=contradiction, e.g. "port is 7777" vs "port is 8888") ' +
+        'awaiting confirm/dismiss. Contradiction rows include verdict/confidence/excerpts from the ' +
+        'judge. Nothing is changed until a proposal is resolved via resolve_consolidation_proposal.',
       inputSchema: z.object({
         status: z.enum(['pending', 'accepted', 'rejected']).default('pending').describe('Filter by status'),
+        kind: z.enum(['merge', 'contradiction']).optional().describe('Optional filter by proposal kind'),
       }),
     },
     async (args) => {
-      const proposals = new ProposalRepo(db).list(args.status);
+      const proposals = new ProposalRepo(db).list(args.status, args.kind);
       const memRepo = new MemoryRepo(db);
       const enriched = proposals.map(p => ({
         ...p,
         winner_text: memRepo.get(p.winner_id)?.text ?? null,
         loser_text: memRepo.get(p.loser_id)?.text ?? null,
+        // FEAT-456 SLICE-2: parsed verdict/confidence/excerpts for
+        // kind='contradiction' rows so an agent sees *why* without a
+        // second round-trip. null for kind='merge' rows (metadata_json
+        // is NULL) — see parseContradictionMetadata.
+        contradiction_metadata: parseContradictionMetadata(p),
       }));
       return { content: [{ type: 'text' as const, text: JSON.stringify({ proposals: enriched }) }] };
     }
@@ -869,9 +882,11 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     'resolve_consolidation_proposal',
     {
       description:
-        'Accept or reject a pending consolidation proposal. Accept executes the non-destructive ' +
-        'merge-as-supersede (loser kept as superseded, winner gains derived_from lineage); reject ' +
-        'keeps both memories untouched.',
+        'Accept or reject a pending consolidation proposal, merge or contradiction kind alike — ' +
+        'resolution is identical for both. Accept executes the non-destructive merge-as-supersede ' +
+        '(loser kept as superseded, winner gains derived_from lineage); reject keeps both memories ' +
+        'untouched. For a contradiction proposal, accept confirms the newer atom (winner) corrects ' +
+        'the older one (loser).',
       inputSchema: z.object({
         id: z.string().min(1).describe('Proposal id'),
         action: z.enum(['accept', 'reject']).describe('Resolution'),

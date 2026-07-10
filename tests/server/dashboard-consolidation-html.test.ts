@@ -138,4 +138,21 @@ describe('GET /dashboard/consolidation — pending list + accept/reject', () => 
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('(memory not found)');
   });
+
+  // AC-12 (FEAT-456 SLICE-2): pending merge and contradiction proposals get
+  // visually distinct kind badges, not just the same plain-text cell.
+  it('renders a distinct kind badge class for merge vs contradiction proposals', async () => {
+    const repo = new MemoryRepo(db);
+    const mergeWinner = insertMemory(repo, 'merge winner text', 'h-badge-1');
+    const mergeLoser = insertMemory(repo, 'merge loser text', 'h-badge-2');
+    const contraWinner = insertMemory(repo, 'default port is now 8888', 'h-badge-3');
+    const contraLoser = insertMemory(repo, 'default port is 7777', 'h-badge-4');
+    insertProposal(db, { id: 'prop-badge-merge', winnerId: mergeWinner, loserId: mergeLoser, similarity: 0.9, kind: 'merge' });
+    insertProposal(db, { id: 'prop-badge-contra', winnerId: contraWinner, loserId: contraLoser, similarity: 0.7, kind: 'contradiction' });
+
+    const res = await app.inject({ method: 'GET', url: '/dashboard/consolidation', headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('class="kind-badge kind-merge"');
+    expect(res.body).toContain('class="kind-badge kind-contradiction"');
+  });
 });

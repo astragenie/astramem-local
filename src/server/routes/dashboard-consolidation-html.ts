@@ -84,6 +84,9 @@ nav .active{color:#fff;font-weight:bold}
 .tabs a{color:#3a7bd5;text-decoration:none}
 .tabs .active{color:#fff;font-weight:bold}
 .note{color:#666;font-size:11px;margin-bottom:10px}
+.kind-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
+.kind-merge{background:#233;color:#7ec8e3}
+.kind-contradiction{background:#3a1f1f;color:#e38a7e}
 `.trim();
 
 /** `db` backs the real proposal + memory lookups (SLICE-410-1's stub
@@ -140,9 +143,12 @@ function renderExcerpt(memoryId: string, memories: MemoryRepo): string {
   return esc(truncate(mem.text, 140));
 }
 
+function renderKindBadge(kind: ConsolidationProposal['kind']): string {
+  return `<span class="kind-badge kind-${esc(kind)}">${esc(kind)}</span>`;
+}
+
 function renderRow(p: ConsolidationProposal, memories: MemoryRepo): string {
   const id = esc(p.id);
-  const kind = esc(p.kind);
   const sim = p.similarity.toFixed(2);
   const age = esc(fmtAge(Date.now() - p.created_at));
 
@@ -164,7 +170,7 @@ function renderRow(p: ConsolidationProposal, memories: MemoryRepo): string {
 
   return `<tr>
     <td>${id}</td>
-    <td>${kind}</td>
+    <td>${renderKindBadge(p.kind)}</td>
     <td class="num">${sim}</td>
     <td class="trunc">${renderExcerpt(p.winner_id, memories)}</td>
     <td class="trunc">${renderExcerpt(p.loser_id, memories)}</td>
