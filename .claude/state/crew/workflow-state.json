@@ -1,25 +1,17 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-09T20:52:44.136Z",
+  "updatedAt": "2026-07-10T11:56:02.608Z",
   "currentRun": {
-    "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
-    "goal": "",
+    "title": "FEAT461 SLICE420: Implement FEAT-461",
+    "goal": "**configToYaml() silently drops newer Config fields on every writeConfig()** —",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-09T13:47:22.481Z",
-    "updatedAt": "2026-07-09T20:52:44.136Z",
-    "next": "Feed this into the competitive gap-analysis doc; the two biggest corrections to the prior web-only pass are (a) cognee HAS a first-party MCP server, so any gap-analysis claiming astramemory-local's MCP support as a differentiator vs cognee needs updating, and (b) cognee's local-first claim only applies to storage, not the default LLM/embedding path (OpenAI required unless user explicitly opts into Ollama) -- this is a real differentiator astramemory-local can claim (Ollama as documented default vs opt-in).",
+    "startedAt": "2026-07-10T11:56:02.607Z",
+    "updatedAt": "2026-07-10T11:56:02.607Z",
+    "next": "Begin implementation",
     "gates": {
-      "review": {
-        "status": "passed",
-        "updatedAt": "2026-07-09T14:34:04.533Z",
-        "note": "FEAT-449 durable ingest spool is correct and closes the ingest outage; no data-loss path found and the ingest.ts refactor is byte-identical HTTP behavior, but two MEDIUM perf/design notes (synchronous unbounded boot-time drain, dropped D-B6 prepared-statement hoisting on the hot path) warrant a low-risk follow-up."
-      },
-      "validation": {
-        "status": "passed",
-        "updatedAt": "2026-07-09T14:43:01.409Z",
-        "note": "Final readiness mode: build + full targeted + full suite all green; all 8 ACs exercised with evidence; both folded review fixes spot-checked live."
-      },
+      "review": null,
+      "validation": null,
       "deployment": {
         "dev": null,
         "prod": null
@@ -29,16 +21,11 @@
       "incident": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
-      "handoffs": [
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204935Z-handoff-letta-letta-ai-letta-competitive-intel-code-verified.md",
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204947Z-handoff-graphiti-getzep-source-code-verification-for-competitive-int.md",
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204950Z-handoff-mem0ai-mem0-competitive-intel-code-verified.md",
-        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T205244Z-handoff-cognee-topoteretes-cognee-source-verified-competitive-audit.md"
-      ],
-      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260710T115602Z-run-brief-feat461-slice420-implement-feat-461.md",
+      "handoffs": [],
+      "reviewResult": null,
       "validationPlan": null,
-      "validationResult": ".claude/artifacts/crew/validations/20260709T144053Z-validation-result-slice-419-ingest-spool-validation.md",
+      "validationResult": null,
       "deploymentChecks": {
         "dev": null,
         "prod": null
@@ -47,6 +34,52 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
+      "goal": "",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-09T13:47:22.481Z",
+      "updatedAt": "2026-07-09T20:52:44.136Z",
+      "completedAt": "2026-07-09T20:52:44.136Z",
+      "next": "Feed this into the competitive gap-analysis doc; the two biggest corrections to the prior web-only pass are (a) cognee HAS a first-party MCP server, so any gap-analysis claiming astramemory-local's MCP support as a differentiator vs cognee needs updating, and (b) cognee's local-first claim only applies to storage, not the default LLM/embedding path (OpenAI required unless user explicitly opts into Ollama) -- this is a real differentiator astramemory-local can claim (Ollama as documented default vs opt-in).",
+      "gates": {
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-09T14:34:04.533Z",
+          "note": "FEAT-449 durable ingest spool is correct and closes the ingest outage; no data-loss path found and the ingest.ts refactor is byte-identical HTTP behavior, but two MEDIUM perf/design notes (synchronous unbounded boot-time drain, dropped D-B6 prepared-statement hoisting on the hot path) warrant a low-risk follow-up."
+        },
+        "validation": {
+          "status": "passed",
+          "updatedAt": "2026-07-09T14:43:01.409Z",
+          "note": "Final readiness mode: build + full targeted + full suite all green; all 8 ACs exercised with evidence; both folded review fixes spot-checked live."
+        },
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
+        "handoffs": [
+          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204935Z-handoff-letta-letta-ai-letta-competitive-intel-code-verified.md",
+          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204947Z-handoff-graphiti-getzep-source-code-verification-for-competitive-int.md",
+          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204950Z-handoff-mem0ai-mem0-competitive-intel-code-verified.md",
+          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T205244Z-handoff-cognee-topoteretes-cognee-source-verified-competitive-audit.md"
+        ],
+        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
+        "validationPlan": null,
+        "validationResult": ".claude/artifacts/crew/validations/20260709T144053Z-validation-result-slice-419-ingest-spool-validation.md",
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "memory SaaS: why demo dashboard user sees no data",
       "goal": "",

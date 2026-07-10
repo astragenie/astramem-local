@@ -1,14 +1,14 @@
 ---
 id: FEAT-461
-status: triaged
+status: done
 priority: P1
 category: bug
 target_release: null
 created: 2026-07-10
 updated: 2026-07-10
 depends_on: []
-slices: []
-derived_from: FEAT-455 build (build-455 finding, 2026-07-10)
+slices: [SLICE-420]
+derived_from: "FEAT-455 build (build-455 finding, 2026-07-10)"
 cross_product: [astramem-local]
 pm_user_value: 0.65
 pm_strategic_fit: 0.55
@@ -19,6 +19,9 @@ composite_score: 0.74
 composite_priority: P1
 autonomous_safe: true
 triaged_at: 2026-07-10
+started_at: 2026-07-10
+slices_complete: [SLICE-420]
+completed_at: 2026-07-10
 ---
 ## Description
 
@@ -186,3 +189,80 @@ Effort well below the 8-point threshold (single-file fix + one test) — no
   ]
 }
 ```
+
+## Acceptance criteria
+
+**Re-verified against current code** (`src/config/config.ts`, `src/config/writer.ts`,
+`src/config/loader.ts`, all read in full 2026-07-10). The drop is **wider than the
+FEAT body and PM triage above describe**: `configToYaml()` (src/config/writer.ts:45-160)
+today emits `port, dataDir, network, llm, embedding, vector, budget, ollama, azure,
+openaiCompatible, codexSubscription, search, crossEncoder, recallPack, security,
+tagHygiene, pipeline, consolidation (autoAcceptThreshold only), capture` and
+deliberately skips `sync` (writer.ts:122-123 comment — owned by `sync.json`,
+intentional, not a bug). Confirmed **completely absent** from the emitter, cross-checked
+against every top-level key on the `Config` interface (config.ts:5-318):
+- `archival` (config.ts:157-167) — **missing from the FEAT's own list of four**; neither
+  the original filer nor the PM triage caught this fifth fully-dropped block.
+- `ingestIdempotency` (config.ts:178-182)
+- `distill` (config.ts:268-270)
+- `memoryHealth` (config.ts:279-283)
+- `ingest` (config.ts:290-296)
+
+Also confirmed dropped **inside** an otherwise-emitted block (writer.ts:143-144 only
+emits `consolidation.autoAcceptThreshold`):
+- `consolidation.contradictionDetection` (mode/minSimilarity/minConfidence/maxPerRun,
+  config.ts:241-257) — a nested partial drop a naive "add the missing top-level blocks"
+  patch could still miss.
+
+Two more field-level omissions inside emitted blocks (lower severity, same bug class):
+`crossEncoder.model` (config.ts:101-103, writer only emits enabled/provider/topK/
+timeoutMs/sidecarUrl) and `security.redaction.customPatterns` (config.ts:133, writer
+only emits enabled/entropyThreshold).
+
+`loader.ts:147-201` confirms the mechanism: `loadConfigFromDisk` deep-merges parsed
+YAML **over `defaultConfig()`**, so any key `configToYaml` failed to emit silently
+reverts to the code default on next load — exactly the reported behavior. Note the
+correct read-back entry point is `loadConfigFromDisk(configDir)` (loader.ts), not
+`loadConfig()` (config.ts — that one takes an in-memory `Partial<Config>`, not YAML
+text); the round-trip test must go through `writeConfig` → `loadConfigFromDisk`.
+
+- **AC-1 (exhaustive round-trip fidelity).** Given a fully-populated `Config` object
+   with an explicit non-default value assigned to *every* top-level field — including
+   `archival`, `ingestIdempotency`, `distill`, `memoryHealth`, `ingest`, and
+   `consolidation.contradictionDetection` (not only the four blocks named in the
+   original report) — When `writeConfig(cfg, path)` writes it and `loadConfigFromDisk(configDir)`
+   reads it back, Then the result deep-equals `cfg` for every field. The test must build
+   `cfg` field-by-field with non-default values (not start from `defaultConfig()` and
+   leave fields untouched), otherwise a still-missing block round-trips "successfully"
+   by accident (default in, default out).
+
+- **AC-2 (regression guard, not a fixed field list).** Given a new field is added to
+   the `Config` type in `src/config/config.ts` but `configToYaml()` in
+   `src/config/writer.ts` is not updated to emit it, When the test suite runs, Then a
+   test fails — implemented as a structural key-diff (top level, and one level of
+   nesting for object-valued fields) between `Object.keys` of a fully-populated `Config`
+   and the keys actually present in the parsed emitted YAML, with `sync` as the one
+   documented, intentional exclusion. A test that only asserts the four originally-named
+   fields would not have caught the `archival` or `consolidation.contradictionDetection`
+   gaps found above and does not satisfy this AC.
+
+- **AC-3 (observability on incomplete emit).** Given `configToYaml(cfg)` is about to
+   return and the same key-diff from AC-2 finds `cfg` keys (top-level or one level
+   nested) that were not written, When the emit completes, Then a structured warning is
+   logged naming the missing keys (e.g. `logger.warn({ missingKeys }, 'configToYaml:
+   emitted config is missing known Config keys')), so a future field addition not wired
+   into the emitter surfaces immediately at write time rather than silently at next load.
+
+- **AC-4 (defaulted-undefined sub-block).** Given an optional sub-block is `undefined`
+   on the in-memory `Config` at emit time (e.g. a config object built before a newer
+   field's default existed), When `configToYaml(cfg)` runs, Then it emits that block
+   using its documented default rather than throwing a `TypeError` or silently omitting
+   the key.
+
+- **AC-5 (no behavior change for existing valid configs).** Given a `Config` object
+   using only the fields `configToYaml` already emits correctly today (`port` through
+   `capture`, per the current writer.ts), When `configToYaml` runs before and after this
+   fix, Then the emitted YAML for those already-covered blocks is byte-identical, and
+   `sync` remains excluded from the output (its exclusion is an intentional design
+   decision per writer.ts:122-123, not part of this bug) — a generic/schema-driven
+   emitter must not start emitting `sync` as an unintended side effect.
