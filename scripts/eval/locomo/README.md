@@ -77,7 +77,10 @@ scripts/eval/
                              own 23,531-word reference corpus (see its header)
       metrics.mts             per-category + overall accuracy aggregator,
                              reimplementing the upstream benchmark's own
-                             scoring (task_eval/evaluation.py) in TypeScript
+                             scoring (task_eval/evaluation.py) in TypeScript;
+                             also hosts combineMetricsReports (multi-run
+                             mean±stdev, FEAT-457 slice 1, reusing
+                             ../../shared/stats.ts)
 ```
 
 ## Data model: conversation-centric, not question-centric
@@ -178,6 +181,43 @@ bun scripts/eval/locomo/run.mts --shards 2
 # 3. Score (F1/token-overlap by default; --llm-judge adds an Azure secondary pass)
 bun run eval:locomo:judge -- --hyp .eval-data/locomo/runs/<timestamp>/hypotheses.jsonl --ref .eval-data/locomo/runs/<timestamp>/sample.json
 ```
+
+### Multi-run (mean±stdev, FEAT-457 slice 1)
+
+A single `run.mts` invocation is one sample of whatever noise the daemon/
+model pipeline has (Ollama sampling, distill timing, etc.) — repeating the
+**same** invocation (same `--dataset`/`--seed`/`--n`/`--qa-per-sample`) into
+separate run dirs and judging all of them together reports mean±stdev
+instead of a single point estimate:
+
+```powershell
+# Repeat the same run N times into distinct run dirs (each full run.mts
+# invocation — ingest+distill+answer — takes minutes; see the plain-terminal
+# warning above).
+bun scripts/eval/locomo/run.mts --run-dir .eval-data/locomo/runs/rep-1
+bun scripts/eval/locomo/run.mts --run-dir .eval-data/locomo/runs/rep-2
+bun scripts/eval/locomo/run.mts --run-dir .eval-data/locomo/runs/rep-3
+
+# judge.mts: repeat --run-dir once per run dir. Each run dir must contain the
+# hypotheses.jsonl + sample.json pair run.mts always writes into it.
+bun run eval:locomo:judge -- \
+  --run-dir .eval-data/locomo/runs/rep-1 \
+  --run-dir .eval-data/locomo/runs/rep-2 \
+  --run-dir .eval-data/locomo/runs/rep-3
+```
+
+This prints mean±stdev per category and overall (reusing
+`../shared/stats.ts`'s `computeStats`/`formatStatsPct` — the same math
+extraction-bench's `--runs N` uses) and writes the same `runs`/`*_stats`
+shape into the output JSON. A single `--run-dir` (or the plain `--hyp`/
+`--ref` form above) reports identically to the pre-multi-run output — no
+mean/stdev section, since there's nothing to average over one run.
+
+`run.mts` itself is unchanged and has no `--runs` flag of its own: each
+repetition is a full, independently-timed daemon lifecycle (ingest+distill
+can run to tens of minutes even for a subset), so repeating it is left to
+the caller (a loop, or CI) rather than orchestrated inside one `run.mts`
+process.
 
 **Run real (multi-minute-plus) `run.mts` invocations from a plain terminal
 you opened yourself, not from inside a coding-agent's shell tool** — see

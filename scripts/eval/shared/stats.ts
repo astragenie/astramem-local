@@ -1,8 +1,12 @@
 /**
- * Pure statistics helpers for multi-run bench aggregation (FEAT-450).
+ * Pure statistics helpers for multi-run bench aggregation. Originated in
+ * extraction-bench (FEAT-450); promoted here (FEAT-457 slice 1, AC-4) so
+ * locomo's judge layer can reuse the identical mean/stdev/formatting math
+ * instead of a duplicate implementation — extraction-bench now imports this
+ * same file rather than keeping its own copy.
  *
  * No I/O, no Azure/Ollama dependency — everything here is testable with
- * synthetic arrays, which is how lib/stats.test.ts exercises it.
+ * synthetic arrays, which is how stats.test.ts exercises it.
  */
 
 /** Arithmetic mean of the finite values in `nums`; null if there are none. */

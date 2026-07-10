@@ -34,6 +34,7 @@ import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, isAdversarial, type LoCoMoCategory, type LoCoMoSample } from '../lib/types.js';
 import { porterStem } from './porter-stemmer.js';
+import { computeStats, formatStatsPct, type Stats } from '../../shared/stats.js';
 
 const ARTICLES_RE = /\b(a|an|the|and)\b/g;
 // string.punctuation (Python) -- ASCII punctuation set, used verbatim.
@@ -149,6 +150,95 @@ export function printMetricsReport(report: MetricsReport): void {
   }
   console.log(`\nCategory-averaged accuracy: ${Number.isNaN(report.category_averaged_accuracy) ? 'n/a' : report.category_averaged_accuracy.toFixed(4)}`);
   console.log(`Overall accuracy (F1/token-overlap, category 5 binary): ${Number.isNaN(report.overall_accuracy) ? 'n/a' : report.overall_accuracy.toFixed(4)} (n=${report.n_total})`);
+}
+
+// ── multi-run aggregation (FEAT-457 slice 1, AC-4) ─────────────────────────
+//
+// judge.mts scores exactly one run's hypotheses against one reference sample
+// file. When the SAME harness invocation (same dataset/seed/config) is
+// repeated N times -- each producing its own run dir with its own
+// hypotheses.jsonl -- per-run point accuracy alone hides how much of the
+// spread is run-to-run noise vs a real difference. combineMetricsReports
+// aggregates N single-run MetricsReports into mean+-stdev per category and
+// overall, reusing ../../shared/stats.ts's computeStats/formatStatsPct (the
+// same math extraction-bench's --runs N uses, FEAT-450) rather than a new
+// bespoke aggregator.
+
+export interface CategoryStats {
+  name: string;
+  /** mean/stdev across per-run accuracy for this one category. */
+  accuracy: Stats;
+}
+
+/**
+ * A MetricsReport augmented with mean+-stdev across N>=2 repeated runs.
+ * `per_category`/`category_averaged_accuracy`/`overall_accuracy` remain
+ * plain numbers (the mean-of-per-run values), so any existing code reading
+ * them as a single-run report keeps working unchanged; `runs`,
+ * `category_stats`, `category_averaged_accuracy_stats`, and
+ * `overall_accuracy_stats` are the additive fields, present only when
+ * combineMetricsReports actually combined more than one report.
+ */
+export interface MultiRunMetricsReport extends MetricsReport {
+  runs?: MetricsReport[];
+  category_stats?: Record<LoCoMoCategory, CategoryStats>;
+  category_averaged_accuracy_stats?: Stats;
+  overall_accuracy_stats?: Stats;
+}
+
+/**
+ * Combine N per-run MetricsReports (N repeated end-to-end runs of the same
+ * harness invocation) into one report carrying mean+-stdev per category and
+ * overall. Mirrors extraction-bench/lib/report.ts's combineRuns: with
+ * exactly one report, returns it completely unchanged -- no `runs`/`*_stats`
+ * keys at all -- so single-run output/shape is untouched (backward compat).
+ */
+export function combineMetricsReports(reports: MetricsReport[]): MultiRunMetricsReport {
+  if (reports.length === 0) throw new Error('combineMetricsReports requires at least one run');
+  if (reports.length === 1) return reports[0] as MultiRunMetricsReport;
+
+  const perCategory = {} as MetricsReport['per_category'];
+  const categoryStats = {} as Record<LoCoMoCategory, CategoryStats>;
+  for (const c of LOCOMO_CATEGORIES) {
+    const stats = computeStats(reports.map(r => r.per_category[c].accuracy));
+    const n = reports.reduce((sum, r) => sum + r.per_category[c].n, 0);
+    perCategory[c] = { accuracy: stats.mean ?? NaN, n, name: CATEGORY_NAMES[c] };
+    categoryStats[c] = { name: CATEGORY_NAMES[c], accuracy: stats };
+  }
+
+  const categoryAveragedStats = computeStats(reports.map(r => r.category_averaged_accuracy));
+  const overallStats = computeStats(reports.map(r => r.overall_accuracy));
+
+  return {
+    per_category: perCategory,
+    category_averaged_accuracy: categoryAveragedStats.mean ?? NaN,
+    overall_accuracy: overallStats.mean ?? NaN,
+    n_total: reports.reduce((sum, r) => sum + r.n_total, 0),
+    runs: reports,
+    category_stats: categoryStats,
+    category_averaged_accuracy_stats: categoryAveragedStats,
+    overall_accuracy_stats: overallStats,
+  };
+}
+
+/**
+ * Prints a MultiRunMetricsReport. For a single-run report (no `runs`/
+ * `category_stats`) this delegates straight to printMetricsReport, so output
+ * is byte-for-byte identical to the pre-AC-4 single-run path.
+ */
+export function printMultiRunReport(report: MultiRunMetricsReport): void {
+  if (!report.runs || !report.category_stats) {
+    printMetricsReport(report);
+    return;
+  }
+  console.log(`\nLoCoMo results by category (n=${report.runs.length} runs, mean ± stdev):`);
+  for (const c of LOCOMO_CATEGORIES) {
+    const { name, accuracy } = report.category_stats[c];
+    const n = report.per_category[c].n;
+    console.log(`\t${c} (${name}): ${formatStatsPct(accuracy)} (${n})`);
+  }
+  console.log(`\nCategory-averaged accuracy: ${formatStatsPct(report.category_averaged_accuracy_stats)}`);
+  console.log(`Overall accuracy (F1/token-overlap, category 5 binary): ${formatStatsPct(report.overall_accuracy_stats)} (n=${report.n_total})`);
 }
 
 // ── CLI entry ────────────────────────────────────────────────────────────

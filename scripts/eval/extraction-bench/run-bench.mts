@@ -40,7 +40,7 @@ import { AzureReasoningLLMProvider } from './lib/azure-reasoning-provider.js';
 import { NuExtractAdapterProvider } from './lib/nuextract-adapter-provider.js';
 import { judgeFixture, judgeSelfAgreement, type FixtureScore, type JudgeAtomIn, type JudgeAgreementReport, type JudgeReasoningEffort } from './lib/judge.js';
 import { aggregateFixtureScores, combineRuns, renderMarkdown, type ModelReport, type SingleRunReport } from './lib/report.js';
-import { formatStatsPct } from './lib/stats.js';
+import { formatStatsPct } from '../shared/stats.js';
 import { resolveAzureConfig, type AzureConfig } from '../longmemeval/lib/config.js';
 import { OllamaLLMProvider } from '../../../src/providers/llm/ollama.js';
 import { OpenAICompatibleLLMProvider } from '../../../src/providers/llm/openai-compatible.js';
