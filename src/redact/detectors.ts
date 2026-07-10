@@ -34,6 +34,28 @@ export const PEM_DETECTOR: PatternDetector = {
 };
 
 // ---------------------------------------------------------------------------
+// Shared fragments for the FEAT-463 quoted/JSON-label credential entries
+// (defined below, alongside their unquoted `generic_credential` siblings).
+// ---------------------------------------------------------------------------
+
+/** Same trailing-only keyword set as the unquoted `generic_credential` entry. */
+const GENERIC_TRAILING_KEYWORDS = '(?:api[_-]?key|secret|token|password|passwd|pwd)';
+/** Same any-segment compound-label base as the unquoted compound entry. */
+const GENERIC_COMPOUND_LABEL = '(?:secret|password|passwd|pwd)(?:_[A-Za-z0-9]+)+';
+/**
+ * Mandatory closing quote/apostrophe on the label, then the separator —
+ * `[:=]` as before, plus the PHP `=>` arrow as its own two-character
+ * alternative (matching `[:=]` alone would consume only the `=` of `=>` and
+ * wrongly leave a stray `>` at the start of the "value").
+ */
+const QUOTED_LABEL_SEP = `["']\\s*(?:=>|[:=])\\s*`;
+
+/** Rejects purely-numeric or boolean-literal values (config knobs, not secrets). */
+function rejectNumericOrBooleanLiteral(value: string): boolean {
+  return !/^\d+$/.test(value) && !/^(?:true|false)$/i.test(value);
+}
+
+// ---------------------------------------------------------------------------
 // Vendor-specific token/key patterns.
 // ---------------------------------------------------------------------------
 
@@ -136,6 +158,70 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
     flags: 'id',
     valueGroup: 1,
     valueFilter: (value) => !/^\d+$/.test(value) && !/^(?:true|false)$/i.test(value),
+  },
+  // Quoted/JSON-label forms (FEAT-463 review follow-up to FEAT-459): the two
+  // `generic_credential` entries above require the `[:=]` separator to
+  // immediately follow the keyword — a closing quote/apostrophe on the label
+  // (`"OPENAI_API_KEY":`, `'DB_PASSWORD' =>`) breaks that adjacency, so
+  // JSON-config-shaped and PHP-array-shaped transcript payloads went
+  // unmatched entirely. These entries tolerate a MANDATORY quote/apostrophe
+  // between keyword and separator (mandatory, not optional, so they never
+  // overlap the two entries above — those require the quote to be absent)
+  // plus the PHP `=>` arrow as an alternative separator. Tagged with a
+  // distinct `type` (not `generic_credential`) so redaction-log coverage is
+  // observable by pattern shape — no schema change, just more
+  // `PATTERN_DETECTORS` rows, same convention `azure_key` already uses
+  // across its 3 entries above.
+  //
+  // Three value shapes per keyword family (trailing / compound), so 6
+  // entries total: double-quoted value, single-quoted value, and bare
+  // (unquoted) value. The bare-value variant excludes a leading quote via
+  // `(?!["'])` so it never mis-captures a quoted value's opening quote as
+  // part of a "bare" token — that shape is already handled by the two
+  // quoted-value entries in the same family.
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}"([^"]*)"`,
+    flags: 'id',
+    valueGroup: 1,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}'([^']*)'`,
+    flags: 'id',
+    valueGroup: 1,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}(?!["'])(\\S+)`,
+    flags: 'id',
+    valueGroup: 1,
+  },
+  // Compound-label quoted forms mirror the any-segment `generic_credential`
+  // entry above: same numeric/boolean `valueFilter` guard (a quoted label
+  // doesn't make a config-knob value any more secret than an unquoted one —
+  // AC-3: `"PASSWORD_MIN_LENGTH": 8`, `"SECRET_SCAN_ENABLED": "true"` must
+  // stay unredacted).
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}"([^"]*)"`,
+    flags: 'id',
+    valueGroup: 1,
+    valueFilter: rejectNumericOrBooleanLiteral,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}'([^']*)'`,
+    flags: 'id',
+    valueGroup: 1,
+    valueFilter: rejectNumericOrBooleanLiteral,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}(?!["'])(\\S+)`,
+    flags: 'id',
+    valueGroup: 1,
+    valueFilter: rejectNumericOrBooleanLiteral,
   },
   {
     type: 'jwt',

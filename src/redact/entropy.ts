@@ -35,6 +35,22 @@ const PLACEHOLDER_RE = /^\[REDACTED:[^\]]+\]$/;
 // guard detectors.ts applies to its any-segment compound-label match.
 const CONFIG_ASSIGNMENT_RE = /^[A-Za-z][A-Za-z0-9_]*[:=](?:\d+|true|false)$/i;
 
+// FEAT-463: a quoted/JSON label followed by a SPACE before its value (e.g.
+// `"PASSWORD_MIN_LENGTH": 8`) tokenizes as TWO tokens here (whitespace-
+// delimited), not one — so CONFIG_ASSIGNMENT_RE above (which expects the
+// value glued to the same token) never applies, and the label token alone
+// can clear the entropy threshold purely on its own character diversity
+// (measured: `"PASSWORD_MIN_LENGTH":` scores >4.0 bits/char). Guard any
+// token that is JUST a quoted-or-bare identifier ending in a bare separator
+// (no value attached) AND contains one of the same secret-ish keywords the
+// pattern detectors in detectors.ts recognize — narrower than "any label
+// token", so this can't suppress a genuine unlabeled high-entropy secret
+// that merely happens to end in `=` (e.g. base64 padding): a real secret
+// value is vanishingly unlikely to also spell a recognizable keyword like
+// "password" or "token" as a same-case identifier substring.
+const LABEL_ONLY_RE = /^["']?[A-Za-z][A-Za-z0-9_]*["']?[:=]$/;
+const SECRET_LABEL_KEYWORD_RE = /(?:api[_-]?key|secret|token|password|passwd|pwd)/i;
+
 /** Shannon entropy in bits/char over the token's character distribution. */
 export function shannonEntropy(token: string): number {
   if (token.length === 0) return 0;
@@ -77,6 +93,7 @@ function isGuarded(token: string, text: string, start: number, end: number): boo
   if (UUID_RE.test(token)) return true;
   if (token.includes('/') || token.includes('\\')) return true;
   if (CONFIG_ASSIGNMENT_RE.test(token)) return true;
+  if (LABEL_ONLY_RE.test(token) && SECRET_LABEL_KEYWORD_RE.test(token)) return true;
 
   // Pure-hex 40/64-char strings (git SHA-1 / SHA-256) adjacent to a
   // commit/sha/hash/digest keyword within ~40 chars are assumed to be

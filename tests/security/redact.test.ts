@@ -103,6 +103,47 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
   { name: 'JWT_SECRET_KEY= (middle segment)', input: 'JWT_SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
   { name: 'APP_SECRET_KEY= (middle segment)', input: 'APP_SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
   { name: 'secret_key_base: (Rails convention, colon separator)', input: 'secret_key_base: abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
+  // FEAT-463: quoted/JSON label forms — separator no longer needs to
+  // immediately follow the keyword; a closing quote/apostrophe (label side)
+  // and a quoted OR bare value are both tolerated. New detector type
+  // (`generic_credential_quoted`) keeps these observable as a distinct shape
+  // from the plain trailing-unquoted match (AC-5).
+  {
+    name: 'AC-1a: JSON double-quoted label + double-quoted value (trailing keyword api_key)',
+    input: '"OPENAI_API_KEY": "sk-proj-AbCdEf1234567890"',
+    type: 'generic_credential_quoted',
+    secret: 'sk-proj-AbCdEf1234567890',
+  },
+  {
+    name: 'AC-1b: JSON double-quoted label + double-quoted value (compound keyword secret, middle segment)',
+    input: '"DJANGO_SECRET_KEY": "abcdefgh1234"',
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+  },
+  {
+    name: 'AC-1c: quoted label + bare value, no space around separator (compound keyword secret, leading segment)',
+    input: '"SECRET_KEY"=abcdefgh1234',
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+  },
+  {
+    name: 'AC-2: PHP array-arrow form, single-quoted label + single-quoted value (trailing keyword password)',
+    input: "'DB_PASSWORD' => 'hunter2'",
+    type: 'generic_credential_quoted',
+    secret: 'hunter2',
+  },
+  {
+    name: 'quoted label (single quote) + bare value, trailing keyword token',
+    input: "'SESSION_TOKEN'=abcdefghijk123",
+    type: 'generic_credential_quoted',
+    secret: 'abcdefghijk123',
+  },
+  {
+    name: 'quoted label (double quote) + single-quoted value, compound keyword password',
+    input: '"APP_PASSWORD_HASH": \'zzzz9999yyyy8888\'',
+    type: 'generic_credential_quoted',
+    secret: 'zzzz9999yyyy8888',
+  },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
@@ -268,6 +309,45 @@ describe('redactText — false-positive guards', () => {
 
   it('does not redact monkey=business (mid-word "key" substring, no separator)', () => {
     const input = 'monkey=business';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-463 (AC-3): the quote-tolerant widening must not overtrigger on
+  // benign quoted config, quoted numeric/boolean values on any-segment
+  // keywords, or a quoted mid-word collision — mirroring the unquoted
+  // false-positive guards above, but for the new quoted/JSON-label shapes.
+  it('does not redact "NODE_ENV": "production" (benign quoted JSON config)', () => {
+    const input = '"NODE_ENV": "production"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "PORT": "7777" (benign quoted JSON config)', () => {
+    const input = '"PORT": "7777"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "PASSWORD_MIN_LENGTH": 8 (quoted label, bare numeric value, middle-segment keyword)', () => {
+    const input = '"PASSWORD_MIN_LENGTH": 8';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "SECRET_SCAN_ENABLED": "true" (quoted label, quoted boolean value, leading-segment keyword)', () => {
+    const input = '"SECRET_SCAN_ENABLED": "true"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "authtoken": "abc123456789" (quoted mid-word collision, "token" preceded by a letter)', () => {
+    const input = '"authtoken": "abc123456789"';
     const { text, events } = redactText(input);
     expect(text).toBe(input);
     expect(events.length).toBe(0);
