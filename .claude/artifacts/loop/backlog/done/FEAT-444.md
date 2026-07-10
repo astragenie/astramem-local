@@ -1,13 +1,15 @@
 ---
 id: FEAT-444
-status: triaged
+status: done
 priority: P1
 category: feature
 target_release: null
 created: 2026-07-08
-updated: 2026-07-08
+updated: 2026-07-09
+completed_at: 2026-07-09
 depends_on: []
 slices: []
+closure_note: "Verified already-implemented 2026-07-09. AC-1 doctor memory-health row (src/doctor/checks.ts). AC-2 GET /health memory_health block (src/server/routes/health.ts:64, cheap-tier). AC-3 `memory health` CLI exits 0, no mutation; `--deep` adds near-duplicate estimate + junk heuristic + opt-in LLM-judged sample (src/cli/memory-health.ts). AC-4 empty store returns n/a not error. AC-5 heuristic-only unless config opt-in. Tests green: tests/cli/memory-health.test.ts, tests/doctor/memory-health-check.test.ts, tests/server/queries/memory-health-queries.test.ts (29 passed)."
 derived_from: null
 tags: [stack:typescript, surface:api, concern:observability]
 needs_contract: true

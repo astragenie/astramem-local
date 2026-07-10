@@ -1,0 +1,22 @@
+{
+  "id": "fx20-refactor-dedupe-validation",
+  "title": "Extract duplicated input-validation logic into a shared helper",
+  "difficulty": "clean",
+  "notes": "Refactor session with an explicit decision to preserve existing external error message text unchanged while deduping the internal validation logic.",
+  "turns": [
+    { "role": "user", "text": "The same email/phone/zip validation logic is copy-pasted across the signup, checkout, and profile-update handlers, with tiny inconsistencies creeping in. Can we consolidate it?" },
+    { "role": "assistant", "text": "Yes — I'll extract a shared validateContactFields() helper in src/lib/validation.ts and have all three handlers call it instead of their own copies. That removes the drift risk going forward." },
+    { "role": "user", "text": "Just don't change any of the user-facing error messages — support has FAQ articles and screenshots referencing the exact current wording." },
+    { "role": "assistant", "text": "Understood — I'll preserve the exact existing error message strings per handler (they differ slightly between signup and checkout today), just centralize the validation logic itself. The helper will accept a messages override so each call site keeps its own wording." },
+    { "role": "user", "text": "Good, go ahead." },
+    { "role": "assistant", "text": "Done — validateContactFields() is now the single source of truth for the regex/logic, with each of the three call sites passing their existing message strings unchanged. Ran the existing test suite for all three handlers; all error message assertions still pass verbatim." },
+    { "role": "user", "text": "Nice. Any duplication left after this?" },
+    { "role": "assistant", "text": "The core email/phone/zip checks are fully deduped now. There's still a separate address-validation block duplicated in checkout and profile-update that this refactor didn't touch — out of scope for this change but worth a follow-up." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Extract a shared validateContactFields() helper in src/lib/validation.ts to replace the duplicated email/phone/zip validation logic across the signup, checkout, and profile-update handlers." },
+    { "type": "decision", "text": "Preserve the exact existing user-facing error message strings per handler (they differ slightly between signup and checkout) rather than unifying wording, since support's FAQ articles and screenshots reference the current text — the shared helper accepts a messages override per call site." },
+    { "type": "event", "text": "Ran the existing test suite for signup, checkout, and profile-update after the refactor; all error message assertions still passed verbatim." },
+    { "type": "note", "text": "A separate address-validation block is still duplicated in checkout and profile-update; this refactor didn't touch it and it's a candidate for a follow-up." }
+  ]
+}

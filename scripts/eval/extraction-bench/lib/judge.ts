@@ -10,6 +10,9 @@
 import { azureChatComplete } from '../../longmemeval/lib/azure-client.js';
 import type { AzureConfig } from '../../longmemeval/lib/config.js';
 import type { GoldAtom } from './fixtures.js';
+import { computeStats, type Stats } from './stats.js';
+
+export type JudgeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 
 export interface JudgeAtomIn {
   type: string;
@@ -107,6 +110,14 @@ export async function judgeFixture(
   fixtureId: string,
   goldAtoms: GoldAtom[],
   extracted: JudgeAtomIn[],
+  // AC-4 (FEAT-450): default raised from 'minimal' to 'low' — the
+  // triage-note evidence (qwen2.5:7b F1 swinging 50-72 across identical
+  // configs) implicated judge noise as one contributor alongside model/
+  // extraction noise; more reasoning budget on the grading call itself is
+  // the cheapest lever to reduce that without restructuring the scoring
+  // rubric. Callers that want the old cheap-and-noisy behavior (or a
+  // majority-vote wrapper) can still pass 'minimal' explicitly.
+  reasoningEffort: JudgeReasoningEffort = 'low',
 ): Promise<FixtureScore> {
   // Fast path: nothing gold, nothing extracted — a perfect score, no LLM call needed (saves spend).
   if (goldAtoms.length === 0 && extracted.length === 0) {
@@ -121,7 +132,7 @@ export async function judgeFixture(
     { role: 'system' as const, content: JUDGE_SYSTEM_PROMPT },
     { role: 'user' as const, content: buildUserPrompt(goldAtoms, extracted) },
   ];
-  const raw = await azureChatComplete(cfg, { messages, maxCompletionTokens: 2000, reasoningEffort: 'minimal', deployment: cfg.answererDeployment });
+  const raw = await azureChatComplete(cfg, { messages, maxCompletionTokens: 2000, reasoningEffort, deployment: cfg.answererDeployment });
 
   let parsed = tryParseJudge(raw);
   if (!parsed) {
@@ -132,7 +143,7 @@ export async function judgeFixture(
     const retryRaw = await azureChatComplete(cfg, {
       messages: [...messages, { role: 'assistant' as const, content: raw }, { role: 'user' as const, content: 'That was not valid JSON matching the required schema. Reply with ONLY the JSON object — no prose, no markdown fences.' }],
       maxCompletionTokens: 2000,
-      reasoningEffort: 'minimal',
+      reasoningEffort,
       deployment: cfg.answererDeployment,
     });
     parsed = tryParseJudge(retryRaw);
@@ -162,5 +173,53 @@ export async function judgeFixture(
     typeAccuracy,
     overExtractionCount,
     judge: parsed,
+  };
+}
+
+export interface JudgeAgreementReport {
+  fixtureId: string;
+  repeats: number;
+  recall: Stats;
+  precision: Stats;
+  f1: Stats;
+  typeAccuracy: Stats;
+  raw: FixtureScore[];
+}
+
+/**
+ * AC-4 (FEAT-450): judge self-agreement — judge the exact same (unchanging)
+ * extracted-atom set against the exact same gold atoms `repeats` times in a
+ * row. Because the input is held fixed, any variance across the repeats is
+ * JUDGE noise specifically (LLM sampling variance in the grading call
+ * itself), decoupled from model/extraction noise (which multi-run --runs N
+ * already measures by re-running extraction). Reported alongside the main
+ * results so judge noise is visible rather than silently folded into the
+ * overall run-to-run F1 swing.
+ */
+export async function judgeSelfAgreement(
+  cfg: AzureConfig,
+  fixtureId: string,
+  goldAtoms: GoldAtom[],
+  extracted: JudgeAtomIn[],
+  repeats: number,
+  reasoningEffort: JudgeReasoningEffort = 'low',
+): Promise<JudgeAgreementReport> {
+  const raw: FixtureScore[] = [];
+  for (let i = 0; i < repeats; i++) {
+    raw.push(await judgeFixture(cfg, fixtureId, goldAtoms, extracted, reasoningEffort));
+  }
+  const f1Vals = raw.map(s =>
+    s.recall !== null && s.precision !== null && s.recall + s.precision > 0
+      ? (2 * s.recall * s.precision) / (s.recall + s.precision)
+      : NaN,
+  );
+  return {
+    fixtureId,
+    repeats,
+    recall: computeStats(raw.map(s => s.recall ?? NaN)),
+    precision: computeStats(raw.map(s => s.precision ?? NaN)),
+    f1: computeStats(f1Vals),
+    typeAccuracy: computeStats(raw.map(s => s.typeAccuracy ?? NaN)),
+    raw,
   };
 }

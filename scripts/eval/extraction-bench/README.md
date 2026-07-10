@@ -13,12 +13,13 @@ For each candidate model, every gold fixture is run through the real
 extraction stage (`src/distill/stages/05-extract.ts`, same prompt/schema as
 production — `src/distill/prompts/extract.ts`), and the resulting atoms are
 judged against a hand-authored gold answer key by Azure gpt-5-mini
-(`reasoning_effort: minimal`). Per fixture: **recall** (gold atoms
-semantically captured), **precision** (fraction of extracted atoms that
-aren't junk/hallucinated/trivial), **type accuracy** (matched atoms with the
-correct `type`), and — for the one fixture with nothing worth remembering —
-an **over-extraction count**. Aggregated per model: recall / precision / F1 /
-junk-rate / avg wall-clock per session.
+(`reasoning_effort: low` by default — see "Statistical reliability" below).
+Per fixture: **recall** (gold atoms semantically captured), **precision**
+(fraction of extracted atoms that aren't junk/hallucinated/trivial), **type
+accuracy** (matched atoms with the correct `type`), and — for the fixtures
+with nothing worth remembering — an **over-extraction count**. Aggregated
+per model: recall / precision / F1 / junk-rate / avg wall-clock per session,
+optionally as **mean ± stdev across N runs** with `--runs N` (FEAT-450).
 
 `llm.compaction` is held constant at `ollama/qwen2.5-coder:7b` (the current
 production default) for every candidate — only `llm.extraction.model` varies.
@@ -28,13 +29,15 @@ test; letting compaction vary too would confound the comparison.
 ## Layout
 
 ```
-fixtures/            15 gold transcript fixtures (JSON) — see "Fixtures" below
+fixtures/            42 gold transcript fixtures (JSON) — see "Fixtures" below
 lib/
   fixtures.ts           fixture types + loader
   daemon-runner.ts       Ollama candidates: real daemon HTTP path
   pipeline-direct.ts     Azure gpt-5-mini reference: in-process pipeline path
   azure-reasoning-provider.ts   LLMProvider adapter for gpt-5-mini (see below)
-  judge.ts               Azure gpt-5-mini semantic judge
+  judge.ts               Azure gpt-5-mini semantic judge + self-agreement (FEAT-450)
+  stats.ts               mean/stdev/noise-floor/significance math (FEAT-450) + stats.test.ts
+  report.ts              aggregation, multi-run combine, markdown rendering (FEAT-450) + report.test.ts
   bun-sqlite.d.ts        ambient type decl for bun:sqlite (no bun-types installed)
 run-bench.mts         CLI entry point
 results/              output dir (results.json + report.md per run)
@@ -49,6 +52,12 @@ under `scripts/eval/longmemeval/` was modified — only imported.
 
 ```
 bun scripts/eval/extraction-bench/run-bench.mts --models qwen2.5-coder:7b,llama3.1:8b,azure:gpt-5-mini
+```
+
+Multi-run (FEAT-450 — see "Statistical reliability" below):
+
+```
+bun scripts/eval/extraction-bench/run-bench.mts --models qwen2.5-coder:7b,llama3.1:8b --runs 5
 ```
 
 Flags:
@@ -69,10 +78,50 @@ Flags:
 - `--skip-judge`: run extraction only, skip the Azure judge call entirely —
   zero Azure spend, useful to sanity-check a new model's plumbing/latency
   before paying for scoring.
+- `--runs N` (default `1`, FEAT-450): re-run extraction+judging N times per
+  model. `N=1` is byte-for-byte the original single-run report shape. `N>1`
+  reports **mean ± stdev** for recall/precision/F1/type-accuracy in the
+  table, retains every raw per-run aggregate (`.runs[]` in `results.json`),
+  and adds a pairwise **Significance (F1)** section to `report.md` that
+  labels a cross-model F1 delta "within noise / not significant" unless it
+  exceeds a noise floor derived from the observed stdevs (2×
+  standard-error-of-the-difference — see `lib/stats.ts`'s `compareMeans`).
+- `--judge-reasoning-effort <minimal|low|medium|high>` (default `low`,
+  FEAT-450): reasoning effort for the Azure judge call. Raised from the
+  original hardcoded `minimal` to cut judge-sampling noise (AC-4).
+- `--judge-agreement-fixtures N` (default `2`) / `--judge-agreement-repeats N`
+  (default `3`) / `--skip-judge-agreement` (FEAT-450): after all models
+  finish, re-judges the SAME (first model, first run) extracted-atom set for
+  the first N fixtures, `--judge-agreement-repeats` times each, with nothing
+  about the atoms changing between repeats — any variance in that block is
+  JUDGE noise specifically (not model/extraction noise), and is reported in
+  a "Judge self-agreement" section plus `judge-agreement.json`. Set repeats
+  below 2 (or pass `--skip-judge-agreement`) to skip this and save a handful
+  of extra judge calls.
 
 Each run writes `results.json` (full detail: every extracted atom + judge
-verdict, per fixture, per model) and `report.md` (the ranked summary table)
-to `--out-dir`.
+verdict, per fixture, per model — always the same top-level shape, a plain
+array of per-model reports, regardless of `--runs`) and `report.md` (the
+ranked summary table) to `--out-dir`. With `--runs` > 1 and judge
+self-agreement enabled, `judge-agreement.json` is also written.
+
+### Statistical reliability (FEAT-450)
+
+Before FEAT-450, every config here was run **once**, over 15 fixtures,
+judged by a single non-deterministic `gpt-5-mini` call
+(`reasoning_effort=minimal`). Real evidence from 2026-07-09: `qwen2.5:7b`
+scored F1 = 50/53/58/59/61/61/67/72 across 8 near-identical-config runs —
+a sample stdev of **~7.1 F1 points** (≈14-point peak-to-peak swing), enough
+noise to swallow every prompt-v1/v2/v2.1 and temperature-0/0.1 delta tested
+that day. That number is this bench's **15-fixture baseline stdev** — see
+"Known limitations" for what changed and what still needs a live re-measure
+on the (now 40+ fixture) set to confirm the reduction empirically.
+
+`--runs N` (N≥2) turns that into a measured mean±stdev instead of a single
+noisy sample, and the Significance section refuses to rank two configs
+whose means don't clear the noise floor. Use `--runs 3` to `--runs 5` for
+real prompt/temp/model tuning decisions; `--runs 1` (default) is still fine
+for a quick sanity/smoke pass.
 
 ## Why gpt-5-mini needs a different code path than the Ollama candidates
 
@@ -118,28 +167,32 @@ is API-compatible for the handful of calls `BudgetTracker` actually makes.
 
 ## Fixtures
 
-15 synthetic Claude-Code-style sessions, each a JSON file with `turns`
-(the transcript) and `gold_atoms` (the hand-authored answer key: the
-facts/decisions/lessons/commands/todos/notes/events a perfect extractor
-should produce). Difficulty spread:
+42 synthetic Claude-Code-style sessions (expanded from the original 15 —
+FEAT-450 AC-3, more per-difficulty replicates to shrink per-run F1
+variance), each a JSON file with `turns` (the transcript) and `gold_atoms`
+(the hand-authored answer key: the facts/decisions/lessons/commands/todos/
+notes/events a perfect extractor should produce). Difficulty spread across
+all 42 (original 15 + 27 new, same tag set, roughly proportional counts):
 
-| Fixture | Difficulty | Tests |
+| Difficulty | Count | Tests |
 |---|---|---|
-| fx01-clean-decision | clean | baseline — decision-dense, no noise |
-| fx02-debugging-race-condition | clean | debug session: symptom -> root cause -> fix -> todo |
-| fx03-refactor-extract-module | clean | captures an explicit *non-action* ("leave X alone") correctly |
-| fx04-deploy-incident | clean | incident response: event -> lesson -> rollback -> fix |
-| fx05-config-decision | clean | "decided NOT to change X" — don't invent a config change that didn't happen |
-| fx06-tool-failure-permission | clean | tool failure -> root cause -> fix -> verification |
-| fx07-noisy-tool-spam | **noisy** | long runs of near-identical tool-output lines — tests junk/duplicate resistance |
-| fx08-long-multitopic | **long** | three unrelated topics in one session — tests attribution, not conflating topics |
-| fx09-nothing-worth-remembering | **nothing** | zero gold atoms — any output is an over-extraction false positive |
-| fx10-contradiction-correction | **contradiction** | a decision is proposed then explicitly reverted mid-session — must capture the FINAL value, not the stale one |
-| fx11-todo-heavy | todo-heavy | many pending items + a late reprioritization |
-| fx12-command-heavy | command-heavy | multi-step shell command sequences |
-| fx13-entity-rich | entity-rich | many named products/orgs/people in one session |
-| fx14-secrets-present | secrets | contains a fake API key — extractor must skip the secret itself (per its own prompt rule) while still capturing the incident lesson |
-| fx15-short-ambiguous | ambiguous | very low-signal musing — tests restraint / confidence calibration |
+| clean | 19 | baseline decision-dense/debug/refactor/deploy/config/tool-failure sessions, no noise |
+| noisy | 3 | long runs of near-identical tool/build-log/health-check output — junk/duplicate resistance |
+| long | 4 | three+ unrelated topics in one session — attribution, not conflating topics |
+| nothing | 3 | zero gold atoms — any output is an over-extraction false positive |
+| contradiction | 3 | a decision/value is proposed then explicitly reverted mid-session — must capture the FINAL value |
+| todo-heavy | 2 | many pending items + a late reprioritization |
+| command-heavy | 2 | multi-step shell/db command sequences |
+| entity-rich | 2 | many named products/orgs/people/vendors in one session |
+| secrets | 2 | contains a fake secret — extractor must skip the secret itself while still capturing the incident lesson |
+| ambiguous | 2 | very low-signal musing — tests restraint / confidence calibration |
+
+The original 15 (`fx01`-`fx15`) are listed individually in git history / the
+pre-FEAT-450 README revision; `fx16`-`fx42` follow the identical schema and
+difficulty tags (see file names in `fixtures/` — each is self-descriptive,
+e.g. `fx32-contradiction-port-number.json`, `fx37-secrets-present-webhook-
+secret.json`). No loader changes were needed — `lib/fixtures.ts` already
+picks up every `*.json` file in the directory.
 
 ### Adding a gold transcript
 
@@ -234,3 +287,19 @@ should produce). Difficulty spread:
 - The judge itself is an LLM (gpt-5-mini) — it can occasionally misjudge a
   borderline semantic match. `results.json` retains every raw verdict +
   reason so a spot-check is always possible without re-running anything.
+  FEAT-450 raised the default judge `reasoning_effort` from `minimal` to
+  `low` and added `--judge-agreement-fixtures`/`--judge-agreement-repeats`
+  to directly measure this specific noise source (same atoms, re-judged) —
+  see "Statistical reliability" above.
+- FEAT-450's fixture expansion (15 -> 42) and the `--runs`/judge-effort
+  changes were verified via `bunx tsc --noEmit` on every touched file plus
+  `lib/stats.test.ts` + `lib/report.test.ts` (synthetic mean/stdev/
+  significance-gate math, including a case reproducing the exact
+  50/53/58/59/61/61/67/72 qwen2.5:7b noise band from the 2026-07-09 triage
+  note). A live multi-model `--runs N` sweep against Ollama + the Azure
+  judge to *measure* the new 42-fixture F1 stdev and confirm it is lower
+  than the 15-fixture baseline (~7.1 F1 points) was **not** run as part of
+  this slice (full sweep is slow/costly and out of this change's verification
+  budget) — that live comparison is the one remaining step to fully close
+  AC-3 empirically; the mechanism to produce it (`--runs 8` on a fixed model
+  against the new fixture set) is in place and unit-tested.

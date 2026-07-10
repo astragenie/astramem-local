@@ -1,0 +1,19 @@
+{
+  "id": "fx33-contradiction-cache-ttl",
+  "title": "Cache TTL proposed then revised after a stale-data concern",
+  "difficulty": "contradiction",
+  "notes": "Tests update/correction handling: an initial 1-hour TTL is proposed then revised down to 5 minutes after a stale-data concern is raised in the same session. Gold captures the final TTL plus the reasoning for the revision.",
+  "turns": [
+    { "role": "user", "text": "For the product-price cache, let's set the TTL to 1 hour — prices don't change that often." },
+    { "role": "assistant", "text": "Setting the product-price cache TTL to 1 hour." },
+    { "role": "user", "text": "Actually, wait — marketing runs flash sales that change prices instantly and expect them live within a minute or two. A 1-hour TTL would show stale (pre-sale) prices for up to an hour during a flash sale launch. Let's drop it to 5 minutes instead." },
+    { "role": "user", "text": "Actually maybe even that's risky for flash sales — but 5 minutes is probably an acceptable tradeoff between staleness risk and cache hit rate, so let's go with that." },
+    { "role": "assistant", "text": "Understood — setting the TTL to 5 minutes instead of 1 hour. That caps worst-case price staleness during a flash sale to 5 minutes, which is an acceptable tradeoff against giving up some cache hit rate versus the 1-hour option." },
+    { "role": "user", "text": "Right, 5 minutes is the final number, not the original 1 hour — make sure that's clear in the config comments." },
+    { "role": "assistant", "text": "Confirmed: product-price cache TTL is 5 minutes. I'll add a config comment explaining the flash-sale staleness reasoning so nobody bumps it back to 1 hour without realizing why it's short." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Set the product-price cache TTL to 5 minutes — NOT the initially proposed 1 hour." },
+    { "type": "lesson", "text": "A 1-hour product-price cache TTL would show stale pre-sale prices for up to an hour during a flash sale launch, since marketing expects flash-sale price changes to go live within a minute or two; 5 minutes caps worst-case staleness while still giving up some cache hit rate versus the 1-hour option." }
+  ]
+}

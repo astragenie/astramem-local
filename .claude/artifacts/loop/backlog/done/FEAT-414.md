@@ -1,11 +1,13 @@
 ---
 id: FEAT-414
-status: triaged
+status: done
 priority: P2
 created: 2026-07-04
-updated: 2026-07-04
+updated: 2026-07-09
+completed_at: 2026-07-09
 depends_on: []
 slices: []
+closure_note: "Verified already-implemented 2026-07-09 in src/pipeline/mock-extraction-vocab.ts (MOCK_EXTRACTION_VOCAB single source), consumed by src/pipeline/mock-providers.ts. Drift is now a test error via tests/hygiene/mock-vocab-fixture-lockstep.test.ts. sqlite-vec trigger behavior + plugin-flow/smoke suites unchanged. Lockstep test green."
 derived_from: arch-review-2026-07-04
 pm_customer_impact: 0.30
 pm_effort_estimate: 0.25

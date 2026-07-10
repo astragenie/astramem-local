@@ -1,13 +1,15 @@
 ---
 id: FEAT-425
-status: triaged
+status: done
 priority: P2
 category: platform
 target_release: null
 created: 2026-07-05
-updated: 2026-07-07
+updated: 2026-07-09
+completed_at: 2026-07-09
 depends_on: [FEAT-423]
 slices: []
+closure_note: "Verified already-implemented 2026-07-09 in src/pipeline/cwd-basename.ts (deriveWorktreeSafeBasename), wired into derive-project.ts, tag-hygiene/derive-repo.ts, capture/claude.ts. AC-1 `<repo>-worktrees/wt-foo` → repo name. AC-2 non-worktree cwd unchanged. AC-3 string-only heuristic, no git/stat calls. Tests green: tests/pipeline/cwd-basename.test.ts, tests/pipeline/derive-project.test.ts, tests/tag-hygiene/derive-repo.test.ts."
 derived_from: null
 tags: [concern:recall, concern:provenance, surface:daemon]
 pm_customer_impact: 0.40

@@ -1,0 +1,25 @@
+{
+  "id": "fx21-deploy-incident-rollback",
+  "title": "Elevated error rate after deploy traced to a missing feature-flag default",
+  "difficulty": "clean",
+  "notes": "Incident response: bad deploy causes elevated error rates, rollback decision, root-cause lesson, follow-up todo.",
+  "turns": [
+    { "role": "user", "text": "Error rate on checkout jumped from ~0.2% to ~9% right after the 2:15pm deploy. Can you take a look?" },
+    { "role": "assistant", "text": "Looking at the error logs now — most of the errors are 'undefined is not a function' on getShippingEstimate(), which is behind the new express-shipping feature flag. The flag lookup is throwing instead of returning false when the flag key doesn't exist in the flag store yet." },
+    { "role": "user", "text": "Roll it back while we figure out the fix." },
+    { "role": "assistant", "text": "Rolled back to the previous deploy. Error rate dropped back to ~0.2% within about 90 seconds of rollback completing." },
+    { "role": "user", "text": "So what actually went wrong with the flag?" },
+    { "role": "assistant", "text": "The new code assumed the express-shipping flag key would already exist in the flag store (defaulting to false), but the flag was never actually created there before this deploy shipped — the flag-store entry and the code that reads it were supposed to ship together but the flag creation step got missed." },
+    { "role": "user", "text": "Fix that properly before we redeploy." },
+    { "role": "assistant", "text": "I'll make the flag lookup default to false when the key is missing, instead of throwing, as defense in depth — and separately, create the express-shipping flag entry in the flag store now so the intended behavior is available once we redeploy." },
+    { "role": "user", "text": "Good. Let's also make sure this class of bug can't repeat." },
+    { "role": "assistant", "text": "Adding a todo: audit the deploy checklist to require confirming any new feature-flag key exists in the flag store before the code referencing it ships, not after." }
+  ],
+  "gold_atoms": [
+    { "type": "event", "text": "Checkout error rate jumped from about 0.2% to about 9% shortly after the 2:15pm deploy, caused by getShippingEstimate() throwing on lookup of the new express-shipping feature flag." },
+    { "type": "decision", "text": "Rolled back the deploy to stop the elevated checkout error rate; error rate returned to about 0.2% within roughly 90 seconds of rollback completing." },
+    { "type": "lesson", "text": "The new deploy assumed the express-shipping feature flag key already existed in the flag store, but the flag-store entry was never created before the deploy shipped, and the flag lookup threw instead of defaulting to false for a missing key." },
+    { "type": "decision", "text": "Make the feature-flag lookup default to false when a flag key is missing, instead of throwing, as defense in depth; also create the missing express-shipping flag entry before redeploying." },
+    { "type": "todo", "text": "Audit the deploy checklist to require confirming any new feature-flag key exists in the flag store before the code referencing it ships." }
+  ]
+}

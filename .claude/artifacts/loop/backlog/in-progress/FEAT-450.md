@@ -1,6 +1,6 @@
 ---
 id: FEAT-450
-status: triaged
+status: in-progress
 priority: P2
 category: platform
 target_release: null
@@ -10,18 +10,22 @@ blocks: []
 slices: []
 derived_from: 2026-07-09 extraction model/prompt eval (noise dominated all deltas)
 autonomous_safe: true
-tags: ["concern:eval", "concern:quality", "surface:eval", "stack:typescript", followup]
-triage_notes: "technical_risk 0.15, band 0.0-0.2 (bench-script-only change under scripts/eval, no production code path, git-revertable, existing --runs 1 default preserved per AC-5). Not urgent (nothing is currently broken in production) but blocks a just-landed capability (prompt/temp selectors) from ever being tunable -- P2, autonomous-safe, matching the FEAT's own pre-existing triage_notes classification."
-pm_customer_impact: 0.3
-pm_effort_estimate: 0.42
-pm_strategic_alignment: 0.55
-pm_technical_risk: 0.15
-pm_dependency_depth: 0.1
-pm_composite_priority: P2
-pm_autonomous_safe: true
-pm_reviewed: 2026-07-09
-updated: 2026-07-09
+tags: [concern:eval, concern:quality, surface:eval, stack:typescript, followup]
+triage_notes: "The extraction-bench (scripts/eval/extraction-bench) cannot resolve extraction-quality deltas under ~15 F1 because each config is run ONCE, over only 15 gold fixtures, judged by a single non-deterministic gpt-5-mini (reasoning_effort=minimal). Evidence from 2026-07-09: qwen2.5:7b scored 50/53/58/59/61/61/67/72 F1 across runs on near-identical configs (±14 swing). Every prompt (v1/v2/v2.1) and temperature (0/0.1) a/b landed inside that band → indistinguishable from noise. So model/prompt/temp tuning is currently impossible — we can only separate big cloud models (azure 81, codex 71) from the local ~50-72 band. This blocks any real prompt/temp iteration (the ASTRA_EXTRACT_PROMPT / ASTRA_EXTRACT_TEMP selectors landed but can't be evaluated). Bench-script-only change, reversible, low risk — autonomous_safe."
 ---
+
+> **STATUS 2026-07-09 — code merged to main, verification-blocked (NOT done).**
+> Implementation merged (commit range incl. `27bbf82`, scripts/eval/extraction-bench only):
+> `--runs N` multi-run mean±stdev; significance gate (`compareMeans`, noise floor
+> = 2×√(sA²/nA+sB²/nB)); 15→42 gold fixtures; judge reasoning-effort minimal→low +
+> `judgeSelfAgreement`; backward-compatible at `--runs 1`. New `lib/stats.ts`,
+> `lib/report.ts` + 26 unit tests (green), root `tsc` clean, live `--runs 2` Ollama smoke passed.
+>
+> **Remaining before close (ACs 3 & 4 empirical):** run a live judged sweep once
+> Azure is available — `az login`, then `--runs 8` over the 42 fixtures — and confirm
+> (AC-3) 42-fixture per-run F1 stdev < the ~7.1 F1 15-fixture baseline, and (AC-4)
+> judge self-agreement is reported. Blocked 2026-07-09 by expired `az` session
+> (AADSTS50132). Mechanism built + unit-tested; only the empirical measurement is pending.
 
 # FEAT-450: harden extraction-bench so prompt/temp/model tuning is statistically possible
 

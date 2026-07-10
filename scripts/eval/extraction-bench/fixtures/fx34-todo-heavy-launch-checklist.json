@@ -1,0 +1,26 @@
+{
+  "id": "fx34-todo-heavy-launch-checklist",
+  "title": "Pre-launch punch list with a late reprioritization",
+  "difficulty": "todo-heavy",
+  "notes": "Session dominated by pending pre-launch work items with a late-session reprioritization, mirroring fx11's structure and spirit with a different scenario.",
+  "turns": [
+    { "role": "user", "text": "Let's run through the pre-launch checklist for the mobile-app v2.0 release. What's outstanding?" },
+    { "role": "assistant", "text": "From the tracking board: (1) finalize App Store screenshots for the new onboarding flow, (2) load-test the new push-notification service at 10x expected launch traffic, (3) write the support team's FAQ for the new subscription tiers, (4) confirm the privacy policy update is live on the marketing site, (5) set up crash-reporting alerts for the new build." },
+    { "role": "user", "text": "Add one: we need to decide the rollout percentage for the phased release — 10%, 25%, or 100% on day one." },
+    { "role": "assistant", "text": "Added as item 6: decide the day-one phased-rollout percentage. Given this is a major version bump touching payments (subscription tiers), I'd lean toward a cautious 10% before ramping, but that's your call to make." },
+    { "role": "user", "text": "Good point about payments — let's make that and the load test the top priorities, everything else can wait a day if needed." },
+    { "role": "assistant", "text": "Reordered: the rollout-percentage decision and the push-notification load test are now top priority. Screenshots, FAQ, privacy policy confirmation, and crash-alert setup are still needed before launch but can slip a day without blocking the payments-adjacent risk items." },
+    { "role": "user", "text": "One more I forgot — we still need someone to verify the App Store metadata reflects the new minimum OS version." },
+    { "role": "assistant", "text": "Added as item 7: verify App Store metadata reflects the new minimum OS version requirement before submission." }
+  ],
+  "gold_atoms": [
+    { "type": "todo", "text": "Finalize App Store screenshots for the new onboarding flow before the mobile-app v2.0 launch." },
+    { "type": "todo", "text": "Load-test the new push-notification service at 10x expected launch traffic before the v2.0 launch." },
+    { "type": "todo", "text": "Write the support team's FAQ for the new subscription tiers before launch." },
+    { "type": "todo", "text": "Confirm the updated privacy policy is live on the marketing site before launch." },
+    { "type": "todo", "text": "Set up crash-reporting alerts for the new v2.0 build before launch." },
+    { "type": "todo", "text": "Decide the day-one phased-rollout percentage (10%, 25%, or 100%) for the v2.0 launch, given it touches payments via the new subscription tiers." },
+    { "type": "todo", "text": "Verify the App Store metadata reflects the new minimum OS version requirement before submission." },
+    { "type": "note", "text": "The rollout-percentage decision and the push-notification load test were reprioritized above the screenshots, FAQ, privacy-policy confirmation, and crash-alert setup, which can slip a day without blocking the payments-adjacent risk items." }
+  ]
+}

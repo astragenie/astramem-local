@@ -1,0 +1,23 @@
+{
+  "id": "fx36-entity-rich-vendor-comparison",
+  "title": "Comparing named vendors for an email-delivery provider decision",
+  "difficulty": "entity-rich",
+  "notes": "Session mentioning many named products, vendors, and people while evaluating an email-delivery provider. Mirrors fx13's entity-rich structure; tests whether atom text stays faithful and specific with many named entities in play.",
+  "turns": [
+    { "role": "user", "text": "We need to pick a transactional email provider. I know Priya already looked at SendGrid and Postmark — what's the state of that comparison?" },
+    { "role": "assistant", "text": "Per Priya's notes: SendGrid offers the broadest feature set (marketing + transactional in one platform) but has a worse reputation for deliverability lately due to shared IP pool issues reported by several users on their status page. Postmark is transactional-only, deliverability-focused, and Priya's test sends landed in inbox 98% of the time versus SendGrid's 91% in the same test." },
+    { "role": "user", "text": "What about Amazon SES? We're already on AWS for everything else." },
+    { "role": "assistant", "text": "SES is the cheapest by far and integrates natively with our existing AWS infrastructure (same IAM roles, CloudWatch metrics), but it requires more manual setup for things like bounce/complaint handling and templating that Postmark and SendGrid provide out of the box." },
+    { "role": "user", "text": "Did we ever loop in security about any of these regarding data residency?" },
+    { "role": "assistant", "text": "Yes — Marcus from security confirmed Postmark and SES both support EU data residency (Postmark via their EU region, SES via eu-west-1), which matters for the GDPR-covered customers we onboarded last quarter. SendGrid's EU offering was less clear and Marcus flagged it as needing more diligence before we could greenlight it for those customers." },
+    { "role": "user", "text": "Given all that, let's go with Postmark." },
+    { "role": "assistant", "text": "Going with Postmark — best deliverability in Priya's test (98% inbox rate), confirmed EU data residency per Marcus, and transactional-focused feature set that matches our actual need better than SendGrid's broader marketing-oriented platform." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "In Priya's test sends, Postmark landed in inbox 98% of the time versus SendGrid's 91% in the same test." },
+    { "type": "fact", "text": "SendGrid has had reported deliverability issues linked to shared IP pool problems, per several users on their status page." },
+    { "type": "fact", "text": "Amazon SES is the cheapest option and integrates natively with existing AWS infrastructure (same IAM roles, CloudWatch metrics), but requires more manual setup for bounce/complaint handling and templating than Postmark or SendGrid." },
+    { "type": "fact", "text": "Marcus from security confirmed Postmark and SES both support EU data residency (Postmark via their EU region, SES via eu-west-1); SendGrid's EU offering was flagged as needing more diligence before being greenlit for GDPR-covered customers." },
+    { "type": "decision", "text": "Choose Postmark as the transactional email provider, based on best deliverability (98% inbox rate in testing), confirmed EU data residency, and a feature set better matched to transactional-only needs than SendGrid's broader marketing platform." }
+  ]
+}

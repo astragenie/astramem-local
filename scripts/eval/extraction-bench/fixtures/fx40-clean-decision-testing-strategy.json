@@ -1,0 +1,21 @@
+{
+  "id": "fx40-clean-decision-testing-strategy",
+  "title": "Prioritizing integration tests over unit tests for a thin-wrapper module",
+  "difficulty": "clean",
+  "notes": "Clean decision session on testing strategy: prioritizing integration tests over unit tests for a module that is mostly a thin wrapper around an external API, with explicit reasoning.",
+  "turns": [
+    { "role": "user", "text": "The new paymentGatewayClient module barely has any unit tests. Should we prioritize writing a bunch of unit tests for it?" },
+    { "role": "assistant", "text": "I'd actually argue against heavy unit-testing here — paymentGatewayClient is mostly a thin wrapper around the payment provider's SDK, so unit tests would mostly just mock the SDK and assert we called it with the right arguments, which tests the mock more than real behavior." },
+    { "role": "user", "text": "So what should we test instead?" },
+    { "role": "assistant", "text": "Integration tests against the provider's sandbox environment — they exercise the real request/response contract, catch cases where our assumptions about the SDK's behavior are wrong, and would have caught the recent bug where we misread a decimal-vs-cents field, which a mocked unit test would never have surfaced." },
+    { "role": "user", "text": "Won't sandbox integration tests be slower and flakier than unit tests?" },
+    { "role": "assistant", "text": "Somewhat slower, yes, but the sandbox is quite stable in practice and the module's surface area is small enough (maybe 8 methods) that a modest integration suite is manageable — for a module this thin, a handful of well-chosen integration tests give more real confidence than a much larger mocked-unit-test suite would." },
+    { "role": "user", "text": "OK, let's do that then — integration tests as the priority for this module." },
+    { "role": "assistant", "text": "Agreed — I'll build out an integration test suite against the sandbox covering all 8 methods' happy paths and the known decimal/cents edge case, and treat unit tests as optional for this module rather than required." }
+  ],
+  "gold_atoms": [
+    { "type": "decision", "text": "Prioritize integration tests against the payment provider's sandbox over unit tests for paymentGatewayClient, since it's mostly a thin wrapper around the provider's SDK." },
+    { "type": "lesson", "text": "Unit-testing a thin SDK-wrapper module mostly ends up mocking the SDK and asserting call arguments, which tests the mock rather than real behavior, and would not have caught the recent decimal-vs-cents field bug that an integration test against the real sandbox contract would catch." },
+    { "type": "decision", "text": "Build an integration test suite against the sandbox covering all 8 of paymentGatewayClient's methods' happy paths plus the known decimal/cents edge case, treating unit tests as optional rather than required for this module." }
+  ]
+}
