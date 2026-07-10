@@ -117,6 +117,56 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     type: 'high_entropy',
     secret: 'myrandomvalue1234567890abcdef=',
   },
+  // FEAT-463 review fix round 2 (CRITICAL suffix-attack bypass, closed): round
+  // 1's "safe value immediately follows" check trusted next-token SHAPE alone
+  // — appending a plausible decoy (a bare digit, boolean, or quoted digit/
+  // boolean) right after one of the round-1 repro tokens revived the exact
+  // same leak by making the secret masquerade as a label with its value on
+  // the next token. The round-2 fix requires the label's own identifier core
+  // (quotes/separator stripped) to itself be low-entropy — a genuine secret
+  // hiding behind this shape fails that check regardless of what follows it.
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + bare digit decoy',
+    input: 'mysecrettoken1234567890abcdef= 8',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + bare boolean decoy',
+    input: 'mysecrettoken1234567890abcdef= true',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing ":" + bare digit decoy',
+    input: 'mysecrettoken1234567890abcdef: 8',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef:',
+  },
+  {
+    name: 'suffix-attack repro: underscore-segment variant + digit decoy',
+    input: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c= 42',
+    type: 'high_entropy',
+    secret: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + quoted-digit decoy',
+    input: 'mysecrettoken1234567890abcdef= "8"',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + quoted-boolean decoy',
+    input: 'mysecrettoken1234567890abcdef= "true"',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'multi-token line: legit label:value pair stays unredacted, unrelated trailing secret (nothing following it) still redacts',
+    input: 'PASSWORD_MIN_LENGTH: 8 mysecrettoken1234567890abcdef=',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
   // FEAT-459: compound SCREAMING_SNAKE_CASE labels (`X_SECRET=`, `X_API_KEY=`,
   // `X_TOKEN=`), both '=' and ':' separators, plus the exact measured gap fixture.
   { name: 'compound INTERNAL_SECRET= (measured gap fixture)', input: 'INTERNAL_SECRET=abc123', type: 'generic_credential', secret: 'abc123' },

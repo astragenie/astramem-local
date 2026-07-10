@@ -43,48 +43,92 @@ const CONFIG_ASSIGNMENT_RE = /^[A-Za-z][A-Za-z0-9_]*[:=](?:\d+|true|false)$/i;
 // (measured: `"PASSWORD_MIN_LENGTH":` scores 4.096 bits/char, just over the
 // 4.0 default threshold).
 //
-// FEAT-463 review fix (CRITICAL, reproduced): an earlier version of this
-// guard suppressed entropy on ANY token shaped like `["']?identifier["']?
-// [:=]` that merely *contained* a recognized keyword substring — but that
-// shape doesn't actually prove the token is a value-less label. A genuine
-// high-entropy SECRET can satisfy it too, e.g.
+// FEAT-463 review fix round 1 (CRITICAL, reproduced): an earlier version of
+// this guard suppressed entropy on ANY token shaped like `["']?identifier
+// ["']?[:=]` that merely *contained* a recognized keyword substring — but
+// that shape doesn't actually prove the token is a value-less label. A
+// genuine high-entropy SECRET can satisfy it too, e.g.
 // `mysecrettoken1234567890abcdef=` (entropy 4.507, contains "secret"/
-// "token", ends in bare `=` with nothing else) — the trailing `=`/`:` need
-// not be base64 padding or a real separator, it can just be incidental
-// punctuation glued onto the value itself, and "secret"/"token"/"key" are
-// common substrings of real vendor token *values*, not just labels. Nor
-// does requiring the keyword to be an exact underscore-delimited segment
-// close this: `my_secret_token_9f8a7b6c5d4e3f2a1b0c=` has "secret"/"token"
-// as clean segments and is still a bona fide secret, not a label.
+// "token", ends in bare `=` with nothing else). Round 1 added a "safe value
+// immediately follows" requirement (`isLabelWithSafeValueFollowing` below).
 //
-// The only reliable signal that a keyword-shaped token is GENUINELY a
-// value-less label (not itself the secret) is that a plausible, safely-
-// shaped value immediately follows it — replicating the exact split-token
-// context this guard exists for (`"PASSWORD_MIN_LENGTH": 8`,
-// `"SECRET_SCAN_ENABLED": "true"`). A keyword-shaped token with nothing
-// safe following — including nothing following at all, which is exactly
-// the shape of the three bypass repros above — is NOT guarded here: it
-// falls through to the ordinary entropy check like any other token, so a
-// genuinely high-entropy secret still gets redacted. (Note: this remains a
-// heuristic, not an adversarial-evasion-hardened parser, per this FEAT's
-// regex-tier-only scope — an attacker who deliberately appends a short
-// numeric/boolean token after a crafted secret could still exploit this
-// exact split-token shape; that residual is the same one the reviewer's
-// own proposed fix direction carries, and is out of scope here.)
-const LABEL_ONLY_RE = /^["']?[A-Za-z][A-Za-z0-9_]*["']?[:=]$/;
+// FEAT-463 review fix round 2 (CRITICAL, reproduced): round 1's "safe value
+// follows" check trusts the NEXT token's shape alone, which is itself
+// gameable — appending a plausible decoy (`mysecrettoken1234567890abcdef=
+// 8`) revives the exact same leak by making the secret token look like a
+// label with its value on the next token. Closing this requires a signal
+// that doesn't depend on trusting adjacent-token shape: the label's OWN
+// identifier text (quotes/separator stripped — the "core") must itself be
+// LOW entropy. Verified by direct computation before implementing (not
+// assumed): real config-label cores score well below the 4.0 default
+// threshold —
+//   PASSWORD_MIN_LENGTH   3.932   SECRET_SCAN_ENABLED  3.301
+//   DJANGO_SECRET_KEY     3.690   OPENAI_API_KEY       3.093
+//   DB_PASSWORD           3.096
+// — while every secret-shaped core (the value itself, not a label) scores
+// well above it, a ~0.5 bit/char margin:
+//   mysecrettoken1234567890abcdef              4.444
+//   my_secret_token_9f8a7b6c5d4e3f2a1b0c        4.461
+//   myrandomvalue1234567890abcdef (no keyword)  4.487
+// A secret-shaped core no longer passes the guard even when a decoy value
+// follows it: `mysecrettoken1234567890abcdef= 8` now fails on the CORE's
+// own entropy (4.444 >= threshold), falls through to the ordinary entropy
+// check on the FULL token (`...abcdef=`, entropy 4.507), and is correctly
+// redacted as `high_entropy`. This closes the suffix-attack class because,
+// unlike round 1's check, it does not depend on trusting what follows the
+// label at all.
+//
+// Third layer (identifier-case profile), belt-and-suspenders alongside the
+// entropy margin above: the core must ALSO be either short (below the
+// entropy length floor — true of every real label fixture above) or not
+// densely mix lowercase letters with digits (`HEX_LIKE_MIX_RE`) — the
+// hex/base62 shape real secret material takes but SCREAMING_SNAKE_CASE
+// identifiers essentially never do. Guards against a hypothetical future
+// core that happens to sit close to the entropy threshold.
+//
+// Three conditions must ALL hold to suppress entropy on a keyword-shaped
+// label token: (1) a safe value (digits/boolean, optionally quoted)
+// immediately follows it — the original split-token shape this guard
+// exists for; (2) the label's own core text is itself low-entropy; (3) the
+// core is short or doesn't have a hex-like case profile. A keyword-shaped
+// token failing ANY of these — including the three original bypass repros
+// (nothing follows) and all suffix-attack variants (core entropy too high)
+// — falls through to the ordinary entropy check like any other token, so a
+// genuinely high-entropy secret still gets redacted regardless of what
+// does or doesn't sit next to it in the text. This remains a heuristic, not
+// an adversarial-evasion-hardened parser, per this FEAT's regex-tier-only
+// scope — but the remaining bypass surface now requires constructing a
+// secret whose own identifier-shaped text is ALSO low-entropy, which is a
+// materially different (and self-defeating, for an attacker: a low-entropy
+// "secret" is a weak secret) requirement than round 1's.
+const LABEL_CORE_RE = /^["']?([A-Za-z][A-Za-z0-9_]*)["']?[:=]$/;
 const SECRET_LABEL_KEYWORD_RE = /(?:api[_-]?key|secret|token|password|passwd|pwd)/i;
 const SAFE_VALUE_RE = /^(?:\d+|true|false)$/i;
+const HEX_LIKE_MIX_RE = /[a-z][0-9]|[0-9][a-z]/;
 
 /**
  * True if `token` (ending at offset `end` in `text`) is shaped like a
- * value-less credential label AND is immediately followed by a safely-typed
- * value (digits or a boolean literal, optionally quoted) — the genuine
- * `"PASSWORD_MIN_LENGTH": 8` split-token shape. Returns false (not guarded)
- * if nothing follows, or what follows isn't a safe value shape — including
- * for a token that IS itself the whole secret.
+ * value-less credential label AND satisfies all three layers described
+ * above. Returns false (not guarded — falls through to the ordinary
+ * entropy check) if the token doesn't parse as a label, its core doesn't
+ * contain a recognized keyword, the core is itself high-entropy (the
+ * suffix-attack signal), the core has a hex-like case profile at length,
+ * or nothing safely-typed follows it.
  */
-function isLabelWithSafeValueFollowing(token: string, text: string, end: number): boolean {
-  if (!LABEL_ONLY_RE.test(token) || !SECRET_LABEL_KEYWORD_RE.test(token)) return false;
+function isLabelWithSafeValueFollowing(token: string, text: string, end: number, threshold: number): boolean {
+  const coreMatch = LABEL_CORE_RE.exec(token);
+  const core = coreMatch?.[1];
+  if (!core) return false;
+  if (!SECRET_LABEL_KEYWORD_RE.test(core)) return false;
+
+  // Layer 2: the label's own text must be low-entropy — a genuine secret
+  // hiding behind this shape is not.
+  if (shannonEntropy(core) >= threshold) return false;
+
+  // Layer 3: ...and short, or at least not hex/base62-shaped.
+  if (core.length >= MIN_TOKEN_LENGTH && HEX_LIKE_MIX_RE.test(core)) return false;
+
+  // Layer 1: a genuinely safe value must immediately follow.
   const nextMatch = /\S+/.exec(text.slice(end));
   if (!nextMatch) return false;
   const nextValue = nextMatch[0].replace(/^["']/, '').replace(/["']$/, '');
@@ -127,13 +171,13 @@ export function tokenize(text: string): EntropyToken[] {
  * True if `token` should be SKIPPED (i.e. is a known false-positive shape)
  * rather than flagged as a high-entropy secret.
  */
-function isGuarded(token: string, text: string, start: number, end: number): boolean {
+function isGuarded(token: string, text: string, start: number, end: number, threshold: number): boolean {
   if (token.length < MIN_TOKEN_LENGTH) return true;
   if (PLACEHOLDER_RE.test(token)) return true;
   if (UUID_RE.test(token)) return true;
   if (token.includes('/') || token.includes('\\')) return true;
   if (CONFIG_ASSIGNMENT_RE.test(token)) return true;
-  if (isLabelWithSafeValueFollowing(token, text, end)) return true;
+  if (isLabelWithSafeValueFollowing(token, text, end, threshold)) return true;
 
   // Pure-hex 40/64-char strings (git SHA-1 / SHA-256) adjacent to a
   // commit/sha/hash/digest keyword within ~40 chars are assumed to be
@@ -159,7 +203,7 @@ export interface EntropyMatch {
 export function findEntropySecrets(text: string, threshold: number): EntropyMatch[] {
   const matches: EntropyMatch[] = [];
   for (const tok of tokenize(text)) {
-    if (isGuarded(tok.value, text, tok.start, tok.end)) continue;
+    if (isGuarded(tok.value, text, tok.start, tok.end, threshold)) continue;
     if (shannonEntropy(tok.value) >= threshold) {
       matches.push({ start: tok.start, end: tok.end, value: tok.value });
     }
