@@ -31,7 +31,7 @@ import {
   type IsolatedDaemonEnv,
 } from './helpers/daemon.js';
 
-// Same 17-tool pin as tests/mcp/server.test.ts — the stdio transport must
+// Same 18-tool pin as tests/mcp/server.test.ts — the stdio transport must
 // advertise the identical tool set as the HTTP transport (both are built
 // from the same buildMcpServer()).
 const EXPECTED_TOOL_NAMES = [
@@ -51,6 +51,7 @@ const EXPECTED_TOOL_NAMES = [
   'session_digest',
   'submit_feedback',
   'supersede_memory',
+  'user_profile',
   'why_memory',
 ].sort();
 
