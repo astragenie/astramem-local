@@ -24,6 +24,17 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 const PURE_HEX_RE = /^[0-9a-f]+$/i;
 const PLACEHOLDER_RE = /^\[REDACTED:[^\]]+\]$/;
 
+// FEAT-459 review fix: a `LABEL=VALUE` pair with no surrounding whitespace
+// (e.g. `PASSWORD_MIN_LENGTH=8`) tokenizes as ONE opaque unit here — this
+// detector has no concept of "label" vs. "value", unlike the pattern
+// detectors in detectors.ts. A long, character-diverse identifier glued to
+// a trivial numeric/boolean value can clear the entropy threshold on the
+// LABEL's diversity alone even though the value itself carries no secret
+// (measured: `PASSWORD_MIN_LENGTH=8` scores >4.0 bits/char purely from its
+// 18 distinct label characters). Mirrors the same numeric/boolean value
+// guard detectors.ts applies to its any-segment compound-label match.
+const CONFIG_ASSIGNMENT_RE = /^[A-Za-z][A-Za-z0-9_]*[:=](?:\d+|true|false)$/i;
+
 /** Shannon entropy in bits/char over the token's character distribution. */
 export function shannonEntropy(token: string): number {
   if (token.length === 0) return 0;
@@ -65,6 +76,7 @@ function isGuarded(token: string, text: string, start: number, end: number): boo
   if (PLACEHOLDER_RE.test(token)) return true;
   if (UUID_RE.test(token)) return true;
   if (token.includes('/') || token.includes('\\')) return true;
+  if (CONFIG_ASSIGNMENT_RE.test(token)) return true;
 
   // Pure-hex 40/64-char strings (git SHA-1 / SHA-256) adjacent to a
   // commit/sha/hash/digest keyword within ~40 chars are assumed to be

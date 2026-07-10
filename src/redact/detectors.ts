@@ -14,6 +14,13 @@ export interface PatternDetector {
   flags: string;
   /** Capture group index to redact instead of the whole match (1-based). */
   valueGroup?: number;
+  /**
+   * Optional post-match guard on the captured value (or whole match, when
+   * `valueGroup` is unset). Return false to discard the match entirely —
+   * used by the compound-label credential detector (FEAT-459) to reject
+   * pure-numeric/boolean values on its widened, lower-precision matches.
+   */
+  valueFilter?: (value: string) => boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -90,11 +97,45 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
   // (e.g. a 17-char truncated token fragment) are redacted here regardless
   // of length — the entropy detector's MIN_TOKEN_LENGTH floor (entropy.ts)
   // only ever applies to UNLABELED values, by design (see comment there).
+  //
+  // This detector requires the recognized keyword to be the LAST
+  // underscore-delimited segment before the separator ("trailing"), which
+  // is deliberate for the two ambiguous keywords here — `token` and
+  // `api[_-]?key` — because widening either to match anywhere in a compound
+  // produces real false positives on common non-secret identifiers
+  // (`TOKEN_LIMIT=`, `TOKEN_COUNT=`, `KEY_SIZE=`). See the next detector for
+  // the higher-precision keywords, which don't have this problem.
   {
     type: 'generic_credential',
     source: '(?<![A-Za-z])(?:api[_-]?key|secret|token|password|passwd|pwd)\\s*[:=]\\s*(\\S+)',
     flags: 'id',
     valueGroup: 1,
+  },
+  // Compound-label credential, ANY segment position (FEAT-459 review
+  // finding: the trailing-only detector above misses `SECRET_KEY=`,
+  // `DJANGO_SECRET_KEY=`, `JWT_SECRET_KEY=`, `secret_key_base:` — all real,
+  // common secret labels where the recognized keyword is a LEADING or
+  // MIDDLE segment, not the last one). Restricted to `secret`/`password`/
+  // `passwd`/`pwd` — these words are almost never benign in a label
+  // regardless of position, unlike `token`/`key` above. Deliberately does
+  // NOT add a bare `key` keyword (`primary_key=`, `sort_key=`, `cache_key=`
+  // are common non-secret column/identifier names — see the false-positive
+  // fixture for `primary_key=id`).
+  //
+  // Because this is lower-precision than a trailing match (the label is
+  // real, but middle-segment keywords like `..._MIN_LENGTH`, `..._DAYS`,
+  // `..._ENABLED` describe config knobs about a secret, not the secret
+  // itself), `valueFilter` rejects purely-numeric or boolean-literal
+  // values (`PASSWORD_MIN_LENGTH=8`, `SECRET_ROTATION_DAYS=30`,
+  // `SECRET_SCAN_ENABLED=true` all stay unredacted). Trailing matches above
+  // get no such guard — a trailing keyword IS the secret's label, at any
+  // value.
+  {
+    type: 'generic_credential',
+    source: '(?<![A-Za-z])(?:secret|password|passwd|pwd)(?:_[A-Za-z0-9]+)+\\s*[:=]\\s*(\\S+)',
+    flags: 'id',
+    valueGroup: 1,
+    valueFilter: (value) => !/^\d+$/.test(value) && !/^(?:true|false)$/i.test(value),
   },
   {
     type: 'jwt',

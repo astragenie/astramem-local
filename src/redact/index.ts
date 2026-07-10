@@ -94,7 +94,7 @@ function runDetector(text: string, detector: PatternDetector, guard: Array<[numb
       end = m.index + m[0].length;
       value = m[0];
     }
-    if (end > start && !overlapsAny(start, end, guard)) {
+    if (end > start && !overlapsAny(start, end, guard) && (!detector.valueFilter || detector.valueFilter(value))) {
       spans.push({ type: detector.type, start, end, value });
     }
     if (re.lastIndex === m.index) re.lastIndex++; // guard zero-length matches

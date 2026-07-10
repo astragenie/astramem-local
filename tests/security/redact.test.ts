@@ -93,6 +93,16 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
   { name: 'compound X_TOKEN: with colon separator', input: 'SESSION_TOKEN: abcdefghijk123', type: 'generic_credential', secret: 'abcdefghijk123' },
   { name: 'compound DB_PASSWORD=', input: 'DB_PASSWORD=letmein123456', type: 'generic_credential', secret: 'letmein123456' },
   { name: 'labeled short fragment (<20 chars, no entropy floor applies)', input: `token=${GHP_TOKEN.slice(0, 17)}`, type: 'generic_credential', secret: GHP_TOKEN.slice(0, 17) },
+  // FEAT-459 review fix: high-precision keywords (secret/password/passwd/pwd)
+  // matched as ANY underscore-delimited segment, not just trailing — these
+  // are the 5 reviewer-confirmed misses (SECRET_KEY is arguably the single
+  // most common secret label in existence: Django settings.py, Flask
+  // app.secret_key, Rails secret_key_base).
+  { name: 'SECRET_KEY= (leading segment)', input: 'SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
+  { name: 'DJANGO_SECRET_KEY= (middle segment)', input: 'DJANGO_SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
+  { name: 'JWT_SECRET_KEY= (middle segment)', input: 'JWT_SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
+  { name: 'APP_SECRET_KEY= (middle segment)', input: 'APP_SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
+  { name: 'secret_key_base: (Rails convention, colon separator)', input: 'secret_key_base: abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
@@ -207,6 +217,38 @@ describe('redactText — false-positive guards', () => {
 
   it('does not redact a plain code assignment "result = value"', () => {
     const input = 'result = value';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-459 review fix: the any-segment detector for secret/password/passwd/
+  // pwd is lower-precision than a trailing match, so a middle-segment keyword
+  // describing a CONFIG KNOB about a secret (not the secret itself) must not
+  // redact a plain numeric or boolean value.
+  it('does not redact PASSWORD_MIN_LENGTH=8 (numeric value, middle-segment keyword)', () => {
+    const input = 'PASSWORD_MIN_LENGTH=8';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact SECRET_ROTATION_DAYS=30 (numeric value, leading-segment keyword)', () => {
+    const input = 'SECRET_ROTATION_DAYS=30';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact SECRET_SCAN_ENABLED=true (boolean value, leading-segment keyword)', () => {
+    const input = 'SECRET_SCAN_ENABLED=true';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact TOKEN_LIMIT=4096 ("token" is an ambiguous keyword — stays trailing-only, never enters the any-segment detector at all)', () => {
+    const input = 'TOKEN_LIMIT=4096';
     const { text, events } = redactText(input);
     expect(text).toBe(input);
     expect(events.length).toBe(0);
