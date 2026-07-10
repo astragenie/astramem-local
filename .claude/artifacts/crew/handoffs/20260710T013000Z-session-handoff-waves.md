@@ -45,3 +45,9 @@ autonomous coordination ("run waves one after another, you are human in the loop
 - NEVER `git stash` in worktrees (repo-global stack — caused today's race; memory updated).
 - Review gate on every merge (crew:reviewer / reviewer-lite).
 - Suite baseline: 186 files / 2135 passed / 0 failed.
+
+## UPDATE 01:35Z (post-handoff, pre-close)
+- build-453s2 COMPLETED: commit 40d166e on feat/feat-453-s2-local (25 files, 2134 green).
+  review-453s2 dispatched — if no review artifact in the worktree, re-dispatch review
+  with the brief in this session's log, then merge (BEFORE 455).
+- build-455 still running at close — check feat-455-build worktree for commits.
