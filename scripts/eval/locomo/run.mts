@@ -30,6 +30,7 @@
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { loadDataset, sampleLocomo, ensureDatasetDownloaded } from './lib/dataset.js';
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, sessionNumbers, type LoCoMoSample } from './lib/types.js';
 import {
@@ -44,6 +45,9 @@ import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance } from '../shared/ollama-tuning.js';
 import { ledgerCompletedMap } from '../shared/resume-ledger.js';
 import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
+import { evaluateDetachDecision, isDetachedChild, buildDetachedChildArgs, spawnDetached } from '../shared/detach.js';
+import { patchRunStatus, printRunStatus, shouldFlushProgress } from '../shared/run-status.js';
+import { writeDaemonManifest, type DaemonManifestEntry } from '../shared/daemon-manifest.js';
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -61,8 +65,13 @@ const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
 const dryRunThroughput = has('--dry-run-throughput');
 // FEAT-462 AC-1/AC-6: see ../longmemeval/run-smoke.mts's identical comment.
 const resumeDir = get('--resume');
+// FEAT-462 slice B AC-2: see ../longmemeval/run-smoke.mts's identical comment.
+const detachRequested = has('--detach');
+const statusDir = get('--status');
 
-if (dryRunThroughput) {
+if (statusDir) {
+  process.exitCode = printRunStatus(statusDir);
+} else if (dryRunThroughput) {
   await runDryRunThroughput();
 } else {
   await runFull();
@@ -91,8 +100,15 @@ async function runShard(opts: {
   /** FEAT-462 AC-1: see ../longmemeval/run-smoke.mts's identical option —
    *  defaults to false so every existing call site is unaffected (AC-7). */
   resume?: boolean;
+  /** FEAT-462 slice B AC-3/AC-2: see ../longmemeval/run-smoke.mts's
+   *  identical options. */
+  onDaemonSpawned?: (entry: DaemonManifestEntry) => void;
+  reportIngestProgress?: (shardIndex: number, done: number, total: number) => void;
 }): Promise<ShardResult> {
-  const { shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false } = opts;
+  const {
+    shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false,
+    onDaemonSpawned, reportIngestProgress,
+  } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
   const shardDir = label ? join(runDir, label) : runDir;
   const dataDir = join(shardDir, 'datadir');
@@ -125,6 +141,7 @@ async function runShard(opts: {
     await waitForHealthStatus(daemon.baseUrl, ['ok'], 60_000);
     timings.daemon_boot_ms = Date.now() - t;
     console.log(`${tag}daemon up at ${daemon.baseUrl} (${timings.daemon_boot_ms}ms)`);
+    onDaemonSpawned?.({ shard: shardIndex, label: label ?? 'single', pid: daemon.pid, port: daemon.port, datadir: dataDir });
 
     t = Date.now();
     const ingestManifest = await ingestConversations(
@@ -134,7 +151,11 @@ async function runShard(opts: {
         concurrency,
         ledgerPath,
         resumeCompleted,
-        onProgress: (d, total) => { checkDaemonAlive(); if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`); },
+        onProgress: (d, total) => {
+          checkDaemonAlive();
+          reportIngestProgress?.(shardIndex, d, total);
+          if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`);
+        },
       },
     );
     process.stdout.write('\n');
@@ -219,6 +240,31 @@ async function runFull(): Promise<void> {
   mkdirSync(runDir, { recursive: true });
   console.log(resumeDir ? `Resuming run dir: ${runDir} (ledger-driven skip of already-ingested sessions)` : `Run dir: ${runDir}`);
 
+  // FEAT-462 slice B AC-2: see ../longmemeval/run-smoke.mts's identical
+  // comment for the full --detach mechanism/rationale.
+  const detachDecision = evaluateDetachDecision({ detachRequested, alreadyDetached: isDetachedChild(process.env) });
+  const startedAt = new Date().toISOString();
+  if (detachDecision.action === 'spawn-detached') {
+    const child = spawnDetached({
+      scriptPath: fileURLToPath(import.meta.url),
+      args: buildDetachedChildArgs(args, runDir),
+      cwd: process.cwd(),
+      runDir,
+    });
+    patchRunStatus(runDir, {
+      status: 'running', phase: 'starting', orchestrator_pid: child.pid ?? -1, detached: true,
+      started_at: startedAt, sessions_done: 0, sessions_total: 0,
+    });
+    console.log(`Detached: orchestrator pid ${child.pid}, run dir ${runDir}`);
+    console.log(`Check progress:  bun scripts/eval/locomo/run.mts --status ${runDir}`);
+    console.log(`Detached stdout/stderr -> ${child.stdoutPath} / ${child.stderrPath}`);
+    return;
+  }
+  patchRunStatus(runDir, {
+    status: 'running', phase: 'starting', orchestrator_pid: process.pid, detached: isDetachedChild(process.env),
+    started_at: startedAt, sessions_done: 0, sessions_total: 0,
+  });
+
   const overallStart = Date.now();
   const timings: Record<string, number> = {};
 
@@ -240,6 +286,10 @@ async function runFull(): Promise<void> {
   const guard = evaluateResumeGuard(runParamsPath, Boolean(resumeDir), currentParams);
   if (guard.action === 'refuse') {
     console.error(`--resume ${resumeDir}: ${guard.refuseMessage}`);
+    patchRunStatus(runDir, {
+      status: 'failed', phase: 'failed', orchestrator_pid: process.pid, started_at: startedAt,
+      error: guard.refuseMessage, exit_code: 1,
+    });
     process.exitCode = 1;
     return;
   }
@@ -261,6 +311,10 @@ async function runFull(): Promise<void> {
     console.log(`Sample: ${sample.length} conversation(s), ${totalQa} QA pair(s) -> ${join(runDir, 'sample.json')}`);
     for (const cat of LOCOMO_CATEGORIES) console.log(`  ${cat} (${CATEGORY_NAMES[cat]}): ${counts[cat] ?? 0}`);
   }
+  const totalSessionsSampled = sample.reduce((s, c) => s + sessionNumbers(c.conversation).length, 0);
+  patchRunStatus(runDir, {
+    orchestrator_pid: process.pid, started_at: startedAt, phase: 'sampling', sessions_total: totalSessionsSampled,
+  });
 
   const ollamaStatus = await queryOllamaStatus(ollamaBaseUrl);
   printOllamaTuningGuidance(ollamaStatus, ollamaBaseUrl);
@@ -273,11 +327,37 @@ async function runFull(): Promise<void> {
   const azureCfg = resolveAzureConfig();
   console.log(`Answering via Azure deployment "${azureCfg.answererDeployment}" (reasoning_effort=minimal, k=${k})...`);
 
+  patchRunStatus(runDir, { orchestrator_pid: process.pid, started_at: startedAt, phase: 'ingesting' });
+
+  // FEAT-462 slice B AC-3/AC-2: see ../longmemeval/run-smoke.mts's identical
+  // comment for both accumulators.
+  const daemonManifestEntries: DaemonManifestEntry[] = [];
+  const onDaemonSpawned = (entry: DaemonManifestEntry): void => {
+    daemonManifestEntries.push(entry);
+    writeDaemonManifest(runDir, [...daemonManifestEntries]);
+  };
+  const shardIngestProgress = new Map<number, { done: number; total: number }>();
+  let lastProgressFlushMs = 0;
+  const reportIngestProgress = (shardIndex: number, done: number, total: number): void => {
+    shardIngestProgress.set(shardIndex, { done, total });
+    const now = Date.now();
+    if (!shouldFlushProgress(lastProgressFlushMs, now)) return;
+    lastProgressFlushMs = now;
+    let sessionsDone = 0;
+    for (const v of shardIngestProgress.values()) sessionsDone += v.done;
+    patchRunStatus(runDir, {
+      orchestrator_pid: process.pid, started_at: startedAt, phase: 'ingesting',
+      sessions_done: sessionsDone, sessions_total: totalSessionsSampled,
+    });
+  };
+
   tStart = Date.now();
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
       resume: Boolean(resumeDir),
+      onDaemonSpawned,
+      reportIngestProgress,
     })),
   );
   timings.shards_wall_clock_ms = Date.now() - tStart;
@@ -349,6 +429,11 @@ async function runFull(): Promise<void> {
   console.log(`\nNext: judge the hypotheses, e.g.\n  bun scripts/eval/locomo/judge.mts --hyp ${hypPath} --ref ${join(runDir, 'sample.json')}`);
 
   if (manifest.failed_count > 0 || distillResult.timed_out_sample_ids.length > 0 || failedShards.length > 0) exitCode = 1;
+  patchRunStatus(runDir, {
+    status: exitCode === 0 ? 'completed' : 'failed', phase: exitCode === 0 ? 'completed' : 'failed',
+    orchestrator_pid: process.pid, started_at: startedAt,
+    sessions_done: manifest.ok_count, sessions_total: manifest.total_sessions, exit_code: exitCode,
+  });
   process.exitCode = exitCode;
 }
 

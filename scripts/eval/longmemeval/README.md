@@ -325,6 +325,54 @@ assumes.
   overwrites `<hyp>.eval-results-<judge>` — re-running re-judges everything,
   it does not skip already-judged rows.
 
+## Detached execution, status, and the PID/port manifest (FEAT-462 slice B)
+
+Two of the three eval deaths this FEAT was filed over (CLAUDE.md's Do-NOT
+section, this repo's own `docs/eval/`... post-mortems) were the invoking
+terminal/session ending, not the daemon itself crashing. `--detach` and the
+PID/port manifest close that gap:
+
+```powershell
+# Launches, prints the orchestrator pid + where to check on it, then THIS
+# invocation exits immediately -- the real work continues in a detached
+# child process, surviving this terminal closing.
+bun scripts/eval/longmemeval/run-smoke.mts --detach --shards 2 --n 50
+
+# From any later session, on this same machine:
+bun scripts/eval/longmemeval/run-smoke.mts --status .eval-data/longmemeval/runs/<timestamp>
+```
+
+- **Mechanism**: a plain `child_process.spawn(..., { detached: true }).unref()`
+  re-invocation of this same script with the same args (`--run-dir` pinned
+  explicitly so the child lands on the exact run dir the parent already
+  committed to), stdio redirected to `<run-dir>/detached-stdout.log` /
+  `detached-stderr.log`. **Not** the `AstraMemoryD` schtasks-keepalive
+  pattern this FEAT's body cites as a reference point — schtasks solves a
+  different problem (surviving a full OS reboot, needed for a long-lived
+  service) that this harness doesn't have; `detached: true` + `unref()`
+  already survives the terminal/session ending on both Windows and POSIX
+  with zero OS-specific registration and nothing left to clean up
+  afterward. Implementation: `../shared/detach.ts`.
+- **`run-status.json`** is written into the run dir on EVERY invocation,
+  `--detach` or not (same additive-file precedent as `ingest-ledger.jsonl` /
+  `run-params.json`): `status` (running/completed/failed), `phase`,
+  `orchestrator_pid`, `detached`, `started_at`/`updated_at`,
+  `sessions_done`/`sessions_total`. Updated at phase transitions
+  (starting/sampling/ingesting/completed/failed) and periodically
+  (throttled to every 2s) as ingest progresses across all shards. Read it
+  yourself or via `--status <run-dir>`. Implementation: `../shared/run-status.ts`.
+- **`daemon-manifest.json`** is written into the run dir every time a shard
+  daemon's boot log reports its bound port — one `{ shard, label, pid, port,
+  datadir }` entry per daemon, always on (same additive-file precedent).
+  This is the scoped-kill target CLAUDE.md's Do-NOT section calls for
+  ("kill only PIDs you spawned", never a machine-wide `taskkill`/image-name
+  sweep): a cleanup script reads this file and signals only these PIDs.
+  Killing a daemon this way and then `--resume`-ing the run works exactly
+  like killing it any other way (proven in
+  `../longmemeval/detach-kill-resume.test.ts`) — the manifest doesn't change
+  resume semantics, it only scopes the kill. Implementation:
+  `../shared/daemon-manifest.ts`'s `killManifestDaemons`.
+
 ## Isolation — why the eval daemon does NOT use your real config dir
 
 **Do not remove this isolation.** While building this harness we spawned a

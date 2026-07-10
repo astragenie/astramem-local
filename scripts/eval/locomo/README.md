@@ -243,6 +243,23 @@ start a fresh run dir for different params. Implementation:
 `../longmemeval/run-smoke.mts`'s (see that README's "Resume behavior"
 section for the full writeup).
 
+## Detached execution, status, and the PID/port manifest
+
+`run.mts --detach` / `--status <run-dir>` and the `daemon-manifest.json`
+PID/port manifest (FEAT-462 slice B) are identical mechanism and flag
+surface to `../longmemeval/run-smoke.mts`'s — same shared
+`../shared/detach.ts` / `../shared/run-status.ts` / `../shared/daemon-manifest.ts`
+modules. See that README's "Detached execution, status, and the PID/port
+manifest" section for the full writeup; the short version:
+
+```
+bun scripts/eval/locomo/run.mts --detach --shards 2
+bun scripts/eval/locomo/run.mts --status .eval-data/locomo/runs/<timestamp>
+```
+
+`run-status.json` and `daemon-manifest.json` appear in the run dir on
+EVERY invocation, `--detach` or not.
+
 ## Reproducibility — what to pin before publishing a number
 
 Per the FEAT's architecture note, a published LoCoMo number needs more than
