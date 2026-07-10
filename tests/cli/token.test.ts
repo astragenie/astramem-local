@@ -124,13 +124,15 @@ describe('rotateToken — credential store unavailable (secrets.env fallback)', 
 // ─── rotateToken: credential store available (SEC-10 primary path) ──────────
 
 describe('rotateToken — credential store available', () => {
-  it('stores the bearer in the credential store and omits it from secrets.env', () => {
+  it('stores the bearer in the credential store (scoped to configDir) and omits it from secrets.env', () => {
     const store = stubWorkingCredentialStore();
     const path = tmpSecretsPath();
-    const token = rotateToken(path);
+    const configDir = join(path, '..'); // reuse the tmp secrets dir as the scoping configDir
+    const token = rotateToken(path, configDir);
 
-    expect(readBearer()).toBe(token);
-    expect(store.get('astramem-local:bearer')).toBe(token);
+    expect(readBearer(configDir)).toBe(token);
+    // Scoped write never lands on the legacy unscoped key (FEAT-466).
+    expect(store.has('astramem-local:bearer')).toBe(false);
 
     const content = readFileSync(path, 'utf8');
     expect(content).not.toContain('MEMORY_BEARER=');

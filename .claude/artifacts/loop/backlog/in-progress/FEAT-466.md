@@ -1,13 +1,13 @@
 ---
 id: FEAT-466
-status: triaged
+status: in-progress
 priority: P1
 category: bug
 target_release: null
 created: 2026-07-10
 updated: 2026-07-10
 depends_on: []
-slices: []
+slices: [SLICE-422]
 derived_from: .claude/artifacts/crew/validations/20260710T123200Z-validation-result-slice-420-feat-461-config-yaml.md (incident finding)
 cross_product: [astramem-local]
 tags: ["concern:security", "concern:testing", "stack:typescript", "surface:daemon"]
@@ -21,6 +21,7 @@ pm_autonomous_safe: true
 pm_reviewed: 2026-07-10
 autonomous_safe: true
 triage_notes: "P1 via formula: impact 0.75>=0.7 AND alignment 0.7>=0.6, so the first P1 branch fires directly. composite_score = 0.75*0.35 + 0.7*0.30 + (1-0.5)*0.20 + (1-0.45)*0.10 + (1-0.1)*0.05 = 0.6725. Customer impact scored high, not just 'testing hygiene': this is a live production-credential collision incident (2026-07-10, SLICE-420 validation) — a sandboxed init overwrote the real machine-wide bearer in Windows Credential Manager, caught only by luck (no daemon restart during the ~1 min window) and restored manually from secrets.env. Every future sandboxed init/e2e run carries the same latent blast radius until this is scoped. strategic_alignment scored 0.7: directly protects the daemon's core trust proposition ('your local memory, not leaked/clobbered by unrelated processes') and unblocks safe sandboxed testing of init/writeConfig going forward. technical_risk banded at 0.45: security-sensitive (credential storage identity) and must preserve backward compat for existing installs via legacy-identity fallback, but confined to src/storage/keystore.ts + doctor.ts, no data-migration, revert-only rollback, and precedented by the existing ASTRA_MEMORY_TEST_FORCE_KEYFILE bypass pattern already shipped for db-key. autonomous_safe=true: all three mechanical thresholds pass (risk 0.45, effort 0.5, dependency 0.1, all <=0.6) and this triage pass drafts concrete Given-When-Then ACs below (scoped identity + legacy fallback, sandbox bypass, doctor row, before/after OS-store-untouched assertion, two-configDir incident-class regression test) satisfying the AC-exists gate."
+started_at: 2026-07-10
 ---
 ## Description
 

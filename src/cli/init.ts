@@ -738,7 +738,7 @@ export async function init(argv: string[] = []): Promise<void> {
   //    ONLY as fallback when the store is unavailable — mirrors keystore.ts).
   const secretsPath = join(configDir, 'secrets.env');
   const bearer = generateToken();
-  const { stored } = storeBearer(bearer);
+  const { stored } = storeBearer(bearer, configDir);
   writeSecrets(
     {
       bearer: stored ? undefined : bearer,

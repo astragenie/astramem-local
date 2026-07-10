@@ -33,7 +33,7 @@ import { shimPaths, exitHistoryPaths, type ShimPointer, type ExitHistoryEntry } 
 import { releaseIdFromEntryJs, defaultReleasesRoot } from '../service/release.js';
 import { pathToFileURL } from 'node:url';
 import { SCHEMA_VERSION } from '../server/lib/wire-meta.js';
-import { getOrCreateKey, readBearer } from '../storage/keystore.js';
+import { getOrCreateKey, readBearer, getBearerIdentity } from '../storage/keystore.js';
 import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
 import { usefulnessRate, usefulnessByType } from '../storage/usefulness.js';
 import { buildMemoryHealthFull } from '../server/queries/memory-health.js';
@@ -535,8 +535,11 @@ function checkEncryption(dataDir: string, enabled: boolean): Check {
       }
 
       try {
-        const { source } = getOrCreateKey(defaultConfigDir());
+        const { source, identity } = getOrCreateKey(defaultConfigDir());
         const label = source === 'credential-store' ? 'keychain' : 'key-file';
+        // AC-5: surface which credential-store identity (scoped vs legacy)
+        // this daemon is actually reading its key from.
+        const identitySuffix = identity ? `, identity: ${identity}` : '';
 
         const dbPath = join(dataDir, 'memory.sqlite');
         if (existsSync(dbPath)) {
@@ -544,12 +547,12 @@ function checkEncryption(dataDir: string, enabled: boolean): Check {
           if (header.startsWith('SQLite format 3')) {
             return {
               ok: false,
-              message: `encryption: on (${label}) but memory.sqlite header is still PLAINTEXT — auto-migration has not run yet`,
+              message: `encryption: on (${label}${identitySuffix}) but memory.sqlite header is still PLAINTEXT — auto-migration has not run yet`,
               fix: 'astramem-local serve  (auto-migrates a plaintext DB to encrypted form on next start)',
             };
           }
         }
-        return { ok: true, message: `encryption: on (${label})` };
+        return { ok: true, message: `encryption: on (${label}${identitySuffix})` };
       } catch (err) {
         return { ok: false, message: `Encryption check error: ${err}` };
       }
@@ -564,8 +567,12 @@ function checkBearerLocation(): Check {
     name: 'Bearer token location',
     async run(): Promise<CheckResult> {
       try {
-        if (readBearer()) {
-          return { ok: true, message: 'bearer: OS credential store' };
+        const configDir = defaultConfigDir();
+        if (readBearer(configDir)) {
+          // AC-5: surface which credential-store identity (scoped vs
+          // legacy) this daemon is actually reading its bearer from.
+          const identity = getBearerIdentity(configDir);
+          return { ok: true, message: `bearer: OS credential store (identity: ${identity})` };
         }
         if (readBearerFromSecretsFile()) {
           return {

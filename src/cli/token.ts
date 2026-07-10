@@ -28,10 +28,14 @@ export function generateToken(): string {
  *
  * @param secretsPath - Absolute path to secrets.env. Defaults to
  *   `defaultConfigDir()/secrets.env`.
+ * @param configDir - Config dir used to scope the OS credential-store
+ *   identity (FEAT-466). Defaults to `defaultConfigDir()`. Tests pass a tmp
+ *   dir here to keep the stubbed Entry's scoped key isolated per test.
  * @returns The new Bearer token string (64 hex chars).
  */
-export function rotateToken(secretsPath?: string): string {
+export function rotateToken(secretsPath?: string, configDir?: string): string {
   const path = secretsPath ?? join(defaultConfigDir(), 'secrets.env');
+  const dir = configDir ?? defaultConfigDir();
   const newToken = generateToken();
 
   // Preserve any existing azure keys from the current secrets.env.
@@ -56,7 +60,7 @@ export function rotateToken(secretsPath?: string): string {
   // SEC-10: try the OS credential store first; only fall back to writing the
   // bearer into secrets.env when the store is unavailable. Azure keys (if
   // any) are unaffected — they still live in secrets.env regardless.
-  const { stored } = storeBearer(newToken);
+  const { stored } = storeBearer(newToken, dir);
   writeSecrets(
     { bearer: stored ? undefined : newToken, azureKey, azureEndpoint, azureDeployment },
     path,
