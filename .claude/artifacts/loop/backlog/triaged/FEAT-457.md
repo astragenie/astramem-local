@@ -1,15 +1,25 @@
 ---
 id: FEAT-457
-status: pending
-priority: null
+status: triaged
+priority: P2
 category: feature
 target_release: null
 created: 2026-07-09
-updated: 2026-07-09
+updated: 2026-07-10
 depends_on: []
 slices: []
 derived_from: docs/research/2026-07-09-packaging-audit.md
 cross_product: [astramem-local]
+pm_customer_impact: 0.4
+pm_effort_estimate: 0.45
+pm_strategic_alignment: 0.55
+pm_technical_risk: 0.35
+pm_dependency_depth: 0.15
+pm_composite_priority: P2
+pm_autonomous_safe: false
+pm_reviewed: 2026-07-10
+autonomous_safe: false
+triage_notes: "P2 via formula (default branch): impact 0.40 < 0.70 so the (impact>=0.7 AND alignment>=0.6) P1 branch does not fire; alignment 0.55 < 0.80 so the (alignment>=0.8 AND effort<=0.4) P1 branch does not fire; effort 0.45 < 0.70 so P3 (effort>=0.7 AND impact<=0.3) does not fire. composite_score = 0.40*0.35 + 0.55*0.30 + (1-0.45)*0.20 + (1-0.35)*0.10 + (1-0.15)*0.05 = 0.5225. autonomousSafe=false: all three mechanical thresholds individually pass (risk 0.35, effort 0.45, dependency 0.15 all <=0.6) but no AC/spec exists on the body and P2-with-no-flag means inline AC drafting is not triggered -- forced false by the missing-AC branch, not a risk-threshold override. Moderate-priority eval-infra item, exactly as the coordinator framed it: the FEAT's own sequencing section is the load-bearing reason this isn't scored higher despite genuine external-credibility value."
 ---
 ## Description
 
