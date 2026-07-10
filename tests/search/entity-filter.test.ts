@@ -102,6 +102,52 @@ describe('search() entity filter (AC-4)', () => {
   });
 });
 
+// FEAT-453 §3.3/AC-6 — entity + as_of together narrow SELECTION (not just
+// projection): a memory whose matched fact link's effective window has
+// closed is excluded, even though the same memory is still "current" and
+// would be returned by a plain as_of query with no entity filter (Example 1
+// vs Example 2, design doc §3.4).
+describe('search() entity + as_of composition (FEAT-453 AC-6)', () => {
+  it('excludes a memory once as_of falls outside the fact link window, though entity-less as_of still includes it', async () => {
+    const db = setupDb();
+    const entities = new EntityRepo(db);
+    const validFrom = Date.parse('2026-01-01T00:00:00Z');
+    const memId = new MemoryRepo(db).insert({
+      type: 'fact', text: 'alice approved the pr', normalized_text: 'alice approved the pr',
+      repo: 'r1', project: null, branch: null, agent: null,
+      session_id: null, hash: 'h-ef-as-of-1', source_hash: null,
+      valid_from: validFrom,
+    });
+    const aliceId = entities.upsert('alice', 'actor');
+    entities.linkWithValidity(memId, aliceId, {
+      validAt: validFrom,
+      invalidAt: Date.parse('2026-03-01T00:00:00Z'),
+    });
+
+    // Example 2: entity + as_of AFTER the fact link's window — excluded.
+    const afterWindow = await search('alice approved the pr', {
+      entity: 'alice',
+      as_of: Date.parse('2026-04-01T00:00:00Z'),
+    }, 10, { db, embed: fakeEmbed, weights: defaultConfig().search });
+    expect(afterWindow.map(h => h.id)).not.toContain(memId);
+
+    // Example 2: entity + as_of INSIDE the fact link's window — included.
+    const insideWindow = await search('alice approved the pr', {
+      entity: 'alice',
+      as_of: Date.parse('2026-02-01T00:00:00Z'),
+    }, 10, { db, embed: fakeEmbed, weights: defaultConfig().search });
+    expect(insideWindow.map(h => h.id)).toContain(memId);
+
+    // Example 1: plain as_of, no entity filter, same instant AFTER the fact
+    // link's window — the memory is STILL returned (memory-level window is
+    // unaffected by fact-level windows; projection only).
+    const plainAsOf = await search('alice approved the pr', {
+      as_of: Date.parse('2026-04-01T00:00:00Z'),
+    }, 10, { db, embed: fakeEmbed, weights: defaultConfig().search });
+    expect(plainAsOf.map(h => h.id)).toContain(memId);
+  });
+});
+
 describe('search() zeta ranking safety (AC-6)', () => {
   // Freshness (the δ component) is computed from Date.now() at call time —
   // two back-to-back search() calls a few ms apart would otherwise produce

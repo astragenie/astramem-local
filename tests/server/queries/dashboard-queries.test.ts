@@ -132,7 +132,7 @@ describe('queryEntityLinkage', () => {
     });
 
     db.prepare("INSERT INTO entities (id, name, kind) VALUES ('e1', 'postgres', 'tech')").run();
-    db.prepare('INSERT INTO memory_entities (memory_id, entity_id) VALUES (?, ?)').run(idLinked, 'e1');
+    db.prepare("INSERT INTO memory_entities (id, memory_id, entity_id) VALUES ('me1', ?, ?)").run(idLinked, 'e1');
 
     const linkage = queryEntityLinkage(db);
     expect(linkage.entityCount).toBe(1);

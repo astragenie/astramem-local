@@ -182,11 +182,24 @@ export async function embedAndIndex(
       entities: mem.entities ?? [],
     }, eventsRepo);
 
-    // FEAT-402 AC-1: link entities emitted in the same extraction call.
-    // Idempotent (INSERT OR IGNORE on the memory_id/entity_id PK) so this is
-    // safe to run on a deduped hit too — backfills entities for a memory
-    // that pre-existed before this feature shipped, on its next re-ingest.
-    entityRepo.linkEntitiesForMemory(memoryId, mem.entities);
+    // FEAT-402 AC-1 / FEAT-453 §4: link entities emitted in the same
+    // extraction call, carrying each entity's stated fact-level validity
+    // hint (if any) through to memory_entities. Idempotent — linkWithValidity
+    // silently no-ops a duplicate open-window insert for the same pair (see
+    // its doc comment), so this is safe to run on a deduped hit too, exactly
+    // like the linkEntitiesForMemory() call it replaces here. valid_at/
+    // invalid_at are parsed from the extractor's ISO-8601 strings to epoch
+    // ms; a missing or unparseable hint resolves to `null` — "no stated
+    // fact-level start/end," never "now" — so it falls back to the parent
+    // memory's own valid_from at query time (design doc §3.1), not baked in
+    // here.
+    for (const entity of mem.entities ?? []) {
+      const entityId = entityRepo.upsert(entity.name, entity.kind);
+      entityRepo.linkWithValidity(memoryId, entityId, {
+        validAt: parseIsoToMs(entity.valid_at),
+        invalidAt: parseIsoToMs(entity.invalid_at),
+      });
+    }
 
     // Always upsert vec (may update if the memory already existed but had no vec)
     await vecStore.upsert(memoryId, vec);
@@ -204,4 +217,17 @@ export async function embedAndIndex(
   }
 
   return results;
+}
+
+/**
+ * Parse an extractor-emitted ISO-8601 valid_at/invalid_at hint (FEAT-453 §4)
+ * to epoch ms. Returns `null` — not `undefined`, not `Date.now()` — for a
+ * missing or unparseable value: `linkWithValidity`'s `null` means "no stated
+ * fact-level bound," which is the correct fallback whether the extractor
+ * omitted the hint entirely or emitted a malformed date string.
+ */
+function parseIsoToMs(value: string | undefined): number | null {
+  if (!value) return null;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
 }

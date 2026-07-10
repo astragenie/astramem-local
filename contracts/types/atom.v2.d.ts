@@ -108,6 +108,14 @@ export interface AtomV2 {
      * Optional refinement, meaningful for actor-family kinds (see ACTOR_KINDS in contracts/wire.ts): human or AI agent.
      */
     subtype?: 'human' | 'ai';
+    /**
+     * FEAT-453: bitemporal valid-time start for THIS entity link (fact-level, distinct from the atom's own valid_from). null = no stated fact-level start; resolves to the atom's own valid_from at query time.
+     */
+    valid_at?: string | null;
+    /**
+     * FEAT-453: bitemporal valid-time end for THIS entity link. null = not known to have stopped being true.
+     */
+    invalid_at?: string | null;
   }[];
   created_at: string;
   updated_at: string;

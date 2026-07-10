@@ -45,11 +45,69 @@ export class EntityRepo {
     return id;
   }
 
-  /** Idempotent link — INSERT OR IGNORE on the (memory_id, entity_id) PK. */
+  /**
+   * Idempotent link with no stated validity window (valid_at/invalid_at both
+   * NULL) — the FEAT-402 default. Since migration 023 (FEAT-453), the table
+   * PK is a surrogate `id`, not the composite (memory_id, entity_id), so
+   * idempotency on a re-call now comes from `idx_memory_entities_open_window`
+   * (the partial unique index on open rows, §1.4 of the design doc) rather
+   * than the old composite PK — `INSERT OR IGNORE` still silently no-ops a
+   * duplicate open-window insert for the same pair either way, so this
+   * method's behavior for existing callers is unchanged.
+   */
   link(memoryId: string, entityId: string): void {
     this.db
-      .prepare('INSERT OR IGNORE INTO memory_entities (memory_id, entity_id) VALUES (?, ?)')
-      .run(memoryId, entityId);
+      .prepare('INSERT OR IGNORE INTO memory_entities (id, memory_id, entity_id) VALUES (?, ?, ?)')
+      .run(randomUUID(), memoryId, entityId);
+  }
+
+  /**
+   * Fact-level link with an explicit validity window (FEAT-453 §1.3). `{}`
+   * (both null) is byte-identical in effect to `link()` — same idempotent
+   * no-op via `idx_memory_entities_open_window` when an open row already
+   * exists for this pair, so a dedup-replay re-call (e.g. re-ingesting a
+   * memory whose hash already exists) is still a safe no-op. To REPLACE an
+   * already-open window with a new one (e.g. a stated correction), close the
+   * old row first via `closeAndRelink` — this method alone will not do that;
+   * it only ever adds a new row or silently skips when one is already open.
+   */
+  linkWithValidity(
+    memoryId: string,
+    entityId: string,
+    opts: { validAt?: number | null; invalidAt?: number | null } = {},
+  ): void {
+    this.db
+      .prepare(`
+        INSERT INTO memory_entities (id, memory_id, entity_id, valid_at, invalid_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT (memory_id, entity_id) WHERE invalid_at IS NULL DO NOTHING
+      `)
+      .run(randomUUID(), memoryId, entityId, opts.validAt ?? null, opts.invalidAt ?? null);
+  }
+
+  /**
+   * Close the currently-open window for (memoryId, entityId) at `closeAt`
+   * and insert a new window in the same transaction (AC-2: proves the
+   * surrogate PK allows a second row for the same pair once the first is
+   * closed). No-op on the close side if no open row exists for the pair —
+   * the insert still happens.
+   */
+  closeAndRelink(
+    memoryId: string,
+    entityId: string,
+    closeAt: number,
+    opts: { validAt?: number | null; invalidAt?: number | null } = {},
+  ): void {
+    const tx = this.db.transaction(() => {
+      this.db
+        .prepare(`
+          UPDATE memory_entities SET invalid_at = ?
+          WHERE memory_id = ? AND entity_id = ? AND invalid_at IS NULL
+        `)
+        .run(closeAt, memoryId, entityId);
+      this.linkWithValidity(memoryId, entityId, opts);
+    });
+    tx();
   }
 
   /**
@@ -149,6 +207,33 @@ export class EntityRepo {
     const rows = this.db
       .prepare(`SELECT DISTINCT memory_id FROM memory_entities WHERE entity_id IN (${placeholders})`)
       .all(...entityIds) as { memory_id: string }[];
+    return new Set(rows.map(r => r.memory_id));
+  }
+
+  /**
+   * Time-aware sibling of `memoryIdsForEntities` (FEAT-453 §3.3 composition
+   * point B — `filters.entity` + `filters.as_of` together). A memory
+   * qualifies only when a matched fact link's EFFECTIVE window covers
+   * `asOf`: clipped to the parent memory's own valid_from/valid_to (§3.1),
+   * computed at query time, never mutated onto the memory_entities row.
+   * `9223372036854775807` is the same "+inf" epoch-ms sentinel the design
+   * doc uses for an open (NULL) end bound. Empty entityIds returns an empty
+   * set, same as `memoryIdsForEntities` (never "no filter").
+   */
+  memoryIdsForEntitiesAsOf(entityIds: string[], asOf: number): Set<string> {
+    if (entityIds.length === 0) return new Set();
+    const placeholders = entityIds.map(() => '?').join(',');
+    const rows = this.db
+      .prepare(`
+        SELECT DISTINCT me.memory_id
+        FROM memory_entities me
+        JOIN memories m ON m.id = me.memory_id
+        WHERE me.entity_id IN (${placeholders})
+          AND MAX(COALESCE(me.valid_at, m.valid_from), m.valid_from) <= ?
+          AND MIN(COALESCE(me.invalid_at, 9223372036854775807),
+                  COALESCE(m.valid_to, 9223372036854775807)) > ?
+      `)
+      .all(...entityIds, asOf, asOf) as { memory_id: string }[];
     return new Set(rows.map(r => r.memory_id));
   }
 }
