@@ -2,12 +2,98 @@
 slice: SLICE-421
 feature: FEAT-463
 role: builder
-status: implementation_complete
+status: fix_round_complete
 branch: feat/feat-463-quoted-labels
-commit: fab5173
+commit: 32db526
+review: .claude/artifacts/crew/reviews/20260710T130230Z-review-result-slice-421-feat-463-quoted-labels.md (needs_fix, Finding 1 CRITICAL closed in 32db526)
 ---
 
 # SLICE-421 / FEAT-463 — builder handoff
+
+## Fix round (2026-07-10, commit 32db526, on top of fab5173/07cc8ea) — review CRITICAL finding
+
+Review (`20260710T130230Z-review-result-slice-421-feat-463-quoted-labels.md`) returned
+**needs_fix**: all 6 ACs, structural non-overlap, ReDoS safety, and AC-4's pure-addition
+guarantee were independently re-verified and confirmed genuine, but flagged one
+CRITICAL finding in the "unplanned" `entropy.ts` guard added alongside the detector work.
+
+**Finding 1 (CRITICAL, reproduced by reviewer, now fixed):** the original guard —
+`LABEL_ONLY_RE.test(token) && SECRET_LABEL_KEYWORD_RE.test(token)` — suppressed entropy
+detection on any token *shaped* like a value-less label (identifier ending in a bare
+`:`/`=`) that merely *contained* a recognized keyword substring, without verifying there
+was actually no value attached. A genuine high-entropy secret can satisfy that exact
+shape: the reviewer reproduced `mysecrettoken1234567890abcdef=` (entropy 4.507, no
+pattern-detector hit, contains "secret"/"token") sailing through all three redaction
+stages as full plaintext, plus a `:`-trailing variant and an underscore-segment variant
+(`my_secret_token_9f8a7b6c5d4e3f2a1b0c=`) proving "exact segment, not substring" alone
+doesn't close it either. A no-keyword control with the identical shape redacted
+correctly, isolating the keyword check as the exact hole.
+
+I verified the reviewer's own suggested "simplest form" fix (suppress only when the
+label's own entropy is below threshold) does **not** actually work before implementing
+it: `"PASSWORD_MIN_LENGTH":` itself scores 4.096 bits/char, above the 4.0 default
+threshold, so that check would have wrongly un-guarded the very AC-3 fixture it was
+supposed to keep green. Implemented the reviewer's other proposed direction instead —
+context-aware, verified against all four cases before committing:
+`isLabelWithSafeValueFollowing()` (`src/redact/entropy.ts`) only suppresses entropy on a
+label-shaped, keyword-containing token when a genuinely safe value (digits or a boolean
+literal, optionally quoted) is found as the *next* whitespace-delimited token in the
+text. Nothing following (the shape of all three bypass repros) or an unsafe next token
+means the label-shaped token falls through to the ordinary entropy check like any other
+token — so a real secret in that shape still gets redacted.
+
+Also addressed review finding #2 (LOW, disclosed, non-blocking): added an inline code
+comment at the escaped-quote value-capture regex site in `detectors.ts` (not just the
+handoff doc) documenting the partial-redaction limitation for `"key": "va\"lue"`-style
+escaped inner quotes — left unfixed per the FEAT's own non-AST-parsing non-goal, per the
+reviewer's own recommendation (fast-follow, not a blocker). Unicode smart-quotes
+(finding in the same section) intentionally left untouched per team-lead instruction —
+out of scope, follow-up FEAT.
+
+New tests in `tests/security/redact.test.ts` (4 new `TRUE_POSITIVES` fixtures): the
+reviewer's three exact bypass repros (trailing `=`, trailing `:`, underscore-segment
+variant) now redact as `high_entropy`, plus the no-keyword control fixture confirming
+the identical shape without a keyword substring redacts correctly either way (regression
+guard against reintroducing an overly-broad "any label-shaped token" check in the
+future).
+
+### Re-run self-verify gates (fix round)
+- `bunx tsc --noEmit` — exit 0, no output.
+- `bun run build` — exit 0 (`tsc -p .` clean).
+- `bun vitest run tests/security/redact.test.ts` — **76/76 passed** (72 prior + 4 new
+  bypass-regression fixtures).
+- `bun vitest run tests/security/redact-perf.test.ts` — **2/2 passed**. Logged:
+  `p50=0.125ms p95=0.248ms mean=0.145ms max=0.979ms` — still ~80x under the 20ms budget
+  (AC-6 unaffected by the entropy-stage change).
+- `bun vitest run tests/security` (full directory) — **6 files / 117 tests passed, 0
+  failed** (up from 113 by the 4 new fixtures).
+- `bun run test` (full suite) — **198 files / 2345 tests passed, 6 skipped
+  (pre-existing, unrelated), 0 failed** (up from 2341 by exactly the 4 new tests).
+
+### Bypass repro evidence (before/after)
+| input | before (this fix round) | after |
+|---|---|---|
+| `mysecrettoken1234567890abcdef=` | suppressed, full plaintext leak | redacted as `high_entropy` |
+| `mysecrettoken1234567890abcdef:` | suppressed, full plaintext leak | redacted as `high_entropy` |
+| `my_secret_token_9f8a7b6c5d4e3f2a1b0c=` | suppressed, full plaintext leak | redacted as `high_entropy` |
+| `myrandomvalue1234567890abcdef=` (control, no keyword) | redacted (unaffected) | redacted (unaffected) |
+| `"PASSWORD_MIN_LENGTH": 8` (AC-3 fixture, must stay unredacted) | unredacted (guard fired) | unredacted (guard still fires — safe value "8" follows) |
+| `"SECRET_SCAN_ENABLED": "true"` (AC-3 fixture) | unredacted | unredacted (safe value "true" follows) |
+
+### Confidence
+High. The fix directly targets the reviewer's root-caused mechanism (shape-only check
+with no "is there really no value" verification), is verified against all three
+reproduced bypasses plus the control and both AC-3 fixtures by direct computation before
+implementation (not just after-the-fact test-passing), and the reviewer's own alternate
+suggestion was checked and found insufficient rather than assumed correct.
+
+### Suggested next handoff
+Re-review (`crew:reviewer`) to confirm Finding 1 is closed, then validator per
+`requires_validation: true` in the slice frontmatter. Parent loop drives both dispatches.
+
+---
+
+## Original implementation (2026-07-10, commit fab5173)
 
 ## Objective
 `generic_credential` in `src/redact/detectors.ts` required the `[:=]`
