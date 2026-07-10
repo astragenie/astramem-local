@@ -1,14 +1,14 @@
 /**
  * LLM-judge scoring — Azure gpt-5-mini (reasoning_effort minimal), reusing
- * scripts/eval/longmemeval/lib/azure-client.ts + lib/config.ts rather than
+ * scripts/eval/shared/azure-client.ts + lib/config.ts rather than
  * re-deriving an Azure client. One judge call per (model, fixture) pair:
  * given the gold atom list and the model's extracted atoms, the judge
  * performs SEMANTIC matching (not string equality — paraphrases count) and
  * classifies every extracted atom, so recall/precision/junk-rate/type-
  * accuracy can all be computed from one response.
  */
-import { azureChatComplete } from '../../longmemeval/lib/azure-client.js';
-import type { AzureConfig } from '../../longmemeval/lib/config.js';
+import { azureChatComplete } from '../../shared/azure-client.js';
+import type { AzureConfig } from '../../shared/config.js';
 import type { GoldAtom } from './fixtures.js';
 import { computeStats, type Stats } from './stats.js';
 

@@ -1,7 +1,7 @@
 /**
  * Daemon-HTTP runner — the primary path for Ollama extraction-model
  * candidates. Spawns a fully isolated daemon (reusing
- * scripts/eval/longmemeval/lib/spawn-daemon.ts — same sandboxed
+ * scripts/eval/shared/spawn-daemon.ts — same sandboxed
  * APPDATA/LOCALAPPDATA/HOME/XDG_* + encryption-disabled config.yaml
  * technique that closes the "real sync.json paired to prod tenant" hazard
  * documented there), points its `llm.extraction` at the candidate model via
@@ -34,7 +34,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import {
   spawnEvalDaemon, waitForHealthStatus, killDaemon, makeIsolatedEvalEnv, cleanupIsolatedEvalEnv,
   type DaemonHandle,
-} from '../../longmemeval/lib/spawn-daemon.js';
+} from '../../shared/spawn-daemon.js';
 import type { GoldFixture } from './fixtures.js';
 
 const COMPACTION_MODEL = 'qwen2.5-coder:7b';

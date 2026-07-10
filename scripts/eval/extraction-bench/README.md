@@ -43,7 +43,7 @@ run-bench.mts         CLI entry point
 results/              output dir (results.json + report.md per run)
 ```
 
-Reuses `scripts/eval/longmemeval/lib/spawn-daemon.ts` (isolated daemon spawn +
+Reuses `scripts/eval/shared/spawn-daemon.ts` (isolated daemon spawn +
 env sandboxing) and `lib/azure-client.ts` / `lib/config.ts` (Azure OpenAI
 client + key resolution via `az` CLI) rather than re-deriving them. Nothing
 under `scripts/eval/longmemeval/` was modified — only imported.
@@ -150,7 +150,7 @@ stage functions** (`cleanup` -> `normalize` -> `chunk` -> `compact` ->
 `extract` -> `reduce` -> `memoryNormalize`, plus the real redaction stage and
 `flattenTranscriptContent`) in-process, swapping only the transport for
 `lib/azure-reasoning-provider.ts` — an `LLMProvider` adapter that reuses
-`scripts/eval/longmemeval/lib/azure-client.ts`'s `azureChatComplete` (already
+`scripts/eval/shared/azure-client.ts`'s `azureChatComplete` (already
 correct: no `temperature`, `max_completion_tokens`, `reasoning_effort`).
 Everything except the HTTP/job-queue/storage layer (stage 8, which this bench
 doesn't need) is the identical production code path. If the daemon's Azure
@@ -280,7 +280,7 @@ picks up every `*.json` file in the directory.
   experiences), but it means daemon-path and direct-path timings aren't
   perfectly apples-to-apples; treat cross-model *ranking* as reliable and
   absolute-latency comparisons between the two paths as approximate.
-- Ollama model-reload latency (see `scripts/eval/longmemeval/lib/ollama-
+- Ollama model-reload latency (see `scripts/eval/shared/ollama-
   tuning.ts`'s guidance) can spike an individual fixture's wall-clock if the
   model was unloaded between runs — set `OLLAMA_KEEP_ALIVE=-1` for stable
   timing comparisons across a multi-model run.

@@ -31,8 +31,8 @@
  * harness rather than re-deriving it.
  */
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../../../src/contracts/llm.js';
-import { azureChatComplete } from '../../longmemeval/lib/azure-client.js';
-import type { AzureConfig } from '../../longmemeval/lib/config.js';
+import { azureChatComplete } from '../../shared/azure-client.js';
+import type { AzureConfig } from '../../shared/config.js';
 
 // Public Azure pricing for gpt-5-mini (medium), verified 2026-07-08 via
 // Helicone / Artificial Analysis pricing pages: $0.25 / 1M input tokens,
