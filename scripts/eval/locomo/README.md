@@ -258,7 +258,23 @@ bun scripts/eval/locomo/run.mts --status .eval-data/locomo/runs/<timestamp>
 ```
 
 `run-status.json` and `daemon-manifest.json` appear in the run dir on
-EVERY invocation, `--detach` or not.
+EVERY invocation, `--detach` or not. `killManifestDaemons`'s PID-reuse
+identity guard (confirms a manifest pid still owns its recorded port via
+`netstat`/`lsof` before signaling anything, skip-by-default on ambiguity)
+is identical too — see that README's writeup for the full rationale.
+
+## "My detached run looks stuck" — operator playbook
+
+Identical steps to `../longmemeval/run-smoke.mts`'s playbook — see that
+README's "My detached run looks stuck" section for the full walkthrough
+(check `--status`, inspect `run-status.json`/`daemon-manifest.json`, scoped
+kill, `--resume`). Substituting this harness's paths:
+
+```powershell
+bun scripts/eval/locomo/run.mts --status .eval-data/locomo/runs/<timestamp>
+bun scripts/eval/shared/kill-run.mts .eval-data/locomo/runs/<timestamp>
+bun scripts/eval/locomo/run.mts --resume .eval-data/locomo/runs/<timestamp> --shards 2 --detach
+```
 
 ## Reproducibility — what to pin before publishing a number
 

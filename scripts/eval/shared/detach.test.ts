@@ -103,19 +103,28 @@ describe('spawnDetached (real process integration — AC-2 detach test)', () => 
         if (!existsSync(heartbeatFile)) return undefined;
         try { return JSON.parse(readFileSync(heartbeatFile, 'utf8')); } catch { return undefined; }
       };
+      // Retrying variant -- under heavy parallel test-suite load (fs
+      // contention, a delayed event loop tick in the spawned child) a
+      // single read can transiently see a not-yet-existing or mid-write
+      // file even though the process is behaving correctly; retry instead
+      // of treating one miss as a real assertion failure.
+      const readHeartbeatRetrying = async (timeoutMs = 2_000): Promise<{ tick: number } | undefined> => {
+        const deadline = Date.now() + timeoutMs;
+        let result = readHeartbeat();
+        while (!result && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+          result = readHeartbeat();
+        }
+        return result;
+      };
 
-      const deadline = Date.now() + 5_000;
-      let first: { tick: number } | undefined;
-      while (Date.now() < deadline && !first) {
-        first = readHeartbeat();
-        if (!first) await new Promise(resolve => setTimeout(resolve, 50));
-      }
+      const first = await readHeartbeatRetrying(5_000);
       expect(first).toBeDefined();
 
       // Confirm it's genuinely alive and progressing (tick advances), not a
       // one-shot write.
       await new Promise(resolve => setTimeout(resolve, 300));
-      const second = readHeartbeat();
+      const second = await readHeartbeatRetrying();
       expect(second!.tick).toBeGreaterThan(first!.tick);
 
       // Manifest-scoped kill (AC-3 handshake): the daemon manifest names
@@ -128,9 +137,9 @@ describe('spawnDetached (real process integration — AC-2 detach test)', () => 
       expect(result.outcomes[0]!.action).toBe('killed');
 
       await new Promise(resolve => setTimeout(resolve, 400));
-      const afterKillTick = readHeartbeat()!.tick;
+      const afterKillTick = (await readHeartbeatRetrying())!.tick;
       await new Promise(resolve => setTimeout(resolve, 400));
-      const stillSameTick = readHeartbeat()!.tick;
+      const stillSameTick = (await readHeartbeatRetrying())!.tick;
       expect(stillSameTick).toBe(afterKillTick); // heartbeat stopped advancing -- process is actually dead
     },
     15_000,
