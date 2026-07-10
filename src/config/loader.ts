@@ -41,10 +41,74 @@ import { type Config, defaultConfig, applyFusionGovernance, applyDurabilityGateG
 
 type PlainObject = Record<string, unknown>;
 
+/** Unescape a double-quoted YAML/JSON-style scalar body (quotes already
+ * stripped): `\"` -> `"`, `\\` -> `\`, any other `\X` -> `X` (minimal — this
+ * loader only needs to round-trip what `yamlScalar`/`JSON.stringify` emit,
+ * not the full YAML double-quote escape grammar). */
+function unescapeDoubleQuoted(s: string): string {
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (s[i] === '\\' && i + 1 < s.length) {
+      out += s[++i];
+    } else {
+      out += s[i];
+    }
+  }
+  return out;
+}
+
+/** Split a flow-sequence's inner text (between `[` and `]`) into entries on
+ * top-level commas, honoring single/double-quote state so a comma or `#`
+ * inside a quoted entry is content, not a delimiter (FEAT-465, AC-2) —
+ * the array-entry counterpart of `stripComment`'s quote-tracking below.
+ *
+ * FEAT-465 review fix (HIGH regression): a `'`/`"` only OPENS a quoted entry
+ * when it is the first non-whitespace character of that entry (right after
+ * the start of `inner` or a top-level `,`) — never at an arbitrary
+ * apostrophe mid-entry. An earlier version treated any bare `'` as a
+ * quote-open unconditionally, so an unquoted entry containing a literal
+ * apostrophe (e.g. `don't`) would falsely "open a string" and swallow the
+ * rest of the array (comma, closing `]`, everything) as if still inside
+ * quotes — matching YAML's own grammar, where a quote only starts a scalar
+ * at that scalar's first character. */
+function splitFlowSequenceEntries(inner: string): string[] {
+  const entries: string[] = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  let atEntryStart = true;
+
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i] as string;
+    if (inSingle) {
+      current += ch;
+      if (ch === "'") {
+        if (inner[i + 1] === "'") { current += inner[++i]; } else { inSingle = false; atEntryStart = false; }
+      }
+      continue;
+    }
+    if (inDouble) {
+      current += ch;
+      if (ch === '\\' && i + 1 < inner.length) { current += inner[++i]; }
+      else if (ch === '"') { inDouble = false; atEntryStart = false; }
+      continue;
+    }
+    if (/\s/.test(ch)) { current += ch; continue; } // leading/inner whitespace never ends entry-start eligibility
+    if (atEntryStart && ch === "'") { inSingle = true; current += ch; continue; }
+    if (atEntryStart && ch === '"') { inDouble = true; current += ch; continue; }
+    if (ch === ',') { entries.push(current); current = ''; atEntryStart = true; continue; }
+    atEntryStart = false;
+    current += ch;
+  }
+  if (current.trim() !== '') entries.push(current);
+  return entries.map((e) => e.trim());
+}
+
 function parseScalar(raw: string): unknown {
   const v = raw.trim();
   if (v === '') return undefined;
   if (v.startsWith("'") && v.endsWith("'")) return v.slice(1, -1).replace(/''/g, "'");
+  if (v.startsWith('"') && v.endsWith('"')) return unescapeDoubleQuoted(v.slice(1, -1));
   if (v === 'true') return true;
   if (v === 'false') return false;
   if (v === 'null' || v === '~') return null;
@@ -52,17 +116,101 @@ function parseScalar(raw: string): unknown {
   // FEAT-461: flow-style array (writer.ts emits string[] fields, e.g.
   // security.redaction.customPatterns, as a JSON array literal — valid YAML
   // flow-sequence syntax for the string case, so a plain JSON.parse round-
-  // trips it). Falls through to the plain-string case below on parse failure
-  // rather than throwing — malformed input must not block config load.
+  // trips it). FEAT-465: a hand-edited array with single-quoted entries
+  // (or a mix of quote styles) isn't valid JSON, so it falls back to a
+  // quote-aware manual split + recursive parseScalar per entry rather than
+  // degrading to an opaque string — that fallback is what preserves entry
+  // count for a `#`-bearing quoted entry (AC-2).
   if (v.startsWith('[') && v.endsWith(']')) {
     try {
       const parsed: unknown = JSON.parse(v);
       if (Array.isArray(parsed)) return parsed;
     } catch {
-      // not valid JSON — treat as an opaque string, same as any other value
+      // not valid JSON (e.g. single-quoted entries) — fall through to the
+      // manual quote-aware split below rather than throwing
     }
+    return splitFlowSequenceEntries(v.slice(1, -1)).map((entry) => parseScalar(entry));
   }
   return v;
+}
+
+/**
+ * Strip a trailing `#` comment from one physical config.yaml line, honoring
+ * quote state (FEAT-465). The original `/(^|\s)#.*$/` regex was quote-unaware,
+ * so any scalar whose value contained a whitespace-preceded `#` was silently
+ * truncated at that point — including inside a `[...]` flow-sequence entry
+ * (SLICE-420 review repro: `customPatterns: ["hash #tag no leading space"]`
+ * corrupted to the string `["hash`).
+ *
+ * FEAT-465 review fix (HIGH regression): a `'`/`"` only OPENS quote state at
+ * a position where a scalar VALUE may legally start — right after the
+ * `key:` separator, or right after a top-level `[`/`,` inside a flow
+ * sequence — never at an arbitrary quote character mid-value. The first
+ * version of this function treated ANY bare `'` as a quote-open, so an
+ * unquoted value containing a literal apostrophe (a contraction like
+ * `don't`, a name like `O'Brien`) left the scanner incorrectly believing it
+ * was still inside a quoted string, silently swallowing a real trailing `#`
+ * comment into the value — a regression vs. the old regex, which had no
+ * quote-tracking at all and so never mishandled this case. The key portion
+ * of the line (before the separating `:`) never legitimately contains a
+ * quote or a `#` in this dialect, so it's scanned without any quote
+ * awareness, same as the original regex.
+ */
+function stripComment(rawLine: string): string {
+  const colonIdx = rawLine.indexOf(':');
+  const valueStart = colonIdx === -1 ? rawLine.length : colonIdx + 1;
+
+  // Dumb (quote-unaware) scan for the key prefix, or the WHOLE line when
+  // there's no colon at all (e.g. a standalone `# header comment` line).
+  for (let i = 0; i < valueStart; i++) {
+    if (rawLine[i] === '#' && (i === 0 || /\s/.test(rawLine[i - 1] as string))) {
+      return rawLine.slice(0, i);
+    }
+  }
+  if (colonIdx === -1) return rawLine;
+
+  let i = valueStart;
+  let atValueStart = true; // true only where a NEW scalar may legally begin
+  let inSingle = false;
+  let inDouble = false;
+  let bracketDepth = 0;
+
+  while (i < rawLine.length) {
+    const ch = rawLine[i] as string;
+
+    if (inSingle) {
+      // YAML escapes an embedded quote inside a single-quoted scalar by
+      // doubling it (''); a doubled quote stays inside the string.
+      if (ch === "'") {
+        if (rawLine[i + 1] === "'") { i += 2; continue; }
+        inSingle = false; atValueStart = false; i++; continue;
+      }
+      i++; continue;
+    }
+    if (inDouble) {
+      if (ch === '\\' && i + 1 < rawLine.length) { i += 2; continue; }
+      if (ch === '"') { inDouble = false; atValueStart = false; }
+      i++; continue;
+    }
+
+    if (/\s/.test(ch)) { i++; continue; } // leading/inter-token whitespace never ends value-start eligibility
+    if (atValueStart && ch === "'") { inSingle = true; i++; continue; }
+    if (atValueStart && ch === '"') { inDouble = true; i++; continue; }
+    if (ch === '#' && (i === 0 || /\s/.test(rawLine[i - 1] as string))) {
+      return rawLine.slice(0, i);
+    }
+    // A `[` opens a flow sequence (entries may quote-open right after it or
+    // after a top-level `,`); `,` is only a new entry boundary while inside
+    // one — an unbracketed comma in a hand-edited unquoted scalar must NOT
+    // re-arm quote-opening for whatever follows it.
+    if (ch === '[') { bracketDepth++; atValueStart = true; i++; continue; }
+    if (ch === ']') { bracketDepth = Math.max(0, bracketDepth - 1); atValueStart = false; i++; continue; }
+    if (ch === ',' && bracketDepth > 0) { atValueStart = true; i++; continue; }
+
+    atValueStart = false;
+    i++;
+  }
+  return rawLine;
 }
 
 /** Parse the writer.ts YAML subset into a nested plain object. */
@@ -72,7 +220,7 @@ export function parseConfigYaml(text: string): PlainObject {
   const stack: Array<{ indent: number; obj: PlainObject }> = [{ indent: -1, obj: root }];
 
   for (const rawLine of text.split('\n')) {
-    const withoutComment = rawLine.replace(/(^|\s)#.*$/, '');
+    const withoutComment = stripComment(rawLine);
     if (!withoutComment.trim()) continue;
 
     const indent = withoutComment.length - withoutComment.trimStart().length;
