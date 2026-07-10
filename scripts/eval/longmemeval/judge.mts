@@ -20,7 +20,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { resolveAzureConfig } from './lib/config.js';
+import { resolveAzureConfig } from '../shared/config.js';
 
 const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
 const UPSTREAM_REPO_URL = 'https://github.com/xiaowu0162/LongMemEval';

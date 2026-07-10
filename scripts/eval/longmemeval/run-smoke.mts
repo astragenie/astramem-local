@@ -8,9 +8,9 @@
  * unchanged from before sharding was added. With `--shards N` (N > 1), the
  * sampled questions are round-robin-partitioned (plan doc section 4 lever 2)
  * across N isolated daemons — each its own port + fully sandboxed
- * APPDATA/HOME env (lib/spawn-daemon.ts's makeIsolatedEvalEnv) — run
+ * APPDATA/HOME env (../shared/spawn-daemon.ts's makeIsolatedEvalEnv) — run
  * concurrently, then merged back into one hypotheses.jsonl / manifest. All
- * shards share the ONE local Ollama server (see lib/ollama-tuning.ts) — this
+ * shards share the ONE local Ollama server (see ../shared/ollama-tuning.ts) — this
  * only buys real speedup if Ollama itself can serve requests concurrently.
  *
  * bun scripts/eval/longmemeval/run-smoke.mts [--dataset <path>] [--n 50]
@@ -30,13 +30,13 @@ import { QUESTION_TYPES, isAbstention, type LongMemEvalQuestion } from './lib/ty
 import {
   spawnEvalDaemon, waitForHealthStatus, killDaemon, makeIsolatedEvalEnv, cleanupIsolatedEvalEnv,
   type DaemonHandle,
-} from './lib/spawn-daemon.js';
+} from '../shared/spawn-daemon.js';
 import { ingestQuestions, type IngestManifest } from './ingest.mts';
 import { waitForQuestionsDistilled, type DistillWaitResult } from './distill-wait.mts';
 import { answerQuestions, writeHypothesesJsonl, type AnswerOutcome } from './answer.mts';
-import { resolveAzureConfig, type AzureConfig } from './lib/config.js';
-import { partitionRoundRobin } from './lib/shard.js';
-import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance, detectPossibleReload } from './lib/ollama-tuning.js';
+import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
+import { partitionRoundRobin } from '../shared/shard.js';
+import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance, detectPossibleReload } from '../shared/ollama-tuning.js';
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -103,7 +103,7 @@ async function runShard(opts: {
   // — a clean exit, not a native fault, so it produces no OS-level crash
   // report and otherwise looks exactly like the connection just dropping.
   // spawnEvalDaemon buffers that stdout/stderr in-process (see
-  // lib/spawn-daemon.ts); surface it the moment we notice the daemon is gone
+  // ../shared/spawn-daemon.ts); surface it the moment we notice the daemon is gone
   // instead of only reporting a bare ECONNREFUSED once a poll happens to hit
   // the dead port. Checked on every ingest/distill-wait progress tick so it
   // fires immediately (a fetch to a just-closed port is not always instant).
