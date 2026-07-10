@@ -94,7 +94,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 16 tools', async () => {
+  it('initialize + tools/list returns 18 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -107,7 +107,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(17);
+    expect(tools.length).toBe(18);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'agent_profile',
@@ -129,6 +129,8 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
       'session_digest',
       'submit_feedback',
       'supersede_memory',
+      // FEAT-451 slice 1 — daemon-wide profile, no agent filter.
+      'user_profile',
       'why_memory',
     ]);
   });

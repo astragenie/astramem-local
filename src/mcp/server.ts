@@ -7,7 +7,7 @@
  * list below is a human-readable summary kept in sync by that test, not a
  * second SoT.
  *
- * Exposes 17 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 18 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert
@@ -15,6 +15,7 @@
  *   - why_memory         — provenance receipt (evidence, session, transcript ref)
  *   - session_digest     — per-session "what I learned" summary (derived at read time)
  *   - agent_profile      — per-agent "what has this agent learned" summary (derived at read time)
+ *   - user_profile       — daemon-wide "what does this owner keep coming back to" summary (FEAT-451, derived at read time)
  *   - invalidate_memory  — lifecycle: mark a memory invalid (ADR-002 memory_events log)
  *   - supersede_memory   — lifecycle: replace one memory with another
  *   - promote_memory     — lifecycle: upward-only scope promotion (ADR-009)
@@ -73,6 +74,7 @@ import {
 import { contentHash } from '../storage/content-hash.js';
 import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import { buildAgentProfile } from '../server/queries/agent-profile.js';
+import { buildUserProfile } from '../server/queries/user-profile.js';
 import {
   ProposalRepo,
   ProposalNotFoundError,
@@ -558,6 +560,33 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           isError: true,
         };
       }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(profile) }] };
+    }
+  );
+
+  // ---- user_profile -----------------------------------------------------
+  server.registerTool(
+    'user_profile',
+    {
+      description:
+        'Read-time synthesized daemon-wide profile — "what does this owner keep coming back to": ' +
+        'standing facts, preferences, recurring lessons (each ranked by the ADR-010 usefulness ' +
+        'signal, then importance), recent decisions, and known entities. No agent filter — this ' +
+        'is the whole daemon\'s profile, not a per-agent one (see agent_profile for that). Every ' +
+        'entry carries a memory id that composes with why_memory.',
+      inputSchema: z.object({
+        scope: z
+          .enum(['private', 'team', 'org', 'all'])
+          .optional()
+          .describe('Scope filter, defaults to "private" (ADR-009 default). "all" removes the scope filter entirely.'),
+      }),
+    },
+    async (args) => {
+      // args.scope is already constrained to the enum by inputSchema (the
+      // SDK rejects an out-of-enum value before this handler runs) — no
+      // runtime re-check needed here, unlike the REST route which parses an
+      // untyped query string.
+      const profile = buildUserProfile(db, args.scope ?? 'private');
       return { content: [{ type: 'text' as const, text: JSON.stringify(profile) }] };
     }
   );

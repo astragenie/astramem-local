@@ -11,6 +11,7 @@ import { memoryRoute } from './routes/memory.js';
 import { lifecycleRoutes } from './routes/lifecycle.js';
 import { whyRoute } from './routes/why.js';
 import { agentsRoute } from './routes/agents.js';
+import { profileRoute } from './routes/profile.js';
 import { digestRoute } from './routes/digest.js';
 import { recallRoute } from './routes/recall.js';
 import { mcpRoute } from './routes/mcp.js';
@@ -154,6 +155,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(lifecycleRoutes(opts.db));
   await app.register(whyRoute(opts.db));
   await app.register(agentsRoute(opts.db));
+  await app.register(profileRoute(opts.db));
   await app.register(digestRoute(opts.db));
   await app.register(recallRoute(opts.db, config));
   await app.register(mcpRoute(opts.db, embed, config));

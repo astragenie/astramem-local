@@ -253,6 +253,7 @@ Claude Code discovers and calls the tools below automatically when configured in
 | `why_memory` | Provenance receipt — extraction evidence + confidence for a memory | `GET /memory/:id/why` |
 | `session_digest` | Session summary digest | `GET /sessions/:id/digest` |
 | `agent_profile` | Read-time per-agent "what has this agent learned" profile — top lessons, recent decisions, prior corrections | `GET /agents/:agent/profile` |
+| `user_profile` | Read-time daemon-wide profile (no agent filter) — standing facts, preferences, recurring lessons, recent decisions, known entities. Optional `?scope=team\|org\|all` (defaults to `private`) | `GET /profile` |
 | `invalidate_memory` | Soft-delete a memory (lifecycle op) | `POST /memory/:id/invalidate` |
 | `supersede_memory` | Replace an old memory with a new one, linked via `memory_events` | `POST /memory/:id/supersede` |
 | `promote_memory` | Promote a memory's scope: personal → team → org | `POST /memory/:id/promote` |
@@ -402,6 +403,33 @@ recalled fact or decision can be traced back to its source.
 
 ---
 
+## User profile
+
+`GET /profile` (and the `user_profile` MCP tool) return a read-time, daemon-wide "what does this
+owner keep coming back to" profile, rolled up from the existing atom kinds — zero new schema, zero
+persisted document, no rebuild step. Every call is a fresh SQL read against current state, so there
+is no staleness window.
+
+| Profile section | Rolled up from |
+|---|---|
+| `standing_facts` | `fact` atoms |
+| `preferences` | `note` atoms (the closest existing semantic match — see FEAT-451 design doc) |
+| `recurring_lessons` | `lesson` atoms |
+| `recent_decisions` | `decision` atoms, newest first |
+| `known_entities` | linked entities of kind `actor`/`tech`/`product`/`tool`, ranked by mention count |
+
+`standing_facts`/`preferences`/`recurring_lessons` are ranked by the same ADR-010 usefulness signal
+`agent_profile`'s `top_lessons` uses, then importance, then memory id (a total tie-break, required
+for deterministic output). Only currently-active memories count (`valid_to IS NULL AND archived =
+0`) — a superseded or invalidated atom drops out on the next call, no extra event needed.
+
+Defaults to `scope=private` (ADR-009's default); pass `?scope=team|org|all` to widen it. This
+daemon has a single global Bearer token and no per-caller scope authorization, so widening scope is
+the authenticated caller's own choice, not a privilege escalation — see the FEAT-451 design doc §3
+for the full reasoning.
+
+---
+
 ## Usefulness metric
 
 The daemon tracks a **recall-usefulness rate**: of the memories served by a search/recall/pack call,
@@ -515,7 +543,7 @@ publishing flow.
 
 ## Status
 
-**v0.10.0** — local-first memory daemon with 21 migrations, a 17-tool MCP surface, hybrid
+**v0.10.0** — local-first memory daemon with 21 migrations, an 18-tool MCP surface, hybrid
 BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
 promote) with full provenance (`why_memory`), consolidation proposals, and local↔SaaS sync
 (shipper/puller/conflict-resolve). CI-gated retrieval eval (ADR-005) runs recall@10 ≥ 0.9 /
