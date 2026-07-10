@@ -108,4 +108,6 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 // 021 = widen memory_events.event_type CHECK to add 'unsupersede' (FEAT-442
 //       reversal primitive for autonomous-consolidation auto-accept) --
 //       same create-copy-swap table-rewrite pattern migration 013 used.
-export const SCHEMA_VERSION = 21 as const;
+// 022 = consolidation_proposals.metadata_json, additive nullable column
+//       (FEAT-456 SLICE-1 contradiction judge verdict/confidence/excerpts).
+export const SCHEMA_VERSION = 22 as const;

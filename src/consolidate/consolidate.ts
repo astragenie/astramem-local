@@ -20,18 +20,28 @@
  *    winner is untouched).
  *
  * v1 is deterministic: similarity is cosine over the stored embeddings, no
- * LLM call. The second-order abstraction + contradiction detection passes
- * (ADR-004 stage 9 b/c) are v1.x — they will reuse the same proposal queue.
+ * LLM call for merge/propose decisions. The second-order abstraction pass
+ * (ADR-004 stage 9b) is still v1.x. Contradiction detection (stage 9c) is
+ * FEAT-456 SLICE-1: an opt-in (default off) judge call inserted ahead of
+ * the propose-tier guard below — see the "FEAT-456" comments in this file
+ * and `src/consolidate/contradiction-judge.ts`. Propose-only like the rest
+ * of this module: a confident 'contradicts' verdict writes a
+ * `kind='contradiction'` proposal row, never an auto-action.
  *
  * Winner selection: higher usefulness score wins (ADR-010), then higher
- * importance, then the newer atom.
+ * importance, then the newer atom. (Contradiction proposals use a
+ * different rule — newer atom always wins — see `runConsolidation`'s
+ * FEAT-456 branch.)
  */
 
 import { randomUUID } from 'node:crypto';
 import type { DB } from '../storage/db.js';
+import type { Config } from '../config/config.js';
+import type { LLMProvider } from '../contracts/llm.js';
 import { MemoryEventRepo, type SupersedeProvenance } from '../storage/memory-events.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
+import { judgeContradiction, type JudgeVerdict } from './contradiction-judge.js';
 
 export interface ConsolidateOpts {
   /** Cosine similarity at/above which a pair auto-merges. */
@@ -70,6 +80,23 @@ export interface ConsolidateOpts {
    * human resolves it.
    */
   autoAcceptThreshold?: number | null;
+  /**
+   * FEAT-456 SLICE-1: contradiction-detection config for this run. Mirrors
+   * `Config['consolidation']['contradictionDetection']` exactly (the job
+   * handler and REST route forward the running config's value verbatim).
+   * Omitted, or `mode: 'off'` (the default), is BYTE-IDENTICAL to
+   * pre-FEAT-456 output — the judge is never called.
+   */
+  contradictionDetection?: Config['consolidation']['contradictionDetection'];
+  /**
+   * LLMProvider for the contradiction judge — reuses
+   * `ProviderSet.llm.extraction` (design §1.3, no new provider role).
+   * Required only when `contradictionDetection.mode !== 'off'`; a missing
+   * provider with mode on disables judging for THIS run only (logged,
+   * non-fatal — matches this file's "never block a run on a bad/missing
+   * capability" governance pattern, see `resolveAutoAcceptThreshold`).
+   */
+  judgeProvider?: LLMProvider;
   /** Injectable logger seam for tests; defaults to `console.warn`. */
   log?: (message: string) => void;
 }
@@ -93,6 +120,27 @@ export interface ConsolidateSummary {
    * reversible via `POST /memory/:id/unsupersede` on `loser`.
    */
   autoAccepted: Array<{ winner: string; loser: string; similarity: number; proposalId: string }>;
+  /**
+   * FEAT-456 `mode: 'dry-run'`: judge-eligible pairs the judge labeled
+   * 'contradicts' at >= `minConfidence`, previewed but NOT written — the
+   * safe-rollout mode. Always `[]` when `mode !== 'dry-run'`.
+   */
+  contradictionsPreviewed: Array<{ winner: string; loser: string; similarity: number; verdict: JudgeVerdict }>;
+  /**
+   * FEAT-456 `mode: 'enabled'`: `kind='contradiction'` proposals actually
+   * inserted this run. `winner` = the newer atom (`created_at` max),
+   * `loser` = the older atom — directional, opposite of the merge tier's
+   * usefulness-based pick (§2.2: the new atom is the presumptive
+   * correction). Always `[]` when `mode !== 'enabled'`.
+   */
+  contradictionsProposed: Array<{ winner: string; loser: string; similarity: number; proposalId: string }>;
+  /**
+   * True when `maxPerRun` judge calls were exhausted before the scan
+   * finished — lets a report distinguish "no contradictions found" from
+   * "ran out of budget before finishing" (§1.5). Remaining judge-eligible
+   * pairs fall through to the existing merge-tier classification unchanged.
+   */
+  contradictionCapReached: boolean;
 }
 
 interface AtomRow {
@@ -255,7 +303,99 @@ function resolveAutoAcceptThreshold(
   return raw;
 }
 
-export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): ConsolidateSummary {
+interface ResolvedContradictionDetection {
+  mode: 'dry-run' | 'enabled';
+  minSimilarity: number;
+  minConfidence: number;
+  maxPerRun: number;
+  judgeProvider: LLMProvider;
+}
+
+/**
+ * FEAT-456: resolve+validate `contradictionDetection` against the
+ * `mergeThreshold` in effect for THIS run, mirroring
+ * `resolveAutoAcceptThreshold`'s "never fatal, disable for this run and
+ * log" shape exactly (§1.5). Returns `null` (contradiction detection off
+ * for this run) when: mode is `'off'`/unset, `minSimilarity` is out of
+ * `[0, mergeThreshold)`, `minConfidence` is out of `[0, 1]`, or no
+ * `judgeProvider` was supplied despite mode being on.
+ */
+function resolveContradictionDetection(
+  raw: ConsolidateOpts['contradictionDetection'],
+  judgeProvider: LLMProvider | undefined,
+  mergeThreshold: number,
+  log: (message: string) => void,
+): ResolvedContradictionDetection | null {
+  if (!raw || raw.mode === 'off') return null;
+  if (raw.minSimilarity < 0 || raw.minSimilarity >= mergeThreshold) {
+    log(
+      `[consolidate] contradictionDetection.minSimilarity=${raw.minSimilarity} is invalid (must be in ` +
+      `[0, mergeThreshold=${mergeThreshold})) — contradiction detection disabled for this run.`,
+    );
+    return null;
+  }
+  if (raw.minConfidence < 0 || raw.minConfidence > 1) {
+    log(
+      `[consolidate] contradictionDetection.minConfidence=${raw.minConfidence} is invalid (must be in ` +
+      '[0, 1]) — contradiction detection disabled for this run.',
+    );
+    return null;
+  }
+  if (!judgeProvider) {
+    log(
+      `[consolidate] contradictionDetection.mode=${JSON.stringify(raw.mode)} but no judgeProvider was ` +
+      'supplied — contradiction detection disabled for this run.',
+    );
+    return null;
+  }
+  return {
+    mode: raw.mode, minSimilarity: raw.minSimilarity, minConfidence: raw.minConfidence,
+    maxPerRun: raw.maxPerRun, judgeProvider,
+  };
+}
+
+const EXCERPT_MAX_CHARS = 280;
+
+function excerpt(text: string): string {
+  return text.length > EXCERPT_MAX_CHARS ? `${text.slice(0, EXCERPT_MAX_CHARS)}...` : text;
+}
+
+/**
+ * FEAT-456: insert a `kind='contradiction'` proposal row. Reuses the exact
+ * `INSERT ... SELECT ... WHERE NOT EXISTS (...)` dedup guard the merge
+ * insert uses (§2.3) — `idx_consolidation_pair_pending` has no `kind`
+ * predicate, so this is a no-op (returns null) when a pending proposal of
+ * EITHER kind already exists for the unordered pair. Excerpts are captured
+ * here, at judge time, not re-derived at read time (§2.1).
+ */
+function insertContradictionProposal(
+  db: DB, winnerId: string, loserId: string, winnerText: string, loserText: string,
+  similarity: number, verdict: JudgeVerdict,
+): string | null {
+  const proposalId = randomUUID();
+  const metadata = {
+    verdict: 'contradicts' as const,
+    confidence: verdict.confidence,
+    winner_excerpt: excerpt(winnerText),
+    loser_excerpt: excerpt(loserText),
+  };
+  const inserted = db.prepare(`
+    INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+    SELECT ?, 'contradiction', ?, ?, ?, 'pending', ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM consolidation_proposals
+      WHERE status = 'pending'
+        AND MIN(winner_id, loser_id) = MIN(?, ?)
+        AND MAX(winner_id, loser_id) = MAX(?, ?)
+    )
+  `).run(
+    proposalId, winnerId, loserId, similarity, Date.now(), JSON.stringify(metadata),
+    winnerId, loserId, winnerId, loserId,
+  );
+  return inserted.changes > 0 ? proposalId : null;
+}
+
+export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Promise<ConsolidateSummary> {
   // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
   // reliably same-fact paraphrases, while 0.90–0.92 still contains
   // distinct facts (e.g. two different env-var names at sim 0.91) —
@@ -266,10 +406,15 @@ export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Consolidat
   const autoMergeContained = opts.autoMergeContained ?? true;
   const log = opts.log ?? ((message: string) => console.warn(message));
   const autoAcceptThreshold = resolveAutoAcceptThreshold(opts.autoAcceptThreshold, proposeThreshold, log);
+  const contradictionDetection = resolveContradictionDetection(
+    opts.contradictionDetection, opts.judgeProvider, mergeThreshold, log,
+  );
+  let judgeCallsThisRun = 0;
 
   const summary: ConsolidateSummary = {
     groupsScanned: 0, groupsSkipped: [], merged: [], proposed: [],
     autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
+    contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
   };
 
   if (autoMergeContained) {
@@ -326,6 +471,44 @@ export function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Consolidat
         const va = vecs.get(a.id), vb = vecs.get(b.id);
         if (!va || !vb) continue;
         const sim = cosine(va, vb);
+
+        // FEAT-456: contradiction judge. Sits AHEAD of the proposeThreshold
+        // guard below so it can also see the lower [minSimilarity,
+        // proposeThreshold) band the merge tier never looks at — two
+        // contradicting facts about the same entity can sit well below the
+        // near-duplicate paraphrase threshold (§1.2). Never judges a pair
+        // sim >= mergeThreshold owns — that tier already treats it as
+        // certain enough to auto-supersede.
+        if (contradictionDetection && sim >= contradictionDetection.minSimilarity && sim < mergeThreshold) {
+          if (judgeCallsThisRun >= contradictionDetection.maxPerRun) {
+            // Cap exhausted — degrade gracefully: fall through to today's
+            // merge-tier classification unchanged (§1.5).
+            summary.contradictionCapReached = true;
+          } else {
+            judgeCallsThisRun++;
+            const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, { log });
+            if (verdict.verdict === 'contradicts' && verdict.confidence >= contradictionDetection.minConfidence) {
+              // Directional: newer atom is the presumptive correction (§2.2)
+              // — opposite of the merge tier's usefulness-based pick.
+              const [newer, older] = a.created_at >= b.created_at ? [a, b] : [b, a];
+              if (contradictionDetection.mode === 'dry-run') {
+                summary.contradictionsPreviewed.push({ winner: newer.id, loser: older.id, similarity: sim, verdict });
+              } else {
+                const proposalId = insertContradictionProposal(
+                  db, newer.id, older.id, newer.text, older.text, sim, verdict,
+                );
+                if (proposalId) {
+                  summary.contradictionsProposed.push({ winner: newer.id, loser: older.id, similarity: sim, proposalId });
+                }
+              }
+              continue; // pair fully handled either way
+            }
+            if (verdict.verdict === 'unrelated') continue; // judge overrides: not actually a candidate
+            // 'agrees' | 'refines' | (unconfident 'contradicts') — fall
+            // through unchanged into the existing merge-tier logic below.
+          }
+        }
+
         if (sim < proposeThreshold) continue;
 
         // Winner: usefulness, then importance, then recency.

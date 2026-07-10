@@ -219,6 +219,42 @@ export interface Config {
    * `applyFusionGovernance`). */
   consolidation: {
     autoAcceptThreshold: number | null;
+    /** Propose-only contradiction detection (FEAT-456 SLICE-1). `mode: 'off'`
+     * (default) is BYTE-IDENTICAL to pre-FEAT-456 behavior — the judge
+     * (`src/consolidate/contradiction-judge.ts`) is never called from
+     * `runConsolidation`. `'dry-run'` runs the judge and records verdicts in
+     * `ConsolidateSummary.contradictionsPreviewed` without writing a row —
+     * the safe-rollout mode. `'enabled'` writes `kind:'contradiction'`
+     * `consolidation_proposals` rows for confident `contradicts` verdicts;
+     * resolution reuses `ProposalRepo.accept`/`reject` unchanged (same
+     * non-destructive, reversible supersede path a 'merge' proposal uses).
+     * Mirrors the `distill.durabilityGate` 3-state-enum precedent rather
+     * than two independent booleans (avoids the ambiguous
+     * `enabled:false, dryRun:true` combination). Opt-in only until eval'd —
+     * do not change this default casually (same caveat durabilityGate
+     * carries). `minSimilarity`/`minConfidence` bounds are validated
+     * per-run inside `runConsolidation` (mirrors
+     * `resolveAutoAcceptThreshold` — they depend on the run's
+     * `mergeThreshold`, so they can't be governed here at config-load
+     * time); only `mode` itself is validated here, see
+     * `applyContradictionDetectionGovernance`. */
+    contradictionDetection: {
+      /** Cosine floor for judge eligibility — deliberately lower/decoupled
+       * from `proposeThreshold`: contradicting facts about the same entity
+       * can sit well below the near-duplicate paraphrase band. Must be in
+       * `[0, mergeThreshold)` for the run in effect. */
+      minSimilarity: number;
+      /** Judge confidence floor to act on a 'contradicts' verdict. Must be
+       * in `[0, 1]`. */
+      minConfidence: number;
+      /** Cap on judge calls per `runConsolidation()` call (cost/latency
+       * guard) — bounds the ENTIRE run, not per group. Once exhausted,
+       * remaining judge-eligible pairs fall through to the existing
+       * merge-tier classification unchanged (`contradictionCapReached`
+       * distinguishes "no contradictions found" from "ran out of budget"). */
+      maxPerRun: number;
+      mode: 'off' | 'dry-run' | 'enabled';
+    };
   };
   /** Distillation durability quality gate (FEAT-441). `off` (default) is
    * BYTE-IDENTICAL to pre-FEAT-441 behavior — the gate
@@ -295,7 +331,10 @@ export function defaultConfig(): Config {
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
     ingestIdempotency: { retentionDays: 7 },
     pipeline: { concurrency: 1 },
-    consolidation: { autoAcceptThreshold: null },
+    consolidation: {
+      autoAcceptThreshold: null,
+      contradictionDetection: { mode: 'off', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 },
+    },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
     distill: { durabilityGate: 'off' },
@@ -399,6 +438,51 @@ export function applyDurabilityGateGovernance(
   return distill;
 }
 
+/**
+ * FEAT-456 SLICE-1: `consolidation.contradictionDetection.mode` is a closed
+ * 3-value enum, same governance concern `applyDurabilityGateGovernance`
+ * already documents for `distill.durabilityGate` — config.yaml is
+ * hand-parsed scalars with no schema, so a typo'd mode value would
+ * otherwise pass straight through `deepMerge` unchecked. Validated here,
+ * never fatal; an invalid value falls back to `'off'` (the documented
+ * default) and is logged. `minSimilarity`/`minConfidence` are NOT governed
+ * here — they're validated per-run inside `runConsolidation` because their
+ * valid range depends on the run's `mergeThreshold`, which this config
+ * layer doesn't know about.
+ */
+const VALID_CONTRADICTION_DETECTION_MODES:
+  ReadonlySet<Config['consolidation']['contradictionDetection']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+const DEFAULT_CONTRADICTION_DETECTION: Config['consolidation']['contradictionDetection'] =
+  { mode: 'off', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 };
+
+export function applyContradictionDetectionGovernance(
+  consolidation: Config['consolidation'],
+  opts: { log?: (message: string) => void } = {},
+): Config['consolidation'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const cd = consolidation.contradictionDetection;
+  // `loadConfig`'s top-level override merge is shallow (`{...base,
+  // ...overrides}`), so an override that only sets `consolidation.
+  // autoAcceptThreshold` replaces the WHOLE `consolidation` object and drops
+  // `contradictionDetection` entirely — a missing object is just as
+  // possible here as an invalid `mode`, so it gets the same non-fatal
+  // fallback rather than a TypeError.
+  if (!cd || !VALID_CONTRADICTION_DETECTION_MODES.has(cd.mode)) {
+    log(
+      cd
+        ? `[contradiction-detection-governance] consolidation.contradictionDetection.mode=` +
+          `${JSON.stringify(cd.mode)} is not one of 'off'|'dry-run'|'enabled' — falling back to ` +
+          "'off' (the documented default). See FEAT-456 / src/consolidate/contradiction-judge.ts."
+        : '[contradiction-detection-governance] consolidation.contradictionDetection is missing — ' +
+          'falling back to defaults (mode: \'off\'). See FEAT-456 / src/consolidate/contradiction-judge.ts.',
+    );
+    return { ...consolidation, contradictionDetection: { ...DEFAULT_CONTRADICTION_DETECTION, ...cd, mode: 'off' } };
+  }
+  return consolidation;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
@@ -406,5 +490,6 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
     ...merged,
     search: applyFusionGovernance(merged.search),
     distill: applyDurabilityGateGovernance(merged.distill),
+    consolidation: applyContradictionDetectionGovernance(merged.consolidation),
   };
 }

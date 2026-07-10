@@ -1053,7 +1053,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     });
     await vecStore.upsert(a, mk(0));
     await vecStore.upsert(b, mk(0.45));
-    runConsolidation(db);
+    await runConsolidation(db);
 
     const list = await toolCall('list_consolidation_proposals', {});
     const { proposals } = list.payload as { proposals: Array<{ id: string; winner_text: string; loser_text: string; status: string }> };
