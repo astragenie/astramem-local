@@ -2,13 +2,64 @@
 slice: SLICE-420
 feature: FEAT-461
 role: builder
-status: fix_round_complete
+status: mini_fix_complete
 branch: feat/feat-461-config-yaml
-commit: 7c89fe9
-review: .claude/artifacts/crew/reviews/20260710T121205Z-review-result-slice-420-feat-461-config-yaml.md (needs_fix)
+commit: 2496848
+review: .claude/artifacts/crew/reviews/20260710T121205Z-review-result-slice-420-feat-461-config-yaml.md (needs_fix, Finding 1 closed in 7c89fe9)
 ---
 
 # SLICE-420 / FEAT-461 — builder handoff
+
+## Mini-fix (2026-07-10, commit 2496848, on top of 7c89fe9/4b05678) — validator finding
+
+Validator flagged (non-blocking severity, but this slice's own AC-3 code, so kept in
+scope): `findMissingConfigKeys` fired a false-positive "missing keys" warn — `azure.
+endpoint`, `azure.deployment`, `openaiCompatible.baseUrl`, `codexSubscription.authPath`
+— on essentially every ordinary `init`/`reembed-dim`/`pair` run.
+
+Root cause: `src/cli/init.ts` builds these blocks as `azure: { ...base.azure, endpoint:
+answers.azureEndpoint, deployment: answers.azureDeployment }` — when the user didn't
+configure that provider, `endpoint`/`deployment` are explicit **own properties with value
+`undefined`**, not absent keys. `findMissingConfigKeys`'s `nestedKey in parsedChild` check
+only tests key presence, so it fired even though `configToYaml` correctly omits these
+fields (the pre-existing `cfg.azure.endpoint ? [...] : []` conditionals were never the
+problem — the false positive was purely in the AC-3 diff check, not in the actual emitted
+YAML).
+
+Fix (`src/config/writer.ts`): a shared `hasNothingToEmit(value)` predicate — true for
+`undefined` or an empty array (generalizing the `customPatterns` carve-out from the prior
+fix round rather than hardcoding a field-name exclusion list) — is now consulted at both
+the top-level and nested-key loops in `findMissingConfigKeys`. "Cannot be missing if there
+is nothing to emit." A key with a real, defined value that's still absent from the
+emitted output is untouched by this predicate and still flags correctly.
+
+New tests in `tests/config/writer.test.ts` (2 tests, added to the existing AC-2 block):
+- an `init.ts`-shaped `Config` (azure/openaiCompatible/codexSubscription/crossEncoder
+  optional fields explicitly set to `undefined`, mirroring the real object-building
+  pattern) reports zero missing keys and logs no AC-3 warning.
+- a defined-but-unemitted field is still flagged: `cfg.azure.endpoint` set to a real
+  value, then hand-stripped from an otherwise-correct emitted YAML string (isolating
+  `findMissingConfigKeys`'s own logic from `configToYaml`'s current, correct behavior) —
+  confirms the fix didn't create a blind spot for genuine regressions.
+
+### Re-run self-verify gates (mini-fix)
+- `bunx tsc --noEmit` — exit 0, no output.
+- `bun run build` — exit 0 (`tsc -p .` clean).
+- `bun vitest run tests/config` — **10 files / 104 tests passed, 0 failed.**
+- `bun run test` (full suite) — **198 files / 2330 tests passed, 6 skipped, 0 failed**
+  (up from 2328 by exactly the 2 new tests added here).
+
+### Confidence
+High. Root cause was confirmed directly against the actual `src/cli/init.ts` code (not
+inferred), the fix is a small, principled predicate rather than a special case, and both
+directions are tested: the false positive is gone, and a genuine missing-defined-field
+regression is still caught.
+
+### Suggested next handoff
+Re-review/re-validate to confirm this closes the validator's finding, then proceed per
+`requires_validation: true` in the slice frontmatter. Parent loop drives dispatch.
+
+---
 
 ## Fix round (2026-07-10, commit 7c89fe9, on top of 60f2b97/ac3081f)
 
