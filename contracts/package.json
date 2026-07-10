@@ -10,8 +10,8 @@
     "directory": "contracts"
   },
   "publishConfig": {
-    "registry": "https://npm.pkg.github.com",
-    "access": "restricted"
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
   },
   "peerDependencies": {
     "zod": "^4.4.3"

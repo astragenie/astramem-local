@@ -1,11 +1,25 @@
-# contracts-publish.yml — publish @astragenie/astramem-contracts to GitHub
-# Packages on a dedicated tag push (unification execution plan U-publish gate).
+# contracts-publish.yml — publish @astragenie/astramem-contracts to npmjs.org
+# (public) on a dedicated tag push (unification execution plan U-publish gate).
 #
 # WHY: astramem cloud (.NET conformance/CI oracle) and astramem-plugin (TS)
 # both need to consume contracts/ as an out-of-tree dependency instead of a
-# vendored copy or git-submodule. GitHub Packages was chosen (not npmjs.org)
-# because the package is org-internal and we don't want a second public
-# registry surface for a contracts-only artifact.
+# vendored copy or git-submodule.
+#
+# WHY npmjs.org, NOT GitHub Packages: npm packages on GitHub Packages inherit
+# the SOURCE REPO's visibility (only ghcr containers get independent
+# visibility). astramem-local is a PRIVATE repo, so the package could only be
+# private there — and private GitHub Packages are metered against the org's
+# paid Packages quota behind a $1 hard-stop budget (prevent_further_usage),
+# which 403s every publish with "Account has reached its billing limit"
+# (this blocked contracts-v2.0.0). Making it public on GitHub Packages would
+# require publishing the whole daemon repo publicly — a non-starter. npmjs.org
+# is a registry NOT tied to GitHub repo visibility, so the package can be
+# public (free, unlimited) while the source repo stays private.
+#
+# VISIBILITY: PUBLIC (publishConfig.access=public, `npm publish --access
+# public`). Payload is only wire-contract schemas, generated types/zod, and
+# SYNTHETIC golden fixtures — no secrets, no user data (scanned) — safe to
+# expose. Owner explicitly approved public exposure of the contracts.
 #
 # TAG NAMESPACE: uses `contracts-v*`, NOT the root package's `v*` tag scheme
 # (see publish.yml / version-tag-parity.yml). This repo publishes TWO
@@ -21,27 +35,18 @@
 # reviewed independently. Tag format: `contracts-v1.2.3` -> package.json
 # version `1.2.3`.
 #
-# AUTH: publish uses the ambient Actions GITHUB_TOKEN with the `packages:
-# write` permission below — this is sufficient for GitHub Packages when the
-# publish target is a package owned by the SAME repo/org as the workflow run.
-# This is deliberately NOT the classic ghp_ PAT pattern documented in
-# `github-packages-auth.md` — that PAT requirement is for humans publishing
-# from a local shell (`gh auth login`'s gho_ OAuth token is 403-rejected by
-# npm.pkg.github.com). CI-triggered publish via GITHUB_TOKEN does not hit
-# that restriction. If this assumption is wrong for this org's GH Packages
-# policy, the publish step below fails loudly with a 401/403 — treat that as
-# signal to fall back to a repo secret holding a classic PAT (write:packages)
-# named CONTRACTS_PUBLISH_TOKEN, not a silent workaround.
+# AUTH: publish authenticates to npmjs.org with an npm Automation access token
+# stored as the repo secret NPM_TOKEN (Automation tokens bypass 2FA, required
+# for CI). The `astragenie` npm org/scope must exist and the token owner must
+# have publish rights on it. The GITHUB_TOKEN / packages:write path no longer
+# applies — this publishes to npmjs, not GitHub Packages.
 #
-# CONSUMPTION (separate concern, not this workflow): astramem-plugin's CI and
-# any engineer's local `bun install` need read:packages to install this
-# package. That still requires a classic PAT (per github-packages-auth.md)
-# configured as NODE_AUTH_TOKEN + a scoped ~/.npmrc / .npmrc in the consuming
-# repo:
-#   @astragenie:registry=https://npm.pkg.github.com
-#   //npm.pkg.github.com/:_authToken=${NODE_AUTH_TOKEN}
-# Cross-repo GITHUB_TOKEN read access to org packages was NOT verified live as
-# part of this change — see the write-up for the open question.
+# CONSUMPTION (separate concern, not this workflow): because the package is
+# PUBLIC on npmjs.org — the default public registry — astramem-plugin's CI and
+# any engineer's local install resolve @astragenie/astramem-contracts with NO
+# auth and NO .npmrc scope mapping. Do NOT scope @astragenie to GitHub Packages
+# in a consumer's .npmrc, or npm will look for this package on GH Packages
+# (private, billing-gated) instead of npmjs.
 #
 # Runs on the self-hosted fleet, consistent with every other workflow here.
 
@@ -54,7 +59,6 @@ on:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   publish:
@@ -75,11 +79,13 @@ jobs:
             exit 1
           fi
 
+      # node 22 matches the repo's engines floor (>=22); registry-url writes the
+      # npmjs auth line into .npmrc. No `scope:` — publishConfig.registry in
+      # contracts/package.json already targets npmjs, mirroring publish.yml.
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
-          registry-url: 'https://npm.pkg.github.com'
-          scope: '@astragenie'
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
 
       - name: Install root deps (generator toolchain lives at repo root)
         working-directory: .
@@ -95,6 +101,6 @@ jobs:
           }
 
       - name: Publish
-        run: npm publish
+        run: npm publish --access public
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
