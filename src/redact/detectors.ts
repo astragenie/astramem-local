@@ -34,6 +34,48 @@ export const PEM_DETECTOR: PatternDetector = {
 };
 
 // ---------------------------------------------------------------------------
+// Shared fragments for the FEAT-463 quoted/JSON-label credential entries
+// (defined below, alongside their unquoted `generic_credential` siblings).
+// ---------------------------------------------------------------------------
+
+/** Same trailing-only keyword set as the unquoted `generic_credential` entry. */
+const GENERIC_TRAILING_KEYWORDS = '(?:api[_-]?key|secret|token|password|passwd|pwd)';
+/** Same any-segment compound-label base as the unquoted compound entry. */
+const GENERIC_COMPOUND_LABEL = '(?:secret|password|passwd|pwd)(?:_[A-Za-z0-9]+)+';
+/**
+ * Mandatory closing quote/apostrophe on the label, then the separator —
+ * `[:=]` as before, plus the PHP `=>` arrow as its own two-character
+ * alternative (matching `[:=]` alone would consume only the `=` of `=>` and
+ * wrongly leave a stray `>` at the start of the "value").
+ *
+ * FEAT-463 validation fix (MEDIUM, live-reproduced): the original
+ * alternation was `(?:=>|[:=])` — plain `[:=]` still matches a bare `=`
+ * even when it's actually the first character of an `=>` arrow. On
+ * `'DB_PASSWORD' => 'hunter2xx'`, the bare-value sibling entry (whose
+ * value pattern requires the value NOT start with a quote) tries `=>`
+ * first, fails past it (the real value IS quoted), and the regex engine
+ * then backtracks the alternation to `[:=]`, consuming only the `=` and
+ * leaving `>` unconsumed — `>` isn't a quote, so the bare-value entry's
+ * `(?!["'])` guard passes and `(\S+)` greedily captures the stray `>`
+ * alone as a bogus one-character "secret", corrupting the arrow in the
+ * output and inflating the redaction-log count. `=(?!>)` closes this: a
+ * bare `=` is only allowed to match when it is NOT immediately followed by
+ * `>` — when it is, the ONLY way to consume it is via the whole `=>`
+ * alternative, which the bare-value entry's own value pattern then
+ * correctly rejects (a quoted value follows), so that entry produces no
+ * match at all for this input, exactly as intended. Does not affect a
+ * genuine bare-value-after-arrow shape (`'DB_PASSWORD' => hunter2xx`,
+ * unquoted value): `=>` matches whole and the bare-value pattern succeeds
+ * directly, no backtracking involved.
+ */
+const QUOTED_LABEL_SEP = `["']\\s*(?:=>|:|=(?!>))\\s*`;
+
+/** Rejects purely-numeric or boolean-literal values (config knobs, not secrets). */
+function rejectNumericOrBooleanLiteral(value: string): boolean {
+  return !/^\d+$/.test(value) && !/^(?:true|false)$/i.test(value);
+}
+
+// ---------------------------------------------------------------------------
 // Vendor-specific token/key patterns.
 // ---------------------------------------------------------------------------
 
@@ -136,6 +178,79 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
     flags: 'id',
     valueGroup: 1,
     valueFilter: (value) => !/^\d+$/.test(value) && !/^(?:true|false)$/i.test(value),
+  },
+  // Quoted/JSON-label forms (FEAT-463 review follow-up to FEAT-459): the two
+  // `generic_credential` entries above require the `[:=]` separator to
+  // immediately follow the keyword — a closing quote/apostrophe on the label
+  // (`"OPENAI_API_KEY":`, `'DB_PASSWORD' =>`) breaks that adjacency, so
+  // JSON-config-shaped and PHP-array-shaped transcript payloads went
+  // unmatched entirely. These entries tolerate a MANDATORY quote/apostrophe
+  // between keyword and separator (mandatory, not optional, so they never
+  // overlap the two entries above — those require the quote to be absent)
+  // plus the PHP `=>` arrow as an alternative separator. Tagged with a
+  // distinct `type` (not `generic_credential`) so redaction-log coverage is
+  // observable by pattern shape — no schema change, just more
+  // `PATTERN_DETECTORS` rows, same convention `azure_key` already uses
+  // across its 3 entries above.
+  //
+  // Three value shapes per keyword family (trailing / compound), so 6
+  // entries total: double-quoted value, single-quoted value, and bare
+  // (unquoted) value. The bare-value variant excludes a leading quote via
+  // `(?!["'])` so it never mis-captures a quoted value's opening quote as
+  // part of a "bare" token — that shape is already handled by the two
+  // quoted-value entries in the same family.
+  //
+  // Known limitation (regex-tier only, per this FEAT's stated non-goal of
+  // full JSON/YAML AST parsing — disclosed, not a hidden gap): `[^"]*`/
+  // `[^']*` have no escape awareness. A value containing an escaped inner
+  // quote (`"api_key": "sk-abc\"def"`) is captured only up to the literal
+  // backslash-quote, so the placeholder replaces `sk-abc\` and the
+  // remainder (`def`) is left in plaintext right after it — a *partial*
+  // redaction that visually looks complete. Flagged as a fast-follow, not
+  // fixed here.
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}"([^"]*)"`,
+    flags: 'id',
+    valueGroup: 1,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}'([^']*)'`,
+    flags: 'id',
+    valueGroup: 1,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}(?!["'])(\\S+)`,
+    flags: 'id',
+    valueGroup: 1,
+  },
+  // Compound-label quoted forms mirror the any-segment `generic_credential`
+  // entry above: same numeric/boolean `valueFilter` guard (a quoted label
+  // doesn't make a config-knob value any more secret than an unquoted one —
+  // AC-3: `"PASSWORD_MIN_LENGTH": 8`, `"SECRET_SCAN_ENABLED": "true"` must
+  // stay unredacted).
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}"([^"]*)"`,
+    flags: 'id',
+    valueGroup: 1,
+    valueFilter: rejectNumericOrBooleanLiteral,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}'([^']*)'`,
+    flags: 'id',
+    valueGroup: 1,
+    valueFilter: rejectNumericOrBooleanLiteral,
+  },
+  {
+    type: 'generic_credential_quoted',
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}(?!["'])(\\S+)`,
+    flags: 'id',
+    valueGroup: 1,
+    valueFilter: rejectNumericOrBooleanLiteral,
   },
   {
     type: 'jwt',

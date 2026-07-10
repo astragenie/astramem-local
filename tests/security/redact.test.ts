@@ -22,6 +22,16 @@ interface TruePositiveCase {
   type: string;
   /** Raw secret substring that must NOT survive in the output. */
   secret: string;
+  /**
+   * Total number of redaction events the input must produce — defaults to
+   * 1. FEAT-463 validation fix: a spurious extra match (e.g. the `=>`
+   * arrow-backtracking bug, detectors.ts `QUOTED_LABEL_SEP`) can leave the
+   * expected secret redacted and hide from a placeholder-presence-only
+   * check while still corrupting output and inflating the redaction log —
+   * asserting the exact count catches that class where presence checks
+   * don't.
+   */
+  expectedEventCount?: number;
 }
 
 const AWS_KEY = 'AKIAHSDOZALWHS3EPALW';
@@ -86,6 +96,87 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     secret: 'admin:s3cr3tpw',
   },
   { name: 'high-entropy unlabeled blob', input: `random blob ${HIGH_ENTROPY_BLOB} embedded here`, type: 'high_entropy', secret: HIGH_ENTROPY_BLOB },
+  // FEAT-463 review fix (CRITICAL bypass, closed): the entropy-guard's
+  // earlier keyword-substring check suppressed these entirely — a
+  // high-entropy secret that happens to (a) be built only from letters/
+  // digits/underscores, (b) contain a recognized keyword substring
+  // anywhere in its own characters, and (c) end in a bare `:`/`=` glued
+  // directly on with no separator in the middle — is NOT a value-less
+  // label and must still be redacted as `high_entropy`.
+  {
+    name: 'entropy bypass repro: keyword-in-value + trailing "=" (base64-padding shape)',
+    input: 'mysecrettoken1234567890abcdef=',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'entropy bypass repro: keyword-in-value + trailing ":" variant',
+    input: 'mysecrettoken1234567890abcdef:',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef:',
+  },
+  {
+    name: 'entropy bypass repro: keyword as a clean underscore-delimited segment (does not close the gap either)',
+    input: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c=',
+    type: 'high_entropy',
+    secret: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c=',
+  },
+  {
+    name: 'entropy bypass control: identical shape, no keyword substring — always redacted (proves the keyword check was the hole, not the shape)',
+    input: 'myrandomvalue1234567890abcdef=',
+    type: 'high_entropy',
+    secret: 'myrandomvalue1234567890abcdef=',
+  },
+  // FEAT-463 review fix round 2 (CRITICAL suffix-attack bypass, closed): round
+  // 1's "safe value immediately follows" check trusted next-token SHAPE alone
+  // — appending a plausible decoy (a bare digit, boolean, or quoted digit/
+  // boolean) right after one of the round-1 repro tokens revived the exact
+  // same leak by making the secret masquerade as a label with its value on
+  // the next token. The round-2 fix requires the label's own identifier core
+  // (quotes/separator stripped) to itself be low-entropy — a genuine secret
+  // hiding behind this shape fails that check regardless of what follows it.
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + bare digit decoy',
+    input: 'mysecrettoken1234567890abcdef= 8',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + bare boolean decoy',
+    input: 'mysecrettoken1234567890abcdef= true',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing ":" + bare digit decoy',
+    input: 'mysecrettoken1234567890abcdef: 8',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef:',
+  },
+  {
+    name: 'suffix-attack repro: underscore-segment variant + digit decoy',
+    input: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c= 42',
+    type: 'high_entropy',
+    secret: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + quoted-digit decoy',
+    input: 'mysecrettoken1234567890abcdef= "8"',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'suffix-attack repro: secret + trailing "=" + quoted-boolean decoy',
+    input: 'mysecrettoken1234567890abcdef= "true"',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'multi-token line: legit label:value pair stays unredacted, unrelated trailing secret (nothing following it) still redacts',
+    input: 'PASSWORD_MIN_LENGTH: 8 mysecrettoken1234567890abcdef=',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
   // FEAT-459: compound SCREAMING_SNAKE_CASE labels (`X_SECRET=`, `X_API_KEY=`,
   // `X_TOKEN=`), both '=' and ':' separators, plus the exact measured gap fixture.
   { name: 'compound INTERNAL_SECRET= (measured gap fixture)', input: 'INTERNAL_SECRET=abc123', type: 'generic_credential', secret: 'abc123' },
@@ -103,18 +194,140 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
   { name: 'JWT_SECRET_KEY= (middle segment)', input: 'JWT_SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
   { name: 'APP_SECRET_KEY= (middle segment)', input: 'APP_SECRET_KEY=abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
   { name: 'secret_key_base: (Rails convention, colon separator)', input: 'secret_key_base: abcdefgh1234', type: 'generic_credential', secret: 'abcdefgh1234' },
+  // FEAT-463: quoted/JSON label forms — separator no longer needs to
+  // immediately follow the keyword; a closing quote/apostrophe (label side)
+  // and a quoted OR bare value are both tolerated. New detector type
+  // (`generic_credential_quoted`) keeps these observable as a distinct shape
+  // from the plain trailing-unquoted match (AC-5).
+  {
+    name: 'AC-1a: JSON double-quoted label + double-quoted value (trailing keyword api_key)',
+    input: '"OPENAI_API_KEY": "sk-proj-AbCdEf1234567890"',
+    type: 'generic_credential_quoted',
+    secret: 'sk-proj-AbCdEf1234567890',
+  },
+  {
+    name: 'AC-1b: JSON double-quoted label + double-quoted value (compound keyword secret, middle segment)',
+    input: '"DJANGO_SECRET_KEY": "abcdefgh1234"',
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+  },
+  {
+    name: 'AC-1c: quoted label + bare value, no space around separator (compound keyword secret, leading segment)',
+    input: '"SECRET_KEY"=abcdefgh1234',
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+  },
+  {
+    name: 'AC-2: PHP array-arrow form, single-quoted label + single-quoted value (trailing keyword password)',
+    input: "'DB_PASSWORD' => 'hunter2'",
+    type: 'generic_credential_quoted',
+    secret: 'hunter2',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'quoted label (single quote) + bare value, trailing keyword token',
+    input: "'SESSION_TOKEN'=abcdefghijk123",
+    type: 'generic_credential_quoted',
+    secret: 'abcdefghijk123',
+  },
+  {
+    name: 'quoted label (double quote) + single-quoted value, compound keyword password',
+    input: '"APP_PASSWORD_HASH": \'zzzz9999yyyy8888\'',
+    type: 'generic_credential_quoted',
+    secret: 'zzzz9999yyyy8888',
+  },
+  // FEAT-463 validation fix (MEDIUM, live-reproduced): `=>` arrow-shape
+  // sweep across all 6 quoted-family entries. Each of these previously
+  // risked a spurious second match from a *sibling* entry backtracking the
+  // `(?:=>|[:=])` separator down to a bare `=`, leaving `>` unconsumed and
+  // captured as a bogus 1-char "secret" by the bare-value entry (root
+  // cause: detectors.ts `QUOTED_LABEL_SEP`). `expectedEventCount: 1`
+  // (explicit here, though it's the default) is the whole point of these
+  // fixtures — the secret being redacted was never in question; the bug
+  // hid from a placeholder-presence-only check.
+  {
+    name: 'arrow sweep: validator\'s exact live-repro string (single-quoted label + single-quoted value)',
+    input: "'DB_PASSWORD' => 'hunter2xx'",
+    type: 'generic_credential_quoted',
+    secret: 'hunter2xx',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: trailing family, double-quoted label + double-quoted value',
+    input: '"DB_PASSWORD" => "hunter2xx"',
+    type: 'generic_credential_quoted',
+    secret: 'hunter2xx',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: trailing family, single-quoted label + bare value',
+    input: "'DB_PASSWORD' => hunter2xxbare",
+    type: 'generic_credential_quoted',
+    secret: 'hunter2xxbare',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: compound family, double-quoted label + double-quoted value',
+    input: '"DJANGO_SECRET_KEY" => "abcdefgh1234"',
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: compound family, single-quoted label + single-quoted value',
+    input: "'DJANGO_SECRET_KEY' => 'abcdefgh1234'",
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: compound family, single-quoted label + bare value',
+    input: "'SECRET_KEY' => abcdefgh1234bare",
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234bare',
+    expectedEventCount: 1,
+  },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
-  it.each(TRUE_POSITIVES)('$name -> type $type', ({ input, type, secret }) => {
+  it.each(TRUE_POSITIVES)('$name -> type $type', ({ input, type, secret, expectedEventCount }) => {
     const { text, events } = redactText(input);
     expect(text).not.toContain(secret);
     expect(events.some(e => e.type === type)).toBe(true);
     expect(text).toMatch(new RegExp(`\\[REDACTED:${type}:[0-9a-f]{8}\\]`));
+    // FEAT-463 validation fix: exact event count, not just placeholder
+    // presence — a spurious extra match hides from the checks above.
+    expect(events.length).toBe(expectedEventCount ?? 1);
   });
 
   it('covers at least 25 true-positive fixtures', () => {
     expect(TRUE_POSITIVES.length).toBeGreaterThanOrEqual(25);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEAT-463 validation fix: PHP `=>` arrow output integrity (MEDIUM,
+// live-reproduced by the validator — see detectors.ts QUOTED_LABEL_SEP).
+// The it.each count assertion above catches the spurious-event symptom;
+// these assert the specific, previously-corrupted output byte-for-byte.
+// ---------------------------------------------------------------------------
+
+describe('redactText — PHP array-arrow (=>) output integrity', () => {
+  it('exactly one event and the `=>` arrow survives byte-intact (validator\'s live repro)', () => {
+    const { text, events } = redactText("'DB_PASSWORD' => 'hunter2xx'");
+    expect(events.length).toBe(1);
+    expect(events[0]?.type).toBe('generic_credential_quoted');
+    expect(text).not.toContain('hunter2xx');
+    expect(text).toContain("'DB_PASSWORD' => '");
+    expect(text).not.toContain('=[REDACTED:'); // the corrupted-arrow shape from the bug
+    expect(text).toMatch(/^'DB_PASSWORD' => '\[REDACTED:generic_credential_quoted:[0-9a-f]{8}\]'$/);
+  });
+
+  it('arrow with an unquoted (bare) value also stays byte-intact', () => {
+    const { text, events } = redactText("'DB_PASSWORD' => hunter2xxbare");
+    expect(events.length).toBe(1);
+    expect(text).toContain("'DB_PASSWORD' => ");
+    expect(text).not.toContain('=[REDACTED:');
   });
 });
 
@@ -268,6 +481,45 @@ describe('redactText — false-positive guards', () => {
 
   it('does not redact monkey=business (mid-word "key" substring, no separator)', () => {
     const input = 'monkey=business';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-463 (AC-3): the quote-tolerant widening must not overtrigger on
+  // benign quoted config, quoted numeric/boolean values on any-segment
+  // keywords, or a quoted mid-word collision — mirroring the unquoted
+  // false-positive guards above, but for the new quoted/JSON-label shapes.
+  it('does not redact "NODE_ENV": "production" (benign quoted JSON config)', () => {
+    const input = '"NODE_ENV": "production"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "PORT": "7777" (benign quoted JSON config)', () => {
+    const input = '"PORT": "7777"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "PASSWORD_MIN_LENGTH": 8 (quoted label, bare numeric value, middle-segment keyword)', () => {
+    const input = '"PASSWORD_MIN_LENGTH": 8';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "SECRET_SCAN_ENABLED": "true" (quoted label, quoted boolean value, leading-segment keyword)', () => {
+    const input = '"SECRET_SCAN_ENABLED": "true"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "authtoken": "abc123456789" (quoted mid-word collision, "token" preceded by a letter)', () => {
+    const input = '"authtoken": "abc123456789"';
     const { text, events } = redactText(input);
     expect(text).toBe(input);
     expect(events.length).toBe(0);
