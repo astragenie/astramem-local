@@ -76,11 +76,35 @@ const EMIT_DEFAULTS = defaultConfig();
  */
 const SYNC_EXCLUSION = new Set(['sync']);
 
+/**
+ * FEAT-461 review fix round 2 (validator finding, non-blocking severity but
+ * user-visible AC-3 noise): a value with "nothing to emit" can't be missing.
+ * `init` builds optional blocks like `azure: { ...base.azure, endpoint:
+ * answers.azureEndpoint, deployment: answers.azureDeployment }`
+ * (src/cli/init.ts) — when the user didn't configure that provider,
+ * `endpoint`/`deployment` are explicit own properties with value
+ * `undefined`, not absent keys, so the naive `nestedKey in parsedChild`
+ * check below used to fire a false-positive "missing" for every ordinary
+ * init run. `configToYaml` already correctly omits these (the pre-existing
+ * `cfg.azure.endpoint ? [...] : []` conditionals), and the same is true for
+ * an empty array (the `customPatterns` carve-out this generalizes). This
+ * predicate is the single point both the top-level and nested-key loops
+ * consult, so the two checks can't drift out of sync with each other. A
+ * value that IS defined (or a non-empty array) but still missing from the
+ * emitted output is untouched by this and still flags correctly.
+ */
+function hasNothingToEmit(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (Array.isArray(value) && value.length === 0) return true;
+  return false;
+}
+
 export function findMissingConfigKeys(cfg: Config, emittedYaml: string): string[] {
   const parsed = parseConfigYaml(emittedYaml) as Record<string, unknown>;
   const missing: string[] = [];
   for (const [key, value] of Object.entries(cfg as unknown as Record<string, unknown>)) {
     if (SYNC_EXCLUSION.has(key)) continue;
+    if (hasNothingToEmit(value)) continue;
     if (!(key in parsed)) {
       missing.push(key);
       continue;
@@ -92,6 +116,8 @@ export function findMissingConfigKeys(cfg: Config, emittedYaml: string): string[
         continue;
       }
       for (const nestedKey of Object.keys(value as Record<string, unknown>)) {
+        const nestedValue = (value as Record<string, unknown>)[nestedKey];
+        if (hasNothingToEmit(nestedValue)) continue;
         if (!(nestedKey in (parsedChild as Record<string, unknown>))) {
           missing.push(`${key}.${nestedKey}`);
         }

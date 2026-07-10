@@ -270,6 +270,56 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(missing).not.toContain('sync');
   });
 
+  // FEAT-461 review fix round 2 (validator finding, non-blocking severity,
+  // in-scope since it's this slice's own AC-3 code): src/cli/init.ts builds
+  // optional blocks as `azure: { ...base.azure, endpoint: answers.azureEndpoint,
+  // deployment: answers.azureDeployment }` — when the user didn't configure
+  // that provider, `endpoint`/`deployment` are explicit own properties with
+  // value `undefined`, not absent keys. The naive `nestedKey in parsedChild`
+  // check used to flag these as "missing" on essentially every ordinary
+  // init/reembed-dim/pair run, even though configToYaml correctly omits them
+  // (the pre-existing `cfg.azure.endpoint ? [...] : []` conditionals).
+  it('does not flag defined-as-undefined optional fields as missing (mirrors src/cli/init.ts object-building shape)', () => {
+    const base = defaultConfig();
+    // Mirrors buildConfig() in src/cli/init.ts: spreading base and setting
+    // optional fields to `answers.x` where the user left that provider
+    // unconfigured (undefined), rather than defaultConfig()'s plain object
+    // literal (which never even has the key).
+    const cfg: Config = {
+      ...base,
+      azure: { ...base.azure, endpoint: undefined, deployment: undefined },
+      openaiCompatible: { ...base.openaiCompatible, baseUrl: undefined },
+      codexSubscription: { ...base.codexSubscription, authPath: undefined },
+      crossEncoder: { ...base.crossEncoder, sidecarUrl: undefined, model: undefined },
+    };
+    const yaml = configToYaml(cfg);
+    const missing = findMissingConfigKeys(cfg, yaml);
+    expect(missing).toEqual([]);
+
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation((() => {}) as never);
+    configToYaml(cfg);
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('still flags a defined optional field that is absent from the emitted output', () => {
+    const cfg = defaultConfig();
+    cfg.azure.endpoint = 'https://my.openai.azure.com'; // defined — configToYaml does emit this
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain('endpoint');
+
+    // Simulate a future regression: the emitter stops writing a field that
+    // IS defined on cfg. Strip the line by hand rather than editing the
+    // emitter, so this test exercises findMissingConfigKeys's own logic in
+    // isolation from configToYaml's current (correct) behavior.
+    const brokenYaml = yaml
+      .split('\n')
+      .filter((l) => !l.trim().startsWith('endpoint:'))
+      .join('\n');
+    const missing = findMissingConfigKeys(cfg, brokenYaml);
+    expect(missing).toContain('azure.endpoint');
+  });
+
   // AC-3: observability on incomplete emit.
   it('logs a structured warning naming the missing keys when the emit is incomplete', () => {
     const warnSpy = vi.spyOn(logger, 'warn').mockImplementation((() => {}) as never);
