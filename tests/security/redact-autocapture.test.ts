@@ -87,11 +87,23 @@ describe('auto-capture shape — partial/truncated turn text', () => {
     expect(text).not.toContain(fragment);
   });
 
-  it('GAP: a SHORTER truncation of the exact same fragment (<20 chars, e.g. a very ' +
-     'early mid-stream read) falls below the entropy detector\'s MIN_TOKEN_LENGTH floor ' +
-     '(src/redact/entropy.ts) and is not redacted by anything — the real cutoff for ' +
-     'truncated-secret coverage is that floor, not a specific vendor pattern', () => {
+  it('FEAT-459: a SHORTER truncation of the exact same fragment (<20 chars, e.g. a ' +
+     'very early mid-stream read) is redacted when a credential-keyword label is ' +
+     'adjacent — labeled matches have no minimum length (detectors.ts), so the ' +
+     'entropy detector\'s MIN_TOKEN_LENGTH floor (entropy.ts) never comes into play ' +
+     'for this shape at all', () => {
     const shortFragment = GHP_TOKEN.slice(0, 17); // "ghp_" + 13 chars = 17 total
+    const partial = `Found it: token=${shortFragment}`;
+    const { text, events } = redactText(partial);
+    expect(events.some(e => e.type === 'generic_credential')).toBe(true);
+    expect(text).not.toContain(shortFragment);
+  });
+
+  it('FEAT-459: the SAME <20-char fragment with NO adjacent credential-keyword label ' +
+     'is still NOT redacted — the entropy floor is preserved for unlabeled matches ' +
+     '(false-positive control), confirming the labeled-short-fragment policy only ' +
+     'lowers the bar when a label is actually present', () => {
+    const shortFragment = GHP_TOKEN.slice(0, 17);
     const partial = `I found this in the config: ${shortFragment} and I think`;
     const { text, events } = redactText(partial);
     expect(events.length).toBe(0);
@@ -137,38 +149,33 @@ describe('auto-capture shape — multi-line env dump in a single turn', () => {
     expect(types).toContain('connection_string');
   });
 
-  it('a SCREAMING_SNAKE_CASE env-var name compounded onto "key/token/secret" (e.g. ' +
-     'OPENAI_API_KEY=) is NOT caught by the labeled generic_credential detector — \\b ' +
-     'does not match between two word characters ("I" and "_") — but a sufficiently ' +
-     'random value in that shape is still rescued by the entropy fallback', () => {
+  it('FEAT-459: a SCREAMING_SNAKE_CASE env-var name compounded onto "key/token/secret" ' +
+     '(e.g. OPENAI_API_KEY=) IS caught by the labeled generic_credential detector — the ' +
+     'label side now uses a negative lookbehind instead of `\\b`, so a compound keyword ' +
+     'preceded by "_" (a word char, which defeated `\\b`) still matches', () => {
     const line = 'OPENAI_API_KEY=sk-proj-9f8e7d6c5b4a3210';
     const { text, events } = redactText(line);
-    const genericHit = events.some(e => e.type === 'generic_credential');
-    expect(genericHit).toBe(false); // confirms the \b/underscore label gap exists today
-    // The whole label+value token (no whitespace around "=") is tokenized as
-    // one unit by the entropy detector; its randomness clears the 4.0
-    // bits/char default threshold, so THIS value is rescued — but that is a
-    // property of this specific value's randomness, not a general guarantee.
-    expect(events.some(e => e.type === 'high_entropy')).toBe(true);
+    expect(events.some(e => e.type === 'generic_credential')).toBe(true);
     expect(text).not.toContain('sk-proj-9f8e7d6c5b4a3210');
   });
 
-  it('GAP: "INTERNAL_SECRET=<value>" is not rescued by anything — the labeled ' +
-     'detector misses it for the same \\b/underscore reason, AND this particular ' +
-     'label+value combination sits just under the 4.0 bits/char entropy threshold ' +
-     '(measured 3.97) — confirmed by direct measurement, not assumed', () => {
+  it('FEAT-459 (AC-1): "INTERNAL_SECRET=<value>" IS redacted by the labeled ' +
+     'generic_credential detector, independent of the value\'s entropy (measured ' +
+     '3.97 bits/char, under the 4.0 threshold — this exact case used to slip past ' +
+     'both the labeled detector AND the entropy fallback before the compound-label fix)', () => {
     const line = 'INTERNAL_SECRET=abc123';
     const { text, events } = redactText(line);
-    expect(events.length).toBe(0);
-    expect(text).toBe(line);
+    expect(events.some(e => e.type === 'generic_credential')).toBe(true);
+    expect(text).not.toContain('abc123');
   });
 
-  it('for contrast: DB_PASSWORD=<value> and SERVICE_PWD=<value> in the SAME ' +
-     'SCREAMING_SNAKE_CASE shape ARE rescued by entropy — confirms the residual gap ' +
-     'is value/label-combination-dependent, not a blanket miss on this whole shape', () => {
+  it('FEAT-459: DB_PASSWORD=<value> and SERVICE_PWD=<value> in the SAME ' +
+     'SCREAMING_SNAKE_CASE shape are now caught directly by the labeled detector — ' +
+     'previously only rescued by entropy (value-randomness-dependent); the compound-' +
+     'label fix makes this a high-confidence label match instead', () => {
     for (const line of ['DB_PASSWORD=letmein123456', 'SERVICE_PWD=abc123456']) {
       const { text, events } = redactText(line);
-      expect(events.some(e => e.type === 'high_entropy')).toBe(true);
+      expect(events.some(e => e.type === 'generic_credential')).toBe(true);
       expect(text).not.toBe(line);
     }
   });
