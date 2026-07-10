@@ -13,6 +13,7 @@ import { z } from 'zod';
 import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import {
   AtomSchema,
+  EntityKindSchema,
   EXTRACTION_SYSTEM_PROMPT,
   EXTRACTION_SYSTEM_PROMPT_V2,
   type Atom,
@@ -119,12 +120,38 @@ async function callExtract(
 }
 
 /**
+ * Coerce an out-of-enum entities[].kind to 'other' instead of letting one bad
+ * entity sink the whole atom under AtomSchema's nested validation. Mirrors
+ * the cloud-side safe-narrow in AstraMemory.Domain/EntityKinds.Normalize() —
+ * an unrecognized kind (stale local build, newer contract value this build
+ * doesn't know yet, LLM hallucination) must not cause silent atom loss.
+ * Only the `kind` field is touched; every other atom/entity field passes
+ * through unchanged for AtomSchema to validate normally.
+ */
+function coerceEntityKinds(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const atom = raw as Record<string, unknown>;
+  if (!Array.isArray(atom.entities)) return raw;
+
+  const entities = atom.entities.map((entity) => {
+    if (entity === null || typeof entity !== 'object' || Array.isArray(entity)) return entity;
+    const e = entity as Record<string, unknown>;
+    if (EntityKindSchema.safeParse(e.kind).success) return entity;
+    return { ...e, kind: 'other' };
+  });
+
+  return { ...atom, entities };
+}
+
+/**
  * Try to parse the LLM response into an Atom[].
  * Strips markdown fences if present.
  *
  * Returns an Atom[] (possibly empty) when the JSON is structurally valid and
  * contains an `atoms` array — even if individual atoms are malformed (they
- * are silently dropped via AtomSchema filtering).
+ * are silently dropped via AtomSchema filtering). An out-of-enum entity kind
+ * is coerced to 'other' before that filtering runs, so it no longer sinks
+ * the atom (see coerceEntityKinds above).
  *
  * Returns null only when the raw text is not parseable JSON or is missing the
  * top-level `atoms` key — this is the signal for a TransientError (see
@@ -150,8 +177,12 @@ function tryParseAtoms(raw: string): Atom[] | null {
     if (!wrapper.success) return null;
 
     // Filter atoms individually: drop those that fail strict AtomSchema
-    // (short text, unknown type, out-of-range numbers, etc.)
-    return wrapper.data.atoms.filter((a) => AtomSchema.safeParse(a).success) as Atom[];
+    // (short text, unknown type, out-of-range numbers, etc.) — but first
+    // repair a recoverable per-entity issue (unknown kind) so it doesn't
+    // take the whole atom down with it.
+    return wrapper.data.atoms
+      .map(coerceEntityKinds)
+      .filter((a) => AtomSchema.safeParse(a).success) as Atom[];
   } catch {
     return null;
   }
