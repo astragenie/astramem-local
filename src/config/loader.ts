@@ -60,31 +60,44 @@ function unescapeDoubleQuoted(s: string): string {
 /** Split a flow-sequence's inner text (between `[` and `]`) into entries on
  * top-level commas, honoring single/double-quote state so a comma or `#`
  * inside a quoted entry is content, not a delimiter (FEAT-465, AC-2) —
- * the array-entry counterpart of `stripComment`'s quote-tracking below. */
+ * the array-entry counterpart of `stripComment`'s quote-tracking below.
+ *
+ * FEAT-465 review fix (HIGH regression): a `'`/`"` only OPENS a quoted entry
+ * when it is the first non-whitespace character of that entry (right after
+ * the start of `inner` or a top-level `,`) — never at an arbitrary
+ * apostrophe mid-entry. An earlier version treated any bare `'` as a
+ * quote-open unconditionally, so an unquoted entry containing a literal
+ * apostrophe (e.g. `don't`) would falsely "open a string" and swallow the
+ * rest of the array (comma, closing `]`, everything) as if still inside
+ * quotes — matching YAML's own grammar, where a quote only starts a scalar
+ * at that scalar's first character. */
 function splitFlowSequenceEntries(inner: string): string[] {
   const entries: string[] = [];
   let current = '';
   let inSingle = false;
   let inDouble = false;
+  let atEntryStart = true;
 
   for (let i = 0; i < inner.length; i++) {
     const ch = inner[i] as string;
     if (inSingle) {
       current += ch;
       if (ch === "'") {
-        if (inner[i + 1] === "'") { current += inner[++i]; } else { inSingle = false; }
+        if (inner[i + 1] === "'") { current += inner[++i]; } else { inSingle = false; atEntryStart = false; }
       }
       continue;
     }
     if (inDouble) {
       current += ch;
       if (ch === '\\' && i + 1 < inner.length) { current += inner[++i]; }
-      else if (ch === '"') { inDouble = false; }
+      else if (ch === '"') { inDouble = false; atEntryStart = false; }
       continue;
     }
-    if (ch === "'") { inSingle = true; current += ch; continue; }
-    if (ch === '"') { inDouble = true; current += ch; continue; }
-    if (ch === ',') { entries.push(current); current = ''; continue; }
+    if (/\s/.test(ch)) { current += ch; continue; } // leading/inner whitespace never ends entry-start eligibility
+    if (atEntryStart && ch === "'") { inSingle = true; current += ch; continue; }
+    if (atEntryStart && ch === '"') { inDouble = true; current += ch; continue; }
+    if (ch === ',') { entries.push(current); current = ''; atEntryStart = true; continue; }
+    atEntryStart = false;
     current += ch;
   }
   if (current.trim() !== '') entries.push(current);
@@ -127,35 +140,75 @@ function parseScalar(raw: string): unknown {
  * so any scalar whose value contained a whitespace-preceded `#` was silently
  * truncated at that point — including inside a `[...]` flow-sequence entry
  * (SLICE-420 review repro: `customPatterns: ["hash #tag no leading space"]`
- * corrupted to the string `["hash`). This tracks single-/double-quote state
- * character by character and only treats a `#` as a comment delimiter when it
- * is outside both, preserving the original "start-of-line or whitespace-
- * preceded" semantics for the unquoted case.
+ * corrupted to the string `["hash`).
+ *
+ * FEAT-465 review fix (HIGH regression): a `'`/`"` only OPENS quote state at
+ * a position where a scalar VALUE may legally start — right after the
+ * `key:` separator, or right after a top-level `[`/`,` inside a flow
+ * sequence — never at an arbitrary quote character mid-value. The first
+ * version of this function treated ANY bare `'` as a quote-open, so an
+ * unquoted value containing a literal apostrophe (a contraction like
+ * `don't`, a name like `O'Brien`) left the scanner incorrectly believing it
+ * was still inside a quoted string, silently swallowing a real trailing `#`
+ * comment into the value — a regression vs. the old regex, which had no
+ * quote-tracking at all and so never mishandled this case. The key portion
+ * of the line (before the separating `:`) never legitimately contains a
+ * quote or a `#` in this dialect, so it's scanned without any quote
+ * awareness, same as the original regex.
  */
 function stripComment(rawLine: string): string {
+  const colonIdx = rawLine.indexOf(':');
+  const valueStart = colonIdx === -1 ? rawLine.length : colonIdx + 1;
+
+  // Dumb (quote-unaware) scan for the key prefix, or the WHOLE line when
+  // there's no colon at all (e.g. a standalone `# header comment` line).
+  for (let i = 0; i < valueStart; i++) {
+    if (rawLine[i] === '#' && (i === 0 || /\s/.test(rawLine[i - 1] as string))) {
+      return rawLine.slice(0, i);
+    }
+  }
+  if (colonIdx === -1) return rawLine;
+
+  let i = valueStart;
+  let atValueStart = true; // true only where a NEW scalar may legally begin
   let inSingle = false;
   let inDouble = false;
+  let bracketDepth = 0;
 
-  for (let i = 0; i < rawLine.length; i++) {
+  while (i < rawLine.length) {
     const ch = rawLine[i] as string;
+
     if (inSingle) {
       // YAML escapes an embedded quote inside a single-quoted scalar by
       // doubling it (''); a doubled quote stays inside the string.
       if (ch === "'") {
-        if (rawLine[i + 1] === "'") { i++; } else { inSingle = false; }
+        if (rawLine[i + 1] === "'") { i += 2; continue; }
+        inSingle = false; atValueStart = false; i++; continue;
       }
-      continue;
+      i++; continue;
     }
     if (inDouble) {
-      if (ch === '\\' && i + 1 < rawLine.length) { i++; }
-      else if (ch === '"') { inDouble = false; }
-      continue;
+      if (ch === '\\' && i + 1 < rawLine.length) { i += 2; continue; }
+      if (ch === '"') { inDouble = false; atValueStart = false; }
+      i++; continue;
     }
-    if (ch === "'") { inSingle = true; continue; }
-    if (ch === '"') { inDouble = true; continue; }
+
+    if (/\s/.test(ch)) { i++; continue; } // leading/inter-token whitespace never ends value-start eligibility
+    if (atValueStart && ch === "'") { inSingle = true; i++; continue; }
+    if (atValueStart && ch === '"') { inDouble = true; i++; continue; }
     if (ch === '#' && (i === 0 || /\s/.test(rawLine[i - 1] as string))) {
       return rawLine.slice(0, i);
     }
+    // A `[` opens a flow sequence (entries may quote-open right after it or
+    // after a top-level `,`); `,` is only a new entry boundary while inside
+    // one — an unbracketed comma in a hand-edited unquoted scalar must NOT
+    // re-arm quote-opening for whatever follows it.
+    if (ch === '[') { bracketDepth++; atValueStart = true; i++; continue; }
+    if (ch === ']') { bracketDepth = Math.max(0, bracketDepth - 1); atValueStart = false; i++; continue; }
+    if (ch === ',' && bracketDepth > 0) { atValueStart = true; i++; continue; }
+
+    atValueStart = false;
+    i++;
   }
   return rawLine;
 }
