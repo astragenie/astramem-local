@@ -24,9 +24,12 @@ green to main, cut v0.14.0 (bump + tag same commit, push, npm publish, verify
 - Commits: 10290b5 (multi-run mean±stdev, stats.ts → shared/), 8436f08
   (cross-run comparability guard — evaluateMultiRunParamsGuard, refuse on
   mismatch, DEC-012 posture), 6a9e941 (artifacts).
-- Gate state: review round 1 needs_fix → fix DONE → **targeted re-review
-  QUEUED with reviewer-420** (brief sent: guard placement, checkRunParams
-  refactor equivalence, mixed-dirs repro, annotation, flake ruling).
+- Gate state: review round 1 needs_fix → fix DONE (8436f08) → re-review was
+  queued when reviewer-420 died on session limit. NEXT SESSION: dispatch a
+  fresh reviewer with the re-review brief (guard placement before scoring I/O,
+  diffRunParams refactor equivalence vs 462a's 15 guard tests, mixed-dirs
+  CLI repro, x/y-runs annotation, flake ruling on post-merge-rebuild +
+  release tests).
 - After re-review PASS: light validation (fixture-based judge.mts --run-dir
   multi-run smoke) → merge.
 
@@ -38,8 +41,19 @@ green to main, cut v0.14.0 (bump + tag same commit, push, npm publish, verify
   cross-check before kill, skip-by-default on ambiguity, per-entry outcomes,
   operator "stuck run" playbook in both READMEs, identity-mismatch test with
   two owned processes.
-- After fix: targeted re-review (attack the identity check) → validation
-  (live detach + status + scoped-kill via fake daemon, sandboxed) → merge.
+- **UPDATE 17:00Z — builder + reviewer agents died on session limit (resets
+  11:50am America/Chicago).** Fix-round WIP committed + pushed as 9ebefd1:
+  identity guard IMPLEMENTED (+155 lines daemon-manifest.ts, tsc clean,
+  48/49 shared tests green). ONE failing test remains: pre-existing
+  "kills only the PIDs in the manifest" expects [pid], gets [] — its sleeper
+  fixtures don't bind the manifest ports so the new skip-by-default guard
+  correctly refuses; fixture port-binding adaptation was mid-flight
+  (fake-detached-worker.mjs +25 lines committed in the WIP).
+  NEXT SESSION: (1) finish wiring the port-binding fixture into that test,
+  (2) add the 3 identity-outcome tests from the fix brief (killed /
+  already-dead / skipped-identity-mismatch with two owned processes),
+  (3) targeted re-review (attack the netstat/port-owner parse), (4) validation,
+  (5) merge.
 
 ## Release recipe (when both merged)
 
