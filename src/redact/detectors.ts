@@ -72,9 +72,27 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
     flags: '',
   },
   // Generic `key = value` / `key: value` credential — redact value only.
+  //
+  // Label side uses a negative lookbehind, not `\b`, so compound
+  // SCREAMING_SNAKE_CASE labels match: `\b` fails to find a boundary between
+  // two word characters, so `OPENAI_API_KEY=` (keyword preceded by `_`, a
+  // word char) never matched the old `\bapi[_-]?key` anchor (FEAT-459).
+  // `(?<![A-Za-z])` instead only requires the char immediately before the
+  // keyword NOT be a letter — underscore/digit/start-of-string/punctuation
+  // all satisfy it, so `INTERNAL_SECRET=`, `X_API_KEY=`, `X_TOKEN=` all
+  // match, while genuine mid-word collisions (`authtoken=`, `topsecret=`)
+  // stay blocked exactly as `\b` blocked them before. The trailing
+  // `\s*[:=]` requirement (immediately after the keyword, before any other
+  // identifier char) is what keeps `MAX_TOKENS=`, `PORT=`, `NODE_ENV=`,
+  // `LOG_LEVEL=` from matching — none of those have `[:=]` right after a
+  // keyword substring. The captured value group has no minimum length: a
+  // labeled match is high-confidence on the label alone, so short secrets
+  // (e.g. a 17-char truncated token fragment) are redacted here regardless
+  // of length — the entropy detector's MIN_TOKEN_LENGTH floor (entropy.ts)
+  // only ever applies to UNLABELED values, by design (see comment there).
   {
     type: 'generic_credential',
-    source: '\\b(?:api[_-]?key|secret|token|password|passwd|pwd)\\s*[:=]\\s*(\\S+)',
+    source: '(?<![A-Za-z])(?:api[_-]?key|secret|token|password|passwd|pwd)\\s*[:=]\\s*(\\S+)',
     flags: 'id',
     valueGroup: 1,
   },

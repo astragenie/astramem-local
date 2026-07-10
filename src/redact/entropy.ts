@@ -7,6 +7,16 @@
  * UUIDs, and file paths (see redactText doc-comment for the full list).
  */
 
+// Floor applies ONLY to unlabeled tokens (FEAT-459 decision point). Labeled
+// short secrets (e.g. `token=<12-char-fragment>`) never reach this floor at
+// all — the generic_credential pattern detector (detectors.ts) runs BEFORE
+// this stage, matches on the label alone, and has no minimum length on its
+// captured value, so a labeled match is redacted at any length. Lowering
+// this floor for "label context" here would be redundant AND would remove
+// the one false-positive guard protecting genuinely unlabeled short tokens
+// (a stray 12-char identifier, a short hash fragment, etc.) from being
+// flagged on entropy alone — so the floor stays fixed regardless of nearby
+// text, by design.
 const MIN_TOKEN_LENGTH = 20;
 const CONTEXT_WINDOW = 40;
 const HEX_DIGEST_CONTEXT_RE = /\b(commit|sha|hash|digest)\b/i;
