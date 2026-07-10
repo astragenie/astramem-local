@@ -231,11 +231,18 @@ export function printMultiRunReport(report: MultiRunMetricsReport): void {
     printMetricsReport(report);
     return;
   }
-  console.log(`\nLoCoMo results by category (n=${report.runs.length} runs, mean ± stdev):`);
+  const totalRuns = report.runs.length;
+  console.log(`\nLoCoMo results by category (n=${totalRuns} runs, mean ± stdev):`);
   for (const c of LOCOMO_CATEGORIES) {
     const { name, accuracy } = report.category_stats[c];
     const n = report.per_category[c].n;
-    console.log(`\t${c} (${name}): ${formatStatsPct(accuracy)} (${n})`);
+    // Review fix (observability nit): accuracy.n is the count of runs that
+    // actually had >=1 QA in this category, not the pooled QA count -- flag
+    // it when a category was missing from some run(s), e.g. a distill
+    // timeout that emptied one run's worth of a category's QA pairs.
+    const contributingRuns = accuracy.n;
+    const runsNote = contributingRuns !== totalRuns ? `, ${contributingRuns}/${totalRuns} runs` : '';
+    console.log(`\t${c} (${name}): ${formatStatsPct(accuracy)} (n=${n}${runsNote})`);
   }
   console.log(`\nCategory-averaged accuracy: ${formatStatsPct(report.category_averaged_accuracy_stats)}`);
   console.log(`Overall accuracy (F1/token-overlap, category 5 binary): ${formatStatsPct(report.overall_accuracy_stats)} (n=${report.n_total})`);

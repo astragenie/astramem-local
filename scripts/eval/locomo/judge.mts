@@ -31,6 +31,16 @@
  *
  * bun scripts/eval/locomo/judge.mts --run-dir <run-dir-1> --run-dir <run-dir-2> [...]
  *   [--llm-judge] [--out <path>]
+ *
+ * Cross-run comparability guard (review fix): 2+ --run-dir combines ONLY if
+ * every dir's run-params.json (written by run.mts on every invocation,
+ * FEAT-462) agrees on every scope-determining sampling flag. A mismatch (or
+ * a dir missing run-params.json) hard-refuses, naming the offending dir(s)
+ * -- there is no override flag. See ../shared/run-params.ts's
+ * evaluateMultiRunParamsGuard for the full rationale: this is the same
+ * "silently narrows/changes scope" risk evaluateResumeGuard already guards
+ * for a single --resume, one stage later in the pipeline (aggregation
+ * across runs, instead of resuming one run).
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -38,6 +48,7 @@ import { pathToFileURL } from 'node:url';
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, type LoCoMoCategory, type LoCoMoSample } from './lib/types.js';
 import { scoreRun, printMetricsReport, combineMetricsReports, printMultiRunReport, type MetricsReport } from './judge/metrics.mts';
 import { azureChatComplete } from '../shared/azure-client.js';
+import { evaluateMultiRunParamsGuard } from '../shared/run-params.js';
 import { resolveAzureConfig } from '../shared/config.js';
 
 interface HypothesisRow {
@@ -153,6 +164,16 @@ if (isMain) {
     // hypotheses.jsonl + sample.json (same layout run.mts always writes).
     // A single --run-dir combines to a report identical to the single-run
     // path (combineMetricsReports short-circuits at length===1).
+    //
+    // Cross-run comparability guard (review fix): refuse before scoring
+    // anything if the run dirs weren't sampled with the same params --
+    // see the file header comment and ../shared/run-params.ts.
+    const guard = evaluateMultiRunParamsGuard(runDirs);
+    if (guard.action === 'refuse') {
+      console.error(guard.refuseMessage);
+      process.exit(1);
+    }
+
     const outPath = get('--out') ?? `${runDirs[0]}.metrics.json`;
     const perRunF1: MetricsReport[] = [];
     const perRunLlm: MetricsReport[] = [];

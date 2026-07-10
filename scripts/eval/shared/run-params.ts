@@ -24,6 +24,7 @@
  */
 import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { join } from 'node:path';
 
 export type RunParams = Record<string, string | number | boolean | null>;
 
@@ -44,6 +45,31 @@ export function writeRunParams(runParamsPath: string, params: RunParams): void {
   writeFileSync(runParamsPath, JSON.stringify(sorted, null, 2), 'utf8');
 }
 
+export interface RunParamsDiff {
+  key: string;
+  a: string | number | boolean | null;
+  b: string | number | boolean | null;
+}
+
+/**
+ * Pure key-by-key diff between two RunParams sets — a missing key is
+ * treated as `null` (LoCoMo's optional `qaPerSample`). Extracted (FEAT-457
+ * slice 1 review fix) so the exact same comparison backs BOTH
+ * `checkRunParams` (one original vs. one current invocation, `--resume`)
+ * and `evaluateMultiRunParamsGuard` below (N peer run dirs, `judge.mts
+ * --run-dir`) — one comparison implementation, not two.
+ */
+export function diffRunParams(a: RunParams, b: RunParams): RunParamsDiff[] {
+  const diffs: RunParamsDiff[] = [];
+  const allKeys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  for (const key of [...allKeys].sort()) {
+    const av = a[key] ?? null;
+    const bv = b[key] ?? null;
+    if (av !== bv) diffs.push({ key, a: av, b: bv });
+  }
+  return diffs;
+}
+
 export interface RunParamsCheckResult {
   ok: boolean;
   /** true if run-params.json itself was missing — a pre-fix run dir. */
@@ -58,13 +84,7 @@ export function checkRunParams(runParamsPath: string, current: RunParams): RunPa
     return { ok: false, missingFile: true, mismatches: [] };
   }
   const original = JSON.parse(readFileSync(runParamsPath, 'utf8')) as RunParams;
-  const mismatches: string[] = [];
-  const allKeys = new Set([...Object.keys(original), ...Object.keys(current)]);
-  for (const key of [...allKeys].sort()) {
-    const o = original[key] ?? null;
-    const c = current[key] ?? null;
-    if (o !== c) mismatches.push(`${key}: original=${JSON.stringify(o)}, current=${JSON.stringify(c)}`);
-  }
+  const mismatches = diffRunParams(original, current).map(d => `${d.key}: original=${JSON.stringify(d.a)}, current=${JSON.stringify(d.b)}`);
   return { ok: mismatches.length === 0, missingFile: false, mismatches };
 }
 
@@ -101,4 +121,62 @@ export function evaluateResumeGuard(runParamsPath: string, resuming: boolean, cu
     };
   }
   return { action: 'proceed-resume' };
+}
+
+export type MultiRunGuardResult =
+  | { action: 'proceed' }
+  | { action: 'refuse'; refuseMessage: string };
+
+/**
+ * Guards combining N run dirs' worth of hypotheses into one multi-run
+ * report (`judge.mts --run-dir`, FEAT-457 slice 1 review fix) — the same
+ * "silently narrows/changes scope, looks fully successful" risk class
+ * `evaluateResumeGuard` above already guards for a single `--resume`, one
+ * stage later in the pipeline: an operator combining a `--n 20` smoke dir
+ * with full-`--n` real runs would otherwise get a confidently-printed
+ * mean±stdev over runs that were never comparable in the first place.
+ *
+ * Zero or one run dir needs no comparison. With 2+, every dir's
+ * `run-params.json` (written by `run.mts` on every invocation, FEAT-462)
+ * must exist and agree on every scope-determining field — ANY mismatch,
+ * against ANY dir missing `run-params.json`, is a hard refusal naming the
+ * offending dir(s) and (for mismatches) every differing param. No override
+ * flag, matching DEC-012's refuse-on-mismatch posture: an operator who
+ * really means to compare non-comparable runs starts over with fresh,
+ * matched run dirs.
+ */
+export function evaluateMultiRunParamsGuard(runDirs: string[]): MultiRunGuardResult {
+  if (runDirs.length <= 1) return { action: 'proceed' };
+
+  const missingDirs: string[] = [];
+  const loaded: { dir: string; params: RunParams }[] = [];
+  for (const dir of runDirs) {
+    const path = join(dir, 'run-params.json');
+    if (!existsSync(path)) {
+      missingDirs.push(dir);
+      continue;
+    }
+    loaded.push({ dir, params: JSON.parse(readFileSync(path, 'utf8')) as RunParams });
+  }
+  if (missingDirs.length > 0) {
+    return {
+      action: 'refuse',
+      refuseMessage: `refusing to combine --run-dir runs -- these run dir(s) have no run-params.json (predates FEAT-462's resume support, so there is no record of their sampling flags to compare):\n${missingDirs.map(d => `  ${d}`).join('\n')}\nOnly combine run dirs written by a FEAT-462+ run.mts.`,
+    };
+  }
+
+  const base = loaded[0]!;
+  const lines: string[] = [];
+  for (const other of loaded.slice(1)) {
+    for (const d of diffRunParams(base.params, other.params)) {
+      lines.push(`  ${other.dir}: ${d.key} differs (${base.dir}=${JSON.stringify(d.a)}, ${other.dir}=${JSON.stringify(d.b)})`);
+    }
+  }
+  if (lines.length > 0) {
+    return {
+      action: 'refuse',
+      refuseMessage: `refusing to combine --run-dir runs -- these run dirs were NOT sampled with the same params (combining them would produce a mean/stdev across substantively different runs, not honest run-to-run variance):\n${lines.join('\n')}\nOnly combine run dirs produced by the identical --dataset/--seed/--n/--qa-per-sample/--shards invocation.`,
+    };
+  }
+  return { action: 'proceed' };
 }

@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   normalizeAnswer, f1Score, multiAnswerF1, isAbstentionPhrase, scoreHypothesis,
-  computeMetrics, scoreRun, combineMetricsReports, type ScoredQa, type MetricsReport,
+  computeMetrics, scoreRun, combineMetricsReports, printMultiRunReport, type ScoredQa, type MetricsReport,
 } from './metrics.mts';
 import type { LoCoMoSample } from '../lib/types.js';
 
@@ -218,5 +218,50 @@ describe('combineMetricsReports — AC-4 multi-run mean±stdev (FEAT-457 slice 1
 
     // n_total pools across runs (3 + 3), not averaged
     expect(combined.n_total).toBe(6);
+  });
+});
+
+describe('printMultiRunReport — runs-contributing annotation (review fix, low-severity observability nit)', () => {
+  function captureLogs(fn: () => void): string[] {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg?: unknown) => { logs.push(String(msg)); });
+    try {
+      fn();
+    } finally {
+      spy.mockRestore();
+    }
+    return logs;
+  }
+
+  it('appends "x/y runs" when a category is present in fewer runs than the total (e.g. emptied by a distill timeout)', () => {
+    // run A: only category 4 has QA. run B: only category 5 has QA -- so
+    // each category is contributed by exactly 1 of the 2 runs.
+    const runA = computeMetrics([{ qa_id: 'a#0', category: 4, score: 1 }]);
+    const runB = computeMetrics([{ qa_id: 'b#0', category: 5, score: 1 }]);
+    const combined = combineMetricsReports([runA, runB]);
+
+    const logs = captureLogs(() => printMultiRunReport(combined));
+    const cat4Line = logs.find(l => l.includes('(single-hop)'));
+    const cat5Line = logs.find(l => l.includes('(adversarial)'));
+    expect(cat4Line).toContain('1/2 runs');
+    expect(cat5Line).toContain('1/2 runs');
+  });
+
+  it('omits the runs-contributing note when every run contributed to a category', () => {
+    const runA = computeMetrics([{ qa_id: 'a#0', category: 4, score: 1 }, { qa_id: 'a#1', category: 4, score: 0 }]);
+    const runB = computeMetrics([{ qa_id: 'b#0', category: 4, score: 1 }]);
+    const combined = combineMetricsReports([runA, runB]);
+
+    const logs = captureLogs(() => printMultiRunReport(combined));
+    const cat4Line = logs.find(l => l.includes('(single-hop)'));
+    expect(cat4Line).not.toContain('runs)');
+    expect(cat4Line).toContain('n=3'); // pooled QA count (2 + 1), still shown
+  });
+
+  it('delegates a single-report (no runs/category_stats) straight to the single-run print path unchanged', () => {
+    const single = computeMetrics([{ qa_id: 'a#0', category: 4, score: 1 }]);
+    const logs = captureLogs(() => printMultiRunReport(single));
+    expect(logs.some(l => l.includes('mean ± stdev'))).toBe(false);
+    expect(logs.some(l => l.includes('runs)'))).toBe(false);
   });
 });

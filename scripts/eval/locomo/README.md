@@ -186,9 +186,8 @@ bun run eval:locomo:judge -- --hyp .eval-data/locomo/runs/<timestamp>/hypotheses
 
 A single `run.mts` invocation is one sample of whatever noise the daemon/
 model pipeline has (Ollama sampling, distill timing, etc.) — repeating the
-**same** invocation (same `--dataset`/`--seed`/`--n`/`--qa-per-sample`) into
-separate run dirs and judging all of them together reports mean±stdev
-instead of a single point estimate:
+same invocation into separate run dirs and judging all of them together
+reports mean±stdev instead of a single point estimate:
 
 ```powershell
 # Repeat the same run N times into distinct run dirs (each full run.mts
@@ -212,6 +211,32 @@ extraction-bench's `--runs N` uses) and writes the same `runs`/`*_stats`
 shape into the output JSON. A single `--run-dir` (or the plain `--hyp`/
 `--ref` form above) reports identically to the pre-multi-run output — no
 mean/stdev section, since there's nothing to average over one run.
+
+#### Cross-run comparability is enforced, not just documented
+
+Averaging accuracy across run dirs is only honest if every run was sampled
+with the same scope — mixing, say, a `--n 20` smoke-test dir in with two
+full-`--n` real runs would print a confidently-formatted mean±stdev over
+runs that were never comparable in the first place. Rather than relying on
+an operator to remember "use the same params" (a documentation-only
+safeguard is exactly the failure shape FEAT-462a's resume guard was built
+to close), `judge.mts`'s multi-run path reads every `--run-dir`'s
+`run-params.json` (written by `run.mts` on every invocation) and **hard-
+refuses** before scoring anything if:
+
+- any two run dirs disagree on a scope-determining flag (dataset hash,
+  seed, `--n`, `--qa-per-sample`, `--shards`) — the refusal names every
+  offending dir and every differing param, or
+- any run dir is missing `run-params.json` entirely (predates FEAT-462's
+  resume support, so there's no record of its sampling flags to compare).
+
+There is no override flag, matching this project's DEC-012 refuse-on-
+mismatch posture (`../shared/run-params.ts`'s `evaluateMultiRunParamsGuard`
+— the same comparison logic `evaluateResumeGuard` uses for single-run
+`--resume`, one stage earlier in the pipeline). A single `--run-dir` needs
+no comparison and always proceeds. If the guard refuses, start fresh,
+matched run dirs — there's no way to force a combination of non-comparable
+runs.
 
 `run.mts` itself is unchanged and has no `--runs` flag of its own: each
 repetition is a full, independently-timed daemon lifecycle (ingest+distill
