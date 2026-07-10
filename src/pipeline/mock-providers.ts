@@ -24,6 +24,16 @@
  * the fixture is now a failing test, not silence. This file is never
  * reachable outside ASTRA_MEMORY_MOCK_PROVIDERS=1 (CI/test only — real
  * serving never sets it).
+ *
+ * FEAT-456 SLICE-1 adds a second deterministic branch for the contradiction
+ * judge (../consolidate/contradiction-judge.ts) — also a `chat()` call, but
+ * a distinct call SHAPE (single-pair classification, not atom extraction).
+ * Both ask for `json: true`, so the judge branch is routed on the stable
+ * `CONTRADICTION_JUDGE_MARKER` system-prompt marker, checked BEFORE the
+ * extraction detection below (design §3.1) — without that ordering a judge
+ * call would be misrouted into the atom-extraction branch. Vocabulary lives
+ * in ../consolidate/mock-judge-pairs.ts, same closed-table pattern as
+ * MOCK_EXTRACTION_VOCAB.
  */
 
 import { createHash } from 'node:crypto';
@@ -32,6 +42,20 @@ import type { EmbedProvider, EmbedHealth } from '../contracts/embed.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import type { ProviderSet } from '../providers/index.js';
 import { MOCK_EXTRACTION_VOCAB } from './mock-extraction-vocab.js';
+import { CONTRADICTION_JUDGE_MARKER } from '../consolidate/contradiction-judge.js';
+import { findMockJudgePair } from '../consolidate/mock-judge-pairs.js';
+
+/**
+ * Parses `judgeContradiction()`'s fixed user-content shape
+ * (`Statement A (<ts>): <text>\nStatement B (<ts>): <text>`) back into the
+ * two statement texts. Returns null if the shape doesn't match (defensive —
+ * should never happen for a real judge call).
+ */
+function parseJudgeStatements(userContent: string): { textA: string; textB: string } | null {
+  const match = userContent.match(/^Statement A \(\d+\): ([\s\S]*)\nStatement B \(\d+\): ([\s\S]*)$/);
+  if (!match) return null;
+  return { textA: match[1] ?? '', textB: match[2] ?? '' };
+}
 
 // ── Mock LLM ─────────────────────────────────────────────────────────────────
 
@@ -42,9 +66,24 @@ class MockLLMProvider implements LLMProvider {
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
     const userContent = messages.find(m => m.role === 'user')?.content ?? '';
 
-    // Detect extraction calls (json mode or system prompt contains "atoms")
+    // FEAT-456: judge calls also ask for json:true, so they must be
+    // distinguished from extraction calls BEFORE the isExtraction check
+    // below — see the module doc comment.
     const systemContent = messages.find(m => m.role === 'system')?.content ?? '';
-    const isExtraction = opts?.json === true || systemContent.includes('atoms');
+    const isJudge = systemContent.includes(CONTRADICTION_JUDGE_MARKER);
+    const isExtraction = !isJudge && (opts?.json === true || systemContent.includes('atoms'));
+
+    if (isJudge) {
+      const stmts = parseJudgeStatements(userContent);
+      const pair = stmts ? findMockJudgePair(stmts.textA, stmts.textB) : undefined;
+      const verdict = pair
+        ? { verdict: pair.verdict, confidence: pair.confidence }
+        : { verdict: 'unrelated' as const, confidence: 0.5 };
+      return {
+        text: JSON.stringify(verdict),
+        usage: { in: 10, out: 10, usd: 0 }
+      };
+    }
 
     if (isExtraction) {
       // Return a valid ExtractionSchema JSON that the Zod validator will accept.

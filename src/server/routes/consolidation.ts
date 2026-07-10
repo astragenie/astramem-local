@@ -44,7 +44,7 @@ export function consolidationRoutes(db: DB, config: Config) {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
       }
-      return runConsolidation(db, {
+      return await runConsolidation(db, {
         mergeThreshold: parsed.data.merge_threshold,
         proposeThreshold: parsed.data.propose_threshold,
         // FEAT-442: on-demand runs pick up the configured auto-accept

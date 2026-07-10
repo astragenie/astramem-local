@@ -18,6 +18,38 @@ export interface ConsolidationProposal {
   status: 'pending' | 'accepted' | 'rejected';
   created_at: number;
   resolved_at: number | null;
+  /** FEAT-456 SLICE-1: additive nullable column (migration 022). `NULL`
+   *  forever for `kind='merge'` rows. `kind='contradiction'` rows populate
+   *  it with the judge's verdict/confidence + excerpts captured at judge
+   *  time — see {@link ContradictionMetadata} and
+   *  `parseContradictionMetadata`. */
+  metadata_json: string | null;
+}
+
+/** Parsed shape of a `kind='contradiction'` row's `metadata_json`. */
+export interface ContradictionMetadata {
+  verdict: 'contradicts';
+  confidence: number;
+  /** Truncated (~280 chars) atom text, captured at judge time — reflects
+   *  what the judge actually saw, not the atom's current (possibly
+   *  since-superseded) text. */
+  winner_excerpt: string;
+  loser_excerpt: string;
+}
+
+/**
+ * Typed accessor for callers (MCP, dashboard — slice 2) that want the
+ * structured shape instead of raw JSON text. Returns `null` for `kind=
+ * 'merge'` rows (metadata_json is NULL) or an unparsable value — never
+ * throws, matches this module's "propose-only, never block a read" spirit.
+ */
+export function parseContradictionMetadata(p: ConsolidationProposal): ContradictionMetadata | null {
+  if (!p.metadata_json) return null;
+  try {
+    return JSON.parse(p.metadata_json) as ContradictionMetadata;
+  } catch {
+    return null;
+  }
 }
 
 export class ProposalNotFoundError extends Error {
