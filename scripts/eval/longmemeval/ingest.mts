@@ -101,14 +101,25 @@ export async function ingestQuestions(
       outcome = { question_id: job.question_id, session_id: job.session_id, ok: false, idempotent: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (opts.ledgerPath) {
-      appendLedgerEntry(opts.ledgerPath, {
-        session_id: outcome.session_id,
-        owner_id: outcome.question_id,
-        ok: outcome.ok,
-        idempotent: outcome.idempotent,
-        error: outcome.error,
-        ts: new Date().toISOString(),
-      });
+      // Review fix (FEAT-462 finding 2): a ledger write failure (disk full,
+      // permissions, an antivirus lock on Windows) must never fail an
+      // otherwise-successful ingest job — log-and-continue, matching this
+      // repo's own "never let auxiliary bookkeeping crash the real work"
+      // posture. Losing one entry only costs a future --resume the ability
+      // to skip this one already-ok session; it never corrupts THIS run's
+      // outcome or manifest.
+      try {
+        appendLedgerEntry(opts.ledgerPath, {
+          session_id: outcome.session_id,
+          owner_id: outcome.question_id,
+          ok: outcome.ok,
+          idempotent: outcome.idempotent,
+          error: outcome.error,
+          ts: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(`WARNING: failed to append to resume ledger at ${opts.ledgerPath} (session ${outcome.session_id} is still ${outcome.ok ? 'ok' : 'failed'} for this run, but a future --resume won't be able to skip it): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     done++;
     opts.onProgress?.(done, jobs.length);

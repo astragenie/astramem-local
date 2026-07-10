@@ -228,6 +228,21 @@ as the original invocation. Each shard's crash-safe `ingest-ledger.jsonl`
 merely idempotency-key-safe. `--dry-run-throughput` does not support
 `--resume`.
 
+Two more files appear in the run dir on EVERY invocation, resume or not:
+the per-shard `ingest-ledger.jsonl` above and a top-level `run-params.json`
+recording the sampling flags the run dir was created with. **`--resume`
+REFUSES (non-zero exit, not a warning) to proceed if the re-derived flags
+don't match `run-params.json`** — a smaller `--n` under the same seed
+produces a sample that is a strict subset of a larger original one (same
+seeded-shuffle-then-slice reasoning as `sampleStratified`), so a mismatched
+`--resume` would otherwise silently complete a scope-narrowed run that
+looks fully successful instead of erroring. A run dir with no
+`run-params.json` (predates this guard) also refuses. No override flag —
+start a fresh run dir for different params. Implementation:
+`../shared/run-params.ts`'s `evaluateResumeGuard`, identical to
+`../longmemeval/run-smoke.mts`'s (see that README's "Resume behavior"
+section for the full writeup).
+
 ## Reproducibility — what to pin before publishing a number
 
 Per the FEAT's architecture note, a published LoCoMo number needs more than

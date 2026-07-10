@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ingestQuestions } from './ingest.mts';
@@ -90,6 +90,24 @@ describe('ingestQuestions resume support (FEAT-462 AC-1, AC-4, AC-7)', () => {
     // The ledger only gained entries for the freshly-run 2 -- the replayed
     // ones were already durable and are not re-appended.
     expect(ledgerCompletedMap(ledgerPath).size).toBe(2);
+  });
+
+  it('review fix (finding 2): a ledger write failure does not fail the job -- the outcome still succeeds and a warning is logged', async () => {
+    // Forces mkdirSync(dirname(ledgerPath)) inside appendLedgerEntry to
+    // throw ENOTDIR by making an intermediate path segment a plain file.
+    const blockerPath = join(dir, 'blocker');
+    writeFileSync(blockerPath, 'not a directory', 'utf8');
+    const badLedgerPath = join(blockerPath, 'ingest-ledger.jsonl');
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const question = makeQuestion('q1', 2);
+    const manifest = await ingestQuestions(client, [question], { concurrency: 2, ledgerPath: badLedgerPath });
+
+    expect(manifest.ok_count).toBe(2);
+    expect(manifest.failed_count).toBe(0);
+    expect(postedSessionIds).toHaveLength(2);
+    expect(errorSpy.mock.calls.some(args => String(args[0]).includes('WARNING: failed to append to resume ledger'))).toBe(true);
+    errorSpy.mockRestore();
   });
 
   it('a session whose LATEST ledger entry is ok:false is retried, not skipped', async () => {

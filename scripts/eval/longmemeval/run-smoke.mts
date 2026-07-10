@@ -47,6 +47,7 @@ import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance, detectPossibleReload } from '../shared/ollama-tuning.js';
 import { ledgerCompletedMap } from '../shared/resume-ledger.js';
+import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -248,6 +249,21 @@ async function runSmoke(): Promise<void> {
   }
   mkdirSync(runDir, { recursive: true });
   console.log(resumeDir ? `Resuming run dir: ${runDir} (ledger-driven skip of already-ingested sessions)` : `Run dir: ${runDir}`);
+
+  // FEAT-462 review fix (finding 5): refuse a --resume whose sampling scope
+  // doesn't match the original invocation -- see ../shared/run-params.ts's
+  // header comment for the full incident this guards against (a smaller
+  // --n silently completing a scope-narrowed, falsely "fully successful"
+  // run because every session in the smaller sample is already ok in the
+  // ledger from the larger original run).
+  const runParamsPath = join(runDir, 'run-params.json');
+  const currentParams: RunParams = { datasetPath, datasetHash: hashDatasetFile(datasetPath), seed, n, shards };
+  const guard = evaluateResumeGuard(runParamsPath, Boolean(resumeDir), currentParams);
+  if (guard.action === 'refuse') {
+    console.error(`--resume ${resumeDir}: ${guard.refuseMessage}`);
+    process.exitCode = 1;
+    return;
+  }
 
   const overallStart = Date.now();
   const timings: Record<string, number> = {};

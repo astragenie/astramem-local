@@ -122,6 +122,12 @@ bun run eval:longmemeval:judge -- --hyp .eval-data/longmemeval/runs/<timestamp>/
 `per_shard_timings` and `failed_shards` when `--shards` > 1). `.eval-data/` is
 already `.gitignore`d.
 
+Two more files appear on EVERY invocation now, resume or not (FEAT-462, see
+"Resume behavior" below): a per-shard `ingest-ledger.jsonl` (crash-safe
+append-only ingest record) and a top-level `run-params.json` (the sampling
+flags this run dir was created with — `--resume` refuses to proceed if a
+later invocation's flags don't match it).
+
 Useful flags on `run-smoke.mts` (all optional):
 
 | flag | default | meaning |
@@ -299,6 +305,22 @@ assumes.
   dir can be resumed later even if `--resume` wasn't anticipated at launch
   time. Implementation: `../shared/resume-ledger.ts` (shared verbatim with
   `../locomo/run.mts`'s `--resume`).
+- **`--resume` REFUSES to proceed if the sampling scope doesn't match the
+  original invocation** — this is not a warning, it's a hard error with a
+  non-zero exit. The first (non-`--resume`) invocation writes the
+  scope-determining flags (`--dataset` path + a content hash, `--seed`,
+  `--n`, `--shards`) to `run-params.json`; `--resume` loads it and compares.
+  This exists because `sampleStratified`'s seeded shuffle-then-slice means a
+  **smaller** `--n` under the same seed produces a sample that is a *strict
+  subset* of a larger original sample — every one of those sessions would
+  already be `ok` in the ledger, so a mismatched `--resume` would otherwise
+  silently complete a scope-narrowed run that looks fully successful (zero
+  failures, `run-manifest.json`'s `counts.sampled` just reflects the smaller
+  number) instead of erroring. A run dir with no `run-params.json` (one
+  created before this guard existed) also refuses to resume — there's no
+  record of the original scope to verify against. There is no override
+  flag: start a fresh run dir if you actually want different params.
+  Implementation: `../shared/run-params.ts`'s `evaluateResumeGuard`.
 - **Judging** (`judge.mts`) is idempotent in the sense that it always
   overwrites `<hyp>.eval-results-<judge>` — re-running re-judges everything,
   it does not skip already-judged rows.

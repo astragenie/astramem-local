@@ -43,6 +43,7 @@ import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance } from '../shared/ollama-tuning.js';
 import { ledgerCompletedMap } from '../shared/resume-ledger.js';
+import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -223,6 +224,25 @@ async function runFull(): Promise<void> {
 
   const { downloaded } = await ensureDatasetDownloaded(datasetPath);
   console.log(downloaded ? `Downloaded LoCoMo dataset -> ${datasetPath}` : `Using existing dataset at ${datasetPath}`);
+
+  // FEAT-462 review fix (finding 5) -- see ../longmemeval/run-smoke.mts's
+  // identical comment for the full incident this guards against. Placed
+  // after ensureDatasetDownloaded so the file is guaranteed present to hash.
+  const runParamsPath = join(runDir, 'run-params.json');
+  const currentParams: RunParams = {
+    datasetPath,
+    datasetHash: hashDatasetFile(datasetPath),
+    seed,
+    n: nRaw !== undefined ? Number(nRaw) : null,
+    qaPerSample: qaPerSampleRaw !== undefined ? Number(qaPerSampleRaw) : null,
+    shards,
+  };
+  const guard = evaluateResumeGuard(runParamsPath, Boolean(resumeDir), currentParams);
+  if (guard.action === 'refuse') {
+    console.error(`--resume ${resumeDir}: ${guard.refuseMessage}`);
+    process.exitCode = 1;
+    return;
+  }
 
   let tStart = Date.now();
   const dataset = loadDataset(datasetPath);

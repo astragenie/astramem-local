@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ingestConversations } from './ingest.mts';
@@ -72,5 +72,21 @@ describe('ingestConversations resume support (FEAT-462 AC-1, AC-4, AC-6, AC-7)',
 
     expect(postedSessionIds.sort()).toEqual([sessionIds[2]!, sessionIds[3]!].sort());
     expect(ledgerCompletedMap(ledgerPath).size).toBe(2);
+  });
+
+  it('review fix (finding 2): a ledger write failure does not fail the job -- the outcome still succeeds and a warning is logged', async () => {
+    const blockerPath = join(dir, 'blocker');
+    writeFileSync(blockerPath, 'not a directory', 'utf8');
+    const badLedgerPath = join(blockerPath, 'ingest-ledger.jsonl');
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const sample = makeSample('s1', 2);
+    const manifest = await ingestConversations(client, [sample], { concurrency: 2, ledgerPath: badLedgerPath });
+
+    expect(manifest.ok_count).toBe(2);
+    expect(manifest.failed_count).toBe(0);
+    expect(postedSessionIds).toHaveLength(2);
+    expect(errorSpy.mock.calls.some(args => String(args[0]).includes('WARNING: failed to append to resume ledger'))).toBe(true);
+    errorSpy.mockRestore();
   });
 });

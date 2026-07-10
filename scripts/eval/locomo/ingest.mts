@@ -99,14 +99,22 @@ export async function ingestConversations(
       outcome = { sample_id: job.sample_id, session_id: job.session_id, ok: false, idempotent: false, error: err instanceof Error ? err.message : String(err) };
     }
     if (opts.ledgerPath) {
-      appendLedgerEntry(opts.ledgerPath, {
-        session_id: outcome.session_id,
-        owner_id: outcome.sample_id,
-        ok: outcome.ok,
-        idempotent: outcome.idempotent,
-        error: outcome.error,
-        ts: new Date().toISOString(),
-      });
+      // Review fix (FEAT-462 finding 2) -- see ../longmemeval/ingest.mts's
+      // identical comment: a ledger write failure must never fail an
+      // otherwise-successful ingest job, only cost a future --resume the
+      // ability to skip this one already-ok session.
+      try {
+        appendLedgerEntry(opts.ledgerPath, {
+          session_id: outcome.session_id,
+          owner_id: outcome.sample_id,
+          ok: outcome.ok,
+          idempotent: outcome.idempotent,
+          error: outcome.error,
+          ts: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(`WARNING: failed to append to resume ledger at ${opts.ledgerPath} (session ${outcome.session_id} is still ${outcome.ok ? 'ok' : 'failed'} for this run, but a future --resume won't be able to skip it): ${err instanceof Error ? err.message : String(err)}`);
+      }
     }
     done++;
     opts.onProgress?.(done, jobs.length);
