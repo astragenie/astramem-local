@@ -18,6 +18,7 @@ import { sessionNumbers } from './lib/types.js';
 import { buildIngestEnvelope, sessionIdFor } from './lib/envelope.js';
 import { ingestTranscript, type DaemonClientOpts } from '../shared/daemon-client.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
+import { appendLedgerEntry, type LedgerEntry } from '../shared/resume-ledger.js';
 
 export interface IngestJob {
   sample_id: string;
@@ -45,7 +46,19 @@ export interface IngestManifest {
 export async function ingestConversations(
   client: DaemonClientOpts,
   samples: LoCoMoSample[],
-  opts: { concurrency?: number; onProgress?: (done: number, total: number) => void } = {},
+  opts: {
+    concurrency?: number;
+    onProgress?: (done: number, total: number) => void;
+    /** See ../longmemeval/ingest.mts's ingestQuestions for the full doc
+     *  comment — identical contract (FEAT-462 AC-6): crash-safe ledger
+     *  path, appended per-job as it completes. Omitted: behavior is
+     *  byte-identical to before this option existed (AC-7). */
+    ledgerPath?: string;
+    /** session_id -> prior ledger entry; sessions whose latest entry has
+     *  `ok: true` are replayed instead of re-POSTed. Only passed by
+     *  run.mts when --resume is given. */
+    resumeCompleted?: Map<string, LedgerEntry>;
+  } = {},
 ): Promise<IngestManifest> {
   const jobs: IngestJob[] = [];
   for (const sample of samples) {
@@ -58,7 +71,20 @@ export async function ingestConversations(
   const start = Date.now();
   let done = 0;
 
-  const outcomes = await mapWithConcurrency(jobs, opts.concurrency ?? 4, async job => {
+  const toRun: IngestJob[] = [];
+  const replayedOutcomes: IngestOutcome[] = [];
+  for (const job of jobs) {
+    const prior = opts.resumeCompleted?.get(job.session_id);
+    if (prior?.ok) {
+      replayedOutcomes.push({ sample_id: job.sample_id, session_id: job.session_id, ok: true, idempotent: prior.idempotent });
+      done++;
+    } else {
+      toRun.push(job);
+    }
+  }
+  if (replayedOutcomes.length > 0) opts.onProgress?.(done, jobs.length);
+
+  const freshOutcomes = await mapWithConcurrency(toRun, opts.concurrency ?? 4, async job => {
     const sample = bySampleId.get(job.sample_id)!;
     let outcome: IngestOutcome;
     try {
@@ -72,10 +98,22 @@ export async function ingestConversations(
     } catch (err) {
       outcome = { sample_id: job.sample_id, session_id: job.session_id, ok: false, idempotent: false, error: err instanceof Error ? err.message : String(err) };
     }
+    if (opts.ledgerPath) {
+      appendLedgerEntry(opts.ledgerPath, {
+        session_id: outcome.session_id,
+        owner_id: outcome.sample_id,
+        ok: outcome.ok,
+        idempotent: outcome.idempotent,
+        error: outcome.error,
+        ts: new Date().toISOString(),
+      });
+    }
     done++;
     opts.onProgress?.(done, jobs.length);
     return outcome;
   });
+
+  const outcomes = [...replayedOutcomes, ...freshOutcomes];
 
   const bySample: IngestManifest['by_sample'] = {};
   for (const s of samples) bySample[s.sample_id] = { session_ids: [], failed_session_ids: [] };

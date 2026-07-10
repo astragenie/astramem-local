@@ -134,6 +134,7 @@ Useful flags on `run-smoke.mts` (all optional):
 | `--distill-timeout-ms` | 900000 (15 min) | **see the throughput section below — this default is almost certainly too low for a real 50-question run; measure first, then raise it** |
 | `--run-dir` | `.eval-data/longmemeval/runs/<timestamp>` | override output location |
 | `--ollama-url` | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | where to query Ollama's `/api/version` + `/api/ps` for the tuning-guidance printout |
+| `--resume <run-dir>` | (none) | resume a killed run — see "Resume behavior" below |
 
 ## Sharding (`--shards N`)
 
@@ -276,13 +277,28 @@ assumes.
   body is a pure function of the dataset + that session — re-running
   `ingest.mts` against a daemon that already has some sessions replays
   those (`idempotent: true` in the outcome) instead of double-ingesting.
-- **There is no cross-run resume for a whole `run-smoke.mts` invocation** —
-  each run spins a fresh throwaway datadir (see Isolation below) and tears
-  it down in a `finally` block even on failure. If you need to resume a
-  large run that died partway, run the individual steps (`ingest.mts` ->
-  `distill-wait.mts` -> `answer.mts`) by hand against a daemon you keep
-  alive yourself (`node dist/cli/index.js serve --port <p>` with your own
-  `ASTRA_MEMORY_DATADIR`), instead of `run-smoke.mts`'s all-in-one spawn.
+- **`run-smoke.mts --resume <run-dir>` resumes a whole killed run**
+  (FEAT-462 — added after three real runs died mid-distill in two days, one
+  to a machine-wide `taskkill` incident, see CLAUDE.md's Do-NOT section).
+  Pass the SAME `--dataset`/`--seed`/`--n`/`--shards` flags as the original
+  invocation plus `--resume <run-dir>`:
+  ```
+  bun scripts/eval/longmemeval/run-smoke.mts --resume .eval-data/longmemeval/runs/<timestamp> \
+    --n 50 --seed 42 --shards 2
+  ```
+  This respawns each shard's daemon on its EXISTING `datadir` (the SQLite
+  file already holds every distill result completed before the kill), reads
+  each shard's crash-safe `ingest-ledger.jsonl` (written incrementally as
+  each session completes, unlike `ingest-manifest.json` which is only
+  written once the whole ingest phase finishes) to skip re-POSTing every
+  session already recorded ok, and resumes the distill-wait poll against the
+  merged old+new manifest. The sample and shard partitioning are
+  deterministic given the same flags, so nothing needs to be re-read from
+  `sample.json` to line back up. Without `--resume`, every run-dir gets a
+  fresh `ingest-ledger.jsonl` too (harmless, additive) — so ANY prior run's
+  dir can be resumed later even if `--resume` wasn't anticipated at launch
+  time. Implementation: `../shared/resume-ledger.ts` (shared verbatim with
+  `../locomo/run.mts`'s `--resume`).
 - **Judging** (`judge.mts`) is idempotent in the sense that it always
   overwrites `<hyp>.eval-results-<judge>` — re-running re-judges everything,
   it does not skip already-judged rows.
