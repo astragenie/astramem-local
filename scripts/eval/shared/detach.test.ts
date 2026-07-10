@@ -2,6 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { createServer, type AddressInfo } from 'node:net';
 import {
   evaluateDetachDecision, buildDetachedChildArgs, isDetachedChild, spawnDetached,
   DETACHED_CHILD_ENV_VAR,
@@ -9,6 +10,23 @@ import {
 import { killManifestDaemons } from './daemon-manifest.js';
 
 const FIXTURE = join('scripts', 'eval', 'shared', '__fixtures__', 'fake-detached-worker.mjs');
+
+/** Grabs a currently-free TCP port by binding ephemeral port 0 and closing
+ *  immediately -- same "measure then rebind" pattern used elsewhere in this
+ *  test suite's fixtures. A real port is needed here (review fix, Finding
+ *  1): killManifestDaemons now verifies the manifest's recorded pid still
+ *  owns the recorded port before signaling, so the test's manifest entry
+ *  must point at a port the fixture process genuinely binds. */
+function getFreePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.on('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const port = (srv.address() as AddressInfo).port;
+      srv.close(() => resolve(port));
+    });
+  });
+}
 
 describe('evaluateDetachDecision (single decision point, DEC-012 pattern)', () => {
   it('no --detach passed -> run-inline regardless of the env marker', () => {
@@ -66,10 +84,11 @@ describe('spawnDetached (real process integration — AC-2 detach test)', () => 
       dir = mkdtempSync(join(tmpdir(), 'detach-test-'));
       const pidFile = join(dir, 'pid.txt');
       const heartbeatFile = join(dir, 'heartbeat.json');
+      const port = await getFreePort();
 
       const child = spawnDetached({
         scriptPath: FIXTURE,
-        args: ['--pid-file', pidFile, '--heartbeat-file', heartbeatFile],
+        args: ['--pid-file', pidFile, '--heartbeat-file', heartbeatFile, '--port', String(port)],
         cwd: process.cwd(),
         runDir: dir,
       });
@@ -102,10 +121,11 @@ describe('spawnDetached (real process integration — AC-2 detach test)', () => 
       // Manifest-scoped kill (AC-3 handshake): the daemon manifest names
       // exactly this PID; killing via the manifest must actually stop it.
       const result = killManifestDaemons(
-        { run_dir: dir, updated_at: 'x', daemons: [{ shard: 0, label: 'detached-child', pid: child.pid, port: 0, datadir: dir }] },
+        { run_dir: dir, updated_at: 'x', daemons: [{ shard: 0, label: 'detached-child', pid: child.pid, port, datadir: dir }] },
         'SIGKILL',
       );
       expect(result.killed).toEqual([child.pid]);
+      expect(result.outcomes[0]!.action).toBe('killed');
 
       await new Promise(resolve => setTimeout(resolve, 400));
       const afterKillTick = readHeartbeat()!.tick;
