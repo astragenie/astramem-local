@@ -1,13 +1,13 @@
 ---
 id: FEAT-457
-status: triaged
+status: in-progress
 priority: P2
 category: feature
 target_release: null
 created: 2026-07-09
 updated: 2026-07-10
 depends_on: []
-slices: []
+slices: [SLICE-423]
 derived_from: docs/research/2026-07-09-packaging-audit.md
 cross_product: [astramem-local]
 pm_customer_impact: 0.4
@@ -20,6 +20,7 @@ pm_autonomous_safe: true
 pm_reviewed: 2026-07-10
 autonomous_safe: true
 triage_notes: "P2 via formula (default branch): impact 0.40 < 0.70 so the (impact>=0.7 AND alignment>=0.6) P1 branch does not fire; alignment 0.55 < 0.80 so the (alignment>=0.8 AND effort<=0.4) P1 branch does not fire; effort 0.45 < 0.70 so P3 (effort>=0.7 AND impact<=0.3) does not fire. composite_score = 0.40*0.35 + 0.55*0.30 + (1-0.45)*0.20 + (1-0.35)*0.10 + (1-0.15)*0.05 = 0.5225. autonomousSafe=false: all three mechanical thresholds individually pass (risk 0.35, effort 0.45, dependency 0.15 all <=0.6) but no AC/spec exists on the body and P2-with-no-flag means inline AC drafting is not triggered -- forced false by the missing-AC branch, not a risk-threshold override. Moderate-priority eval-infra item, exactly as the coordinator framed it: the FEAT's own sequencing section is the load-bearing reason this isn't scored higher despite genuine external-credibility value. || 2026-07-10 deep AC pass: MAJOR SCOPE FINDING before drafting ACs -- the LoCoMo harness this FEAT describes is ALREADY MERGED to main as commit 480d870 ('feat(eval): add LoCoMo benchmark harness alongside LongMemEval (FEAT-457)', 2026-07-10T02:53:19-05:00, 34 files, +2603/-61), landed BEFORE this triage pass ran. Verified directly: scripts/eval/shared/ exists with the plumbing tier extracted out of longmemeval/lib (spawn-daemon retains its sync.json safety fix, diffed not forked); scripts/eval/locomo/ has lib/{types,dates,dataset,envelope}.ts + sample/ingest/distill-wait/answer/run/judge.mts + judge/{porter-stemmer,metrics}.mts, each with a matching .test.ts; .eval-data/ is gitignored (.gitignore:27); package.json has eval:locomo:{sample,run,judge} scripts wired; vitest.config.ts has no path include/exclude beyond node_modules/dist/.claude, so the six LoCoMo *.test.ts suites (pure-function, fixture-based, zero live LLM/network per their own file headers) already run under the standard `bun run test` CI job -- no separate CI wiring needed. Data-model inversion, category derivation from real upstream scoring code, and Porter-stemmer F1 scoring are all implemented and verified (99.93% match vs the algorithm author's reference corpus per that file's header). The LongMemEval as_of/temporal gap does NOT apply to LoCoMo at all (harness README: LoCoMo's temporal category has no as_of-anchored questions), so the FEAT's temporal re-verification step is moot for this FEAT specifically. Two real gaps remain, verified by direct read of judge.mts/metrics.mts: (1) no multi-run mean+-stdev aggregation exists yet -- judge.mts emits single-run per-category + aggregate point accuracy only, with zero references to extraction-bench/lib/stats.ts's computeStats/formatStatsPct anywhere in scripts/eval/locomo/; (2) the reproducibility doc under docs/eval/ does not exist and no real run has been published yet -- the harness's own README explicitly defers this ('should be written alongside the first real published run, not speculatively ahead of one'). Given this, autonomous_safe flips true but ONLY for the narrow remaining buildable scope (AC4-5 below); the publish step (AC6) requires a human-opened plain terminal with a live AZURE_OPENAI_API_KEY per the harness's own documented incident (2026-07-08: a coding-agent sandbox reaped a spawned daemon mid-run) and must NOT be dispatched to an autonomous loop builder subagent -- recommend 2 slices, only the first of which the loop should run unattended."
+started_at: 2026-07-10
 ---
 ## Description
 
@@ -150,21 +151,21 @@ that already exists and are written as regression guards, not build targets.
 AC4 is the one real remaining code change. AC6 is publish-only work and is
 explicitly out of scope for autonomous loop dispatch.
 
-1. **Given** `scripts/eval/shared/` hosts the daemon-plumbing tier (spawn-daemon,
+- **AC-1:** Given `scripts/eval/shared/` hosts the daemon-plumbing tier (spawn-daemon,
    daemon-client, azure-client, config, concurrency, shard, ollama-tuning),
    **when** any `scripts/eval/locomo/*.mts` script runs its ingest/answer/
    orchestration steps, **then** it imports those helpers from `../shared/`
    verbatim — no duplicate implementation of any shared-tier filename exists
    under `scripts/eval/locomo/`.
-2. **Given** `sample.mts` runs with no prior local copy of the dataset,
+- **AC-2:** Given `sample.mts` runs with no prior local copy of the dataset,
    **when** it fetches LoCoMo, **then** `locomo10.json` lands under
    `.eval-data/locomo/` (already covered by the repo-root `.gitignore`) and the
    CC BY-NC 4.0 attribution stays present in `scripts/eval/locomo/README.md`.
-3. **Given** `run.mts` orchestrates a LoCoMo run, **when** it spawns a daemon
+- **AC-3:** Given `run.mts` orchestrates a LoCoMo run, **when** it spawns a daemon
    via `../shared/spawn-daemon.ts`, **then** the daemon boots against an
    isolated `ASTRA_MEMORY_DATADIR` — never the developer's default datadir or
    the production daemon — identically to `scripts/eval/longmemeval/run-smoke.mts`.
-4. **Given** `judge.mts`/`judge/metrics.mts` currently score exactly one run
+- **AC-4:** Given `judge.mts`/`judge/metrics.mts` currently score exactly one run
    into single-run per-category + aggregate point accuracy, **when** the
    harness is invoked across N repeated runs, **then** it additionally emits
    mean±stdev per category and overall, reusing
@@ -172,7 +173,7 @@ explicitly out of scope for autonomous loop dispatch.
    `formatStatsPct` (or an equivalent shared helper promoted alongside it)
    rather than a new bespoke aggregator. **Not yet implemented** — this is the
    one genuine remaining code change.
-5. **Given** `vitest.config.ts` has no path scoping beyond excluding
+- **AC-5:** Given `vitest.config.ts` has no path scoping beyond excluding
    `node_modules`/`dist`/`.claude`, **when** `bun run test` runs in CI,
    **then** the six LoCoMo unit suites (`lib/dates.test.ts`,
    `lib/dataset.test.ts`, `lib/envelope.test.ts`,
@@ -181,7 +182,7 @@ explicitly out of scope for autonomous loop dispatch.
    access, and pass. Already true as merged — this AC guards against
    regression, e.g. an edit that accidentally makes one of these suites hit a
    real Ollama/Azure endpoint.
-6. **Given** no LoCoMo number has ever been published from this repo,
+- **AC-6:** Given no LoCoMo number has ever been published from this repo,
    **when** a real scored run is executed, **then** it is run from a plain
    terminal a human opened themselves — not a coding-agent sandbox shell tool
    (per `scripts/eval/locomo/README.md`'s explicit warning, referencing the
