@@ -59,6 +59,12 @@ export interface ClaudeCaptureEnvelope {
   client_version: string;
   client_scrub_version: string;
   wire_version: 'v1.0';
+  /** FEAT-455 / ADR-012 decision 4: present only when this envelope was
+   *  built by the hook-tap auto-capture trigger (i.e. `buildClaudeEnvelope`
+   *  was called with `captureSource: 'auto_capture'`) — every existing
+   *  `session_end`/`subagent_stop` call path omits this field, so today's
+   *  captures are entirely unaffected. */
+  capture_source?: 'auto_capture';
 }
 
 /** Extract conversational text from an Anthropic-shaped message `content`
@@ -129,6 +135,12 @@ export function buildClaudeEnvelope(
   event: ClaudeCaptureEvent,
   clientVersion: string,
   capturedAt = new Date().toISOString(),
+  /** FEAT-455 / ADR-012 decision 4: set only by the hook-tap auto-capture
+   *  trigger's call site (`src/cli/capture.ts`'s `--auto-capture` path) —
+   *  every existing `session_end`/`subagent_stop` call omits this and gets
+   *  the byte-identical envelope shape (no `capture_source` key at all,
+   *  since it's conditionally spread below, not set to `undefined`). */
+  captureSource?: 'auto_capture',
 ): ClaudeCaptureEnvelope {
   return {
     event,
@@ -147,6 +159,7 @@ export function buildClaudeEnvelope(
     client_version: clientVersion,
     client_scrub_version: 'none',
     wire_version: 'v1.0',
+    ...(captureSource ? { capture_source: captureSource } : {}),
   };
 }
 

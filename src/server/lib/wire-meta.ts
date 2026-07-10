@@ -110,4 +110,7 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       same create-copy-swap table-rewrite pattern migration 013 used.
 // 022 = consolidation_proposals.metadata_json, additive nullable column
 //       (FEAT-456 SLICE-1 contradiction judge verdict/confidence/excerpts).
-export const SCHEMA_VERSION = 22 as const;
+// 023 = reserved by FEAT-453 (entity-link-validity), merges ahead of this.
+// 024 = transcripts.capture_source / memories.capture_source, additive
+//       nullable columns + partial index (FEAT-455, ADR-012 decision 4).
+export const SCHEMA_VERSION = 24 as const;
