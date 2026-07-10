@@ -1,6 +1,6 @@
 ---
 id: FEAT-456
-status: triaged
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -155,3 +155,12 @@ judge-accuracy eval fixture; (c) dry-run/report mode.
 
 Sequencing vs FEAT-453: confirmed soft constraint only ("don't parallelize the
 migration slices"), not a hard `depends_on`.
+
+## Shipped (2026-07-10)
+SLICE-1 merged (review PASS, 2094 tests): propose-only contradiction detection
+in the consolidate pair loop, kind:'contradiction' proposals, migration 022
+metadata_json, mock-judge determinism fixture. Default OFF. SLICE-2 shipped 2026-07-10 (review PASS). Was: (MCP/
+digest surfacing) remains. INFO follow-up: POST /consolidation/run doesn't
+wire the judge (job handler only) — intentional SLICE-1 scope, future slice.
+
+SLICE-2 shipped 2026-07-10 (merge, review PASS): kind filter (repo/REST/MCP), contradiction_metadata on list tool, session_digest pending_contradictions, dashboard badge. LOW follow-ups: junk-kind + malformed-metadata tests.
