@@ -2,13 +2,97 @@
 slice: SLICE-421
 feature: FEAT-463
 role: builder
-status: fix_round_2_complete
+status: mini_fix_complete
 branch: feat/feat-463-quoted-labels
-commit: 963613d
+commit: 55af87e
 review: .claude/artifacts/crew/reviews/20260710T130230Z-review-result-slice-421-feat-463-quoted-labels.md (needs_fix twice; round 1 CRITICAL closed in 32db526, round 2 suffix-attack variant closed in 963613d)
+validation: .claude/artifacts/crew/validations/20260710T133900Z-validation-result-slice-421-feat-463-quoted-labels.md (PASS overall; in-slice MEDIUM finding closed in 55af87e)
 ---
 
 # SLICE-421 / FEAT-463 — builder handoff
+
+## Mini-fix (2026-07-10, commit 55af87e, on top of 963613d/6d18873/32db526/9534cd8/07cc8ea/fab5173) — validator MEDIUM finding
+
+Validator (`20260710T133900Z-validation-result-slice-421-feat-463-quoted-labels.md`) returned
+overall **PASS** — the entropy-guard bypass fix (both rounds) held live through the real built
+CLI and ingest path, all 6 ACs behaved correctly, redaction-log observability worked, and
+perf was fine on a ~75KB realistic transcript. But it found and reproduced a new **MEDIUM**
+correctness defect on this FEAT's own AC-2 shape, exercised live rather than via the unit-test
+fixture set: `'DB_PASSWORD' => 'hunter2xx'` produced **two** redaction events instead of one.
+
+**Root cause, confirmed by isolating each `PATTERN_DETECTORS` entry:** `QUOTED_LABEL_SEP`'s
+separator alternation `(?:=>|[:=])` still lets a bare `=` match even when it's actually the
+first character of an `=>` arrow. The single-quoted-value entry correctly matches the whole
+span and redacts `hunter2xx`. But the *bare-value* sibling entry (same family, tried
+independently over the same text) attempts `=>` first, fails past it because the real value
+IS quoted (its own `(?!["'])` guard correctly rejects a quote-led "bare" value) — and the
+regex engine then **backtracks the alternation** to the shorter `[:=]` option, consuming only
+the `=` and leaving `>` unconsumed. From that position `(?!["'])` now passes (`>` isn't a
+quote) and `(\S+)` greedily captures `>` alone as a bogus one-character "secret". No leak (the
+real secret is still redacted by its correct sibling), but the arrow is corrupted in the
+output (`=>` → `=[REDACTED:...]`) and the redaction_log over-counts (validator measured 4
+events for 3 real secrets in its live ingest fixture).
+
+**Fix (`src/redact/detectors.ts`):** changed the separator alternation in the single shared
+`QUOTED_LABEL_SEP` constant from `(?:=>|[:=])` to `(?:=>|:|=(?!>))` — a bare `=` may now only
+match when NOT immediately followed by `>`. When it IS followed by `>`, the only way to
+consume it is the whole `=>` alternative, which the bare-value entry's own value pattern then
+correctly rejects (a quoted value follows) — producing NO match at all for that entry,
+instead of a partial one. Since `QUOTED_LABEL_SEP` is one shared constant referenced by all 6
+new entries (not duplicated per-entry), this closes the backtracking risk everywhere it
+could occur in a single edit, even though only the two bare-value entries (trailing/compound)
+were actually exploitable — the quoted-value sibling entries require a literal quote
+character immediately after the separator, which a stray `>` never satisfies, so they were
+never at risk of producing the bogus match themselves. Verified directly against the built
+module before writing any test: the exact validator repro now produces exactly one event and
+the arrow survives byte-intact; a genuine bare-value-after-arrow shape
+(`'DB_PASSWORD' => hunter2xx`, unquoted) is unaffected since `=>` matches whole with no
+backtracking needed; the AC-1c bare-`=`-not-followed-by-`>` shape (`"SECRET_KEY"=abcdefgh1234`)
+is unaffected.
+
+New tests in `tests/security/redact.test.ts`:
+- Added an optional `expectedEventCount` field to every `TRUE_POSITIVES` fixture (default 1,
+  asserted in the shared `it.each` loop) — per the validator's own observation, this bug class
+  hides from a placeholder-presence-only check (the real secret WAS redacted; only the count
+  and the surrounding text were wrong), so an explicit count assertion is the actual regression
+  guard, not just "does the secret disappear."
+- 6 new arrow-shape sweep fixtures covering both keyword families (trailing/compound) and all
+  three value shapes (double-quoted, single-quoted, bare) with `=>`, plus the validator's exact
+  live-repro string as its own named fixture.
+- A dedicated `describe('redactText — PHP array-arrow (=>) output integrity')` block asserting
+  the `=>` arrow survives byte-intact in the output string itself (not just the event count) —
+  both for the quoted-value repro and a bare-value-after-arrow variant.
+
+### Re-run self-verify gates (mini-fix)
+- `bunx tsc --noEmit` — exit 0, no output.
+- `bun run build` — exit 0 (`tsc -p .` clean).
+- `bun vitest run tests/security/redact.test.ts` — **91/91 passed** (83 prior + 8 new: 6 arrow
+  sweep fixtures + 2 output-integrity tests).
+- `bun vitest run tests/security/redact-perf.test.ts` — **2/2 passed**. Logged:
+  `p50=0.125ms p95=0.201ms mean=0.141ms max=0.920ms` — still ~100x under the 20ms budget.
+- `bun vitest run tests/security` (full directory) — **6 files / 132 tests passed, 0 failed**
+  (up from 124 by the 8 new tests).
+- `bun run test` (full suite) — **198 files / 2360 tests passed, 6 skipped (pre-existing,
+  unrelated), 0 failed** (up from 2352 by exactly the 8 new tests).
+
+### Housekeeping note
+Same shared checkout as the round-2 fix — verified via `git diff --cached --stat` before
+committing that only `src/redact/detectors.ts` and `tests/security/redact.test.ts` were
+staged, no unrelated files from other parallel loop activity swept in this time.
+
+### Confidence
+High. The validator's root cause (alternation backtracking into a partial separator match) was
+independently re-confirmed by isolating each detector entry before writing the fix, the fix
+targets the single shared constant that all 6 entries reference (not a per-entry patch), and
+every case the validator's finding and recommendation implied — the exact repro, a genuine
+bare-value-after-arrow shape, and the pre-existing AC-1c bare-`=` shape — was verified directly
+against the built module before the corresponding test was written.
+
+### Suggested next handoff
+Re-review/re-validate to confirm this closes the validator's finding, then proceed per
+`requires_validation: true` in the slice frontmatter. Parent loop drives dispatch.
+
+---
 
 ## Fix round 2 (2026-07-10, commit 963613d, on top of 32db526/9534cd8) — suffix-attack re-review finding
 
