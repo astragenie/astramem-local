@@ -2,12 +2,79 @@
 slice: SLICE-420
 feature: FEAT-461
 role: builder
-status: implementation_complete
+status: fix_round_complete
 branch: feat/feat-461-config-yaml
-commit: 60f2b97
+commit: 7c89fe9
+review: .claude/artifacts/crew/reviews/20260710T121205Z-review-result-slice-420-feat-461-config-yaml.md (needs_fix)
 ---
 
 # SLICE-420 / FEAT-461 — builder handoff
+
+## Fix round (2026-07-10, commit 7c89fe9, on top of 60f2b97/ac3081f)
+
+Review (`20260710T121205Z-review-result-slice-420-feat-461-config-yaml.md`) returned
+**needs_fix**: all five ACs, the suite, and typecheck were independently re-verified and
+confirmed genuine (reviewer even diffed pre-fix vs post-fix output in a separate worktree
+for AC-5, more rigorously than my own test), but flagged one HIGH finding.
+
+**Finding 1 (HIGH, reproduced by reviewer, now fixed):** always-emitting
+`security.redaction.customPatterns: []` (even for the default/empty case) breaks
+`reinstall --rollback` to a pre-FEAT-461 binary — the old loader has no flow-sequence
+array branch, so it reads the line back as the literal string `"[]"`, and
+`src/redact/index.ts`'s `(opts.customPatterns ?? []).map(...)` throws on the first
+redaction-enabled request (redaction defaults on). Fixed write-side (the old binary can't
+be patched):
+- `configToYaml()` now omits `customPatterns` entirely when the array is empty/default
+  (`src/config/writer.ts`) — a default config.yaml round-trips through an old binary
+  exactly as before this feature, no new key for it to misparse.
+- Defensive `Array.isArray(opts.customPatterns) ? ... : []` guard at
+  `src/redact/index.ts:168` (the reviewer's requirement 3, for future rollback scenarios).
+- CHANGELOG `[Unreleased]` entry documents the residual caveat: rolling back past this
+  release with a **non-empty** `customPatterns` configured still requires manually
+  removing that line first — inherent, since the old binary's code can't be changed
+  retroactively.
+- Doc-comment caveat added to `Config['security']['redaction']['customPatterns']`
+  (`src/config/config.ts`) per the reviewer's Finding 2 suggestion.
+
+**Finding 2 (MEDIUM, pre-existing, explicitly out of scope — not fixed):** the hand-rolled
+parser's comment-stripping regex truncates any string containing a whitespace-preceded `#`,
+which now also affects `customPatterns` values. Per the reviewer's own recommendation this
+is NOT fixed in this branch (scope discipline — it's a whole-parser limitation predating
+this slice); mitigated with a CHANGELOG note + the config.ts doc-comment caveat above, and
+left for a follow-up FEAT.
+
+New tests added in the fix round (`tests/config/writer.test.ts`, new describe block
+`'FEAT-461 review fix: customPatterns omitted-when-empty (rollback compatibility)'`, 5
+tests; `tests/security/redact.test.ts`, 1 test):
+- default-config emit contains no `customPatterns` line
+- a non-empty value still emits and round-trips through `writeConfig` -> `loadConfigFromDisk`
+- `findMissingConfigKeys` and the AC-3 warning both stay quiet about the empty-array
+  omission (pinned down explicitly, not just implied by the AC-2 tests)
+- `redact/index.ts` treats a stringified `"[]"` input (simulating an old-loader misparse)
+  as no custom patterns rather than throwing
+
+### Re-run self-verify gates (fix round)
+- `bunx tsc --noEmit` — exit 0, no output.
+- `bun run build` — exit 0 (`tsc -p .` clean).
+- `bun vitest run tests/config tests/security/redact.test.ts` — **11 files / 163 tests
+  passed, 0 failed.**
+- `bun run test` (full suite) — **198 files / 2328 tests passed, 6 skipped, 0 failed**
+  (up from 2322 in the prior round by exactly the 6 new tests added here).
+
+### Confidence
+High. The fix is narrowly scoped to the exact regression the reviewer reproduced
+end-to-end, doesn't touch the emitter/loader contract for any other field, and every new
+behavior (omit-when-empty, the redact guard, the quiet structural-diff/warning behavior)
+has direct test coverage. Finding 2 was deliberately left alone per the reviewer's own
+"not a merge blocker, don't fix in this branch" guidance.
+
+### Suggested next handoff
+Re-review (crew:reviewer) to confirm Finding 1 is closed, then validator per
+`requires_validation: true` in the slice frontmatter. Parent loop drives both dispatches.
+
+---
+
+## Original implementation (2026-07-10, commits 60f2b97/ac3081f)
 
 ## Objective
 `configToYaml()` in `src/config/writer.ts` silently dropped newer `Config`
