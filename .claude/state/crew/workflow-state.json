@@ -1,14 +1,14 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-09T14:43:01.409Z",
+  "updatedAt": "2026-07-09T20:52:44.136Z",
   "currentRun": {
     "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
     "goal": "",
     "mode": "autonomous",
     "status": "active",
     "startedAt": "2026-07-09T13:47:22.481Z",
-    "updatedAt": "2026-07-09T14:43:01.409Z",
-    "next": "Optional follow-up (non-blocking): cap or yield the boot-time spool drain pass so a large backlog can't stall request handling at startup; consider whether ingestCanonicalTranscript should accept pre-hoisted statements from the caller to restore the D-B6 optimization on the HTTP hot path. Neither blocks merge.",
+    "updatedAt": "2026-07-09T20:52:44.136Z",
+    "next": "Feed this into the competitive gap-analysis doc; the two biggest corrections to the prior web-only pass are (a) cognee HAS a first-party MCP server, so any gap-analysis claiming astramemory-local's MCP support as a differentiator vs cognee needs updating, and (b) cognee's local-first claim only applies to storage, not the default LLM/embedding path (OpenAI required unless user explicitly opts into Ollama) -- this is a real differentiator astramemory-local can claim (Ollama as documented default vs opt-in).",
     "gates": {
       "review": {
         "status": "passed",
@@ -30,7 +30,12 @@
     },
     "artifacts": {
       "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
-      "handoffs": [],
+      "handoffs": [
+        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204935Z-handoff-letta-letta-ai-letta-competitive-intel-code-verified.md",
+        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204947Z-handoff-graphiti-getzep-source-code-verification-for-competitive-int.md",
+        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204950Z-handoff-mem0ai-mem0-competitive-intel-code-verified.md",
+        "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T205244Z-handoff-cognee-topoteretes-cognee-source-verified-competitive-audit.md"
+      ],
       "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
       "validationPlan": null,
       "validationResult": ".claude/artifacts/crew/validations/20260709T144053Z-validation-result-slice-419-ingest-spool-validation.md",
