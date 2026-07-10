@@ -110,7 +110,10 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       same create-copy-swap table-rewrite pattern migration 013 used.
 // 022 = consolidation_proposals.metadata_json, additive nullable column
 //       (FEAT-456 SLICE-1 contradiction judge verdict/confidence/excerpts).
-// 023 = reserved by FEAT-453 (entity-link-validity), merges ahead of this.
+// 023 = memory_entities surrogate-PK rebuild + nullable valid_at/invalid_at
+//       (FEAT-453 SLICE-2 fact-level bitemporal tracking) -- same
+//       create-copy-swap pattern as 021; see migration file header and
+//       docs/specs/FEAT-453-bitemporal-design.md §1.
 // 024 = transcripts.capture_source / memories.capture_source, additive
 //       nullable columns + partial index (FEAT-455, ADR-012 decision 4).
 export const SCHEMA_VERSION = 24 as const;

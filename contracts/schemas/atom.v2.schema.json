@@ -131,6 +131,16 @@
             "type": "string",
             "description": "Optional refinement, meaningful for actor-family kinds (see ACTOR_KINDS in contracts/wire.ts): human or AI agent.",
             "enum": ["human", "ai"]
+          },
+          "valid_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "FEAT-453: bitemporal valid-time start for THIS entity link (fact-level, distinct from the atom's own valid_from). null = no stated fact-level start; resolves to the atom's own valid_from at query time."
+          },
+          "invalid_at": {
+            "type": ["string", "null"],
+            "format": "date-time",
+            "description": "FEAT-453: bitemporal valid-time end for THIS entity link. null = not known to have stopped being true."
           }
         }
       }

@@ -1,7 +1,7 @@
 ---
 id: FEAT-458
-status: pending
-priority: null
+status: triaged
+priority: P2
 category: feature
 target_release: null
 created: 2026-07-10
@@ -10,6 +10,16 @@ depends_on: [FEAT-455]
 slices: []
 derived_from: docs/adr/ADR-012-auto-capture-security-model.md
 cross_product: [astramem-local]
+pm_customer_impact: 0.55
+pm_effort_estimate: 0.62
+pm_strategic_alignment: 0.65
+pm_technical_risk: 0.85
+pm_dependency_depth: 0.75
+pm_composite_priority: P2
+pm_autonomous_safe: false
+pm_reviewed: 2026-07-10
+autonomous_safe: false
+triage_notes: "P2 via formula (default branch): impact 0.55 < 0.70 so the (impact>=0.7 AND alignment>=0.6) P1 branch does not fire; alignment 0.65 < 0.80 so the (alignment>=0.8 AND effort<=0.4) P1 branch does not fire either; effort 0.62 < 0.70 so P3 (effort>=0.7 AND impact<=0.3) does not fire. composite_score = 0.55*0.35 + 0.65*0.30 + (1-0.62)*0.20 + (1-0.85)*0.10 + (1-0.75)*0.05 = 0.491. technical_risk banded at 0.85 (top rubric band: hot-path proxy sees full system prompts + every turn, byte-transparent-forwarding invariant is hard-to-reverse-if-violated, and the FEAT's OWN scope mandates a pre-build STRIDE/latency/failure-mode spike -- same shape as FEAT-455's own 0.9 score for the same underlying capture-mechanism-choice reason). autonomousSafe=false is forced THREE independent ways (any one alone is sufficient): technical_risk 0.85 > 0.6, effort_estimate 0.62 > 0.6, dependency_depth 0.75 > 0.6 -- exactly matching the coordinator's explicit requirement that this must not be autonomous_safe=true."
 ---
 ## Description
 
