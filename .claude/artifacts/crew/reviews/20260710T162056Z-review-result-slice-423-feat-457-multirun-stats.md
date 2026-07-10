@@ -1,5 +1,5 @@
 ---
-status: needs_fix
+status: PASS
 ---
 
 # Review Result — SLICE-423 / FEAT-457 slice 1 (LoCoMo judge multi-run mean±stdev)
@@ -163,3 +163,59 @@ not a blocker. Everything else in this slice — the stats math (independently
 hand-verified), backward compatibility (verified via a live execution diff, not just
 a diff read), the `stats.ts` promotion's history preservation and clean import
 updates, and the AC-1/2/3/5 citations — is genuinely correct and well-tested.
+
+---
+
+## Round 2 — re-review of fix commit `8436f08` (independent, worktree-only, no edits)
+
+**Verdict: PASS.** Both round-1 gaps are closed: Finding 1 (no cross-run
+comparability guard) now has an enforced hard-refuse, and the low-severity
+observability nit (section 2) is also addressed by the same commit, not just
+the blocker. Verified all of the following directly — repo reading, a real
+diff, and live subprocess execution, not just trusting the handoff.
+
+### 1. Guard placement — refuse happens before any hypotheses/sample I/O; single-run path untouched
+
+Read `judge.mts:162-202` (the whole multi-run branch) directly. `evaluateMultiRunParamsGuard(runDirs)` is called at line 171, immediately after the file-header comment block and before the `for (const dir of runDirs)` loop at line 180 that does `parseJsonl(join(dir, 'hypotheses.jsonl'))` / `readFileSync(join(dir, 'sample.json'))`. On `guard.action === 'refuse'` it `console.error`s the message and `process.exit(1)`s before touching any run-dir content — exactly the "refuse before any hypotheses/sample I/O" placement the fix claims.
+
+Diffed `10290b5..8436f08` on `judge.mts`: the only changes are the new header-comment block, the `evaluateMultiRunParamsGuard` import, and the 5-line guard-and-refuse block inserted into the multi-run branch. The single-run `--hyp`/`--ref` branch (lines 204+ in the current file) has **zero** lines touched by this commit — confirmed via the diff, not inference.
+
+### 2. Refactor equivalence — `checkRunParams` behavior identical post-extraction
+
+Read the diff on `scripts/eval/shared/run-params.ts` directly. Original `checkRunParams` inlined: iterate sorted union of keys, `o = original[key] ?? null`, `c = current[key] ?? null`, push `` `${key}: original=${JSON.stringify(o)}, current=${JSON.stringify(c)}` `` on inequality. The extracted `diffRunParams(a, b)` does the identical iterate-sorted-keys / nullish-coalesce / inequality-push logic (just parameter names `a`/`b` instead of `original`/`current`, returning structured `{key, a, b}` instead of a pre-formatted string), and `checkRunParams` now calls it and maps the structured diffs back to the exact same string format via `.map(d => \`${d.key}: original=${JSON.stringify(d.a)}, current=${JSON.stringify(d.b)}\`)`. This is a mechanical, behavior-preserving extraction — confirmed by direct comparison, not just trusting the commit message.
+
+Ran the 462a resume-guard tests plus the new extraction/guard tests together: `bunx vitest run scripts/eval/shared/run-params.test.ts scripts/eval/locomo/judge/metrics.test.ts` → **2 files, 55 tests, all passed.**
+
+### 3. CLI repro — built real fixtures, ran `judge.mts` as an actual subprocess
+
+Constructed two throwaway run dirs (`sample.json` + `hypotheses.jsonl` + `run-params.json` each, matching the real `LoCoMoSample`/`HypothesisRow` schemas) with `run-params.json` differing only in `n` (10 vs 20, i.e. a smoke-test-sized dir mixed with a full run — the exact scenario Finding 1 described) and ran `bun scripts/eval/locomo/judge.mts --run-dir <A> --run-dir <B>` for real:
+
+```
+refusing to combine --run-dir runs -- these run dirs were NOT sampled with the same params (combining them would produce a mean/stdev across substantively different runs, not honest run-to-run variance):
+  <runB path>: n differs (<runA path>=10, <runB path>=20)
+Only combine run dirs produced by the identical --dataset/--seed/--n/--qa-per-sample/--shards invocation.
+EXIT=1
+```
+
+Non-zero exit, and the message names both the offending dir (runB) and the specific differing param with both values (10 vs 20) — matches the fix's claim exactly, verified by execution rather than reading the guard function in isolation.
+
+### 4. Annotation — verified with a live run, both the matched case and the asymmetric case
+
+Same live-execution approach: two run dirs with **matching** `run-params.json`, one sample/hyp set with 2 QAs (categories 4 and 5) and the other with 1 QA (category 4 only) — i.e. category 4 present in both runs, category 5 present in only one. Real subprocess output:
+
+```
+	4 (single-hop): 100% ± 0% (n=2)
+	5 (adversarial): 0% (n=1, 1/2 runs)
+```
+
+Category 4 (present in both runs) shows no annotation, as the fix intends; category 5 (present in only 1 of 2 runs) is correctly flagged `1/2 runs`. (Categories 1-3, absent from both runs entirely, also picked up a `0/2 runs` annotation — an accurate, if not explicitly-tested, extension of the same `contributingRuns !== totalRuns` logic; not a bug.) The guard did not refuse in this case (matched params), confirming the proceed path also works end-to-end, not just the refuse path.
+
+### 5. Full suite and gates — one flake identified and ruled out, not a regression
+
+- `bunx tsc --noEmit`: clean, no output.
+- `bunx vitest run scripts/eval/`: first run showed **1 failed / 125 passed** — the failure was in `scripts/eval/longmemeval/resume-integration.test.ts` (`SIGKILL mid-ingest` kill-resilience test), a file this commit does not touch (this slice's diff only touches `judge.mts`, `judge/metrics.mts`, `shared/run-params.ts`, their tests, and the README). Re-ran that file alone: **2/2 passed**. Re-ran the full `scripts/eval/` suite again: **13 files / 126 tests passed, 0 failed.** Ruled flake (real-timing SIGKILL-against-a-live-daemon test), not a regression introduced by this fix.
+- `bunx vitest run tests/scripts/post-merge-rebuild.test.ts tests/service/release.test.ts` (the two suites flagged as known-flaky-under-load this session): **14/14 passed**, no isolation needed.
+
+### Conclusion
+
+Finding 1 from round 1 is closed with an enforced guard (not just documentation), verified via direct code reading, a refactor-equivalence diff, and two independent live subprocess executions (refuse case and proceed case). The round-1 observability nit is also fixed and verified live. No new issues found. Recommend merge — FEAT-457's AC-6 (the publish step) can proceed on top of this.
