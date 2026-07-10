@@ -67,6 +67,12 @@ function buildFullyPopulatedConfig(): Config {
         relevanceGate: { minChars: 20, maxBytes: 131_072, dedupWindow: 40 },
       },
     },
+    proxy: {
+      enabled: true,
+      port: 9001,
+      upstream: 'https://api.openai.com/v1',
+      capture: { enabled: true },
+    },
   };
 }
 

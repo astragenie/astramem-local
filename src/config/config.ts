@@ -319,6 +319,30 @@ export interface Config {
       };
     };
   };
+  /** LLM proxy / auto-capture Tier 3 (FEAT-458, ADR-013). `enabled: false`
+   *  (default, and the field's ABSENCE on an existing config.yaml) means no
+   *  proxy process is ever started implicitly — the daemon's own boot path
+   *  never reads this block at all. Unlike `capture.autoCapture`, there is
+   *  no `init` wizard prompt (ADR-013 §5): the proxy is invoked only via its
+   *  own explicit subcommand, `astramem-local proxy serve --port <N>
+   *  --upstream <url>`, which can override `port`/`upstream` at the CLI
+   *  without ever touching config.yaml. This block exists so a user who DOES
+   *  want a persistent config-driven default doesn't have to pass flags
+   *  every time, and so `doctor` has something to read (FEAT-458 S4).
+   *  S2 ships zero capture code — `capture.enabled` here is plumbing for S3
+   *  only, always false and unread until then. */
+  proxy: {
+    enabled: boolean;
+    port: number;
+    upstream: string;
+    capture: {
+      /** Default false EVEN WHEN proxy.enabled is true — capture is a
+       *  second, independent opt-in on top of running the proxy at all
+       *  (ADR-013 §5). A user can run the transparent-forward-only proxy
+       *  (FEAT-458 S2) with zero capture surface. */
+      enabled: boolean;
+    };
+  };
 }
 
 export function defaultConfig(): Config {
@@ -368,6 +392,12 @@ export function defaultConfig(): Config {
         enabled: false,
         relevanceGate: { minChars: 8, maxBytes: 65536, dedupWindow: 20 },
       },
+    },
+    proxy: {
+      enabled: false,
+      port: 7778,
+      upstream: '',
+      capture: { enabled: false },
     },
   };
 }
