@@ -646,6 +646,24 @@ async function promptHookInstall(nonInteractive: boolean, noHookFlag: boolean): 
   );
 }
 
+// ─── Auto-capture opt-in (FEAT-455 / ADR-012 decision 4) ──────────────────────
+
+/**
+ * Decide whether to enable `capture.autoCapture.enabled` (ADR-012 decision
+ * 4). Non-interactive mode NEVER sees this prompt and gets the `false`
+ * default, same as every other interactive-only wizard question in this
+ * file — a scripted/CI `init` must never silently opt in to auto-capture.
+ */
+async function promptAutoCaptureOptIn(nonInteractive: boolean): Promise<boolean> {
+  if (nonInteractive) return false;
+  return promptConfirm(
+    'Astramem can automatically capture more of your session traffic (not just at session end) ' +
+    'to form memories with less manual effort. This observes your session transcripts more ' +
+    'frequently than today\'s default capture. Turn on auto-capture?',
+    false,
+  );
+}
+
 // ─── Main wizard flow ─────────────────────────────────────────────────────────
 
 export async function init(argv: string[] = []): Promise<void> {
@@ -759,6 +777,18 @@ export async function init(argv: string[] = []): Promise<void> {
     }
   }
 
+  // 6c. Offer the auto-capture opt-in (FEAT-455 / ADR-012 decision 4).
+  // Default OFF, explicit disclosure prompt, never enabled implicitly —
+  // interactive TTY only, same as the hook-install prompt above.
+  const enableAutoCapture = await promptAutoCaptureOptIn(nonInteractive);
+  if (enableAutoCapture) {
+    cfg.capture.autoCapture.enabled = true;
+    writeConfig(cfg, configPath); // persist the flag flip — config.yaml now round-trips capture.autoCapture
+    if (!nonInteractive) {
+      console.log(`  ✓ auto-capture enabled — capture.autoCapture.enabled=true persisted to config.yaml`);
+    }
+  }
+
   // 7. Run migrations — this is the fresh-DB creation path, so
   // cfg.embedding.dim (FEAT-409) is what actually bakes into memories_vec.
   const dbPath = join(answers.dataDir, 'memory.sqlite');
@@ -771,7 +801,12 @@ export async function init(argv: string[] = []): Promise<void> {
   // 8. Run doctor (skip daemon-reachable check — daemon not yet started)
   //    We pass a dummy port that won't be running, then filter out the
   //    daemon check to avoid noisy failure during init.
-  const allChecks = getChecks({ dataDir: answers.dataDir, port: answers.port, dailyBudgetUsd: answers.budget });
+  const allChecks = getChecks({
+    dataDir: answers.dataDir,
+    port: answers.port,
+    dailyBudgetUsd: answers.budget,
+    autoCaptureEnabled: cfg.capture.autoCapture.enabled,
+  });
   const checksToRun = allChecks.filter(c => !c.name.startsWith('Daemon reachable'));
   const results = await runChecks(checksToRun);
   if (!nonInteractive) {

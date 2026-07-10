@@ -123,6 +123,8 @@ rely on the loader alone to catch it.
 
 ## Do NOT
 - Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
+- Do NOT kill processes machine-wide by image name (`taskkill /F /IM node.exe`, `/IM bun.exe`, `Stop-Process -Name node`). This box runs the production daemon, eval shard daemons, Ollama, and sibling agents' processes — an image-name kill murders all of them (2026-07-10: killed a 40-min LongMemEval run + prod daemon). Kill only PIDs you spawned (track them; use process-tree kill on your own root PID). If stray vitest daemons pile up, find YOUR strays via their listen ports / datadir paths and kill those PIDs.
+- Do NOT `git stash` in worktrees — the stash stack is repo-global across all worktrees; a `stash pop` in one worktree can eat a sibling agent's stash (caused a 2026-07-09 work-loss race). Use `git diff > x.patch` + `git checkout` + `git apply` instead.
 - Do NOT hand-edit `memories_vec FLOAT[N]` in a migration file directly. Since FEAT-409 (merged) the dim is single-sourced from `DEFAULT_EMBED_DIM` (`src/contracts/embed.ts`) — config default, embed providers, `SqliteVecStore`, mock providers, the `__EMBED_DIM__` migration placeholder, and the boot-time preflight (`src/doctor/probes/embed-probe.ts`) all derive from it or from `getVecSchemaDim()`. Changing the *default* is a one-constant edit for fresh DBs; migrating an *existing* DB's live vectors to a new dim requires `astramem-local reembed-dim` (migration 011, `docs/embed-dim-migration.md`) — there is no ALTER for a sqlite-vec vec0 table. FEAT-436 (2026-07-05) re-audited this and confirmed it is resolved, not an open coordinated-change hazard.
 
 <!-- crew:start -->

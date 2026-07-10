@@ -32,6 +32,23 @@ describe('loadConfig', () => {
     const cfg = loadConfig({ consolidation: { autoAcceptThreshold: 0.9 } } as any);
     expect(cfg.consolidation.autoAcceptThreshold).toBe(0.9);
   });
+
+  // FEAT-455 / ADR-012 decision 4: default OFF, never enabled implicitly.
+  it('capture.autoCapture.enabled defaults to false (OFF)', () => {
+    const cfg = loadConfig(undefined);
+    expect(cfg.capture.autoCapture.enabled).toBe(false);
+    expect(defaultConfig().capture.autoCapture.enabled).toBe(false);
+  });
+
+  it('capture.autoCapture.relevanceGate defaults match the spike spec (checklist #2)', () => {
+    const cfg = defaultConfig();
+    expect(cfg.capture.autoCapture.relevanceGate).toEqual({ minChars: 8, maxBytes: 65536, dedupWindow: 20 });
+  });
+
+  it('capture.autoCapture.enabled can be overridden — an explicit opt-in round-trips', () => {
+    const cfg = loadConfig({ capture: { autoCapture: { enabled: true } } } as any);
+    expect(cfg.capture.autoCapture.enabled).toBe(true);
+  });
 });
 
 // FEAT-428: fusion-model governance — component ceiling + η eval-evidence

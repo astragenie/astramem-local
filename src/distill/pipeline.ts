@@ -44,6 +44,9 @@ export interface PipelineContext {
   sourceHash: string | null;
   /** See EmbedIndexContext.capturedAtMs — plumbed from the canonical envelope via distillHandler. */
   capturedAtMs?: number | null;
+  /** FEAT-455 / ADR-012 decision 4: provenance tag plumbed from the
+   *  transcripts row via distillHandler — see EmbedIndexContext.captureSource. */
+  captureSource?: 'auto_capture' | null;
   /** FEAT-441 durability gate mode — undefined behaves as 'off' (AC-2). */
   durabilityGateMode?: DurabilityGateMode;
   /** Full runtime config, threaded through to EmbedIndexContext.redactConfig
@@ -156,6 +159,7 @@ export async function runPipeline(
     agent: ctx.agent,
     sourceHash: ctx.sourceHash,
     capturedAtMs: ctx.capturedAtMs,
+    captureSource: ctx.captureSource,
     durabilityGateMode: ctx.durabilityGateMode,
     redactConfig: ctx.config,
     gatedOutCounter,

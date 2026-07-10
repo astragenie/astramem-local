@@ -160,6 +160,30 @@ describe('embedAndIndex stage', () => {
     expect(row.agent).toBe('claude-code');
   });
 
+  // FEAT-455 / ADR-012 decision 4 — provenance tag threads to the inserted row.
+  it('sets memories.capture_source when ctx.captureSource is "auto_capture"', async () => {
+    const embed = makeMockEmbed();
+    const mems = [normalizedMem('auto-captured decision', 'c'.repeat(64))];
+    const results = await embedAndIndex(mems, {
+      db, embed,
+      sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      captureSource: 'auto_capture',
+    });
+    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0].memoryId) as { capture_source: string | null };
+    expect(row.capture_source).toBe('auto_capture');
+  });
+
+  it('leaves memories.capture_source NULL when ctx.captureSource is omitted (byte-identical default)', async () => {
+    const embed = makeMockEmbed();
+    const mems = [normalizedMem('manually captured decision', 'd'.repeat(64))];
+    const results = await embedAndIndex(mems, {
+      db, embed,
+      sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0].memoryId) as { capture_source: string | null };
+    expect(row.capture_source).toBeNull();
+  });
+
   // FEAT-402 AC-1 — entities emitted alongside an atom are linked at index time.
   it('links entities emitted on the atom to the inserted memory', async () => {
     const embed = makeMockEmbed();

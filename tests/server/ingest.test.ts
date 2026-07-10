@@ -260,6 +260,52 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
     expect(sessions[0]!['repo']).toBe('project');
   });
 
+  // FEAT-455 / ADR-012 decision 4: capture_source is set only by the
+  // hook-tap auto-capture trigger's envelope — every other client omits it
+  // and transcripts.capture_source stays NULL (byte-identical default).
+  it('capture_source: "auto_capture" round-trips onto the transcripts row', async () => {
+    const { db, app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-capture-source', capture_source: 'auto_capture' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const transcripts = db.prepare('SELECT capture_source FROM transcripts WHERE session_id = ?').all('sess-capture-source') as
+      { capture_source: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.capture_source).toBe('auto_capture');
+  });
+
+  it('capture_source omitted (every non-auto-capture client): transcripts.capture_source stays NULL', async () => {
+    const { db, app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-no-capture-source' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const transcripts = db.prepare('SELECT capture_source FROM transcripts WHERE session_id = ?').all('sess-no-capture-source') as
+      { capture_source: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.capture_source).toBeNull();
+  });
+
+  it('capture_source: an invalid value (not "auto_capture") returns 400', async () => {
+    const { app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-bad-capture-source', capture_source: 'something_else' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('client_scrub_hits_by_label round-trips through client_scrub_hits_by_label_json column', async () => {
     const { db, app } = makeApp();
     const res = await (await app).inject({

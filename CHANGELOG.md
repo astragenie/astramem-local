@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.0] — 2026-07-10
+
+### Added
+- **Hook-tap auto-capture (FEAT-455, ADR-012 tier 1)** — daemon-side support for high-frequency passive capture of session transcripts: `capture_source` provenance column (migration 024) threads envelope → transcript → distilled atoms; standalone source-side relevance gate (`src/capture/relevance-gate.ts` — size caps, per-session dedup window, structural junk heuristics; disjoint from the durability gate per its AC-6); `capture.autoCapture.enabled` config, default **OFF**, enabled only via the `init` wizard's explicit disclosure prompt; `doctor` row showing enabled state + auto-captured count; `capture auto-capture disable [--purge|--keep]` — disabling offers retroactive purge scoped to auto-captured atoms via the existing erasure path. Auto-captured payloads flow through the same stage-0 redaction as every other ingest.
+- **Fact-level bitemporal validity on entity links (FEAT-453 slice 2)** — `memory_entities` rebuilt with `valid_at`/`invalid_at` windows (migration 023, data-preserving), at-most-one-open-window-per-pair partial unique index, `linkWithValidity`/`closeAndRelink`/`memoryIdsForEntitiesAsOf` storage primitives, and entity+`as_of` search composition (both filters apply). atom@2 contract relaxed additively for entity validity fields (contracts `2.1.0`); extraction prompt emits validity hints.
+
+### Fixed
+- `writeConfig()` now emits the `capture` config block (previously silently dropped, so wizard opt-in and disable would not persist). Remaining missing blocks tracked as FEAT-461.
+
+### Notes
+- Schema version 22 → 24 (migrations 023, 024). Upgrade is automatic and data-preserving.
+
+---
+
 ## [0.11.0] — 2026-07-10
 
 ### Added
