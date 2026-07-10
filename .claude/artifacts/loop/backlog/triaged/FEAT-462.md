@@ -1,6 +1,6 @@
 ---
 id: FEAT-462
-status: in-progress
+status: triaged
 priority: P1
 category: infra
 target_release: null
@@ -20,7 +20,11 @@ composite_priority: P1
 autonomous_safe: true
 triaged_at: 2026-07-10
 started_at: 2026-07-10
+slices_complete: [SLICE-422]
+completed_at: 2026-07-10
 ---
+> **STATUS 2026-07-10 — slice A+C SHIPPED (resume ledger + scope guard + kill-sim test; ACs 1/4/5/6/7 done, merged 55c03d6). Remaining: slice B — `--detach` + status file + PID/port manifest (ACs 2/3). DaemonHandle.pid groundwork already landed.**
+
 ## Description
 
 **Eval-harness durability: resume support + detached execution** — the
