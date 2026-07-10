@@ -155,9 +155,17 @@ export function redactText(input: string, opts: RedactOptions = {}): RedactResul
   // ---- Stage 2: vendor/pattern detectors + custom config patterns ----
   {
     const guard = protectedRanges(text);
+    // FEAT-461 review fix (Finding 1, HIGH): tolerate a non-array value here,
+    // not just a missing one. `?? []` alone doesn't catch it — a config.yaml
+    // written by a newer daemon version, then read by an older
+    // `loadConfigFromDisk` that predates flow-sequence array support (a
+    // `reinstall --rollback` target), parses `customPatterns: [...]` back as
+    // the literal STRING "[...]", which is truthy and would otherwise reach
+    // `.map()` and throw. Treat any non-array as "no custom patterns" rather
+    // than crash the ingest path.
     const detectors: PatternDetector[] = [
       ...PATTERN_DETECTORS,
-      ...(opts.customPatterns ?? []).map(customDetector),
+      ...(Array.isArray(opts.customPatterns) ? opts.customPatterns.map(customDetector) : []),
     ];
     let spans: Span[] = [];
     for (const detector of detectors) {

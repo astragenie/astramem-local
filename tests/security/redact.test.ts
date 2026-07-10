@@ -131,6 +131,18 @@ describe('redactText — custom pattern (config-supplied)', () => {
   it('does not throw on an invalid custom regex — skips it', () => {
     expect(() => redactText('hello world', { customPatterns: ['('] })).not.toThrow();
   });
+
+  // FEAT-461 review fix (Finding 1, HIGH): a config.yaml written by a newer
+  // daemon and later read by an OLDER `loadConfigFromDisk` (no flow-sequence
+  // array support — a `reinstall --rollback` target) would parse
+  // `customPatterns: [...]` back as the literal string "[...]", not an
+  // array. `??  []` alone doesn't catch a truthy non-array value reaching
+  // `.map()`; `Array.isArray` must be checked explicitly.
+  it('treats a non-array customPatterns (e.g. a stringified "[]" from an older loader) as no custom patterns, not a crash', () => {
+    expect(() => redactText('hello world', { customPatterns: '[]' as unknown as string[] })).not.toThrow();
+    const { events } = redactText('hello world', { customPatterns: '[]' as unknown as string[] });
+    expect(events.some(e => e.type === 'custom')).toBe(false);
+  });
 });
 
 // ---------------------------------------------------------------------------

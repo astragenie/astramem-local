@@ -129,7 +129,13 @@ export interface Config {
       enabled: boolean;
       /** Shannon-entropy threshold in bits/char for the fallback secret detector. */
       entropyThreshold: number;
-      /** Org-specific regex sources applied as detector type 'custom'. */
+      /** Org-specific regex sources applied as detector type 'custom'.
+       * CAVEAT (FEAT-461 review): avoid a literal `#` in these patterns for
+       * now — the hand-rolled config.yaml parser (loader.ts) strips anything
+       * after a whitespace-preceded `#` as a comment, with no quote
+       * awareness, so a pattern containing one silently truncates on load.
+       * Pre-existing parser limitation, not specific to this field; tracked
+       * separately from FEAT-461. */
       customPatterns: string[];
     };
     /** Encryption at rest (SEC-1/2/7/9). Disabling is a deliberate trust

@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Fixed
+- **`configToYaml()` no longer silently drops newer `Config` fields (FEAT-461)** — `writeConfig()` (triggered by `init`, `reembed-dim`, `pair`, and auto-capture disable) previously re-emitted config.yaml without `archival`, `ingestIdempotency`, `distill`, `memoryHealth`, `ingest`, `consolidation.contradictionDetection`, `search.governance.maxComponentWeight`, and `crossEncoder.model` — since the loader deep-merges over `defaultConfig()`, every field the emitter dropped silently reverted to its code default on next load. A new structural key-diff (`findMissingConfigKeys`) now runs on every emit and logs a warning if a future field is left unwired, so this bug class can't recur silently.
+
+### Compatibility caveat
+- **`security.redaction.customPatterns` and downgrade compatibility.** This release adds minimal YAML flow-sequence support (`customPatterns: ["a","b"]`) for the one array-typed `Config` field. If you configure a non-empty `customPatterns` list and later **roll back** to a daemon binary older than this release (e.g. `reinstall --rollback` past this version), that older binary's config loader cannot parse the array syntax and will misread the line — **remove the `customPatterns` line from config.yaml before rolling back** in that case. An unconfigured (empty, the default) `customPatterns` is unaffected: the line is omitted entirely when empty, specifically so a default config.yaml stays byte-identical across a rollback.
+- **`customPatterns` entries containing a literal `#` are not supported yet** — the hand-rolled config parser strips anything after a whitespace-preceded `#` as a comment (a pre-existing limitation of the whole parser, not new here). Avoid `#` in custom redaction regexes until a real YAML parser is adopted; tracked separately from FEAT-461.
+
+---
+
 ## [0.12.1] — 2026-07-10
 
 ### Fixed
