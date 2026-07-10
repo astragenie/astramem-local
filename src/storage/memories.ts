@@ -49,7 +49,7 @@ export interface InsertInput {
    * capture, `/remember`, Codex capture, distill's other producers), which
    * all omit this field and get `NULL` -- byte-identical to pre-FEAT-455
    * behavior. `'auto_capture'` is the only value the auto-capture trigger
-   * ever sets; see migrations/023-auto-capture-provenance.sql and
+   * ever sets; see migrations/024-capture-source.sql and
    * docs/specs/FEAT-455-spike-results.md checklist #4. Drives the doctor
    * WARN-row count and the disable -> purge scoping query.
    */
