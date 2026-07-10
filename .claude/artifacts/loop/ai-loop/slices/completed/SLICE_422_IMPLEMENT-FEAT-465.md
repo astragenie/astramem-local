@@ -11,6 +11,7 @@ risk: medium
 created: 2026-07-10
 updated: 2026-07-10
 completed_at: 2026-07-10
+badges: [serial-reviewer-warning]
 ---
 # SLICE-422: Implement FEAT-465
 
