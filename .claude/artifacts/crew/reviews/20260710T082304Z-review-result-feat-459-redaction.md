@@ -2,7 +2,8 @@
 
 **Commit:** `3eadb8c` on `feat/feat-459-redaction`
 **Reviewer:** independent adversarial review (both directions: missed secrets AND false positives)
-**Verdict: NEEDS_FIX**
+**Original verdict: NEEDS_FIX** — see re-review below.
+**Final verdict (after fix commit `4661587`): PASS**
 
 ## Scope
 
@@ -111,8 +112,119 @@ and worth a follow-up ticket. Not in this FEAT's stated scope, not blocking.
   for unlabeled-only matches is explicitly documented at `entropy.ts:10-19`.
 - **Perf**: not vacuous — see AC-5 above.
 
-## Recommendation
+## Recommendation (original pass)
 
 Fix Finding 1 (or explicitly scope it out with a documented follow-up FEAT, mirroring how the
 unlabeled-entropy-floor decision was documented) before merge. Everything else in the diff is
 correct, well-tested, and matches its stated claims.
+
+---
+
+## Re-review — fix commit `4661587`
+
+**Verdict: PASS.** Finding 1 is resolved. All checks below were re-run empirically (direct
+regex/redactText execution, not just reading the diff or trusting the commit message).
+
+### 1. The 5 confirmed misses, re-tested
+
+Ran `redactText()` directly (via a throwaway vitest probe, deleted after) on all 5 originally-
+failing fixtures — all now redact correctly, with the secret substring absent from output and a
+`generic_credential` event emitted:
+
+```
+SECRET_KEY=abcdefgh1234        -> redacted (cap "abcdefgh1234")
+DJANGO_SECRET_KEY=abcdefgh1234 -> redacted
+JWT_SECRET_KEY=abcdefgh1234    -> redacted
+APP_SECRET_KEY=abcdefgh1234    -> redacted
+secret_key_base: abcdefgh1234  -> redacted (colon separator, Rails form)
+```
+
+### 2. Two-tier design — trailing-only keywords stay trailing-only
+
+Confirmed `token`/`api_key` were deliberately NOT widened (a second `PatternDetector` entry
+restricted to `secret|password|passwd|pwd` was added instead of touching the original). Verified
+the cited ambiguous-keyword shapes still produce zero events:
+
+```
+TOKEN_LIMIT=4096  -> NOT redacted
+TOKEN_COUNT=5     -> NOT redacted
+KEY_SIZE=256      -> NOT redacted
+```
+
+`KEY_SIZE=` in particular confirms bare `key` is still not a recognized keyword under either
+detector (only `api[_-]?key` is), so this isn't just "token stayed narrow" — the fix didn't
+quietly widen `key` either, consistent with the commit message.
+
+### 3. Value guard scoped correctly to the new any-segment detector only
+
+```
+PASSWORD_MIN_LENGTH=8      -> NOT redacted (numeric, guarded)
+SECRET_ROTATION_DAYS=30    -> NOT redacted (numeric, guarded)
+SECRET_SCAN_ENABLED=true   -> NOT redacted (boolean, guarded)
+SECRET_SCAN_ENABLED=false  -> NOT redacted (boolean, guarded)
+DB_PASSWORD=letmein123456  -> redacted (trailing match, no guard applied — value isn't
+                               numeric/boolean here anyway, but confirms the guard is wired to
+                               `valueFilter` on the any-segment detector only, per
+                               `src/redact/index.ts:97`, not injected into the shared path)
+```
+
+Also checked a case the brief didn't ask for but that specifically exercises the guard's scope
+boundary: `SECRET_KEY_ROTATION_DAYS=30` (leading keyword `secret`, trailing segment numeric) —
+correctly NOT redacted, confirming the guard applies to the whole captured value regardless of
+where in the compound the keyword sits, not just to single-segment cases.
+
+Also spot-checked the entropy-side companion guard (`CONFIG_ASSIGNMENT_RE` in `entropy.ts`) is
+real, not decorative: `PASSWORD_MIN_LENGTH=8` produces **zero** events overall (not just zero
+`generic_credential` events) — if the entropy guard weren't there, this LABEL=VALUE token's
+high character diversity could still have cleared the 4.0 bits/char threshold and gotten
+flagged as `high_entropy` despite the pattern-detector guard correctly declining it. Confirms
+the two guards (detectors.ts value filter + entropy.ts config-assignment regex) are actually
+both load-bearing, not redundant.
+
+### 4. Full original false-positive matrix, re-run against the new code
+
+Every false positive from my original review still holds with both new detectors active:
+`NODE_ENV=`, `LOG_LEVEL=`, `PORT=`, `MAX_TOKENS=`, `primary_key=id`, `monkey=business`,
+`authtoken=`, `topsecret=`, `RETRY_LIMIT=`, `SESSION_TIMEOUT=`,
+`const API_KEY_HEADER = 'x-api-key';`, `XAPI_KEY=`, plus `cache_key=abc` (new, since the
+any-segment detector's docstring specifically calls out `cache_key=`/`sort_key=` as intended
+non-matches). Also verified no double-redaction / overlap artifact on a case designed to trigger
+both detectors at once: `MY_SECRET_PASSWORD=hunter2222` matches via the any-segment detector
+(`secret` is a leading segment) — confirmed exactly one `generic_credential` event fires and the
+full secret is absent from output, via `dedupeOverlaps` in `src/redact/index.ts` (sorts by
+span start, keeps first non-overlapping) correctly resolving the two candidate spans from the
+two `generic_credential`-typed detectors into one.
+
+### 5. Design documented at the pattern site
+
+`src/redact/detectors.ts`'s new block (comment above the any-segment detector) documents: why
+`secret`/`password`/`passwd`/`pwd` are high-precision enough to widen, why `token`/`api_key`
+are deliberately excluded (cites `TOKEN_LIMIT=`/`TOKEN_COUNT=`/`KEY_SIZE=` as the concrete FP
+risk), why bare `key` stays unrecognized, and why the value-side guard exists. `entropy.ts`'s
+new comment documents the companion gap it closes and includes the measured motivating case
+(`PASSWORD_MIN_LENGTH=8` scoring >4.0 bits/char). Same standard as the original commit's
+documentation — no regression in rigor.
+
+### 6. Suite / build
+
+- `npx tsc --noEmit -p .`: clean.
+- `npx vitest run` (full suite): **190/190 files passed, 2230/2230 non-skipped tests passed** (6
+  skipped, 0 failed) — matches the team-lead-reported baseline exactly. Notably the
+  `tests/scripts/post-merge-rebuild.test.ts` timeout flake from my original review run did NOT
+  recur this time, consistent with it being an unrelated parallel-load flake rather than
+  anything caused by this branch.
+- Confirmed the 6 skipped tests are unrelated to redaction: they live in
+  `tests/providers/{openai-compatible-llm,ollama-embed,ollama-llm,azure-llm,codex-subscription-llm,azure-embed}.test.ts`
+  (live-service integration tests), `tests/e2e/plugin-flow.test.ts`, and
+  `tests/config/migrate-dirs-reconcile.test.ts` — nothing under `tests/security/` is skipped.
+
+### Outstanding (non-blocking, unchanged from original review)
+
+Finding 2 (quoted/JSON label forms like `"OPENAI_API_KEY": "sk-abc"` still not matched) was not
+in scope for this fix and remains open as a low-severity follow-up candidate, same as before.
+
+## Final recommendation
+
+Ship it. Finding 1 is fully resolved with a well-scoped, well-documented, well-tested two-tier
+design that keeps the false-positive posture intact and adds a genuinely necessary companion
+guard on the entropy side. No new issues introduced.
