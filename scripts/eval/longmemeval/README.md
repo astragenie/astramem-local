@@ -9,31 +9,35 @@ building it that the plan doc couldn't have known in advance.
 ## Layout
 
 ```
-scripts/eval/longmemeval/
-  lib/
-    types.ts          dataset + hypothesis record shapes
-    dates.ts          "YYYY/MM/DD (Dow) HH:MM" -> ISO-8601 UTC
-    dataset.ts        loader + deterministic stratified sampler
-    envelope.ts        haystack session -> canonical /ingest/transcript envelope
-    daemon-client.ts   fetch wrappers for /ingest/transcript, /recall, /sessions/:id/digest, /health
-    spawn-daemon.ts    spawns an ISOLATED throwaway daemon (see "Isolation" below)
-    azure-client.ts    Azure OpenAI chat-completions (plain fetch, no SDK dependency)
-    config.ts          Azure endpoint/deployment/key resolution (az cli fallback)
-    concurrency.ts      tiny bounded-concurrency map helper
-    shard.ts            round-robin question partitioning across N daemon shards
-    ollama-tuning.ts     Ollama server status query (/api/version, /api/ps) + tuning guidance
-  sample.mts            CLI: stratified sampler
-  ingest.mts             CLI + module: haystack -> /ingest/transcript driver
-  distill-wait.mts       CLI + module: poll /sessions/:id/digest until ready
-  answer.mts             CLI + module: /recall -> Azure gpt-5-mini -> hypotheses.jsonl
-  run-smoke.mts          orchestrator: sample -> daemon(s) -> ingest -> wait -> answer -> manifest
-                         (single-daemon by default; `--shards N` runs N isolated daemons
-                         concurrently and merges the results — see "Sharding" below; also
-                         hosts `--dry-run-throughput`, a standalone throughput measurement mode)
-  judge.mts              orchestrator: clone upstream (pristine) -> run Azure judge fork -> metrics
-  judge/
-    evaluate_qa_azure.py  Azure-aware fork of upstream's evaluate_qa.py (see its header)
-    metrics.mts           our own per-type/overall/abstention aggregator
+scripts/eval/
+  shared/                  plumbing shared with every eval harness under scripts/eval/
+                           (extracted here FEAT-457 so LoCoMo reuses it verbatim — see
+                           scripts/eval/locomo/README.md)
+    daemon-client.ts       fetch wrappers for /ingest/transcript, /recall, /sessions/:id/digest, /health
+    spawn-daemon.ts        spawns an ISOLATED throwaway daemon (see "Isolation" below)
+    azure-client.ts        Azure OpenAI chat-completions (plain fetch, no SDK dependency)
+    config.ts              Azure endpoint/deployment/key resolution (az cli fallback)
+    concurrency.ts         tiny bounded-concurrency map helper
+    shard.ts               round-robin item partitioning across N daemon shards
+    ollama-tuning.ts       Ollama server status query (/api/version, /api/ps) + tuning guidance
+  longmemeval/
+    lib/
+      types.ts             dataset + hypothesis record shapes
+      dates.ts             "YYYY/MM/DD (Dow) HH:MM" -> ISO-8601 UTC
+      dataset.ts           loader + deterministic stratified sampler
+      envelope.ts          haystack session -> canonical /ingest/transcript envelope
+    sample.mts             CLI: stratified sampler
+    ingest.mts             CLI + module: haystack -> /ingest/transcript driver
+    distill-wait.mts       CLI + module: poll /sessions/:id/digest until ready
+    answer.mts             CLI + module: /recall -> Azure gpt-5-mini -> hypotheses.jsonl
+    run-smoke.mts          orchestrator: sample -> daemon(s) -> ingest -> wait -> answer -> manifest
+                           (single-daemon by default; `--shards N` runs N isolated daemons
+                           concurrently and merges the results — see "Sharding" below; also
+                           hosts `--dry-run-throughput`, a standalone throughput measurement mode)
+    judge.mts              orchestrator: clone upstream (pristine) -> run Azure judge fork -> metrics
+    judge/
+      evaluate_qa_azure.py Azure-aware fork of upstream's evaluate_qa.py (see its header)
+      metrics.mts          our own per-type/overall/abstention aggregator
 ```
 
 Everything runs directly under `bun` (no build step) — this is a one-shot
@@ -59,7 +63,7 @@ lighter shard kept running fine. What ruled out an application bug:
   time of death (ruled out via `Get-WinEvent`) — a native fault or a normal
   OS-visible kill would show up in one of those.
 - The child process handle's own `exit` event never fired (checked via
-  `DaemonHandle.exitInfo()` — see `lib/spawn-daemon.ts`), yet the process
+  `DaemonHandle.exitInfo()` — see `../shared/spawn-daemon.ts`), yet the process
   was later confirmed gone from `Get-CimInstance Win32_Process`.
 - Separately, in an earlier attempt the same session, an entire `nohup ... &`
   detached background process TREE (including the orchestrating `bun`
@@ -293,7 +297,7 @@ to the **live production SaaS tenant** (`https://api.astramemory.com`) —
 `ASTRA_MEMORY_DATADIR`. Left running, that daemon would have sync-shipped
 every synthetic LongMemEval haystack session into a real cloud account.
 
-`lib/spawn-daemon.ts`'s `makeIsolatedEvalEnv` redirects
+`../shared/spawn-daemon.ts`'s `makeIsolatedEvalEnv` redirects
 `APPDATA`/`LOCALAPPDATA`/`HOME`/`XDG_CONFIG_HOME`/`XDG_DATA_HOME` into a
 throwaway temp sandbox for every run (same technique
 `tests/smoke/helpers/daemon.ts` uses, independently authored here since

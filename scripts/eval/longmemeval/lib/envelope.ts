@@ -1,5 +1,5 @@
 import type { LongMemEvalQuestion } from './types.js';
-import type { CanonicalIngestEnvelope } from './daemon-client.js';
+import type { CanonicalIngestEnvelope } from '../../shared/daemon-client.js';
 import { parseLongMemEvalDate } from './dates.js';
 
 /** `project_id` isolates one question's haystack from every other question's

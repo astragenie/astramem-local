@@ -1,22 +1,28 @@
 /**
- * Standalone daemon spawn/health helper for the eval harness — deliberately
- * NOT importing tests/smoke/helpers/daemon.ts (that's test-only code; this
- * adapter is new files under scripts/, per the task's "do not modify
- * src/ or existing tests" scope). Same technique (ephemeral port 0, parse
- * the boot log line, poll /health) as that helper, independently.
+ * Standalone daemon spawn/health helper shared by every eval harness under
+ * scripts/eval/ (LongMemEval, LoCoMo, ...) — deliberately NOT importing
+ * tests/smoke/helpers/daemon.ts (that's test-only code; this adapter is new
+ * files under scripts/, per the task's "do not modify src/ or existing
+ * tests" scope). Same technique (ephemeral port 0, parse the boot log line,
+ * poll /health) as that helper, independently.
  *
- * CRITICAL isolation requirement discovered while building this harness
- * (2026-07-08): the real %APPDATA%\Astramem\sync.json on this machine is
- * PAIRED to the live production SaaS tenant (https://api.astramemory.com,
- * a real tenantId). `resolveRuntimeConfig` merges sync.json over config.yaml
- * regardless of ASTRA_MEMORY_DATADIR overrides — so spawning against the
- * real config dir with only the datadir swapped would have sync-shipped
- * every synthetic LongMemEval haystack session into the user's real cloud
- * account. This is why `makeIsolatedEvalEnv` below redirects
- * APPDATA/LOCALAPPDATA/HOME/XDG_* into a throwaway sandbox (same technique
- * as tests/smoke/helpers/daemon.ts's makeIsolatedDaemonEnv, independently
- * authored here) — a fresh config dir has no sync.json (sync defaults to
- * disabled, src/config/config.ts:198) and we explicitly force
+ * Extracted from scripts/eval/longmemeval/lib/spawn-daemon.ts to
+ * scripts/eval/shared/ (FEAT-457) so the LoCoMo harness reuses it verbatim
+ * instead of forking it — every eval harness needs this exact isolation
+ * fix, not a per-dataset variant.
+ *
+ * CRITICAL isolation requirement discovered while building the LongMemEval
+ * harness (2026-07-08): the real %APPDATA%\Astramem\sync.json on this
+ * machine is PAIRED to the live production SaaS tenant
+ * (https://api.astramemory.com, a real tenantId). `resolveRuntimeConfig`
+ * merges sync.json over config.yaml regardless of ASTRA_MEMORY_DATADIR
+ * overrides — so spawning against the real config dir with only the
+ * datadir swapped would have sync-shipped every synthetic eval session into
+ * the user's real cloud account. This is why `makeIsolatedEvalEnv` below
+ * redirects APPDATA/LOCALAPPDATA/HOME/XDG_* into a throwaway sandbox (same
+ * technique as tests/smoke/helpers/daemon.ts's makeIsolatedDaemonEnv,
+ * independently authored here) — a fresh config dir has no sync.json (sync
+ * defaults to disabled, src/config/config.ts:198) and we explicitly force
  * `security.encryption.enabled: false` (same as that test helper) so boot
  * never touches the real OS credential store either. `defaultConfig()`
  * already points llm/embedding at the real local Ollama models
@@ -29,9 +35,9 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { defaultConfigDir } from '../../../../src/config/datadir.js';
+import { defaultConfigDir } from '../../../src/config/datadir.js';
 
-export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
+export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
 export interface IsolatedEvalEnv {
   root: string;

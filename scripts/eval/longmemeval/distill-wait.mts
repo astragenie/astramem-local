@@ -12,7 +12,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { pathToFileURL } from 'node:url';
-import { sessionDigest, type DaemonClientOpts } from './lib/daemon-client.js';
+import { sessionDigest, type DaemonClientOpts } from '../shared/daemon-client.js';
 import type { IngestManifest } from './ingest.mts';
 
 export interface DistillWaitResult {
