@@ -47,8 +47,28 @@ const GENERIC_COMPOUND_LABEL = '(?:secret|password|passwd|pwd)(?:_[A-Za-z0-9]+)+
  * `[:=]` as before, plus the PHP `=>` arrow as its own two-character
  * alternative (matching `[:=]` alone would consume only the `=` of `=>` and
  * wrongly leave a stray `>` at the start of the "value").
+ *
+ * FEAT-463 validation fix (MEDIUM, live-reproduced): the original
+ * alternation was `(?:=>|[:=])` — plain `[:=]` still matches a bare `=`
+ * even when it's actually the first character of an `=>` arrow. On
+ * `'DB_PASSWORD' => 'hunter2xx'`, the bare-value sibling entry (whose
+ * value pattern requires the value NOT start with a quote) tries `=>`
+ * first, fails past it (the real value IS quoted), and the regex engine
+ * then backtracks the alternation to `[:=]`, consuming only the `=` and
+ * leaving `>` unconsumed — `>` isn't a quote, so the bare-value entry's
+ * `(?!["'])` guard passes and `(\S+)` greedily captures the stray `>`
+ * alone as a bogus one-character "secret", corrupting the arrow in the
+ * output and inflating the redaction-log count. `=(?!>)` closes this: a
+ * bare `=` is only allowed to match when it is NOT immediately followed by
+ * `>` — when it is, the ONLY way to consume it is via the whole `=>`
+ * alternative, which the bare-value entry's own value pattern then
+ * correctly rejects (a quoted value follows), so that entry produces no
+ * match at all for this input, exactly as intended. Does not affect a
+ * genuine bare-value-after-arrow shape (`'DB_PASSWORD' => hunter2xx`,
+ * unquoted value): `=>` matches whole and the bare-value pattern succeeds
+ * directly, no backtracking involved.
  */
-const QUOTED_LABEL_SEP = `["']\\s*(?:=>|[:=])\\s*`;
+const QUOTED_LABEL_SEP = `["']\\s*(?:=>|:|=(?!>))\\s*`;
 
 /** Rejects purely-numeric or boolean-literal values (config knobs, not secrets). */
 function rejectNumericOrBooleanLiteral(value: string): boolean {

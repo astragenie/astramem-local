@@ -22,6 +22,16 @@ interface TruePositiveCase {
   type: string;
   /** Raw secret substring that must NOT survive in the output. */
   secret: string;
+  /**
+   * Total number of redaction events the input must produce — defaults to
+   * 1. FEAT-463 validation fix: a spurious extra match (e.g. the `=>`
+   * arrow-backtracking bug, detectors.ts `QUOTED_LABEL_SEP`) can leave the
+   * expected secret redacted and hide from a placeholder-presence-only
+   * check while still corrupting output and inflating the redaction log —
+   * asserting the exact count catches that class where presence checks
+   * don't.
+   */
+  expectedEventCount?: number;
 }
 
 const AWS_KEY = 'AKIAHSDOZALWHS3EPALW';
@@ -212,6 +222,7 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     input: "'DB_PASSWORD' => 'hunter2'",
     type: 'generic_credential_quoted',
     secret: 'hunter2',
+    expectedEventCount: 1,
   },
   {
     name: 'quoted label (single quote) + bare value, trailing keyword token',
@@ -225,18 +236,98 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     type: 'generic_credential_quoted',
     secret: 'zzzz9999yyyy8888',
   },
+  // FEAT-463 validation fix (MEDIUM, live-reproduced): `=>` arrow-shape
+  // sweep across all 6 quoted-family entries. Each of these previously
+  // risked a spurious second match from a *sibling* entry backtracking the
+  // `(?:=>|[:=])` separator down to a bare `=`, leaving `>` unconsumed and
+  // captured as a bogus 1-char "secret" by the bare-value entry (root
+  // cause: detectors.ts `QUOTED_LABEL_SEP`). `expectedEventCount: 1`
+  // (explicit here, though it's the default) is the whole point of these
+  // fixtures — the secret being redacted was never in question; the bug
+  // hid from a placeholder-presence-only check.
+  {
+    name: 'arrow sweep: validator\'s exact live-repro string (single-quoted label + single-quoted value)',
+    input: "'DB_PASSWORD' => 'hunter2xx'",
+    type: 'generic_credential_quoted',
+    secret: 'hunter2xx',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: trailing family, double-quoted label + double-quoted value',
+    input: '"DB_PASSWORD" => "hunter2xx"',
+    type: 'generic_credential_quoted',
+    secret: 'hunter2xx',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: trailing family, single-quoted label + bare value',
+    input: "'DB_PASSWORD' => hunter2xxbare",
+    type: 'generic_credential_quoted',
+    secret: 'hunter2xxbare',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: compound family, double-quoted label + double-quoted value',
+    input: '"DJANGO_SECRET_KEY" => "abcdefgh1234"',
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: compound family, single-quoted label + single-quoted value',
+    input: "'DJANGO_SECRET_KEY' => 'abcdefgh1234'",
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'arrow sweep: compound family, single-quoted label + bare value',
+    input: "'SECRET_KEY' => abcdefgh1234bare",
+    type: 'generic_credential_quoted',
+    secret: 'abcdefgh1234bare',
+    expectedEventCount: 1,
+  },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
-  it.each(TRUE_POSITIVES)('$name -> type $type', ({ input, type, secret }) => {
+  it.each(TRUE_POSITIVES)('$name -> type $type', ({ input, type, secret, expectedEventCount }) => {
     const { text, events } = redactText(input);
     expect(text).not.toContain(secret);
     expect(events.some(e => e.type === type)).toBe(true);
     expect(text).toMatch(new RegExp(`\\[REDACTED:${type}:[0-9a-f]{8}\\]`));
+    // FEAT-463 validation fix: exact event count, not just placeholder
+    // presence — a spurious extra match hides from the checks above.
+    expect(events.length).toBe(expectedEventCount ?? 1);
   });
 
   it('covers at least 25 true-positive fixtures', () => {
     expect(TRUE_POSITIVES.length).toBeGreaterThanOrEqual(25);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEAT-463 validation fix: PHP `=>` arrow output integrity (MEDIUM,
+// live-reproduced by the validator — see detectors.ts QUOTED_LABEL_SEP).
+// The it.each count assertion above catches the spurious-event symptom;
+// these assert the specific, previously-corrupted output byte-for-byte.
+// ---------------------------------------------------------------------------
+
+describe('redactText — PHP array-arrow (=>) output integrity', () => {
+  it('exactly one event and the `=>` arrow survives byte-intact (validator\'s live repro)', () => {
+    const { text, events } = redactText("'DB_PASSWORD' => 'hunter2xx'");
+    expect(events.length).toBe(1);
+    expect(events[0]?.type).toBe('generic_credential_quoted');
+    expect(text).not.toContain('hunter2xx');
+    expect(text).toContain("'DB_PASSWORD' => '");
+    expect(text).not.toContain('=[REDACTED:'); // the corrupted-arrow shape from the bug
+    expect(text).toMatch(/^'DB_PASSWORD' => '\[REDACTED:generic_credential_quoted:[0-9a-f]{8}\]'$/);
+  });
+
+  it('arrow with an unquoted (bare) value also stays byte-intact', () => {
+    const { text, events } = redactText("'DB_PASSWORD' => hunter2xxbare");
+    expect(events.length).toBe(1);
+    expect(text).toContain("'DB_PASSWORD' => ");
+    expect(text).not.toContain('=[REDACTED:');
   });
 });
 
