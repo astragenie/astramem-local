@@ -1,9 +1,74 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { join } from 'node:path';
+import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { configToYaml, writeConfig } from '../../src/config/writer.js';
-import { defaultConfig } from '../../src/config/config.js';
+import { configToYaml, writeConfig, findMissingConfigKeys } from '../../src/config/writer.js';
+import { defaultConfig, type Config } from '../../src/config/config.js';
+import { loadConfigFromDisk } from '../../src/config/loader.js';
+import { logger } from '../../src/log/logger.js';
+
+/**
+ * FEAT-461 AC-1: a fully-populated `Config` built field-by-field with a
+ * non-default value for EVERY field (including `archival`,
+ * `ingestIdempotency`, `distill`, `memoryHealth`, `ingest`, and
+ * `consolidation.contradictionDetection` — the fields the original bug
+ * silently dropped). Deliberately NOT derived from `defaultConfig()` with
+ * fields mutated in place: a still-missing emitter block must not be able to
+ * round-trip "successfully" by accident (default in, default out).
+ */
+function buildFullyPopulatedConfig(): Config {
+  return {
+    port: 8765,
+    dataDir: 'C:\\custom\\astra-data',
+    network: { host: '0.0.0.0' },
+    llm: {
+      compaction: { provider: 'azure-openai', model: 'gpt-4o-compact' },
+      extraction: { provider: 'openai-compatible', model: 'gpt-4o-extract' },
+    },
+    embedding: { provider: 'azure-openai', model: 'text-embed-3-large', dim: 1536 },
+    vector: { store: 'lancedb' },
+    budget: { daily_usd: 42 },
+    ollama: { baseUrl: 'http://192.168.1.50:11434' },
+    azure: { endpoint: 'https://my.openai.azure.com', deployment: 'gpt41', apiVersion: '2025-01-01' },
+    openaiCompatible: { baseUrl: 'https://api.example.com/v1', apiKeyEnv: 'MY_CUSTOM_KEY_ENV' },
+    codexSubscription: { authPath: '/home/user/.codex/auth.json' },
+    search: {
+      alpha: 0.25, beta: 0.35, gamma: 0.15, delta: 0.05, epsilon: 0.2, zeta: 0.05, eta: 0.03,
+      governance: { maxComponentWeight: 0.8 },
+    },
+    crossEncoder: {
+      enabled: true, provider: 'http', topK: 77, timeoutMs: 450,
+      sidecarUrl: 'http://sidecar:8080/rerank', model: 'rerank-v2',
+    },
+    recallPack: {
+      enabled: true,
+      budgetTokens: 2200,
+      policy: { enabled: false, minScore: 0.35, minPromptChars: 20 },
+    },
+    sync: { enabled: true, url: 'https://sync.example.com', workspaceId: 'ws-123', batchSize: 500, intervalMs: 60_000 },
+    security: {
+      redaction: { enabled: false, entropyThreshold: 3.5, customPatterns: ['SECRET-\\d+', 'sk-[a-zA-Z0-9]{20,}'] },
+      encryption: { enabled: false },
+    },
+    tagHygiene: { tier2Enabled: true, tier2ConfidenceThreshold: 0.85 },
+    archival: { enabled: true, ageThresholdDays: 90, usefulnessFloor: 0.1 },
+    ingestIdempotency: { retentionDays: 14 },
+    pipeline: { concurrency: 4 },
+    consolidation: {
+      autoAcceptThreshold: 0.95,
+      contradictionDetection: { mode: 'enabled', minSimilarity: 0.5, minConfidence: 0.8, maxPerRun: 50 },
+    },
+    memoryHealth: { llmJudgedJunkSample: { enabled: true } },
+    ingest: { spoolMaxBytes: 1_048_576 },
+    distill: { durabilityGate: 'strict' },
+    capture: {
+      autoCapture: {
+        enabled: true,
+        relevanceGate: { minChars: 20, maxBytes: 131_072, dedupWindow: 40 },
+      },
+    },
+  };
+}
 
 // Wrap the real implementations in vi.fn() so every existing test keeps
 // hitting the real filesystem by default — only the tmp-cleanup tests below
@@ -135,5 +200,139 @@ describe('writeConfig tmp-file cleanup on failure', () => {
     expect(() => writeConfig(defaultConfig(), path)).toThrow('EPERM');
     const leftoverTmp = readdirSync(dir).filter((f) => f.endsWith('.tmp'));
     expect(leftoverTmp).toEqual([]);
+  });
+});
+
+// FEAT-461: configToYaml() silently dropped archival, ingestIdempotency,
+// distill, memoryHealth, ingest, and consolidation.contradictionDetection
+// (plus crossEncoder.model and security.redaction.customPatterns) on every
+// writeConfig() call — the loader deep-merges over defaultConfig(), so any
+// key the emitter failed to write silently reverted to its default on next
+// load. sync stays an intentional, documented exclusion (owned by
+// sync.json) throughout — not part of this bug.
+describe('FEAT-461: configToYaml emit completeness', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  // AC-1: exhaustive round-trip fidelity.
+  it('a fully-populated Config round-trips through writeConfig -> loadConfigFromDisk unchanged (except sync)', () => {
+    const cfg = buildFullyPopulatedConfig();
+    const path = tmpPath();
+    writeConfig(cfg, path);
+    const loaded = loadConfigFromDisk(dirname(path));
+
+    // Two pre-existing, documented, orthogonal exclusions from strict
+    // round-trip equality — neither is part of the FEAT-461 emit-completeness
+    // bug this test targets:
+    //  - sync: never written to config.yaml at all (owned by sync.json).
+    //  - search.eta: FEAT-428 fusion governance (applyFusionGovernance, run
+    //    by loadConfigFromDisk) forces any configured eta > 0 back to 0
+    //    unless a passing ADR-005 eval-harness run is recorded for it — a
+    //    real value here would never survive loadConfigFromDisk regardless
+    //    of whether the emitter wrote it correctly.
+    const { sync: loadedSync, search: loadedSearch, ...loadedRest } = loaded;
+    const { sync: cfgSync, search: cfgSearch, ...cfgRest } = cfg;
+    expect(loadedRest).toEqual(cfgRest);
+    expect(loadedSearch).toEqual({ ...cfgSearch, eta: 0 });
+
+    expect(loadedSync).toEqual(defaultConfig().sync);
+    expect(cfgSync).not.toEqual(defaultConfig().sync);
+  });
+
+  // AC-2: regression guard — a structural key-diff, not a fixed field list.
+  it('findMissingConfigKeys reports nothing for the current writer against a fully-populated Config (except sync)', () => {
+    const cfg = buildFullyPopulatedConfig();
+    const missing = findMissingConfigKeys(cfg, configToYaml(cfg));
+    expect(missing).toEqual([]);
+  });
+
+  it('findMissingConfigKeys catches a top-level Config field the emitter does not know about', () => {
+    // Simulates the exact regression this AC guards against: a new field
+    // added to the Config type that configToYaml isn't updated to emit.
+    const cfg = { ...defaultConfig(), futureField: { subKey: 'x' } } as unknown as Config;
+    const missing = findMissingConfigKeys(cfg, configToYaml(cfg));
+    expect(missing).toContain('futureField');
+  });
+
+  it('findMissingConfigKeys catches a nested field dropped inside an otherwise-emitted block', () => {
+    const cfg = defaultConfig() as unknown as Record<string, unknown>;
+    const withExtraNested = {
+      ...cfg,
+      consolidation: { ...(cfg['consolidation'] as Record<string, unknown>), futureNested: true },
+    } as unknown as Config;
+    const missing = findMissingConfigKeys(withExtraNested, configToYaml(withExtraNested));
+    expect(missing).toContain('consolidation.futureNested');
+  });
+
+  it('never flags the documented sync exclusion as missing', () => {
+    const missing = findMissingConfigKeys(defaultConfig(), configToYaml(defaultConfig()));
+    expect(missing).not.toContain('sync');
+  });
+
+  // AC-3: observability on incomplete emit.
+  it('logs a structured warning naming the missing keys when the emit is incomplete', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation((() => {}) as never);
+    const cfg = { ...defaultConfig(), futureField: 'x' } as unknown as Config;
+
+    configToYaml(cfg);
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ missingKeys: expect.arrayContaining(['futureField']) }),
+      expect.stringContaining('configToYaml: emitted config is missing known Config keys'),
+    );
+  });
+
+  it('does not warn when the emit is complete', () => {
+    const warnSpy = vi.spyOn(logger, 'warn').mockImplementation((() => {}) as never);
+    configToYaml(buildFullyPopulatedConfig());
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
+  // AC-4: defaulted-undefined sub-block does not throw and emits the default.
+  it('emits documented defaults instead of throwing when optional sub-blocks are undefined at emit time', () => {
+    const cfg = defaultConfig();
+    const degraded = {
+      ...cfg,
+      archival: undefined,
+      ingestIdempotency: undefined,
+      distill: undefined,
+      memoryHealth: undefined,
+      ingest: undefined,
+      consolidation: { ...cfg.consolidation, contradictionDetection: undefined },
+    } as unknown as Config;
+
+    let yaml = '';
+    expect(() => { yaml = configToYaml(degraded); }).not.toThrow();
+
+    const defaults = defaultConfig();
+    expect(yaml).toContain(`ageThresholdDays: ${defaults.archival.ageThresholdDays}`);
+    expect(yaml).toContain(`retentionDays: ${defaults.ingestIdempotency.retentionDays}`);
+    expect(yaml).toContain(`durabilityGate: ${defaults.distill.durabilityGate}`);
+    expect(yaml).toContain(`spoolMaxBytes: ${defaults.ingest.spoolMaxBytes}`);
+    expect(yaml).toContain(`mode: ${defaults.consolidation.contradictionDetection.mode}`);
+  });
+
+  // AC-5: no behavior change for existing valid configs.
+  it('emits byte-identical YAML for the blocks already covered before this fix, for a default Config', () => {
+    const yaml = configToYaml(defaultConfig());
+    // Spot-check every block the pre-FEAT-461 emitter already covered
+    // correctly, unchanged in shape/value by this patch.
+    expect(yaml).toContain('port: 7777');
+    expect(yaml).toContain("  host: '127.0.0.1'"); // quoted: yamlScalar quotes leading-digit strings
+    expect(yaml).toContain('  provider: ollama');
+    expect(yaml).toContain('  store: sqlite-vec');
+    expect(yaml).toContain('  daily_usd: 10');
+    expect(yaml).toContain('  alpha: 0.4');
+    expect(yaml).toContain('  tier2Enabled: false');
+    expect(yaml).toContain('  concurrency: 1');
+    expect(yaml).toContain('autoAcceptThreshold: null');
+    expect(yaml).toContain('  enabled: false'); // capture.autoCapture.enabled (default)
+  });
+
+  it('never emits a sync: block — the exclusion is intentional, not something a generic emitter can regress', () => {
+    const yaml = configToYaml(buildFullyPopulatedConfig());
+    // 'sync' should never appear as a top-level YAML key (indent 0, own line).
+    expect(yaml).not.toMatch(/^sync:/m);
   });
 });

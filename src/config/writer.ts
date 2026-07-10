@@ -3,12 +3,18 @@
  *
  * No external yaml package required. The Config shape is flat enough that
  * a purpose-built emitter is both simpler and faster to load than a full
- * YAML library. Add the `yaml` package when Config grows nested lists.
+ * YAML library — the one list field (`security.redaction.customPatterns`)
+ * is handled as a flow-sequence via `arrayLine` below, not a real YAML
+ * parser. Add the `yaml` package if Config ever needs nested lists of
+ * objects, multi-line strings, or anchors.
  */
 
 import { writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import type { Config } from './config.js';
+import { defaultConfig } from './config.js';
+import { parseConfigYaml } from './loader.js';
+import { logger } from '../log/logger.js';
 
 /** Emit a scalar value as a YAML-safe string (no quoting for safe values). */
 function yamlScalar(v: unknown): string {
@@ -34,6 +40,65 @@ function line(indent: number, key: string, value?: unknown): string {
   const pad = '  '.repeat(indent);
   if (value === undefined) return `${pad}${key}:`;
   return `${pad}${key}: ${yamlScalar(value)}`;
+}
+
+/**
+ * Emit a string[] as a YAML flow-sequence (FEAT-461, security.redaction.
+ * customPatterns). `JSON.stringify` of a string array is already valid YAML
+ * flow-sequence syntax, so this doubles as the round-trip counterpart of
+ * `parseConfigYaml`'s `[...]` handling in loader.ts — no separate quoting
+ * rules to keep in sync.
+ */
+function arrayLine(indent: number, key: string, value: readonly string[]): string {
+  const pad = '  '.repeat(indent);
+  return `${pad}${key}: ${JSON.stringify(value)}`;
+}
+
+/**
+ * FEAT-461 regression guard: module-level fallback values for fields that
+ * may be `undefined` at emit time despite `Config` marking them required —
+ * e.g. an in-memory Config assembled by older code, or a partial object a
+ * caller built before a newer field's default existed (AC-4). Computed once;
+ * `configToYaml` reads from here instead of throwing a `TypeError` on `cfg.x.y`.
+ */
+const EMIT_DEFAULTS = defaultConfig();
+
+/**
+ * Structural key-diff between a `Config` object and the YAML actually
+ * emitted for it: top-level keys, plus one level of nesting for
+ * object-valued top-level fields. `sync` is the one documented, intentional
+ * exclusion (writer.ts below — owned by sync.json, merged separately at
+ * boot). Backs both the AC-2 regression-guard test (tests/config/writer.test.ts)
+ * and the AC-3 runtime warning in `configToYaml` below — a future `Config`
+ * field that isn't wired into the emitter shows up here immediately instead
+ * of silently reverting to its default on next load (see loader.ts's
+ * deep-merge-over-defaults doc comment for why that revert is silent).
+ */
+const SYNC_EXCLUSION = new Set(['sync']);
+
+export function findMissingConfigKeys(cfg: Config, emittedYaml: string): string[] {
+  const parsed = parseConfigYaml(emittedYaml) as Record<string, unknown>;
+  const missing: string[] = [];
+  for (const [key, value] of Object.entries(cfg as unknown as Record<string, unknown>)) {
+    if (SYNC_EXCLUSION.has(key)) continue;
+    if (!(key in parsed)) {
+      missing.push(key);
+      continue;
+    }
+    if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
+      const parsedChild = parsed[key];
+      if (parsedChild === null || typeof parsedChild !== 'object' || Array.isArray(parsedChild)) {
+        missing.push(key);
+        continue;
+      }
+      for (const nestedKey of Object.keys(value as Record<string, unknown>)) {
+        if (!(nestedKey in (parsedChild as Record<string, unknown>))) {
+          missing.push(`${key}.${nestedKey}`);
+        }
+      }
+    }
+  }
+  return missing;
 }
 
 /**
@@ -101,6 +166,11 @@ export function configToYaml(cfg: Config): string {
     line(1, 'epsilon', cfg.search.epsilon),
     line(1, 'zeta', cfg.search.zeta),
     line(1, 'eta', cfg.search.eta),
+    // FEAT-428 governance ceiling — also dropped pre-FEAT-461 (missed by the
+    // original bug report's own field list; caught by the AC-1 exhaustive
+    // round-trip test instead).
+    line(1, 'governance'),
+    line(2, 'maxComponentWeight', cfg.search.governance.maxComponentWeight),
     '',
     // Cross-encoder rerank stage (issue #26, ADR-005) — OFF by default. See
     // docs/runbooks/cross-encoder-rerank.md before flipping `enabled: true`.
@@ -110,6 +180,7 @@ export function configToYaml(cfg: Config): string {
     line(1, 'topK', cfg.crossEncoder.topK),
     line(1, 'timeoutMs', cfg.crossEncoder.timeoutMs),
     ...(cfg.crossEncoder.sidecarUrl ? [line(1, 'sidecarUrl', cfg.crossEncoder.sidecarUrl)] : []),
+    ...(cfg.crossEncoder.model ? [line(1, 'model', cfg.crossEncoder.model)] : []),
     '',
     line(0, 'recallPack'),
     line(1, 'enabled', cfg.recallPack.enabled),
@@ -125,6 +196,7 @@ export function configToYaml(cfg: Config): string {
     line(1, 'redaction'),
     line(2, 'enabled', cfg.security.redaction.enabled),
     line(2, 'entropyThreshold', cfg.security.redaction.entropyThreshold),
+    arrayLine(2, 'customPatterns', cfg.security.redaction.customPatterns ?? EMIT_DEFAULTS.security.redaction.customPatterns),
     line(1, 'encryption'),
     line(2, 'enabled', cfg.security.encryption.enabled),
     '',
@@ -140,8 +212,45 @@ export function configToYaml(cfg: Config): string {
     // Autonomous consolidation auto-accept (FEAT-442) — null (default) is
     // OFF, byte-identical to pre-FEAT-442 propose/accept. See
     // Config['consolidation'] doc comment before setting a value.
+    // contradictionDetection (FEAT-456 SLICE-1) added under FEAT-461 — the
+    // whole sub-block was previously dropped on every writeConfig() call.
     line(0, 'consolidation'),
     line(1, 'autoAcceptThreshold', cfg.consolidation.autoAcceptThreshold),
+    line(1, 'contradictionDetection'),
+    line(2, 'mode', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).mode),
+    line(2, 'minSimilarity', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).minSimilarity),
+    line(2, 'minConfidence', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).minConfidence),
+    line(2, 'maxPerRun', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxPerRun),
+    '',
+    // Memory TTL / archival tiers (FEAT-404) — previously dropped on every
+    // writeConfig() call (FEAT-461). enabled: false (default) is OFF.
+    line(0, 'archival'),
+    line(1, 'enabled', (cfg.archival ?? EMIT_DEFAULTS.archival).enabled),
+    line(1, 'ageThresholdDays', (cfg.archival ?? EMIT_DEFAULTS.archival).ageThresholdDays),
+    line(1, 'usefulnessFloor', (cfg.archival ?? EMIT_DEFAULTS.archival).usefulnessFloor),
+    '',
+    // ingest_idempotency row retention (FEAT-432) — previously dropped on
+    // every writeConfig() call (FEAT-461).
+    line(0, 'ingestIdempotency'),
+    line(1, 'retentionDays', (cfg.ingestIdempotency ?? EMIT_DEFAULTS.ingestIdempotency).retentionDays),
+    '',
+    // Distillation durability quality gate (FEAT-441) — previously dropped on
+    // every writeConfig() call (FEAT-461). 'off' (default) is byte-identical
+    // to pre-FEAT-441 behavior.
+    line(0, 'distill'),
+    line(1, 'durabilityGate', (cfg.distill ?? EMIT_DEFAULTS.distill).durabilityGate),
+    '',
+    // Memory-health score (FEAT-444) — previously dropped on every
+    // writeConfig() call (FEAT-461). enabled: false (default) makes
+    // estimateLlmJudgedJunk() a no-op, see Config['memoryHealth'] doc comment.
+    line(0, 'memoryHealth'),
+    line(1, 'llmJudgedJunkSample'),
+    line(2, 'enabled', (cfg.memoryHealth ?? EMIT_DEFAULTS.memoryHealth).llmJudgedJunkSample.enabled),
+    '',
+    // Durable ingest spool (FEAT-449) — previously dropped on every
+    // writeConfig() call (FEAT-461).
+    line(0, 'ingest'),
+    line(1, 'spoolMaxBytes', (cfg.ingest ?? EMIT_DEFAULTS.ingest).spoolMaxBytes),
     '',
     // Automatic memory capture (FEAT-455, ADR-012) — enabled: false (default)
     // is byte-identical to pre-FEAT-455 behavior. Only ever flipped to true
@@ -156,7 +265,17 @@ export function configToYaml(cfg: Config): string {
     line(3, 'dedupWindow', cfg.capture.autoCapture.relevanceGate.dedupWindow),
     '',
   ];
-  return lines.join('\n');
+  const yaml = lines.join('\n');
+
+  // AC-3: a future Config field not wired into the blocks above must surface
+  // immediately, not silently revert to its default on next load (the bug
+  // this FEAT fixes). Non-fatal — writeConfig must never fail because of it.
+  const missingKeys = findMissingConfigKeys(cfg, yaml);
+  if (missingKeys.length > 0) {
+    logger.warn({ missingKeys }, 'configToYaml: emitted config is missing known Config keys');
+  }
+
+  return yaml;
 }
 
 /**

@@ -49,6 +49,19 @@ function parseScalar(raw: string): unknown {
   if (v === 'false') return false;
   if (v === 'null' || v === '~') return null;
   if (/^-?\d+(\.\d+)?$/.test(v)) return Number(v);
+  // FEAT-461: flow-style array (writer.ts emits string[] fields, e.g.
+  // security.redaction.customPatterns, as a JSON array literal — valid YAML
+  // flow-sequence syntax for the string case, so a plain JSON.parse round-
+  // trips it). Falls through to the plain-string case below on parse failure
+  // rather than throwing — malformed input must not block config load.
+  if (v.startsWith('[') && v.endsWith(']')) {
+    try {
+      const parsed: unknown = JSON.parse(v);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // not valid JSON — treat as an opaque string, same as any other value
+    }
+  }
   return v;
 }
 
