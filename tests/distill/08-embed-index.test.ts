@@ -200,6 +200,59 @@ describe('embedAndIndex stage', () => {
     expect(count).toBe(1);
   });
 
+  // FEAT-453 AC-4 — a stated validity hint on an extracted entity is parsed
+  // to epoch ms and lands on the memory_entities row via linkWithValidity.
+  it('AC-4: an entity with a stated valid_at/invalid_at hint links with the parsed window', async () => {
+    const embed = makeMockEmbed();
+    const mems = [
+      normalizedMem('Alice was the approver from January to March', 's'.repeat(64), 0.7, [
+        { name: 'Alice', kind: 'actor', subtype: 'human', valid_at: '2026-01-01T00:00:00.000Z', invalid_at: '2026-03-01T00:00:00.000Z' },
+      ]),
+    ];
+
+    const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+      { valid_at: number | null; invalid_at: number | null };
+    expect(row.valid_at).toBe(Date.parse('2026-01-01T00:00:00.000Z'));
+    expect(row.invalid_at).toBe(Date.parse('2026-03-01T00:00:00.000Z'));
+  });
+
+  // FEAT-453 AC-5 — no stated hint links with valid_at/invalid_at both NULL
+  // (never defaulted to captured_at/now), resolving to the parent memory's
+  // own valid_from at query time (design doc §3.1).
+  it('AC-5: an entity with no stated validity hint links with valid_at/invalid_at both NULL', async () => {
+    const embed = makeMockEmbed();
+    const mems = [
+      normalizedMem('Bob is mentioned with no stated date', 't'.repeat(64), 0.7, [
+        { name: 'Bob', kind: 'actor', subtype: 'human' },
+      ]),
+    ];
+
+    const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+      { valid_at: number | null; invalid_at: number | null };
+    expect(row.valid_at).toBeNull();
+    expect(row.invalid_at).toBeNull();
+  });
+
+  it('an unparseable validity hint falls back to NULL rather than throwing', async () => {
+    const embed = makeMockEmbed();
+    const mems = [
+      normalizedMem('a fact with a garbage date hint', 'u'.repeat(64), 0.7, [
+        { name: 'Carol', kind: 'actor', valid_at: 'not-a-date' },
+      ]),
+    ];
+
+    const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+      { valid_at: number | null; invalid_at: number | null };
+    expect(row.valid_at).toBeNull();
+    expect(row.invalid_at).toBeNull();
+  });
+
   // FEAT-441: durability quality gate wired as a second continue-style filter
   // at the real persist site, same ordering position as the ADR-006
   // erasure-replay filter immediately above it in 08-embed-index.ts.

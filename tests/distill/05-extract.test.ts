@@ -254,4 +254,61 @@ describe('extract stage', () => {
     // fails the atom, matching the existing "drop malformed atoms silently" behavior.
     expect(result.atoms).toEqual([]);
   });
+
+  // FEAT-453 AC-4 — a stated valid_at/invalid_at hint on an entities[] item
+  // round-trips through AtomEntitySchema validation unchanged.
+  it('parses valid_at/invalid_at hints emitted alongside an entity', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const withValidity = JSON.stringify({
+      atoms: [
+        {
+          type: 'fact',
+          text: 'Alice was the approver from January to March',
+          importance: 0.6,
+          confidence: 0.8,
+          entities: [{
+            name: 'Alice', kind: 'actor', subtype: 'human',
+            valid_at: '2026-01-01T00:00:00.000Z',
+            invalid_at: '2026-03-01T00:00:00.000Z',
+          }],
+        },
+      ],
+    });
+    const llm = makeMockLLM([withValidity]);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0].entities).toEqual([{
+      name: 'Alice', kind: 'actor', subtype: 'human',
+      valid_at: '2026-01-01T00:00:00.000Z',
+      invalid_at: '2026-03-01T00:00:00.000Z',
+    }]);
+  });
+
+  // FEAT-453 AC-5 — omitting valid_at/invalid_at (the "no stated hint" case)
+  // still validates and leaves both fields absent, not defaulted.
+  it('an entity with no stated validity hint parses with valid_at/invalid_at both absent', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const noHint = JSON.stringify({
+      atoms: [
+        {
+          type: 'fact',
+          text: 'Bob is mentioned with no stated date',
+          importance: 0.4,
+          confidence: 0.6,
+          entities: [{ name: 'Bob', kind: 'actor', subtype: 'human' }],
+        },
+      ],
+    });
+    const llm = makeMockLLM([noHint]);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0].entities?.[0].valid_at).toBeUndefined();
+    expect(result.atoms[0].entities?.[0].invalid_at).toBeUndefined();
+  });
 });
