@@ -1,13 +1,13 @@
 ---
 id: FEAT-462
-status: triaged
+status: in-progress
 priority: P1
 category: infra
 target_release: null
 created: 2026-07-10
 updated: 2026-07-10
 depends_on: []
-slices: [SLICE-422]
+slices: [SLICE-422, SLICE-423]
 derived_from: 2026-07-10 eval-death post-mortems (3 failed LongMemEval runs)
 cross_product: [astramem-local]
 pm_user_value: 0.55

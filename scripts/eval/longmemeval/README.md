@@ -325,6 +325,122 @@ assumes.
   overwrites `<hyp>.eval-results-<judge>` — re-running re-judges everything,
   it does not skip already-judged rows.
 
+## Detached execution, status, and the PID/port manifest (FEAT-462 slice B)
+
+Two of the three eval deaths this FEAT was filed over (CLAUDE.md's Do-NOT
+section, this repo's own `docs/eval/`... post-mortems) were the invoking
+terminal/session ending, not the daemon itself crashing. `--detach` and the
+PID/port manifest close that gap:
+
+```powershell
+# Launches, prints the orchestrator pid + where to check on it, then THIS
+# invocation exits immediately -- the real work continues in a detached
+# child process, surviving this terminal closing.
+bun scripts/eval/longmemeval/run-smoke.mts --detach --shards 2 --n 50
+
+# From any later session, on this same machine:
+bun scripts/eval/longmemeval/run-smoke.mts --status .eval-data/longmemeval/runs/<timestamp>
+```
+
+- **Mechanism**: a plain `child_process.spawn(..., { detached: true }).unref()`
+  re-invocation of this same script with the same args (`--run-dir` pinned
+  explicitly so the child lands on the exact run dir the parent already
+  committed to), stdio redirected to `<run-dir>/detached-stdout.log` /
+  `detached-stderr.log`. **Not** the `AstraMemoryD` schtasks-keepalive
+  pattern this FEAT's body cites as a reference point — schtasks solves a
+  different problem (surviving a full OS reboot, needed for a long-lived
+  service) that this harness doesn't have; `detached: true` + `unref()`
+  already survives the terminal/session ending on both Windows and POSIX
+  with zero OS-specific registration and nothing left to clean up
+  afterward. Implementation: `../shared/detach.ts`.
+- **`run-status.json`** is written into the run dir on EVERY invocation,
+  `--detach` or not (same additive-file precedent as `ingest-ledger.jsonl` /
+  `run-params.json`): `status` (running/completed/failed), `phase`,
+  `orchestrator_pid`, `detached`, `started_at`/`updated_at`,
+  `sessions_done`/`sessions_total`. Updated at phase transitions
+  (starting/sampling/ingesting/completed/failed) and periodically
+  (throttled to every 2s) as ingest progresses across all shards. Read it
+  yourself or via `--status <run-dir>`. Implementation: `../shared/run-status.ts`.
+- **`daemon-manifest.json`** is written into the run dir every time a shard
+  daemon's boot log reports its bound port — one `{ shard, label, pid, port,
+  datadir }` entry per daemon, always on (same additive-file precedent).
+  This is the scoped-kill target CLAUDE.md's Do-NOT section calls for
+  ("kill only PIDs you spawned", never a machine-wide `taskkill`/image-name
+  sweep): `../shared/kill-run.mts` reads this file and signals only these
+  PIDs. Killing a daemon this way and then `--resume`-ing the run works
+  exactly like killing it any other way (proven in
+  `../longmemeval/detach-kill-resume.test.ts`) — the manifest doesn't change
+  resume semantics, it only scopes the kill.
+- **PID-reuse guard**: `killManifestDaemons` (`../shared/daemon-manifest.ts`)
+  does **not** trust the manifest's recorded pid blindly — before signaling,
+  it confirms via the OS itself (`netstat -ano` on Windows, `lsof` on
+  POSIX) that the recorded `port` is *still* bound by *that exact* pid. A
+  dead daemon's pid can be silently reused by the OS for an unrelated
+  process on a long-running, multi-tenant box (this repo's own CLAUDE.md:
+  "this box runs the production daemon, eval shard daemons, Ollama, and
+  sibling agents' processes") — that's precisely the shape of the
+  2026-07-10 incident CLAUDE.md's Do-NOT section already records, just via
+  PID reuse instead of an image-name sweep. Skip-by-default: a port that
+  isn't listening (`already-dead`), a port owned by a different pid
+  (`skipped-identity-mismatch`), or the check itself failing (also
+  `skipped-identity-mismatch`, treated as "can't verify") all result in
+  **no signal being sent** — there is no force flag. Every call returns a
+  per-entry outcome (`{ shard, label, pid, port, action, detail }`) so the
+  operator sees exactly what happened to each daemon, not just an aggregate
+  count.
+
+## "My detached run looks stuck" — operator playbook
+
+Concrete steps if a `--detach`'d run hasn't produced output in a while and
+you're not sure whether it's still working or dead. Windows-first (this
+box); the same `bun`/PowerShell commands work under WSL or a POSIX shell
+with `pwsh`-style quoting adjusted.
+
+1. **Check `--status` first.**
+   ```powershell
+   bun scripts/eval/longmemeval/run-smoke.mts --status .eval-data/longmemeval/runs/<timestamp>
+   ```
+   Look at `phase` and `updated_at`. If `updated_at` is recent (within the
+   last couple of minutes, given the ~2s throttled-flush interval during
+   ingest), it's still alive — just slow (see "Throughput" below for why a
+   real run can take hours). If `updated_at` is stale (many minutes with no
+   movement) and `phase` never reached `completed`/`failed`, treat it as
+   stuck.
+2. **Look at the raw files if you want more detail than `--status` prints.**
+   ```powershell
+   Get-Content .eval-data\longmemeval\runs\<timestamp>\run-status.json
+   Get-Content .eval-data\longmemeval\runs\<timestamp>\daemon-manifest.json
+   Get-Content .eval-data\longmemeval\runs\<timestamp>\detached-stdout.log -Tail 40
+   Get-Content .eval-data\longmemeval\runs\<timestamp>\detached-stderr.log -Tail 40
+   ```
+   `daemon-manifest.json` lists every shard daemon's `{pid, port, datadir}`
+   — you can also independently confirm liveness yourself:
+   ```powershell
+   netstat -ano | findstr :<port>   # is the recorded port still listening, and by which pid?
+   ```
+3. **Kill it — scoped, never a machine-wide sweep.**
+   ```powershell
+   bun scripts/eval/shared/kill-run.mts .eval-data/longmemeval/runs/<timestamp>
+   ```
+   This signals only the PIDs `daemon-manifest.json` records, and only
+   after confirming (via the PID-reuse guard above) each one is still
+   genuinely listening on its recorded port. It prints one outcome line per
+   daemon (`killed` / `already-dead` / `skipped-identity-mismatch` — the
+   last one means it refused to signal something it couldn't confirm was
+   safe; investigate manually with `netstat`/Task Manager before assuming
+   it's safe to force anything, there is no `--force` flag in this slice)
+   and, if anything was actually killed, updates `run-status.json` to
+   `failed` so the next `--status` check reflects reality instead of a
+   stale `running`.
+4. **Resume once you're ready.**
+   ```powershell
+   bun scripts/eval/longmemeval/run-smoke.mts --resume .eval-data/longmemeval/runs/<timestamp> \
+     --n 50 --seed 42 --shards 2 --detach
+   ```
+   Same `--dataset`/`--seed`/`--n`/`--shards` flags as the original
+   invocation (see "Resume behavior" above) — add `--detach` again if you
+   want the resumed run to also survive this terminal closing.
+
 ## Isolation — why the eval daemon does NOT use your real config dir
 
 **Do not remove this isolation.** While building this harness we spawned a
