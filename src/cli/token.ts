@@ -3,9 +3,17 @@
  *
  * Generates a fresh 32-byte (64 hex char) random Bearer token, stores it in
  * the OS credential store (SEC-10), and prints the `export MEMORY_BEARER=...`
- * line so the user can paste it. secrets.env is written ONLY as a fallback
- * when the credential store is unavailable (mode 0600 on Unix) — mirrors the
- * db-key degradation pattern in storage/keystore.ts.
+ * line so the user can paste it.
+ *
+ * secrets.env ALWAYS gets the new MEMORY_BEARER= line, regardless of
+ * whether the OS-store write also succeeded (review fix-round decision,
+ * FEAT-466: secrets.env is unconditionally authoritative for the bearer —
+ * see storage/keystore.ts's bearer-section header for the rollback
+ * rationale). rotateToken() also write-throughs the rotated token into the
+ * LEGACY unscoped OS-credential-store identity (not just the new scoped
+ * one) so a `reinstall --rollback` to a pre-FEAT-466 binary — which reads
+ * only that legacy identity — picks up the current token instead of a
+ * stale one.
  */
 
 import { randomBytes } from 'node:crypto';
@@ -28,10 +36,14 @@ export function generateToken(): string {
  *
  * @param secretsPath - Absolute path to secrets.env. Defaults to
  *   `defaultConfigDir()/secrets.env`.
+ * @param configDir - Config dir used to scope the OS credential-store
+ *   identity (FEAT-466). Defaults to `defaultConfigDir()`. Tests pass a tmp
+ *   dir here to keep the stubbed Entry's scoped key isolated per test.
  * @returns The new Bearer token string (64 hex chars).
  */
-export function rotateToken(secretsPath?: string): string {
+export function rotateToken(secretsPath?: string, configDir?: string): string {
   const path = secretsPath ?? join(defaultConfigDir(), 'secrets.env');
+  const dir = configDir ?? defaultConfigDir();
   const newToken = generateToken();
 
   // Preserve any existing azure keys from the current secrets.env.
@@ -53,12 +65,15 @@ export function rotateToken(secretsPath?: string): string {
     }
   }
 
-  // SEC-10: try the OS credential store first; only fall back to writing the
-  // bearer into secrets.env when the store is unavailable. Azure keys (if
-  // any) are unaffected — they still live in secrets.env regardless.
-  const { stored } = storeBearer(newToken);
+  // SEC-10 + FEAT-466 review fix-round: store in the OS credential store
+  // (scoped identity, with a write-through into the legacy identity so a
+  // rollback to a pre-FEAT-466 binary doesn't resolve a stale bearer), AND
+  // always write MEMORY_BEARER= into secrets.env regardless of whether the
+  // OS-store write succeeded — secrets.env is unconditionally authoritative
+  // for the bearer now. Azure keys (if any) are unaffected either way.
+  storeBearer(newToken, dir, { writeThroughLegacy: true });
   writeSecrets(
-    { bearer: stored ? undefined : newToken, azureKey, azureEndpoint, azureDeployment },
+    { bearer: newToken, azureKey, azureEndpoint, azureDeployment },
     path,
   );
   return newToken;

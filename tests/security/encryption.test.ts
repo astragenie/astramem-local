@@ -274,6 +274,87 @@ describe('keystore: getOrCreateKey provider chain', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// FEAT-466: db-key scoped identity per configDir (AC-1) + legacy
+// read-fallback (AC-2) — the same collision-proofing as the bearer, applied
+// to getOrCreateKey().
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('keystore: getOrCreateKey scoped identity (FEAT-466)', () => {
+  function stubStore(): Map<string, string> {
+    const store = new Map<string, string>();
+    __setEntryCtorForTests(class {
+      private key: string;
+      constructor(service: string, account: string) {
+        this.key = `${service}:${account}`;
+      }
+      getPassword(): string | null {
+        return store.get(this.key) ?? null;
+      }
+      setPassword(p: string): void {
+        store.set(this.key, p);
+      }
+      deleteCredential(): boolean {
+        return store.delete(this.key);
+      }
+      deletePassword(): boolean {
+        return store.delete(this.key);
+      }
+    } as unknown as typeof Entry);
+    return store;
+  }
+
+  it('two distinct configDirs write to independent scoped identities — neither clobbers the other (incident-class regression, AC-1)', () => {
+    const store = stubStore();
+    const configA = mkTmpDir('astramem-enc-scope-a-');
+    const configB = mkTmpDir('astramem-enc-scope-b-');
+
+    const keyA = getOrCreateKey(configA);
+    const keyB = getOrCreateKey(configB);
+
+    expect(keyA.source).toBe('credential-store');
+    expect(keyA.identity).toBe('scoped');
+    expect(keyB.source).toBe('credential-store');
+    expect(keyB.identity).toBe('scoped');
+    expect(keyA.key).not.toBe(keyB.key);
+
+    // Re-reading each configDir returns its own key, unaffected by the other.
+    expect(getOrCreateKey(configA).key).toBe(keyA.key);
+    expect(getOrCreateKey(configB).key).toBe(keyB.key);
+    // Neither write landed on the legacy unscoped key.
+    expect(store.has('astramem-local:db-key')).toBe(false);
+    expect(store.size).toBe(2);
+  });
+
+  it('reads fall back read-only to the legacy unscoped identity for pre-FEAT-466 installs (AC-2)', () => {
+    const store = stubStore();
+    store.set('astramem-local:db-key', 'legacy-key-hex'); // simulates a pre-FEAT-466 write
+
+    const configDir = mkTmpDir('astramem-enc-legacy-fallback-');
+    const result = getOrCreateKey(configDir);
+
+    expect(result).toEqual({ key: 'legacy-key-hex', source: 'credential-store', identity: 'legacy' });
+    // Read-only: no scoped entry was minted as a side effect of the fallback read.
+    expect(store.size).toBe(1);
+  });
+
+  it('once the scoped identity is populated, it takes priority over a stale legacy entry', () => {
+    const store = stubStore();
+    store.set('astramem-local:db-key', 'legacy-key-hex');
+    const configDir = mkTmpDir('astramem-enc-scoped-wins-');
+
+    // Force a scoped write by deleting the legacy entry first, then
+    // restoring it — simplest way to prove scoped-read-wins without
+    // reaching into the module's private hash function.
+    store.delete('astramem-local:db-key');
+    const minted = getOrCreateKey(configDir); // mints under the scoped identity
+    store.set('astramem-local:db-key', 'legacy-key-hex'); // legacy entry reappears
+
+    const result = getOrCreateKey(configDir);
+    expect(result).toEqual({ key: minted.key, source: 'credential-store', identity: 'scoped' });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // AC-6 (SEC-9): encryption disabled -> plaintext
 // ─────────────────────────────────────────────────────────────────────────
 

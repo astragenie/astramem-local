@@ -734,14 +734,21 @@ export async function init(argv: string[] = []): Promise<void> {
   writeConfig(cfg, configPath);
   if (!nonInteractive) console.log(`\n  ✓ config.yaml written to ${configPath}`);
 
-  // 6. Generate bearer + store it (SEC-10: credential store first, secrets.env
-  //    ONLY as fallback when the store is unavailable — mirrors keystore.ts).
+  // 6. Generate bearer + store it. SEC-10 + FEAT-466 review fix-round:
+  //    store in the OS credential store (scoped identity only — init does
+  //    NOT write-through the legacy identity; that write-through is
+  //    reserved for token.ts's rotateToken(), since a sandboxed/test init
+  //    touching the legacy identity is the exact mechanism that caused the
+  //    original 2026-07-10 incident this FEAT closes). secrets.env ALWAYS
+  //    gets MEMORY_BEARER= regardless of whether the OS-store write also
+  //    succeeded — secrets.env is unconditionally authoritative for the
+  //    bearer now (see keystore.ts's bearer-section header).
   const secretsPath = join(configDir, 'secrets.env');
   const bearer = generateToken();
-  const { stored } = storeBearer(bearer);
+  const { stored } = storeBearer(bearer, configDir);
   writeSecrets(
     {
-      bearer: stored ? undefined : bearer,
+      bearer,
       azureKey: answers.azureApiKey,
       azureEndpoint: answers.azureEndpoint,
       azureDeployment: answers.azureDeployment,
@@ -753,7 +760,7 @@ export async function init(argv: string[] = []): Promise<void> {
   if (!nonInteractive) {
     console.log(
       stored
-        ? `  ✓ bearer token stored in OS credential store`
+        ? `  ✓ bearer token stored in OS credential store (and secrets.env, kept authoritative)`
         : `  ✓ secrets.env written to ${secretsPath} (mode 0600, bearer fallback — OS credential store unavailable)`
     );
   }

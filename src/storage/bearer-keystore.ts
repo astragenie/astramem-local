@@ -5,8 +5,9 @@
  * Resolution order (used by serve.ts):
  *   1. CLI `--token` flag
  *   2. `ASTRA_MEMORY_TOKEN` env var
- *   3. OS credential store (service 'astramem-local', account 'bearer' —
- *      see storage/keystore.ts)
+ *   3. OS credential store, identity scoped to configDir with a read-only
+ *      fallback to the legacy unscoped identity (FEAT-466 — see
+ *      storage/keystore.ts)
  *   4. secrets.env — canonical config dir, then legacy dir (kept as a
  *      read-only fallback; existing files are never deleted)
  *   5. 'devtok' default (dev/test convenience, matches pre-SEC-10 behavior)
@@ -53,6 +54,14 @@ export interface ResolveBearerOpts {
    * ignore XDG_CONFIG_HOME entirely, so env stubbing does NOT isolate there.
    */
   secretsDirs?: string[];
+  /**
+   * Config dir used to scope the OS credential-store identity (FEAT-466).
+   * Defaults to defaultConfigDir(). Injectable for the same isolation
+   * reason as secretsDirs — tests point this at a tmp dir so the stubbed
+   * Entry's scoped key is deterministic and never collides with a real
+   * install's identity.
+   */
+  configDir?: string;
 }
 
 const DEFAULT_TOKEN = 'devtok';
@@ -105,12 +114,14 @@ export function resolveBearerToken(opts: ResolveBearerOpts = {}): ResolvedBearer
     return { token: randomBytes(32).toString('hex'), source: 'ephemeral' };
   }
 
-  const stored = readBearer();
+  const configDir = opts.configDir ?? defaultConfigDir();
+
+  const stored = readBearer(configDir);
   if (stored) return { token: stored, source: 'credential-store' };
 
   const fileToken = readBearerFromSecretsFile(opts.secretsDirs);
   if (fileToken) {
-    storeBearer(fileToken); // opportunistic one-way promotion; best-effort
+    storeBearer(fileToken, configDir); // opportunistic one-way promotion; best-effort
     return { token: fileToken, source: 'secrets-env' };
   }
 
