@@ -1,4 +1,3 @@
-#!/usr/bin/env node
 /**
  * post-merge-rebuild.mjs — FEAT-439 AC-1/AC-3/AC-4 rebuild-trigger logic.
  *
@@ -6,7 +5,12 @@
  * importable ESM module (rather than inlined directly in the hook file) so
  * its pure detection logic (`touchesWatchedPaths`) is unit-testable without
  * a real git repo or an actual `bun install`/`bun run build` — see
- * tests/scripts/post-merge-rebuild.test.ts.
+ * tests/scripts/post-merge-rebuild.test.ts. Never executed directly (no
+ * shebang needed): `post-merge` statically imports it, and the test loads
+ * it via a runtime `import()` — Vite/Vitest's SSR module runner evaluates
+ * dynamically-imported modules with `node:vm`, which (unlike Node's own
+ * module loader) does not strip a leading `#!` shebang line and throws
+ * `SyntaxError: Invalid or unexpected token` on it.
  *
  * Enable once per checkout:
  *   git config core.hooksPath scripts/git-hooks
