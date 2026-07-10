@@ -124,29 +124,31 @@ describe('rotateToken — credential store unavailable (secrets.env fallback)', 
 // ─── rotateToken: credential store available (SEC-10 primary path) ──────────
 
 describe('rotateToken — credential store available', () => {
-  it('stores the bearer in the credential store (scoped to configDir) and omits it from secrets.env', () => {
+  it('stores the bearer in the credential store (scoped to configDir), write-throughs the legacy identity, and ALSO writes secrets.env (review fix-round: secrets.env is unconditionally authoritative)', () => {
     const store = stubWorkingCredentialStore();
     const path = tmpSecretsPath();
     const configDir = join(path, '..'); // reuse the tmp secrets dir as the scoping configDir
     const token = rotateToken(path, configDir);
 
     expect(readBearer(configDir)).toBe(token);
-    // Scoped write never lands on the legacy unscoped key (FEAT-466).
-    expect(store.has('astramem-local:bearer')).toBe(false);
+    // rotateToken() deliberately write-throughs the legacy identity too
+    // (rollback-safety fix), unlike a plain storeBearer() call.
+    expect(store.get('astramem-local:bearer')).toBe(token);
 
     const content = readFileSync(path, 'utf8');
-    expect(content).not.toContain('MEMORY_BEARER=');
+    expect(content).toContain(`MEMORY_BEARER=${token}`);
   });
 
-  it('still preserves existing azure keys in secrets.env even when the bearer moves to the store', async () => {
+  it('still preserves existing azure keys in secrets.env alongside the (now-always-written) bearer', async () => {
     stubWorkingCredentialStore();
     const path = tmpSecretsPath();
     const { writeSecrets } = await import('../../src/config/secrets.js');
     writeSecrets({ bearer: 'oldtoken', azureKey: 'myazurekey' }, path);
 
-    rotateToken(path);
+    const newToken = rotateToken(path);
     const content = readFileSync(path, 'utf8');
-    expect(content).not.toContain('MEMORY_BEARER=');
+    expect(content).toContain(`MEMORY_BEARER=${newToken}`);
+    expect(content).not.toContain('MEMORY_BEARER=oldtoken');
     expect(content).toContain('AZURE_OPENAI_API_KEY=myazurekey');
   });
 });

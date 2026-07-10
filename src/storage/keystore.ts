@@ -46,7 +46,7 @@
 import { Entry } from '@napi-rs/keyring';
 import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 const SERVICE = 'astramem-local';
@@ -64,13 +64,28 @@ export interface KeyResult {
 }
 
 /**
+ * Normalizes configDir before hashing (review defense-in-depth): resolves
+ * to an absolute path (also strips a trailing separator) and, on Windows,
+ * case-folds — so `C:\Users\x`, `c:\users\x`, `C:/Users/x`, and a
+ * trailing-backslash variant all hash to the SAME scoped identity instead
+ * of four different ones. Every real call site in this repo already
+ * derives configDir from the single `defaultConfigDir()` function, so this
+ * has no effect on current behavior; it only guards a future call site
+ * that constructs configDir some other way.
+ */
+function normalizeConfigDir(configDir: string): string {
+  const resolved = resolve(configDir);
+  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+/**
  * Scoped OS credential-store service name for a given configDir — the
  * FEAT-466 fix for the machine-global identity collision. Deterministic:
  * the same configDir always hashes to the same service name, so
  * getOrCreateKey()/storeBearer() stay idempotent per install.
  */
 function scopedService(configDir: string): string {
-  const hash = createHash('sha256').update(configDir).digest('hex').slice(0, 16);
+  const hash = createHash('sha256').update(normalizeConfigDir(configDir)).digest('hex').slice(0, 16);
   return `${SERVICE}:${hash}`;
 }
 
@@ -231,11 +246,25 @@ export function keyFilePath(configDir: string): string {
 // EntryCtor test seam as the db-key above — one stub controls both. Unlike
 // the db-key, the bearer has no "always needs a value" contract: the caller
 // (token.ts/init.ts) generates the token, then asks the store to hold it;
-// the resolution side (bearer-keystore.ts) reads it back. secrets.env
-// remains the fallback persistence layer, exactly mirroring getOrCreateKey's
-// credential-store -> key-file degradation. Reads fall back read-only to
-// the legacy unscoped identity (AC-2); writes always target the scoped
-// identity for `configDir` (AC-1) — never the legacy one.
+// the resolution side (bearer-keystore.ts) reads it back. Reads fall back
+// read-only to the legacy unscoped identity (AC-2); writes always target
+// the scoped identity for `configDir` (AC-1) — never the legacy one, EXCEPT
+// the deliberate `writeThroughLegacy` exception on rotate (see
+// StoreBearerOpts below — a review fix-round addition, not part of the
+// original FEAT-466 AC-2 read-only guarantee).
+//
+// secrets.env is UNCONDITIONALLY AUTHORITATIVE for the bearer (review
+// fix-round decision, superseding the original "fallback of last resort"
+// design): callers (init.ts, token.ts) now always write MEMORY_BEARER=
+// regardless of whether the OS-store write also succeeded. Rationale: a
+// rollback to a pre-FEAT-466 binary reads the OS store BEFORE secrets.env
+// (see bearer-keystore.ts's documented resolution order), so if secrets.env
+// were left empty whenever the OS store succeeded (the pre-fix-round
+// behavior), a rollback could resolve a stale or hard-coded-default bearer
+// with no way to recover it from secrets.env. Keeping secrets.env always
+// current closes that gap for fresh installs (no legacy OS entry to shadow
+// it); the `writeThroughLegacy` rotate exception above closes it for
+// upgraded installs that do have a pre-existing legacy OS entry.
 
 export interface BearerStoreResult {
   stored: boolean;
@@ -269,6 +298,26 @@ function readBearerFile(configDir: string): string | null {
   return readFileSync(filePath, 'utf8').trim();
 }
 
+export interface StoreBearerOpts {
+  /**
+   * Review fix-round (rollback hazard): also best-effort write `token` into
+   * the LEGACY unscoped identity, not just the scoped one. This is a
+   * deliberate, narrowly-scoped exception to the "legacy is read-only"
+   * rule (AC-2) — rotation is exactly the moment a stale legacy entry
+   * becomes dangerous: a `reinstall --rollback` to a pre-FEAT-466 binary
+   * reads the legacy identity directly (it has no scoping concept at all),
+   * so if rotation only refreshed the scoped identity, the rolled-back
+   * binary would resolve a stale bearer instead of the one just issued.
+   * Only `token.ts`'s `rotateToken()` sets this — `init.ts`'s first-time
+   * provisioning deliberately does NOT, since writing the legacy identity
+   * from a sandboxed/test `init` is the exact mechanism that caused the
+   * original 2026-07-10 incident this FEAT closes. Never touched when the
+   * ASTRA_MEMORY_TEST_FORCE_KEYFILE bypass is active (that path never
+   * touches the OS store at all, scoped or legacy).
+   */
+  writeThroughLegacy?: boolean;
+}
+
 /**
  * Store `token` in the OS credential store, under the identity scoped to
  * `configDir` (FEAT-466). On failure (no credential store / no
@@ -279,7 +328,7 @@ function readBearerFile(configDir: string): string | null {
  * (AC-3) — a sandboxed/test caller that sets this never touches the real
  * store, writing to `<configDir>/bearer.key` instead.
  */
-export function storeBearer(token: string, configDir: string): BearerStoreResult {
+export function storeBearer(token: string, configDir: string, opts: StoreBearerOpts = {}): BearerStoreResult {
   if (process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE === '1') {
     console.warn(
       '[astramem-local] WARNING: TEST-ONLY key-file bypass active ' +
@@ -291,6 +340,17 @@ export function storeBearer(token: string, configDir: string): BearerStoreResult
   try {
     const entry = new EntryCtor(scopedService(configDir), BEARER_ACCOUNT);
     entry.setPassword(token);
+    if (opts.writeThroughLegacy) {
+      try {
+        new EntryCtor(SERVICE, BEARER_ACCOUNT).setPassword(token);
+      } catch (err) {
+        console.warn(
+          `[astramem-local] WARNING: could not write-through the rotated bearer into the legacy ` +
+          `credential-store identity (${errMessage(err)}); a rollback to a pre-FEAT-466 binary may ` +
+          `read a stale bearer from that identity until the next successful rotate.`,
+        );
+      }
+    }
     return { stored: true, source: 'credential-store', identity: 'scoped' };
   } catch (err) {
     console.warn(

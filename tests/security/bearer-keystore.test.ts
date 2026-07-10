@@ -10,7 +10,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { tmpdir, platform } from 'node:os';
 import { join } from 'node:path';
 import { Entry } from '@napi-rs/keyring';
 
@@ -400,5 +400,151 @@ describe('resolveBearerToken: ASTRA_MEMORY_ISOLATED=1', () => {
     process.env.ASTRA_MEMORY_ISOLATED = '1';
     const result = resolveBearerToken({ envToken: 'env-token' });
     expect(result).toEqual({ token: 'env-token', source: 'env' });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Review fix-round: storeBearer's writeThroughLegacy option (rollback fix)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('storeBearer: writeThroughLegacy option (rollback-safety fix)', () => {
+  it('without the option, a normal store never touches the legacy identity (unchanged FEAT-466 AC-1 behavior)', () => {
+    const store = stubWorkingCredentialStore();
+    const configDir = mkTmpDir('astramem-bearer-no-writethrough-');
+
+    storeBearer('scoped-only-token', configDir);
+
+    expect(store.has('astramem-local:bearer')).toBe(false);
+  });
+
+  it('with writeThroughLegacy: true, the token lands in BOTH the scoped and legacy identities', () => {
+    const store = stubWorkingCredentialStore();
+    const configDir = mkTmpDir('astramem-bearer-writethrough-');
+
+    storeBearer('rotated-token', configDir, { writeThroughLegacy: true });
+
+    expect(readBearer(configDir)).toBe('rotated-token'); // scoped read
+    expect(store.get('astramem-local:bearer')).toBe('rotated-token'); // legacy read
+  });
+
+  it('writeThroughLegacy refreshes a STALE legacy entry left over from a pre-FEAT-466 install', () => {
+    const store = stubWorkingCredentialStore();
+    store.set('astramem-local:bearer', 'stale-pre-upgrade-token');
+    const configDir = mkTmpDir('astramem-bearer-writethrough-refresh-');
+
+    storeBearer('fresh-rotated-token', configDir, { writeThroughLegacy: true });
+
+    expect(store.get('astramem-local:bearer')).toBe('fresh-rotated-token');
+    expect(store.get('astramem-local:bearer')).not.toBe('stale-pre-upgrade-token');
+  });
+
+  it('the ASTRA_MEMORY_TEST_FORCE_KEYFILE bypass still never constructs any Entry, even with writeThroughLegacy: true', () => {
+    stubEntryThatMustNeverBeConstructed();
+    process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE = '1';
+    const configDir = mkTmpDir('astramem-bearer-bypass-writethrough-');
+
+    const result = storeBearer('bypassed-token', configDir, { writeThroughLegacy: true });
+    expect(result).toEqual({ stored: true, source: 'key-file' });
+
+    delete process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE;
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Review fix-round: rollback simulation — a pre-FEAT-466 binary's
+// resolution order (legacy OS-store identity FIRST, then secrets.env, then
+// the 'devtok' default — confirmed via `git show c947310:src/storage/
+// bearer-keystore.ts`) must resolve the CURRENT token after a rotate, never
+// a stale one and never the hard-coded default.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Mirrors the OLD (pre-FEAT-466) binary's bearer resolution precedence:
+ * unscoped OS-store identity, then secrets.env, then 'devtok'. */
+function simulateOldBinaryResolve(store: Map<string, string>, secretsPath: string): string {
+  const legacy = store.get('astramem-local:bearer');
+  if (legacy) return legacy;
+  if (existsSync(secretsPath)) {
+    const line = readFileSync(secretsPath, 'utf8')
+      .split('\n')
+      .find(l => l.startsWith('MEMORY_BEARER='));
+    const fileToken = line?.slice('MEMORY_BEARER='.length).trim();
+    if (fileToken) return fileToken;
+  }
+  return 'devtok';
+}
+
+describe('review fix-round: pre-FEAT-466 binary rollback simulation', () => {
+  it('upgraded install (stale legacy entry pre-dates this release): old-binary resolution finds the NEW token after rotate, not the stale legacy one', () => {
+    const store = stubWorkingCredentialStore();
+    store.set('astramem-local:bearer', 'stale-legacy-token'); // pre-existing, pre-upgrade entry
+    const configDir = mkTmpDir('astramem-bearer-rollback-upgraded-');
+    const secretsPath = join(configDir, 'secrets.env');
+    writeSecretsEnvBearer(configDir, 'stale-legacy-token'); // secrets.env also stale pre-rotate
+
+    storeBearer('rotated-token', configDir, { writeThroughLegacy: true }); // what rotateToken() does
+    writeSecretsEnvBearer(configDir, 'rotated-token'); // what rotateToken()'s writeSecrets call does
+
+    expect(simulateOldBinaryResolve(store, secretsPath)).toBe('rotated-token');
+    expect(simulateOldBinaryResolve(store, secretsPath)).not.toBe('stale-legacy-token');
+  });
+
+  it('fresh install (no pre-existing legacy entry): old-binary resolution finds the NEW token via secrets.env, never falls through to the devtok default', () => {
+    const store = stubWorkingCredentialStore(); // empty — no legacy entry ever existed
+    const configDir = mkTmpDir('astramem-bearer-rollback-fresh-');
+    const secretsPath = join(configDir, 'secrets.env');
+
+    storeBearer('rotated-token', configDir, { writeThroughLegacy: true });
+    writeSecretsEnvBearer(configDir, 'rotated-token');
+
+    expect(simulateOldBinaryResolve(store, secretsPath)).toBe('rotated-token');
+    expect(simulateOldBinaryResolve(store, secretsPath)).not.toBe('devtok');
+  });
+
+  it('devtok fall-through is impossible post-rotate even when the OS credential store is completely unavailable (secrets.env alone rescues it)', () => {
+    stubUnavailableCredentialStore();
+    const configDir = mkTmpDir('astramem-bearer-rollback-store-down-');
+    const secretsPath = join(configDir, 'secrets.env');
+
+    const result = storeBearer('rotated-token', configDir, { writeThroughLegacy: true });
+    expect(result.stored).toBe(false); // OS store unavailable; caller falls back to secrets.env
+    writeSecretsEnvBearer(configDir, 'rotated-token'); // what rotateToken() always does now
+
+    const noLegacyEntry = new Map<string, string>(); // OS store was never reachable at all
+    expect(simulateOldBinaryResolve(noLegacyEntry, secretsPath)).toBe('rotated-token');
+    expect(simulateOldBinaryResolve(noLegacyEntry, secretsPath)).not.toBe('devtok');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Review fix-round: configDir normalization before hashing
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('review fix-round: configDir normalization (scopedService)', () => {
+  it('a trailing separator does not change the scoped identity', () => {
+    const store = stubWorkingCredentialStore();
+    const configDir = mkTmpDir('astramem-bearer-normalize-trailing-');
+
+    storeBearer('normalized-token', configDir);
+    expect(readBearer(configDir + (platform() === 'win32' ? '\\' : '/'))).toBe('normalized-token');
+    expect(store.size).toBe(1);
+  });
+
+  it('Windows-only: case and forward/backward slash variants of the same directory all resolve to one identity', () => {
+    if (platform() !== 'win32') return;
+    const store = stubWorkingCredentialStore();
+    const configDir = mkTmpDir('astramem-bearer-normalize-winforms-');
+
+    storeBearer('normalized-token', configDir);
+
+    const spellings = [
+      configDir.toUpperCase(),
+      configDir.toLowerCase(),
+      configDir.replace(/\\/g, '/'),
+      configDir + '\\',
+    ];
+    for (const spelling of spellings) {
+      expect(readBearer(spelling)).toBe('normalized-token');
+    }
+    expect(store.size).toBe(1); // only one scoped entry, not five
   });
 });
