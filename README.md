@@ -1,6 +1,10 @@
 # AstraMemory Local
 
-Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.8.1.
+[![npm version](https://img.shields.io/npm/v/astramem-local.svg)](https://www.npmjs.com/package/astramem-local)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Test](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml/badge.svg)](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml)
+
+Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.12.1.
 
 ## Wire compatibility
 
@@ -220,8 +224,8 @@ All endpoints require Bearer token authentication except `GET /version` and `GET
 | `GET /health` | — | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` |
 | `GET /version` | — | Version discovery: `{ name, version, wire_versions_supported, schema_version, ts }` |
 | `POST /ingest/transcript` | Bearer | Capture protocol endpoint — accepts `transcript` and `events` kinds; idempotency via `Idempotency-Key` header. See [docs/capture-protocol.md](docs/capture-protocol.md). |
-| `GET /search` | Bearer | Hybrid search with type/repo/project/since filters |
-| `POST /recall` | Bearer | Top-K semantic recall (alias: `search` with k=5) |
+| `GET /search` | Bearer | Hybrid search with type/repo/project/since filters + named `preset` routing. See [docs/retrieval-presets.md](docs/retrieval-presets.md). |
+| `POST /recall` | Bearer | Top-K semantic recall (alias: `search` with k=5) + named `preset` routing |
 | `POST /recall/pack` | Bearer | Token-budgeted memory pack for a repo/project/branch — powers the SessionStart hook |
 | `POST /remember` | Bearer | Direct memory insert, bypasses distillation |
 | `GET /memory/:id` | Bearer | Single memory lookup |
@@ -242,18 +246,24 @@ Claude Code discovers and calls the tools below automatically when configured in
 
 | Tool | Description | Maps to |
 |---|---|---|
-| `search_memory` | Hybrid FTS + vector search with optional type/repo/project/since filters | `GET /search` |
-| `recall_memory` | Top-K semantic recall (default k=5) | `POST /recall` |
+| `search_memory` | Hybrid FTS + vector search with optional type/repo/project/since filters + named `preset` routing | `GET /search` |
+| `recall_memory` | Top-K semantic recall (default k=5) + named `preset` routing | `POST /recall` |
 | `remember` | Direct memory insert, bypasses distillation | `POST /remember` |
 | `get_health` | Daemon health probe: `{ ok, version, wire_versions_supported, schema_version }` | `GET /health` |
 | `why_memory` | Provenance receipt — extraction evidence + confidence for a memory | `GET /memory/:id/why` |
 | `session_digest` | Session summary digest | `GET /sessions/:id/digest` |
+| `agent_profile` | Read-time per-agent "what has this agent learned" profile — top lessons, recent decisions, prior corrections | `GET /agents/:agent/profile` |
+| `user_profile` | Read-time daemon-wide profile (no agent filter) — standing facts, preferences, recurring lessons, recent decisions, known entities. Optional `?scope=team\|org\|all` (defaults to `private`) | `GET /profile` |
 | `invalidate_memory` | Soft-delete a memory (lifecycle op) | `POST /memory/:id/invalidate` |
 | `supersede_memory` | Replace an old memory with a new one, linked via `memory_events` | `POST /memory/:id/supersede` |
 | `promote_memory` | Promote a memory's scope: personal → team → org | `POST /memory/:id/promote` |
+| `restore_memory` | Un-archive a memory previously archived by the W4.4 TTL policy or a manual archive event | `POST /memory/:id/restore` |
 | `memory_history` | Full `memory_events` log for a memory | `GET /memory/:id/history` |
 | `submit_feedback` | Explicit recall-usefulness signal — "this memory mattered" (U5 canonical name, shared with cloud) | `POST /memory/:id/used` |
 | `mark_memory_used` | **DEPRECATED** one-release alias for `submit_feedback` (same handler) — migrate now | `POST /memory/:id/used` |
+| `erase_memory` | Erasure v1 (ADR-006): permanently hard-delete a memory, leaving only a tombstone event | `DELETE /memory/:id` |
+| `list_consolidation_proposals` | Pending (or resolved) stage-9 consolidation proposals awaiting a merge/keep decision (ADR-004) | `GET /consolidation/proposals` |
+| `resolve_consolidation_proposal` | Accept or reject a pending consolidation proposal | `POST /consolidation/proposals/:id/accept` / `.../reject` |
 
 **Plugin `.mcp.json` wiring:**
 
@@ -393,6 +403,33 @@ recalled fact or decision can be traced back to its source.
 
 ---
 
+## User profile
+
+`GET /profile` (and the `user_profile` MCP tool) return a read-time, daemon-wide "what does this
+owner keep coming back to" profile, rolled up from the existing atom kinds — zero new schema, zero
+persisted document, no rebuild step. Every call is a fresh SQL read against current state, so there
+is no staleness window.
+
+| Profile section | Rolled up from |
+|---|---|
+| `standing_facts` | `fact` atoms |
+| `preferences` | `note` atoms (the closest existing semantic match — see FEAT-451 design doc) |
+| `recurring_lessons` | `lesson` atoms |
+| `recent_decisions` | `decision` atoms, newest first |
+| `known_entities` | linked entities of kind `actor`/`tech`/`product`/`tool`, ranked by mention count |
+
+`standing_facts`/`preferences`/`recurring_lessons` are ranked by the same ADR-010 usefulness signal
+`agent_profile`'s `top_lessons` uses, then importance, then memory id (a total tie-break, required
+for deterministic output). Only currently-active memories count (`valid_to IS NULL AND archived =
+0`) — a superseded or invalidated atom drops out on the next call, no extra event needed.
+
+Defaults to `scope=private` (ADR-009's default); pass `?scope=team|org|all` to widen it. This
+daemon has a single global Bearer token and no per-caller scope authorization, so widening scope is
+the authenticated caller's own choice, not a privilege escalation — see the FEAT-451 design doc §3
+for the full reasoning.
+
+---
+
 ## Usefulness metric
 
 The daemon tracks a **recall-usefulness rate**: of the memories served by a search/recall/pack call,
@@ -457,6 +494,7 @@ secret.
 
 ## Further reading
 
+- [docs/retrieval-presets.md](docs/retrieval-presets.md) — named retrieval presets (`preset=default|recent|exact|entity|temporal`)
 - [docs/migration-from-saas.md](docs/migration-from-saas.md) — switch the plugin from remote SaaS to local daemon
 - [docs/configuration.md](docs/configuration.md) — full config.yaml reference
 - [docs/providers.md](docs/providers.md) — Ollama and Azure OpenAI setup
@@ -505,7 +543,7 @@ publishing flow.
 
 ## Status
 
-**v0.8.1** — local-first memory daemon with 17 migrations, a 15-tool MCP surface, hybrid
+**v0.12.0** — local-first memory daemon with 24 migrations, an 18-tool MCP surface, hybrid
 BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
 promote) with full provenance (`why_memory`), consolidation proposals, and local↔SaaS sync
 (shipper/puller/conflict-resolve). CI-gated retrieval eval (ADR-005) runs recall@10 ≥ 0.9 /

@@ -94,7 +94,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 16 tools', async () => {
+  it('initialize + tools/list returns 18 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -107,7 +107,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(17);
+    expect(tools.length).toBe(18);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'agent_profile',
@@ -129,6 +129,8 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
       'session_digest',
       'submit_feedback',
       'supersede_memory',
+      // FEAT-451 slice 1 — daemon-wide profile, no agent filter.
+      'user_profile',
       'why_memory',
     ]);
   });
@@ -1051,7 +1053,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     });
     await vecStore.upsert(a, mk(0));
     await vecStore.upsert(b, mk(0.45));
-    runConsolidation(db);
+    await runConsolidation(db);
 
     const list = await toolCall('list_consolidation_proposals', {});
     const { proposals } = list.payload as { proposals: Array<{ id: string; winner_text: string; loser_text: string; status: string }> };
@@ -1068,5 +1070,49 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     expect(again.isError).toBe(true);
     const missing = await toolCall('resolve_consolidation_proposal', { id: 'nope', action: 'accept' });
     expect(missing.isError).toBe(true);
+  });
+
+  // AC-10/AC-11 (FEAT-456 SLICE-2): kind='contradiction' proposals surface
+  // parsed verdict/confidence/excerpts, and resolve behaves identically to
+  // a 'merge' proposal (same accept -> merge-as-supersede path, no branch
+  // by kind).
+  it('list_consolidation_proposals enriches a contradiction proposal with parsed metadata; resolve behaves like merge', async () => {
+    const repo = new MemoryRepo(db);
+    const winnerId = repo.insert({
+      type: 'fact', text: 'default port is now 8888', normalized_text: 'default port is now 8888',
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: 'h-mcp-contra-1', source_hash: null,
+    });
+    const loserId = repo.insert({
+      type: 'fact', text: 'default port is 7777', normalized_text: 'default port is 7777',
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: 'h-mcp-contra-2', source_hash: null,
+    });
+    const metadata = {
+      verdict: 'contradicts', confidence: 0.92,
+      winner_excerpt: 'default port is now 8888', loser_excerpt: 'default port is 7777',
+    };
+    db.prepare(`
+      INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+      VALUES ('prop-contra-1', 'contradiction', ?, ?, ?, 'pending', ?, ?)
+    `).run(winnerId, loserId, 0.7, Date.now(), JSON.stringify(metadata));
+
+    // kind filter: contradiction-only list excludes any merge proposals.
+    const filtered = await toolCall('list_consolidation_proposals', { kind: 'contradiction' });
+    const { proposals } = filtered.payload as {
+      proposals: Array<{
+        id: string; kind: string; winner_text: string; loser_text: string;
+        contradiction_metadata: { verdict: string; confidence: number; winner_excerpt: string; loser_excerpt: string } | null;
+      }>;
+    };
+    expect(proposals).toHaveLength(1);
+    const p = proposals[0]!;
+    expect(p.kind).toBe('contradiction');
+    expect(p.winner_text).toBe('default port is now 8888');
+    expect(p.contradiction_metadata).toEqual(metadata);
+
+    // Resolve: identical accept path to a 'merge' proposal (no branch by kind).
+    const resolve = await toolCall('resolve_consolidation_proposal', { id: 'prop-contra-1', action: 'accept' });
+    expect(resolve.isError).toBe(false);
+    expect((resolve.payload as { proposal: { status: string } }).proposal.status).toBe('accepted');
+    expect(new MemoryRepo(db).get(loserId)!.superseded_by).toBe(winnerId);
   });
 });

@@ -1,14 +1,24 @@
 ---
 id: FEAT-447
-status: pending
-priority: null
+status: triaged
+priority: P2
 category: feature
 target_release: null
 created: 2026-07-08
-updated: 2026-07-08
+updated: 2026-07-09
 depends_on: []
 slices: []
 derived_from: null
+pm_customer_impact: 0.25
+pm_effort_estimate: 0.12
+pm_strategic_alignment: 0.5
+pm_technical_risk: 0.05
+pm_dependency_depth: 0.1
+pm_composite_priority: P2
+pm_autonomous_safe: true
+pm_reviewed: 2026-07-09
+autonomous_safe: true
+triage_notes: "technical_risk 0.05 sits in the 0.0-0.2 band (known repo pattern -- read-only research, zero files touched, trivially discarded); low effort (2 pts) and moderate strategic value (feeds the report's own 'reframe local-first as default-local' messaging recommendation and possible install.sh UX borrowing) land this at P2, autonomous-safe given zero blast radius."
 ---
 ## Description
 

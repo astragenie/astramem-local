@@ -98,4 +98,43 @@ describe('GET /sessions/:id/digest (KF-C)', () => {
       headers: { authorization: 'Bearer t' } });
     expect(res.statusCode).toBe(404);
   });
+
+  // AC-13 (FEAT-456 SLICE-2): pending_contradictions counts pending
+  // kind='contradiction' proposals touching this session's memories.
+  it('pending_contradictions counts a pending contradiction proposal touching this session (winner or loser side)', async () => {
+    seedSession(db, 's6');
+    const repo = new MemoryRepo(db);
+    const inSession = repo.insert({ type: 'fact', text: 'default port is 7777', normalized_text: 'default port is 7777',
+      repo: 'r', project: null, branch: null, agent: null, session_id: 's6',
+      hash: 'd-c1', source_hash: null });
+    const otherSession = repo.insert({ type: 'fact', text: 'default port is 8888', normalized_text: 'default port is 8888',
+      repo: 'r', project: null, branch: null, agent: null, session_id: null,
+      hash: 'd-c2', source_hash: null });
+    // winner_id side (otherSession is newer/winner, inSession is older/loser
+    // — direction is irrelevant here, the count checks either side).
+    db.prepare(`
+      INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at)
+      VALUES (?, 'contradiction', ?, ?, ?, 'pending', ?)
+    `).run('prop-digest-1', otherSession, inSession, 0.7, Date.now());
+
+    const app = await buildApp({ db, token: 't' });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s6/digest',
+      headers: { authorization: 'Bearer t' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().pending_contradictions).toBe(1);
+  });
+
+  it('pending_contradictions is 0 when no consolidation run has produced one yet (documented latency)', async () => {
+    seedSession(db, 's7');
+    const repo = new MemoryRepo(db);
+    repo.insert({ type: 'fact', text: 'a fresh atom', normalized_text: 'a fresh atom',
+      repo: 'r', project: null, branch: null, agent: null, session_id: 's7',
+      hash: 'd-c3', source_hash: null });
+
+    const app = await buildApp({ db, token: 't' });
+    const res = await app.inject({ method: 'GET', url: '/sessions/s7/digest',
+      headers: { authorization: 'Bearer t' } });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().pending_contradictions).toBe(0);
+  });
 });

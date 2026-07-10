@@ -7,6 +7,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.12.1] — 2026-07-10
+
+### Fixed
+- **Stage-0 redaction hardening (FEAT-459, security)** — compound credential labels are now detected: `INTERNAL_SECRET=`, `OPENAI_API_KEY=`, and leading/middle-keyword forms like `SECRET_KEY=` / `DJANGO_SECRET_KEY=` / `secret_key_base:` (previously all silently unredacted). Two-tier precision design: high-confidence keywords (`secret`, `password`, `passwd`, `pwd`) match in any label segment with a numeric/boolean value guard (`PASSWORD_MIN_LENGTH=8` stays untouched); ambiguous keywords (`token`, `api_key`) remain trailing-only (`TOKEN_LIMIT=4096` never matches). Labeled short secrets are redacted regardless of length; the entropy detector's length floor still applies to unlabeled matches only. Perf smoke added — no hot-path regression.
+- Distill no longer drops an entire atom when one extracted entity has an out-of-enum `kind` — the entity is coerced to `other` (mirrors cloud `EntityKinds.Normalize()`); atoms still drop for genuine schema violations (#152).
+
+---
+
+## [0.12.0] — 2026-07-10
+
+### Added
+- **Hook-tap auto-capture (FEAT-455, ADR-012 tier 1)** — daemon-side support for high-frequency passive capture of session transcripts: `capture_source` provenance column (migration 024) threads envelope → transcript → distilled atoms; standalone source-side relevance gate (`src/capture/relevance-gate.ts` — size caps, per-session dedup window, structural junk heuristics; disjoint from the durability gate per its AC-6); `capture.autoCapture.enabled` config, default **OFF**, enabled only via the `init` wizard's explicit disclosure prompt; `doctor` row showing enabled state + auto-captured count; `capture auto-capture disable [--purge|--keep]` — disabling offers retroactive purge scoped to auto-captured atoms via the existing erasure path. Auto-captured payloads flow through the same stage-0 redaction as every other ingest.
+- **Fact-level bitemporal validity on entity links (FEAT-453 slice 2)** — `memory_entities` rebuilt with `valid_at`/`invalid_at` windows (migration 023, data-preserving), at-most-one-open-window-per-pair partial unique index, `linkWithValidity`/`closeAndRelink`/`memoryIdsForEntitiesAsOf` storage primitives, and entity+`as_of` search composition (both filters apply). atom@2 contract relaxed additively for entity validity fields (contracts `2.1.0`); extraction prompt emits validity hints.
+
+### Fixed
+- `writeConfig()` now emits the `capture` config block (previously silently dropped, so wizard opt-in and disable would not persist). Remaining missing blocks tracked as FEAT-461.
+
+### Notes
+- Schema version 22 → 24 (migrations 023, 024). Upgrade is automatic and data-preserving.
+
+---
+
+## [0.11.0] — 2026-07-10
+
+### Added
+- **User profile (FEAT-451)** — `GET /profile` + MCP `user_profile` tool (18th tool): live-computed standing profile rolled up from existing atoms (standing facts, preferences, recurring lessons, recent decisions, known entities), deterministic ordering, scope-aware (private by default), zero schema change.
+- **Contradiction detection, propose-only (FEAT-456 slice 1)** — the consolidation pass can now flag likely-contradicting memory pairs via an LLM judge and file them as `kind:'contradiction'` proposals in the existing proposal queue (accept → normal audited supersede). Default **off** (`consolidation.contradiction.mode`); migration 022 adds `metadata_json` to proposals. No auto-action — per ADR-004, contradiction resolution requires an explicit accept.
+- **Rerank provenance (FEAT-452)** — reranked search hits now carry `reranked`, `rerank_score`, and `explanation.signals.cross_encoder` while `score` keeps the original fused value (previously overwritten in place); outcome-tagged structured logs for the rerank stage; runbook documents the sidecar-satisfies-local-only decision.
+- **Named retrieval presets (FEAT-454)** — `preset` (`default|recent|exact|entity|temporal`) on `GET /search`, `POST /recall`, and the MCP search/recall tools; presets are weight-routings over the existing fusion pipeline, constructed through fusion governance; `default` is byte-identical to prior behavior (snapshot-tested).
+
+### Fixed
+- Vestigial shebang in `scripts/git-hooks/post-merge-rebuild.mjs` broke the suite's dynamic import under vitest's `node:vm` evaluator.
+- LongMemEval harness: distill-wait polling no longer bursts every session concurrently (Windows ephemeral-port exhaustion at n=50); sequential short-circuit + 5s interval.
+
+---
+
+## [0.10.0] — 2026-07-09
+
+### Changed
+- **BREAKING — atom@2 contract cut.** Retrieval/sync entities are now typed across 12 `ENTITY_KINDS`; the `repo`/`personal` scope fields are dropped in favour of `project`, and result types are widened. Local extraction retags to atom@2, the sync create-event payload embeds typed entities, and the daemon advertises `atom@2` in `WIRE_VERSIONS_SUPPORTED`. Contracts published as `contracts-v2.0.0`. Clients on the v1 entity shape must upgrade.
+- **`engines.node` floor raised to `>=22`** to match the SQLCipher prebuilt matrix.
+
+### Added
+- **Durable ingest spool (FEAT-449)** — transcript content is captured at session close and the daemon drains the spool asynchronously, closing the ephemeral-worktree-transcript starvation class where paths were deleted before async ingest could read them.
+- **Distiller durability quality gate (FEAT-441)** — `distill.durabilityGate` (`off` | `lenient` | `strict`, default `off`) skips low-signal atoms at the store layer; `/remember` bypasses the gate by construction. Ships inert (`off`) — byte-identical to prior behaviour until opted in.
+- **Memory-health score (FEAT-444)** — surfaced in `doctor`, `GET /health`, and the CLI.
+- **Consolidation auto-accept (FEAT-442)** — opt-in auto-accept above a confidence threshold, plus un-supersede reversal.
+- **Release-pinned service pointer + rollback for systemd/launchd (FEAT-443)** — parity with the Windows release-pinning model.
+- **Crash-loop visibility + schema-drift probe (FEAT-440, FEAT-439)** — doctor reports crash-loop state; post-merge migration-currency probe and rebuild.
+- Authed `GET /whoami` bearer-verification probe.
+- Extraction eval infrastructure: codex/qwen3 provider fixes, prompt/temperature A/B harness, cloud benchmark specs, junk-pollution eval fixtures.
+
+### Fixed
+- **Release-pinning was silently broken** — `migrations/` is now materialized into the pinned release (previously omitted, so pinned releases could run against a stale schema).
+- Service reliability: `reinstall` stops the actual daemon PID (not just the scheduler task) and widens the verify-health budget to 90s; `pidAlive` treats `EPERM` as alive; daemon stderr is redirected to an fd instead of buffered in memory.
+- Sync CLI closes its DB handle exactly once per subcommand on both success and error paths.
+- CI: fetch the pinned prebuilt SQLCipher addon instead of compiling.
+
+---
+
 ## [0.9.1] — 2026-07-08
 
 ### Changed

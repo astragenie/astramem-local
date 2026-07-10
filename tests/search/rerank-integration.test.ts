@@ -125,6 +125,56 @@ describe('search() + cross-encoder rerank stage (issue #26)', () => {
     expect(hits.length).toBeLessThanOrEqual(2);
   });
 
+  it('FEAT-452: rerank enabled — a reranked hit carries reranked/rerank_score/explanation, score stays the fused value', async () => {
+    const db = setupDb();
+    const idA = await seedWithVec(db, 'sqlite-vec hybrid bm25 fusion search', 'fx-a');
+    const idB = await seedWithVec(db, 'completely unrelated banana bread recipe', 'fx-b');
+
+    const provider: CrossEncoderProvider = {
+      name: 'mock',
+      score: async (_q, candidates) => {
+        const map = new Map<string, number>();
+        candidates.forEach((c, i) => map.set(c.id, i === 0 ? 0.99 : 0.01));
+        return map;
+      },
+    };
+    const rerank: RerankOpts = { topK: 50, timeoutMs: 300, provider };
+
+    const baseline = await search('sqlite-vec hybrid search', {}, 10, {
+      db, embed: fakeEmbed, weights: defaultConfig().search,
+    });
+    const reranked = await search('sqlite-vec hybrid search', {}, 10, {
+      db, embed: fakeEmbed, weights: defaultConfig().search, rerank,
+    });
+
+    expect(new Set(reranked.map(h => h.id))).toEqual(new Set([idA, idB]));
+    for (const hit of reranked) {
+      expect(hit.reranked).toBe(true);
+      expect(typeof hit.rerank_score).toBe('number');
+      expect(hit.explanation?.signals.cross_encoder.final).toBe(hit.rerank_score);
+      // `score` is untouched by rerank — still whatever fusion produced,
+      // matching the un-reranked baseline for the same id.
+      const baselineHit = baseline.find(b => b.id === hit.id)!;
+      expect(hit.score).toBeCloseTo(baselineHit.score, 6);
+    }
+  });
+
+  it('FEAT-452: rerank disabled (default) — hits carry no rerank fields at all', async () => {
+    const db = setupDb();
+    await seedWithVec(db, 'sqlite-vec hybrid bm25 fusion search', 'fx-c');
+
+    const hits = await search('sqlite-vec hybrid search', {}, 10, {
+      db, embed: fakeEmbed, weights: defaultConfig().search,
+    });
+
+    expect(hits.length).toBeGreaterThan(0);
+    for (const hit of hits) {
+      expect('reranked' in hit).toBe(false);
+      expect('rerank_score' in hit).toBe(false);
+      expect('explanation' in hit).toBe(false);
+    }
+  });
+
   it('debug:true never invokes the rerank provider — fusion breakdown is always pre-rerank', async () => {
     const db = setupDb();
     await seedWithVec(db, 'sqlite-vec hybrid bm25 fusion search', 'dbg-1');

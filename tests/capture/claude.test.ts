@@ -115,6 +115,21 @@ describe('buildClaudeEnvelope', () => {
     const env = buildClaudeEnvelope(parsed, 'session_end', '0.9.0');
     expect(env.project_id).toBe('astramemory-local');
   });
+
+  // FEAT-455 / ADR-012 decision 4.
+  it('omits capture_source entirely when not passed (byte-identical to pre-FEAT-455)', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/session.jsonl');
+    const env = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0');
+    expect('capture_source' in env).toBe(false);
+  });
+
+  it('sets capture_source: "auto_capture" when the auto-capture trigger builds the envelope', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/session.jsonl');
+    const env = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0', '2026-07-09T12:00:00.000Z', 'auto_capture');
+    expect(env.capture_source).toBe('auto_capture');
+    const validated = CanonicalIngestSchema.safeParse(env);
+    expect(validated.success).toBe(true);
+  });
 });
 
 describe('claudeIdempotencyKey — AC-2 (content-stable, captured_at-independent)', () => {
@@ -131,6 +146,16 @@ describe('claudeIdempotencyKey — AC-2 (content-stable, captured_at-independent
     const envA = buildClaudeEnvelope(parsedA, 'subagent_stop', '0.9.0');
     const envB = buildClaudeEnvelope(parsedB, 'subagent_stop', '0.9.0');
     expect(claudeIdempotencyKey(envA)).not.toBe(claudeIdempotencyKey(envB));
+  });
+
+  // FEAT-455 / ADR-012 decision 4: capture_source is envelope CONTENT (unlike
+  // captured_at), so it's part of the hash — an auto-captured envelope and a
+  // manually-captured envelope of otherwise-identical turns get different keys.
+  it('differs between an auto-captured and manually-captured envelope of the same turns', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/session.jsonl');
+    const manual = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0', '2026-07-09T12:00:00.000Z');
+    const auto = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0', '2026-07-09T12:00:00.000Z', 'auto_capture');
+    expect(claudeIdempotencyKey(manual)).not.toBe(claudeIdempotencyKey(auto));
   });
 });
 

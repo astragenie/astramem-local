@@ -24,6 +24,8 @@ import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
+import type { Config } from '../config/config.js';
+import type { DurabilityGateMode } from './durability-gate.js';
 import { childLogger } from '../log/logger.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
@@ -42,6 +44,16 @@ export interface PipelineContext {
   sourceHash: string | null;
   /** See EmbedIndexContext.capturedAtMs — plumbed from the canonical envelope via distillHandler. */
   capturedAtMs?: number | null;
+  /** FEAT-455 / ADR-012 decision 4: provenance tag plumbed from the
+   *  transcripts row via distillHandler — see EmbedIndexContext.captureSource. */
+  captureSource?: 'auto_capture' | null;
+  /** FEAT-441 durability gate mode — undefined behaves as 'off' (AC-2). */
+  durabilityGateMode?: DurabilityGateMode;
+  /** Full runtime config, threaded through to EmbedIndexContext.redactConfig
+   * so a gated atom's logged text is redacted with the real running config
+   * (AC-7), not the fallback default. Optional — falls back to
+   * defaultConfig() at the embed-index stage when omitted. */
+  config?: Config;
 }
 
 export interface PipelineResult {
@@ -51,6 +63,9 @@ export interface PipelineResult {
   chunksProcessed: number;
   /** IDs of every memory this run touched (both newly-created and deduped-existing), in stage-8 order. */
   memoryIds: string[];
+  /** FEAT-441 AC-4: count of candidate atoms the durability gate rejected
+   * this run (0 when the gate is 'off' or nothing matched). */
+  gatedOutCount: number;
 }
 
 /**
@@ -133,6 +148,7 @@ export async function runPipeline(
 
   // Stage 8: Embed + index
   pipeLog.info({ stage: 'embed-index', memories: normalizedMemories.length }, 'stage start');
+  const gatedOutCounter = { count: 0 };
   const indexResults = await embedAndIndex(normalizedMemories, {
     db: ctx.db,
     embed: ctx.embed,
@@ -143,12 +159,19 @@ export async function runPipeline(
     agent: ctx.agent,
     sourceHash: ctx.sourceHash,
     capturedAtMs: ctx.capturedAtMs,
+    captureSource: ctx.captureSource,
+    durabilityGateMode: ctx.durabilityGateMode,
+    redactConfig: ctx.config,
+    gatedOutCounter,
   });
 
   const created = indexResults.filter(r => r.created).length;
   const deduped = indexResults.filter(r => !r.created).length;
 
-  pipeLog.info({ stage: 'embed-index', memories_created: created, memories_deduped: deduped }, 'stage complete');
+  pipeLog.info(
+    { stage: 'embed-index', memories_created: created, memories_deduped: deduped, gatedOutCount: gatedOutCounter.count },
+    'stage complete',
+  );
 
   return {
     memoriesCreated: created,
@@ -156,5 +179,6 @@ export async function runPipeline(
     atomsExtracted: allAtoms.length,
     chunksProcessed: chunks.length,
     memoryIds: indexResults.map(r => r.memoryId),
+    gatedOutCount: gatedOutCounter.count,
   };
 }

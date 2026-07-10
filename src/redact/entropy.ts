@@ -7,12 +7,33 @@
  * UUIDs, and file paths (see redactText doc-comment for the full list).
  */
 
+// Floor applies ONLY to unlabeled tokens (FEAT-459 decision point). Labeled
+// short secrets (e.g. `token=<12-char-fragment>`) never reach this floor at
+// all — the generic_credential pattern detector (detectors.ts) runs BEFORE
+// this stage, matches on the label alone, and has no minimum length on its
+// captured value, so a labeled match is redacted at any length. Lowering
+// this floor for "label context" here would be redundant AND would remove
+// the one false-positive guard protecting genuinely unlabeled short tokens
+// (a stray 12-char identifier, a short hash fragment, etc.) from being
+// flagged on entropy alone — so the floor stays fixed regardless of nearby
+// text, by design.
 const MIN_TOKEN_LENGTH = 20;
 const CONTEXT_WINDOW = 40;
 const HEX_DIGEST_CONTEXT_RE = /\b(commit|sha|hash|digest)\b/i;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const PURE_HEX_RE = /^[0-9a-f]+$/i;
 const PLACEHOLDER_RE = /^\[REDACTED:[^\]]+\]$/;
+
+// FEAT-459 review fix: a `LABEL=VALUE` pair with no surrounding whitespace
+// (e.g. `PASSWORD_MIN_LENGTH=8`) tokenizes as ONE opaque unit here — this
+// detector has no concept of "label" vs. "value", unlike the pattern
+// detectors in detectors.ts. A long, character-diverse identifier glued to
+// a trivial numeric/boolean value can clear the entropy threshold on the
+// LABEL's diversity alone even though the value itself carries no secret
+// (measured: `PASSWORD_MIN_LENGTH=8` scores >4.0 bits/char purely from its
+// 18 distinct label characters). Mirrors the same numeric/boolean value
+// guard detectors.ts applies to its any-segment compound-label match.
+const CONFIG_ASSIGNMENT_RE = /^[A-Za-z][A-Za-z0-9_]*[:=](?:\d+|true|false)$/i;
 
 /** Shannon entropy in bits/char over the token's character distribution. */
 export function shannonEntropy(token: string): number {
@@ -55,6 +76,7 @@ function isGuarded(token: string, text: string, start: number, end: number): boo
   if (PLACEHOLDER_RE.test(token)) return true;
   if (UUID_RE.test(token)) return true;
   if (token.includes('/') || token.includes('\\')) return true;
+  if (CONFIG_ASSIGNMENT_RE.test(token)) return true;
 
   // Pure-hex 40/64-char strings (git SHA-1 / SHA-256) adjacent to a
   // commit/sha/hash/digest keyword within ~40 chars are assumed to be

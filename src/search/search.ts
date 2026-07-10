@@ -20,7 +20,7 @@ import { fuseHits, normalizeScores, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
-import { applyRerank, type RerankOpts } from './rerank.js';
+import { applyRerank, type RerankOpts, type RerankSignal } from './rerank.js';
 // FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
@@ -81,6 +81,13 @@ export interface SearchFilters {
    * entity-linked members of that candidate set, not a post-fusion filter.
    * An unresolvable entity name yields zero results (not an unfiltered
    * search).
+   *
+   * FEAT-453 §3.3: combined with `as_of`, the intersection narrows to
+   * fact-level validity — a memory only qualifies if the matched entity
+   * link's effective window (clipped to the memory's own valid_from/
+   * valid_to) covers `as_of`, even if the memory itself is still otherwise
+   * "current." `entity` alone (no `as_of`) is unaffected — same as before
+   * FEAT-453.
    */
   entity?: string;
 }
@@ -91,6 +98,20 @@ export interface SearchHit {
   text: string;
   score: number;
   source: 'fts' | 'vec' | 'both';
+  /**
+   * FEAT-452: present + `reranked: true` only when the cross-encoder rerank
+   * stage (issue #26, src/search/rerank.ts) actually scored this hit this
+   * call. `score` above always stays the original fused score — it is never
+   * overwritten by rerank; `rerank_score`/`explanation.signals.cross_encoder`
+   * carry the cross-encoder's own verdict as a distinct, additive signal
+   * (ADR-005 `ScoreExplanation.signals` shape — see
+   * docs/runbooks/cross-encoder-rerank.md). Absent (not just `false`) when
+   * rerank is disabled (the default), when this hit fell beyond
+   * `opts.rerank.topK`, or when the whole-call timeout/error fallback fired.
+   */
+  reranked?: true;
+  rerank_score?: number;
+  explanation?: { signals: { cross_encoder: RerankSignal } };
 }
 
 export interface SearchOpts {
@@ -341,12 +362,24 @@ export async function search(
   // fusion, so the result is all-and-only entity-linked members of that
   // candidate set. An entity name that resolves to zero entities filters the
   // candidate set to empty (not "unfiltered") — search() returns [] below.
+  //
+  // FEAT-453 §3.3 composition point B: when `as_of` is ALSO present, the
+  // intersection is time-aware (memoryIdsForEntitiesAsOf) — a memory whose
+  // matched fact link's effective window (§3.1, clipped to the parent
+  // memory's own window) doesn't cover `as_of` is excluded from selection,
+  // even though the same memory still passes the ordinary memory-level
+  // `validityFilterClause(as_of)` applied later. Without `entity`, `as_of`
+  // alone never reaches this step at all — §3.2's point A (plain temporal,
+  // no entity filter) is projection-only and leaves memory selection
+  // unchanged, so it is not implemented here.
   let filteredFtsHits = ftsHits;
   let filteredVecHits = vecHits;
   if (filters.entity !== undefined) {
     const entityRepo = new EntityRepo(db);
     const entityIds = entityRepo.resolveIds(filters.entity);
-    const linkedIds = entityRepo.memoryIdsForEntities(entityIds);
+    const linkedIds = filters.as_of !== undefined
+      ? entityRepo.memoryIdsForEntitiesAsOf(entityIds, filters.as_of)
+      : entityRepo.memoryIdsForEntities(entityIds);
     filteredFtsHits = ftsHits.filter(h => linkedIds.has(h.id));
     filteredVecHits = vecHits.filter(h => linkedIds.has(h.id));
   }

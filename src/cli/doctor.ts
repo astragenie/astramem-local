@@ -31,6 +31,8 @@ export async function doctorCommand(args: string[]): Promise<void> {
       dataDir,
       redactionEnabled: cfg.security.redaction.enabled,
       encryptionEnabled: cfg.security.encryption.enabled,
+      durabilityGateMode: cfg.distill.durabilityGate,
+      autoCaptureEnabled: cfg.capture.autoCapture.enabled,
     }),
     // W1.3: parity with `reinstall`'s assertions — stranded legacy DB,
     // plaintext pre-encryption backup, served-vs-build version, zombie

@@ -17,11 +17,11 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import type { LongMemEvalQuestion, HypothesisRecord } from './lib/types.js';
-import { recall, type DaemonClientOpts, type SearchHit } from './lib/daemon-client.js';
+import { recall, type DaemonClientOpts, type SearchHit } from '../shared/daemon-client.js';
 import { projectIdFor } from './lib/envelope.js';
 import { parseLongMemEvalDate } from './lib/dates.js';
-import { azureChatComplete } from './lib/azure-client.js';
-import { resolveAzureConfig, type AzureConfig } from './lib/config.js';
+import { azureChatComplete } from '../shared/azure-client.js';
+import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 
 const AS_OF_TYPES = new Set(['temporal-reasoning', 'knowledge-update']);
 

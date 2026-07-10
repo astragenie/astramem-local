@@ -206,6 +206,12 @@
       "status": "stable"
     },
     {
+      "name": "user_profile",
+      "owner": "local",
+      "description": "Read-time synthesized daemon-wide profile (FEAT-451): standing facts, preferences, recurring lessons (ranked by the ADR-010 usefulness signal, then importance), recent decisions, and known entities. No agent filter, unlike agent_profile.",
+      "status": "stable"
+    },
+    {
       "name": "why_memory",
       "owner": "local",
       "description": "Provenance receipt for a memory: evidence excerpt, source session, transcript ref.",

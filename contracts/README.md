@@ -569,6 +569,17 @@ explicitly (point 4 above), not infer it from the npm package's semver.
 
 ## Changelog
 
+- **2.1.0** — `atom.v2.schema.json` `entities[]` items gain optional
+  `valid_at`/`invalid_at` (both nullable `date-time`, FEAT-453 fact-level
+  bitemporal tracking) — additive, in place, no schema major bump per the
+  "Versioning rules" below (removes/renames/narrows nothing; every document
+  valid under the pre-2.1.0 schema stays valid). New fixtures:
+  `atom-v2-entity-validity-window.json` (populated), `atom-v2-entity-
+  validity-null.json` (both explicitly `null`, proving the nullable-not-
+  just-optional type union), and an `atom-v2-entity-extra-key-rejected.json`
+  regression fixture proving `additionalProperties: false` still rejects an
+  unrecognized key. See `docs/specs/FEAT-453-bitemporal-design.md` §2 for
+  the full rationale (including why this is additive, not a `@3` cut).
 - **2.0.0** — `atom.v2.schema.json` added (breaking; `atom.v1.schema.json`
   kept, unmodified, for the dual-read window) — see "Memory atom v2" above
   for the full rationale. Package major bump per the "Versioning rules"

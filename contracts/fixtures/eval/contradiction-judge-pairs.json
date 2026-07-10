@@ -1,0 +1,62 @@
+{
+  "schema": "astramem-contradiction-judge-eval-pairs@1",
+  "description": "FEAT-456 SLICE-1 closed labeled pair-set for the contradiction judge. Single source of truth shared with src/consolidate/mock-judge-pairs.ts (kept in lockstep by tests/hygiene/mock-judge-vocab-fixture-lockstep.test.ts). tests/eval/contradiction-judge-eval.test.ts runs every pair through judgeContradiction() with the mock provider and asserts 100% match — a hard floor, not a statistical one, since this is a closed deterministic table.",
+  "pairs": [
+    {
+      "id": "P1",
+      "textA": "Port 7777 is the default.",
+      "textB": "The default port is 7777.",
+      "verdict": "agrees",
+      "confidence": 0.9
+    },
+    {
+      "id": "P2",
+      "textA": "Default port is 7777.",
+      "textB": "Default port is now 8888.",
+      "verdict": "contradicts",
+      "confidence": 0.92
+    },
+    {
+      "id": "P3",
+      "textA": "Uses mxbai-embed-large (1024-dim).",
+      "textB": "Uses mxbai-embed-large, 1024-dim, verified at boot.",
+      "verdict": "refines",
+      "confidence": 0.85
+    },
+    {
+      "id": "P4",
+      "textA": "Config lives in %APPDATA%\\Astramem.",
+      "textB": "Ollama must be running locally.",
+      "verdict": "unrelated",
+      "confidence": 0.8
+    },
+    {
+      "id": "P5",
+      "textA": "The daemon binds to port 7777.",
+      "textB": "The daemon now binds to port 9999.",
+      "verdict": "contradicts",
+      "confidence": 0.95
+    },
+    {
+      "id": "P6",
+      "textA": "SQLite is the storage engine.",
+      "textB": "The storage engine is SQLite.",
+      "verdict": "agrees",
+      "confidence": 0.88
+    },
+    {
+      "id": "P7",
+      "textA": "mxbai-embed-large is 1024-dim.",
+      "textB": "mxbai-embed-large is 1024-dim and matches the schema default.",
+      "verdict": "refines",
+      "confidence": 0.82
+    },
+    {
+      "id": "P8",
+      "textA": "Deploys run at midnight.",
+      "textB": "Ollama must be running for embeddings.",
+      "verdict": "unrelated",
+      "confidence": 0.75
+    }
+  ]
+}

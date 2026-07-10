@@ -35,21 +35,24 @@ describe('migration 012-entities schema (AC-2)', () => {
     ).toThrow();
   });
 
-  it('memory_entities has PK(memory_id, entity_id) and an index on entity_id', () => {
+  it('memory_entities has a surrogate id PK (FEAT-453 migration 023) and an index on entity_id', () => {
     const cols = db.prepare('PRAGMA table_info(memory_entities)').all() as { name: string; pk: number }[];
     const colNames = cols.map(c => c.name);
+    expect(colNames).toContain('id');
     expect(colNames).toContain('memory_id');
     expect(colNames).toContain('entity_id');
-    const pkCols = cols.filter(c => c.pk > 0).map(c => c.name).sort();
-    expect(pkCols).toEqual(['entity_id', 'memory_id']);
+    expect(colNames).toContain('valid_at');
+    expect(colNames).toContain('invalid_at');
+    const pkCols = cols.filter(c => c.pk > 0).map(c => c.name);
+    expect(pkCols).toEqual(['id']);
 
     const indexes = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='memory_entities'").all() as { name: string; sql: string | null }[];
     expect(indexes.some(i => (i.sql ?? '').includes('entity_id'))).toBe(true);
   });
 
-  it('DB max schema version is 21 after migration', () => {
+  it('DB max schema version is 24 after migration', () => {
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(21);
+    expect(row.v).toBe(24);
   });
 });
 

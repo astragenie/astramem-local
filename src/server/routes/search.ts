@@ -1,15 +1,21 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=
+ *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=&preset=
  *   POST /recall  { query|text, k|limit, filters? }  filters.as_of: ISO-8601 date-time,
  *                                          filters.entity: FEAT-402 AC-4,
  *                                          filters.agentMode: FEAT-426 ('filter'|'boost')
+ *                 { preset? }              FEAT-454: named retrieval preset, see src/search/presets.ts
  *   POST /remember { text, type, metadata? }
  *
  * #112 (U3-local): `query`/`k` are the pre-ADR-005 legacy field names for
  * POST /recall; `text`/`limit` are the canonical ADR-005 names
  * (contracts/schemas/retrieval-query.v1.schema.json). Both spellings are
  * accepted for exactly one release — drop `query`/`k` next release.
+ *
+ * FEAT-454: `preset` selects a named routing over the existing fusion
+ * weights/filters (default|recent|exact|entity|temporal) — see
+ * src/search/presets.ts for the full semantics and AC-3 400 cases. Omitted
+ * `preset` is `'default'`, byte-identical to pre-FEAT-454 behavior (AC-1).
  */
 
 import { randomUUID } from 'node:crypto';
@@ -42,8 +48,18 @@ import { assignQueryFilterValues, assignStructuredFilterValues } from '../../con
 // it up automatically — tests/contracts/recall-filter-parity.test.ts is the
 // regression gate that fails the build if a local copy is ever re-introduced.
 import { MEMORY_TYPES } from '../../contracts/memory.js';
+// FEAT-454: named retrieval preset — routing over existing fusion
+// weights/filters, never a new scoring path. See src/search/presets.ts.
+import {
+  RETRIEVAL_PRESETS,
+  resolvePresetWeights,
+  validatePresetFilters,
+  PresetValidationError,
+  type RetrievalPreset,
+} from '../../search/presets.js';
 
 const MemoryTypeEnum = z.enum(MEMORY_TYPES);
+const RetrievalPresetEnum = z.enum(RETRIEVAL_PRESETS);
 
 const RecallBodySchema = z.object({
   // #112 AC-2: `text` (ADR-005 canonical) and `query` (legacy) are both
@@ -75,7 +91,9 @@ const RecallBodySchema = z.object({
     as_of: z.string().optional(),
     /** FEAT-402 slice 2 AC-4/FEAT-424: entity name — resolved via the AC-9 normalize seam — canonical contract. */
     entity: EntityFilterSchema
-  }).optional()
+  }).optional(),
+  /** FEAT-454: named retrieval preset — see src/search/presets.ts. Omitted = 'default'. */
+  preset: RetrievalPresetEnum.optional()
 }).refine((body) => (body.text ?? body.query) !== undefined, {
   // #112 AC-2: at least one of the canonical/legacy query-text spellings
   // is required — mirrors the pre-#112 `query: z.string().min(1)` required
@@ -99,7 +117,12 @@ const RememberBodySchema = z.object({
 
 export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defaultConfig()) {
   const cfg = defaultConfig();
-  const weights = cfg.search;
+  // FEAT-454: renamed from `weights` — this is now the per-preset BASE, not
+  // the final weights object. `resolvePresetWeights` (src/search/presets.ts)
+  // derives the actual per-request weights from this base, once per request
+  // (was: built once per route-factory call, which made a per-request preset
+  // impossible to honor).
+  const baseWeights = cfg.search;
   // issue #26 / ADR-005: cross-encoder rerank stage, read from the REAL
   // passed-in `config` (not `cfg` above — that pre-existing `defaultConfig()`
   // fallback for `weights` is out of scope here) so config.yaml's
@@ -143,6 +166,27 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         }
       }
 
+      // FEAT-454: named retrieval preset. Omitted = 'default', byte-identical
+      // to pre-FEAT-454 behavior (AC-1). An out-of-enum value is a 400, same
+      // shape as the `type` validation above.
+      let preset: RetrievalPreset = 'default';
+      if (params.preset !== undefined) {
+        const parsedPreset = RetrievalPresetEnum.safeParse(params.preset);
+        if (!parsedPreset.success) {
+          return reply.code(400).send({ error: 'invalid', details: parsedPreset.error.flatten() });
+        }
+        preset = parsedPreset.data;
+      }
+      try {
+        validatePresetFilters(preset, filters);
+      } catch (err) {
+        if (err instanceof PresetValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        throw err;
+      }
+      const weights = resolvePresetWeights(preset, baseWeights);
+
       const hits = await search(q, filters, limit, { db, embed, weights, rerank });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
@@ -183,6 +227,19 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
           return reply.code(400).send({ error: err instanceof Error ? err.message : 'invalid as_of' });
         }
       }
+
+      // FEAT-454: named retrieval preset. Omitted = 'default', byte-identical
+      // to pre-FEAT-454 behavior (AC-1).
+      const preset: RetrievalPreset = parsed.data.preset ?? 'default';
+      try {
+        validatePresetFilters(preset, filters);
+      } catch (err) {
+        if (err instanceof PresetValidationError) {
+          return reply.code(400).send({ error: err.message });
+        }
+        throw err;
+      }
+      const weights = resolvePresetWeights(preset, baseWeights);
 
       const hits = await search(query, filters, k, { db, embed, weights, rerank });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).

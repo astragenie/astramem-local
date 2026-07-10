@@ -12,6 +12,9 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { defaultDataDir } from '../config/datadir.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
+import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
+import { writeConfig } from '../config/writer.js';
+import { openRuntimeDb } from './open-runtime-db.js';
 import {
   defaultCodexSessionsDir,
   findNewSessions,
@@ -24,7 +27,9 @@ import {
   buildClaudeEnvelope,
   claudeIdempotencyKey,
   type ClaudeCaptureEvent,
+  type ClaudeTurn,
 } from '../capture/claude.js';
+import { gateRelevance, recordCapturedTurnHash } from '../capture/relevance-gate.js';
 import { writeToSpool } from '../ingest/spool.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -65,6 +70,9 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   const asJson = args.includes('--json');
   const eventArg = parseArg(args, '--event');
   const event: ClaudeCaptureEvent = eventArg === 'session_end' ? 'session_end' : 'subagent_stop';
+  // FEAT-455 / ADR-012 decision 1: the (future, plugin-repo, out of scope for
+  // this slice) denser-sampling trigger calls this CLI with --auto-capture.
+  const autoCaptureFlag = args.includes('--auto-capture');
 
   if (!transcriptPath) {
     console.error('capture claude: missing <transcript-path> argument');
@@ -84,9 +92,43 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
     return;
   }
 
+  // FEAT-455 / ADR-012 decision 4: this CLI is the actual enforcement point
+  // for "never enabled implicitly" — even once a future hook fires
+  // --auto-capture unconditionally, capture stays a no-op unless config.yaml
+  // has the explicit opt-in (set only via the init wizard prompt).
+  let captureSource: 'auto_capture' | undefined;
+  if (autoCaptureFlag) {
+    const { cfg } = resolveRuntimeConfig();
+    if (!cfg.capture.autoCapture.enabled) {
+      if (asJson) {
+        console.log(JSON.stringify({ transcript: transcriptPath, status: 'auto-capture-disabled' }, null, 2));
+      } else {
+        console.log(`capture claude: auto-capture is disabled in config — nothing spooled (${transcriptPath})`);
+      }
+      return;
+    }
+    captureSource = 'auto_capture';
+
+    // ADR-012 decision 2 (src/capture/relevance-gate.ts) — source-side gate,
+    // distinct from src/distill/durability-gate.ts per that module's AC-6.
+    // The dedup ring buffer is process-local and NOT persisted across
+    // invocations of this one-shot CLI (see relevance-gate.ts doc comment) —
+    // an accepted cold-start cost, not a correctness bug.
+    const gateOpts = cfg.capture.autoCapture.relevanceGate;
+    const recentHashes = new Set<string>();
+    const kept: ClaudeTurn[] = [];
+    for (const turn of parsed.turns) {
+      if (gateRelevance(turn, recentHashes, gateOpts)) continue;
+      recordCapturedTurnHash(recentHashes, turn.text, gateOpts.dedupWindow);
+      kept.push(turn);
+    }
+    parsed = { ...parsed, turns: kept };
+  }
+
   if (parsed.turns.length === 0) {
     // Not an error — a transcript that never got a real exchange (e.g. a
-    // subagent that was killed before responding) distills to noise.
+    // subagent that was killed before responding), or one whose every turn
+    // the relevance gate filtered out, distills to noise.
     if (asJson) {
       console.log(JSON.stringify({ transcript: transcriptPath, status: 'no-turns' }, null, 2));
     } else {
@@ -96,7 +138,7 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   }
 
   const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? defaultDataDir();
-  const envelope = buildClaudeEnvelope(parsed, event, PKG_VERSION);
+  const envelope = buildClaudeEnvelope(parsed, event, PKG_VERSION, undefined, captureSource);
   const key = claudeIdempotencyKey(envelope);
   const spooledPath = writeToSpool(dataDir, key, envelope);
 
@@ -113,14 +155,138 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   }
 }
 
+/**
+ * `astramem-local capture auto-capture disable [--purge|--keep] [--json]`
+ * (FEAT-455 / ADR-012 decision 4). Turning auto-capture off is always
+ * immediate (config.yaml write, no daemon required); the purge OFFER is a
+ * separate, explicit step — "offered, not forced" — scoped to
+ * `capture_source = 'auto_capture'` atoms via the SAME lifecycle primitive
+ * `erase_memory` (MCP) / `DELETE /memory/:id` (REST) already exposes
+ * (ADR-006), reused unmodified (spike checklist #5). A per-id try/catch means
+ * one already-erased id doesn't fail the whole batch.
+ */
+async function runAutoCaptureDisable(args: string[]): Promise<void> {
+  const asJson = args.includes('--json');
+  const purgeFlag = args.includes('--purge');
+  const keepFlag = args.includes('--keep');
+
+  if (purgeFlag && keepFlag) {
+    console.error('capture auto-capture disable: pass only one of --purge / --keep');
+    process.exitCode = 1;
+    return;
+  }
+
+  const { cfg, configDir } = resolveRuntimeConfig();
+  const wasEnabled = cfg.capture.autoCapture.enabled;
+  cfg.capture.autoCapture.enabled = false;
+  const configPath = join(configDir, 'config.yaml');
+  writeConfig(cfg, configPath);
+
+  if (!asJson) {
+    console.log(
+      wasEnabled
+        ? `auto-capture disabled — capture.autoCapture.enabled=false persisted to ${configPath}`
+        : `auto-capture was already disabled — config.yaml re-confirmed at ${configPath}`,
+    );
+  }
+
+  const { db } = openRuntimeDb();
+  const rows = db
+    .prepare(`SELECT id FROM memories WHERE capture_source = 'auto_capture' AND valid_to IS NULL`)
+    .all() as { id: string }[];
+  db.close();
+
+  if (rows.length === 0) {
+    if (asJson) {
+      console.log(JSON.stringify({ disabled: true, was_enabled: wasEnabled, auto_captured_count: 0, purge: 'no-op' }, null, 2));
+    } else {
+      console.log('No auto-captured memories found — nothing to purge.');
+    }
+    return;
+  }
+
+  let purge: boolean;
+  if (purgeFlag) {
+    purge = true;
+  } else if (keepFlag) {
+    purge = false;
+  } else if (process.stdout.isTTY && process.stdin.isTTY) {
+    const { confirm } = await import('@inquirer/prompts');
+    purge = await confirm({
+      message:
+        `${rows.length} auto-captured ${rows.length === 1 ? 'memory' : 'memories'} found. ` +
+        'Permanently erase them now? (No = keep them — auto-capture stays off either way)',
+      default: false,
+    });
+  } else {
+    console.log(
+      `${rows.length} auto-captured ${rows.length === 1 ? 'memory' : 'memories'} found. ` +
+      'Re-run with --purge to erase them or --keep to leave them (non-interactive, no action taken).',
+    );
+    return;
+  }
+
+  if (!purge) {
+    const msg = `Kept ${rows.length} auto-captured ${rows.length === 1 ? 'memory' : 'memories'} — offered, not forced (ADR-012 decision 4).`;
+    if (asJson) console.log(JSON.stringify({ disabled: true, was_enabled: wasEnabled, auto_captured_count: rows.length, purge: 'declined' }, null, 2));
+    else console.log(msg);
+    return;
+  }
+
+  // Purge: same REST surface erase_memory (MCP) / DELETE /memory/:id
+  // exposes — requires a running daemon. 404 (already erased) counts as
+  // done, not a failure (spike checklist #5 finding).
+  const baseUrl = process.env.ASTRA_MEMORY_URL ?? `http://127.0.0.1:${cfg.port}`;
+  const token = process.env.ASTRA_MEMORY_TOKEN ?? 'devtok';
+  let erased = 0;
+  let alreadyGone = 0;
+  let failed = 0;
+  for (const { id } of rows) {
+    try {
+      const res = await fetch(`${baseUrl}/memory/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { authorization: `Bearer ${token}` },
+      });
+      if (res.status === 200) erased++;
+      else if (res.status === 404) alreadyGone++;
+      else failed++;
+    } catch {
+      failed++;
+    }
+  }
+
+  if (asJson) {
+    console.log(JSON.stringify(
+      { disabled: true, was_enabled: wasEnabled, auto_captured_count: rows.length, purge: 'completed', erased, already_gone: alreadyGone, failed },
+      null, 2,
+    ));
+  } else {
+    console.log(`Purge complete: ${erased} erased, ${alreadyGone} already gone, ${failed} failed.`);
+    if (failed > 0) {
+      console.log('Some erasures failed — is the daemon running? Re-run this command to retry the remainder.');
+    }
+  }
+  if (failed > 0) process.exitCode = 1;
+}
+
 export async function captureCommand(args: string[]): Promise<void> {
   const source = args[0];
   if (source === 'claude') {
     await runCaptureClaudeOnce(args.slice(1));
     return;
   }
+  if (source === 'auto-capture') {
+    const sub = args[1];
+    if (sub === 'disable') {
+      await runAutoCaptureDisable(args.slice(2));
+      return;
+    }
+    console.error(`capture auto-capture: unknown subcommand '${sub ?? ''}' — supported: disable`);
+    process.exit(1);
+    return;
+  }
   if (source !== 'codex') {
-    console.error(`capture: unknown source '${source ?? ''}' — supported: codex, claude`);
+    console.error(`capture: unknown source '${source ?? ''}' — supported: codex, claude, auto-capture`);
     process.exit(1);
   }
 

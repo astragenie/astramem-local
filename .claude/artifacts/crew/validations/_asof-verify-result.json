@@ -1,0 +1,34 @@
+{
+  "verdict": "FIX CONFIRMED",
+  "results": [
+    {
+      "label": "no as_of",
+      "status": 200,
+      "hitCount": 3,
+      "foundFact": true
+    },
+    {
+      "label": "as_of=2023-12-01 (after captured_at, before today)",
+      "asOf": "2023-12-01T00:00:00Z",
+      "status": 200,
+      "hitCount": 3,
+      "foundFact": true
+    },
+    {
+      "label": "as_of=2020-01-01 (before captured_at)",
+      "asOf": "2020-01-01T00:00:00Z",
+      "status": 200,
+      "hitCount": 0,
+      "foundFact": false
+    },
+    {
+      "label": "as_of=today+1y (2027-07-09)",
+      "asOf": "2027-07-09T00:00:00Z",
+      "status": 200,
+      "hitCount": 3,
+      "foundFact": true
+    }
+  ],
+  "sessionId": "asof-verify-34589653-c499-4931-8fde-0d8277c49372",
+  "capturedAt": "2023-09-15T12:00:00Z"
+}

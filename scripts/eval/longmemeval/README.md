@@ -9,31 +9,35 @@ building it that the plan doc couldn't have known in advance.
 ## Layout
 
 ```
-scripts/eval/longmemeval/
-  lib/
-    types.ts          dataset + hypothesis record shapes
-    dates.ts          "YYYY/MM/DD (Dow) HH:MM" -> ISO-8601 UTC
-    dataset.ts        loader + deterministic stratified sampler
-    envelope.ts        haystack session -> canonical /ingest/transcript envelope
-    daemon-client.ts   fetch wrappers for /ingest/transcript, /recall, /sessions/:id/digest, /health
-    spawn-daemon.ts    spawns an ISOLATED throwaway daemon (see "Isolation" below)
-    azure-client.ts    Azure OpenAI chat-completions (plain fetch, no SDK dependency)
-    config.ts          Azure endpoint/deployment/key resolution (az cli fallback)
-    concurrency.ts      tiny bounded-concurrency map helper
-    shard.ts            round-robin question partitioning across N daemon shards
-    ollama-tuning.ts     Ollama server status query (/api/version, /api/ps) + tuning guidance
-  sample.mts            CLI: stratified sampler
-  ingest.mts             CLI + module: haystack -> /ingest/transcript driver
-  distill-wait.mts       CLI + module: poll /sessions/:id/digest until ready
-  answer.mts             CLI + module: /recall -> Azure gpt-5-mini -> hypotheses.jsonl
-  run-smoke.mts          orchestrator: sample -> daemon(s) -> ingest -> wait -> answer -> manifest
-                         (single-daemon by default; `--shards N` runs N isolated daemons
-                         concurrently and merges the results — see "Sharding" below; also
-                         hosts `--dry-run-throughput`, a standalone throughput measurement mode)
-  judge.mts              orchestrator: clone upstream (pristine) -> run Azure judge fork -> metrics
-  judge/
-    evaluate_qa_azure.py  Azure-aware fork of upstream's evaluate_qa.py (see its header)
-    metrics.mts           our own per-type/overall/abstention aggregator
+scripts/eval/
+  shared/                  plumbing shared with every eval harness under scripts/eval/
+                           (extracted here FEAT-457 so LoCoMo reuses it verbatim — see
+                           scripts/eval/locomo/README.md)
+    daemon-client.ts       fetch wrappers for /ingest/transcript, /recall, /sessions/:id/digest, /health
+    spawn-daemon.ts        spawns an ISOLATED throwaway daemon (see "Isolation" below)
+    azure-client.ts        Azure OpenAI chat-completions (plain fetch, no SDK dependency)
+    config.ts              Azure endpoint/deployment/key resolution (az cli fallback)
+    concurrency.ts         tiny bounded-concurrency map helper
+    shard.ts               round-robin item partitioning across N daemon shards
+    ollama-tuning.ts       Ollama server status query (/api/version, /api/ps) + tuning guidance
+  longmemeval/
+    lib/
+      types.ts             dataset + hypothesis record shapes
+      dates.ts             "YYYY/MM/DD (Dow) HH:MM" -> ISO-8601 UTC
+      dataset.ts           loader + deterministic stratified sampler
+      envelope.ts          haystack session -> canonical /ingest/transcript envelope
+    sample.mts             CLI: stratified sampler
+    ingest.mts             CLI + module: haystack -> /ingest/transcript driver
+    distill-wait.mts       CLI + module: poll /sessions/:id/digest until ready
+    answer.mts             CLI + module: /recall -> Azure gpt-5-mini -> hypotheses.jsonl
+    run-smoke.mts          orchestrator: sample -> daemon(s) -> ingest -> wait -> answer -> manifest
+                           (single-daemon by default; `--shards N` runs N isolated daemons
+                           concurrently and merges the results — see "Sharding" below; also
+                           hosts `--dry-run-throughput`, a standalone throughput measurement mode)
+    judge.mts              orchestrator: clone upstream (pristine) -> run Azure judge fork -> metrics
+    judge/
+      evaluate_qa_azure.py Azure-aware fork of upstream's evaluate_qa.py (see its header)
+      metrics.mts          our own per-type/overall/abstention aggregator
 ```
 
 Everything runs directly under `bun` (no build step) — this is a one-shot
@@ -59,7 +63,7 @@ lighter shard kept running fine. What ruled out an application bug:
   time of death (ruled out via `Get-WinEvent`) — a native fault or a normal
   OS-visible kill would show up in one of those.
 - The child process handle's own `exit` event never fired (checked via
-  `DaemonHandle.exitInfo()` — see `lib/spawn-daemon.ts`), yet the process
+  `DaemonHandle.exitInfo()` — see `../shared/spawn-daemon.ts`), yet the process
   was later confirmed gone from `Get-CimInstance Win32_Process`.
 - Separately, in an earlier attempt the same session, an entire `nohup ... &`
   detached background process TREE (including the orchestrating `bun`
@@ -293,7 +297,7 @@ to the **live production SaaS tenant** (`https://api.astramemory.com`) —
 `ASTRA_MEMORY_DATADIR`. Left running, that daemon would have sync-shipped
 every synthetic LongMemEval haystack session into a real cloud account.
 
-`lib/spawn-daemon.ts`'s `makeIsolatedEvalEnv` redirects
+`../shared/spawn-daemon.ts`'s `makeIsolatedEvalEnv` redirects
 `APPDATA`/`LOCALAPPDATA`/`HOME`/`XDG_CONFIG_HOME`/`XDG_DATA_HOME` into a
 throwaway temp sandbox for every run (same technique
 `tests/smoke/helpers/daemon.ts` uses, independently authored here since
@@ -354,9 +358,25 @@ observation) pace regardless of how fast you post. Raising `--concurrency`
 past what's needed to keep the queue non-empty does not speed up distill —
 only the plan doc's §4 multi-daemon sharding does.
 
-## CRITICAL daemon-side gap: `as_of` does not use `captured_at` — it uses real ingest wall-clock time
+## RESOLVED (historical): `as_of` used real ingest wall-clock time instead of `captured_at`
 
-**This is the single most important finding from building this adapter.**
+> **STATUS UPDATE (2026-07-09): FIXED in v0.9.0 — this section is a
+> historical record.** The population-side fix landed in the same PR wave
+> (#135) that added this README: distill now threads the envelope's
+> `captured_at` through to `valid_from` (`src/pipeline/handlers/distill.ts:108-113`,
+> mirrored in the events/spool path, terminal write `src/storage/memories.ts:130`;
+> CHANGELOG 0.9.0 "Fixed"). The "verified live" bisection below was run against
+> a daemon binary that predated the fix — the fix commit (`079117c`) was
+> authored 31 seconds before the README commit, and the running service had
+> not been rebuilt/reinstalled at measurement time. **Re-verified 2026-07-09
+> against a fresh v0.10.0 isolated daemon: FIX CONFIRMED** — the critical case
+> (`as_of` after `captured_at`, before real ingest time) returns hits; see
+> `.claude/artifacts/crew/validations/20260709T234200Z-validation-asof-population-fix.md`
+> for the full bisection table. Temporal-reasoning/knowledge-update questions
+> are valid to score. Legacy v0.0 envelopes (no `captured_at`) still fall back
+> to wall-clock by design.
+
+**Original finding (2026-07-08, pre-fix daemon):**
 Verified live (2026-07-08) against a real completed haystack (39 sessions,
 all `captured_at` dated 2023-07 through 2023-12, ingested for real on
 2026-07-08): `POST /recall` with `filters.as_of` set to the question's own
@@ -392,11 +412,10 @@ filtering — **temporal-reasoning (133) + knowledge-update (78) = 211 of
 hits and score as if abstaining, regardless of retrieval quality, for as
 long as this gap exists. `answer.mts` still applies `as_of` for those two
 question types per the plan doc (that part of the adapter is correct and
-unchanged) — this is a daemon-side gap, not an adapter bug, and is
-escalated to the daemon owners rather than fixed here. **Do not attempt a
-real scored run of temporal-reasoning/knowledge-update questions until this
-is resolved on the daemon side** — the number would be a measurement of
-this gap, not of memory quality.
+unchanged) — this was a daemon-side gap, not an adapter bug. **Resolved in v0.9.0 — see
+the status update at the top of this section.** Re-verify the bisection
+table once against a freshly-reinstalled ≥0.10.0 daemon before publishing a
+temporal score.
 
 ## Known daemon-side gap: poison distill jobs report as "ready"
 

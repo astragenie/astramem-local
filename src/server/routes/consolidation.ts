@@ -1,13 +1,17 @@
 /**
  * Consolidation routes (Wave 4b, ADR-004 stage 9):
- *   POST /consolidation/run                     -> 200 ConsolidateSummary
- *   GET  /consolidation/proposals?status=       -> { proposals: [...] }
- *   POST /consolidation/proposals/:id/accept    -> 200 proposal | 404 | 409
- *   POST /consolidation/proposals/:id/reject    -> 200 proposal | 404 | 409
+ *   POST /consolidation/run                          -> 200 ConsolidateSummary
+ *   GET  /consolidation/proposals?status=&kind=       -> { proposals: [...] }
+ *   POST /consolidation/proposals/:id/accept         -> 200 proposal | 404 | 409
+ *   POST /consolidation/proposals/:id/reject         -> 200 proposal | 404 | 409
  *
  * /run executes the deterministic pass inline (no LLM in v1 — cheap enough
  * to run synchronously); the `consolidate` job kind wraps the same call for
  * scheduled runs.
+ *
+ * FEAT-456 SLICE-2: `kind` is an optional second filter on the list route,
+ * needed for the design's `?status=accepted&kind=contradiction` audit query
+ * (§2.4) — `ProposalRepo.list()` already accepts it (proposals.ts).
  */
 
 import { z } from 'zod';
@@ -33,6 +37,7 @@ const RunBodySchema = z.object({
 
 const ListQuerySchema = z.object({
   status: z.enum(['pending', 'accepted', 'rejected']).optional(),
+  kind: z.enum(['merge', 'contradiction']).optional(),
 });
 
 export function consolidationRoutes(db: DB, config: Config) {
@@ -44,7 +49,7 @@ export function consolidationRoutes(db: DB, config: Config) {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
       }
-      return runConsolidation(db, {
+      return await runConsolidation(db, {
         mergeThreshold: parsed.data.merge_threshold,
         proposeThreshold: parsed.data.propose_threshold,
         // FEAT-442: on-demand runs pick up the configured auto-accept
@@ -58,7 +63,7 @@ export function consolidationRoutes(db: DB, config: Config) {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
       }
-      return { proposals: proposals.list(parsed.data.status) };
+      return { proposals: proposals.list(parsed.data.status, parsed.data.kind) };
     });
 
     const resolveHandler = (action: 'accept' | 'reject') =>

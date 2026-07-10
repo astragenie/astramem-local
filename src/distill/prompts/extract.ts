@@ -21,6 +21,16 @@ export const AtomEntitySchema = z.object({
   kind: EntityKindSchema,
   /** Meaningful only for ACTOR_KINDS (actor|team|org) — omitted when unknown. */
   subtype: z.enum(['human', 'ai']).optional(),
+  /**
+   * FEAT-453 §4: fact-level bitemporal validity hints, ISO-8601 date-time
+   * strings, extracted ONLY when the source text explicitly states a date
+   * for THIS entity relationship. Omitted (not "now") when the source
+   * states no date — an absent hint is "no fact-level opinion," which
+   * resolves at query time via the parent memory's own valid_from
+   * (docs/specs/FEAT-453-bitemporal-design.md §3.1), never baked in here.
+   */
+  valid_at: z.string().optional(),
+  invalid_at: z.string().optional(),
 });
 export type AtomEntity = z.infer<typeof AtomEntitySchema>;
 
@@ -53,7 +63,7 @@ Output STRICT JSON matching:
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
       "evidence": "<optional, short excerpt from source>",
-      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }]
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }]
     }
   ]
 }
@@ -91,6 +101,9 @@ kind is one of:
 - event: a named happening at a point in time (e.g. "the 2026-07-08 incident")
 - other: doesn't fit any kind above but is still a specific named thing
 Omit "entities" entirely (or leave it empty) when the atom names nothing specific.
+valid_at/invalid_at: omit both for a given entity unless the source text explicitly states
+a start and/or end date for THAT entity's specific relationship to the atom (e.g. "Alice was
+the approver from January to March") — never infer or default one from context.
 
 Skip noise: greetings, repeated thinking, false starts, generic AI fluff.
 Skip secrets: tokens, API keys, passwords.
@@ -164,7 +177,7 @@ Output STRICT JSON matching:
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
       "evidence": "<optional: an EXACT verbatim quote from the source — copy, never paraphrase>",
-      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }]
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }]
     }
   ]
 }
@@ -208,6 +221,9 @@ kind is one of:
 Precedence when a name is ambiguous (e.g. "Claude Code"): acting AS an agent → actor;
 the software/app itself → product; invoked as a CLI → tool.
 Omit "entities" entirely (or leave it empty) when the atom names nothing specific.
+valid_at/invalid_at: omit both for a given entity unless the source text explicitly states
+a start and/or end date for THAT entity's specific relationship to the atom (e.g. "Alice was
+the approver from January to March") — never infer or default one from context.
 
 Skip noise: greetings, repeated thinking, false starts, generic AI fluff.
 Skip secrets: tokens, API keys, passwords.

@@ -5,6 +5,7 @@ import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
+import { defaultConfig } from '../../src/config/config.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
 
@@ -540,6 +541,49 @@ describe('POST /remember', () => {
       payload: { text: 'hello', type: 'unknown' }
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  // FEAT-441 AC-5/AC-6: /remember writes a memory directly via
+  // MemoryRepo.insertWithCreateEvent (search.ts:220) — it never routes
+  // through the distill pipeline's embedAndIndex stage 8, so the durability
+  // gate (src/distill/durability-gate.ts) never runs against it, even with
+  // distill.durabilityGate: 'strict' configured. A deliberate /remember
+  // outranks the heuristic gate. One body per AC-1 taxonomy class (matching
+  // every gatedReason pattern the classifier recognizes) all persist with a
+  // real row and the unchanged {id, ok: true} response shape.
+  it('bypasses the durability gate entirely — every AC-1 low-durability pattern still persists, even with distill.durabilityGate: strict configured', async () => {
+    const gatedApp = await buildApp({
+      db,
+      token: 'tok',
+      embed: buildMockEmbed(),
+      config: { ...defaultConfig(), distill: { durabilityGate: 'strict' } },
+    });
+
+    const lowDurabilityBodies: Array<{ text: string; type: string }> = [
+      { text: 'Trunk status is green.', type: 'fact' },              // ephemeral_state
+      { text: 'Commit a589551 fixed the prod tag deploy blocker.', type: 'fact' }, // git_derivable
+      { text: 'No token handling identified in the auth module.', type: 'fact' }, // vacuous_negative
+      { text: 'Run memory test', type: 'command' },                  // bare_todo
+      { text: 'src/distill/stages/08-embed-index.ts:84', type: 'note' }, // path_fragment
+    ];
+
+    for (const body of lowDurabilityBodies) {
+      const res = await gatedApp.inject({
+        method: 'POST',
+        url: '/remember',
+        headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+        payload: body,
+      });
+      expect(res.statusCode, `POST /remember for "${body.text}"`).toBe(200);
+      const parsed = res.json();
+      expect(parsed).toEqual({ id: expect.any(String), ok: true });
+
+      const row = db.prepare('SELECT id, text FROM memories WHERE id = ?').get(parsed.id) as
+        | { id: string; text: string }
+        | undefined;
+      expect(row, `real row for "${body.text}"`).toBeTruthy();
+      expect(row!.text).toBe(body.text);
+    }
   });
 });
 

@@ -13,8 +13,8 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import type { LongMemEvalQuestion } from './lib/types.js';
 import { buildIngestEnvelope, sessionIdFor } from './lib/envelope.js';
-import { ingestTranscript, type DaemonClientOpts } from './lib/daemon-client.js';
-import { mapWithConcurrency } from './lib/concurrency.js';
+import { ingestTranscript, type DaemonClientOpts } from '../shared/daemon-client.js';
+import { mapWithConcurrency } from '../shared/concurrency.js';
 
 export interface IngestJob {
   question_id: string;

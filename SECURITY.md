@@ -2,14 +2,14 @@
 
 ## Supported versions
 
-Only the `0.8.x` line is currently supported with security fixes. AstraMemory Local has not yet
-reached a 1.0 release; there is no LTS branch. Upgrade to the latest `0.8.x` release before
+Only the `0.10.x` line is currently supported with security fixes. AstraMemory Local has not yet
+reached a 1.0 release; there is no LTS branch. Upgrade to the latest `0.10.x` release before
 reporting an issue.
 
 | Version | Supported |
 |---------|-----------|
-| 0.8.x   | ✅        |
-| < 0.8.0 | ❌        |
+| 0.10.x  | ✅        |
+| < 0.10.0 | ❌       |
 
 ## Reporting a vulnerability
 

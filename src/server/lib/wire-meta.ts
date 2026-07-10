@@ -108,4 +108,12 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 // 021 = widen memory_events.event_type CHECK to add 'unsupersede' (FEAT-442
 //       reversal primitive for autonomous-consolidation auto-accept) --
 //       same create-copy-swap table-rewrite pattern migration 013 used.
-export const SCHEMA_VERSION = 21 as const;
+// 022 = consolidation_proposals.metadata_json, additive nullable column
+//       (FEAT-456 SLICE-1 contradiction judge verdict/confidence/excerpts).
+// 023 = memory_entities surrogate-PK rebuild + nullable valid_at/invalid_at
+//       (FEAT-453 SLICE-2 fact-level bitemporal tracking) -- same
+//       create-copy-swap pattern as 021; see migration file header and
+//       docs/specs/FEAT-453-bitemporal-design.md §1.
+// 024 = transcripts.capture_source / memories.capture_source, additive
+//       nullable columns + partial index (FEAT-455, ADR-012 decision 4).
+export const SCHEMA_VERSION = 24 as const;

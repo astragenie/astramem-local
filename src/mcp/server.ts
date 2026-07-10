@@ -7,7 +7,7 @@
  * list below is a human-readable summary kept in sync by that test, not a
  * second SoT.
  *
- * Exposes 17 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 18 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert
@@ -15,6 +15,7 @@
  *   - why_memory         — provenance receipt (evidence, session, transcript ref)
  *   - session_digest     — per-session "what I learned" summary (derived at read time)
  *   - agent_profile      — per-agent "what has this agent learned" summary (derived at read time)
+ *   - user_profile       — daemon-wide "what does this owner keep coming back to" summary (FEAT-451, derived at read time)
  *   - invalidate_memory  — lifecycle: mark a memory invalid (ADR-002 memory_events log)
  *   - supersede_memory   — lifecycle: replace one memory with another
  *   - promote_memory     — lifecycle: upward-only scope promotion (ADR-009)
@@ -23,7 +24,9 @@
  *   - submit_feedback    — ADR-010 explicit recall-used signal for a served memory (U5 canonical name)
  *   - mark_memory_used   — DEPRECATED one-release alias for submit_feedback (U5 collapse), same handler
  *   - erase_memory       — erasure v1 (ADR-006): hard-delete + tombstone
- *   - list_consolidation_proposals / resolve_consolidation_proposal — stage-9 propose-only queue (ADR-004)
+ *   - list_consolidation_proposals / resolve_consolidation_proposal — stage-9 propose-only queue
+ *     (ADR-004): 'merge' near-duplicates and FEAT-456 judge-flagged 'contradiction' pairs, both
+ *     resolved identically (accept = merge-as-supersede, reject = no-op)
  *
  * FEAT-442 (autonomous consolidation auto-accept + reversal primitive) ships
  * REST-only this slice: `POST /memory/:id/unsupersede`
@@ -61,13 +64,24 @@ import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../c
 // FEAT-429: project/agent/entity arg-parsing derives from the shared
 // filter-descriptor registry — see src/contracts/filter-registry.ts.
 import { assignStructuredFilterValues } from '../contracts/filter-registry.js';
+// FEAT-454: named retrieval preset — routing over existing fusion
+// weights/filters, never a new scoring path. See src/search/presets.ts.
+import {
+  RETRIEVAL_PRESETS,
+  resolvePresetWeights,
+  validatePresetFilters,
+  PresetValidationError,
+  type RetrievalPreset,
+} from '../search/presets.js';
 import { contentHash } from '../storage/content-hash.js';
 import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import { buildAgentProfile } from '../server/queries/agent-profile.js';
+import { buildUserProfile } from '../server/queries/user-profile.js';
 import {
   ProposalRepo,
   ProposalNotFoundError,
   ProposalAlreadyResolvedError,
+  parseContradictionMetadata,
 } from '../consolidate/proposals.js';
 // Canonical cross-repo save-contract unification: `remember`'s type enum and
 // the REST POST /remember route (src/server/routes/search.ts) both derive
@@ -87,7 +101,10 @@ export interface McpServerDeps {
 export function buildMcpServer(deps: McpServerDeps): McpServer {
   const { db, embed } = deps;
   const cfg = deps.config ?? defaultConfig();
-  const weights = cfg.search;
+  // FEAT-454: renamed from `weights` — this is now the per-preset BASE, not
+  // the final weights object. `resolvePresetWeights` (src/search/presets.ts)
+  // derives the actual per-call weights from this base, once per tool call.
+  const baseWeights = cfg.search;
   // issue #26 / ADR-005: cross-encoder rerank stage — undefined (search()
   // takes zero extra branches) unless crossEncoder.enabled is set.
   const rerank = resolveRerankOpts(cfg);
@@ -128,6 +145,16 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .describe(
             'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
           ),
+        preset: z
+          .enum(RETRIEVAL_PRESETS)
+          .optional()
+          .describe(
+            "FEAT-454: named retrieval preset routing over existing capability, not a new scoring path. " +
+            "'default' (or omitted): today's fusion weights, unchanged. 'recent': boosts freshness so newer " +
+            "memories rank higher. 'exact': boosts BM25 so literal term matches dominate over semantic " +
+            "similarity. 'entity': requires the entity filter to also be supplied (400 otherwise). " +
+            "'temporal': requires the as_of filter to also be supplied (400 otherwise)."
+          ),
       }),
     },
     async (args) => {
@@ -148,6 +175,21 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           };
         }
       }
+      // FEAT-454: named retrieval preset. Omitted = 'default', byte-identical
+      // to pre-FEAT-454 behavior (AC-1).
+      const preset: RetrievalPreset = args.preset ?? 'default';
+      try {
+        validatePresetFilters(preset, filters);
+      } catch (err) {
+        if (err instanceof PresetValidationError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message }) }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+      const weights = resolvePresetWeights(preset, baseWeights);
 
       const hits = await search(args.query, filters, args.limit ?? 10, {
         db,
@@ -206,6 +248,16 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .describe(
             'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
           ),
+        preset: z
+          .enum(RETRIEVAL_PRESETS)
+          .optional()
+          .describe(
+            "FEAT-454: named retrieval preset routing over existing capability, not a new scoring path. " +
+            "'default' (or omitted): today's fusion weights, unchanged. 'recent': boosts freshness so newer " +
+            "memories rank higher. 'exact': boosts BM25 so literal term matches dominate over semantic " +
+            "similarity. 'entity': requires the entity filter to also be supplied (400 otherwise). " +
+            "'temporal': requires the as_of filter to also be supplied (400 otherwise)."
+          ),
       }),
     },
     async (args) => {
@@ -226,6 +278,21 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           };
         }
       }
+      // FEAT-454: named retrieval preset. Omitted = 'default', byte-identical
+      // to pre-FEAT-454 behavior (AC-1).
+      const preset: RetrievalPreset = args.preset ?? 'default';
+      try {
+        validatePresetFilters(preset, filters);
+      } catch (err) {
+        if (err instanceof PresetValidationError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message }) }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+      const weights = resolvePresetWeights(preset, baseWeights);
 
       const hits = await search(args.query, filters, args.k ?? 5, {
         db,
@@ -439,7 +506,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     'session_digest',
     {
       description:
-        'What I learned this session: per-type counts + texts of memories formed. Defaults to the latest session.',
+        'What I learned this session: per-type counts + texts of memories formed, plus a ' +
+        'pending_contradictions count (FEAT-456) for judge-flagged conflicts touching this session\'s ' +
+        'memories, awaiting resolution via list/resolve_consolidation_proposal. Defaults to the latest session.',
       inputSchema: z.object({
         session_id: z.string().optional().describe('Session id; defaults to most recent session'),
       }),
@@ -496,6 +565,33 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           isError: true,
         };
       }
+      return { content: [{ type: 'text' as const, text: JSON.stringify(profile) }] };
+    }
+  );
+
+  // ---- user_profile -----------------------------------------------------
+  server.registerTool(
+    'user_profile',
+    {
+      description:
+        'Read-time synthesized daemon-wide profile — "what does this owner keep coming back to": ' +
+        'standing facts, preferences, recurring lessons (each ranked by the ADR-010 usefulness ' +
+        'signal, then importance), recent decisions, and known entities. No agent filter — this ' +
+        'is the whole daemon\'s profile, not a per-agent one (see agent_profile for that). Every ' +
+        'entry carries a memory id that composes with why_memory.',
+      inputSchema: z.object({
+        scope: z
+          .enum(['private', 'team', 'org', 'all'])
+          .optional()
+          .describe('Scope filter, defaults to "private" (ADR-009 default). "all" removes the scope filter entirely.'),
+      }),
+    },
+    async (args) => {
+      // args.scope is already constrained to the enum by inputSchema (the
+      // SDK rejects an out-of-enum value before this handler runs) — no
+      // runtime re-check needed here, unlike the REST route which parses an
+      // untyped query string.
+      const profile = buildUserProfile(db, args.scope ?? 'private');
       return { content: [{ type: 'text' as const, text: JSON.stringify(profile) }] };
     }
   );
@@ -755,19 +851,27 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     {
       description:
         'Pending (or resolved) consolidation proposals from the stage-9 pass (ADR-004): borderline ' +
-        'near-duplicate pairs awaiting an explicit merge/keep decision. Nothing is changed until a ' +
-        'proposal is resolved via resolve_consolidation_proposal.',
+        'near-duplicate pairs (kind=merge) awaiting an explicit merge/keep decision, and FEAT-456 ' +
+        'judge-flagged conflicting pairs (kind=contradiction, e.g. "port is 7777" vs "port is 8888") ' +
+        'awaiting confirm/dismiss. Contradiction rows include verdict/confidence/excerpts from the ' +
+        'judge. Nothing is changed until a proposal is resolved via resolve_consolidation_proposal.',
       inputSchema: z.object({
         status: z.enum(['pending', 'accepted', 'rejected']).default('pending').describe('Filter by status'),
+        kind: z.enum(['merge', 'contradiction']).optional().describe('Optional filter by proposal kind'),
       }),
     },
     async (args) => {
-      const proposals = new ProposalRepo(db).list(args.status);
+      const proposals = new ProposalRepo(db).list(args.status, args.kind);
       const memRepo = new MemoryRepo(db);
       const enriched = proposals.map(p => ({
         ...p,
         winner_text: memRepo.get(p.winner_id)?.text ?? null,
         loser_text: memRepo.get(p.loser_id)?.text ?? null,
+        // FEAT-456 SLICE-2: parsed verdict/confidence/excerpts for
+        // kind='contradiction' rows so an agent sees *why* without a
+        // second round-trip. null for kind='merge' rows (metadata_json
+        // is NULL) — see parseContradictionMetadata.
+        contradiction_metadata: parseContradictionMetadata(p),
       }));
       return { content: [{ type: 'text' as const, text: JSON.stringify({ proposals: enriched }) }] };
     }
@@ -778,9 +882,11 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     'resolve_consolidation_proposal',
     {
       description:
-        'Accept or reject a pending consolidation proposal. Accept executes the non-destructive ' +
-        'merge-as-supersede (loser kept as superseded, winner gains derived_from lineage); reject ' +
-        'keeps both memories untouched.',
+        'Accept or reject a pending consolidation proposal, merge or contradiction kind alike — ' +
+        'resolution is identical for both. Accept executes the non-destructive merge-as-supersede ' +
+        '(loser kept as superseded, winner gains derived_from lineage); reject keeps both memories ' +
+        'untouched. For a contradiction proposal, accept confirms the newer atom (winner) corrects ' +
+        'the older one (loser).',
       inputSchema: z.object({
         id: z.string().min(1).describe('Proposal id'),
         action: z.enum(['accept', 'reject']).describe('Resolution'),

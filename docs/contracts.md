@@ -8,4 +8,4 @@ Wave 2 parallel tracks build against these. Changes require PR review.
 - `src/contracts/memory.ts` — Memory, MemoryType
 - `src/contracts/job.ts` — Job, JobKind, JobState
 
-Schema is frozen at migration `001-init`. New columns/tables = new migration file.
+Schema is currently at migration `021-unsupersede-event-type` (21 migrations applied). New columns/tables = new migration file.

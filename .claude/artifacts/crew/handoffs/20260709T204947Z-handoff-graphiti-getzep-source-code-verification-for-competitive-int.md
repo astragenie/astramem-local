@@ -1,0 +1,35 @@
+# Task Handoff: Graphiti (getzep) source-code verification for competitive intel
+
+- Created: 2026-07-09T20:49:47.358Z
+- From: researcher
+- To: dispatcher
+- Objective: Prior web-only claims about Graphiti (bitemporal edges, hybrid retrieval, no MCP) are mostly confirmed in code, but 'no first-party MCP' is REFUTED — mcp_server/ ships 13 FastMCP tools in-repo — and the 63.8% LongMemEval number is unverified-in-repo (README/CI have no such figure).
+- Allowed Scope:
+  - 10-dimension code-verified audit of C:\work\mega\astramem-local-competitors-code\graphiti (stack
+  - storage
+  - retrieval
+  - bitemporal model
+  - provenance
+  - local-first
+  - security
+  - eval rigor
+  - MCP
+  - license)
+- Forbidden Scope: -
+- Deliverable: Dense per-dimension findings with file:line citations, each tagged verified-from-code/from-README/unverified, plus explicit confirm/refute/add-detail verdict vs prior claim (see inline report below)
+- Changed Files:
+  - graphiti_core/edges.py:263-355
+  - graphiti_core/nodes.py:98
+  - 322
+  - graphiti_core/driver/driver.py:59-64
+  - graphiti_core/search/search.py:24-65
+  - mcp_server/src/graphiti_mcp_server.py:171-1231
+  - pyproject.toml
+  - LICENSE
+  - graphiti_core/telemetry/telemetry.py
+  - .github/workflows/unit_tests.yml
+  - tests/evals/data/longmemeval_data
+- Confidence: high
+- Risks: Shallow clone has only 1 git commit visible (CLA-bot commit) so cannot independently confirm repo activity/cadence from git log alone (rely on external GitHub signal instead); did not exhaustively grep server/graph_service for full auth middleware chain beyond config.py; LongMemEval 63.8% figure could still be accurate but is not present anywhere in this checkout (README, CI, or eval scripts) so it is an external-source claim only
+- Suggested Next Handoff: Feed this into the gap-analysis doc; flag 'no first-party MCP' as a correction (13 tools: add_memory, search_nodes, search_memory_facts, delete_entity_edge, delete_episode, get_entity_edge, get_episodes, summarize_saga, build_communities, add_triplet, get_episode_entities, clear_graph, get_status)
+

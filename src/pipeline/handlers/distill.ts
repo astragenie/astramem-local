@@ -34,6 +34,9 @@ interface TranscriptRow {
   source: string;
   /** Canonical envelope's captured_at (epoch ms), NULL for legacy v0.0 ingests. */
   captured_at: number | null;
+  /** FEAT-455 / ADR-012 decision 4: 'auto_capture' when this transcript came
+   *  from the hook-tap auto-capture trigger, NULL for every other producer. */
+  capture_source: 'auto_capture' | null;
 }
 
 interface SessionRow {
@@ -58,7 +61,7 @@ export const distillHandler: JobHandler = {
 
     // Fetch transcript content
     const transcript = ctx.db
-      .prepare('SELECT id, session_id, content, source, captured_at FROM transcripts WHERE id = ?')
+      .prepare('SELECT id, session_id, content, source, captured_at, capture_source FROM transcripts WHERE id = ?')
       .get(transcript_id) as TranscriptRow | undefined;
 
     if (!transcript) {
@@ -111,13 +114,23 @@ export const distillHandler: JobHandler = {
       // NULL for legacy v0.0 envelopes, which have no captured_at and keep
       // the wall-clock default (see EmbedIndexContext.capturedAtMs).
       capturedAtMs: transcript.captured_at ?? null,
+      // FEAT-455 / ADR-012 decision 4: carried on the transcripts row at
+      // ingest time (see ingestCanonicalTranscript, src/server/routes/
+      // ingest.ts) — NULL for every producer except the hook-tap
+      // auto-capture trigger.
+      captureSource: transcript.capture_source ?? null,
+      // FEAT-441: durability gate mode + config threaded straight from the
+      // running config — undefined durabilityGateMode falls back to 'off'
+      // deep in embedAndIndex (AC-2 byte-identical default).
+      durabilityGateMode: ctx.config.distill.durabilityGate,
+      config: ctx.config,
     };
 
     try {
       const result = await runPipeline(transcriptText, pipelineCtx);
       console.log(
         `${ts()} [distill] transcript=${transcript_id} chunks=${result.chunksProcessed} atoms=${result.atomsExtracted} ` +
-          `created=${result.memoriesCreated} deduped=${result.memoriesDeduped}`,
+          `created=${result.memoriesCreated} deduped=${result.memoriesDeduped} gatedOut=${result.gatedOutCount}`,
       );
 
       // D-DEF2: backfill ingest_idempotency.summary_memory_id (currently the

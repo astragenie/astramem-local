@@ -219,6 +219,54 @@ export interface Config {
    * `applyFusionGovernance`). */
   consolidation: {
     autoAcceptThreshold: number | null;
+    /** Propose-only contradiction detection (FEAT-456 SLICE-1). `mode: 'off'`
+     * (default) is BYTE-IDENTICAL to pre-FEAT-456 behavior — the judge
+     * (`src/consolidate/contradiction-judge.ts`) is never called from
+     * `runConsolidation`. `'dry-run'` runs the judge and records verdicts in
+     * `ConsolidateSummary.contradictionsPreviewed` without writing a row —
+     * the safe-rollout mode. `'enabled'` writes `kind:'contradiction'`
+     * `consolidation_proposals` rows for confident `contradicts` verdicts;
+     * resolution reuses `ProposalRepo.accept`/`reject` unchanged (same
+     * non-destructive, reversible supersede path a 'merge' proposal uses).
+     * Mirrors the `distill.durabilityGate` 3-state-enum precedent rather
+     * than two independent booleans (avoids the ambiguous
+     * `enabled:false, dryRun:true` combination). Opt-in only until eval'd —
+     * do not change this default casually (same caveat durabilityGate
+     * carries). `minSimilarity`/`minConfidence` bounds are validated
+     * per-run inside `runConsolidation` (mirrors
+     * `resolveAutoAcceptThreshold` — they depend on the run's
+     * `mergeThreshold`, so they can't be governed here at config-load
+     * time); only `mode` itself is validated here, see
+     * `applyContradictionDetectionGovernance`. */
+    contradictionDetection: {
+      /** Cosine floor for judge eligibility — deliberately lower/decoupled
+       * from `proposeThreshold`: contradicting facts about the same entity
+       * can sit well below the near-duplicate paraphrase band. Must be in
+       * `[0, mergeThreshold)` for the run in effect. */
+      minSimilarity: number;
+      /** Judge confidence floor to act on a 'contradicts' verdict. Must be
+       * in `[0, 1]`. */
+      minConfidence: number;
+      /** Cap on judge calls per `runConsolidation()` call (cost/latency
+       * guard) — bounds the ENTIRE run, not per group. Once exhausted,
+       * remaining judge-eligible pairs fall through to the existing
+       * merge-tier classification unchanged (`contradictionCapReached`
+       * distinguishes "no contradictions found" from "ran out of budget"). */
+      maxPerRun: number;
+      mode: 'off' | 'dry-run' | 'enabled';
+    };
+  };
+  /** Distillation durability quality gate (FEAT-441). `off` (default) is
+   * BYTE-IDENTICAL to pre-FEAT-441 behavior — the gate
+   * (`src/distill/durability-gate.ts`) is never even evaluated at the
+   * persist call site (`src/distill/stages/08-embed-index.ts`). `strict`
+   * gates all 5 low-durability taxonomy reasons; `lenient` gates only the
+   * 3 lowest-false-positive-risk reasons (see durability-gate.ts doc
+   * comment). Opt-in only until eval'd — do not change this default. Read
+   * once at boot like every other config value (CLAUDE.md "Config reload"
+   * section) — no hot reload. */
+  distill: {
+    durabilityGate: 'strict' | 'lenient' | 'off';
   };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
@@ -245,6 +293,27 @@ export interface Config {
      * Default 32MB comfortably exceeds the measured p99 main-session size
      * (28.9MB, FEAT-449 triage). */
     spoolMaxBytes: number;
+  };
+  /** Automatic memory capture (FEAT-455, ADR-012). `enabled: false` (default)
+   * is BYTE-IDENTICAL to pre-FEAT-455 behavior — the hook-tap trigger never
+   * fires and the ingest spool sees nothing new. Enabling requires an
+   * explicit opt-in disclosed by the `init` wizard prompt (ADR-012 decision
+   * 4) — never flipped on by an upgrade or a default-config write. v1 =
+   * hook-tap only (ADR-012 decision 1); MCP-tap/LLM-proxy are out of scope
+   * and have no config surface here. */
+  capture: {
+    autoCapture: {
+      enabled: boolean;
+      /** Source-side relevance gate (ADR-012 decision 2,
+       * `src/capture/relevance-gate.ts`) — distinct config surface from
+       * `distill.durabilityGate`, kept fully separate per that module's
+       * AC-6. */
+      relevanceGate: {
+        minChars: number;
+        maxBytes: number;
+        dedupWindow: number;
+      };
+    };
   };
 }
 
@@ -283,9 +352,19 @@ export function defaultConfig(): Config {
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
     ingestIdempotency: { retentionDays: 7 },
     pipeline: { concurrency: 1 },
-    consolidation: { autoAcceptThreshold: null },
+    consolidation: {
+      autoAcceptThreshold: null,
+      contradictionDetection: { mode: 'off', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 },
+    },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
+    distill: { durabilityGate: 'off' },
+    capture: {
+      autoCapture: {
+        enabled: false,
+        relevanceGate: { minChars: 8, maxBytes: 65536, dedupWindow: 20 },
+      },
+    },
   };
 }
 
@@ -355,8 +434,89 @@ export function applyFusionGovernance(
   return governed;
 }
 
+/**
+ * FEAT-441 fix pass (2026-07-09 review MEDIUM): `distill.durabilityGate` is
+ * a closed 3-value enum, but config.yaml is hand-parsed scalars with no
+ * schema (see loader.ts's doc comment) — an invalid/typo'd value (e.g.
+ * 'strcit') would otherwise pass straight through `deepMerge` unchecked.
+ * That is not a silent no-op: `gateDurability`'s `mode === 'off'` /
+ * `mode === 'strict'` checks fall through to the `lenient` branch for ANY
+ * other string, so a typo would silently start gating atoms under lenient
+ * rules instead of falling back to the documented 'off' default. Validated
+ * here, mirroring `applyFusionGovernance`'s "never throw, degrade + log"
+ * shape exactly — never fatal, config.yaml validity must never block boot.
+ */
+const VALID_DURABILITY_GATE_MODES: ReadonlySet<Config['distill']['durabilityGate']> =
+  new Set(['strict', 'lenient', 'off']);
+
+export function applyDurabilityGateGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  if (!VALID_DURABILITY_GATE_MODES.has(distill.durabilityGate)) {
+    log(
+      `[durability-gate-governance] distill.durabilityGate=${JSON.stringify(distill.durabilityGate)} is not one ` +
+      "of 'strict'|'lenient'|'off' — falling back to 'off' (the documented default). " +
+      'See FEAT-441 / src/distill/durability-gate.ts.',
+    );
+    return { ...distill, durabilityGate: 'off' };
+  }
+  return distill;
+}
+
+/**
+ * FEAT-456 SLICE-1: `consolidation.contradictionDetection.mode` is a closed
+ * 3-value enum, same governance concern `applyDurabilityGateGovernance`
+ * already documents for `distill.durabilityGate` — config.yaml is
+ * hand-parsed scalars with no schema, so a typo'd mode value would
+ * otherwise pass straight through `deepMerge` unchecked. Validated here,
+ * never fatal; an invalid value falls back to `'off'` (the documented
+ * default) and is logged. `minSimilarity`/`minConfidence` are NOT governed
+ * here — they're validated per-run inside `runConsolidation` because their
+ * valid range depends on the run's `mergeThreshold`, which this config
+ * layer doesn't know about.
+ */
+const VALID_CONTRADICTION_DETECTION_MODES:
+  ReadonlySet<Config['consolidation']['contradictionDetection']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+const DEFAULT_CONTRADICTION_DETECTION: Config['consolidation']['contradictionDetection'] =
+  { mode: 'off', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 };
+
+export function applyContradictionDetectionGovernance(
+  consolidation: Config['consolidation'],
+  opts: { log?: (message: string) => void } = {},
+): Config['consolidation'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const cd = consolidation.contradictionDetection;
+  // `loadConfig`'s top-level override merge is shallow (`{...base,
+  // ...overrides}`), so an override that only sets `consolidation.
+  // autoAcceptThreshold` replaces the WHOLE `consolidation` object and drops
+  // `contradictionDetection` entirely — a missing object is just as
+  // possible here as an invalid `mode`, so it gets the same non-fatal
+  // fallback rather than a TypeError.
+  if (!cd || !VALID_CONTRADICTION_DETECTION_MODES.has(cd.mode)) {
+    log(
+      cd
+        ? `[contradiction-detection-governance] consolidation.contradictionDetection.mode=` +
+          `${JSON.stringify(cd.mode)} is not one of 'off'|'dry-run'|'enabled' — falling back to ` +
+          "'off' (the documented default). See FEAT-456 / src/consolidate/contradiction-judge.ts."
+        : '[contradiction-detection-governance] consolidation.contradictionDetection is missing — ' +
+          'falling back to defaults (mode: \'off\'). See FEAT-456 / src/consolidate/contradiction-judge.ts.',
+    );
+    return { ...consolidation, contradictionDetection: { ...DEFAULT_CONTRADICTION_DETECTION, ...cd, mode: 'off' } };
+  }
+  return consolidation;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
-  return { ...merged, search: applyFusionGovernance(merged.search) };
+  return {
+    ...merged,
+    search: applyFusionGovernance(merged.search),
+    distill: applyDurabilityGateGovernance(merged.distill),
+    consolidation: applyContradictionDetectionGovernance(merged.consolidation),
+  };
 }
