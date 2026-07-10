@@ -13,11 +13,21 @@
  *   [--distill-timeout-ms 900000] [--shards 1]
  *   [--run-dir .eval-data/locomo/runs/<timestamp>] [--ollama-url <url>]
  *
+ * Resume a killed run (FEAT-462): re-attach to an existing --run-dir,
+ * respawn shard daemons on their existing datadirs, and skip re-ingesting
+ * every session each shard's ledger already shows completed ok. Pass the
+ * SAME --dataset/--seed/--n/--qa-per-sample/--shards flags as the original
+ * invocation (the sample and shard partitioning are deterministic given
+ * those). Mirrors ../longmemeval/run-smoke.mts's --resume exactly (FEAT-462
+ * AC-6 — same shared/resume-ledger.ts machinery, same flag surface):
+ * bun scripts/eval/locomo/run.mts --resume <run-dir>
+ *   [...same flags as the original invocation]
+ *
  * Throughput dry run (ingest+distill only, no answer/judge step, no Azure):
  * bun scripts/eval/locomo/run.mts --dry-run-throughput
  *   [--shards 2] [--dry-run-conversations 1] [--distill-timeout-ms <ms>]
  */
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { loadDataset, sampleLocomo, ensureDatasetDownloaded } from './lib/dataset.js';
@@ -32,6 +42,8 @@ import { answerConversations, writeHypothesesJsonl, type AnswerOutcome } from '.
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance } from '../shared/ollama-tuning.js';
+import { ledgerCompletedMap } from '../shared/resume-ledger.js';
+import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -47,6 +59,8 @@ const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
 const dryRunThroughput = has('--dry-run-throughput');
+// FEAT-462 AC-1/AC-6: see ../longmemeval/run-smoke.mts's identical comment.
+const resumeDir = get('--resume');
 
 if (dryRunThroughput) {
   await runDryRunThroughput();
@@ -74,10 +88,18 @@ async function runShard(opts: {
   distillTimeoutMs: number;
   k: number;
   azureCfg: AzureConfig | null; // null => ingest+distill only, skip answer (dry-run-throughput mode)
+  /** FEAT-462 AC-1: see ../longmemeval/run-smoke.mts's identical option —
+   *  defaults to false so every existing call site is unaffected (AC-7). */
+  resume?: boolean;
 }): Promise<ShardResult> {
-  const { shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg } = opts;
+  const { shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
-  const dataDir = label ? join(runDir, label, 'datadir') : join(runDir, 'datadir');
+  const shardDir = label ? join(runDir, label) : runDir;
+  const dataDir = join(shardDir, 'datadir');
+  // Crash-safe ledger (FEAT-462 AC-1/AC-4) — see run-smoke.mts's identical
+  // comment for the always-write / conditional-read rationale.
+  const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
+  const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
   const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run');
   const timings: Record<string, number> = {};
@@ -108,7 +130,12 @@ async function runShard(opts: {
     const ingestManifest = await ingestConversations(
       { baseUrl: daemon.baseUrl, token },
       samples,
-      { concurrency, onProgress: (d, total) => { checkDaemonAlive(); if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`); } },
+      {
+        concurrency,
+        ledgerPath,
+        resumeCompleted,
+        onProgress: (d, total) => { checkDaemonAlive(); if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`); },
+      },
     );
     process.stdout.write('\n');
     timings.ingest_ms = Date.now() - t;
@@ -182,16 +209,40 @@ async function runFull(): Promise<void> {
   const nRaw = get('--n');
   const qaPerSampleRaw = get('--qa-per-sample');
   const distillTimeoutMs = Number(get('--distill-timeout-ms') ?? String(15 * 60_000));
-  const runDir = get('--run-dir') ?? join('.eval-data', 'locomo', 'runs', new Date().toISOString().replace(/[:.]/g, '-'));
+  const runDir = resumeDir ?? get('--run-dir') ?? join('.eval-data', 'locomo', 'runs', new Date().toISOString().replace(/[:.]/g, '-'));
 
+  if (resumeDir && !existsSync(resumeDir)) {
+    console.error(`--resume ${resumeDir}: run dir does not exist — nothing to resume.`);
+    process.exitCode = 1;
+    return;
+  }
   mkdirSync(runDir, { recursive: true });
-  console.log(`Run dir: ${runDir}`);
+  console.log(resumeDir ? `Resuming run dir: ${runDir} (ledger-driven skip of already-ingested sessions)` : `Run dir: ${runDir}`);
 
   const overallStart = Date.now();
   const timings: Record<string, number> = {};
 
   const { downloaded } = await ensureDatasetDownloaded(datasetPath);
   console.log(downloaded ? `Downloaded LoCoMo dataset -> ${datasetPath}` : `Using existing dataset at ${datasetPath}`);
+
+  // FEAT-462 review fix (finding 5) -- see ../longmemeval/run-smoke.mts's
+  // identical comment for the full incident this guards against. Placed
+  // after ensureDatasetDownloaded so the file is guaranteed present to hash.
+  const runParamsPath = join(runDir, 'run-params.json');
+  const currentParams: RunParams = {
+    datasetPath,
+    datasetHash: hashDatasetFile(datasetPath),
+    seed,
+    n: nRaw !== undefined ? Number(nRaw) : null,
+    qaPerSample: qaPerSampleRaw !== undefined ? Number(qaPerSampleRaw) : null,
+    shards,
+  };
+  const guard = evaluateResumeGuard(runParamsPath, Boolean(resumeDir), currentParams);
+  if (guard.action === 'refuse') {
+    console.error(`--resume ${resumeDir}: ${guard.refuseMessage}`);
+    process.exitCode = 1;
+    return;
+  }
 
   let tStart = Date.now();
   const dataset = loadDataset(datasetPath);
@@ -226,6 +277,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
+      resume: Boolean(resumeDir),
     })),
   );
   timings.shards_wall_clock_ms = Date.now() - tStart;

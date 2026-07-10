@@ -199,6 +199,7 @@ Useful flags on `run.mts` (mirrors `../longmemeval/run-smoke.mts`'s surface):
 | `--distill-timeout-ms` | 900000 (15 min) | almost certainly too low for a real run — see LongMemEval's measured throughput section for the order of magnitude (this harness hasn't published its own measured rate yet; use `--dry-run-throughput` first) |
 | `--run-dir` | `.eval-data/locomo/runs/<timestamp>` | override output location |
 | `--ollama-url` | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | Ollama status/tuning query target |
+| `--resume <run-dir>` | (none) | resume a killed run — see "Resume behavior" below |
 
 `--dry-run-throughput` (ingest+distill only, no Azure) measures real
 sessions/sec on your own machine before committing to a full run —
@@ -206,6 +207,41 @@ sessions/sec on your own machine before committing to a full run —
 sample for the probe. See `../longmemeval/README.md`'s Ollama tuning section
 for `OLLAMA_NUM_PARALLEL`/`OLLAMA_KEEP_ALIVE` guidance; it applies verbatim
 since both harnesses share the one local Ollama server.
+
+## Resume behavior
+
+`run.mts --resume <run-dir>` resumes a whole killed run (FEAT-462) —
+identical mechanism and flag surface to `../longmemeval/run-smoke.mts`'s
+`--resume` (same shared `../shared/resume-ledger.ts` module, AC-6 of that
+FEAT). See that README's "Resume behavior" section for the full writeup;
+the short version:
+
+```
+bun scripts/eval/locomo/run.mts --resume .eval-data/locomo/runs/<timestamp> \
+  --n 10 --seed 42 --shards 2
+```
+
+Pass the same `--dataset`/`--seed`/`--n`/`--qa-per-sample`/`--shards` flags
+as the original invocation. Each shard's crash-safe `ingest-ledger.jsonl`
+(written as each session completes, not batched to end-of-phase like
+`ingest-manifest.json`) is what makes the resume exactly-once rather than
+merely idempotency-key-safe. `--dry-run-throughput` does not support
+`--resume`.
+
+Two more files appear in the run dir on EVERY invocation, resume or not:
+the per-shard `ingest-ledger.jsonl` above and a top-level `run-params.json`
+recording the sampling flags the run dir was created with. **`--resume`
+REFUSES (non-zero exit, not a warning) to proceed if the re-derived flags
+don't match `run-params.json`** — a smaller `--n` under the same seed
+produces a sample that is a strict subset of a larger original one (same
+seeded-shuffle-then-slice reasoning as `sampleStratified`), so a mismatched
+`--resume` would otherwise silently complete a scope-narrowed run that
+looks fully successful instead of erroring. A run dir with no
+`run-params.json` (predates this guard) also refuses. No override flag —
+start a fresh run dir for different params. Implementation:
+`../shared/run-params.ts`'s `evaluateResumeGuard`, identical to
+`../longmemeval/run-smoke.mts`'s (see that README's "Resume behavior"
+section for the full writeup).
 
 ## Reproducibility — what to pin before publishing a number
 

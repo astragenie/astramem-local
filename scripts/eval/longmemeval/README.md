@@ -122,6 +122,12 @@ bun run eval:longmemeval:judge -- --hyp .eval-data/longmemeval/runs/<timestamp>/
 `per_shard_timings` and `failed_shards` when `--shards` > 1). `.eval-data/` is
 already `.gitignore`d.
 
+Two more files appear on EVERY invocation now, resume or not (FEAT-462, see
+"Resume behavior" below): a per-shard `ingest-ledger.jsonl` (crash-safe
+append-only ingest record) and a top-level `run-params.json` (the sampling
+flags this run dir was created with — `--resume` refuses to proceed if a
+later invocation's flags don't match it).
+
 Useful flags on `run-smoke.mts` (all optional):
 
 | flag | default | meaning |
@@ -134,6 +140,7 @@ Useful flags on `run-smoke.mts` (all optional):
 | `--distill-timeout-ms` | 900000 (15 min) | **see the throughput section below — this default is almost certainly too low for a real 50-question run; measure first, then raise it** |
 | `--run-dir` | `.eval-data/longmemeval/runs/<timestamp>` | override output location |
 | `--ollama-url` | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | where to query Ollama's `/api/version` + `/api/ps` for the tuning-guidance printout |
+| `--resume <run-dir>` | (none) | resume a killed run — see "Resume behavior" below |
 
 ## Sharding (`--shards N`)
 
@@ -276,13 +283,44 @@ assumes.
   body is a pure function of the dataset + that session — re-running
   `ingest.mts` against a daemon that already has some sessions replays
   those (`idempotent: true` in the outcome) instead of double-ingesting.
-- **There is no cross-run resume for a whole `run-smoke.mts` invocation** —
-  each run spins a fresh throwaway datadir (see Isolation below) and tears
-  it down in a `finally` block even on failure. If you need to resume a
-  large run that died partway, run the individual steps (`ingest.mts` ->
-  `distill-wait.mts` -> `answer.mts`) by hand against a daemon you keep
-  alive yourself (`node dist/cli/index.js serve --port <p>` with your own
-  `ASTRA_MEMORY_DATADIR`), instead of `run-smoke.mts`'s all-in-one spawn.
+- **`run-smoke.mts --resume <run-dir>` resumes a whole killed run**
+  (FEAT-462 — added after three real runs died mid-distill in two days, one
+  to a machine-wide `taskkill` incident, see CLAUDE.md's Do-NOT section).
+  Pass the SAME `--dataset`/`--seed`/`--n`/`--shards` flags as the original
+  invocation plus `--resume <run-dir>`:
+  ```
+  bun scripts/eval/longmemeval/run-smoke.mts --resume .eval-data/longmemeval/runs/<timestamp> \
+    --n 50 --seed 42 --shards 2
+  ```
+  This respawns each shard's daemon on its EXISTING `datadir` (the SQLite
+  file already holds every distill result completed before the kill), reads
+  each shard's crash-safe `ingest-ledger.jsonl` (written incrementally as
+  each session completes, unlike `ingest-manifest.json` which is only
+  written once the whole ingest phase finishes) to skip re-POSTing every
+  session already recorded ok, and resumes the distill-wait poll against the
+  merged old+new manifest. The sample and shard partitioning are
+  deterministic given the same flags, so nothing needs to be re-read from
+  `sample.json` to line back up. Without `--resume`, every run-dir gets a
+  fresh `ingest-ledger.jsonl` too (harmless, additive) — so ANY prior run's
+  dir can be resumed later even if `--resume` wasn't anticipated at launch
+  time. Implementation: `../shared/resume-ledger.ts` (shared verbatim with
+  `../locomo/run.mts`'s `--resume`).
+- **`--resume` REFUSES to proceed if the sampling scope doesn't match the
+  original invocation** — this is not a warning, it's a hard error with a
+  non-zero exit. The first (non-`--resume`) invocation writes the
+  scope-determining flags (`--dataset` path + a content hash, `--seed`,
+  `--n`, `--shards`) to `run-params.json`; `--resume` loads it and compares.
+  This exists because `sampleStratified`'s seeded shuffle-then-slice means a
+  **smaller** `--n` under the same seed produces a sample that is a *strict
+  subset* of a larger original sample — every one of those sessions would
+  already be `ok` in the ledger, so a mismatched `--resume` would otherwise
+  silently complete a scope-narrowed run that looks fully successful (zero
+  failures, `run-manifest.json`'s `counts.sampled` just reflects the smaller
+  number) instead of erroring. A run dir with no `run-params.json` (one
+  created before this guard existed) also refuses to resume — there's no
+  record of the original scope to verify against. There is no override
+  flag: start a fresh run dir if you actually want different params.
+  Implementation: `../shared/run-params.ts`'s `evaluateResumeGuard`.
 - **Judging** (`judge.mts`) is idempotent in the sense that it always
   overwrites `<hyp>.eval-results-<judge>` — re-running re-judges everything,
   it does not skip already-judged rows.

@@ -94,6 +94,11 @@ const SERVING_LINE_RE = /astramem-local serving on [^\s:]+:(\d+)/;
 
 export interface DaemonHandle {
   proc: ChildProcess;
+  /** Groundwork for FEAT-462 slice B (AC-3, PID/port manifest) — not yet
+   *  written anywhere, just exposed here since `proc.pid` was otherwise
+   *  unreachable outside this module. `undefined` only if the spawn itself
+   *  failed to produce a process (mirrors ChildProcess.pid's own type). */
+  pid: number | undefined;
   port: number;
   token: string;
   baseUrl: string;
@@ -109,6 +114,13 @@ export interface SpawnDaemonOpts {
   /** Extra env merged over process.env (e.g. ASTRA_MEMORY_PORT if a fixed
    *  port is ever needed — default is ephemeral `--port 0`). */
   env?: Record<string, string>;
+  /** Test-only escape hatch: override the args passed to `node` (default:
+   *  the real astramemory-local daemon, `dist/cli/index.js serve --port
+   *  <port>`). Lets resume/kill-resilience tests (FEAT-462 AC-5) point
+   *  spawnEvalDaemon at a fake/stub daemon fixture while reusing the same
+   *  boot-log-parsing, health-poll, and kill machinery the real harnesses
+   *  use — never set by run-smoke.mts / run.mts themselves. */
+  command?: string[];
 }
 
 async function waitForBoundPort(
@@ -148,7 +160,7 @@ export async function spawnEvalDaemon(opts: SpawnDaemonOpts): Promise<DaemonHand
     // (`'better-sqlite3' is not yet supported in Bun` — verified live
     // 2026-07-08 when this was `process.execPath` and resolved to bun.exe).
     'node',
-    ['dist/cli/index.js', 'serve', '--port', String(opts.port ?? 0)],
+    opts.command ?? ['dist/cli/index.js', 'serve', '--port', String(opts.port ?? 0)],
     {
       cwd: REPO_ROOT,
       env: {
@@ -168,6 +180,7 @@ export async function spawnEvalDaemon(opts: SpawnDaemonOpts): Promise<DaemonHand
 
   return {
     proc,
+    pid: proc.pid,
     port: actualPort,
     token: opts.token,
     baseUrl: `http://127.0.0.1:${actualPort}`,

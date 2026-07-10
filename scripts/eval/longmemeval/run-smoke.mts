@@ -17,6 +17,15 @@
  *   [--seed 42] [--k 10] [--concurrency 4] [--distill-timeout-ms 900000]
  *   [--shards 1] [--run-dir .eval-data/runs/<timestamp>] [--ollama-url <url>]
  *
+ * Resume a killed run (FEAT-462): re-attach to an existing --run-dir,
+ * respawn shard daemons on their existing datadirs, and skip re-ingesting
+ * every session each shard's ledger already shows completed ok. Pass the
+ * SAME --dataset/--seed/--n/--shards flags as the original invocation
+ * (the sample and shard partitioning are deterministic given those, so
+ * they don't need to be persisted separately):
+ * bun scripts/eval/longmemeval/run-smoke.mts --resume <run-dir>
+ *   [...same flags as the original invocation]
+ *
  * Throughput dry run (ingest+distill only, no answer/judge step):
  * bun scripts/eval/longmemeval/run-smoke.mts --dry-run-throughput
  *   [--shards 2] [--dry-run-questions 2] [--seed 42]
@@ -37,6 +46,8 @@ import { answerQuestions, writeHypothesesJsonl, type AnswerOutcome } from './ans
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance, detectPossibleReload } from '../shared/ollama-tuning.js';
+import { ledgerCompletedMap } from '../shared/resume-ledger.js';
+import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -52,6 +63,14 @@ const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
 const dryRunThroughput = has('--dry-run-throughput');
+// FEAT-462 AC-1: re-attach to an existing --run-dir instead of starting a
+// fresh one. The sample is deterministically re-derived from the same
+// --dataset/--seed/--n flags (sampleStratified is a pure function), so the
+// question set and per-shard buckets line up exactly with the original
+// invocation without needing to persist and re-read them. Each shard's
+// ingest ledger (scripts/eval/shared/resume-ledger.ts) is what actually
+// skips already-completed sessions — see runShard below.
+const resumeDir = get('--resume');
 
 // Sampled-dataset extrapolation constants (README "Throughput" section) —
 // used only to print the 50q/500q projection table in dry-run mode, never to
@@ -87,10 +106,22 @@ async function runShard(opts: {
   distillTimeoutMs: number;
   k: number;
   azureCfg: AzureConfig | null; // null => ingest+distill only, skip answer (dry-run-throughput mode)
+  /** FEAT-462 AC-1: when true, skip re-POSTing sessions this shard's
+   *  ledger already shows completed ok. Defaults to false so every
+   *  existing call site (including --dry-run-throughput) is unaffected —
+   *  AC-7. */
+  resume?: boolean;
 }): Promise<ShardResult> {
-  const { shardIndex, totalShards, questions, runDir, concurrency, distillTimeoutMs, k, azureCfg } = opts;
+  const { shardIndex, totalShards, questions, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
-  const dataDir = label ? join(runDir, label, 'datadir') : join(runDir, 'datadir');
+  const shardDir = label ? join(runDir, label) : runDir;
+  const dataDir = join(shardDir, 'datadir');
+  // Crash-safe ledger (FEAT-462 AC-1/AC-4) — always written (cheap, additive,
+  // AC-7-safe) so ANY run dir can later be resumed even if --resume wasn't
+  // anticipated at launch time. Only READ (to skip already-done sessions)
+  // when --resume is explicitly passed.
+  const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
+  const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
   const isolated = makeIsolatedEvalEnv(label ? `lme-${label}` : 'lme-smoke');
   const timings: Record<string, number> = {};
@@ -128,7 +159,12 @@ async function runShard(opts: {
     const ingestManifest = await ingestQuestions(
       { baseUrl: daemon.baseUrl, token },
       questions,
-      { concurrency, onProgress: (d, total) => { checkDaemonAlive(); if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`); } },
+      {
+        concurrency,
+        ledgerPath,
+        resumeCompleted,
+        onProgress: (d, total) => { checkDaemonAlive(); if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`); },
+      },
     );
     process.stdout.write('\n');
     timings.ingest_ms = Date.now() - t;
@@ -204,10 +240,30 @@ function mergeDistillResults(results: DistillWaitResult[]): DistillWaitResult {
 async function runSmoke(): Promise<void> {
   const n = Number(get('--n') ?? '50');
   const distillTimeoutMs = Number(get('--distill-timeout-ms') ?? String(15 * 60_000));
-  const runDir = get('--run-dir') ?? join('.eval-data', 'longmemeval', 'runs', new Date().toISOString().replace(/[:.]/g, '-'));
+  const runDir = resumeDir ?? get('--run-dir') ?? join('.eval-data', 'longmemeval', 'runs', new Date().toISOString().replace(/[:.]/g, '-'));
 
+  if (resumeDir && !existsSync(resumeDir)) {
+    console.error(`--resume ${resumeDir}: run dir does not exist — nothing to resume.`);
+    process.exitCode = 1;
+    return;
+  }
   mkdirSync(runDir, { recursive: true });
-  console.log(`Run dir: ${runDir}`);
+  console.log(resumeDir ? `Resuming run dir: ${runDir} (ledger-driven skip of already-ingested sessions)` : `Run dir: ${runDir}`);
+
+  // FEAT-462 review fix (finding 5): refuse a --resume whose sampling scope
+  // doesn't match the original invocation -- see ../shared/run-params.ts's
+  // header comment for the full incident this guards against (a smaller
+  // --n silently completing a scope-narrowed, falsely "fully successful"
+  // run because every session in the smaller sample is already ok in the
+  // ledger from the larger original run).
+  const runParamsPath = join(runDir, 'run-params.json');
+  const currentParams: RunParams = { datasetPath, datasetHash: hashDatasetFile(datasetPath), seed, n, shards };
+  const guard = evaluateResumeGuard(runParamsPath, Boolean(resumeDir), currentParams);
+  if (guard.action === 'refuse') {
+    console.error(`--resume ${resumeDir}: ${guard.refuseMessage}`);
+    process.exitCode = 1;
+    return;
+  }
 
   const overallStart = Date.now();
   const timings: Record<string, number> = {};
@@ -256,6 +312,7 @@ async function runSmoke(): Promise<void> {
       distillTimeoutMs,
       k,
       azureCfg,
+      resume: Boolean(resumeDir),
     })),
   );
   timings.shards_wall_clock_ms = Date.now() - tStart;

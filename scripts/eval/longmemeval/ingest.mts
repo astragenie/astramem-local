@@ -15,6 +15,7 @@ import type { LongMemEvalQuestion } from './lib/types.js';
 import { buildIngestEnvelope, sessionIdFor } from './lib/envelope.js';
 import { ingestTranscript, type DaemonClientOpts } from '../shared/daemon-client.js';
 import { mapWithConcurrency } from '../shared/concurrency.js';
+import { appendLedgerEntry, type LedgerEntry } from '../shared/resume-ledger.js';
 
 export interface IngestJob {
   question_id: string;
@@ -42,7 +43,24 @@ export interface IngestManifest {
 export async function ingestQuestions(
   client: DaemonClientOpts,
   questions: LongMemEvalQuestion[],
-  opts: { concurrency?: number; onProgress?: (done: number, total: number) => void } = {},
+  opts: {
+    concurrency?: number;
+    onProgress?: (done: number, total: number) => void;
+    /** Crash-safe append-only ledger path (FEAT-462 AC-1/AC-4). When set,
+     *  every freshly-completed job is appended here the moment it settles
+     *  — not batched to end-of-phase like the returned IngestManifest.
+     *  Omitted entirely (default): behavior is byte-identical to before
+     *  this option existed (AC-7). */
+    ledgerPath?: string;
+    /** session_id -> prior ledger entry from a previous invocation
+     *  against the same run dir. A session whose latest entry has
+     *  `ok: true` is replayed from the ledger instead of re-POSTed — this
+     *  is what makes a --resume exactly-once rather than merely
+     *  idempotency-key-safe (the Idempotency-Key replay is a safety net,
+     *  not the resume mechanism, per AC-4). Only passed by run-smoke.mts
+     *  when --resume is given; omitted otherwise (AC-7). */
+    resumeCompleted?: Map<string, LedgerEntry>;
+  } = {},
 ): Promise<IngestManifest> {
   const jobs: IngestJob[] = [];
   for (const q of questions) {
@@ -55,7 +73,20 @@ export async function ingestQuestions(
   const start = Date.now();
   let done = 0;
 
-  const outcomes = await mapWithConcurrency(jobs, opts.concurrency ?? 4, async job => {
+  const toRun: IngestJob[] = [];
+  const replayedOutcomes: IngestOutcome[] = [];
+  for (const job of jobs) {
+    const prior = opts.resumeCompleted?.get(job.session_id);
+    if (prior?.ok) {
+      replayedOutcomes.push({ question_id: job.question_id, session_id: job.session_id, ok: true, idempotent: prior.idempotent });
+      done++;
+    } else {
+      toRun.push(job);
+    }
+  }
+  if (replayedOutcomes.length > 0) opts.onProgress?.(done, jobs.length);
+
+  const freshOutcomes = await mapWithConcurrency(toRun, opts.concurrency ?? 4, async job => {
     const question = byQid.get(job.question_id)!;
     let outcome: IngestOutcome;
     try {
@@ -69,10 +100,33 @@ export async function ingestQuestions(
     } catch (err) {
       outcome = { question_id: job.question_id, session_id: job.session_id, ok: false, idempotent: false, error: err instanceof Error ? err.message : String(err) };
     }
+    if (opts.ledgerPath) {
+      // Review fix (FEAT-462 finding 2): a ledger write failure (disk full,
+      // permissions, an antivirus lock on Windows) must never fail an
+      // otherwise-successful ingest job — log-and-continue, matching this
+      // repo's own "never let auxiliary bookkeeping crash the real work"
+      // posture. Losing one entry only costs a future --resume the ability
+      // to skip this one already-ok session; it never corrupts THIS run's
+      // outcome or manifest.
+      try {
+        appendLedgerEntry(opts.ledgerPath, {
+          session_id: outcome.session_id,
+          owner_id: outcome.question_id,
+          ok: outcome.ok,
+          idempotent: outcome.idempotent,
+          error: outcome.error,
+          ts: new Date().toISOString(),
+        });
+      } catch (err) {
+        console.error(`WARNING: failed to append to resume ledger at ${opts.ledgerPath} (session ${outcome.session_id} is still ${outcome.ok ? 'ok' : 'failed'} for this run, but a future --resume won't be able to skip it): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     done++;
     opts.onProgress?.(done, jobs.length);
     return outcome;
   });
+
+  const outcomes = [...replayedOutcomes, ...freshOutcomes];
 
   const byQuestion: IngestManifest['by_question'] = {};
   for (const q of questions) byQuestion[q.question_id] = { session_ids: [], failed_session_ids: [] };
