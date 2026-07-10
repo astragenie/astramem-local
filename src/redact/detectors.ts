@@ -179,6 +179,15 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
   // `(?!["'])` so it never mis-captures a quoted value's opening quote as
   // part of a "bare" token — that shape is already handled by the two
   // quoted-value entries in the same family.
+  //
+  // Known limitation (regex-tier only, per this FEAT's stated non-goal of
+  // full JSON/YAML AST parsing — disclosed, not a hidden gap): `[^"]*`/
+  // `[^']*` have no escape awareness. A value containing an escaped inner
+  // quote (`"api_key": "sk-abc\"def"`) is captured only up to the literal
+  // backslash-quote, so the placeholder replaces `sk-abc\` and the
+  // remainder (`def`) is left in plaintext right after it — a *partial*
+  // redaction that visually looks complete. Flagged as a fast-follow, not
+  // fixed here.
   {
     type: 'generic_credential_quoted',
     source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}"([^"]*)"`,

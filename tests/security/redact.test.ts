@@ -86,6 +86,37 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     secret: 'admin:s3cr3tpw',
   },
   { name: 'high-entropy unlabeled blob', input: `random blob ${HIGH_ENTROPY_BLOB} embedded here`, type: 'high_entropy', secret: HIGH_ENTROPY_BLOB },
+  // FEAT-463 review fix (CRITICAL bypass, closed): the entropy-guard's
+  // earlier keyword-substring check suppressed these entirely — a
+  // high-entropy secret that happens to (a) be built only from letters/
+  // digits/underscores, (b) contain a recognized keyword substring
+  // anywhere in its own characters, and (c) end in a bare `:`/`=` glued
+  // directly on with no separator in the middle — is NOT a value-less
+  // label and must still be redacted as `high_entropy`.
+  {
+    name: 'entropy bypass repro: keyword-in-value + trailing "=" (base64-padding shape)',
+    input: 'mysecrettoken1234567890abcdef=',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef=',
+  },
+  {
+    name: 'entropy bypass repro: keyword-in-value + trailing ":" variant',
+    input: 'mysecrettoken1234567890abcdef:',
+    type: 'high_entropy',
+    secret: 'mysecrettoken1234567890abcdef:',
+  },
+  {
+    name: 'entropy bypass repro: keyword as a clean underscore-delimited segment (does not close the gap either)',
+    input: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c=',
+    type: 'high_entropy',
+    secret: 'my_secret_token_9f8a7b6c5d4e3f2a1b0c=',
+  },
+  {
+    name: 'entropy bypass control: identical shape, no keyword substring — always redacted (proves the keyword check was the hole, not the shape)',
+    input: 'myrandomvalue1234567890abcdef=',
+    type: 'high_entropy',
+    secret: 'myrandomvalue1234567890abcdef=',
+  },
   // FEAT-459: compound SCREAMING_SNAKE_CASE labels (`X_SECRET=`, `X_API_KEY=`,
   // `X_TOKEN=`), both '=' and ':' separators, plus the exact measured gap fixture.
   { name: 'compound INTERNAL_SECRET= (measured gap fixture)', input: 'INTERNAL_SECRET=abc123', type: 'generic_credential', secret: 'abc123' },
