@@ -78,6 +78,11 @@ export const CanonicalIngestSchema = z.object({
   events: z.array(CanonicalEventItemSchema).min(1).max(500).optional(),
   /** Provenance (ADR-008 `tool` field). No default — record what's sent or null. */
   tool: z.string().optional(),
+  /** FEAT-455 / ADR-012 decision 4: set only by the hook-tap auto-capture
+   *  trigger's envelope builder (`buildClaudeEnvelope`'s optional
+   *  `captureSource` param) — every other client omits this field and the
+   *  transcripts/memories rows it flows into stay NULL (byte-identical). */
+  capture_source: z.literal('auto_capture').optional(),
   /** Aggregate scrub flag — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label for per-label breakdown but not deprecated. */
   client_scrub_applied: z.boolean(),
   /** Aggregate scrub hit count — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label sum for per-label breakdown but not deprecated. */
@@ -195,14 +200,14 @@ export function ingestCanonicalTranscript(
     string, string, string, string, number,
     string, number, number, number,
     string | null, string | null,
-    string | null, string,
+    string | null, string, string | null,
   ]>(`
     INSERT INTO transcripts (
       id, session_id, source, content, ingested_at,
       event, captured_at, client_scrub_applied, client_scrub_hits,
       client_scrub_version, client_scrub_hits_by_label_json,
-      client_version, wire_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      client_version, wire_version, capture_source
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const stmtInsertJob = db.prepare<[string, string, number, number]>(`
     INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
@@ -280,6 +285,7 @@ export function ingestCanonicalTranscript(
         : null,
       data.client_version ?? null,
       data.wire_version,
+      data.capture_source ?? null,
     );
 
     recordRedactionEvents(db, redactionEvents, data.session_id);

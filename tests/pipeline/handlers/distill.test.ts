@@ -85,11 +85,12 @@ function insertCanonicalTranscript(
   sessionId: string,
   turns: Array<{ role: string; text: string }>,
   capturedAtMs: number | null = null,
+  captureSource: 'auto_capture' | null = null,
 ): void {
   db.prepare(`
-    INSERT INTO transcripts (id, session_id, source, content, ingested_at, captured_at)
-    VALUES (?, ?, 'claude-code-pre_compact', ?, ?, ?)
-  `).run(id, sessionId, JSON.stringify(turns), Date.now(), capturedAtMs);
+    INSERT INTO transcripts (id, session_id, source, content, ingested_at, captured_at, capture_source)
+    VALUES (?, ?, 'claude-code-pre_compact', ?, ?, ?, ?)
+  `).run(id, sessionId, JSON.stringify(turns), Date.now(), capturedAtMs, captureSource);
 }
 
 /** Inserts an ingest_idempotency row exactly as POST /ingest/transcript does at insert time: summary_memory_id === transcript id. */
@@ -273,6 +274,48 @@ describe('distillHandler', () => {
     for (const m of memories) {
       expect(m.valid_from).toBeGreaterThanOrEqual(beforeInsert);
       expect(m.valid_from).toBeLessThanOrEqual(afterInsert);
+    }
+  });
+
+  // FEAT-455 / ADR-012 decision 4: proves the full plumb — transcripts.
+  // capture_source -> distillHandler -> PipelineContext.captureSource ->
+  // embedAndIndex -> memories.capture_source — mirrors the captured_at
+  // plumbing test above.
+  it('FEAT-455: transcripts.capture_source threads into memories.capture_source', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    insertSession(db, sessionId);
+    insertCanonicalTranscript(db, transcriptId, sessionId, [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ], null, 'auto_capture');
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+
+    const memories = db.prepare('SELECT id, capture_source FROM memories').all() as
+      { id: string; capture_source: string | null }[];
+    expect(memories.length).toBeGreaterThanOrEqual(1);
+    for (const m of memories) {
+      expect(m.capture_source).toBe('auto_capture');
+    }
+  });
+
+  it('every other producer (transcripts.capture_source NULL): memories.capture_source stays NULL', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    insertSession(db, sessionId);
+    insertCanonicalTranscript(db, transcriptId, sessionId, [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ]);
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+
+    const memories = db.prepare('SELECT id, capture_source FROM memories').all() as
+      { id: string; capture_source: string | null }[];
+    expect(memories.length).toBeGreaterThanOrEqual(1);
+    for (const m of memories) {
+      expect(m.capture_source).toBeNull();
     }
   });
 });

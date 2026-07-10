@@ -1,6 +1,6 @@
 /**
- * FEAT-455 spike (ADR-012 checklist #5): validates the disable -> purge flow
- * end to end against a SIMULATED auto-captured memory.
+ * FEAT-455 build (ADR-012 checklist #5): validates the disable -> purge flow
+ * end to end against a REAL auto-captured memory.
  *
  * ADR-012 decision 4 requires: "Disabling auto-capture offers a purge, wired
  * to the existing purge tooling (erase_memory/invalidate_memory ...) scoped
@@ -8,19 +8,13 @@
  * forced: a user may keep already-formed memories while stopping new
  * auto-capture."
  *
- * The real provenance tag (a `capture_source` column or similar — see
- * docs/specs/FEAT-455-spike-results.md §3, checklist #4) does not exist yet;
- * this spike is explicitly scoped to a SPEC for that field, not a migration.
- * This test proves the MECHANISM decision 4 depends on — scoped, reversible
- * removal of a subset of memories identified by a provenance predicate,
- * using the two existing lifecycle primitives unmodified — by standing in
- * for the not-yet-existent column with a marker embedded in `evidence`
- * (a free-form nullable TEXT column, contracts/memory.ts:85, unused by any
- * of today's write paths for auto-capture since that surface doesn't exist
- * yet). Swapping the WHERE-clause predicate below for the real
- * `capture_source = 'auto_capture'` column, once it lands, is the only
- * change a real disable-flow implementation needs to make to this query —
- * erase()/invalidate() themselves need no auto-capture-specific code at all.
+ * Originally written during the FEAT-455 security spike against a marker
+ * embedded in `evidence` (the real `capture_source` column did not exist
+ * yet — see docs/specs/FEAT-455-spike-results.md §3, checklist #4, and
+ * migrations/024-capture-source.sql). Now that the column has landed, this
+ * test uses it directly — exactly the swap the spike's own doc comment
+ * anticipated, with no other change: erase()/invalidate() themselves need
+ * no auto-capture-specific code at all.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -28,10 +22,6 @@ import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo, type InsertInput } from '../../src/storage/memories.js';
 import { MemoryEventRepo, MemoryNotFoundError } from '../../src/storage/memory-events.js';
-
-/** Stand-in provenance marker — see file doc comment. Real implementation
- *  replaces this with a dedicated `capture_source` column (ADR-012 §4 spec). */
-const AUTO_CAPTURE_MARKER = '__auto_capture_v1__';
 
 function insertMem(repo: MemoryRepo, hash: string, opts: { autoCaptured: boolean }): string {
   const input: InsertInput = {
@@ -45,17 +35,18 @@ function insertMem(repo: MemoryRepo, hash: string, opts: { autoCaptured: boolean
     session_id: null,
     hash,
     source_hash: null,
-    evidence: opts.autoCaptured ? AUTO_CAPTURE_MARKER : null,
+    capture_source: opts.autoCaptured ? 'auto_capture' : null,
   };
   return repo.insert(input);
 }
 
-/** Stand-in for the future "list auto-captured atom ids" query the real
- *  disable-flow handler would run against the dedicated provenance column. */
+/** The real disable-flow handler's "list auto-captured atom ids" query —
+ *  scoped by the dedicated provenance column, same predicate the doctor
+ *  WARN-row count check uses (src/doctor/checks.ts's checkAutoCapture). */
 function listAutoCapturedIds(db: DB): string[] {
   const rows = db
-    .prepare(`SELECT id FROM memories WHERE evidence = ? AND valid_to IS NULL`)
-    .all(AUTO_CAPTURE_MARKER) as { id: string }[];
+    .prepare(`SELECT id FROM memories WHERE capture_source = 'auto_capture' AND valid_to IS NULL`)
+    .all() as { id: string }[];
   return rows.map(r => r.id);
 }
 

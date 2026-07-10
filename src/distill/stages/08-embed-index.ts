@@ -46,6 +46,16 @@ export interface EmbedIndexContext {
    */
   capturedAtMs?: number | null;
   /**
+   * FEAT-455 / ADR-012 decision 4: provenance tag carried on the transcripts
+   * row this distill run's atoms were extracted from — `'auto_capture'` when
+   * the source transcript was captured by the hook-tap auto-capture trigger,
+   * `null`/omitted for every other producer (byte-identical default). Passed
+   * straight through to `MemoryRepo.insertWithCreateEvent`'s `capture_source`
+   * so every atom formed from an auto-captured transcript is itself scoped
+   * for the doctor WARN-row count and the disable -> purge query.
+   */
+  captureSource?: 'auto_capture' | null;
+  /**
    * FEAT-441: durability quality gate mode. Undefined/omitted behaves as
    * 'off' — every pre-FEAT-441 caller (and the existing test suite) that
    * never sets this field is byte-identical (AC-2): `gateDurability` short
@@ -174,6 +184,7 @@ export async function embedAndIndex(
       evidence: mem.evidence ?? null,
       scope: 'private',
       valid_from: ctx.capturedAtMs ?? undefined,
+      capture_source: ctx.captureSource ?? null,
       // atom@2: stage 5 always runs entity extraction as part of this same
       // atom's LLM call, so every atom from this pipeline has "declared"
       // entities even when it found none — default to [] (not undefined)

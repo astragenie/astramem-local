@@ -294,6 +294,27 @@ export interface Config {
      * (28.9MB, FEAT-449 triage). */
     spoolMaxBytes: number;
   };
+  /** Automatic memory capture (FEAT-455, ADR-012). `enabled: false` (default)
+   * is BYTE-IDENTICAL to pre-FEAT-455 behavior — the hook-tap trigger never
+   * fires and the ingest spool sees nothing new. Enabling requires an
+   * explicit opt-in disclosed by the `init` wizard prompt (ADR-012 decision
+   * 4) — never flipped on by an upgrade or a default-config write. v1 =
+   * hook-tap only (ADR-012 decision 1); MCP-tap/LLM-proxy are out of scope
+   * and have no config surface here. */
+  capture: {
+    autoCapture: {
+      enabled: boolean;
+      /** Source-side relevance gate (ADR-012 decision 2,
+       * `src/capture/relevance-gate.ts`) — distinct config surface from
+       * `distill.durabilityGate`, kept fully separate per that module's
+       * AC-6. */
+      relevanceGate: {
+        minChars: number;
+        maxBytes: number;
+        dedupWindow: number;
+      };
+    };
+  };
 }
 
 export function defaultConfig(): Config {
@@ -338,6 +359,12 @@ export function defaultConfig(): Config {
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
     distill: { durabilityGate: 'off' },
+    capture: {
+      autoCapture: {
+        enabled: false,
+        relevanceGate: { minChars: 8, maxBytes: 65536, dedupWindow: 20 },
+      },
+    },
   };
 }
 

@@ -143,6 +143,18 @@ export function configToYaml(cfg: Config): string {
     line(0, 'consolidation'),
     line(1, 'autoAcceptThreshold', cfg.consolidation.autoAcceptThreshold),
     '',
+    // Automatic memory capture (FEAT-455, ADR-012) — enabled: false (default)
+    // is byte-identical to pre-FEAT-455 behavior. Only ever flipped to true
+    // by an explicit `init` wizard opt-in or `capture auto-capture disable`
+    // writing it back to false — see Config['capture'] doc comment.
+    line(0, 'capture'),
+    line(1, 'autoCapture'),
+    line(2, 'enabled', cfg.capture.autoCapture.enabled),
+    line(2, 'relevanceGate'),
+    line(3, 'minChars', cfg.capture.autoCapture.relevanceGate.minChars),
+    line(3, 'maxBytes', cfg.capture.autoCapture.relevanceGate.maxBytes),
+    line(3, 'dedupWindow', cfg.capture.autoCapture.relevanceGate.dedupWindow),
+    '',
   ];
   return lines.join('\n');
 }

@@ -115,6 +115,9 @@ export interface DoctorCheckOpts {
   /** FEAT-441 AC-8: current `distill.durabilityGate` mode. Defaults to
    * 'off' (the shipped default) when not supplied. */
   durabilityGateMode?: DurabilityGateMode;
+  /** FEAT-455 / ADR-012 decision 4: current `capture.autoCapture.enabled`.
+   * Defaults to `false` (the shipped default) when not supplied. */
+  autoCaptureEnabled?: boolean;
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
@@ -945,6 +948,51 @@ function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
   };
 }
 
+// ─── Check: Auto-capture (FEAT-455 / ADR-012 decision 4) ─────────────────────
+
+/**
+ * WARN-visibility row for the hook-tap auto-capture trigger. `ok: true` in
+ * BOTH states — unlike `checkServicePointer`'s dev-pinned row (an always-
+ * unintended misconfiguration, hence `ok: false`), auto-capture being ON is a
+ * deliberate, disclosed, opt-in user choice (ADR-012 decision 4's whole
+ * point). `ok: false` here would read as "something is wrong" to a user who
+ * turned it on intentionally — the wrong signal. Mirrors
+ * `checkDurabilityGateMode`'s informational-row precedent: visibility, not an
+ * error state, every `doctor` run.
+ */
+function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encryptionEnabled: boolean): Check {
+  return {
+    name: 'Auto-capture',
+    async run(): Promise<CheckResult> {
+      if (!autoCaptureEnabled) {
+        return { ok: true, message: 'auto-capture: off (default)' };
+      }
+
+      const dbPath = join(dataDir, 'memory.sqlite');
+      if (!existsSync(dbPath)) {
+        return { ok: true, message: 'auto-capture is ON — no DB yet, 0 auto-captured memories' };
+      }
+
+      try {
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const row = db
+          .prepare(`SELECT COUNT(*) AS count FROM memories WHERE capture_source = 'auto_capture' AND valid_to IS NULL`)
+          .get() as { count: number } | undefined;
+        db.close();
+        const count = row?.count ?? 0;
+        return {
+          ok: true,
+          message: `auto-capture is ON — ${count} auto-captured ${count === 1 ? 'memory' : 'memories'} currently stored`,
+        };
+      } catch (err) {
+        // Informational check — never fail doctor over a count-query error,
+        // consistent with the other read-only DB checks above.
+        return { ok: true, message: `auto-capture is ON — count check error (non-fatal): ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Check: Schema drift (FEAT-439 AC-2/AC-5) ────────────────────────────────
 
 interface ServedSchemaVersion {
@@ -1084,6 +1132,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkUsefulness(dataDir, encryptionEnabled),
     checkMemoryHealth(dataDir, encryptionEnabled),
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
+    checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
