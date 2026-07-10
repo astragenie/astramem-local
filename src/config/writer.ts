@@ -326,6 +326,23 @@ export function configToYaml(cfg: Config): string {
     line(1, 'purge'),
     line(2, 'restoreWindowDays', (cfg.capture.purge ?? EMIT_DEFAULTS.capture.purge).restoreWindowDays),
     '',
+    // LLM proxy (FEAT-458, ADR-013) — enabled: false (default) means no
+    // proxy process starts implicitly; `upstream` is always emitted quoted
+    // (yamlScalar quotes the empty-string default too) since a URL value
+    // must never be emitted bare (DEC-010 precedent — mid-value special
+    // characters like `://` are exactly what that quote-grammar fix was
+    // for). A wholly new nested object (not a new scalar under an existing
+    // key), so a pre-FEAT-458 loader encountering this block on a
+    // `reinstall --rollback` sees one extra top-level key it doesn't
+    // recognize — verified inert, not a crash, by
+    // tests/config/proxy-downgrade.test.ts.
+    line(0, 'proxy'),
+    line(1, 'enabled', (cfg.proxy ?? EMIT_DEFAULTS.proxy).enabled),
+    line(1, 'port', (cfg.proxy ?? EMIT_DEFAULTS.proxy).port),
+    line(1, 'upstream', (cfg.proxy ?? EMIT_DEFAULTS.proxy).upstream),
+    line(1, 'capture'),
+    line(2, 'enabled', (cfg.proxy ?? EMIT_DEFAULTS.proxy).capture.enabled),
+    '',
   ];
   const yaml = lines.join('\n');
 

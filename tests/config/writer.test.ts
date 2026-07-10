@@ -68,6 +68,12 @@ function buildFullyPopulatedConfig(): Config {
       },
       purge: { restoreWindowDays: 45 },
     },
+    proxy: {
+      enabled: true,
+      port: 9001,
+      upstream: 'https://api.openai.com/v1',
+      capture: { enabled: true },
+    },
   };
 }
 
