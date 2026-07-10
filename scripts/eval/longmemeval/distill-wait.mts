@@ -36,7 +36,9 @@ export async function waitForQuestionsDistilled(
   opts: { timeoutMs?: number; intervalMs?: number; onProgress?: (readyCount: number, total: number) => void } = {},
 ): Promise<DistillWaitResult> {
   const timeoutMs = opts.timeoutMs ?? 120_000;
-  const intervalMs = opts.intervalMs ?? 1_000;
+  // 5s default (was 1s): distill runs for minutes-to-hours; polling faster
+  // only burns sockets. See the 2026-07-10 port-exhaustion incident below.
+  const intervalMs = opts.intervalMs ?? 5_000;
   const questionIds = Object.keys(byQuestion);
   const perQuestionMs: Record<string, number> = {};
   const ready = new Set<string>();
@@ -48,8 +50,18 @@ export async function waitForQuestionsDistilled(
   while (pending.size > 0 && Date.now() < deadline) {
     for (const qid of [...pending]) {
       const sessionIds = byQuestion[qid]!.session_ids;
-      const results = await Promise.all(sessionIds.map(sid => isSessionReady(client, sid)));
-      if (results.every(Boolean)) {
+      // Sequential with short-circuit — NOT Promise.all. A 50-question run
+      // has ~1200 sessions/shard; blasting them all concurrently every poll
+      // round exhausted the Windows ephemeral-port pool within ~30 rounds
+      // (TIME_WAIT pile-up → "Unable to connect" from the HARNESS side while
+      // the daemon was still healthy; 2026-07-10 n=50 run, both shards).
+      // During distill almost every question has an unready session early in
+      // its list, so short-circuiting also cuts calls per round by ~50x.
+      let allReady = true;
+      for (const sid of sessionIds) {
+        if (!(await isSessionReady(client, sid))) { allReady = false; break; }
+      }
+      if (allReady) {
         ready.add(qid);
         perQuestionMs[qid] = Date.now() - start;
         pending.delete(qid);
