@@ -2,15 +2,124 @@
 slice: SLICE-421
 feature: FEAT-463
 role: builder
-status: fix_round_complete
+status: fix_round_2_complete
 branch: feat/feat-463-quoted-labels
-commit: 32db526
-review: .claude/artifacts/crew/reviews/20260710T130230Z-review-result-slice-421-feat-463-quoted-labels.md (needs_fix, Finding 1 CRITICAL closed in 32db526)
+commit: 963613d
+review: .claude/artifacts/crew/reviews/20260710T130230Z-review-result-slice-421-feat-463-quoted-labels.md (needs_fix twice; round 1 CRITICAL closed in 32db526, round 2 suffix-attack variant closed in 963613d)
 ---
 
 # SLICE-421 / FEAT-463 — builder handoff
 
-## Fix round (2026-07-10, commit 32db526, on top of fab5173/07cc8ea) — review CRITICAL finding
+## Fix round 2 (2026-07-10, commit 963613d, on top of 32db526/9534cd8) — suffix-attack re-review finding
+
+Re-review of the round-1 fix (`32db526`) confirmed the original CRITICAL bypass was
+genuinely closed for the three repros and the general "isolated keyword-shaped token"
+class, but found and reproduced a narrower variant of the same under-redaction class by
+attacking round 1's own mechanism directly: `isLabelWithSafeValueFollowing` trusted the
+*next token's shape* alone to decide "is this a value-less label" — so appending a
+plausible decoy value right after a bypass token revives the leak by making the secret
+masquerade as a label whose value sits on the next token.
+
+**Reproduced, confirmed leaking on the round-1 branch:** `mysecrettoken1234567890abcdef=
+8` → `events: []`, full plaintext. Same for `= true`, `: 8`, the underscore-segment
+variant `+ 42`, and both quoted-decoy forms (`= "8"`, `= "true"`).
+
+Per the team lead's explicit instruction, I verified the key hypothesis by direct
+computation **before writing any fix code** (same discipline as round 1's threshold
+check): stripped the label token down to its bare identifier "core" (quotes and trailing
+separator removed) and computed Shannon entropy on the core alone for both real labels
+and the secret-shaped repro cores:
+
+| core | length | entropy | kind |
+|---|---|---|---|
+| `PASSWORD_MIN_LENGTH` | 19 | 3.932 | real config label |
+| `SECRET_SCAN_ENABLED` | 19 | 3.301 | real config label |
+| `DJANGO_SECRET_KEY` | 17 | 3.690 | real config label (AC-1b) |
+| `OPENAI_API_KEY` | 14 | 3.093 | real config label (AC-1a) |
+| `DB_PASSWORD` | 11 | 3.096 | real config label (AC-2) |
+| `mysecrettoken1234567890abcdef` | 29 | 4.444 | secret-shaped core (repro 1/2) |
+| `my_secret_token_9f8a7b6c5d4e3f2a1b0c` | 36 | 4.461 | secret-shaped core (repro 3, underscore) |
+| `myrandomvalue1234567890abcdef` | 29 | 4.487 | control core |
+
+The hypothesis held with real margin: every genuine label core scores 3.09–3.93
+bits/char, well below the 4.0 default threshold; every secret-shaped core scores
+4.44–4.49, well above it — a ~0.5 bit/char gap. I also re-checked the one close boundary
+case in the existing fixture set (`"DJANGO_SECRET_KEY":`, the full token including quotes
+and colon, exactly 20 chars — right at the entropy length floor) and confirmed it scores
+3.884, safely under threshold, so no new false positive there.
+
+**Fix (`src/redact/entropy.ts`):** layered the guard to require all three conditions,
+not just the round-1 check:
+1. A safe value (digits/boolean, optionally quoted) immediately follows — round 1's
+   check, kept as the first gate.
+2. The label core's *own* entropy is below threshold — this is what closes the suffix
+   attack: a secret token's own core stays high-entropy (4.44+) no matter what decoy
+   value an attacker appends after it, so this layer can't be gamed by adjacent-token
+   shape at all.
+3. The core is either short (below the entropy length floor, true of every real label
+   fixture) or doesn't have a hex/base62-like case profile (dense lowercase+digit
+   mixing) — belt-and-suspenders per the team lead's request, in case a future core sits
+   close to the threshold.
+
+A keyword-shaped token failing ANY layer falls through to the ordinary entropy check on
+its own full token text (not suppressed), so a genuinely high-entropy secret is
+redacted regardless of what does or doesn't sit next to it.
+
+Updated the code comment in `entropy.ts` to state the residual precisely, per the team
+lead's instruction: closing this further would require an attacker to construct a secret
+whose own identifier-shaped text is *also* low-entropy — which is self-defeating (a
+low-entropy "secret" is a weak secret), a materially different and much narrower
+residual than round 1's "any decoy value works."
+
+New tests in `tests/security/redact.test.ts` (7 new `TRUE_POSITIVES` fixtures): all 6
+suffix-attack shapes from the review (bare digit, bare boolean, colon+digit,
+underscore+digit, quoted-digit, quoted-boolean) redact as `high_entropy`, plus the
+reviewer's own multi-token-line verification case (`PASSWORD_MIN_LENGTH: 8
+mysecrettoken1234567890abcdef=` — legit pair stays unredacted, unrelated trailing secret
+still redacts). Re-verified directly (not just via the test suite) that the original 3
+repros, the no-keyword control, and both AC-3 fixtures are unaffected before writing the
+test file, using a small Node script against the built `dist/redact/index.js`.
+
+### Re-run self-verify gates (fix round 2)
+- `bunx tsc --noEmit` — exit 0, no output (one type-narrowing fix needed:
+  `coreMatch?.[1]` + explicit `!core` check, since the capture-group type is
+  `string | undefined` under strict mode).
+- `bun run build` — exit 0 (`tsc -p .` clean).
+- `bun vitest run tests/security/redact.test.ts` — **83/83 passed** (76 prior + 7 new).
+- `bun vitest run tests/security/redact-perf.test.ts` — **2/2 passed**. Logged:
+  `p50=0.188ms p95=0.369ms mean=0.225ms max=1.674ms` — still ~54x under the 20ms budget.
+- `bun vitest run tests/security` (full directory) — **6 files / 124 tests passed, 0
+  failed** (up from 117 by the 7 new fixtures).
+- `bun run test` (full suite) — **198 files / 2352 tests passed, 6 skipped
+  (pre-existing, unrelated), 0 failed** (up from 2345 by exactly the 7 new tests).
+
+### Housekeeping note
+The first commit attempt for this round accidentally swept in unrelated backlog-file
+renames (FEAT-464/465/466/467) that had been staged in this shared checkout by other
+parallel loop activity, not by this task. Caught it immediately via `git show --stat`,
+undid it with `git reset --soft HEAD~1` (branch is local-only, nothing pushed, so safe),
+unstaged the unrelated files back to their original working-tree state, and re-committed
+with only `src/redact/entropy.ts` and `tests/security/redact.test.ts`. Verified via
+`git status --short` that those files ended up byte-identical to their pre-commit state
+(same modification/untracked status, no content change from my actions).
+
+### Confidence
+High. The suffix-attack repro was reproduced first on the round-1 branch to confirm the
+finding was real (not assumed from the review text), the fix's core hypothesis was
+verified by direct computation against real label text before any code was written (same
+discipline that caught round 1's own "simplest form doesn't actually work" issue), and
+every case the review asked to check — all 4 suffix shapes, the two AC-3 fixtures, the
+multi-token line, and the original round-1 repros/control — was independently verified
+against the built module output before writing the corresponding test.
+
+### Suggested next handoff
+Re-review (`crew:reviewer`) to confirm the suffix-attack variant is closed and no further
+variant of this class remains, then validator per `requires_validation: true` in the
+slice frontmatter. Parent loop drives both dispatches.
+
+---
+
+## Fix round 1 (2026-07-10, commit 32db526, on top of fab5173/07cc8ea) — review CRITICAL finding
 
 Review (`20260710T130230Z-review-result-slice-421-feat-463-quoted-labels.md`) returned
 **needs_fix**: all 6 ACs, structural non-overlap, ReDoS safety, and AC-4's pure-addition
