@@ -1,6 +1,6 @@
 ---
 id: FEAT-451
-status: triaged
+status: done
 priority: P1
 category: feature
 target_release: null
@@ -105,3 +105,12 @@ that does not exist in this codebase. Corrected facts:
   profile field) is new work, not a reuse of existing why_memory plumbing.
 - Product scope: declared local-only (`cross_product: [astramem-local]`); cloud
   parity deferred pending the extraction-schema and storage-design decisions above.
+
+## Shipped (2026-07-10)
+Slice 1 merged to main (0f52351, review PASS): live-computed GET /profile + MCP
+user_profile (18th tool). Slice 2 (local `preference` atom kind) deferred by
+design — needs prompt A/B first. Non-blocking review follow-ups: (1) MEDIUM —
+per-request queries scan the full active set (no type/scope index, no SQL
+LIMIT); add an index + LIMIT when read volume warrants (agent-profile
+migration-019 precedent). (2) LOW — share VALID_PROFILE_SCOPES between
+user-profile.ts and mcp/server.ts.

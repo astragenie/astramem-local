@@ -1,7 +1,14 @@
 # ADR-012: Auto-Capture Security Model — passive, gated, revocable
 
-**Status:** proposed · **Date:** 2026-07-09 · **Confidence:** Medium on mechanism tiering; Low on
+**Status:** accepted (2026-07-10) · **Date:** 2026-07-09 · **Confidence:** Medium on mechanism tiering; Low on
 relevance-gate tuning (untested taxonomy)
+**Acceptance note:** spike checklist executed 2026-07-10 (docs/specs/FEAT-455-spike-results.md,
+8/9 PASS, independently reviewed PASS). Item 9 (human sign-off) satisfied by the product owner's
+explicit 2026-07-10 direction "land hook-tap first; file separate feature for future router
+implementation" given with the tier analysis presented. Conditions carried: build order
+provenance→config→doctor-row; spike findings 1-3 tracked as FEAT-459 (stage-0 redaction
+hardening); finding 4 (no invalidate-reversal primitive) scoped into the FEAT-455 build;
+LLM-proxy tier tracked as FEAT-458 with its own future ADR.
 **Context:** FEAT-455 (automatic memory capture) proposes observing agent traffic so memory forms
 without an explicit `remember`/ingest call — mem0 and Supermemory both do this via a proxy sitting
 in the request path. PM triage flagged `pm_technical_risk: 0.9` and set `autonomous_safe: false`
