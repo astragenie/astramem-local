@@ -1,7 +1,7 @@
 ---
 id: FEAT-464
-status: pending
-priority: null
+status: triaged
+priority: P3
 category: platform
 target_release: null
 created: 2026-07-10
@@ -10,8 +10,17 @@ depends_on: []
 slices: []
 derived_from: dependabot PR #55 (closed 2026-07-10 — major bumps rejected)
 cross_product: [astramem-local]
-autonomous_safe: null
 tags: ["concern:deps", "stack:typescript", "surface:build"]
+pm_customer_impact: 0.2
+pm_effort_estimate: 0.7
+pm_strategic_alignment: 0.35
+pm_technical_risk: 0.3
+pm_dependency_depth: 0.1
+pm_composite_priority: P3
+pm_autonomous_safe: false
+pm_reviewed: 2026-07-10
+autonomous_safe: false
+triage_notes: "P3 via formula: impact 0.2 and alignment 0.35 are both far below the P1 thresholds (impact>=0.7 AND alignment>=0.6; or alignment>=0.8 AND effort<=0.4), so neither P1 branch fires. P3 fires on the second condition: effort 0.7>=0.7 AND impact 0.2<=0.3 both hold — this is a wide-reaching mechanical migration (105 test-side type errors across 3+ files, bun.lock regen, a real @types/node-26-vs-20 decision, 4-leg CI verification) with no direct end-user-visible impact (pure toolchain, no runtime behavior change per the FEAT's own text). composite_score = 0.2*0.35 + 0.35*0.30 + (1-0.7)*0.20 + (1-0.3)*0.10 + (1-0.1)*0.05 = 0.35. technical_risk banded at 0.3 (mechanical type-fixups only, no runtime/schema change, git-revertible; residual risk is entirely in the @types/node major-version decision, not the mechanical fixes). autonomous_safe=false is forced by effort_estimate 0.7 > 0.6 alone (mechanical threshold) — reinforced by no AC/spec being drafted this pass (not in this triage batch's AC-drafting scope) and by the wide test-file churn the coordinator flagged as needing human review of the toolchain decision (take TS7+@types/node 26 vs pin @types/node 20.x), not a bulk autonomous rewrite of ~105 call sites."
 ---
 ## Description
 

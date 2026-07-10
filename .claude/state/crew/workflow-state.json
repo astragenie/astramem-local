@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-10T11:56:02.608Z",
+  "updatedAt": "2026-07-10T12:45:36.387Z",
   "currentRun": {
-    "title": "FEAT461 SLICE420: Implement FEAT-461",
-    "goal": "**configToYaml() silently drops newer Config fields on every writeConfig()** —",
+    "title": "FEAT463 SLICE421: Implement FEAT-463",
+    "goal": "**Stage-0 redaction: quoted/JSON label forms not detected** — the",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-10T11:56:02.607Z",
-    "updatedAt": "2026-07-10T11:56:02.607Z",
+    "startedAt": "2026-07-10T12:45:36.387Z",
+    "updatedAt": "2026-07-10T12:45:36.387Z",
     "next": "Begin implementation",
     "gates": {
       "review": null,
@@ -21,7 +21,7 @@
       "incident": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260710T115602Z-run-brief-feat461-slice420-implement-feat-461.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260710T124536Z-run-brief-feat463-slice421-implement-feat-463.md",
       "handoffs": [],
       "reviewResult": null,
       "validationPlan": null,
@@ -34,6 +34,39 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT461 SLICE420: Implement FEAT-461",
+      "goal": "**configToYaml() silently drops newer Config fields on every writeConfig()** —",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-10T11:56:02.607Z",
+      "updatedAt": "2026-07-10T11:56:02.607Z",
+      "completedAt": "2026-07-10T11:56:02.607Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260710T115602Z-run-brief-feat461-slice420-implement-feat-461.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
       "goal": "",
