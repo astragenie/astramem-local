@@ -61,6 +61,15 @@ import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema } from '../c
 // FEAT-429: project/agent/entity arg-parsing derives from the shared
 // filter-descriptor registry — see src/contracts/filter-registry.ts.
 import { assignStructuredFilterValues } from '../contracts/filter-registry.js';
+// FEAT-454: named retrieval preset — routing over existing fusion
+// weights/filters, never a new scoring path. See src/search/presets.ts.
+import {
+  RETRIEVAL_PRESETS,
+  resolvePresetWeights,
+  validatePresetFilters,
+  PresetValidationError,
+  type RetrievalPreset,
+} from '../search/presets.js';
 import { contentHash } from '../storage/content-hash.js';
 import { buildWhyReceipt, buildSessionDigest } from '../server/queries/provenance.js';
 import { buildAgentProfile } from '../server/queries/agent-profile.js';
@@ -87,7 +96,10 @@ export interface McpServerDeps {
 export function buildMcpServer(deps: McpServerDeps): McpServer {
   const { db, embed } = deps;
   const cfg = deps.config ?? defaultConfig();
-  const weights = cfg.search;
+  // FEAT-454: renamed from `weights` — this is now the per-preset BASE, not
+  // the final weights object. `resolvePresetWeights` (src/search/presets.ts)
+  // derives the actual per-call weights from this base, once per tool call.
+  const baseWeights = cfg.search;
   // issue #26 / ADR-005: cross-encoder rerank stage — undefined (search()
   // takes zero extra branches) unless crossEncoder.enabled is set.
   const rerank = resolveRerankOpts(cfg);
@@ -128,6 +140,16 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .describe(
             'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
           ),
+        preset: z
+          .enum(RETRIEVAL_PRESETS)
+          .optional()
+          .describe(
+            "FEAT-454: named retrieval preset routing over existing capability, not a new scoring path. " +
+            "'default' (or omitted): today's fusion weights, unchanged. 'recent': boosts freshness so newer " +
+            "memories rank higher. 'exact': boosts BM25 so literal term matches dominate over semantic " +
+            "similarity. 'entity': requires the entity filter to also be supplied (400 otherwise). " +
+            "'temporal': requires the as_of filter to also be supplied (400 otherwise)."
+          ),
       }),
     },
     async (args) => {
@@ -148,6 +170,21 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           };
         }
       }
+      // FEAT-454: named retrieval preset. Omitted = 'default', byte-identical
+      // to pre-FEAT-454 behavior (AC-1).
+      const preset: RetrievalPreset = args.preset ?? 'default';
+      try {
+        validatePresetFilters(preset, filters);
+      } catch (err) {
+        if (err instanceof PresetValidationError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message }) }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+      const weights = resolvePresetWeights(preset, baseWeights);
 
       const hits = await search(args.query, filters, args.limit ?? 10, {
         db,
@@ -206,6 +243,16 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           .describe(
             'ISO-8601 date-time — bitemporal time-travel snapshot (FEAT-401): return memories as they stood at this instant rather than the current snapshot.'
           ),
+        preset: z
+          .enum(RETRIEVAL_PRESETS)
+          .optional()
+          .describe(
+            "FEAT-454: named retrieval preset routing over existing capability, not a new scoring path. " +
+            "'default' (or omitted): today's fusion weights, unchanged. 'recent': boosts freshness so newer " +
+            "memories rank higher. 'exact': boosts BM25 so literal term matches dominate over semantic " +
+            "similarity. 'entity': requires the entity filter to also be supplied (400 otherwise). " +
+            "'temporal': requires the as_of filter to also be supplied (400 otherwise)."
+          ),
       }),
     },
     async (args) => {
@@ -226,6 +273,21 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
           };
         }
       }
+      // FEAT-454: named retrieval preset. Omitted = 'default', byte-identical
+      // to pre-FEAT-454 behavior (AC-1).
+      const preset: RetrievalPreset = args.preset ?? 'default';
+      try {
+        validatePresetFilters(preset, filters);
+      } catch (err) {
+        if (err instanceof PresetValidationError) {
+          return {
+            content: [{ type: 'text' as const, text: JSON.stringify({ error: err.message }) }],
+            isError: true,
+          };
+        }
+        throw err;
+      }
+      const weights = resolvePresetWeights(preset, baseWeights);
 
       const hits = await search(args.query, filters, args.k ?? 5, {
         db,
