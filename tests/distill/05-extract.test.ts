@@ -232,7 +232,7 @@ describe('extract stage', () => {
     expect(result.atoms[0].entities).toBeUndefined();
   });
 
-  it('drops an atom whose entities entry has an invalid kind, keeps the atom without it', async () => {
+  it('coerces an out-of-enum entity kind to "other" instead of dropping the whole atom', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
@@ -250,8 +250,59 @@ describe('extract stage', () => {
     const llm = makeMockLLM([badKind]);
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
-    // AtomSchema validates the whole atom — an invalid nested entities[] kind
-    // fails the atom, matching the existing "drop malformed atoms silently" behavior.
+    // An unrecognized entities[] kind must not sink the whole atom (silent
+    // data loss) — it is safe-narrowed to 'other', matching the cloud-side
+    // EntityKinds.Normalize() pattern (AstraMemory.Domain/EntityKinds.cs).
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0].text).toBe('some fact about a thing');
+    expect(result.atoms[0].entities).toEqual([{ name: 'Whatever', kind: 'other' }]);
+  });
+
+  it('coerces only the bad entity, leaving valid entities on the same atom untouched', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const mixedKinds = JSON.stringify({
+      atoms: [
+        {
+          type: 'fact',
+          text: 'Postgres was chosen by Alice for the analytics store',
+          importance: 0.6,
+          confidence: 0.7,
+          entities: [
+            { name: 'Postgres', kind: 'tech' },
+            { name: 'Alice', kind: 'human' }, // stale/unrecognized kind string
+          ],
+        },
+      ],
+    });
+    const llm = makeMockLLM([mixedKinds]);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0].entities).toEqual([
+      { name: 'Postgres', kind: 'tech' },
+      { name: 'Alice', kind: 'other' },
+    ]);
+  });
+
+  it('still drops an atom that fails validation for a reason other than entity kind', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const badType = JSON.stringify({
+      atoms: [
+        {
+          type: 'not-a-real-atom-type',
+          text: 'some fact about a thing',
+          importance: 0.5,
+          confidence: 0.5,
+        },
+      ],
+    });
+    const llm = makeMockLLM([badType]);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms).toEqual([]);
   });
 
