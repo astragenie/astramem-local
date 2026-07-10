@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.11.0] — 2026-07-10
+
+### Added
+- **User profile (FEAT-451)** — `GET /profile` + MCP `user_profile` tool (18th tool): live-computed standing profile rolled up from existing atoms (standing facts, preferences, recurring lessons, recent decisions, known entities), deterministic ordering, scope-aware (private by default), zero schema change.
+- **Contradiction detection, propose-only (FEAT-456 slice 1)** — the consolidation pass can now flag likely-contradicting memory pairs via an LLM judge and file them as `kind:'contradiction'` proposals in the existing proposal queue (accept → normal audited supersede). Default **off** (`consolidation.contradiction.mode`); migration 022 adds `metadata_json` to proposals. No auto-action — per ADR-004, contradiction resolution requires an explicit accept.
+- **Rerank provenance (FEAT-452)** — reranked search hits now carry `reranked`, `rerank_score`, and `explanation.signals.cross_encoder` while `score` keeps the original fused value (previously overwritten in place); outcome-tagged structured logs for the rerank stage; runbook documents the sidecar-satisfies-local-only decision.
+- **Named retrieval presets (FEAT-454)** — `preset` (`default|recent|exact|entity|temporal`) on `GET /search`, `POST /recall`, and the MCP search/recall tools; presets are weight-routings over the existing fusion pipeline, constructed through fusion governance; `default` is byte-identical to prior behavior (snapshot-tested).
+
+### Fixed
+- Vestigial shebang in `scripts/git-hooks/post-merge-rebuild.mjs` broke the suite's dynamic import under vitest's `node:vm` evaluator.
+- LongMemEval harness: distill-wait polling no longer bursts every session concurrently (Windows ephemeral-port exhaustion at n=50); sequential short-circuit + 5s interval.
+
+---
+
 ## [0.10.0] — 2026-07-09
 
 ### Changed
