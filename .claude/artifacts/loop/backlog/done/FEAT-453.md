@@ -1,13 +1,13 @@
 ---
 id: FEAT-453
-status: triaged
+status: done
 priority: P2
 category: feature
-target_release: null
+target_release: v0.12.0
 created: 2026-07-09
-updated: 2026-07-09
+updated: 2026-07-12
 depends_on: []
-slices: []
+slices: [SLICE-1, SLICE-2]
 derived_from: docs/research/2026-07-09-competitor-gap-analysis.md
 cross_product: [astramem-local, memory]
 pm_customer_impact: 0.4
@@ -140,3 +140,58 @@ Additional findings:
   spike, not a routine contract edit.
 - Sequencing vs FEAT-456: soft constraint only (don't parallelize the migration
   slices), not a hard `depends_on`.
+
+## Completion (reconciled 2026-07-12)
+
+**The local half of this FEAT shipped in v0.12.0.** This backlog file was never
+updated and sat in `triaged/` with `status: triaged, slices: []`, which caused
+the post-v0.15.0 roadmap handoff to plan it as a fresh 1–2 week Wave C item.
+That was phantom work. Verified against live repo state, not the review artifact's
+claims:
+
+- **SLICE-1 (design spike)** — `docs/specs/FEAT-453-bitemporal-design.md`, commit
+  `051a1c0`. Answers the DDL / contract / query-composition questions in full.
+- **SLICE-2 (local implementation)** — commit `40d166e`, reviewed PASS
+  (`.claude/artifacts/crew/reviews/20260710T065902-review-result-feat-453-s2.md`),
+  merged `11348dd`, released in v0.12.0. Confirmed on `main`:
+  `migrations/023-entity-link-validity.sql`, `linkWithValidity` /
+  `closeAndRelink` / `memoryIdsForEntitiesAsOf` in `src/storage/entities.ts`,
+  entity+`as_of` composition in `src/search/search.ts`, distill validity-hint
+  extraction, and the additive atom@2 relax (contracts 2.1.0).
+
+### What actually remains
+
+**SLICE-3 — the cloud EF Core mirror in the sibling `memory` repo. NOT STARTED.**
+It is cross-repo and NOT autonomous-safe: dispatch it as an explicit cross-repo
+session against `C:\work\mega\memory`, not through the wave/loop dispatcher.
+Proposed cloud contract is in `docs/specs/FEAT-453-bitemporal-design.md` §11 —
+but §11.4 flags it as a reasoned mirror proposal that has NOT been checked against
+cloud's live schema. Confirm before implementing.
+
+### Open human decision — the "bitemporal" label overclaims
+
+What shipped is **valid-time only**, on both grains. There is no queryable
+transaction-time axis anywhere — `created_at` is ingest bookkeeping, not a
+"what did we believe before the correction" axis. The FEAT title and the
+Graphiti comparison in the competitor gap analysis both claim "bitemporal,"
+which is stronger than what exists.
+
+Two ways out, needs a call:
+- **(a) Accept as valid-time-only and correct the label** — recommended by the
+  architect pass; no evidence of transaction-time query demand exists.
+- **(b) File a distinct, larger FEAT for real transaction-time tracking** — this
+  is a different data model (append-only fact-version log, not a mutable column),
+  not an increment on what shipped.
+
+### Design answers (full reasoning in `docs/specs/FEAT-453-bitemporal-design.md` §10)
+
+- **Grain**: neither fact/atom nor memory — the memory→entity LINK
+  (`memory_entities`). `entities` is a global dedup registry and cannot hold a
+  window; `memories` already has its own separate window.
+- **vs `invalidate_memory` / `supersede_memory`**: already reconciled, zero new
+  code. Narrower window wins, computed at query time.
+- **Retrieval blast radius**: small. Plain memory selection is UNCHANGED —
+  fact-level validity only affects selection when a caller supplies BOTH
+  `filters.entity` AND `filters.as_of`.
+- **NULL backfill semantics**: defers to the parent memory's own window, resolved
+  at query time via COALESCE — never baked into the row.

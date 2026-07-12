@@ -114,3 +114,38 @@ follow-up work tracked in the unification plan, not this schema change.
 - `repo` is retired as both a `provenance` field and an entity `kind` — repo/project identity is
   owned solely by the structural `provenance.project` field; cross-repo mentions land in the
   `product` entity kind instead.
+
+## Amendment (2026-07-12): fact-level valid-time tracking on entity links (FEAT-453)
+
+**Status:** accepted (local half shipped v0.12.0) · **Confidence:** High for local scope, Medium
+for the unresolved terminology question below · Full design in
+`docs/specs/FEAT-453-bitemporal-design.md`.
+
+**Context:** this ADR's original `valid_from`/`valid_to` (2026-07-02, above) is memory-level —
+one validity window per whole atom. FEAT-453 asked for finer granularity: a single atom names
+several entities (`entities[]`, added in the atom@2 amendment above), and each entity *mention*
+can have its own validity window independent of the atom's — "atom M says Alice was the approver
+Jan–Mar" without invalidating the rest of what M asserts.
+
+**Decision:** add `valid_at`/`invalid_at` to the memory↔entity link row (`memory_entities`
+locally; a to-be-confirmed EF Core mirror on cloud, migration 023, both nullable, additive, no
+new atom schema major — see design doc §2 for why this stayed a relaxation of atom@2's `entities[]`
+items rather than an atom@3 cut). A link's *effective* window is always clipped to fall inside its
+parent atom's own `valid_from`/`valid_to`, computed at query time (design doc §3.1) — never
+mutated onto the link row when the parent atom's lifecycle changes. This composes with, rather
+than replacing, the pre-existing `supersede()`/`invalidate()` machinery: no new cascade code was
+needed on either lifecycle op (design doc AC-7).
+
+**Consequences:**
+- Local (astramem-local): fully shipped, v0.12.0. Cloud (`memory`): not started — cross-repo,
+  non-autonomous slice, tracked as FEAT-453 SLICE-3 (design doc §11).
+- **Open terminology question, not yet resolved:** this amendment — like the base ADR's own
+  `valid_from`/`valid_to` — models **valid-time only**. Neither this repo nor the base ADR track a
+  second, independently-queryable *transaction-time* axis (when the system learned/recorded a
+  fact, as distinct from when the fact was true). "Bitemporal" in FEAT-453's own title and its
+  Graphiti-comparison research is therefore describing a *narrower* capability than the term
+  formally means. This does not block what shipped (the shipped feature is real and useful under
+  valid-time-only semantics) but the label should either be corrected in the FEAT/CHANGELOG
+  language or a distinct, larger follow-up FEAT should be filed if genuine transaction-time query
+  demand ("what did we believe before this correction") emerges — see design doc §10 Q2 for the
+  full reasoning. Left as an explicit human decision, not resolved by this amendment.
