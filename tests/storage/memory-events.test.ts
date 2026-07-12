@@ -449,9 +449,12 @@ describe('MemoryEventRepo.purgeBatch / restorePurgeBatch / finalizePurgeBatch', 
     const a1Types = events.listForAtom(a1).map(e => e.event_type);
     expect(a1Types).toEqual(['purge']);
     const purgeEvent = events.listForAtom(a1).find(e => e.event_type === 'purge');
-    expect(JSON.parse(purgeEvent?.payload_json ?? '{}')).toEqual({
-      batch_id: result.batchId, capture_source: 'auto_capture',
-    });
+    const purgePayload = JSON.parse(purgeEvent?.payload_json ?? '{}');
+    expect(purgePayload.batch_id).toBe(result.batchId);
+    expect(purgePayload.capture_source).toBe('auto_capture');
+    // AC-6: restore_deadline_at is on the event payload itself, not just the
+    // purge_batches row — reachable without a separate batch lookup.
+    expect(purgePayload.restore_deadline_at).toBe(purgeBatchRow(result.batchId).restore_deadline_at);
 
     const batch = purgeBatchRow(result.batchId);
     expect(batch.capture_source).toBe('auto_capture');
@@ -614,19 +617,19 @@ describe('MemoryEventRepo.purgeBatch / restorePurgeBatch / finalizePurgeBatch', 
     expect(repo.get(id)?.valid_to).toBeNull();
   });
 
-  // AC-6: batch id + restore-deadline are visible on the purge event payload,
-  // not just a bare state change (verified at the storage layer; the REST/MCP
-  // history surfaces pass this payload through unchanged — see
-  // tests/server/capture-purge.test.ts).
-  it('the purge event payload carries batch_id (restore-deadline lives on the batch record, ' +
-     'joinable by batch_id) — distinguishable from a bare invalidate()', () => {
+  // AC-6: batch id + restore-deadline are visible directly on the purge
+  // event's own payload, not just a bare state change (verified at the
+  // storage layer; the REST/MCP history surfaces pass this payload through
+  // unchanged — see tests/server/capture-purge.test.ts).
+  it('the purge event payload carries batch_id AND restore_deadline_at — distinguishable from a bare invalidate()', () => {
     const id = insertMem('pb-history', { captureSource: 'auto_capture' });
     const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
 
     const purgeEvent = events.listForAtom(id).find(e => e.event_type === 'purge');
     const payload = JSON.parse(purgeEvent?.payload_json ?? '{}');
     expect(payload.batch_id).toBe(batchId);
-    expect(purgeBatchRow(batchId).restore_deadline_at).toBeGreaterThan(Date.now());
+    expect(payload.restore_deadline_at).toBeGreaterThan(Date.now());
+    expect(payload.restore_deadline_at).toBe(purgeBatchRow(batchId).restore_deadline_at);
   });
 });
 

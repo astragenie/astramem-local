@@ -445,8 +445,14 @@ export class MemoryEventRepo {
    * `purge` event (never `invalidate` — see the `MemoryEventType` doc
    * comment) and persists one `purge_batches` audit row (batch id,
    * `captureSource`, atom count, restore-deadline time range), all in one
-   * transaction. `capture_source` is a plain parameter with no branching —
-   * this primitive is identical for `'auto_capture'` and `'proxy'` (FEAT-467
+   * transaction. Each `purge` event's own payload also carries `batch_id`
+   * and `restore_deadline_at` (FEAT-467 AC-6): `GET /memory/:id/history`
+   * and the MCP `memory_history`/`why_memory` tools surface `memory_events`
+   * rows as-is with no batch lookup of their own, so the deadline must live
+   * on the event payload itself to be visible there — `purge_batches`
+   * remains the source of truth this is read from at write time.
+   * `capture_source` is a plain parameter with no branching — this
+   * primitive is identical for `'auto_capture'` and `'proxy'` (FEAT-467
    * AC-5).
    *
    * Ids that don't exist, or are already invalid (`valid_to` set — including
@@ -480,7 +486,17 @@ export class MemoryEventRepo {
         this.append({
           event_type: 'purge',
           atom_id: atomId,
-          payload: { batch_id: batchId, capture_source: captureSource },
+          // FEAT-467 AC-6 fix (reviewer finding): restore_deadline_at is
+          // duplicated onto the event payload itself, not just left on the
+          // purge_batches row. GET /memory/:id/history and why_memory pass
+          // memory_events rows through unchanged with no batch-id lookup of
+          // their own, so without this the deadline was only ever reachable
+          // via raw SQL against purge_batches — indistinguishable from a
+          // bare state change per the AC's own wording. `purge_batches`
+          // remains the source of truth (this is a read-convenience
+          // duplication of a value fixed at purge time, not a second
+          // mutable copy that can drift).
+          payload: { batch_id: batchId, capture_source: captureSource, restore_deadline_at: restoreDeadlineAt },
           created_at: now,
         });
         count++;

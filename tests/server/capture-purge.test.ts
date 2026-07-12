@@ -101,9 +101,11 @@ describe('POST /capture/purge', () => {
     expect(repo.get(proxyAtom)?.valid_to).not.toBeNull();
   });
 
-  // AC-6: batch id + restore-deadline are visible on the purge event's payload
-  // via the existing history surface, not just a bare state change.
-  it('the purge event is visible via GET /memory/:id/history with batch id + a restore-deadline joinable via the batch', async () => {
+  // AC-6: batch id + restore-deadline are visible directly on the purge
+  // event's own payload via the existing history surface — not just a bare
+  // state change indistinguishable from a manual invalidate(), and not
+  // something the caller has to separately look up in purge_batches.
+  it('the purge event is visible via GET /memory/:id/history with batch id + restore-deadline on the payload itself', async () => {
     const id = insertMem(repo, 'cp-history-1', { capture_source: 'auto_capture' });
     const purgeRes = await app.inject({
       method: 'POST', url: '/capture/purge',
@@ -120,14 +122,17 @@ describe('POST /capture/purge', () => {
     const body = histRes.json() as { history: Array<{ event_type: string; payload_json: string }> };
     expect(body.history.map(e => e.event_type)).toEqual(['purge']);
     const payload = JSON.parse(body.history[0]!.payload_json);
-    expect(payload).toEqual({ batch_id: batchId, capture_source: 'auto_capture' });
+    expect(payload.batch_id).toBe(batchId);
+    expect(payload.capture_source).toBe('auto_capture');
+    expect(typeof payload.restore_deadline_at).toBe('number');
+    expect(payload.restore_deadline_at).toBeGreaterThan(Date.now());
 
-    // Restore-deadline lives on the batch row (joinable by batch_id) — not
-    // duplicated onto every atom's payload.
+    // Matches the purge_batches row exactly — this is a read-convenience
+    // duplication fixed at purge time, not a value that can drift.
     const batchRow = db.prepare('SELECT restore_deadline_at FROM purge_batches WHERE batch_id = ?').get(batchId) as {
       restore_deadline_at: number;
     };
-    expect(batchRow.restore_deadline_at).toBeGreaterThan(Date.now());
+    expect(payload.restore_deadline_at).toBe(batchRow.restore_deadline_at);
   });
 
   it('why_memory (GET /memory/:id/why) also surfaces the purge event in history', async () => {
