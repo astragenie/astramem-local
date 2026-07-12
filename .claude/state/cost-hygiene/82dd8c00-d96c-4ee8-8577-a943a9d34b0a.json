@@ -1,7 +1,7 @@
 {
   "session_id": "82dd8c00-d96c-4ee8-8577-a943a9d34b0a",
   "first_seen": "2026-07-12T17:04:02.946Z",
-  "last_seen": "2026-07-12T17:24:54.592Z",
+  "last_seen": "2026-07-12T17:36:37.024Z",
   "total_bytes": 0,
   "entries": {
     "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260712T161646Z-review-result-feat-471-review.md": {
@@ -92,6 +92,17 @@
       "content": null,
       "last_edit_at": "2026-07-12T17:24:54.591Z",
       "mtime_at_last_edit": "2026-07-12T17:24:54.435Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260712T174500Z-post-v0150-roadmap-waves-handoff.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-12T17:36:37.023Z",
+      "last_read_at": "2026-07-12T17:36:37.023Z",
+      "mtime_at_last_read": "2026-07-12T17:36:36.763Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-12T17:36:37.023Z",
+      "mtime_at_last_edit": "2026-07-12T17:36:36.763Z"
     }
   }
 }
