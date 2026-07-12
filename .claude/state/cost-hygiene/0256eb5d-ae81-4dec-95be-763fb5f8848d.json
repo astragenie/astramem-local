@@ -1,0 +1,215 @@
+{
+  "session_id": "0256eb5d-ae81-4dec-95be-763fb5f8848d",
+  "first_seen": "2026-07-10T17:26:07.412Z",
+  "last_seen": "2026-07-10T18:14:36.645Z",
+  "total_bytes": 0,
+  "entries": {
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260710T170000Z-session-handoff-wave2-v014-pending.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:26:07.412Z",
+      "last_read_at": "2026-07-10T17:26:07.412Z",
+      "mtime_at_last_read": "2026-07-10T16:52:03.715Z",
+      "size_at_last_read": 6452,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\deployments\\20260710T172500Z-feat458-bake-clock-start.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:26:08.207Z",
+      "last_read_at": "2026-07-10T17:26:08.207Z",
+      "mtime_at_last_read": "2026-07-10T16:59:01.019Z",
+      "size_at_last_read": 2144,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\.claude\\artifacts\\crew\\reviews\\20260710T163908Z-review-result-slice-423-feat-462b-detach.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:28:12.679Z",
+      "last_read_at": "2026-07-10T17:28:12.679Z",
+      "mtime_at_last_read": "2026-07-10T16:40:06.233Z",
+      "size_at_last_read": 12202,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\shared\\daemon-manifest.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:29:48.539Z",
+      "last_read_at": "2026-07-10T17:29:48.539Z",
+      "mtime_at_last_read": "2026-07-10T16:44:47.763Z",
+      "size_at_last_read": 9612,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\shared\\__fixtures__\\fake-detached-worker.mjs": {
+      "read_count": 2,
+      "first_read_at": "2026-07-10T17:29:48.827Z",
+      "last_read_at": "2026-07-10T17:41:25.332Z",
+      "mtime_at_last_read": "2026-07-10T17:19:29.639Z",
+      "size_at_last_read": 2887,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\shared\\daemon-manifest.test.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:29:53.003Z",
+      "last_read_at": "2026-07-10T17:29:53.003Z",
+      "mtime_at_last_read": "2026-07-10T17:04:12.476Z",
+      "size_at_last_read": 8623,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\shared\\detach.test.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:29:59.936Z",
+      "last_read_at": "2026-07-10T17:29:59.936Z",
+      "mtime_at_last_read": "2026-07-10T17:13:12.080Z",
+      "size_at_last_read": 6666,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\shared\\kill-run.mts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:30:10.747Z",
+      "last_read_at": "2026-07-10T17:30:10.747Z",
+      "mtime_at_last_read": "2026-07-10T17:05:55.874Z",
+      "size_at_last_read": 3983,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\shared\\kill-run.test.ts": {
+      "read_count": 2,
+      "first_read_at": "2026-07-10T17:30:10.924Z",
+      "last_read_at": "2026-07-10T17:41:18.144Z",
+      "mtime_at_last_read": "2026-07-10T17:06:14.718Z",
+      "size_at_last_read": 4184,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\.claude\\artifacts\\crew\\reviews\\20260710T173337Z-review-result-feat-462b-re-review-fix-round.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:38:14.659Z",
+      "last_read_at": "2026-07-10T17:38:14.659Z",
+      "mtime_at_last_read": "2026-07-10T17:38:07.756Z",
+      "size_at_last_read": 6938,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\longmemeval\\README.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:40:29.829Z",
+      "last_read_at": "2026-07-10T17:40:29.829Z",
+      "mtime_at_last_read": "2026-07-10T17:07:51.167Z",
+      "size_at_last_read": 40275,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\w462b\\scripts\\eval\\longmemeval\\detach-kill-resume.test.ts": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:41:09.930Z",
+      "last_read_at": "2026-07-10T17:41:09.930Z",
+      "mtime_at_last_read": "2026-07-10T16:08:52.623Z",
+      "size_at_last_read": 5857,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\relmain\\CHANGELOG.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:50:29.923Z",
+      "last_read_at": "2026-07-10T17:50:29.923Z",
+      "mtime_at_last_read": "2026-07-10T17:16:39.606Z",
+      "size_at_last_read": 42774,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T17:50:46.581Z",
+      "mtime_at_last_edit": "2026-07-10T17:50:46.373Z"
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\relmain\\package.json": {
+      "read_count": 0,
+      "first_read_at": "2026-07-10T17:50:48.238Z",
+      "last_read_at": "2026-07-10T17:50:48.238Z",
+      "mtime_at_last_read": "2026-07-10T17:50:47.909Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T17:50:48.238Z",
+      "mtime_at_last_edit": "2026-07-10T17:50:47.909Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\merge-local-tip-not-origin.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-10T17:54:11.007Z",
+      "last_read_at": "2026-07-10T17:54:11.007Z",
+      "mtime_at_last_read": "2026-07-10T17:54:10.777Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T17:54:11.007Z",
+      "mtime_at_last_edit": "2026-07-10T17:54:10.777Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\tsc-noemit-not-build-smoke-fail.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-10T17:54:17.587Z",
+      "last_read_at": "2026-07-10T17:54:17.587Z",
+      "mtime_at_last_read": "2026-07-10T17:54:17.341Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T17:54:17.587Z",
+      "mtime_at_last_edit": "2026-07-10T17:54:17.341Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\MEMORY.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-10T17:54:21.554Z",
+      "last_read_at": "2026-07-10T17:54:21.554Z",
+      "mtime_at_last_read": "2026-07-10T12:34:17.595Z",
+      "size_at_last_read": 3299,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T18:14:36.644Z",
+      "mtime_at_last_edit": "2026-07-10T18:14:36.472Z"
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\relmain\\.claude\\artifacts\\loop\\plans\\20260710T180000Z-wave-plan-drain-triaged-post-v014.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-10T18:08:54.796Z",
+      "last_read_at": "2026-07-10T18:08:54.796Z",
+      "mtime_at_last_read": "2026-07-10T18:08:54.477Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T18:08:54.796Z",
+      "mtime_at_last_edit": "2026-07-10T18:08:54.477Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\wave-plan-location.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-10T18:14:19.366Z",
+      "last_read_at": "2026-07-10T18:14:19.366Z",
+      "mtime_at_last_read": "2026-07-10T18:14:19.180Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T18:14:19.366Z",
+      "mtime_at_last_edit": "2026-07-10T18:14:19.180Z"
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\relmain\\.claude\\artifacts\\loop\\plans\\CURRENT-WAVE-PLAN.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-10T18:14:24.826Z",
+      "last_read_at": "2026-07-10T18:14:24.826Z",
+      "mtime_at_last_read": "2026-07-10T18:14:24.655Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T18:14:24.826Z",
+      "mtime_at_last_edit": "2026-07-10T18:14:24.655Z"
+    },
+    "C:\\work\\mega\\astramemory-local-worktrees\\relmain\\.claude\\artifacts\\loop\\plans\\20260707T123000Z-wave-plan-stable-infra-plus-features.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-10T18:14:32.938Z",
+      "last_read_at": "2026-07-10T18:14:32.938Z",
+      "mtime_at_last_read": "2026-07-10T18:14:32.732Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-10T18:14:32.938Z",
+      "mtime_at_last_edit": "2026-07-10T18:14:32.732Z"
+    }
+  }
+}

@@ -1,0 +1,97 @@
+{
+  "session_id": "82dd8c00-d96c-4ee8-8577-a943a9d34b0a",
+  "first_seen": "2026-07-12T17:04:02.946Z",
+  "last_seen": "2026-07-12T17:24:54.592Z",
+  "total_bytes": 0,
+  "entries": {
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260712T161646Z-review-result-feat-471-review.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:04:02.946Z",
+      "last_read_at": "2026-07-12T17:04:02.946Z",
+      "mtime_at_last_read": "2026-07-12T16:17:00.285Z",
+      "size_at_last_read": 3997,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\loop\\backlog\\triaged\\FEAT-458.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:06:43.242Z",
+      "last_read_at": "2026-07-12T17:06:43.242Z",
+      "mtime_at_last_read": "2026-07-10T13:12:58.321Z",
+      "size_at_last_read": 9748,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\deployments\\20260710T172500Z-feat458-bake-clock-start.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:07:45.359Z",
+      "last_read_at": "2026-07-12T17:07:45.359Z",
+      "mtime_at_last_read": "2026-07-12T15:37:12.190Z",
+      "size_at_last_read": 2180,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\feat-458-s2-gate-blocked.md": {
+      "read_count": 0,
+      "first_read_at": "2026-07-12T17:10:28.988Z",
+      "last_read_at": "2026-07-12T17:10:28.988Z",
+      "mtime_at_last_read": "2026-07-12T17:10:28.808Z",
+      "size_at_last_read": 0,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-12T17:10:28.988Z",
+      "mtime_at_last_edit": "2026-07-12T17:10:28.808Z"
+    },
+    "C:\\Users\\serge\\.claude\\projects\\C--work-mega-astramemory-local\\memory\\MEMORY.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:10:46.681Z",
+      "last_read_at": "2026-07-12T17:10:46.681Z",
+      "mtime_at_last_read": "2026-07-10T18:14:36.472Z",
+      "size_at_last_read": 3926,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-12T17:10:57.093Z",
+      "mtime_at_last_edit": "2026-07-12T17:10:56.851Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\.claude\\loop\\rules.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:19:37.691Z",
+      "last_read_at": "2026-07-12T17:19:37.691Z",
+      "mtime_at_last_read": "2026-07-12T16:20:41.042Z",
+      "size_at_last_read": 14388,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-12T17:19:54.828Z",
+      "mtime_at_last_edit": "2026-07-12T17:19:54.668Z"
+    },
+    "C:\\work\\mega\\astramemory-local\\docs\\runbooks\\release-publish.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:22:39.846Z",
+      "last_read_at": "2026-07-12T17:22:39.846Z",
+      "mtime_at_last_read": "2026-07-09T20:31:04.407Z",
+      "size_at_last_read": 2713,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\Users\\serge\\AppData\\Local\\Temp\\claude\\C--work-mega-astramemory-local\\82dd8c00-d96c-4ee8-8577-a943a9d34b0a\\tasks\\b6borou2x.output": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:23:55.728Z",
+      "last_read_at": "2026-07-12T17:23:55.728Z",
+      "mtime_at_last_read": "2026-07-12T17:23:41.302Z",
+      "size_at_last_read": 61,
+      "content_bytes": 0,
+      "content": null
+    },
+    "C:\\work\\mega\\astramemory-local\\CHANGELOG.md": {
+      "read_count": 1,
+      "first_read_at": "2026-07-12T17:24:26.469Z",
+      "last_read_at": "2026-07-12T17:24:26.469Z",
+      "mtime_at_last_read": "2026-07-12T15:37:12.222Z",
+      "size_at_last_read": 44441,
+      "content_bytes": 0,
+      "content": null,
+      "last_edit_at": "2026-07-12T17:24:54.591Z",
+      "mtime_at_last_edit": "2026-07-12T17:24:54.435Z"
+    }
+  }
+}
