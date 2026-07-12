@@ -1,13 +1,13 @@
 ---
 id: FEAT-474
-status: triaged
+status: in-progress
 priority: P2
 category: feature
 target_release: null
 created: 2026-07-12
 updated: 2026-07-12
 depends_on: []
-slices: []
+slices: [SLICE-425, SLICE-426]
 derived_from: "docs/research/20260712-feat447-supermemory-install-ux.md (FEAT-447 investigation, Q4 install.sh UX copy-list)"
 cross_product: [astramem-local]
 autonomous_safe: true
@@ -28,6 +28,7 @@ proposed_slices:
   - id_suffix: -SLICE-2
     title: "install.sh: root/sudo handling + PATH guidance + config-dir perm hardening"
     points: 3
+started_at: 2026-07-12
 ---
 ## Description
 

@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-12T20:51:21.811Z",
+  "updatedAt": "2026-07-12T20:54:42.198Z",
   "currentRun": {
-    "title": "FEAT475 SLICE424: Implement FEAT-475",
-    "goal": "**Eval detach/daemon-manifest tests flake under parallel load** — sibling of",
+    "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
+    "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-12T20:51:21.811Z",
-    "updatedAt": "2026-07-12T20:51:21.811Z",
+    "startedAt": "2026-07-12T20:54:42.198Z",
+    "updatedAt": "2026-07-12T20:54:42.198Z",
     "next": "Begin implementation",
     "gates": {
       "review": null,
@@ -22,7 +22,7 @@
       "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205121Z-run-brief-feat475-slice424-implement-feat-475.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205442Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
       "handoffs": [],
       "reviewResult": null,
       "validationPlan": null,
@@ -35,6 +35,74 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
+      "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-12T20:54:37.963Z",
+      "updatedAt": "2026-07-12T20:54:37.963Z",
+      "completedAt": "2026-07-12T20:54:37.963Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205437Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
+    {
+      "title": "FEAT475 SLICE424: Implement FEAT-475",
+      "goal": "**Eval detach/daemon-manifest tests flake under parallel load** — sibling of",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-12T20:51:21.811Z",
+      "updatedAt": "2026-07-12T20:51:21.811Z",
+      "completedAt": "2026-07-12T20:51:21.811Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205121Z-run-brief-feat475-slice424-implement-feat-475.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT466 SLICE422: Implement FEAT-466",
       "goal": "",
@@ -133,91 +201,6 @@
         "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260710T115602Z-run-brief-feat461-slice420-implement-feat-461.md",
         "handoffs": [],
         "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
-      "goal": "",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-09T13:47:22.481Z",
-      "updatedAt": "2026-07-09T20:52:44.136Z",
-      "completedAt": "2026-07-09T20:52:44.136Z",
-      "next": "Feed this into the competitive gap-analysis doc; the two biggest corrections to the prior web-only pass are (a) cognee HAS a first-party MCP server, so any gap-analysis claiming astramemory-local's MCP support as a differentiator vs cognee needs updating, and (b) cognee's local-first claim only applies to storage, not the default LLM/embedding path (OpenAI required unless user explicitly opts into Ollama) -- this is a real differentiator astramemory-local can claim (Ollama as documented default vs opt-in).",
-      "gates": {
-        "review": {
-          "status": "passed",
-          "updatedAt": "2026-07-09T14:34:04.533Z",
-          "note": "FEAT-449 durable ingest spool is correct and closes the ingest outage; no data-loss path found and the ingest.ts refactor is byte-identical HTTP behavior, but two MEDIUM perf/design notes (synchronous unbounded boot-time drain, dropped D-B6 prepared-statement hoisting on the hot path) warrant a low-risk follow-up."
-        },
-        "validation": {
-          "status": "passed",
-          "updatedAt": "2026-07-09T14:43:01.409Z",
-          "note": "Final readiness mode: build + full targeted + full suite all green; all 8 ACs exercised with evidence; both folded review fixes spot-checked live."
-        },
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
-        "handoffs": [
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204935Z-handoff-letta-letta-ai-letta-competitive-intel-code-verified.md",
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204947Z-handoff-graphiti-getzep-source-code-verification-for-competitive-int.md",
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204950Z-handoff-mem0ai-mem0-competitive-intel-code-verified.md",
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T205244Z-handoff-cognee-topoteretes-cognee-source-verified-competitive-audit.md"
-        ],
-        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
-        "validationPlan": null,
-        "validationResult": ".claude/artifacts/crew/validations/20260709T144053Z-validation-result-slice-419-ingest-spool-validation.md",
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "memory SaaS: why demo dashboard user sees no data",
-      "goal": "",
-      "mode": "",
-      "status": "active",
-      "startedAt": "2026-07-08T22:42:05.755Z",
-      "updatedAt": "2026-07-08T23:27:24.998Z",
-      "completedAt": "2026-07-08T23:27:24.998Z",
-      "next": "Optional: add a timeout-path test for scripts/git-hooks/post-merge-rebuild.mjs (SPAWN_TIMEOUT_MS) if that hook's reliability under a hung install ever becomes a concern; not blocking for this fix.",
-      "gates": {
-        "review": {
-          "status": "passed",
-          "updatedAt": "2026-07-08T23:27:24.998Z",
-          "note": "HIGH (daemon-kill vector) is fully closed: stderr now goes through an OS fd to a scratch file with no in-process buffer, so neither the ENOBUFS-kill nor an unbounded memory leak can occur; build and all 170 tests (19 files) pass clean."
-        },
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null
-      },
-      "artifacts": {
-        "runBrief": null,
-        "handoffs": [
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
-        ],
-        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T232541Z-review-result-feat-observability-probes-shim-ts-high-re-review.md",
         "validationPlan": null,
         "validationResult": null,
         "deploymentChecks": {
