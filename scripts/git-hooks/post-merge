@@ -4,6 +4,11 @@
 //
 //   git config core.hooksPath scripts/git-hooks
 //
+// Auto-activated: `astramem-local init` and `astramem-local reinstall` now
+// run the one-liner above for you (src/service/git-hooks-activate.ts),
+// idempotently, whenever run from a git checkout of this repo. The manual
+// command above remains for anyone who hasn't run either of those yet.
+//
 // See post-merge-rebuild.mjs (same directory) for the full contract:
 // non-blocking-safe (never fails/reverts the merge), de-duped per HEAD, and
 // only fires when migrations/ or src/storage/ changed.
