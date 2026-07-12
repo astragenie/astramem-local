@@ -1,6 +1,6 @@
 ---
 id: FEAT-445
-status: triaged
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -32,3 +32,12 @@ Single-binary distribution spike (timeboxed 1 day): evaluate bun build --compile
 Created via free-text intake (`/runner:intake "<text>"`). Priority is
 unset — this FEAT has not been scored yet. Run `/runner:triage`
 (PM scoring + `backlog pm-apply`) to score it before slicing.
+## Closure note (2026-07-12)
+
+Spike already executed 2026-07-08 — report at docs/research/2026-07-08-single-binary-spike.md.
+Verdict: NEVER via bun build --compile (better-sqlite3-multiple-ciphers dlopen
+fails under Bun runtime itself); recommendation DEFER, npm package stays primary
+distribution; Node SEA is the only plausible future route (own spike if wanted).
+2026-07-12 FEAT-447 research independently corroborates: Supermemory's single
+binary is bun-compile + bun:sqlite, achieved by giving up native-cipher
+encryption — not a technique compatible with our encrypted-at-rest posture.

@@ -1,6 +1,6 @@
 ---
 id: FEAT-447
-status: triaged
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -29,3 +29,12 @@ Investigate how Supermemory achieves one-step install (curl -fsSL supermemory.ai
 Created via free-text intake (`/runner:intake "<text>"`). Priority is
 unset — this FEAT has not been scored yet. Run `/runner:triage`
 (PM scoring + `backlog pm-apply`) to score it before slicing.
+## Closure note (2026-07-12)
+
+Research complete: docs/research/20260712-feat447-supermemory-install-ux.md.
+Key findings: supermemory-server = bun build --compile + bun:sqlite (no
+SQLCipher evidence → likely unencrypted at rest; corroborates matrix red row);
+no Windows asset; smfs is a separate Rust tool, not the server. Actionable:
+port install.sh UX patterns (checksum manifest, idempotent skip, /dev/tty
+re-attach, env-var prefill, PATH guidance) to our installer — candidate
+follow-up FEAT if wanted. FEAT-445 defer verdict reinforced.
