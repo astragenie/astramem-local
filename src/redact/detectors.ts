@@ -42,6 +42,40 @@ export const PEM_DETECTOR: PatternDetector = {
 const GENERIC_TRAILING_KEYWORDS = '(?:api[_-]?key|secret|token|password|passwd|pwd)';
 /** Same any-segment compound-label base as the unquoted compound entry. */
 const GENERIC_COMPOUND_LABEL = '(?:secret|password|passwd|pwd)(?:_[A-Za-z0-9]+)+';
+
+/**
+ * Any recognized quote-like character — the two straight ASCII quotes plus
+ * the four common Unicode "smart"/curly quote code points (FEAT-473:
+ * U+2018/U+2019 single left/right, U+201C/U+201D double left/right). Used
+ * wherever this file only needs "some quote character sits here", not which
+ * exact one or which side of a pair it is (the label's closing quote right
+ * before the `:`/`=>` separator, and the bare-value negative-lookahead
+ * guard below) — a word processor or chat client can auto-curl either side
+ * of a pasted quote independently of the other, so these two positions are
+ * deliberately permissive across the whole set rather than trying to pair
+ * open/close by direction. Exported so `entropy.ts`'s `LABEL_PREFIX_RE`
+ * (FEAT-468) shares this exact set instead of maintaining a second copy
+ * that could silently drift out of sync with this one.
+ */
+export const ANY_QUOTE_CHAR = `["'‘’“”]`;
+
+/**
+ * Opening/closing classes for each quote FAMILY (double vs. single),
+ * used by the quoted-VALUE entries below so a value may be opened with one
+ * style and closed with the other (FEAT-473: "curly-open straight-close"
+ * and vice versa — the common word-processor mangle) while the two
+ * families still never overlap each other: a double-quoted value's content
+ * still may not itself contain ANY double-family quote char, straight or
+ * curly (mirrors the original ASCII-only `[^"]*` design, just widened to
+ * the family's two extra code points), and likewise for single.
+ */
+const DOUBLE_QUOTE_OPEN = `["“]`;
+const DOUBLE_QUOTE_CLOSE = `["”]`;
+const DOUBLE_QUOTE_EXCLUDE = `"“”`; // dropped inside a [^...] class, no brackets of its own
+const SINGLE_QUOTE_OPEN = `['‘]`;
+const SINGLE_QUOTE_CLOSE = `['’]`;
+const SINGLE_QUOTE_EXCLUDE = `'‘’`;
+
 /**
  * Mandatory closing quote/apostrophe on the label, then the separator —
  * `[:=]` as before, plus the PHP `=>` arrow as its own two-character
@@ -68,7 +102,7 @@ const GENERIC_COMPOUND_LABEL = '(?:secret|password|passwd|pwd)(?:_[A-Za-z0-9]+)+
  * unquoted value): `=>` matches whole and the bare-value pattern succeeds
  * directly, no backtracking involved.
  */
-const QUOTED_LABEL_SEP = `["']\\s*(?:=>|:|=(?!>))\\s*`;
+const QUOTED_LABEL_SEP = `${ANY_QUOTE_CHAR}\\s*(?:=>|:|=(?!>))\\s*`;
 
 /** Rejects purely-numeric or boolean-literal values (config knobs, not secrets). */
 function rejectNumericOrBooleanLiteral(value: string): boolean {
@@ -186,7 +220,8 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
   // JSON-config-shaped and PHP-array-shaped transcript payloads went
   // unmatched entirely. These entries tolerate a MANDATORY quote/apostrophe
   // between keyword and separator (mandatory, not optional, so they never
-  // overlap the two entries above — those require the quote to be absent)
+  // overlap the two entries above — those require the quote to be absent) —
+  // straight ASCII or Unicode smart/curly (FEAT-473, `ANY_QUOTE_CHAR`) —
   // plus the PHP `=>` arrow as an alternative separator. Tagged with a
   // distinct `type` (not `generic_credential`) so redaction-log coverage is
   // observable by pattern shape — no schema change, just more
@@ -196,33 +231,47 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
   // Three value shapes per keyword family (trailing / compound), so 6
   // entries total: double-quoted value, single-quoted value, and bare
   // (unquoted) value. The bare-value variant excludes a leading quote via
-  // `(?!["'])` so it never mis-captures a quoted value's opening quote as
-  // part of a "bare" token — that shape is already handled by the two
-  // quoted-value entries in the same family.
+  // `(?!${ANY_QUOTE_CHAR})` so it never mis-captures a quoted value's
+  // opening quote as part of a "bare" token — that shape is already handled
+  // by the two quoted-value entries in the same family.
+  //
+  // FEAT-473: the double/single-quoted value entries accept EITHER the
+  // straight ASCII quote OR the matching Unicode "smart"/curly quote pair
+  // on each side INDEPENDENTLY (`DOUBLE_QUOTE_OPEN`/`DOUBLE_QUOTE_CLOSE`,
+  // `SINGLE_QUOTE_OPEN`/`SINGLE_QUOTE_CLOSE` above) — so a value may be
+  // opened with one style and closed with the other (a common
+  // word-processor/chat-client auto-curl mangle touches only one side), not
+  // just a cleanly-paired straight or cleanly-paired curly pair. Before
+  // this, a curly-quoted JSON payload (`“API_KEY”: “short1”`) fell through
+  // to the entropy stage entirely — a SHORT secret (under the entropy
+  // floor) leaked in full, since only the label-match path has no minimum
+  // length. Long secrets were already caught by entropy regardless of quote
+  // style, so this closes the short-secret gap specifically.
   //
   // Known limitation (regex-tier only, per this FEAT's stated non-goal of
-  // full JSON/YAML AST parsing — disclosed, not a hidden gap): `[^"]*`/
-  // `[^']*` have no escape awareness. A value containing an escaped inner
-  // quote (`"api_key": "sk-abc\"def"`) is captured only up to the literal
-  // backslash-quote, so the placeholder replaces `sk-abc\` and the
-  // remainder (`def`) is left in plaintext right after it — a *partial*
-  // redaction that visually looks complete. Flagged as a fast-follow, not
-  // fixed here.
+  // full JSON/YAML AST parsing — disclosed, not a hidden gap): the
+  // `[^"“”]*`/`[^'‘’]*` exclusion classes have no escape awareness. A value
+  // containing an escaped inner quote (`"api_key": "sk-abc\"def"`) is
+  // captured only up to the literal backslash-quote, so the placeholder
+  // replaces `sk-abc\` and the remainder (`def`) is left in plaintext right
+  // after it — a *partial* redaction that visually looks complete. Flagged
+  // as a fast-follow, not fixed here (pre-existing, not introduced by this
+  // FEAT — see the FEAT-463 review that first disclosed it).
   {
     type: 'generic_credential_quoted',
-    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}"([^"]*)"`,
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}${DOUBLE_QUOTE_OPEN}([^${DOUBLE_QUOTE_EXCLUDE}]*)${DOUBLE_QUOTE_CLOSE}`,
     flags: 'id',
     valueGroup: 1,
   },
   {
     type: 'generic_credential_quoted',
-    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}'([^']*)'`,
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}${SINGLE_QUOTE_OPEN}([^${SINGLE_QUOTE_EXCLUDE}]*)${SINGLE_QUOTE_CLOSE}`,
     flags: 'id',
     valueGroup: 1,
   },
   {
     type: 'generic_credential_quoted',
-    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}(?!["'])(\\S+)`,
+    source: `(?<![A-Za-z])${GENERIC_TRAILING_KEYWORDS}${QUOTED_LABEL_SEP}(?!${ANY_QUOTE_CHAR})(\\S+)`,
     flags: 'id',
     valueGroup: 1,
   },
@@ -230,24 +279,24 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
   // entry above: same numeric/boolean `valueFilter` guard (a quoted label
   // doesn't make a config-knob value any more secret than an unquoted one —
   // AC-3: `"PASSWORD_MIN_LENGTH": 8`, `"SECRET_SCAN_ENABLED": "true"` must
-  // stay unredacted).
+  // stay unredacted, including their smart-quoted equivalents).
   {
     type: 'generic_credential_quoted',
-    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}"([^"]*)"`,
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}${DOUBLE_QUOTE_OPEN}([^${DOUBLE_QUOTE_EXCLUDE}]*)${DOUBLE_QUOTE_CLOSE}`,
     flags: 'id',
     valueGroup: 1,
     valueFilter: rejectNumericOrBooleanLiteral,
   },
   {
     type: 'generic_credential_quoted',
-    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}'([^']*)'`,
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}${SINGLE_QUOTE_OPEN}([^${SINGLE_QUOTE_EXCLUDE}]*)${SINGLE_QUOTE_CLOSE}`,
     flags: 'id',
     valueGroup: 1,
     valueFilter: rejectNumericOrBooleanLiteral,
   },
   {
     type: 'generic_credential_quoted',
-    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}(?!["'])(\\S+)`,
+    source: `(?<![A-Za-z])${GENERIC_COMPOUND_LABEL}${QUOTED_LABEL_SEP}(?!${ANY_QUOTE_CHAR})(\\S+)`,
     flags: 'id',
     valueGroup: 1,
     valueFilter: rejectNumericOrBooleanLiteral,

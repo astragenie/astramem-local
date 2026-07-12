@@ -7,6 +7,8 @@
  * UUIDs, and file paths (see redactText doc-comment for the full list).
  */
 
+import { ANY_QUOTE_CHAR } from './detectors.js';
+
 // Floor applies ONLY to unlabeled tokens (FEAT-459 decision point). Labeled
 // short secrets (e.g. `token=<12-char-fragment>`) never reach this floor at
 // all — the generic_credential pattern detector (detectors.ts) runs BEFORE
@@ -101,10 +103,26 @@ const CONFIG_ASSIGNMENT_RE = /^[A-Za-z][A-Za-z0-9_]*[:=](?:\d+|true|false)$/i;
 // secret whose own identifier-shaped text is ALSO low-entropy, which is a
 // materially different (and self-defeating, for an attacker: a low-entropy
 // "secret" is a weak secret) requirement than round 1's.
-const LABEL_CORE_RE = /^["']?([A-Za-z][A-Za-z0-9_]*)["']?[:=]$/;
+// FEAT-473 (found empirically, not merely by inspection: the ASCII-only
+// version of this regex left a curly-quoted label token — e.g.
+// `“PASSWORD_MIN_LENGTH”:` — unrecognized as a label at all, so it fell
+// through to the ordinary entropy check on its own raw text and got wrongly
+// flagged as `high_entropy`, exactly the false-positive class this whole
+// guard exists to prevent, just for a different quote style than the ASCII
+// repro this guard's comment block above documents). Both optional-quote
+// slots (opening, closing) now accept `ANY_QUOTE_CHAR` (detectors.ts) —
+// shared, not duplicated, so this can't drift from the pattern-detector
+// entries again.
+const LABEL_CORE_RE = new RegExp(`^${ANY_QUOTE_CHAR}?([A-Za-z][A-Za-z0-9_]*)${ANY_QUOTE_CHAR}?[:=]$`);
 const SECRET_LABEL_KEYWORD_RE = /(?:api[_-]?key|secret|token|password|passwd|pwd)/i;
 const SAFE_VALUE_RE = /^(?:\d+|true|false)$/i;
 const HEX_LIKE_MIX_RE = /[a-z][0-9]|[0-9][a-z]/;
+// FEAT-473: strips one layer of EITHER straight or smart/curly quoting from
+// the "safe value" token below (Layer 1) — a curly-quoted `“true”`/`“8”`
+// following a label-shaped token must be recognized as safe the same way
+// the straight-quoted `"true"`/`"8"` already is.
+const QUOTE_STRIP_LEADING_RE = new RegExp(`^${ANY_QUOTE_CHAR}`);
+const QUOTE_STRIP_TRAILING_RE = new RegExp(`${ANY_QUOTE_CHAR}$`);
 
 /**
  * True if `token` (ending at offset `end` in `text`) is shaped like a
@@ -131,7 +149,7 @@ function isLabelWithSafeValueFollowing(token: string, text: string, end: number,
   // Layer 1: a genuinely safe value must immediately follow.
   const nextMatch = /\S+/.exec(text.slice(end));
   if (!nextMatch) return false;
-  const nextValue = nextMatch[0].replace(/^["']/, '').replace(/["']$/, '');
+  const nextValue = nextMatch[0].replace(QUOTE_STRIP_LEADING_RE, '').replace(QUOTE_STRIP_TRAILING_RE, '');
   return SAFE_VALUE_RE.test(nextValue);
 }
 
@@ -314,7 +332,22 @@ const DIGIT_RUN_RE = /\d+/g;
 //     and the value (e.g. fixed-width/aligned config: `ACCOUNT_NUMBER:
 //     <40 spaces>12345...`). Same-line scanning has no length cap, so
 //     `\s*` in `LABEL_PREFIX_RE` absorbs arbitrary same-line padding.
-const LABEL_PREFIX_RE = /(?<![A-Za-z0-9_])["']?[A-Za-z][A-Za-z0-9_]*["']?\s*[:=]\s*["']?$/;
+//
+// FEAT-473: the three `["']?` optional-quote slots (before the label, after
+// it, and after the separator before the value) are widened to
+// `ANY_QUOTE_CHAR` (detectors.ts) — straight ASCII quotes plus the four
+// Unicode smart/curly quote code points. Without this, a curly-quoted
+// labeled numeric value (`"orderId": 12345678901234567890`) would have
+// looked unlabeled to THIS heuristic specifically (even though the
+// pattern-detector stage upstream never even reaches this function for a
+// recognized secret keyword) and been wrongly flagged as an unlabeled
+// numeric secret — the same class of false positive the ASCII-only guard
+// was built to prevent for straight-quoted labels, just for a curly-quoted
+// one instead. Shares the exact character set with detectors.ts's quoted
+// entries rather than maintaining a second copy, so the two can't drift.
+const LABEL_PREFIX_RE = new RegExp(
+  `(?<![A-Za-z0-9_])${ANY_QUOTE_CHAR}?[A-Za-z][A-Za-z0-9_]*${ANY_QUOTE_CHAR}?\\s*[:=]\\s*${ANY_QUOTE_CHAR}?$`
+);
 
 /** True if `text` immediately before offset `start`, on the SAME LINE only
  * (never crossing a `\n`), looks like a `LABEL=`, `label: `, or `"label": `

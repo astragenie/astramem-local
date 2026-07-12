@@ -287,6 +287,77 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     secret: 'abcdefgh1234bare',
     expectedEventCount: 1,
   },
+  // FEAT-473 (FEAT-463 review LOW finding #2): Unicode "smart"/curly quotes
+  // ("“”" double, "‘’" single) around a credential label
+  // were entirely unrecognized before this FEAT — a smart-quoted JSON/PHP
+  // payload fell through to the entropy stage, and a SHORT secret (under
+  // the 20-char entropy floor) leaked in full (long secrets were always
+  // caught by entropy regardless of quote style). Every secret below is
+  // deliberately short to prove the total-leak class specifically, not just
+  // "some redaction happened."
+  {
+    name: 'FEAT-473: curly double quotes both sides, trailing keyword (SHORT secret, under the entropy floor)',
+    input: '“API_KEY”: “short1”',
+    type: 'generic_credential_quoted',
+    secret: 'short1',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: curly single quotes both sides, PHP-arrow form, trailing keyword (SHORT secret)',
+    input: '‘DB_PASSWORD’ => ‘short2’',
+    type: 'generic_credential_quoted',
+    secret: 'short2',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: mixed double quotes — curly-open, straight-close value (word-processor mangle touching only one side)',
+    input: '"API_KEY": “short3"',
+    type: 'generic_credential_quoted',
+    secret: 'short3',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: mixed double quotes — straight-open, curly-close value (mangle in the other direction)',
+    input: '"API_KEY": "short4”',
+    type: 'generic_credential_quoted',
+    secret: 'short4',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: mixed single quotes — curly-open, straight-close value',
+    input: "'DB_PASSWORD' => ‘short5'",
+    type: 'generic_credential_quoted',
+    secret: 'short5',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: mixed single quotes — straight-open, curly-close value',
+    input: "'DB_PASSWORD' => 'short6’",
+    type: 'generic_credential_quoted',
+    secret: 'short6',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: curly double quotes, compound keyword (middle segment), SHORT secret',
+    input: '“DJANGO_SECRET_KEY”: “short7”',
+    type: 'generic_credential_quoted',
+    secret: 'short7',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: curly-closed label + bare (unquoted) value, trailing keyword',
+    input: '“SESSION_TOKEN”=short8bareval',
+    type: 'generic_credential_quoted',
+    secret: 'short8bareval',
+    expectedEventCount: 1,
+  },
+  {
+    name: 'FEAT-473: curly single quotes, compound keyword (leading segment), SHORT secret',
+    input: '‘SECRET_KEY’: ‘short9’',
+    type: 'generic_credential_quoted',
+    secret: 'short9',
+    expectedEventCount: 1,
+  },
   // FEAT-468: numeric-secret digit-run heuristic. Shannon entropy over a
   // 10-symbol (digits-only) alphabet caps at log2(10) ≈ 3.32 bits/char, below
   // the 4.0 default threshold, so an unlabeled all-digit secret was
@@ -592,6 +663,46 @@ describe('redactText — false-positive guards', () => {
     expect(events.length).toBe(0);
   });
 
+  // FEAT-473: the same three quoted false-positive guards above, repeated
+  // with Unicode smart/curly quotes (and one mixed straight/curly combo) —
+  // widening the quote character class must not itself widen what counts
+  // as a secret; a benign config knob stays benign regardless of which
+  // quote style wraps it.
+  it('does not redact “NODE_ENV”: “production” (benign curly-quoted JSON config)', () => {
+    const input = '“NODE_ENV”: “production”';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact “PASSWORD_MIN_LENGTH”: 8 (curly-quoted label, bare numeric value, middle-segment keyword)', () => {
+    const input = '“PASSWORD_MIN_LENGTH”: 8';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact “SECRET_SCAN_ENABLED”: “true” (curly-quoted label, curly-quoted boolean value)', () => {
+    const input = '“SECRET_SCAN_ENABLED”: “true”';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact "SECRET_SCAN_ENABLED": “true” (mixed straight-quoted label, curly-quoted boolean value)', () => {
+    const input = '"SECRET_SCAN_ENABLED": “true”';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact “authtoken”: “abc123456789” (curly-quoted mid-word collision, "token" preceded by a letter)', () => {
+    const input = '“authtoken”: “abc123456789”';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
   it('never re-redacts inside an already-inserted placeholder', () => {
     // "github_token" itself contains the word "token" — must not be caught by
     // the generic_credential detector on a second look.
@@ -666,6 +777,32 @@ describe('redactText — FEAT-468 numeric-secret false-positive corpus', () => {
 
   it('does not redact a JSON-style "label": "digits" value (both sides quoted)', () => {
     const input = '"orderId": "12345678901234567890"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-473: LABEL_PREFIX_RE (entropy.ts) is widened alongside detectors.ts's
+  // quoted entries — a curly-quoted labeled numeric value must be recognized
+  // as labeled too, or this heuristic would wrongly flag an ordinary
+  // smart-quoted ID/order-number as an unlabeled numeric secret purely
+  // because of its quote style.
+  it('does not redact a curly-quoted JSON-style “label”: “digits” value (both sides curly-quoted)', () => {
+    const input = '“orderId”: “12345678901234567890”';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a mixed-quote JSON-style "label”: “digits" value (curly/straight combo on both label and value)', () => {
+    const input = '"orderId”: “12345678901234567890"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a curly-quoted label with a bare (unquoted) digit value', () => {
+    const input = '“orderId”: 12345678901234567890123';
     const { text, events } = redactText(input);
     expect(text).toBe(input);
     expect(events.length).toBe(0);
