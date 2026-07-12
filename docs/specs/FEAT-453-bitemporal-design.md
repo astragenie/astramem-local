@@ -1,7 +1,16 @@
-# FEAT-453: Fact-Level Bitemporal Tracking — Design Spike
+# FEAT-453: Fact-Level Valid-Time Tracking on Entity Links — Design Spike
+
+> **Title corrected 2026-07-12** (originally "Fact-Level Bitemporal Tracking"). What this FEAT
+> designs, and what shipped in v0.12.0, is **valid-time tracking only** — there is no queryable
+> transaction-time axis anywhere in this system ("what did we believe before a correction"). A
+> genuine bitemporal model needs both axes; this repo has one. That is a real, useful feature —
+> it is just not the feature the original title named. Operator decision (2026-07-12): correct
+> the label, do not build the missing transaction-time axis (no evidence of demand for it). Full
+> reasoning in §9 (status correction) and §10 Q2 (the terminology gap and the decision).
 
 **Status:** proposed
 **Date:** 2026-07-09
+**Terminology:** valid-time only (label corrected 2026-07-12 — see note above and §10 Q2)
 **Origin:** `.claude/artifacts/loop/backlog/triaged/FEAT-453.md` (architecture-corrected 2026-07-09 —
 no `atoms` table, `entities` is a global dedup registry, migration target is `memory_entities`,
 migration number is **023** — 022 is taken by `022-consolidation-proposal-metadata.sql`, shipped
@@ -9,7 +18,7 @@ v0.11.0).
 
 ## 0. Framing
 
-Memory-level bitemporal already ships: `memories.valid_from`/`valid_to`
+Memory-level valid-time tracking already ships: `memories.valid_from`/`valid_to`
 (`migrations/006-atom-v3.sql:20-21`), `validityFilterClause` (`src/search/search.ts:190-208`),
 `preset=temporal` (`src/search/presets.ts`), and the window is already on the atom@2 wire
 (`contracts/schemas/atom.v2.schema.json:83-92`). This FEAT adds one level finer: a single memory
@@ -591,6 +600,12 @@ column, since transaction-time is inherently insert-only/immutable) if there's r
 demand for "what did we used to believe" queries. Recommend (a) — no evidence in the competitor
 research or the FEAT's own customer-impact score (0.4) suggests transaction-time queries are asked
 for; ship the valid-time win, rename the label.
+
+**Resolved 2026-07-12 (operator decision):** Option (a) accepted. The label is corrected wherever
+this repo describes its own capability (this document's title, above; the competitor-gap-analysis
+report; this ADR's own amendment) — no transaction-time axis will be built absent concrete demand.
+Historical CHANGELOG entries are left unedited (they record what was said at release time); a
+clarifying note there is a separate call for the maintainer, not made by this pass.
 
 **Q3 — Invalidation/supersession vs fact-level `invalid_at`: two overlapping mechanisms?**
 Yes, there are now two independent triggers that can close a fact-link window — but they don't
