@@ -30,6 +30,13 @@
  * that merely mentions a commit SHA or a status word in passing (e.g. a
  * postmortem root-cause note) persists (2026-07-09 review HIGH fix).
  *
+ * The rationale-marker check (`hasRationaleMarker`) requires the marker to
+ * be in genuine causal proximity to the statement, not merely present
+ * anywhere in the atom (FEAT-448, closing the FF-1 re-review gap): a
+ * temporal "since" ("since 3pm"), a CLI flag's literal "--" ("--verbose"),
+ * and a "because"/"reason" glued onto a contentless clause ("because
+ * deploy", "because reasons") no longer count as an exemption.
+ *
  * `classifyDurability` is the pure taxonomy check — always evaluates the
  * full pattern set regardless of gate mode. `gateDurability` applies the
  * `strict|lenient|off` mode on top of it:
@@ -90,9 +97,54 @@ const EPHEMERAL_STATE_RE =
 /** Short imperative command/todo with no rationale markers. */
 const IMPERATIVE_VERB_RE =
   /^(run|fix|check|update|add|remove|delete|verify|test|build|deploy|install|restart|revert|merge|push|pull|rename|bump|ship|execute|start|stop|kill)\b/i;
-const RATIONALE_MARKER_RE =
-  /\b(because|so that|in order to|since|to ensure|rationale|reason)\b|[—–]|--/i;
 const BARE_TODO_MAX_WORDS = 8;
+
+// ─── Rationale-marker exemption (FEAT-448) ────────────────────────────────
+//
+// A rationale marker only exempts an atom when it is in causal proximity to
+// the trigger clause — i.e. it actually binds a reason to the statement,
+// not merely present somewhere in the text (FEAT-448's tightening of the
+// FF-1 re-review finding). Three marker forms need disambiguation beyond
+// bare keyword presence; the rest ("so that", "in order to", "to ensure",
+// "rationale", an em dash) are unambiguous connectives and stay a bare
+// presence check.
+
+/** Connectives that are always genuine rationale markers wherever they
+ *  appear — no further disambiguation needed. */
+const UNCONDITIONAL_MARKER_RE = /\b(so that|in order to|to ensure|rationale)\b|[—–]/i;
+
+/** "since" used as a temporal preposition ("since 3pm", "since last week",
+ *  "since Monday") is not causal and must not exempt a trigger match — only
+ *  "since" introducing a reason clause ("since <subject> <verb> ...") is a
+ *  genuine rationale marker. */
+const TEMPORAL_SINCE_RE =
+  /\bsince\s+(?:\d{1,2}(?::\d{2})?\s*(?:am|pm)\b|last\s+\w+|yesterday|today|this\s+(?:morning|afternoon|evening|week|month|year)|(?:mon|tues?|wednes?|thurs?|fri|satur?|sun)day\b|(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:tember)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?)\b)/i;
+const BARE_SINCE_RE = /\bsince\b/i;
+
+/** A literal "--" counts as a dash-style rationale connective only when
+ *  used as punctuation with whitespace on both sides — not when glued
+ *  directly to a following identifier as a CLI flag ("--verbose"), which
+ *  carries no rationale content at all. */
+const PUNCTUATION_DOUBLE_DASH_RE = /(?:\s|^)--(?:\s|$)/;
+
+/** "because"/"reason" bind a genuine cause only when at least two content
+ *  words follow to the end of the clause — a bare "because deploy" or
+ *  "because reasons" glues the marker on for form's sake with no actual
+ *  reason attached. */
+const BARE_BECAUSE_OR_REASON_RE = /\b(?:because|reason)\b/i;
+const CONTENTLESS_CAUSAL_TAIL_RE =
+  /\b(?:because|reason)\b\s*:?\s*(?:\w+\s*){0,1}[.,;!?]?\s*$/i;
+
+/** True when `text` carries a rationale marker in genuine causal proximity
+ *  to the statement it's attached to — the single predicate both
+ *  `classifyDurability` call sites use in place of a bare keyword scan. */
+function hasRationaleMarker(text: string): boolean {
+  if (UNCONDITIONAL_MARKER_RE.test(text)) return true;
+  if (PUNCTUATION_DOUBLE_DASH_RE.test(text)) return true;
+  if (BARE_SINCE_RE.test(text) && !TEMPORAL_SINCE_RE.test(text)) return true;
+  if (BARE_BECAUSE_OR_REASON_RE.test(text) && !CONTENTLESS_CAUSAL_TAIL_RE.test(text)) return true;
+  return false;
+}
 
 /**
  * Dominance/length guard shared by `ephemeral_state`, `git_derivable`, and
@@ -128,13 +180,13 @@ export function classifyDurability(text: string): GatedReason | null {
   // ephemeral_state / git_derivable / vacuous_negative are only trusted when
   // the candidate atom is short AND carries no rationale marker — see
   // SHORT_ATOM_MAX_WORDS doc comment above.
-  if (!RATIONALE_MARKER_RE.test(trimmed) && wordCount(trimmed) <= SHORT_ATOM_MAX_WORDS) {
+  if (!hasRationaleMarker(trimmed) && wordCount(trimmed) <= SHORT_ATOM_MAX_WORDS) {
     if (GIT_SHA_WITH_KEYWORD_RE.test(trimmed) || GIT_ACTIVITY_RE.test(trimmed)) return 'git_derivable';
     if (VACUOUS_NEGATIVE_RE.test(trimmed)) return 'vacuous_negative';
     if (EPHEMERAL_STATE_RE.test(trimmed)) return 'ephemeral_state';
   }
 
-  if (IMPERATIVE_VERB_RE.test(trimmed) && !RATIONALE_MARKER_RE.test(trimmed)) {
+  if (IMPERATIVE_VERB_RE.test(trimmed) && !hasRationaleMarker(trimmed)) {
     if (wordCount(trimmed) <= BARE_TODO_MAX_WORDS) return 'bare_todo';
   }
 
