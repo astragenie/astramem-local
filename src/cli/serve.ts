@@ -229,7 +229,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // code path re-derives cfg.sync from elsewhere.
   let shipper: ShipperHandle | null = null;
   if (cfg.sync.enabled && dataDir !== ':memory:' && !isolated) {
-    const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
+    const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken(defaultConfigDir());
     if (!cfg.sync.url || !cfg.sync.workspaceId || !syncToken) {
       console.warn(
         `${ts()} [astramem-local] sync.enabled=true but url/workspaceId/device-token incomplete — shipper NOT started.`,

@@ -104,8 +104,8 @@ export async function pairCommand(args: string[]): Promise<void> {
   const syncBase = resolveSyncBase(urlSource, cloudUrl, responseApiUrl);
   const baseSource = urlSource === 'default' ? 'redeem response' : `--url (${urlSource})`;
 
-  const stored = storeSyncToken(apiKey);
   const configDir = defaultConfigDir();
+  const stored = storeSyncToken(apiKey, configDir);
   writeSyncSettings(configDir, { enabled: true, url: syncBase, workspaceId, tenantId });
 
   console.log('✓ paired with AstraMemory cloud');

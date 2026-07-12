@@ -4,6 +4,15 @@
  * config.yaml because pairing happens after init and must survive restarts;
  * the device token itself never lands here — it lives in the OS credential
  * store (keystore.ts storeSyncToken) or ASTRA_SYNC_TOKEN.
+ *
+ * Authority split (FEAT-472): this file is authoritative for CONNECTION
+ * metadata only — enabled/url/workspaceId/tenantId. The keystore entry (or
+ * ASTRA_SYNC_TOKEN) is authoritative for the CREDENTIAL itself. Neither ever
+ * holds the other's data, and both are required together for the shipper/
+ * pull to activate (see cli/serve.ts, cli/sync.ts). Note this file is read
+ * unconditionally by `resolveRuntimeConfig` regardless of datadir overrides
+ * (daemon-spawn-footguns memory) — sandboxing a test/eval daemon's datadir
+ * alone does NOT stop it from reading a real `sync.json`.
  */
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';

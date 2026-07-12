@@ -14,6 +14,7 @@
  */
 
 import { openRuntimeDb } from './open-runtime-db.js';
+import { defaultConfigDir } from '../config/datadir.js';
 import { readSyncToken } from '../storage/keystore.js';
 import { drainPull, httpPullFetcher, getPullWatermark } from '../sync/puller.js';
 import { planBackfill, applyBackfill, planReship, applyReship } from '../sync/backfill.js';
@@ -104,7 +105,7 @@ export async function syncCommand(args: string[]): Promise<void> {
       // reach that outer exit, removes the handle from the race entirely.
       const { db, cfg } = openRuntimeDb();
       try {
-        const token = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken();
+        const token = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken(defaultConfigDir());
         if (!cfg.sync.url || !cfg.sync.workspaceId || !token) {
           console.error('sync pull: sync.enabled url/workspaceId/device-token incomplete — run `astramem-local pair` first.');
           process.exitCode = 1;
