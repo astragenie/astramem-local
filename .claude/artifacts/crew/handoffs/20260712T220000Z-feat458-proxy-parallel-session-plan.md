@@ -9,6 +9,10 @@ owner: a SEPARATE parallel session — NOT the session that wrote this
 
 # FEAT-458 — proxy implementation plan (parallel session)
 
+> **Parallel execution variant:** `20260712T224500Z-feat458-parallel-execution-plan.md`
+> (same directory) compresses this plan into 4 waves / ~4-4.5 wall-clock days
+> with per-track file ownership. This file remains the WHAT; that file is the HOW-FAST.
+
 **Read this whole file before touching anything.** It is written to be picked up
 cold by a session with no context.
 
@@ -39,8 +43,14 @@ of its way:
 | `C:\work\mega\runner-plugin`, `C:\work\mega\astramemory-plugin`, `C:\work\mega\astra-marketplace` | NOT yours. A release is in flight. |
 | `scripts/eval/locomo/`, `.eval-data/` | NOT yours. A ~4h benchmark run may be executing. **Do not spawn heavy Ollama load** — you'll contend for GPU with it. |
 
-Your branch is 1 commit behind main — rebase/merge main in early, do not
-discard the branch (its core is reviewed-good).
+Your branch is **~25 commits behind main and growing** (merge-base `ad9001b`;
+25 at first check, 26 an hour later — main is moving, re-run
+`git rev-list --left-right --count main...HEAD` for the live number). An
+earlier draft of this handoff said "1 commit behind"; that was wrong. The
+branch tip also carries two duplicate-looking merge commits (`0b19681`,
+`f59698e`, identical messages) — **investigate why before re-merging over
+them** (possible botched merge attempt). The rebase in S2 is real mechanical
+work, not trivial. Do not discard the branch — its core is reviewed-good.
 
 ---
 
@@ -61,12 +71,15 @@ discard the branch (its core is reviewed-good).
 
 ---
 
-## 3. The gate situation (resolved — do not re-litigate)
+## 3. The gate situation (resolved by explicit operator override)
 
-FEAT-458's `triage_notes` claim the bake gate blocks *building*. ADR-013 — the
-actual security authority — says it blocks capture *"going live in production."*
-**DEC-014 resolves this: the gate blocks production enablement, not development.**
-You are cleared to implement S1–S4 now.
+ADR-013's own text gates *building* (status line, consequences §, "post-gates"
+slice-table heading). **DEC-014 is an explicit operator override of that strict
+reading, not an interpretation of it** — accepted because astramem-local is a
+single-user local daemon (the disclosure risk lands on the operator's own box
+only) and the default-OFF flag rule protects npm consumers. See DEC-014's
+corrected rationale for the full reasoning. You are cleared to implement S1–S4
+now; the override is deliberate and signed off 2026-07-12.
 
 Separately, and importantly: **the bake was accruing nothing.** Auto-capture has
 been ON in prod since 2026-07-10 and captured **0 memories** — the capture-at-close
@@ -92,9 +105,12 @@ S1's deliverables were **skipped**, not completed. They block S2's evidence.
   defers a *different*, capture-specific WARN to S4 — that is not this.
 - **S1-AC-4 — design-gate closure artifact** under `.claude/artifacts/crew/`.
 - **disable→purge parity.** The primitive already exists and is generic:
-  `src/server/routes/capture-purge.ts` (FEAT-467, on main, zero source-specific
-  branching by design). Wire the proxy's future disable flow to it — near-trivial.
-  Do NOT build a parallel purge mechanism.
+  `src/server/routes/capture-purge.ts` (FEAT-467 — **status: done on main**,
+  zero source-specific branching by design, and `capture_source: 'proxy'`
+  scoping is ALREADY proven end-to-end in `tests/server/capture-purge.test.ts:92-107`
+  and `tests/storage/memory-events.test.ts:608-613`). The only remaining work
+  is a `proxy disable` CLI subcommand that calls it — do not re-verify or
+  re-design the purge itself, and do NOT build a parallel purge mechanism.
 
 ### S2 — finish the core (~1–2 days)
 Branch `feat/feat-458-s2-proxy-core` has `src/proxy/server.ts` + `src/cli/proxy.ts`
@@ -102,7 +118,8 @@ Branch `feat/feat-458-s2-proxy-core` has `src/proxy/server.ts` + `src/cli/proxy.
 code quality genuinely good. **4 of 5 ACs pass on the merits** (AC-1 byte
 transparency, AC-2 pre-bind loopback refusal, AC-3, AC-5).
 
-- Rebase onto main (1 commit behind — trivial).
+- Rebase onto main (**25 commits behind** — see §1; investigate the two
+  duplicate merge commits on the branch tip first).
 - **S2-AC-4**: produce p50 <10ms latency evidence using the S1 bench harness.
   This is the only failing AC and it fails for lack of a measuring tool, not for
   lack of speed.
@@ -130,6 +147,30 @@ Requirements, from ADR-013's STRIDE table — these are not negotiable:
   evidence) is REQUIRED before S4 opens — ADR-013 Review decision 5. This is in
   addition to the normal reviewer gate.
 
+Builder notes (from 2026-07-12 architect ground-truth pass):
+- **`capture_source: 'proxy'` sweep.** Migration 024 has NO CHECK constraint —
+  the SQL side is free. What must be swept: TS unions hardcoding
+  `'auto_capture' | null` at `src/contracts/memory.ts:108` and
+  `src/storage/memories.ts:56`, plus hardcoded `'auto_capture'` string literals
+  at `src/doctor/checks.ts:1118` (SQL literal — leave it; write a NEW
+  `checkProxyCapture` instead) and `src/cli/capture.ts` (`runAutoCaptureDisable`
+  scoping query).
+- **The tee touches `server.ts` — plan for it.** The server.ts:20-21 comment
+  ("capture fork is added alongside server.ts, never inside it") is aspirational:
+  attaching the second `'data'` listener requires a stream reference only
+  server.ts holds. Correct shape: server.ts gains ONLY a thin optional callback
+  param (e.g. `onBody?: (dir: 'req'|'res', chunk: Buffer) => void`); everything
+  downstream of that callback (buffering, relevance gate, spool write) lives in
+  S3's module. Node flowing-mode streams deliver the same chunks to a second
+  `'data'` listener alongside an active `.pipe()` — no restructuring of the
+  forward path needed, and header exclusion is structural for free (the callback
+  only ever sees body chunks).
+- **Spool writes are synchronous fs calls** (`writeFileSync`+`renameSync`).
+  Never call them from the tee callback or the response `'end'` handler
+  directly — defer via `setImmediate` off pipe completion, or the S4
+  capture-live latency bench will eat the fs stall. Consistent with ADR-013
+  Decision 2 (capture must never backpressure the client-facing pipe).
+
 ### S4 — hardening (~2 days)
 - Failure-mode matrix. **Fail-open forwarding, fail-silent capture** (ADR-013
   Decision 2): a hung proxy hangs *every agent turn using it*. "Proxy down ≠ agent
@@ -137,6 +178,10 @@ Requirements, from ADR-013's STRIDE table — these are not negotiable:
 - Latency bench again *with capture live* — still p50 <10ms.
 - Doctor WARN row for capture-enabled state.
 - Live disable→purge e2e against real `capture_source: 'proxy'` records.
+- **Per-request upstream timeout** (added 2026-07-12 review): `forwardOneRequest`
+  handles upstream errors (502) and client disconnect, but a silently-hanging
+  upstream is currently unhandled. ADR-013's DoS row implies this; make it an
+  explicit S4 AC.
 
 ---
 
