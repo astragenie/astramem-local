@@ -1,6 +1,6 @@
 ---
 id: FEAT-470
-status: triaged
+status: done
 priority: P2
 category: chore
 target_release: null
