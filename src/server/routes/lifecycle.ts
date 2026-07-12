@@ -32,6 +32,10 @@
  * routes its typed-error catch through this one helper so a future 5th verb
  * can't silently diverge — see tests/server/lifecycle.test.ts's
  * "lifecycle error-status conformance" suite.
+ *
+ * Exported (not just used internally) so `server/routes/capture-purge.ts`
+ * (FEAT-467) reuses the exact same mapping for its batch-scoped verbs rather
+ * than inventing a parallel error-status convention.
  */
 
 import { z } from 'zod';
@@ -67,7 +71,7 @@ const PromoteBodySchema = z.object({
  * `new_id` target — both still surface under the same `id` key. Anything
  * else is rethrown for Fastify's default error handler.
  */
-function mapLifecycleError(err: unknown, id: string, reply: FastifyReply) {
+export function mapLifecycleError(err: unknown, id: string, reply: FastifyReply) {
   if (err instanceof MemoryNotFoundError) {
     return reply.code(404).send({ error: 'not found', id: err.atomId });
   }

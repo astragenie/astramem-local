@@ -27,7 +27,24 @@ export type MemoryEventType =
    * like 'archive'/'restore' — see MemoryEventRepo.unsupersede() and
    * src/sync/shipper.ts's exclusion list for why this never ships.
    */
-  | 'unsupersede';
+  | 'unsupersede'
+  /**
+   * FEAT-467 reversible soft-delete generation: the compensating action for
+   * one atom in a purge batch (ADR-013 Decision 4 gate for FEAT-458's proxy
+   * capture tier). Payload: `{ batch_id, capture_source }`. Deliberately
+   * NOT the existing 'invalidate' type — a purge-caused hide must stay
+   * distinguishable from a human-initiated invalidate() both for
+   * unpurge()'s own precondition and so a manual invalidate is never
+   * accidentally reactivated by a purge-batch restore. See
+   * MemoryEventRepo.purgeBatch().
+   */
+  | 'purge'
+  /**
+   * FEAT-467 reversal: un-hides one atom previously purged as part of an
+   * open batch (within its restore window). Payload: `{ batch_id }`. See
+   * MemoryEventRepo.restorePurgeBatch().
+   */
+  | 'unpurge';
 
 export interface MemoryEvent {
   seq: number;
@@ -82,6 +99,22 @@ export class InvalidScopeTransitionError extends Error {
   }
 }
 
+/**
+ * FEAT-467: an unknown purge batch id was passed to restorePurgeBatch() /
+ * finalizePurgeBatch(). Subclasses MemoryNotFoundError (not a sibling type)
+ * so the existing `mapLifecycleError` (src/server/routes/lifecycle.ts) maps
+ * it to 404 with no new error-status convention — `err.atomId` holds the
+ * batch id for this call site, read the same way the base class's own
+ * `id`-in-body wiring already does.
+ */
+export class PurgeBatchNotFoundError extends MemoryNotFoundError {
+  constructor(batchId: string) {
+    super(batchId);
+    this.name = 'PurgeBatchNotFoundError';
+    this.message = `purge batch not found: ${batchId}`;
+  }
+}
+
 // ADR-009: scope only ever moves upward — private -> team -> org.
 const SCOPE_RANK: Record<MemoryScope, number> = { private: 0, team: 1, org: 2 };
 
@@ -106,6 +139,29 @@ interface MemoryUnsupersedeRow {
   valid_to: number | null;
   superseded_by: string | null;
   archived: number;
+}
+
+interface PurgeBatchRow {
+  batch_id: string;
+  capture_source: string;
+  requested_at: number;
+  restore_deadline_at: number;
+  atom_count: number;
+  status: 'open' | 'restored' | 'finalized';
+  finalized_at: number | null;
+}
+
+export interface PurgeBatchResult {
+  batchId: string;
+  count: number;
+}
+
+export interface PurgeRestoreResult {
+  restored: number;
+}
+
+export interface PurgeFinalizeResult {
+  erased: number;
 }
 
 /**
@@ -381,6 +437,161 @@ export class MemoryEventRepo {
       });
     });
     tx();
+  }
+
+  /**
+   * Open a purge batch (FEAT-467 reversible soft-delete generation, ADR-013
+   * Decision 4 gate): soft-invalidates every atom in `atomIds` via a new
+   * `purge` event (never `invalidate` — see the `MemoryEventType` doc
+   * comment) and persists one `purge_batches` audit row (batch id,
+   * `captureSource`, atom count, restore-deadline time range), all in one
+   * transaction. `capture_source` is a plain parameter with no branching —
+   * this primitive is identical for `'auto_capture'` and `'proxy'` (FEAT-467
+   * AC-5).
+   *
+   * Ids that don't exist, or are already invalid (`valid_to` set — including
+   * previously purged/archived/superseded/erased), are silently skipped
+   * rather than failing the whole batch — the same per-id tolerance
+   * `runAutoCaptureDisable`'s existing erase loop already relies on. `count`
+   * (and the persisted `atom_count`) reflect only atoms actually purged by
+   * THIS call, which is why callers should pre-scope `atomIds` themselves
+   * (e.g. `WHERE capture_source = ? AND valid_to IS NULL`) rather than rely
+   * on this method to filter a large candidate set efficiently.
+   *
+   * `memories.purge_batch_id` is set to the new batch id on every purged
+   * row — the single marker `restorePurgeBatch()`/`finalizePurgeBatch()`
+   * scope their work by (see those methods' doc comments for why this
+   * doubles as the "untouched by an unrelated lifecycle call" guard).
+   */
+  purgeBatch(atomIds: string[], captureSource: string, restoreWindowDays: number): PurgeBatchResult {
+    const tx = this.db.transaction(() => {
+      const batchId = randomUUID();
+      const now = Date.now();
+      const restoreDeadlineAt = now + restoreWindowDays * 86_400_000;
+      let count = 0;
+      for (const atomId of atomIds) {
+        const row = this.db
+          .prepare('SELECT id, valid_to FROM memories WHERE id = ?')
+          .get(atomId) as MemoryValidityRow | undefined;
+        if (!row || row.valid_to !== null) continue;
+        this.db
+          .prepare('UPDATE memories SET valid_to = ?, purge_batch_id = ?, updated_at = ? WHERE id = ?')
+          .run(now, batchId, now, atomId);
+        this.append({
+          event_type: 'purge',
+          atom_id: atomId,
+          payload: { batch_id: batchId, capture_source: captureSource },
+          created_at: now,
+        });
+        count++;
+      }
+      this.db
+        .prepare(`
+          INSERT INTO purge_batches (batch_id, capture_source, requested_at, restore_deadline_at, atom_count, status)
+          VALUES (?, ?, ?, ?, ?, 'open')
+        `)
+        .run(batchId, captureSource, now, restoreDeadlineAt, count);
+      return { batchId, count };
+    });
+    return tx();
+  }
+
+  /**
+   * Reverse an open purge batch within its restore window (FEAT-467 AC-2):
+   * every atom still marked `purge_batch_id = batchId` and currently invalid
+   * has `valid_to`/`purge_batch_id` cleared and an `unpurge` event appended;
+   * the batch's audit record is marked `restored`. All in one transaction.
+   *
+   * Scoping the un-hide to `purge_batch_id = ? AND valid_to IS NOT NULL`
+   * (rather than replaying `atomIds` from the batch's `purge` events
+   * directly) is what leaves an atom independently changed since the purge
+   * untouched: nothing else in this file's lifecycle API can move an
+   * already-invalid atom's `valid_to` back to non-null except this method
+   * and `unsupersede()`/`restore()` (which require `superseded_by`/`archived`
+   * state a purge never sets), so an atom that no longer carries this
+   * batch's marker was moved by something else and is correctly skipped.
+   *
+   * Throws `PurgeBatchNotFoundError` for an unknown batch id.
+   * Throws `MemoryConflictError` if the batch is already `restored` or
+   * `finalized`, or if `restore_deadline_at` has already elapsed — a stale
+   * restore attempt is a conflict, not a silent no-op; call
+   * `finalizePurgeBatch()` instead once the window has passed.
+   */
+  restorePurgeBatch(batchId: string): PurgeRestoreResult {
+    const tx = this.db.transaction(() => {
+      const batch = this.db
+        .prepare('SELECT * FROM purge_batches WHERE batch_id = ?')
+        .get(batchId) as PurgeBatchRow | undefined;
+      if (!batch) throw new PurgeBatchNotFoundError(batchId);
+      if (batch.status === 'finalized') {
+        throw new MemoryConflictError(`purge batch ${batchId} is already finalized — nothing to restore`);
+      }
+      if (batch.status === 'restored') {
+        throw new MemoryConflictError(`purge batch ${batchId} is already restored`);
+      }
+      const now = Date.now();
+      if (now > batch.restore_deadline_at) {
+        throw new MemoryConflictError(
+          `purge batch ${batchId}'s restore window has elapsed — call finalizePurgeBatch() instead`,
+        );
+      }
+      const rows = this.db
+        .prepare('SELECT id FROM memories WHERE purge_batch_id = ? AND valid_to IS NOT NULL')
+        .all(batchId) as { id: string }[];
+      for (const { id } of rows) {
+        this.db
+          .prepare('UPDATE memories SET valid_to = NULL, purge_batch_id = NULL, updated_at = ? WHERE id = ?')
+          .run(now, id);
+        this.append({ event_type: 'unpurge', atom_id: id, payload: { batch_id: batchId }, created_at: now });
+      }
+      this.db.prepare(`UPDATE purge_batches SET status = 'restored' WHERE batch_id = ?`).run(batchId);
+      return { restored: rows.length };
+    });
+    return tx();
+  }
+
+  /**
+   * Finalize a purge batch (FEAT-467 AC-3): every atom still marked
+   * `purge_batch_id = batchId` and currently invalid is HARD-erased via the
+   * existing, unmodified `erase()` (row + vector index + FTS gone,
+   * `erase_request` tombstone appended) — preserving ADR-006's "erasure
+   * always wins, eventually" guarantee. The batch's audit record is marked
+   * `finalized`. All in one transaction (better-sqlite3 nests `erase()`'s
+   * own transaction as a savepoint).
+   *
+   * Callable once the restore window has elapsed (the scheduled-sweep path)
+   * OR explicitly early, by design (an operator who wants to finalize before
+   * the window ends) — unlike `restorePurgeBatch()`, this method does not
+   * check `restore_deadline_at`.
+   *
+   * Throws `PurgeBatchNotFoundError` for an unknown batch id. Throws
+   * `MemoryConflictError` if the batch was already `finalized` or already
+   * `restored` (nothing left to erase via this path).
+   */
+  finalizePurgeBatch(batchId: string): PurgeFinalizeResult {
+    const tx = this.db.transaction(() => {
+      const batch = this.db
+        .prepare('SELECT * FROM purge_batches WHERE batch_id = ?')
+        .get(batchId) as PurgeBatchRow | undefined;
+      if (!batch) throw new PurgeBatchNotFoundError(batchId);
+      if (batch.status === 'finalized') {
+        throw new MemoryConflictError(`purge batch ${batchId} is already finalized`);
+      }
+      if (batch.status === 'restored') {
+        throw new MemoryConflictError(`purge batch ${batchId} was already restored — nothing to finalize`);
+      }
+      const rows = this.db
+        .prepare('SELECT id FROM memories WHERE purge_batch_id = ? AND valid_to IS NOT NULL')
+        .all(batchId) as { id: string }[];
+      for (const { id } of rows) {
+        this.erase(id, `purge batch ${batchId} finalized`);
+      }
+      this.db
+        .prepare(`UPDATE purge_batches SET status = 'finalized', finalized_at = ? WHERE batch_id = ?`)
+        .run(Date.now(), batchId);
+      return { erased: rows.length };
+    });
+    return tx();
   }
 
   /**

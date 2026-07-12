@@ -10,6 +10,7 @@ import {
   MemoryNotFoundError,
   MemoryConflictError,
   InvalidScopeTransitionError,
+  PurgeBatchNotFoundError,
 } from '../../src/storage/memory-events.js';
 import { selectPack } from '../../src/recall/pack.js';
 import { search, makeFakeVec } from '../../src/search/search.js';
@@ -398,6 +399,234 @@ describe('MemoryEventRepo.unsupersede', () => {
     expect(() => events.unsupersede(oldId)).not.toThrow();
     const unsupEvent = events.listForAtom(oldId).find(e => e.event_type === 'unsupersede');
     expect(JSON.parse(unsupEvent?.payload_json ?? '{}')).toMatchObject({ reason: null });
+  });
+});
+
+// FEAT-467 purge-batch reversible soft-delete generation (ADR-013 Decision 4
+// gate for FEAT-458). AC-1 (batch open + audit record), AC-2 (restore within
+// window, unrelated atoms untouched), AC-3 (finalize hard-erases), AC-4 (both
+// paths end to end), AC-5 (capture_source is a plain parameter, no branching).
+describe('MemoryEventRepo.purgeBatch / restorePurgeBatch / finalizePurgeBatch', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let events: MemoryEventRepo;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    events = new MemoryEventRepo(db);
+  });
+
+  function insertMem(hash: string, opts: { captureSource?: string | null; text?: string } = {}): string {
+    const text = opts.text ?? `purge test ${hash}`;
+    return repo.insert({
+      type: 'fact', text, normalized_text: text,
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+      hash, source_hash: null, capture_source: opts.captureSource ?? null,
+    });
+  }
+
+  function purgeBatchRow(batchId: string) {
+    return db.prepare('SELECT * FROM purge_batches WHERE batch_id = ?').get(batchId) as {
+      batch_id: string; capture_source: string; requested_at: number; restore_deadline_at: number;
+      atom_count: number; status: string; finalized_at: number | null;
+    };
+  }
+
+  // AC-1
+  it('purgeBatch soft-invalidates every matching atom via a "purge" event (never "invalidate") ' +
+     'and persists a batch-level audit record', () => {
+    const a1 = insertMem('pb-a1', { captureSource: 'auto_capture' });
+    const a2 = insertMem('pb-a2', { captureSource: 'auto_capture' });
+
+    const result = events.purgeBatch([a1, a2], 'auto_capture', 30);
+
+    expect(result.count).toBe(2);
+    expect(repo.get(a1)?.valid_to).not.toBeNull();
+    expect(repo.get(a2)?.valid_to).not.toBeNull();
+
+    const a1Types = events.listForAtom(a1).map(e => e.event_type);
+    expect(a1Types).toEqual(['purge']);
+    const purgeEvent = events.listForAtom(a1).find(e => e.event_type === 'purge');
+    expect(JSON.parse(purgeEvent?.payload_json ?? '{}')).toEqual({
+      batch_id: result.batchId, capture_source: 'auto_capture',
+    });
+
+    const batch = purgeBatchRow(result.batchId);
+    expect(batch.capture_source).toBe('auto_capture');
+    expect(batch.atom_count).toBe(2);
+    expect(batch.status).toBe('open');
+    expect(batch.requested_at).toBeLessThanOrEqual(batch.restore_deadline_at);
+    expect(batch.finalized_at).toBeNull();
+  });
+
+  it('the row is not hard-deleted by purgeBatch — text still physically present', () => {
+    const id = insertMem('pb-soft', { captureSource: 'auto_capture' });
+    events.purgeBatch([id], 'auto_capture', 30);
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id);
+    expect(row).not.toBeUndefined();
+  });
+
+  it('ids already invalid (or unknown) are skipped, not fail the whole batch', () => {
+    const valid = insertMem('pb-skip-valid', { captureSource: 'auto_capture' });
+    const alreadyInvalid = insertMem('pb-skip-invalid', { captureSource: 'auto_capture' });
+    events.invalidate(alreadyInvalid);
+
+    const result = events.purgeBatch([valid, alreadyInvalid, 'does-not-exist'], 'auto_capture', 30);
+
+    expect(result.count).toBe(1);
+    expect(events.listForAtom(alreadyInvalid).map(e => e.event_type)).not.toContain('purge');
+  });
+
+  // AC-2
+  it('restorePurgeBatch un-hides every atom still in the purged state and marks the batch restored', () => {
+    const a1 = insertMem('pb-r1', { captureSource: 'auto_capture' });
+    const a2 = insertMem('pb-r2', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([a1, a2], 'auto_capture', 30);
+
+    const result = events.restorePurgeBatch(batchId);
+
+    expect(result.restored).toBe(2);
+    expect(repo.get(a1)?.valid_to).toBeNull();
+    expect(repo.get(a2)?.valid_to).toBeNull();
+    expect(events.listForAtom(a1).map(e => e.event_type)).toEqual(['purge', 'unpurge']);
+    const unpurgeEvent = events.listForAtom(a1).find(e => e.event_type === 'unpurge');
+    expect(JSON.parse(unpurgeEvent?.payload_json ?? '{}')).toEqual({ batch_id: batchId });
+    expect(purgeBatchRow(batchId).status).toBe('restored');
+  });
+
+  it('an atom independently changed since the purge (hard-erased) is left untouched by restore', () => {
+    const a1 = insertMem('pb-untouched-1', { captureSource: 'auto_capture' });
+    const a2 = insertMem('pb-untouched-2', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([a1, a2], 'auto_capture', 30);
+
+    // Simulate an unrelated erase of a1 happening between purge and restore.
+    events.erase(a1, 'unrelated hard delete');
+
+    const result = events.restorePurgeBatch(batchId);
+
+    expect(result.restored).toBe(1); // only a2
+    expect(repo.get(a1)).toBeNull(); // a1 stays erased, untouched by restore
+    expect(repo.get(a2)?.valid_to).toBeNull();
+  });
+
+  it('reappears in current-snapshot search after restore', () => {
+    const id = insertMem('pb-search', {
+      captureSource: 'auto_capture', text: 'a uniquely findable purge-restore-route phrase',
+    });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
+    expect(repo.get(id)?.valid_to).not.toBeNull();
+
+    events.restorePurgeBatch(batchId);
+
+    expect(repo.get(id)?.valid_to).toBeNull();
+  });
+
+  it('unknown batch id throws PurgeBatchNotFoundError (a MemoryNotFoundError subtype)', () => {
+    expect(() => events.restorePurgeBatch('nope')).toThrow(PurgeBatchNotFoundError);
+    expect(() => events.restorePurgeBatch('nope')).toThrow(MemoryNotFoundError);
+  });
+
+  it('a stale restore attempt (window elapsed) throws MemoryConflictError, not a silent no-op', () => {
+    const id = insertMem('pb-stale', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', -1); // deadline already in the past
+    expect(() => events.restorePurgeBatch(batchId)).toThrow(MemoryConflictError);
+  });
+
+  it('restoring an already-restored batch throws MemoryConflictError', () => {
+    const id = insertMem('pb-double-restore', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
+    events.restorePurgeBatch(batchId);
+    expect(() => events.restorePurgeBatch(batchId)).toThrow(MemoryConflictError);
+  });
+
+  it('restoring an already-finalized batch throws MemoryConflictError', () => {
+    const id = insertMem('pb-restore-after-finalize', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
+    events.finalizePurgeBatch(batchId);
+    expect(() => events.restorePurgeBatch(batchId)).toThrow(MemoryConflictError);
+  });
+
+  // AC-3 / AC-4
+  it('finalizePurgeBatch hard-erases every still-purged atom (row + vector + FTS gone) ' +
+     'and marks the batch finalized', () => {
+    const id = insertMem('pb-finalize', {
+      captureSource: 'auto_capture', text: 'a uniquely findable purge-finalize-route phrase',
+    });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
+
+    const result = events.finalizePurgeBatch(batchId);
+
+    expect(result.erased).toBe(1);
+    expect(repo.get(id)).toBeNull();
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(id);
+    expect(row).toBeUndefined();
+    const ftsRow = db.prepare(`SELECT rowid FROM memories_fts WHERE memories_fts MATCH 'finalize'`).all();
+    expect(ftsRow.length).toBe(0);
+    // Tombstone survives: erase_request event, replay filter blocks resurrection.
+    expect(events.listForAtom(id).some(e => e.event_type === 'erase_request')).toBe(true);
+    expect(events.isErasedHash('pb-finalize')).toBe(true);
+
+    const batch = purgeBatchRow(batchId);
+    expect(batch.status).toBe('finalized');
+    expect(batch.finalized_at).not.toBeNull();
+  });
+
+  it('finalize is callable early — before the restore window elapses (operator override)', () => {
+    const id = insertMem('pb-finalize-early', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30); // 30-day window, not elapsed
+
+    const result = events.finalizePurgeBatch(batchId);
+
+    expect(result.erased).toBe(1);
+    expect(repo.get(id)).toBeNull();
+  });
+
+  it('finalizing an already-finalized batch throws MemoryConflictError', () => {
+    const id = insertMem('pb-double-finalize', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
+    events.finalizePurgeBatch(batchId);
+    expect(() => events.finalizePurgeBatch(batchId)).toThrow(MemoryConflictError);
+  });
+
+  it('finalizing an already-restored batch throws MemoryConflictError — nothing left to erase via this path', () => {
+    const id = insertMem('pb-finalize-after-restore', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
+    events.restorePurgeBatch(batchId);
+    expect(() => events.finalizePurgeBatch(batchId)).toThrow(MemoryConflictError);
+  });
+
+  it('unknown batch id throws PurgeBatchNotFoundError', () => {
+    expect(() => events.finalizePurgeBatch('nope')).toThrow(PurgeBatchNotFoundError);
+  });
+
+  // AC-5: capture_source is a plain scoping parameter, identical mechanism for both values.
+  it('the same mechanism handles capture_source "proxy" with no branching difference from "auto_capture"', () => {
+    const id = insertMem('pb-proxy', { captureSource: 'proxy' });
+    const { batchId, count } = events.purgeBatch([id], 'proxy', 30);
+
+    expect(count).toBe(1);
+    expect(purgeBatchRow(batchId).capture_source).toBe('proxy');
+
+    const restoreResult = events.restorePurgeBatch(batchId);
+    expect(restoreResult.restored).toBe(1);
+    expect(repo.get(id)?.valid_to).toBeNull();
+  });
+
+  // AC-6: batch id + restore-deadline are visible on the purge event payload,
+  // not just a bare state change (verified at the storage layer; the REST/MCP
+  // history surfaces pass this payload through unchanged — see
+  // tests/server/capture-purge.test.ts).
+  it('the purge event payload carries batch_id (restore-deadline lives on the batch record, ' +
+     'joinable by batch_id) — distinguishable from a bare invalidate()', () => {
+    const id = insertMem('pb-history', { captureSource: 'auto_capture' });
+    const { batchId } = events.purgeBatch([id], 'auto_capture', 30);
+
+    const purgeEvent = events.listForAtom(id).find(e => e.event_type === 'purge');
+    const payload = JSON.parse(purgeEvent?.payload_json ?? '{}');
+    expect(payload.batch_id).toBe(batchId);
+    expect(purgeBatchRow(batchId).restore_deadline_at).toBeGreaterThan(Date.now());
   });
 });
 

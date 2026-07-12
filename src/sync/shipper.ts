@@ -144,6 +144,11 @@ interface UnsyncedRow {
  * reversal for every supersede path in the system"). Excluding it here keeps
  * today's behavior safe (no wire-schema change, no risk of shipping a type
  * the cloud doesn't recognize) at the cost of that follow-up gap.
+ *
+ * `purge`/`unpurge` (FEAT-467, ADR-013 Decision 4 gate) are excluded for the
+ * same scope-decision reason as `unsupersede`: cross-device propagation of a
+ * disable-flow purge/restore is a real follow-up, not solved by this
+ * primitive, and the wire schema doesn't list either type yet.
  */
 export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
   return db
@@ -152,7 +157,7 @@ export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
-        AND e.event_type NOT IN ('archive', 'restore', 'unsupersede')
+        AND e.event_type NOT IN ('archive', 'restore', 'unsupersede', 'purge', 'unpurge')
         AND (
           m.scope IN ('team', 'org')
           OR (
@@ -199,7 +204,7 @@ export function countUnsynced(db: DB): number {
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
-        AND e.event_type NOT IN ('archive', 'restore', 'unsupersede')
+        AND e.event_type NOT IN ('archive', 'restore', 'unsupersede', 'purge', 'unpurge')
         AND (
           m.scope IN ('team', 'org')
           OR (
