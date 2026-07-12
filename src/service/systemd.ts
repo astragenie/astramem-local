@@ -8,6 +8,8 @@ const SERVICE_NAME = 'astra-memoryd';
 const UNIT_FILENAME = `${SERVICE_NAME}.service`;
 const BACKUP_SERVICE_FILENAME = `${SERVICE_NAME}-backup.service`;
 const BACKUP_TIMER_FILENAME = `${SERVICE_NAME}-backup.timer`;
+const WATCHDOG_SERVICE_FILENAME = `${SERVICE_NAME}-watchdog.service`;
+const WATCHDOG_TIMER_FILENAME = `${SERVICE_NAME}-watchdog.timer`;
 
 function unitDir(): string {
   return join(homedir(), '.config', 'systemd', 'user');
@@ -23,6 +25,14 @@ function backupServicePath(): string {
 
 function backupTimerPath(): string {
   return join(unitDir(), BACKUP_TIMER_FILENAME);
+}
+
+function watchdogServicePath(): string {
+  return join(unitDir(), WATCHDOG_SERVICE_FILENAME);
+}
+
+function watchdogTimerPath(): string {
+  return join(unitDir(), WATCHDOG_TIMER_FILENAME);
 }
 
 function buildUnit(execStart: string, port: number): string {
@@ -63,6 +73,47 @@ function buildBackupTimer(): string {
     '',
     '[Timer]',
     'OnCalendar=03:00',
+    'Persistent=true',
+    '',
+    '[Install]',
+    'WantedBy=timers.target',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Hang-watchdog probe unit (FEAT-443 SLICE-2) — a oneshot that runs
+ * `<execCmd> service watchdog-probe` (watchdog-probe.ts's runWatchdogProbe).
+ * `Restart=on-failure` on the MAIN daemon unit only fires on process exit;
+ * this is the piece that catches a daemon that's alive but wedged.
+ */
+function buildWatchdogService(execCmd: string): string {
+  return [
+    '[Unit]',
+    'Description=AstraMemory hang-watchdog probe',
+    '',
+    '[Service]',
+    'Type=oneshot',
+    `ExecStart=${execCmd} service watchdog-probe`,
+    '',
+  ].join('\n');
+}
+
+/**
+ * `OnUnitActiveSec` (not `OnCalendar`) so the interval is relative to the
+ * PREVIOUS run's completion, not wall-clock — matches the semantics of the
+ * Windows PT5M logon-trigger repetition this mirrors (task-xml.ts).
+ * `OnBootSec` gives the first probe a short head start after boot rather
+ * than waiting a full interval before the first check.
+ */
+function buildWatchdogTimer(intervalSec: number): string {
+  return [
+    '[Unit]',
+    'Description=AstraMemory hang-watchdog probe timer',
+    '',
+    '[Timer]',
+    `OnBootSec=${Math.min(intervalSec, 60)}s`,
+    `OnUnitActiveSec=${intervalSec}s`,
     'Persistent=true',
     '',
     '[Install]',
@@ -136,6 +187,32 @@ export class SystemdAdapter implements ServiceAdapter {
     if (existsSync(timerPath)) {
       try { await runCmd(`systemctl --user stop ${SERVICE_NAME}-backup.timer`); } catch { /* ignore */ }
       try { await runCmd(`systemctl --user disable ${SERVICE_NAME}-backup.timer`); } catch { /* ignore */ }
+      unlinkSync(timerPath);
+    }
+    if (existsSync(svcPath)) {
+      unlinkSync(svcPath);
+    }
+    try { await runCmd(`systemctl --user daemon-reload`); } catch { /* ignore */ }
+  }
+
+  /** FEAT-443 SLICE-2 — see watchdog-probe.ts header for why this exists
+   *  instead of WatchdogSec + sd_notify. Not part of ServiceAdapter (see
+   *  watchdog-probe.ts's hasWatchdogTimer guard) — install-flow.ts and
+   *  cli/service.ts detect it via duck typing. */
+  async installWatchdogTimer(execPath: string, intervalSec: number): Promise<void> {
+    mkdirSync(unitDir(), { recursive: true });
+    writeFileSync(watchdogServicePath(), buildWatchdogService(execPath), 'utf8');
+    writeFileSync(watchdogTimerPath(), buildWatchdogTimer(intervalSec), 'utf8');
+    await runCmd(`systemctl --user daemon-reload`);
+    await runCmd(`systemctl --user enable --now ${SERVICE_NAME}-watchdog.timer`);
+  }
+
+  async uninstallWatchdogTimer(): Promise<void> {
+    const timerPath = watchdogTimerPath();
+    const svcPath = watchdogServicePath();
+    if (existsSync(timerPath)) {
+      try { await runCmd(`systemctl --user stop ${SERVICE_NAME}-watchdog.timer`); } catch { /* ignore */ }
+      try { await runCmd(`systemctl --user disable ${SERVICE_NAME}-watchdog.timer`); } catch { /* ignore */ }
       unlinkSync(timerPath);
     }
     if (existsSync(svcPath)) {

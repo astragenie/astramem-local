@@ -2,6 +2,7 @@ import { getServiceAdapter } from '../service/index.js';
 import { installServiceFlow } from '../service/install-flow.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { stopLockHolder } from '../service/instance-lock.js';
+import { hasWatchdogTimer, runWatchdogProbe } from '../service/watchdog-probe.js';
 import { reinstallCommand } from './reinstall.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -59,6 +60,9 @@ export async function serviceCommand(args: string[]): Promise<void> {
       console.log('Uninstalling AstraMemory service...');
       await adapter.uninstall();
       try { await adapter.uninstallBackupTimer(); } catch { /* timer may not be installed */ }
+      if (hasWatchdogTimer(adapter)) {
+        try { await adapter.uninstallWatchdogTimer(); } catch { /* timer may not be installed */ }
+      }
       console.log('Service uninstalled.');
       break;
     }
@@ -115,6 +119,20 @@ export async function serviceCommand(args: string[]): Promise<void> {
       break;
     }
 
+    case 'watchdog-probe': {
+      // astramem-local service watchdog-probe — invoked unattended by the
+      // systemd timer / launchd StartInterval agent installed alongside the
+      // main service (FEAT-443 SLICE-2, install-flow.ts). Never exits
+      // non-zero on an unhealthy probe: this runs on a schedule with no one
+      // watching in real time, and the recovery action (or its failure) is
+      // reported on stdout for the unit's own journal/log, not via exit code.
+      const portArg = parseArg(rest, '--port');
+      const { port, dataDir } = resolveRuntimeConfig({ port: portArg ? Number(portArg) : undefined });
+      const result = await runWatchdogProbe({ port, dataDir, adapter });
+      console.log(`[watchdog-probe] ${result.healthy ? 'healthy' : 'UNHEALTHY'} — ${result.action}: ${result.detail}`);
+      break;
+    }
+
     case undefined:
     case '--help':
     case '-h':
@@ -125,10 +143,17 @@ Subcommands:
                        Install OS service (systemd/launchd/schtasks)
                        --with-backup-timer  also install nightly 03:00 backup timer
                        --keep N             retain N snapshots (default: 7)
-  uninstall            Remove OS service (also removes backup timer if present)
+  uninstall            Remove OS service (also removes backup timer + hang-watchdog
+                       probe timer, if present)
   start                Start service via OS init
   stop                 Stop service via OS init
-  status               Show service status`);
+  status               Show service status
+  watchdog-probe [--port N]
+                       Hang-detection probe (FEAT-443 SLICE-2, systemd/launchd
+                       only) — hits /health and force-restarts the daemon if
+                       unresponsive. Installed as a recurring timer/agent
+                       automatically by 'install'; not meant to be run
+                       interactively, but safe to invoke by hand.`);
       break;
 
     default:

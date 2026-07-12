@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { getServiceAdapter } from './index.js';
 import { writeShim, shimPaths } from './shim.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
+import { hasWatchdogTimer, WATCHDOG_PROBE_INTERVAL_SEC } from './watchdog-probe.js';
 import type { InstallResult, ServiceAdapter } from './types.js';
 
 export interface ResolvedBuild {
@@ -90,5 +91,21 @@ export async function installServiceFlow(port: number, opts: InstallFlowOptions 
   const taskExecPath = `"${paths.cmdPath}"`;
 
   const result = await adapter.install(taskExecPath, port);
+
+  // Hang-watchdog probe timer (FEAT-443 SLICE-2) — systemd/launchd only
+  // (hasWatchdogTimer duck-types the capability; win32's SchtasksAdapter and
+  // plain-object test mocks don't have it, so this is a silent no-op there).
+  // Registered unconditionally alongside the main unit/plist — unlike the
+  // backup timer (opt-in via --with-backup-timer), a hang-blind keepalive
+  // isn't optional. Best-effort: never fails the overall install.
+  if (result.kind === 'task' && hasWatchdogTimer(adapter)) {
+    try {
+      await adapter.installWatchdogTimer(build.rawExecPath, WATCHDOG_PROBE_INTERVAL_SEC);
+      console.log(`  · watchdog probe registered (every ${WATCHDOG_PROBE_INTERVAL_SEC}s)`);
+    } catch (err) {
+      console.log(`  ⚠ watchdog probe registration failed (non-fatal): ${(err as Error).message}`);
+    }
+  }
+
   return { result, adapter, build, taskExecPath };
 }

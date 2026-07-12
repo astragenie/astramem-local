@@ -1,6 +1,6 @@
 ---
 id: FEAT-442
-status: triaged
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -32,3 +32,11 @@ Autonomous consolidation: auto-accept merge-as-supersede proposals at or above a
 Created via free-text intake (`/runner:intake "<text>"`). Priority is
 unset — this FEAT has not been scored yet. Run `/runner:triage`
 (PM scoring + `backlog pm-apply`) to score it before slicing.
+## Closure note (2026-07-12)
+
+Verified already shipped on main (autoAcceptThreshold knob default-off,
+auto_accepted provenance via supersede events, dashboard/digest pending
+surfacing, consolidate accept --all bulk CLI). Residual merged 2026-07-12:
+distinct bulk_accepted provenance marker (review PASS). Config out-of-range =
+log-and-disable, accepted as repo-wide governance convention (matches
+search.eta / durabilityGate handling).

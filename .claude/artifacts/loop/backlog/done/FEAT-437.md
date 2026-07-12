@@ -1,6 +1,6 @@
 ---
 id: FEAT-437
-status: triaged
+status: done
 priority: P2
 category: platform
 target_release: null
@@ -57,3 +57,12 @@ times:
 ## Refs
 - Routes: `src/server/routes/consolidation.ts` (list/accept/reject already exist).
 - Ops evidence: /health `pending_proposals: 158`, session 2026-07-07.
+
+## Closure note (2026-07-12)
+
+Verified already shipped on main (autoAcceptThreshold knob default-off,
+auto_accepted provenance via supersede events, dashboard/digest pending
+surfacing, consolidate accept --all bulk CLI). Residual merged 2026-07-12:
+distinct bulk_accepted provenance marker (review PASS). Config out-of-range =
+log-and-disable, accepted as repo-wide governance convention (matches
+search.eta / durabilityGate handling).
