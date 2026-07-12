@@ -295,15 +295,36 @@ const DIGIT_RUN_RE = /\d+/g;
 // punctuation that happens to look like one (e.g. `Total: <23-digit
 // number>`) — an unrealistic shape in practice, traded off against the
 // HIGH-severity risk of silently corrupting real labeled IDs/config/JSON.
-const LABEL_PREFIX_WINDOW = 40;
+//
+// FEAT-468 review round 2 (HITL decision — SAME-LINE ONLY, fixed a 40-char
+// fixed-window design that was both too wide and too narrow at once):
+// `hasLabelPrefix` no longer takes a fixed character window. Instead it
+// looks back to the START OF THE CURRENT LINE (the nearest preceding `\n`,
+// or offset 0) and tests only that slice.
+//   - [MEDIUM, closed] the old window's `\s*` could cross a newline, so a
+//     transcript header like `Summary:\n<secret>` — routine LLM output
+//     formatting, not a real label on the secret — silently suppressed
+//     redaction of a genuinely unlabeled secret (a false NEGATIVE, the more
+//     dangerous direction for a redaction control). A digit run that starts
+//     a line has an EMPTY same-line prefix, which can never match
+//     `LABEL_PREFIX_RE`, so it can no longer be suppressed by anything on a
+//     previous line, full stop.
+//   - [LOW, closed] the old fixed 40-char window could push a real label
+//     out of range if enough whitespace padding sat between the separator
+//     and the value (e.g. fixed-width/aligned config: `ACCOUNT_NUMBER:
+//     <40 spaces>12345...`). Same-line scanning has no length cap, so
+//     `\s*` in `LABEL_PREFIX_RE` absorbs arbitrary same-line padding.
 const LABEL_PREFIX_RE = /(?<![A-Za-z0-9_])["']?[A-Za-z][A-Za-z0-9_]*["']?\s*[:=]\s*["']?$/;
 
-/** True if `text` immediately before offset `start` looks like a `LABEL=`,
- * `label: `, or `"label": ` shape — i.e. `start` is the value side of a
- * labeled assignment, not a bare unlabeled token. */
+/** True if `text` immediately before offset `start`, on the SAME LINE only
+ * (never crossing a `\n`), looks like a `LABEL=`, `label: `, or `"label": `
+ * shape — i.e. `start` is the value side of a labeled assignment, not a
+ * bare unlabeled token. A digit run that opens a new line (nothing between
+ * the line start and the run) always returns false here, by construction —
+ * a label on a PREVIOUS line can never suppress it. */
 function hasLabelPrefix(text: string, start: number): boolean {
-  const windowStart = Math.max(0, start - LABEL_PREFIX_WINDOW);
-  return LABEL_PREFIX_RE.test(text.slice(windowStart, start));
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+  return LABEL_PREFIX_RE.test(text.slice(lineStart, start));
 }
 
 export interface NumericSecretMatch {

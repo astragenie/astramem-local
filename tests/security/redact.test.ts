@@ -336,6 +336,24 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     type: 'generic_credential',
     secret: '98765432109876543210987654',
   },
+  // FEAT-468 review round 2 (MEDIUM fix, HITL decision: label guard is
+  // SAME-LINE ONLY): a transcript-header shape (`Summary:`/`Result:` on its
+  // own line, secret on the next) is NOT a real label on the value that
+  // follows it — it's routine LLM output formatting, and the value must
+  // still redact. This is the exact false-negative class round 1's
+  // cross-line-capable window let slip through.
+  {
+    name: 'FEAT-468 review round 2: "Summary:\\n<secret>" still redacts — a previous-line header is not a same-line label',
+    input: 'Summary:\n11223344556677889900112233',
+    type: 'numeric_secret',
+    secret: '11223344556677889900112233',
+  },
+  {
+    name: 'FEAT-468 review round 2: "Result:\\n<secret>" still redacts — a previous-line header is not a same-line label',
+    input: 'Result:\n99887766554433221100998877',
+    type: 'numeric_secret',
+    secret: '99887766554433221100998877',
+  },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
@@ -655,6 +673,29 @@ describe('redactText — FEAT-468 numeric-secret false-positive corpus', () => {
 
   it('does not redact a YAML-style label: digits value (no quotes, colon+space separator)', () => {
     const input = 'trackingId: 12345678901234567890123 confirmed';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 2 (LOW fix): same-line scanning has no fixed
+  // character cap (unlike the old 40-char window), so arbitrary same-line
+  // whitespace padding between a label's separator and its value no longer
+  // pushes a real label out of range.
+  it('does not redact a labeled value with 40 spaces of same-line padding between separator and value (fixed-width/aligned config shape)', () => {
+    const input = `ACCOUNT_NUMBER: ${' '.repeat(40)}12345678901234567890123`;
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 2: label-at-line-start with leading indentation —
+  // the same-line lookback still finds the label even when the label's own
+  // line begins with whitespace (a previous line's trailing newline plus
+  // indentation before the label itself), since the label-shape regex
+  // isn't anchored to the start of the line slice.
+  it('does not redact an indented labeled value on its own line (leading whitespace before the label)', () => {
+    const input = 'notes\n  ACCOUNT_NUMBER: 12345678901234567890123';
     const { text, events } = redactText(input);
     expect(text).toBe(input);
     expect(events.length).toBe(0);
