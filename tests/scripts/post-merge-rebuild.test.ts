@@ -76,6 +76,19 @@ describe('post-merge-rebuild.mjs — touchesWatchedPaths (FEAT-439 AC-1)', () =>
   });
 });
 
+// FEAT-471: every test below invokes several sequential `git` spawnSync
+// calls (init/config/add/commit/checkout/merge via initFixtureRepo /
+// mergeBranchTouching), and the two heaviest additionally shell out through
+// mod.main()'s bun install/build rebuild attempt — hence their own
+// long-standing explicit 30s budgets. Reproduced under parallel load
+// (~16-20 concurrent spawnSync-heavy test processes, simulating a second
+// full suite run + eval daemons per the FEAT), the git-only tests measured
+// 2-4x their idle-box duration (up to ~3.5s), well inside vitest's
+// un-widened 5000ms default testTimeout but with little headroom left.
+// Widen those too so process-spawn latency variance under load — not test
+// logic — determines pass/fail.
+const GIT_SPAWN_TIMEOUT_MS = 20_000;
+
 describe('post-merge-rebuild.mjs — main() (FEAT-439 AC-3/AC-4)', () => {
   let dir: string;
   let stderrOutput: string;
@@ -103,7 +116,7 @@ describe('post-merge-rebuild.mjs — main() (FEAT-439 AC-3/AC-4)', () => {
     initFixtureRepo(dir);
     expect(() => mod.main(dir)).not.toThrow();
     expect(stderrOutput).toContain('could not resolve ORIG_HEAD');
-  });
+  }, GIT_SPAWN_TIMEOUT_MS);
 
   it('no-op when the merge does not touch migrations/ or src/storage/', () => {
     initFixtureRepo(dir);
@@ -111,7 +124,7 @@ describe('post-merge-rebuild.mjs — main() (FEAT-439 AC-3/AC-4)', () => {
     mod.main(dir);
     expect(stderrOutput).not.toContain('rebuilding');
     expect(existsSync(join(dir, '.git', 'astramem-post-merge-last-rebuilt-sha'))).toBe(false);
-  });
+  }, GIT_SPAWN_TIMEOUT_MS);
 
   it(
     'attempts a rebuild when the merge touches migrations/, and reports the failure loudly without ' +
@@ -143,7 +156,7 @@ describe('post-merge-rebuild.mjs — main() (FEAT-439 AC-3/AC-4)', () => {
 
     mod.main(dir);
     expect(stderrOutput).not.toContain('rebuilding');
-  });
+  }, GIT_SPAWN_TIMEOUT_MS);
 
   it('src/storage/ changes are detected the same as migrations/ changes', () => {
     initFixtureRepo(dir);
