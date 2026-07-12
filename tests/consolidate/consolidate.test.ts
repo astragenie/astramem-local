@@ -136,6 +136,25 @@ describe('ProposalRepo accept/reject', () => {
     expect(() => repo.reject(p!.id)).toThrow(/already accepted/);
   });
 
+  // FEAT-437 residual: `consolidate accept --all` distinct provenance.
+  it('accept with bulkAccepted marks the supersede event distinctly from a plain manual accept', async () => {
+    const a1 = await seedEmbedded(db, 'p5', 'h-p-9', vecAt(0));
+    const b1 = await seedEmbedded(db, 'p6', 'h-p-10', vecAt(0, 0.45));
+    await runConsolidation(db);
+    const repo = new ProposalRepo(db);
+    const [p] = repo.list('pending');
+
+    const accepted = repo.accept(p!.id, undefined, { bulkAccepted: true });
+    expect(accepted.status).toBe('accepted');
+
+    const supersedeEvent = new MemoryEventRepo(db).listForAtom(p!.loser_id)
+      .find(e => e.event_type === 'supersede')!;
+    const payload = JSON.parse(supersedeEvent.payload_json ?? '{}');
+    expect(payload).toMatchObject({ bulk_accepted: true, superseded_by: p!.winner_id });
+    expect(payload.auto_accepted).toBeUndefined(); // bulk =/= auto
+    void a1; void b1;
+  });
+
   it('reject resolves without touching memories', async () => {
     await seedEmbedded(db, 'p3', 'h-p-3', vecAt(0));
     await seedEmbedded(db, 'p4', 'h-p-4', vecAt(0, 0.45));
@@ -193,6 +212,33 @@ describe('consolidation REST surface', () => {
 
     const unauthed = await app.inject({ method: 'POST', url: '/consolidation/run', payload: {} });
     expect(unauthed.statusCode).toBe(401);
+  });
+
+  // FEAT-437 residual: POST .../accept { bulk: true } (the `consolidate
+  // accept --all` CLI path) marks the resulting supersede event distinctly
+  // from a plain accept with no body.
+  it('POST /consolidation/proposals/:id/accept { bulk: true } marks the event bulk_accepted', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    await seedEmbedded(db, 'bulk winner', 'h-bulk-1', vecAt(0));
+    await seedEmbedded(db, 'bulk loser', 'h-bulk-2', vecAt(0, 0.45));
+    const app = await buildApp({ db, token: 't' });
+    const auth = { authorization: 'Bearer t' };
+
+    await app.inject({ method: 'POST', url: '/consolidation/run', headers: auth, payload: {} });
+    const list = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending', headers: auth });
+    const [p] = list.json().proposals;
+
+    const accept = await app.inject({
+      method: 'POST', url: `/consolidation/proposals/${p.id}/accept`, headers: auth, payload: { bulk: true },
+    });
+    expect(accept.statusCode).toBe(200);
+
+    const supersedeEvent = new MemoryEventRepo(db).listForAtom(p.loser_id)
+      .find((e: { event_type: string }) => e.event_type === 'supersede')!;
+    const payload = JSON.parse(supersedeEvent.payload_json ?? '{}');
+    expect(payload.bulk_accepted).toBe(true);
+    expect(payload.auto_accepted).toBeUndefined();
   });
 
   // FEAT-456 SLICE-2: `kind` is an optional second filter on the list
