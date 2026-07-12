@@ -1,39 +1,32 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-12T16:20:45.783Z",
+  "updatedAt": "2026-07-12T20:51:21.811Z",
   "currentRun": {
-    "title": "FEAT466 SLICE422: Implement FEAT-466",
-    "goal": "",
+    "title": "FEAT475 SLICE424: Implement FEAT-475",
+    "goal": "**Eval detach/daemon-manifest tests flake under parallel load** — sibling of",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-10T13:52:46.030Z",
-    "updatedAt": "2026-07-12T16:20:45.783Z",
-    "next": "Add restore_deadline_at to the purge event payload in purgeBatch() (memory-events.ts, one-line addition -- restoreDeadlineAt is already computed in scope) so AC-6 is literally satisfied, and update capture-purge.test.ts's AC-6 assertions accordingly. Optional follow-ups: extend the lifecycle error-status conformance suite to cover the 3 new capture-purge verbs; mention the CLI --json shape change in release notes.",
+    "startedAt": "2026-07-12T20:51:21.811Z",
+    "updatedAt": "2026-07-12T20:51:21.811Z",
+    "next": "Begin implementation",
     "gates": {
-      "review": {
-        "status": "passed",
-        "updatedAt": "2026-07-12T16:20:45.783Z",
-        "note": "Purge-batch primitive is correctly built to spec on the mechanics that matter most (migration index preservation, transaction atomicity/savepoint nesting, capture_source non-branching, exhaustive error-edge-case coverage) — all independently re-verified, not just trusted. One HIGH finding: AC-6 (restore-deadline visible via history/why/memory_history) is not actually satisfied by the shipped code, despite the handoff's self-check claiming PASS; the fix is a one-line, isolated payload addition."
-      },
-      "validation": {
-        "status": "passed",
-        "updatedAt": "2026-07-12T16:13:53.538Z",
-        "note": "starting investigation"
-      },
+      "review": null,
+      "validation": null,
       "deployment": {
         "dev": null,
         "prod": null
       },
       "blocked": null,
       "escalation": null,
-      "incident": null
+      "incident": null,
+      "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local-worktrees\\w466\\.claude\\artifacts\\crew\\runs\\20260710T135246Z-run-brief-feat466-slice422-implement-feat-466.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205121Z-run-brief-feat475-slice424-implement-feat-475.md",
       "handoffs": [],
-      "reviewResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\reviews\\20260712T161351Z-review-result-feat-467-purge-batch-reversible-soft-delete-review.md",
+      "reviewResult": null,
       "validationPlan": null,
-      "validationResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\validations\\20260712T161353Z-validation-result-feat-467-purge-batch-validation.md",
+      "validationResult": null,
       "deploymentChecks": {
         "dev": null,
         "prod": null
@@ -42,6 +35,47 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT466 SLICE422: Implement FEAT-466",
+      "goal": "",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-10T13:52:46.030Z",
+      "updatedAt": "2026-07-12T16:20:45.783Z",
+      "completedAt": "2026-07-12T16:20:45.783Z",
+      "next": "Add restore_deadline_at to the purge event payload in purgeBatch() (memory-events.ts, one-line addition -- restoreDeadlineAt is already computed in scope) so AC-6 is literally satisfied, and update capture-purge.test.ts's AC-6 assertions accordingly. Optional follow-ups: extend the lifecycle error-status conformance suite to cover the 3 new capture-purge verbs; mention the CLI --json shape change in release notes.",
+      "gates": {
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-12T16:20:45.783Z",
+          "note": "Purge-batch primitive is correctly built to spec on the mechanics that matter most (migration index preservation, transaction atomicity/savepoint nesting, capture_source non-branching, exhaustive error-edge-case coverage) — all independently re-verified, not just trusted. One HIGH finding: AC-6 (restore-deadline visible via history/why/memory_history) is not actually satisfied by the shipped code, despite the handoff's self-check claiming PASS; the fix is a one-line, isolated payload addition."
+        },
+        "validation": {
+          "status": "passed",
+          "updatedAt": "2026-07-12T16:13:53.538Z",
+          "note": "starting investigation"
+        },
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local-worktrees\\w466\\.claude\\artifacts\\crew\\runs\\20260710T135246Z-run-brief-feat466-slice422-implement-feat-466.md",
+        "handoffs": [],
+        "reviewResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\reviews\\20260712T161351Z-review-result-feat-467-purge-batch-reversible-soft-delete-review.md",
+        "validationPlan": null,
+        "validationResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\validations\\20260712T161353Z-validation-result-feat-467-purge-batch-validation.md",
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT463 SLICE421: Implement FEAT-463",
       "goal": "**Stage-0 redaction: quoted/JSON label forms not detected** — the",
@@ -192,15 +226,6 @@
         },
         "finalSynthesis": null
       }
-    },
-    {
-      "title": "FEAT438 SLICE416: Release dir materialization (dist + prod node_modules) + AC-5 failure guard",
-      "goal": "`current.json.entryJs` points at an immutable versioned release, not the dev checkout",
-      "mode": "autonomous",
-      "status": "completed",
-      "startedAt": "2026-07-07T09:16:27.717Z",
-      "closedAt": "2026-07-08T00:00:00.000Z",
-      "closeNote": "Code shipped via PR #123 (commit 6937ad5) + follow-ups; all FEAT-438 ACs (AC-1..AC-5) verified live in origin/main tree (src/service/release.ts, src/cli/reinstall.ts, src/doctor/checks.ts). Run left 'active' with null gates after 2026-07-07 session died mid-ceremony; closed manually during 2026-07-08 cleanup. FEAT-438 moved to backlog/done/."
     }
   ]
 }
