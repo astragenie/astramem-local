@@ -1,11 +1,14 @@
 /**
  * tests/doctor/auto-capture-check.test.ts
  *
- * FEAT-455 / ADR-012 decision 4: doctor's "Auto-capture" row — an
- * informational check (ok:true in both states, see checkAutoCapture's doc
- * comment for why this deliberately does NOT mirror checkServicePointer's
- * ok:false dev-pinned pattern). Uses a real on-disk memory.sqlite (same
- * pattern as tests/doctor/memory-health-check.test.ts) since the check opens
+ * FEAT-455 / ADR-012 decision 4: doctor's "Auto-capture" row. Being ON is
+ * never itself a warning (ok:true, see checkAutoCapture's doc comment for
+ * why this deliberately does NOT mirror checkServicePointer's ok:false
+ * dev-pinned pattern) — but since the 2026-07-12 "wired, never fired" bug
+ * class, the check now WARNs (ok:false) when ON + the daemon has real
+ * content (>= MEANINGFUL_USAGE_THRESHOLD active memories) yet 0 of them ever
+ * came through auto-capture. Uses a real on-disk memory.sqlite (same pattern
+ * as tests/doctor/memory-health-check.test.ts) since the check opens
  * `join(dataDir, 'memory.sqlite')` via openProductionDbReadonly.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -105,6 +108,45 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
     expect(result.message).toContain('2 auto-captured memories');
+  });
+
+  it('enabled, >= threshold active memories from other sources but 0 auto-captured — WARN (wired, never fired)', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    const repo = new MemoryRepo(db);
+    for (let i = 0; i < 20; i++) {
+      repo.insert({
+        type: 'fact', text: `manually captured fact ${i}`, normalized_text: `manually captured fact ${i}`,
+        repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+        hash: randomUUID(), source_hash: null,
+      });
+    }
+    db.close();
+
+    const result = await checkFor(true).run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('never firing');
+    expect(result.message).toContain('20 active');
+    expect(result.fix).toBeDefined();
+  });
+
+  it('enabled, just below the threshold (19 active memories), 0 auto-captured — stays ok:true (no false alarm)', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    const repo = new MemoryRepo(db);
+    for (let i = 0; i < 19; i++) {
+      repo.insert({
+        type: 'fact', text: `manually captured fact ${i}`, normalized_text: `manually captured fact ${i}`,
+        repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+        hash: randomUUID(), source_hash: null,
+      });
+    }
+    db.close();
+
+    const result = await checkFor(true).run();
+    expect(result.ok).toBe(true);
   });
 
   it('enabled — an invalidated (valid_to set) auto-captured atom is excluded from the count', async () => {

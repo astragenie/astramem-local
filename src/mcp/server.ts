@@ -796,8 +796,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         'mattered in this turn. Canonical cross-repo wire name (U5, astragenie/memory#671) — shared ' +
         'with cloud, which also accepts a +1/-1 score; local always records signal="explicit". ' +
         'This is the explicit feedback channel — heuristic client-side detection (content referenced ' +
-        'in a later turn) is separate adapter work, out of scope here. v1: feeds the recall-usefulness ' +
-        'rate on doctor/dashboard/health only, does not affect ranking.',
+        'in a later turn) is separate adapter work, out of scope here. Feeds the recall-usefulness rate ' +
+        'on doctor/dashboard/health, AND influences ranking directly: the ADR-010 v1.x epsilon component ' +
+        '(src/search/fuse.ts) consumes the usefulness score computed from these events, so calling this ' +
+        'measurably reorders future search/recall results.',
       inputSchema: feedbackInputSchema,
     },
     handleSubmitFeedback
