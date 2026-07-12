@@ -11,6 +11,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.15.0] — 2026-07-12
+
+### Added
+- **Purge-batch reversible soft-delete primitive (FEAT-467)** — batch memory purges are now recorded as reversible soft-delete batches (schema migration 25) with a restore window; the purge event payload surfaces `restore_deadline_at` so clients can show exactly how long an undo remains possible.
+- **Hang-watchdog probe for systemd/launchd (FEAT-443, slice 2)** — Linux/macOS installs get a recurring `/health` probe (systemd `OnUnitActiveSec` timer / launchd `StartInterval` agent, installed automatically alongside the main service) that detects an alive-but-wedged daemon — the blind spot `Restart=on-failure`/`KeepAlive` can't see — kills whatever actually holds `daemon.lock`, and restarts via the platform adapter. A review fix ensures a failed `stopLockHolder` aborts the restart path instead of being silently ignored.
+- **`bulk_accepted` provenance on `consolidate accept --all` (FEAT-437 residual)** — bulk-accepted consolidation candidates are now distinguishable from individually reviewed ones in provenance.
+- **Git post-merge hook auto-activation (FEAT-439 residual)** — `init` and `reinstall` from a git checkout idempotently run `git config core.hooksPath scripts/git-hooks`, activating the migration-currency post-merge hook with no manual step; silent no-op for npm-installed users. Overwrite of a foreign `core.hooksPath` is reported distinctly from fresh activation.
+
+### Fixed
+- **Numeric-secret redaction (FEAT-468, security)** — digit-only secrets (below the entropy threshold by alphabet math, the known limitation shipped in 0.13.0) are now caught by a digit-run heuristic with label-awareness. Two adversarial review rounds hardened it: benign labeled numerics (`PASSWORD_MIN_LENGTH=8`, port numbers, timestamps) stay untouched via a same-line-only label lookback and a raised numeric floor.
+- **Smart/curly-quote credential labels (FEAT-473, security)** — the `generic_credential_quoted` detector family and both entropy-stage label guards now recognize Unicode smart quotes (U+2018/U+2019/U+201C/U+201D), including one-sided auto-curl mangles; previously a short secret in smart-quoted JSON leaked in full, and a curly-quoted benign label could be wrongly flagged as high-entropy.
+- **Sync-token keystore identity scoped per configDir (FEAT-472, security)** — the sync token now uses the same per-install scoped OS-credential-store identity that FEAT-466 gave the bearer and db-key, so a sandboxed/test init can no longer collide with a real install's sync pairing.
+- **Distill rationale-marker precision (FEAT-448)** — `RATIONALE_MARKER_RE` is tightened to causal proximity and the because/reason contentless check is scoped per occurrence, cutting false "rationale" classifications on incidental marker words.
+- **Stabilization quick-wins batch (FEAT-470)** + **spawn-heavy test timeout budgets (FEAT-471)** — CI suite reliability under parallel load; no runtime behavior change.
+
+### Governance
+- **ADR-014 local fusion governance (FEAT-428)** — search fusion component ceiling (N=3) plus an eval-evidence gate enforced by a shipped-config test.
+
+### Upgrade note
+- This release contains schema migration **25** (purge-batch soft-delete tables). Migrations run automatically on daemon start; rolling back to a pre-0.15.0 binary after migration 25 has applied is untested — prefer `reinstall --rollback` only before the upgraded daemon has started.
+
 ## [0.14.0] — 2026-07-10
 
 ### Added
