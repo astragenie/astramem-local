@@ -247,26 +247,64 @@ export function findEntropySecrets(text: string, threshold: number): EntropyMatc
 // run, so a formatted numeric shape is exempted for free, with no separate
 // separator-detection logic needed.
 //
-// Threshold: `MIN_TOKEN_LENGTH` (20), the same floor the entropy stage
-// already uses for unlabeled tokens. Chosen deliberately to sit strictly
-// above every non-secret digit-run length in the required FP corpus:
+// Threshold: FEAT-468 review round 1 (MEDIUM finding) reproduced real,
+// common, unlabeled 20-22 digit false positives that the original
+// MIN_TOKEN_LENGTH-derived floor (20) didn't dodge — USPS Certified Mail
+// tracking numbers are exactly 20 unbroken digits, USPS Priority/Express
+// tracking numbers are exactly 22. Raised to 23, FP-first: still strictly
+// above every non-secret digit-run length in the corpus —
 //   - unix timestamps: 10 digits (seconds), 13 digits (ms)
 //   - squashed ISO date+time(+ms): up to ~17 digits (YYYYMMDDHHmmssSSS)
 //   - credit-card-shaped test numbers: 15 (Amex), 16 (Visa/Mastercard)
 //   - zip+4 (squashed): 9 digits
 //   - order/invoice/ID numbers: well under 20 in practice
-// A LABELED numeric secret (`TOKEN=1234567890123456789012345`) is already
-// caught earlier in `redactText` by the `generic_credential` pattern
-// detector (detectors.ts), which has no minimum length on its captured
-// value — this heuristic only covers the UNLABELED case, matching this
-// FEAT's stated scope (entropy's own blind spot, not a general numeric-PII
-// scanner). No separate config knob was added: unlike `entropyThreshold`
-// (which trades off against real deployment-specific noise), this floor is
-// fixed and corpus-validated rather than something an operator would need
-// to tune, and a knob here would mean touching the FEAT-461/465 config
-// round-trip machinery (buildFullyPopulatedConfig / findMissingConfigKeys)
-// for a heuristic that doesn't need per-deployment adjustment.
+//   - USPS Certified Mail (20) / Priority-Express (22) tracking numbers
+// — while the FEAT-463 26-digit repro (the original motivating case) still
+// clears it with margin. Accepted, documented residual: an unlabeled 20-22
+// digit secret (rarer than a 23+ digit one, and shorter than any of the
+// vendor-format secrets this stage's sibling detectors already catch) is
+// still invisible to this heuristic. No separate config knob: see the
+// stage-3 wiring note in index.ts for why.
+const NUMERIC_SECRET_MIN_LENGTH = 23;
 const DIGIT_RUN_RE = /\d+/g;
+
+// FEAT-468 review round 1 (HIGH finding): the original digit-run scan had
+// zero label-context awareness, so it corrupted ordinary labeled non-secret
+// content — `INVOICE_NUMBER=12345678901234567890`, `"orderId":
+// "12345678901234567890"`, `MAX_RETRIES=9999999999999999999999999` all got
+// redacted, directly contradicting this FEAT's own scope ("the gap is
+// UNLABELED numeric secrets only"). `LABEL_PREFIX_RE` mirrors the intent of
+// `CONFIG_ASSIGNMENT_RE`/`isLabelWithSafeValueFollowing` above (skip a
+// value that's clearly attached to a label) but generalized to
+// arbitrary-length digit values instead of only single digits/booleans,
+// since a numeric-run "value" is exactly the case those two guards don't
+// cover (they both fire on the ENTROPY check over a whole token, not on a
+// digit substring embedded inside one). Matches env-style (`KEY=`),
+// YAML-style (`key: `), and JSON-style (`"key": `) label shapes immediately
+// before the run, with an optional single layer of quoting on the label —
+// deliberately does NOT check whether the label itself is a "secret"
+// keyword: per this FEAT's scope, a labeled value (secret-shaped label or
+// not) is the pattern-detector stage's job upstream, not this stage's.  A
+// genuinely secret-labeled numeric value (`TOKEN=<26 digits>`) is still
+// redacted — by the stage-2 `generic_credential` pattern detector, before
+// stage 3 (this heuristic) ever sees the raw text; see
+// `tests/security/redact.test.ts` for the pinned counter-case proving that.
+//
+// Bias is deliberately FP-first here, per review direction: a label-shaped
+// prefix suppresses the heuristic even when the "label" is ordinary prose
+// punctuation that happens to look like one (e.g. `Total: <23-digit
+// number>`) — an unrealistic shape in practice, traded off against the
+// HIGH-severity risk of silently corrupting real labeled IDs/config/JSON.
+const LABEL_PREFIX_WINDOW = 40;
+const LABEL_PREFIX_RE = /(?<![A-Za-z0-9_])["']?[A-Za-z][A-Za-z0-9_]*["']?\s*[:=]\s*["']?$/;
+
+/** True if `text` immediately before offset `start` looks like a `LABEL=`,
+ * `label: `, or `"label": ` shape — i.e. `start` is the value side of a
+ * labeled assignment, not a bare unlabeled token. */
+function hasLabelPrefix(text: string, start: number): boolean {
+  const windowStart = Math.max(0, start - LABEL_PREFIX_WINDOW);
+  return LABEL_PREFIX_RE.test(text.slice(windowStart, start));
+}
 
 export interface NumericSecretMatch {
   start: number;
@@ -276,15 +314,16 @@ export interface NumericSecretMatch {
 
 /**
  * Find every maximal run of `minLength`+ consecutive digit characters in
- * `text`. Each match is the digit substring itself (not any surrounding
- * non-digit characters in the same token).
+ * `text` that is NOT immediately preceded by a label shape (see
+ * `hasLabelPrefix`). Each match is the digit substring itself (not any
+ * surrounding non-digit characters in the same token).
  */
-export function findNumericSecretRuns(text: string, minLength: number = MIN_TOKEN_LENGTH): NumericSecretMatch[] {
+export function findNumericSecretRuns(text: string, minLength: number = NUMERIC_SECRET_MIN_LENGTH): NumericSecretMatch[] {
   const matches: NumericSecretMatch[] = [];
   DIGIT_RUN_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = DIGIT_RUN_RE.exec(text)) !== null) {
-    if (m[0].length >= minLength) {
+    if (m[0].length >= minLength && !hasLabelPrefix(text, m.index)) {
       matches.push({ start: m.index, end: m.index + m[0].length, value: m[0] });
     }
   }

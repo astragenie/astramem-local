@@ -292,10 +292,14 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
   // the 4.0 default threshold, so an unlabeled all-digit secret was
   // structurally invisible regardless of length — see entropy.ts
   // `findNumericSecretRuns`. These fixtures are the exact FEAT-463
-  // final-review repro plus the FEAT's stated true-positive range
-  // (unlabeled 20-32 digit tokens); the false-positive corpus proving this
-  // doesn't overtrigger on phone numbers/timestamps/IDs lives in the
-  // dedicated describe block below (those all stay UNredacted).
+  // final-review repro plus the FEAT's stated true-positive range; the
+  // false-positive corpus proving this doesn't overtrigger on phone
+  // numbers/timestamps/IDs/labeled values lives in the dedicated describe
+  // block below (those all stay UNredacted).
+  //
+  // FEAT-468 review round 1 (MEDIUM fix): the minimum floor moved 20 -> 23
+  // to dodge real unlabeled 20/22-digit USPS tracking-number shapes (see the
+  // FP corpus below) — the boundary fixtures here reflect the NEW floor.
   {
     name: 'FEAT-468: FEAT-463 final-review repro — bare unlabeled 26-digit string (entropy 3.295, previously leaked)',
     input: 'account number 98765432109876543210987654 on file',
@@ -303,10 +307,10 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     secret: '98765432109876543210987654',
   },
   {
-    name: 'FEAT-468: unlabeled 20-digit token (exact minimum-floor boundary — must redact)',
-    input: 'ref 12345678901234567890 confirmed',
+    name: 'FEAT-468: unlabeled 23-digit token (exact minimum-floor boundary post-review-fix — must redact)',
+    input: 'ref 12345678901234567890123 confirmed',
     type: 'numeric_secret',
-    secret: '12345678901234567890',
+    secret: '12345678901234567890123',
   },
   {
     name: 'FEAT-468: unlabeled 32-digit token (upper end of stated true-positive range)',
@@ -316,9 +320,21 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
   },
   {
     name: 'FEAT-468: digit-heavy legacy token glued to a non-keyword alpha prefix (only the digit run is redacted, not the prefix)',
-    input: 'ACCT9876543210987654321098 rotate',
+    input: 'ACCT98765432109876543210987 rotate',
     type: 'numeric_secret',
-    secret: '9876543210987654321098',
+    secret: '98765432109876543210987',
+  },
+  // FEAT-468 review round 1 (HIGH fix, counter-case): a genuinely
+  // SECRET-labeled numeric value must still be redacted — just by the
+  // upstream stage-2 pattern detector (generic_credential), not by the
+  // stage-3 numeric-secret heuristic this fix round scoped label-awareness
+  // into. Pins WHICH stage catches it so a future change can't silently
+  // drop coverage without a test noticing.
+  {
+    name: 'FEAT-468 review round 1 counter-case: TOKEN=<26 digits> is still redacted, by generic_credential (stage 2), not numeric_secret (stage 3)',
+    input: 'TOKEN=98765432109876543210987654',
+    type: 'generic_credential',
+    secret: '98765432109876543210987654',
   },
 ];
 
@@ -571,15 +587,74 @@ describe('redactText — false-positive guards', () => {
 // ---------------------------------------------------------------------------
 // FEAT-468: numeric-secret digit-run heuristic — false-positive corpus.
 // Every shape here is a realistic non-secret digit string that must stay
-// fully unredacted. The heuristic is length-only (>= 20 consecutive digits,
-// no separator), so the discriminator is: does this shape's raw digit run
-// ever reach 20 chars unbroken? None of these do, by construction of the
-// shape itself (either separator-formatted or simply shorter).
+// fully unredacted. The heuristic is length-only (>= 23 consecutive digits,
+// no separator, no label prefix — see entropy.ts NUMERIC_SECRET_MIN_LENGTH
+// and LABEL_PREFIX_RE), so the discriminator is either: does this shape's
+// raw digit run ever reach 23 chars unbroken (timestamps/cards/zip+4/order
+// IDs/USPS tracking numbers below), or is it the value-side of a labeled
+// assignment (env/YAML/JSON label shapes below)?
 // ---------------------------------------------------------------------------
 
 describe('redactText — FEAT-468 numeric-secret false-positive corpus', () => {
-  it('does not redact an unbroken 19-digit run (one below the minimum-floor boundary)', () => {
-    const input = 'ref 9876543210987654321 confirmed';
+  it('does not redact an unbroken 22-digit run (one below the minimum-floor boundary, post-review-fix)', () => {
+    const input = 'ref 9876543210987654321098 confirmed';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 1 (MEDIUM finding): USPS tracking-number shapes,
+  // reproduced live by the reviewer against the un-fixed code — both are
+  // exactly the unbroken-unlabeled-digit-run shape this heuristic targets,
+  // and both now stay under the raised 23-digit floor.
+  it('does not redact a 22-digit USPS Priority/Express tracking number', () => {
+    const input = 'your package tracking number is 9400111899223197428490 for delivery';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 20-digit USPS Certified Mail tracking number', () => {
+    const input = 'certified mail 71967398271700000000 delivered';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 1 (HIGH finding): labeled numeric values — env
+  // style, JSON style, YAML style — must survive regardless of digit-run
+  // length. Reproduced live by the reviewer against the un-fixed code
+  // (all four leaked in full before the LABEL_PREFIX_RE guard was added).
+  it('does not redact an env-style LABEL=digits assignment (non-secret label, digit value far past the floor)', () => {
+    const input = 'MAX_RETRIES=9999999999999999999999999';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an env-style LABEL=digits assignment embedded in prose', () => {
+    const input = 'INVOICE_NUMBER=12345678901234567890 was issued last week';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an env-style LABEL=digits assignment, label containing a secret-adjacent word as a non-trailing shape', () => {
+    const input = 'please reference ACCOUNT_NUMBER=98765432109876543210 on your next call';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a JSON-style "label": "digits" value (both sides quoted)', () => {
+    const input = '"orderId": "12345678901234567890"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a YAML-style label: digits value (no quotes, colon+space separator)', () => {
+    const input = 'trackingId: 12345678901234567890123 confirmed';
     const { text, events } = redactText(input);
     expect(text).toBe(input);
     expect(events.length).toBe(0);
