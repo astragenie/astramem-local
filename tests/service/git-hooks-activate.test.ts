@@ -81,13 +81,13 @@ describe('activateGitHooks: real fixture git repo', () => {
     expect(readHooksPath(dir)).toBe('scripts/git-hooks'); // unchanged, still correct
   });
 
-  it('overwrites a stale/different hooksPath value rather than leaving it alone', () => {
+  it('overwrites a stale/different hooksPath value rather than leaving it alone, and reports it as overwrote (not a fresh set)', () => {
     const dir = mkTmpDir('astramem-hooks-stale-');
     initFixtureRepo(dir);
     git(dir, ['config', 'core.hooksPath', 'some/other/path']);
 
     const result = activateGitHooks(dir);
-    expect(result).toEqual({ status: 'set', repoRoot: dir });
+    expect(result).toEqual({ status: 'overwrote', repoRoot: dir, previousValue: 'some/other/path' });
     expect(readHooksPath(dir)).toBe('scripts/git-hooks');
   });
 });

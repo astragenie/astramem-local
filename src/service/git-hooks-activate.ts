@@ -26,6 +26,7 @@ import { fileURLToPath } from 'node:url';
 
 export type HooksActivationResult =
   | { status: 'set'; repoRoot: string }
+  | { status: 'overwrote'; repoRoot: string; previousValue: string }
   | { status: 'already-set'; repoRoot: string }
   | { status: 'not-a-git-checkout' }
   | { status: 'error'; message: string };
@@ -54,6 +55,13 @@ export function defaultRepoRootForThisBuild(): string {
  * Never throws: any failure to invoke `git` itself (missing binary,
  * non-zero exit) comes back as `{ status: 'error', message }` for the
  * caller to log as a soft warning — this must never block `init`/`reinstall`.
+ *
+ * When `core.hooksPath` was already configured to something OTHER than
+ * `scripts/git-hooks` (e.g. a dev's own husky/dotfiles setup), that value
+ * is still overwritten — the hook must fire for the repo's own release
+ * process to work — but the result comes back as `overwrote` (carrying
+ * the clobbered `previousValue`) rather than `set`, so callers can log a
+ * distinct warning instead of silently claiming a fresh activation.
  */
 export function activateGitHooks(repoRoot: string = defaultRepoRootForThisBuild()): HooksActivationResult {
   if (!existsSync(join(repoRoot, '.git')) || !existsSync(join(repoRoot, HOOKS_PATH))) {
@@ -62,7 +70,8 @@ export function activateGitHooks(repoRoot: string = defaultRepoRootForThisBuild(
 
   try {
     const current = spawnSync('git', ['config', '--get', 'core.hooksPath'], { cwd: repoRoot, encoding: 'utf8' });
-    if (current.status === 0 && current.stdout.trim() === HOOKS_PATH) {
+    const previousValue = current.status === 0 ? current.stdout.trim() : null;
+    if (previousValue === HOOKS_PATH) {
       return { status: 'already-set', repoRoot };
     }
 
@@ -72,6 +81,9 @@ export function activateGitHooks(repoRoot: string = defaultRepoRootForThisBuild(
     }
     if (set.status !== 0) {
       return { status: 'error', message: (set.stderr || '').trim() || `git config exited with status ${set.status}` };
+    }
+    if (previousValue !== null) {
+      return { status: 'overwrote', repoRoot, previousValue };
     }
     return { status: 'set', repoRoot };
   } catch (err) {

@@ -349,6 +349,8 @@ export async function reinstallCommand(args: string[]): Promise<void> {
     const hookActivation = activateGitHooks();
     if (hookActivation.status === 'set') {
       log('  · git post-merge hook: activated (core.hooksPath=scripts/git-hooks)');
+    } else if (hookActivation.status === 'overwrote') {
+      log(`  ⚠ replaced existing core.hooksPath (was: ${hookActivation.previousValue}) with scripts/git-hooks`);
     } else if (hookActivation.status === 'error') {
       log(`  ⚠ git post-merge hook: could not activate (${hookActivation.message})`);
     }

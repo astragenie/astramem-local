@@ -680,6 +680,8 @@ export async function init(argv: string[] = []): Promise<void> {
     if (!nonInteractive) {
       if (hookActivation.status === 'set') {
         console.log('  ✓ git post-merge hook activated (core.hooksPath=scripts/git-hooks)');
+      } else if (hookActivation.status === 'overwrote') {
+        console.log(`  ⚠ replaced existing core.hooksPath (was: ${hookActivation.previousValue}) with scripts/git-hooks`);
       } else if (hookActivation.status === 'error') {
         console.log(`  ⚠ could not activate git post-merge hook: ${hookActivation.message}`);
       }
