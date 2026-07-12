@@ -58,6 +58,19 @@ console.log('fake-astramem-local-fixture');
   }
 }
 
+// FEAT-471: every test here does 1-2 real `bun install` + a boot-verify
+// `node ... --version` spawnSync round trip (via makeFixtureCheckout and/or
+// materializeRelease itself — "is idempotent" and the self-heal test do
+// TWO full rounds). On an idle box that's ~200-800ms total; under
+// reproduced parallel load (~16-20 concurrent spawnSync-heavy test
+// processes, simulating a second full suite run + eval daemons per the
+// FEAT) the same tests measured 1.5-2.5x that, and vitest's un-widened
+// 5000ms default testTimeout left near-zero margin. Every `it` below is
+// given the same explicit budget already used in the sibling
+// tests/scripts/post-merge-rebuild.test.ts for equivalent spawn-heavy work,
+// rather than relying on the default tuned for an idle box.
+const SPAWN_HEAVY_TIMEOUT_MS = 30_000;
+
 describe('materializeRelease', () => {
   let root: string;
   let checkoutDir: string;
@@ -101,7 +114,7 @@ describe('materializeRelease', () => {
     // No stray .tmp-* dirs left behind after a successful rename-to-final.
     const entries = readdirSync(releasesRoot);
     expect(entries.some(e => e.startsWith('.tmp-'))).toBe(false);
-  });
+  }, SPAWN_HEAVY_TIMEOUT_MS);
 
   it('AC-2: boot-verify succeeds from outside the checkout — release dir is self-contained', () => {
     makeFixtureCheckout(checkoutDir, { version: '1.2.3' });
@@ -117,7 +130,7 @@ describe('materializeRelease', () => {
     });
     expect(res.status).toBe(0);
     expect(res.stdout.trim()).toBe('1.2.3');
-  });
+  }, SPAWN_HEAVY_TIMEOUT_MS);
 
   it('AC-3: a broken package.json fails materialization, quarantines the partial dir, and leaves current.json untouched', () => {
     makeFixtureCheckout(checkoutDir, { version: '5.0.0', brokenPackageJson: true });
@@ -143,7 +156,7 @@ describe('materializeRelease', () => {
     // for debugging rather than a silently vanished failure.
     const failed = entries.filter(e => e.endsWith('.failed'));
     expect(failed.length).toBe(1);
-  });
+  }, SPAWN_HEAVY_TIMEOUT_MS);
 
   it('AC-3: a forced boot-verify mismatch also fails and quarantines, without a valid final dir', () => {
     // Entry script reports the WRONG version on --version, forcing the
@@ -162,7 +175,7 @@ process.exit(0);
     const validLooking = entries.filter(e => !e.startsWith('.tmp-') && !e.endsWith('.failed'));
     expect(validLooking).toEqual([]);
     expect(entries.some(e => e.endsWith('.failed'))).toBe(true);
-  });
+  }, SPAWN_HEAVY_TIMEOUT_MS);
 
   it('is idempotent: re-materializing the same version+sha reuses the existing verified release', () => {
     makeFixtureCheckout(checkoutDir, { version: '3.3.3' });
@@ -176,7 +189,7 @@ process.exit(0);
     const entries = readdirSync(releasesRoot);
     const validLooking = entries.filter(e => !e.startsWith('.tmp-') && !e.endsWith('.failed'));
     expect(validLooking).toEqual(['3.3.3+nogit']);
-  });
+  }, SPAWN_HEAVY_TIMEOUT_MS);
 
   it('AC-3 (SLICE-417 carry-forward): re-verifies a pre-existing same-id release dir instead of trusting it blindly, and self-heals if it is corrupted', () => {
     makeFixtureCheckout(checkoutDir, { version: '4.4.4' });
@@ -216,5 +229,5 @@ process.exit(0);
     const entries = readdirSync(releasesRoot);
     const validLooking = entries.filter(e => !e.startsWith('.tmp-') && !e.endsWith('.failed'));
     expect(validLooking).toEqual(['4.4.4+nogit']);
-  });
+  }, SPAWN_HEAVY_TIMEOUT_MS);
 });
