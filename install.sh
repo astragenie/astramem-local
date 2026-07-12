@@ -90,6 +90,15 @@ echo "Installed: $(astramem-local --version 2>/dev/null || echo "(version check 
 # /dev/tty when one exists so the prompts still work; if there's no
 # controlling terminal at all (CI, containers), fall back to telling the
 # user to run it themselves afterward instead of hanging or erroring out.
+#
+# The reattach probe below deliberately runs `exec < /dev/tty` inside a
+# subshell rather than bare in the `if` condition. `exec` is a POSIX special
+# builtin, and dash (unlike bash) terminates the whole shell on a special
+# builtin's redirection error even inside an `if` test — so a bare
+# `exec < /dev/tty` here would kill `sh install.sh` outright on a no-tty host
+# (CI, containers) instead of falling back. Wrapping it in `( )` confines
+# that failure to the subshell; only the real `exec < /dev/tty` below (run
+# once the subshell proved it's safe) touches this shell's own stdin.
 if [ -t 0 ]; then
   echo "Running 'astramem-local init' ${*:+with args: $*} ..."
   exec astramem-local init "$@"
@@ -98,7 +107,8 @@ fi
 echo
 echo "Stdin isn't a terminal (this script was likely piped in, e.g. curl | bash)."
 
-if [ -e /dev/tty ] && exec < /dev/tty 2>/dev/null; then
+if [ -e /dev/tty ] && (exec < /dev/tty) 2>/dev/null; then
+  exec < /dev/tty
   echo "Re-attached to /dev/tty — running 'astramem-local init' ${*:+with args: $*} ..."
   exec astramem-local init "$@"
 fi
