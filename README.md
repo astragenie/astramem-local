@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Test](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml/badge.svg)](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml)
 
-Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.12.1.
+Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.15.0.
 
 ## Wire compatibility
 
@@ -543,9 +543,11 @@ publishing flow.
 
 ## Status
 
-**v0.12.0** — local-first memory daemon with 24 migrations, an 18-tool MCP surface, hybrid
+**v0.15.0** — local-first memory daemon with 25 migrations, an 18-tool MCP surface, hybrid
 BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
-promote) with full provenance (`why_memory`), consolidation proposals, and local↔SaaS sync
+promote) with full provenance (`why_memory`), consolidation proposals, entity-tagged memory
+with point-in-time (`as_of`) filtering, usefulness-ranked user/agent profiles (live-computed,
+zero persisted state), reversible soft-delete for batch purges, and local↔SaaS sync
 (shipper/puller/conflict-resolve). CI-gated retrieval eval (ADR-005) runs recall@10 ≥ 0.9 /
 NDCG@10 ≥ 0.7 floors on every push.
 

@@ -1,39 +1,32 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-12T16:20:45.783Z",
+  "updatedAt": "2026-07-12T20:54:42.198Z",
   "currentRun": {
-    "title": "FEAT466 SLICE422: Implement FEAT-466",
-    "goal": "",
+    "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
+    "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-10T13:52:46.030Z",
-    "updatedAt": "2026-07-12T16:20:45.783Z",
-    "next": "Add restore_deadline_at to the purge event payload in purgeBatch() (memory-events.ts, one-line addition -- restoreDeadlineAt is already computed in scope) so AC-6 is literally satisfied, and update capture-purge.test.ts's AC-6 assertions accordingly. Optional follow-ups: extend the lifecycle error-status conformance suite to cover the 3 new capture-purge verbs; mention the CLI --json shape change in release notes.",
+    "startedAt": "2026-07-12T20:54:42.198Z",
+    "updatedAt": "2026-07-12T20:54:42.198Z",
+    "next": "Begin implementation",
     "gates": {
-      "review": {
-        "status": "passed",
-        "updatedAt": "2026-07-12T16:20:45.783Z",
-        "note": "Purge-batch primitive is correctly built to spec on the mechanics that matter most (migration index preservation, transaction atomicity/savepoint nesting, capture_source non-branching, exhaustive error-edge-case coverage) — all independently re-verified, not just trusted. One HIGH finding: AC-6 (restore-deadline visible via history/why/memory_history) is not actually satisfied by the shipped code, despite the handoff's self-check claiming PASS; the fix is a one-line, isolated payload addition."
-      },
-      "validation": {
-        "status": "passed",
-        "updatedAt": "2026-07-12T16:13:53.538Z",
-        "note": "starting investigation"
-      },
+      "review": null,
+      "validation": null,
       "deployment": {
         "dev": null,
         "prod": null
       },
       "blocked": null,
       "escalation": null,
-      "incident": null
+      "incident": null,
+      "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local-worktrees\\w466\\.claude\\artifacts\\crew\\runs\\20260710T135246Z-run-brief-feat466-slice422-implement-feat-466.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205442Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
       "handoffs": [],
-      "reviewResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\reviews\\20260712T161351Z-review-result-feat-467-purge-batch-reversible-soft-delete-review.md",
+      "reviewResult": null,
       "validationPlan": null,
-      "validationResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\validations\\20260712T161353Z-validation-result-feat-467-purge-batch-validation.md",
+      "validationResult": null,
       "deploymentChecks": {
         "dev": null,
         "prod": null
@@ -42,6 +35,115 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
+      "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-12T20:54:37.963Z",
+      "updatedAt": "2026-07-12T20:54:37.963Z",
+      "completedAt": "2026-07-12T20:54:37.963Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205437Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
+    {
+      "title": "FEAT475 SLICE424: Implement FEAT-475",
+      "goal": "**Eval detach/daemon-manifest tests flake under parallel load** — sibling of",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-12T20:51:21.811Z",
+      "updatedAt": "2026-07-12T20:51:21.811Z",
+      "completedAt": "2026-07-12T20:51:21.811Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205121Z-run-brief-feat475-slice424-implement-feat-475.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
+    {
+      "title": "FEAT466 SLICE422: Implement FEAT-466",
+      "goal": "",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-10T13:52:46.030Z",
+      "updatedAt": "2026-07-12T16:20:45.783Z",
+      "completedAt": "2026-07-12T16:20:45.783Z",
+      "next": "Add restore_deadline_at to the purge event payload in purgeBatch() (memory-events.ts, one-line addition -- restoreDeadlineAt is already computed in scope) so AC-6 is literally satisfied, and update capture-purge.test.ts's AC-6 assertions accordingly. Optional follow-ups: extend the lifecycle error-status conformance suite to cover the 3 new capture-purge verbs; mention the CLI --json shape change in release notes.",
+      "gates": {
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-12T16:20:45.783Z",
+          "note": "Purge-batch primitive is correctly built to spec on the mechanics that matter most (migration index preservation, transaction atomicity/savepoint nesting, capture_source non-branching, exhaustive error-edge-case coverage) — all independently re-verified, not just trusted. One HIGH finding: AC-6 (restore-deadline visible via history/why/memory_history) is not actually satisfied by the shipped code, despite the handoff's self-check claiming PASS; the fix is a one-line, isolated payload addition."
+        },
+        "validation": {
+          "status": "passed",
+          "updatedAt": "2026-07-12T16:13:53.538Z",
+          "note": "starting investigation"
+        },
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local-worktrees\\w466\\.claude\\artifacts\\crew\\runs\\20260710T135246Z-run-brief-feat466-slice422-implement-feat-466.md",
+        "handoffs": [],
+        "reviewResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\reviews\\20260712T161351Z-review-result-feat-467-purge-batch-reversible-soft-delete-review.md",
+        "validationPlan": null,
+        "validationResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\validations\\20260712T161353Z-validation-result-feat-467-purge-batch-validation.md",
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT463 SLICE421: Implement FEAT-463",
       "goal": "**Stage-0 redaction: quoted/JSON label forms not detected** — the",
@@ -107,100 +209,6 @@
         },
         "finalSynthesis": null
       }
-    },
-    {
-      "title": "FEAT449 SLICE419: durable ingest spool — capture transcript content at close, daemon drains async",
-      "goal": "",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-09T13:47:22.481Z",
-      "updatedAt": "2026-07-09T20:52:44.136Z",
-      "completedAt": "2026-07-09T20:52:44.136Z",
-      "next": "Feed this into the competitive gap-analysis doc; the two biggest corrections to the prior web-only pass are (a) cognee HAS a first-party MCP server, so any gap-analysis claiming astramemory-local's MCP support as a differentiator vs cognee needs updating, and (b) cognee's local-first claim only applies to storage, not the default LLM/embedding path (OpenAI required unless user explicitly opts into Ollama) -- this is a real differentiator astramemory-local can claim (Ollama as documented default vs opt-in).",
-      "gates": {
-        "review": {
-          "status": "passed",
-          "updatedAt": "2026-07-09T14:34:04.533Z",
-          "note": "FEAT-449 durable ingest spool is correct and closes the ingest outage; no data-loss path found and the ingest.ts refactor is byte-identical HTTP behavior, but two MEDIUM perf/design notes (synchronous unbounded boot-time drain, dropped D-B6 prepared-statement hoisting on the hot path) warrant a low-risk follow-up."
-        },
-        "validation": {
-          "status": "passed",
-          "updatedAt": "2026-07-09T14:43:01.409Z",
-          "note": "Final readiness mode: build + full targeted + full suite all green; all 8 ACs exercised with evidence; both folded review fixes spot-checked live."
-        },
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260709T134722Z-run-brief-feat449-slice419-durable-ingest-spool-capture-transcript-con.md",
-        "handoffs": [
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204935Z-handoff-letta-letta-ai-letta-competitive-intel-code-verified.md",
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204947Z-handoff-graphiti-getzep-source-code-verification-for-competitive-int.md",
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T204950Z-handoff-mem0ai-mem0-competitive-intel-code-verified.md",
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260709T205244Z-handoff-cognee-topoteretes-cognee-source-verified-competitive-audit.md"
-        ],
-        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260709T142714Z-review-result-slice-419-feat-449-durable-ingest-spool-review.md",
-        "validationPlan": null,
-        "validationResult": ".claude/artifacts/crew/validations/20260709T144053Z-validation-result-slice-419-ingest-spool-validation.md",
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "memory SaaS: why demo dashboard user sees no data",
-      "goal": "",
-      "mode": "",
-      "status": "active",
-      "startedAt": "2026-07-08T22:42:05.755Z",
-      "updatedAt": "2026-07-08T23:27:24.998Z",
-      "completedAt": "2026-07-08T23:27:24.998Z",
-      "next": "Optional: add a timeout-path test for scripts/git-hooks/post-merge-rebuild.mjs (SPAWN_TIMEOUT_MS) if that hook's reliability under a hung install ever becomes a concern; not blocking for this fix.",
-      "gates": {
-        "review": {
-          "status": "passed",
-          "updatedAt": "2026-07-08T23:27:24.998Z",
-          "note": "HIGH (daemon-kill vector) is fully closed: stderr now goes through an OS fd to a scratch file with no in-process buffer, so neither the ENOBUFS-kill nor an unbounded memory leak can occur; build and all 170 tests (19 files) pass clean."
-        },
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null
-      },
-      "artifacts": {
-        "runBrief": null,
-        "handoffs": [
-          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260708T224205Z-handoff-memory-saas-why-demo-dashboard-user-sees-no-data.md"
-        ],
-        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260708T232541Z-review-result-feat-observability-probes-shim-ts-high-re-review.md",
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT438 SLICE416: Release dir materialization (dist + prod node_modules) + AC-5 failure guard",
-      "goal": "`current.json.entryJs` points at an immutable versioned release, not the dev checkout",
-      "mode": "autonomous",
-      "status": "completed",
-      "startedAt": "2026-07-07T09:16:27.717Z",
-      "closedAt": "2026-07-08T00:00:00.000Z",
-      "closeNote": "Code shipped via PR #123 (commit 6937ad5) + follow-ups; all FEAT-438 ACs (AC-1..AC-5) verified live in origin/main tree (src/service/release.ts, src/cli/reinstall.ts, src/doctor/checks.ts). Run left 'active' with null gates after 2026-07-07 session died mid-ceremony; closed manually during 2026-07-08 cleanup. FEAT-438 moved to backlog/done/."
     }
   ]
 }

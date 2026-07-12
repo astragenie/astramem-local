@@ -1,7 +1,16 @@
-# FEAT-453: Fact-Level Bitemporal Tracking — Design Spike
+# FEAT-453: Fact-Level Valid-Time Tracking on Entity Links — Design Spike
+
+> **Title corrected 2026-07-12** (originally "Fact-Level Bitemporal Tracking"). What this FEAT
+> designs, and what shipped in v0.12.0, is **valid-time tracking only** — there is no queryable
+> transaction-time axis anywhere in this system ("what did we believe before a correction"). A
+> genuine bitemporal model needs both axes; this repo has one. That is a real, useful feature —
+> it is just not the feature the original title named. Operator decision (2026-07-12): correct
+> the label, do not build the missing transaction-time axis (no evidence of demand for it). Full
+> reasoning in §9 (status correction) and §10 Q2 (the terminology gap and the decision).
 
 **Status:** proposed
 **Date:** 2026-07-09
+**Terminology:** valid-time only (label corrected 2026-07-12 — see note above and §10 Q2)
 **Origin:** `.claude/artifacts/loop/backlog/triaged/FEAT-453.md` (architecture-corrected 2026-07-09 —
 no `atoms` table, `entities` is a global dedup registry, migration target is `memory_entities`,
 migration number is **023** — 022 is taken by `022-consolidation-proposal-metadata.sql`, shipped
@@ -9,7 +18,7 @@ v0.11.0).
 
 ## 0. Framing
 
-Memory-level bitemporal already ships: `memories.valid_from`/`valid_to`
+Memory-level valid-time tracking already ships: `memories.valid_from`/`valid_to`
 (`migrations/006-atom-v3.sql:20-21`), `validityFilterClause` (`src/search/search.ts:190-208`),
 `preset=temporal` (`src/search/presets.ts`), and the window is already on the atom@2 wire
 (`contracts/schemas/atom.v2.schema.json:83-92`). This FEAT adds one level finer: a single memory
@@ -511,3 +520,231 @@ the embed-dim preflight run, *then* neither reports any change — `memories_vec
   invariant on `linkWithValidity`'s caller, not a DB constraint, consistent with how the rest of
   this repo's bitemporal windows (`memories.valid_from`/`valid_to`) are enforced by lifecycle-op
   code rather than a `CHECK`.
+
+---
+
+## 9. Status correction (2026-07-12)
+
+**SLICE-1 (this document) and SLICE-2 (local) are DONE and shipped — not pending.** The backlog
+file (`.claude/artifacts/loop/backlog/triaged/FEAT-453.md`) is stale: it still reads
+`status: triaged`, `slices: []`, and carries the `needs_contract` framing as if no design existed.
+The actual history:
+
+| Commit | What |
+|---|---|
+| `051a1c0` | This design doc committed (SLICE-1) |
+| `40d166e` | SLICE-2 implementation (migration 023, `EntityRepo.linkWithValidity`/`closeAndRelink`/`memoryIdsForEntitiesAsOf`, `search.ts` composition, distill prompt hints, contract relax + fixtures) |
+| `9032dad` | Review artifact committed — `.claude/artifacts/crew/reviews/20260710T065902-review-result-feat-453-s2.md`, verdict **PASS** |
+| `11348dd` | Merged to main |
+| `b5f1cee` | **Released in v0.12.0** — CHANGELOG.md "Added" section, "Fact-level bitemporal validity on entity links (FEAT-453 slice 2)" |
+
+Verified directly against the current main-checkout working tree (not just the review artifact's
+claims): `src/storage/entities.ts` has `linkWithValidity`/`closeAndRelink`/`memoryIdsForEntitiesAsOf`
+exactly as designed; `src/search/search.ts:377-385` wires the entity+`as_of` composition point
+(§3.3) exactly as designed, with `validityFilterClause` (§3.2's point A) applied independently and
+unchanged at `search.ts:462`. `SCHEMA_VERSION` is at 25 (migrations through
+`025-purge-batches.sql`), i.e. two full migrations have shipped *after* 023 with no incident.
+
+**Only SLICE-3 (cloud EF Core mirror) remains**, and it has not been started: a read-only sweep of
+the sibling `memory` repo (`C:\work\mega\memory`) found no EF migration, `MemoryEntities` DbSet
+change, or retrieval-path clip touching this feature outside unrelated sibling-agent worktrees
+under `memory/.claude/worktrees/` (different in-flight work, not this FEAT).
+
+**Action needed (not performed here — out of this task's read-only-on-source scope, and backlog
+bookkeeping isn't source/schema, but it's still not this task's assigned deliverable):** update
+`.claude/artifacts/loop/backlog/triaged/FEAT-453.md` frontmatter to drop `needs_contract`, set
+`slices: [FEAT-453-SLICE-1, FEAT-453-SLICE-2]` (done) with only `FEAT-453-SLICE-3` remaining, and
+consider whether the FEAT file should move to an "in-progress"/partial bucket rather than sit in
+`triaged/` unchanged. Flagging this to the lead rather than editing loop backlog state as part of a
+design-only task.
+
+## 10. Answers to the five open questions (2026-07-12 review)
+
+These were posed as "must not be hand-waved" before any further slice work. All five are already
+resolved by §0–§4 above; this section makes each answer explicit and citable in one place, plus one
+genuine gap (Q2) that needs a human call.
+
+**Q1 — Grain: fact/atom or memory?**
+Neither, precisely — it's **the memory-to-entity link** (`memory_entities`), a third grain between
+"whole memory" and "global entity." Confirmed against schema: `entities` (migration 012) is a
+deduplicated *global* registry — one row per canonical name across the entire corpus — so a
+validity window cannot live there (which entity would it belong to; Alice-in-general has no single
+window). `memories` already has its own memory-level `valid_from`/`valid_to` (migration 006) and
+that is untouched. The correct — and only structurally possible — home for "this specific mention
+of Alice, in this specific memory, was true Jan–Mar" is the junction row. This does mean existing
+memory-level `as_of` queries are **completely unaffected** unless a caller also supplies
+`filters.entity` (§3.2 vs §3.3) — a plain `as_of` query never touches `memory_entities` at all.
+
+**Q2 — Bitemporal semantics: which axis, and is the FEAT title accurate? [HUMAN CALL — see below]**
+Precise answer: **this ships valid-time only, on both grains.** `memories.valid_from`/`valid_to`
+and the new `memory_entities.valid_at`/`invalid_at` both model *when the fact was/is true in the
+world* — the valid-time axis. Neither table has a queryable *transaction-time* axis (when the
+system learned or recorded that fact) that a caller can pin with something like `as_of_transaction`
+— `memories.created_at`/`memory_events.created_at` are ingest bookkeeping timestamps, not a second
+indexed dimension you can slice retrieval on ("what did we believe was true, as of last Tuesday,
+even though we've since corrected it"). That capability is what full bitemporal modeling adds over
+valid-time-only modeling, and it does not exist today at either grain.
+
+**This is a genuine terminology gap in the FEAT, not a new one this design doc introduced** — the
+FEAT title and Graphiti comparison both say "bitemporal" while describing (and now shipping) a
+valid-time-only model. It is a defensible, deliberate scope cut (Graphits's own `valid_at`/
+`invalid_at`/`expired_at` on `edges.py:271-282` is also valid-time-only, per the FEAT's own cited
+evidence — "bitemporal" in the competitor-gap research report is describing the *category* of
+temporal-fact tracking loosely, not asserting Graphiti itself does two-axis modeling), but nobody
+made that scope cut explicit before SLICE-2 shipped. **Human decision needed:** (a) accept that
+FEAT-453 is closed-as-shipped under valid-time-only semantics and rename/reframe the FEAT
+title/CHANGELOG language to stop saying "bitemporal" unqualified (or add a one-line clarifying
+footnote), **or** (b) file a distinct new FEAT for true transaction-time tracking (a genuinely
+different, larger feature — it would need an append-only fact-version log, not a mutable window
+column, since transaction-time is inherently insert-only/immutable) if there's real customer
+demand for "what did we used to believe" queries. Recommend (a) — no evidence in the competitor
+research or the FEAT's own customer-impact score (0.4) suggests transaction-time queries are asked
+for; ship the valid-time win, rename the label.
+
+**Resolved 2026-07-12 (operator decision):** Option (a) accepted. The label is corrected wherever
+this repo describes its own capability (this document's title, above; the competitor-gap-analysis
+report; this ADR's own amendment) — no transaction-time axis will be built absent concrete demand.
+Historical CHANGELOG entries are left unedited (they record what was said at release time); a
+clarifying note there is a separate call for the maintainer, not made by this pass.
+
+**Q3 — Invalidation/supersession vs fact-level `invalid_at`: two overlapping mechanisms?**
+Yes, there are now two independent triggers that can close a fact-link window — but they don't
+need unifying because they compose cleanly via one rule, already implemented: **narrower wins,
+computed at query time** (§3.1's `MAX`/`MIN` clip). Concretely:
+- `supersede()` still hard-`DELETE`s all of a memory's `memory_entities` rows (pre-existing AC-3
+  cascade, unchanged) — the strongest possible clip, so a superseded memory's fact links simply
+  don't exist to be queried.
+- `invalidate()` sets the *memory's* `valid_to` but does **not** touch `memory_entities` rows at
+  all (no new cascade was added, and AC-7 proves none is needed) — the effective-window formula's
+  `MIN(..., m.valid_to)` term closes the gap by capping every fact link at the memory's own
+  invalidation instant, without `invalidate()` ever needing to know `memory_entities` exists.
+- An explicit fact-level `invalid_at` (set via distill extraction or a future correction call)
+  closes a *narrower* window than the memory's own lifecycle state — "this specific fact stopped
+  being true before the whole memory did."
+No new unification code is needed; the two mechanisms already resolve to a single answer (the
+tighter bound) by construction, not by special-casing which one "wins." This is fully covered by
+AC-7 with a passing test.
+
+**Q4 — Retrieval blast radius: does search/fuse filter on validity by default?**
+No — and this is the load-bearing design choice that keeps the blast radius small. Memory
+**selection** (which memories are candidates at all) is governed exclusively by the pre-existing
+`validityFilterClause(as_of)` against `memories.valid_from`/`valid_to`, completely unchanged by this
+FEAT. Fact-level validity only enters selection when a caller supplies **both** `filters.entity`
+*and* `filters.as_of` together (§3.3) — the one new code path
+(`memoryIdsForEntitiesAsOf`), gated behind an explicit `if (filters.entity !== undefined)` branch
+that was already there pre-FEAT-453 for the untimed case. A plain `as_of`-only query, or any query
+with no `as_of` at all, takes exactly the pre-FEAT-453 code path with zero behavioral change — this
+was verified against the live `search.ts` diff, not just asserted. Default `as_of` semantics for a
+query with no explicit time are also unchanged: `filters.as_of === undefined` → `valid_to IS NULL`
+(current-snapshot), same as before this FEAT existed.
+
+**Q5 — Backfill: what does NULL mean for pre-existing rows?**
+Neither of the two options posed ("always valid" / "unknown") — it's a third, more precise choice:
+**"defers to the parent memory's own window."** Migration 023 leaves every pre-existing
+`memory_entities` row at `valid_at=NULL, invalid_at=NULL` (no backfill UPDATE, deliberately — §7
+"Non-goals"). At query time, `memoryIdsForEntitiesAsOf`'s clip (§3.1) treats `NULL` as
+`COALESCE(me.valid_at, m.valid_from)` / `COALESCE(me.invalid_at, +inf)` — i.e. a link with no
+stated fact-level opinion inherits exactly its parent memory's own valid-time window, no wider and
+no narrower. This is neither "always valid regardless of the memory's state" (which would ignore
+`m.valid_to` entirely) nor "unknown therefore excluded" (which would need a sentinel/exclusion
+rule the design doesn't have) — it propagates the one temporal fact the system already has an
+opinion about (the memory's own window) down to every link that hasn't stated a finer one. Same
+answer applies uniformly to pre-existing corpus rows and to newly-distilled rows where extraction
+found no date in the source text (§4, AC-5).
+
+## 11. SLICE-3 contract: cloud EF Core mirror (the actual remaining gap)
+
+Everything above is retrospective (confirming already-shipped local design). This section is the
+one piece of net-new design content this pass adds — SLICE-3 has no code yet, on either side.
+Written from this repo's contract-facing surface only; final column/type decisions belong to
+whoever picks up SLICE-3 with the `memory` repo open, but the shape below should not need
+revisiting.
+
+### 11.1 EF Core migration shape (mirrors §1.2, Postgres has no rebuild constraint)
+
+Postgres supports adding a surrogate PK to an existing table and dropping a composite PK/unique
+constraint via a normal `ALTER TABLE` — none of SQLite's copy-swap rebuild is needed. Target: a
+`MemoryEntities` table/entity mirroring local's `memory_entities` post-023 shape:
+
+```
+Id           uuid        PK (was implicitly the composite natural key before, if cloud already had
+                          a memory_entities equivalent — confirm against cloud's actual current
+                          schema before assuming this table exists there at all; this design doc
+                          only has authority over the local side, per this FEAT's own cross-product
+                          scope note)
+MemoryId     uuid        FK -> Memories(Id), cascade delete (mirrors local's ON DELETE CASCADE)
+EntityId     uuid        FK -> Entities(Id), cascade delete
+ValidAt      timestamptz NULL
+InvalidAt    timestamptz NULL
+```
+
+Partial unique index equivalent to §1.4: Postgres supports partial unique indexes natively —
+`CREATE UNIQUE INDEX ... ON "MemoryEntities" ("MemoryId", "EntityId") WHERE "InvalidAt" IS NULL`,
+expressed via EF Core's `HasFilter()` on a `HasIndex(...).IsUnique()` fluent call. This is a
+**plain additive migration** on the cloud side (add table or add two nullable columns + one
+partial index) — no rebuild, no data hazard, matching the FEAT triage's technical-risk banding
+("additive/nullable... keeping it below the 0.9+ contract-break band").
+
+### 11.2 Retrieval query mirror (EF Core / LINQ shape of §3.1's clip)
+
+The `+inf` sentinel trick (§3.1's `9223372036854775807` epoch-ms literal) is a SQLite-ism worth
+replacing on the Postgres side with `InvalidAt == null || InvalidAt > asOf` predicates directly —
+Postgres/LINQ has no need for a sentinel since `NULL`-aware comparisons compose naturally in EF
+Core's translated SQL (`COALESCE` isn't required to express "null means open-ended" in a boolean
+predicate the way SQLite's `MIN`/`MAX`-based clip needed it for a single comparable value). Target
+shape:
+
+```csharp
+var effectiveStart = me.ValidAt ?? m.ValidFrom;
+var effectiveEnd = me.InvalidAt; // null = open
+bool covers = effectiveStart <= asOf && (effectiveEnd == null || effectiveEnd > asOf)
+              && m.ValidFrom <= asOf && (m.ValidTo == null || m.ValidTo > asOf);
+```
+
+i.e. the same two-part rule as §3.3 ("both hold: (i) memory-level filter independently passes, (ii)
+fact-link effective window covers `T`"), not a literal port of the SQLite `MAX`/`MIN`-with-sentinel
+expression, which is an implementation detail of SQLite's lack of nullable-aware comparison
+operators in that particular clause shape.
+
+### 11.3 Shipper wiring — hard-gated, not just soft-sequenced
+
+§2.4 already established the local shipper does not populate these fields on the wire yet
+(`toAtomWireV1` unconditionally emits `entities: []`, independent of this FEAT). SLICE-3's shipper
+work is therefore **cloud pulling the relaxed atom@2 contract first** (a routine version-pin bump
+per `contracts/README.md`'s existing pinned-artifact/subtree process — no new contract work), and
+only *then* does populating `valid_at`/`invalid_at` on outgoing sync payloads become a live wire
+path. Sequence, precisely:
+1. Cloud EF migration lands (11.1) — schema exists, but has zero non-null rows since nothing
+   writes to it yet.
+2. Cloud pulls relaxed `atom.v2.schema.json` (contracts `2.1.0`, already shipped locally).
+3. Cloud retrieval path (11.2) goes live — reads default to NULL/inherits-parent behavior
+   identically to local's own fallback (§10 Q5), so this is safe to deploy before step 4.
+4. **Separate, later** follow-up (not part of SLICE-3 as scoped by the FEAT body): local's own
+   `toAtomWireV1` atom@2 writer cutover (already a known independent piece of unshipped work per
+   §2.4) starts actually emitting real `valid_at`/`invalid_at` values on the wire. Until that
+   cutover lands, SLICE-3's cloud schema/query support ships and sits ready with no observable data
+   flowing into it — this is intentional, not a partial/broken state.
+
+### 11.4 SLICE-3 human decisions
+
+- **Confirm cloud's current `memory_entities`-equivalent shape** before writing the EF migration —
+  this design doc has no authority over what the `memory` repo's schema actually looks like today;
+  §11.1's column list assumes a structural mirror of local's post-023 shape but that assumption
+  needs a human (or a `crew:architect-feature` pass scoped to the `memory` repo) to verify against
+  live cloud EF model state before implementation starts.
+- **Resolve Q2 (§10)** before or alongside SLICE-3 — if the human call there is "rename away from
+  'bitemporal'," that relabeling should happen in the same pass as SLICE-3's cloud-side
+  documentation/ADR language, not drift into a third round of terminology cleanup later.
+
+## 12. Slice decomposition (corrected)
+
+| Slice | Status | Scope | Owner mode |
+|---|---|---|---|
+| SLICE-1 | **DONE** (this document, commit `051a1c0`) | Design spike | n/a |
+| SLICE-2 | **DONE, shipped v0.12.0** (commit `40d166e`, review PASS `9032dad`, merged `11348dd`) | Local: migration 023, contract relax, `EntityRepo` surface, `search.ts` composition, distill hints | n/a |
+| SLICE-3 | **Not started** | Cloud: EF Core migration mirror (§11.1) + retrieval query (§11.2) + shipper (§11.3, hard-gated on the separate atom@2-writer cutover) | **CROSS-REPO, NOT AUTONOMOUS** — needs the sibling `memory` repo open and human coordination on schema-shape confirmation (§11.4) |
+
+No further local-only slice work remains under FEAT-453. The FEAT is not eligible for
+`/runner:wave` autonomous dispatch as currently scoped (SLICE-3 is the only open item and it's
+explicitly non-autonomous) — it needs a human-initiated cross-repo session against `memory`, per
+the wave-plan handoff's own framing.
