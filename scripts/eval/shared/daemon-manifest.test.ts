@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type AddressInfo } from 'node:net';
 import {
-  daemonManifestPath, writeDaemonManifest, readDaemonManifest, killManifestDaemons,
+  daemonManifestPath, writeDaemonManifest, readDaemonManifest, killManifestDaemons, checkPortOwner,
   type DaemonManifestEntry,
 } from './daemon-manifest.js';
 
@@ -39,6 +39,37 @@ function spawnPortOwner(dir: string, tag: string, port: number): ChildProcess {
     '--port', String(port),
   ], { stdio: 'ignore' });
 }
+
+// FEAT-475: the fixed "let the port actually bind" sleep this replaces was
+// tuned for an idle box (300ms). Reproduced directly under concurrent
+// parallel suite/agent load (4 concurrent full-suite-equivalent processes,
+// 20-core box): real spawn-to-bound-port latency for this exact fixture
+// measured p50=1558ms p90=2835ms p99=2885ms (n=20, timed via the fixture's
+// own heartbeat file, which per its own header only starts writing once the
+// TCP listen() callback fires -- i.e. once the port is CONFIRMED bound).
+// A fixed sleep can't track that variance; poll checkPortOwner (the same
+// identity check killManifestDaemons uses) until it actually reports the
+// port as owned by the expected pid, so the test proceeds exactly when the
+// real precondition is true instead of gambling on a guessed delay.
+async function waitForPortBoundBy(port: number, expectedPid: number | undefined, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    const check = checkPortOwner(port);
+    if (check.ok && check.pid === expectedPid) return;
+    if (Date.now() >= deadline) {
+      throw new Error(`port ${port} was not confirmed bound by pid ${expectedPid} within ${timeoutMs}ms`);
+    }
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+}
+
+// FEAT-475: these tests do a real spawn + (poll-verified, up to 10s) bind
+// wait, then a real killManifestDaemons call whose internal netstat/lsof
+// identity check now has its own 15_000ms budget (daemon-manifest.ts,
+// PORT_OWNER_CHECK_TIMEOUT_MS) -- the outer per-test vitest timeout has to
+// comfortably exceed the sum of those, not just the old un-widened 10_000ms
+// default this replaces.
+const IDENTITY_CHECK_TIMEOUT_MS = 30_000;
 
 describe('daemon-manifest (FEAT-462 slice B, AC-3)', () => {
   let dir: string;
@@ -95,7 +126,7 @@ describe('daemon-manifest (FEAT-462 slice B, AC-3)', () => {
       // is a scoped kill, not a sweep.
       const bystander = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
       spawned.push(victim, bystander);
-      await new Promise(resolve => setTimeout(resolve, 300)); // let the port actually bind
+      await waitForPortBoundBy(victimPort, victim.pid);
 
       writeDaemonManifest(dir, [{ shard: 0, label: 'shard-0', pid: victim.pid, port: victimPort, datadir: 'x' }]);
       const manifest = readDaemonManifest(dir)!;
@@ -117,7 +148,7 @@ describe('daemon-manifest (FEAT-462 slice B, AC-3)', () => {
 
       expect(bystander.exitCode).toBeNull();
       expect(bystander.signalCode).toBeNull();
-    }, 10_000);
+    }, IDENTITY_CHECK_TIMEOUT_MS);
 
     it('(b) a pid whose port is not listening -> already-dead, with NO signal ever attempted', async () => {
       // A pid that is provably real and provably not listening on the
@@ -143,7 +174,7 @@ describe('daemon-manifest (FEAT-462 slice B, AC-3)', () => {
       expect(result.skipped).toEqual([]);
       expect(result.outcomes[0]).toMatchObject({ action: 'already-dead', pid: victim.pid, port: deadPort });
       expect(result.outcomes[0]!.detail).toMatch(/not listening/);
-    }, 10_000);
+    }, IDENTITY_CHECK_TIMEOUT_MS);
 
     it('(c) identity mismatch: port owned by a DIFFERENT live process than the manifest pid -> skipped-identity-mismatch, BOTH processes survive', async () => {
       const port = await getFreePort();
@@ -154,7 +185,7 @@ describe('daemon-manifest (FEAT-462 slice B, AC-3)', () => {
       // at something that is NOT the daemon on that port.
       const innocentBystander = spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
       spawned.push(portOwner, innocentBystander);
-      await new Promise(resolve => setTimeout(resolve, 300)); // let the port actually bind
+      await waitForPortBoundBy(port, portOwner.pid);
 
       writeDaemonManifest(dir, [{ shard: 0, label: 'shard-0', pid: innocentBystander.pid, port, datadir: 'x' }]);
       const manifest = readDaemonManifest(dir)!;
@@ -175,6 +206,6 @@ describe('daemon-manifest (FEAT-462 slice B, AC-3)', () => {
       expect(portOwner.signalCode).toBeNull();
       expect(innocentBystander.exitCode).toBeNull();
       expect(innocentBystander.signalCode).toBeNull();
-    }, 10_000);
+    }, IDENTITY_CHECK_TIMEOUT_MS);
   });
 });
