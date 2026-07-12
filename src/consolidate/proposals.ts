@@ -99,14 +99,52 @@ export class ProposalRepo {
    * pass it only from the autonomous-consolidation auto-accept path;
    * omitted (the human-accept path — REST/CLI/MCP), the resulting
    * supersede event carries no `auto_accepted` marker, exactly as before.
+   *
+   * `opts.bulkAccepted` (FEAT-437 residual) marks the resulting supersede
+   * event as resolved via the bulk `consolidate accept --all` CLI path
+   * rather than a single manual accept — see {@link markBulkAccepted} for
+   * why this is a separate, additive mechanism from `provenance`.
    */
-  accept(id: string, provenance?: SupersedeProvenance): ConsolidationProposal {
+  accept(id: string, provenance?: SupersedeProvenance, opts?: { bulkAccepted?: boolean }): ConsolidationProposal {
     const tx = this.db.transaction((): ConsolidationProposal => {
       const p = this.mustBePending(id);
       mergeAsSupersede(this.db, p.winner_id, p.loser_id, provenance);
+      if (opts?.bulkAccepted) this.markBulkAccepted(p.loser_id);
       return this.resolve(p.id, 'accepted');
     });
     return tx();
+  }
+
+  /**
+   * FEAT-437 residual: patch a `bulk_accepted: true` marker onto the
+   * `supersede` event `mergeAsSupersede` just appended for `loserId`, inside
+   * the SAME transaction `accept()` wraps this call in. Deliberately does
+   * NOT go through `MemoryEventRepo.supersede()`'s `provenance` param — that
+   * type (`SupersedeProvenance`) and the payload fields it produces are
+   * owned by src/storage/memory-events.ts (off-limits for this change, per
+   * dispatch — another agent may be mid-edit there) and hardcode the
+   * `auto_accepted`/`threshold`/`similarity` shape for FEAT-442's case
+   * specifically. Patching the row here is observationally identical to
+   * having constructed the payload with the marker before the row was ever
+   * committed: no other connection can see the two-statement window
+   * (better-sqlite3 transactions are synchronous/exclusive on one
+   * connection), and no existing event consumer's semantics change —
+   * `auto_accepted` and `bulk_accepted` are independent optional flags on
+   * the same `supersede` payload, so a proposal resolved via `--all` is
+   * distinguishable from both a lone manual accept (neither flag) and an
+   * autonomous auto-accept (`auto_accepted` only).
+   */
+  private markBulkAccepted(loserId: string): void {
+    const row = this.db.prepare(`
+      SELECT seq, payload_json FROM memory_events
+      WHERE atom_id = ? AND event_type = 'supersede'
+      ORDER BY seq DESC LIMIT 1
+    `).get(loserId) as { seq: number; payload_json: string | null } | undefined;
+    if (!row) return; // defensive — mergeAsSupersede always appends exactly one of these first
+    const payload = row.payload_json ? (JSON.parse(row.payload_json) as Record<string, unknown>) : {};
+    payload.bulk_accepted = true;
+    this.db.prepare('UPDATE memory_events SET payload_json = ? WHERE seq = ?')
+      .run(JSON.stringify(payload), row.seq);
   }
 
   /** Reject: mark rejected, nothing else changes. */

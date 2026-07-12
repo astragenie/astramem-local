@@ -120,7 +120,13 @@ export async function consolidateCommand(args: string[]): Promise<void> {
       const skipped: Array<{ id: string; reason: string }> = [];
       for (const id of ids) {
         try {
-          await api(`/consolidation/proposals/${id}/accept`, { method: 'POST' });
+          // `all` (--all) marks each accept as bulk-resolved so memory_events
+          // can distinguish it from a single manual accept — see
+          // ProposalRepo.accept's `opts.bulkAccepted` (FEAT-437 residual).
+          await api(`/consolidation/proposals/${id}/accept`, {
+            method: 'POST',
+            body: JSON.stringify(all ? { bulk: true } : {}),
+          });
           accepted++;
         } catch (err) {
           // 409s are expected when an atom was merged/erased since the
