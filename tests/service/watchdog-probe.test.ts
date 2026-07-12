@@ -96,9 +96,31 @@ describe('runWatchdogProbe', () => {
     expect(adapter.start).toHaveBeenCalledOnce();
   });
 
-  it('reports restart-failed (never throws) when adapter.start() itself fails', async () => {
+  it('reports restart-failed and does NOT call adapter.start() when stopLockHolder fails to stop the hung process', async () => {
+    // stopLockHolder never throws on failure (instance-lock.ts) — it returns
+    // ok:false when the SIGTERM'd PID is still serving after its wait budget
+    // (e.g. the daemon's own event loop is too wedged to process the
+    // signal). Regression coverage for a real bug caught in review: the
+    // probe used to ignore stopResult.ok entirely and unconditionally call
+    // adapter.start(), which on systemd is a silent no-op against an
+    // already-"active" unit — reporting a false 'restarted' while the daemon
+    // stayed hung.
     const fetchImpl = vi.fn(async () => { throw new Error('timeout'); }) as unknown as typeof fetch;
     const stopLockHolderImpl = vi.fn(async () => ({ ok: false, detail: 'pid 42 still serving after 5000ms' }));
+    const adapter = makePlainAdapter();
+
+    const result = await runWatchdogProbe({ port, dataDir, adapter, fetchImpl, stopLockHolderImpl });
+
+    expect(result.healthy).toBe(false);
+    expect(result.action).toBe('restart-failed');
+    expect(result.detail).toContain('pid 42 still serving after 5000ms');
+    expect(result.detail).toContain('NOT restarted');
+    expect(adapter.start).not.toHaveBeenCalled();
+  });
+
+  it('reports restart-failed (never throws) when adapter.start() itself fails after a successful stop', async () => {
+    const fetchImpl = vi.fn(async () => { throw new Error('timeout'); }) as unknown as typeof fetch;
+    const stopLockHolderImpl = vi.fn(async () => ({ ok: true, detail: 'stopped pid 42' }));
     const adapter = makePlainAdapter({
       start: vi.fn(async () => { throw new Error('systemctl start failed: unit not found'); }),
     });
@@ -108,6 +130,7 @@ describe('runWatchdogProbe', () => {
     expect(result.healthy).toBe(false);
     expect(result.action).toBe('restart-failed');
     expect(result.detail).toContain('systemctl start failed');
+    expect(adapter.start).toHaveBeenCalledOnce();
   });
 
   it('respects a custom timeoutMs and passes it to fetchImpl as an AbortSignal', async () => {

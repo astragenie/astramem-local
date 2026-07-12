@@ -116,6 +116,22 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
 
   try {
     const stopResult = await stopLockHolderFn(opts.dataDir, opts.port);
+    if (!stopResult.ok) {
+      // stopLockHolder never throws on failure (see instance-lock.ts) — it
+      // reports ok:false when the SIGTERM'd PID is still serving after its
+      // wait budget, exactly the "event loop too wedged to process the
+      // signal" case this probe exists to catch. Do NOT call adapter.start()
+      // here: on systemd that's a no-op against an already-"active" unit,
+      // and on launchd there's no guarantee kickstart -k reaches an orphaned
+      // spawnSync grandchild either — either way, claiming 'restarted' would
+      // be a false-positive recovery signal from the one thing whose whole
+      // job is honest hang reporting. Leave it for the next probe cycle.
+      return {
+        healthy: false,
+        action: 'restart-failed',
+        detail: `hang detected (/health unresponsive within ${timeoutMs}ms) but could not stop the hung process: ${stopResult.detail} — daemon likely still wedged, NOT restarted`,
+      };
+    }
     await opts.adapter.start();
     return {
       healthy: false,
