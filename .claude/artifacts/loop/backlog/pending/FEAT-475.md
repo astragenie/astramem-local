@@ -35,3 +35,10 @@ suite runs / builder agents active.
 - FEAT-471's fix (tests/scripts/post-merge-rebuild.test.ts +
   tests/service/release.test.ts) is merged and holding — do not re-touch
   those files.
+
+### Update 2026-07-12 (later)
+
+Third reviewer full-suite run flaked a DIFFERENT pair: tests/backup/
+snapshot.test.ts + tests/cli/capture-claude.test.ts. Flake is spread across
+4+ files under load, not just the eval detach family — widen root-cause scope
+accordingly.
