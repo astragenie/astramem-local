@@ -36,8 +36,8 @@ import { SCHEMA_VERSION } from '../server/lib/wire-meta.js';
 import { getOrCreateKey, readBearer, getBearerIdentity, readSyncToken, getSyncTokenIdentity } from '../storage/keystore.js';
 import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
 import { readSyncSettings } from '../config/sync-settings.js';
-import { usefulnessRate, usefulnessByType } from '../storage/usefulness.js';
-import { buildMemoryHealthFull } from '../server/queries/memory-health.js';
+import { usefulnessRate, usefulnessByType, feedbackLoopSummary } from '../storage/usefulness.js';
+import { buildMemoryHealthFull, buildMemoryHealthCheap } from '../server/queries/memory-health.js';
 import type { DB } from '../storage/db.js';
 import type { DurabilityGateMode } from '../distill/durability-gate.js';
 
@@ -393,6 +393,18 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled:
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+/**
+ * Floor used by both the "Auto-capture" and "Usefulness feedback loop"
+ * canaries below to distinguish "brand-new install, nothing has happened
+ * yet" (silent) from "this daemon has seen real activity, and the wired
+ * mechanism still never fired" (WARN). 20 is deliberately low enough that a
+ * few days of normal use crosses it, but high enough that a fresh `init` on
+ * day one never trips either check — both bugs this floor exists to catch
+ * (2026-07-12: auto-capture hook, usefulness feedback loop) are "built,
+ * wired, never invoked" bugs that only a live, non-trivial store can reveal.
+ */
+const MEANINGFUL_USAGE_THRESHOLD = 20;
+
 function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: boolean): Check {
   return {
     name: 'Secret redaction',
@@ -458,6 +470,89 @@ function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
       } catch (err) {
         // Informational check — never fail doctor over a metric query error.
         return { ok: true, message: `Recall usefulness check error (non-fatal): ${err}` };
+      }
+    },
+  };
+}
+
+// ─── Check: Usefulness feedback loop canary (2026-07-12 "never fired") ──────
+
+/**
+ * WARNs when the ADR-010 usefulness feedback loop has demonstrably NEVER
+ * fired despite meaningful daemon activity — the bug found live in
+ * production 2026-07-12: GET /profile returned 30 entries, every single one
+ * pinned at the Laplace prior 0.5 (0 recall_used, 0 memory_corrected events,
+ * ever). The mechanism itself is sound (see tests/e2e/usefulness-feedback-
+ * loop.e2e.test.ts — submit_feedback/mark_memory_used, invalidate_memory/
+ * supersede_memory, and usefulnessScores() all work correctly when actually
+ * invoked); this check exists because CI cannot catch "wired but nobody
+ * calls it" — only live usage data can, and only doctor sees live usage data.
+ *
+ * Reads ALL-TIME totals (feedbackLoopSummary — no sinceMs window), because
+ * "has this ever happened even once" is a different question than "what's
+ * the 7d rate" (that's checkUsefulness above, which stays purely
+ * informational). Gated on the same MEANINGFUL_USAGE_THRESHOLD (20) floor
+ * checkAutoCapture uses, applied to BOTH active memory count AND distinct
+ * atoms actually served from a recall/search surface — a brand-new install,
+ * or one whose owner has never recalled anything yet, legitimately has zero
+ * feedback and must not warn.
+ *
+ * Uses buildMemoryHealthCheap() (not ...Full()) — this check only ever reads
+ * report.activeCount, and the cheap tier already returns that via an
+ * index-backed COUNT(*) (countActiveAndArchived). The full tier's extra
+ * byType/byScope group-bys and staleness distribution are O(N) scans this
+ * check never uses; checkMemoryHealth right above already pays that cost
+ * once per doctor run for its own reporting, so calling ...Full() here would
+ * be a second, redundant full-tier computation for one integer.
+ */
+function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean): Check {
+  return {
+    name: 'Usefulness feedback loop',
+    async run(): Promise<CheckResult> {
+      try {
+        const dbPath = join(dataDir, 'memory.sqlite');
+        if (!existsSync(dbPath)) {
+          return { ok: true, message: 'usefulness feedback loop: no DB yet' };
+        }
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const report = buildMemoryHealthCheap(db);
+        const summary = feedbackLoopSummary(db);
+        db.close();
+
+        const hasSignal = summary.usedDistinct > 0 || summary.correctedDistinct > 0;
+        const meaningfulUsage =
+          report.activeCount >= MEANINGFUL_USAGE_THRESHOLD &&
+          summary.servedDistinct >= MEANINGFUL_USAGE_THRESHOLD;
+
+        if (meaningfulUsage && !hasSignal) {
+          return {
+            ok: false,
+            message:
+              `usefulness feedback loop has NEVER fired: ${report.activeCount} active memories, ` +
+              `${summary.servedDistinct} distinct atoms served from recall/search, 0 marked used and 0 ` +
+              `corrected — every score is still pinned at the neutral 0.5 prior (2026-07-12 "built, wired, ` +
+              `never invoked" bug class). Ranking is not adapting to anything.`,
+            fix: 'Confirm something in the real usage path actually calls submit_feedback/mark_memory_used for positive signal, and invalidate_memory/supersede_memory for corrections — today nothing does (ADR-010 v1 shipped the mechanism only).',
+          };
+        }
+
+        if (!meaningfulUsage) {
+          return {
+            ok: true,
+            message:
+              `usefulness feedback loop: not enough activity yet to judge (${report.activeCount} active ` +
+              `memories, ${summary.servedDistinct} served) — below the ${MEANINGFUL_USAGE_THRESHOLD}/${MEANINGFUL_USAGE_THRESHOLD} floor`,
+          };
+        }
+
+        return {
+          ok: true,
+          message: `usefulness feedback loop: active (${summary.usedDistinct} used, ${summary.correctedDistinct} corrected, distinct atoms, all-time)`,
+        };
+      } catch (err) {
+        // Informational failure mode — never fail doctor over a metric query
+        // error, consistent with the other read-only DB checks above.
+        return { ok: true, message: `usefulness feedback loop check error (non-fatal): ${err}` };
       }
     },
   };
@@ -996,14 +1091,21 @@ function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
 // ─── Check: Auto-capture (FEAT-455 / ADR-012 decision 4) ─────────────────────
 
 /**
- * WARN-visibility row for the hook-tap auto-capture trigger. `ok: true` in
- * BOTH states — unlike `checkServicePointer`'s dev-pinned row (an always-
- * unintended misconfiguration, hence `ok: false`), auto-capture being ON is a
- * deliberate, disclosed, opt-in user choice (ADR-012 decision 4's whole
- * point). `ok: false` here would read as "something is wrong" to a user who
- * turned it on intentionally — the wrong signal. Mirrors
- * `checkDurabilityGateMode`'s informational-row precedent: visibility, not an
- * error state, every `doctor` run.
+ * Visibility row for the hook-tap auto-capture trigger. `ok: true` covers
+ * both "off" (default) and "on, working" — unlike `checkServicePointer`'s
+ * dev-pinned row (an always-unintended misconfiguration, hence `ok: false`),
+ * auto-capture being ON is a deliberate, disclosed, opt-in user choice
+ * (ADR-012 decision 4's whole point), so merely being ON is never itself a
+ * warning. Mirrors `checkDurabilityGateMode`'s informational-row precedent
+ * for that half.
+ *
+ * `ok: false` (WARN) is reserved for one specific, previously-silent failure
+ * mode found live in production 2026-07-12: the hook is turned ON, the
+ * daemon has real content in it (>= MEANINGFUL_USAGE_THRESHOLD active
+ * memories from ANY source), and yet 0 of them ever came through
+ * auto-capture — the trigger is wired but never actually fires. A brand-new
+ * install below that floor stays silent (`ok: true`) so day-one users never
+ * see a false alarm before they've had a chance to accumulate any activity.
  */
 function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encryptionEnabled: boolean): Check {
   return {
@@ -1023,15 +1125,31 @@ function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encrypti
         const row = db
           .prepare(`SELECT COUNT(*) AS count FROM memories WHERE capture_source = 'auto_capture' AND valid_to IS NULL`)
           .get() as { count: number } | undefined;
+        const totalRow = db
+          .prepare(`SELECT COUNT(*) AS count FROM memories WHERE valid_to IS NULL AND archived = 0`)
+          .get() as { count: number } | undefined;
         db.close();
         const count = row?.count ?? 0;
+        const totalActive = totalRow?.count ?? 0;
+
+        if (count === 0 && totalActive >= MEANINGFUL_USAGE_THRESHOLD) {
+          return {
+            ok: false,
+            message:
+              `auto-capture is ON but 0 memories have ever been auto-captured, despite ${totalActive} active ` +
+              `memories already in the store (>= ${MEANINGFUL_USAGE_THRESHOLD} threshold — this daemon has seen ` +
+              `real activity). The hook is likely wired but never firing (2026-07-12 "built, wired, never invoked" bug class).`,
+            fix: 'Verify the capture hook is actually installed and dispatching to this daemon (check the runner-plugin hook config, and daemon logs for incoming /ingest calls tagged capture_source=auto_capture).',
+          };
+        }
+
         return {
           ok: true,
           message: `auto-capture is ON — ${count} auto-captured ${count === 1 ? 'memory' : 'memories'} currently stored`,
         };
       } catch (err) {
-        // Informational check — never fail doctor over a count-query error,
-        // consistent with the other read-only DB checks above.
+        // Informational failure mode — never fail doctor over a count-query
+        // error, consistent with the other read-only DB checks above.
         return { ok: true, message: `auto-capture is ON — count check error (non-fatal): ${err}` };
       }
     },
@@ -1176,6 +1294,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkBearerLocation(),
     checkSyncTokenLocation(),
     checkUsefulness(dataDir, encryptionEnabled),
+    checkUsefulnessFeedbackLoop(dataDir, encryptionEnabled),
     checkMemoryHealth(dataDir, encryptionEnabled),
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),

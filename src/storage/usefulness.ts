@@ -222,6 +222,59 @@ export function perAtomUsefulnessRate7d(db: DB, atomIds: string[], sinceMs: numb
   return rates;
 }
 
+export interface FeedbackLoopSummary {
+  servedDistinct: number;
+  usedDistinct: number;
+  correctedDistinct: number;
+}
+
+/**
+ * All-time (no sinceMs window) distinct-atom summary across all three
+ * usefulness event families. Feeds the doctor "Usefulness feedback loop"
+ * canary (src/doctor/checks.ts), which detects the 2026-07-12 production
+ * bug class: the mechanism (submit_feedback/mark_memory_used,
+ * invalidate_memory/supersede_memory's memory_corrected append,
+ * usefulnessScores() itself) is sound, but nothing in real usage ever calls
+ * it, leaving every atom pinned at the Laplace prior 0.5 forever. Distinct
+ * from usefulnessRate()/usefulnessByType() above, which window to a recency
+ * period for the day-to-day dashboard rate — "has this EVER fired, even
+ * once" is a different question than "what's this week's rate".
+ *
+ * Split into three per-family queries (not one combined CASE/SELECT) so
+ * served/used each ride the migration 019/021/025 partial indexes
+ * (idx_memory_events_usefulness_served/used) exactly like usefulnessRate()
+ * above — filtering `family` inside a SELECT-list CASE instead of the WHERE
+ * clause was the mistake: no index covers a bare `event_type = 'usefulness'`
+ * predicate, so that shape forces a full `SCAN memory_events` (every event
+ * of every type ever logged), reintroducing the exact perf cliff (21ms ->
+ * 1179ms p50, 1k -> 100k rows) migration 019 fixed for usefulnessRate(). No
+ * partial index covers `memory_corrected` (only served/used got one in
+ * 019/021/025) — that query still scans, but correction volume is far below
+ * recall-served volume and this is unbounded/all-time already (see doctor's
+ * canary), so it's accepted unindexed rather than adding a migration for it.
+ */
+export function feedbackLoopSummary(db: DB): FeedbackLoopSummary {
+  const servedDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'recall_served'
+  `).get() as { n: number }).n;
+
+  const usedDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'recall_used'
+  `).get() as { n: number }).n;
+
+  const correctedDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
+  `).get() as { n: number }).n;
+
+  return { servedDistinct, usedDistinct, correctedDistinct };
+}
+
 export interface UsefulnessByType {
   type: string;
   served: number;
