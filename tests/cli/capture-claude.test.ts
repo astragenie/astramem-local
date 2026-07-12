@@ -207,7 +207,12 @@ describe('capture claude --auto-capture (FEAT-455 / ADR-012)', () => {
     expect(envelope.turns).toHaveLength(2);
   });
 
-  it('plain "capture claude" (no --auto-capture flag) never sets capture_source, regardless of config', async () => {
+  // 2026-07-12 doctor-canary provenance fix: the close-capture hook never
+  // passes --auto-capture, so a plain "capture claude" invocation now stamps
+  // 'hook_close' (previously omitted capture_source entirely, which left
+  // every close-capture memory with capture_source=NULL and made the doctor
+  // "Auto-capture" canary permanently WARN once auto-capture was enabled).
+  it('plain "capture claude" (no --auto-capture flag) sets capture_source="hook_close", regardless of config', async () => {
     const dataDir = tempDir('capture-auto-plain-data-');
     const configRoot = tempDir('capture-auto-plain-cfg-');
     withDataDir(dataDir);
@@ -222,7 +227,7 @@ describe('capture claude --auto-capture (FEAT-455 / ADR-012)', () => {
     const files = listSpoolFiles(dataDir);
     expect(files).toHaveLength(1);
     const envelope = JSON.parse(readFileSync(files[0]!.path, 'utf8')) as { capture_source?: string };
-    expect(envelope.capture_source).toBeUndefined();
+    expect(envelope.capture_source).toBe('hook_close');
   });
 
   it('enabled: the relevance gate filters out a too-short turn before spooling', async () => {
@@ -297,6 +302,8 @@ describe('capture auto-capture disable (FEAT-455 / ADR-012 decision 4)', () => {
 
     expect(process.exitCode).toBeUndefined();
     expect(logSpy.mock.calls.some(c => String(c[0]).includes('nothing to purge'))).toBe(true);
+
+    process.exitCode = savedExitCode;
   });
 
   it('--keep declines the purge — auto-captured memories remain valid and queryable', async () => {
@@ -350,7 +357,7 @@ describe('capture auto-capture disable (FEAT-455 / ADR-012 decision 4)', () => {
 
   it('unknown subcommand exits non-zero', async () => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
-    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((() => undefined) as unknown) as (code?: number) => never);
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((() => undefined) as unknown) as typeof process.exit);
 
     await captureCommand(['auto-capture', 'bogus']);
 

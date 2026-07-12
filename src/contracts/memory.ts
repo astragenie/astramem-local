@@ -102,8 +102,10 @@ export interface Memory {
   archived: boolean;
   /** Epoch ms the archive transition happened; null while archived=false. */
   archived_at: number | null;
-  /** FEAT-455 / ADR-012 decision 4: `'auto_capture'` when this atom came
-   *  from the hook-tap auto-capture trigger, `null` for every other write
-   *  path (the vast majority of rows). See InsertInput.capture_source. */
-  capture_source: 'auto_capture' | null;
+  /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12: `'auto_capture'`
+   *  from the hook-tap auto-capture trigger, `'hook_close'` from the
+   *  ordinary astramem-plugin close-capture hook, `null` for every other
+   *  write path (`/remember`, manual hook capture predating FEAT-449, Codex
+   *  capture — the vast majority of rows). See InsertInput.capture_source. */
+  capture_source: 'auto_capture' | 'hook_close' | null;
 }

@@ -46,15 +46,17 @@ export interface EmbedIndexContext {
    */
   capturedAtMs?: number | null;
   /**
-   * FEAT-455 / ADR-012 decision 4: provenance tag carried on the transcripts
-   * row this distill run's atoms were extracted from — `'auto_capture'` when
-   * the source transcript was captured by the hook-tap auto-capture trigger,
-   * `null`/omitted for every other producer (byte-identical default). Passed
-   * straight through to `MemoryRepo.insertWithCreateEvent`'s `capture_source`
-   * so every atom formed from an auto-captured transcript is itself scoped
-   * for the doctor WARN-row count and the disable -> purge query.
+   * FEAT-455 / ADR-012 decision 4, widened 2026-07-12: provenance tag
+   * carried on the transcripts row this distill run's atoms were extracted
+   * from — `'auto_capture'` when captured by the hook-tap auto-capture
+   * trigger, `'hook_close'` when captured by the ordinary close-capture
+   * hook, `null`/omitted for every other producer (byte-identical default).
+   * Passed straight through to `MemoryRepo.insertWithCreateEvent`'s
+   * `capture_source` so every atom formed from a captured transcript is
+   * itself scoped for the doctor "Auto-capture" canary's count query and the
+   * disable -> purge query.
    */
-  captureSource?: 'auto_capture' | null;
+  captureSource?: 'auto_capture' | 'hook_close' | null;
   /**
    * FEAT-441: durability quality gate mode. Undefined/omitted behaves as
    * 'off' — every pre-FEAT-441 caller (and the existing test suite) that

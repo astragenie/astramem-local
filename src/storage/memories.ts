@@ -44,16 +44,21 @@ export interface InsertInput {
    */
   entities?: Array<{ name: string; kind: string; subtype?: 'human' | 'ai' }>;
   /**
-   * FEAT-455 / ADR-012 decision 4: provenance tag distinguishing the new
-   * hook-tap auto-capture trigger from every other write path (manual hook
-   * capture, `/remember`, Codex capture, distill's other producers), which
-   * all omit this field and get `NULL` -- byte-identical to pre-FEAT-455
-   * behavior. `'auto_capture'` is the only value the auto-capture trigger
-   * ever sets; see migrations/024-capture-source.sql and
+   * FEAT-455 / ADR-012 decision 4, widened 2026-07-12 (doctor canary
+   * provenance fix): provenance tag distinguishing capture-hook write paths
+   * from every other write path (`/remember`, Codex capture, distill's other
+   * producers), which all omit this field and get `NULL` -- byte-identical
+   * to pre-FEAT-455 behavior. `'auto_capture'` is set only by the hook-tap
+   * auto-capture trigger; `'hook_close'` is set by the ordinary
+   * astramem-plugin close-capture hook (every `session_end`/`subagent_stop`
+   * capture that does NOT pass `--auto-capture` — the only caller today).
+   * See migrations/024-capture-source.sql and
    * docs/specs/FEAT-455-spike-results.md checklist #4. Drives the doctor
-   * WARN-row count and the disable -> purge scoping query.
+   * "Auto-capture" canary's count query (both values count as real capture
+   * traffic) and the disable -> purge scoping query (`'auto_capture'` ONLY —
+   * `'hook_close'` atoms are never purged by that flow).
    */
-  capture_source?: 'auto_capture' | null;
+  capture_source?: 'auto_capture' | 'hook_close' | null;
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
