@@ -12,9 +12,10 @@
 #   ./install.sh                      # run locally, same effect
 #   ./install.sh --no-hook            # extra args are passed through to `init`
 #
-# Idempotent: re-running this script (e.g. to upgrade) just reinstalls the
-# npm package at whatever version is current and re-runs `init`, which is
-# itself safe to re-run against an existing config.
+# Idempotent: re-running this script skips the npm reinstall when the
+# installed global version already matches what npm resolves as latest
+# (set FORCE=1 to always reinstall), then re-runs `init`, which is itself
+# safe to re-run against an existing config.
 #
 # Native deps: astramem-local depends on better-sqlite3-multiple-ciphers and
 # @napi-rs/keyring. npm will use prebuilt binaries when available for your
@@ -54,8 +55,26 @@ if ! command -v npm >/dev/null 2>&1; then
 fi
 
 # --- 3. Install / upgrade the package globally --------------------------------
-echo "Installing ${PKG}@latest globally..."
-npm install -g "${PKG}"
+# Idempotent skip: if a global install already exists and its version matches
+# what npm currently resolves as latest, skip the reinstall. FORCE=1 always
+# reinstalls. If either version can't be determined (no existing install, or
+# `npm view` fails, e.g. offline), fall through to installing so a real
+# upgrade never false-positives as "already current".
+installed_version=""
+if command -v astramem-local >/dev/null 2>&1; then
+  installed_version="$(astramem-local --version 2>/dev/null || true)"
+fi
+latest_version="$(npm view "${PKG}" version 2>/dev/null || true)"
+
+if [ -n "${FORCE:-}" ]; then
+  echo "FORCE is set — installing ${PKG}@latest globally..."
+  npm install -g "${PKG}"
+elif [ -n "$installed_version" ] && [ "$installed_version" = "$latest_version" ]; then
+  echo "${PKG} ${installed_version} is already the latest version — skipping reinstall (set FORCE=1 to force)."
+else
+  echo "Installing ${PKG}@latest globally..."
+  npm install -g "${PKG}"
+fi
 
 if ! command -v astramem-local >/dev/null 2>&1; then
   echo "error: install completed but 'astramem-local' is not on PATH." >&2
@@ -67,16 +86,35 @@ echo "Installed: $(astramem-local --version 2>/dev/null || echo "(version check 
 # --- 4. Run the setup wizard ---------------------------------------------------
 # `init` is interactive (it prompts for provider choice, etc.). When this
 # script itself is being piped from curl (stdin is not a real terminal), the
-# wizard would break mid-prompt with no way to answer — detect that and tell
-# the user to run it themselves afterward instead of launching it blind.
+# wizard would otherwise break mid-prompt with no way to answer. Re-attach
+# /dev/tty when one exists so the prompts still work; if there's no
+# controlling terminal at all (CI, containers), fall back to telling the
+# user to run it themselves afterward instead of hanging or erroring out.
+#
+# The reattach probe below deliberately runs `exec < /dev/tty` inside a
+# subshell rather than bare in the `if` condition. `exec` is a POSIX special
+# builtin, and dash (unlike bash) terminates the whole shell on a special
+# builtin's redirection error even inside an `if` test — so a bare
+# `exec < /dev/tty` here would kill `sh install.sh` outright on a no-tty host
+# (CI, containers) instead of falling back. Wrapping it in `( )` confines
+# that failure to the subshell; only the real `exec < /dev/tty` below (run
+# once the subshell proved it's safe) touches this shell's own stdin.
 if [ -t 0 ]; then
   echo "Running 'astramem-local init' ${*:+with args: $*} ..."
   exec astramem-local init "$@"
-else
-  echo
-  echo "Install complete. Stdin isn't a terminal (this script was likely piped in),"
-  echo "so the interactive setup wizard can't run here. Finish setup with:"
-  echo
-  echo "    astramem-local init"
-  echo
 fi
+
+echo
+echo "Stdin isn't a terminal (this script was likely piped in, e.g. curl | bash)."
+
+if [ -e /dev/tty ] && (exec < /dev/tty) 2>/dev/null; then
+  exec < /dev/tty
+  echo "Re-attached to /dev/tty — running 'astramem-local init' ${*:+with args: $*} ..."
+  exec astramem-local init "$@"
+fi
+
+echo "No controlling terminal (/dev/tty) is available (e.g. CI or a container),"
+echo "so the interactive setup wizard can't run here. Finish setup with:"
+echo
+echo "    astramem-local init"
+echo

@@ -1,0 +1,4 @@
+{"type":"shape_classified","sliceId":"SLICE-425","featureId":"FEAT-474","timestamp":"2026-07-12T20:54:38.020Z","shape":"none","rationale":"no files","inlinePathUsed":false,"ts":"2026-07-12T20:54:38.020Z"}
+{"type":"workflow_state_changed","sliceId":"SLICE-425","featureId":"FEAT-474","timestamp":"2026-07-12T20:54:38.087Z","from":null,"to":"building","ts":"2026-07-12T20:54:38.087Z"}
+{"type":"shape_classified","sliceId":"SLICE-425","featureId":"FEAT-474","timestamp":"2026-07-12T20:54:42.270Z","shape":"none","rationale":"no files","inlinePathUsed":false,"ts":"2026-07-12T20:54:42.270Z"}
+{"type":"workflow_state_changed","sliceId":"SLICE-425","featureId":"FEAT-474","timestamp":"2026-07-12T20:54:42.351Z","from":null,"to":"building","ts":"2026-07-12T20:54:42.351Z"}
