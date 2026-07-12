@@ -77,6 +77,17 @@ Pivot triggers — any of these means **stop, dispatch `/crew:fix`, then resume*
 
 When in doubt, prefer dispatch. A subagent run produces its own artifact trail; an inline patch hides in the loop's conversation and loses cost/grade attribution.
 
+## Review-Before-Merge Sequencing — HARD RULE
+
+The review-result artifact is the gate, not the merge commit message. Sequence, strictly ordered:
+
+1. Reviewer completes → review-result artifact written to `.claude/artifacts/crew/reviews/` (`decision: approved` or `approved_with_notes`).
+2. **Verify the artifact file exists on disk** before any merge — `ls` it; a reviewer's in-conversation "PASS" without the artifact does not clear the gate.
+3. Merge the branch to main. Include or immediately commit the review artifact so it lands with (or before) the close commit.
+4. Close the FEAT. A close commit claiming "review PASS" while no review artifact exists in the tree is a sequencing violation.
+
+Rationale: on 2026-07-12 FEAT-471 was merged (11:11) and closed with a "review PASS" claim (11:12) while its review completed at 11:17 and the artifact was never committed — the gate claim had zero artifact backing at merge time (constitution rule 5). The review later approved the diff, but only by luck of ordering.
+
 **Never use `caveman:*` agents for slice work.** They lack the full artifact protocol. Always use a real crew builder (`crew:fullstack-dev`, `crew:backend-dev`, `crew:frontend-dev`), `crew:reviewer`, `crew:validator`, `crew:deployer` — never `crew:builder`, which is not an agent.
 
 - **Dispatch budget.** Maximum {{dispatchLimits.maxSubagentsPerSlice}} subagent dispatches per slice. Inline execution for: single-file edits, test fixes, lint fixes, format fixes. Subagent dispatch only for bounded independent tasks (full build, review, validation). Each cold-start re-derives context — avoid unless the task genuinely benefits from isolation.
