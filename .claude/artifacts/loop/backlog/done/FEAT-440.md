@@ -1,6 +1,6 @@
 ---
 id: FEAT-440
-status: triaged
+status: done
 priority: P1
 category: platform
 target_release: null
@@ -89,3 +89,14 @@ running serve in a foreground shell. `schtasks Last Result: 1` was the sole trac
 - Incident: 2026-07-07 — 8h invisible crash loop, `launch.cjs` stdio:inherit.
 - depends_on: FEAT-438 rewrites the same shim (release-pinned entry) — implement
   the new shim once with both behaviors, or land 438 first.
+
+## Closure note (2026-07-12)
+
+Verified already implemented on main (commit 12a674b, same review as FEAT-439):
+exit-history.jsonl ring buffer (last 50) + rolling crash.log (~64KB) in
+launch.cjs, never-throw writes; doctor "Crash loop" check RED on >=3
+consecutive non-zero exits with codes/span/crash-log tail; zero-exit resets
+streak (instance-lock fast-exit never miscounted). The review's HIGH maxBuffer
+finding was subsequently fixed (src/service/shim.ts:260-264 streaming capture;
+pinned by tests/service/shim.test.ts:236-263 — 2MB stderr past the 1MB default,
+real exit code preserved). depends_on FEAT-438 satisfied (shipped v0.9.x).

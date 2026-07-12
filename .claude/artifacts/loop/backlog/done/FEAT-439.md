@@ -1,6 +1,6 @@
 ---
 id: FEAT-439
-status: triaged
+status: done
 priority: P1
 category: platform
 target_release: null
@@ -86,3 +86,15 @@ Two independent mechanisms:
 - Incident: 2026-07-07 stale-dist outage (drift guard migrate.ts:100).
 - Depends conceptually on FEAT-438 for the "which release is served" question,
   but the doctor probe + hook are implementable against today's layout too.
+
+## Closure note (2026-07-12)
+
+Verified already implemented on main (commit 12a674b, reviewed
+approved_with_notes 2026-07-08, 169/169 tests). All 5 ACs code-complete:
+post-merge-rebuild.mjs (AC-1/3/4), checkSchemaDrift in doctor/checks.ts
+(AC-2/5), fixture-repo + doctor tests. Residual found by 2026-07-12 verify
+pass: the git hook was never ACTIVATED on any checkout (opt-in comment only).
+Resolved for this machine: `git config core.hooksPath scripts/git-hooks` set
+2026-07-12. Follow-up (small): wire hooksPath activation into init/reinstall
+onboarding or package.json prepare so fresh checkouts get it — tracked in
+session task list, candidate for a dev-lite dispatch.
