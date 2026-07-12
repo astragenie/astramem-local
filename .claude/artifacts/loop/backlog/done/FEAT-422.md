@@ -1,6 +1,6 @@
 ---
 id: FEAT-422
-status: triaged
+status: done
 priority: P3
 created: 2026-07-04
 updated: 2026-07-04
