@@ -233,3 +233,35 @@ original 3-slice/13-point estimate).
 
 - SLICE-1: install.sh idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach (3 pts)
 - SLICE-2: install.sh root/sudo handling + PATH guidance + config-dir perm hardening (3 pts)
+
+## Found during SLICE-425 — route to slice 2
+
+**`curl | sh` / `sh install.sh` is completely non-functional and always has been.**
+
+`install.sh:24` is `set -euo pipefail`. `pipefail` is a bash-only option, so dash
+(which is `/bin/sh` on Debian/Ubuntu/Alpine) aborts there:
+
+    install.sh: 24: set: Illegal option -o pipefail
+
+Verified directly with `dash install.sh` on 2026-07-12. The script never reaches
+any of its install logic under `sh`.
+
+Severity is lower than it first appears: the failure is LOUD and happens before
+anything is installed, so nothing half-lands. The shebang (`#!/usr/bin/env bash`)
+and the header comments only ever document `curl | bash`. It predates FEAT-474
+entirely (original commit `a05415d`) — SLICE-425 did not introduce it.
+
+But `curl | sh` is a common habit, and "installer prints a cryptic shell error and
+does nothing" is exactly the first-contact UX FEAT-474 exists to fix. Two options
+for slice 2:
+
+- **(a) Re-exec into bash** — add a shim at the top:
+  `[ -z "${BASH_VERSION:-}" ] && exec bash "$0" "$@"`. Makes `sh install.sh` and
+  `curl | sh` work. ~2 lines.
+- **(b) Stay bash-only, fail better** — drop `pipefail` (or guard it) and print a
+  clear "please run with bash" message instead of dash's raw option error.
+
+Note SLICE-425's `/dev/tty` subshell hardening is still correct and stays: it's the
+right construct if `pipefail` is ever removed, and it costs nothing. But be aware
+its dash scenario is currently *unreachable* because of line 24 — do not cite it as
+evidence that `sh` works today.
