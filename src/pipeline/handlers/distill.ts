@@ -34,9 +34,11 @@ interface TranscriptRow {
   source: string;
   /** Canonical envelope's captured_at (epoch ms), NULL for legacy v0.0 ingests. */
   captured_at: number | null;
-  /** FEAT-455 / ADR-012 decision 4: 'auto_capture' when this transcript came
-   *  from the hook-tap auto-capture trigger, NULL for every other producer. */
-  capture_source: 'auto_capture' | null;
+  /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12: 'auto_capture' when
+   *  this transcript came from the hook-tap auto-capture trigger,
+   *  'hook_close' when it came from the ordinary close-capture hook, NULL
+   *  for every other producer. */
+  capture_source: 'auto_capture' | 'hook_close' | null;
 }
 
 interface SessionRow {

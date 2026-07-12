@@ -279,6 +279,25 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
     expect(transcripts[0]!.capture_source).toBe('auto_capture');
   });
 
+  // 2026-07-12 doctor-canary provenance fix: 'hook_close' is the ordinary
+  // astramem-plugin close-capture hook's provenance tag, widened onto the
+  // same schema/column alongside 'auto_capture'.
+  it('capture_source: "hook_close" round-trips onto the transcripts row', async () => {
+    const { db, app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-hook-close', capture_source: 'hook_close' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const transcripts = db.prepare('SELECT capture_source FROM transcripts WHERE session_id = ?').all('sess-hook-close') as
+      { capture_source: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.capture_source).toBe('hook_close');
+  });
+
   it('capture_source omitted (every non-auto-capture client): transcripts.capture_source stays NULL', async () => {
     const { db, app } = makeApp();
     const res = await (await app).inject({

@@ -110,6 +110,33 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
     expect(result.message).toContain('2 auto-captured memories');
   });
 
+  // 2026-07-12 provenance-mismatch fix: 'hook_close' (the ordinary
+  // close-capture hook — the only capture path that fires today) must count
+  // toward the same total as 'auto_capture', or a user who enables
+  // auto-capture but relies solely on ordinary close-capture would see a
+  // permanent false-positive WARN below despite capture working perfectly.
+  it('enabled, populated store with ONLY hook_close atoms (no auto_capture atoms) — ok:true, counted', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    const repo = new MemoryRepo(db);
+    repo.insert({
+      type: 'fact', text: 'close-capture atom one', normalized_text: 'close-capture atom one',
+      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+      hash: randomUUID(), source_hash: null, capture_source: 'hook_close',
+    });
+    repo.insert({
+      type: 'fact', text: 'manual atom', normalized_text: 'manual atom',
+      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+      hash: randomUUID(), source_hash: null,
+    });
+    db.close();
+
+    const result = await checkFor(true).run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('1 auto-captured memory');
+  });
+
   it('enabled, >= threshold active memories from other sources but 0 auto-captured — WARN (wired, never fired)', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);

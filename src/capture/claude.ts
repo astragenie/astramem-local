@@ -59,12 +59,15 @@ export interface ClaudeCaptureEnvelope {
   client_version: string;
   client_scrub_version: string;
   wire_version: 'v1.0';
-  /** FEAT-455 / ADR-012 decision 4: present only when this envelope was
-   *  built by the hook-tap auto-capture trigger (i.e. `buildClaudeEnvelope`
-   *  was called with `captureSource: 'auto_capture'`) — every existing
-   *  `session_end`/`subagent_stop` call path omits this field, so today's
-   *  captures are entirely unaffected. */
-  capture_source?: 'auto_capture';
+  /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12 (doctor canary
+   *  provenance fix): `'auto_capture'` when this envelope was built by the
+   *  hook-tap auto-capture trigger, `'hook_close'` when built by the
+   *  ordinary astramem-plugin close-capture hook — every `session_end`/
+   *  `subagent_stop` invocation that did NOT pass `--auto-capture`. Omitted
+   *  only when a caller invokes `buildClaudeEnvelope` directly without
+   *  either (existing unit tests exercising the function in isolation) —
+   *  the CLI itself (src/cli/capture.ts) always supplies one or the other. */
+  capture_source?: 'auto_capture' | 'hook_close';
 }
 
 /** Extract conversational text from an Anthropic-shaped message `content`
@@ -135,12 +138,14 @@ export function buildClaudeEnvelope(
   event: ClaudeCaptureEvent,
   clientVersion: string,
   capturedAt = new Date().toISOString(),
-  /** FEAT-455 / ADR-012 decision 4: set only by the hook-tap auto-capture
-   *  trigger's call site (`src/cli/capture.ts`'s `--auto-capture` path) —
-   *  every existing `session_end`/`subagent_stop` call omits this and gets
-   *  the byte-identical envelope shape (no `capture_source` key at all,
-   *  since it's conditionally spread below, not set to `undefined`). */
-  captureSource?: 'auto_capture',
+  /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12: `'auto_capture'`
+   *  from the hook-tap auto-capture trigger, `'hook_close'` from the
+   *  ordinary close-capture hook path — see
+   *  ClaudeCaptureEnvelope.capture_source. Omitting this argument (direct
+   *  callers/unit tests only) keeps the byte-identical no-`capture_source`-
+   *  key envelope shape (conditionally spread below, never set to
+   *  `undefined`). */
+  captureSource?: 'auto_capture' | 'hook_close',
 ): ClaudeCaptureEnvelope {
   return {
     event,

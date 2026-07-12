@@ -11,6 +11,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.15.1] — 2026-07-12
+
+### Fixed
+- **Close-capture provenance + auto-capture canary (874c931)** — `capture claude` (the astramem-plugin close-capture hook path) now stamps `capture_source = 'hook_close'` on every spooled envelope; previously these landed as NULL while the doctor "Auto-capture" canary counted only `'auto_capture'` rows, leaving the canary permanently red even with capture fully working. The canary now counts both provenance values, and its fix hint names the failure mode found live in production: a stale global `astramem-local` install predating the `capture` subcommand silently no-ops inside the hook. `'auto_capture'` stays reserved for the future opt-in denser-sampling trigger, and `capture auto-capture disable --purge` remains scoped to `'auto_capture'` rows only — hook-close memories are never purged by that flow.
+
+### Added
+- **E2E smoke: auto-capture close pipeline** (`tests/e2e/auto-capture-close.e2e.test.ts`) — drives the real CLI → spool → drain → distill → memory chain against an isolated daemon, deleting the source transcript mid-flight to prove the ephemeral-transcript race fix, and asserts the doctor canary goes green.
+- **E2E smoke: profile learning** (`tests/e2e/profile-learning.e2e.test.ts`) — proves the behavioral claim end-to-end: a superseded mistake disappears from search, its correction surfaces, `submit_feedback` measurably re-ranks results via the usefulness epsilon, and `agent_profile.corrections`/`top_lessons` + `user_profile.recurring_lessons` populate correctly.
+
+### Upgrade note
+- A daemon older than this release rejects `hook_close` spool envelopes (closed ingest enum) and quarantines them after 5 drain attempts — upgrade the daemon (`reinstall`) before or together with the global CLI.
+
 ## [0.15.0] — 2026-07-12
 
 ### Added

@@ -107,17 +107,31 @@ function parsePosixLsof(output: string): number | undefined {
  * (tool missing, unparseable output) -- callers must treat that as "cannot
  * verify identity", never as "confirmed dead" or "confirmed alive".
  */
+// FEAT-475: netstat/lsof are themselves real subprocess spawns, and under
+// concurrent parallel suite/agent load the OS scheduler contention that
+// slows everything else (spawn, bind, HTTP) slows these down too --
+// reproduced directly (4 concurrent full-suite-equivalent processes on a
+// 20-core box): netstat -ano -p TCP measured p50=1078ms p90=2473ms
+// p99=3665ms (n=30), with an actual ETIMEDOUT observed in a live test run
+// at the old 5_000ms budget. Widened to 15_000ms (~4x measured p99) so the
+// identity check's own latency budget, not scheduler contention, decides
+// whether it can complete -- this is the shared resource killManifestDaemons
+// blocks on before ever sending a signal, so every caller (this module's
+// tests, detach.test.ts, detach-kill-resume.test.ts) inherits the fix from
+// this one place.
+const PORT_OWNER_CHECK_TIMEOUT_MS = 15_000;
+
 export function checkPortOwner(port: number): PortOwnerCheck {
   if (process.platform === 'win32') {
     try {
-      const output = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: 5_000, windowsHide: true });
+      const output = execFileSync('netstat', ['-ano', '-p', 'TCP'], { encoding: 'utf8', timeout: PORT_OWNER_CHECK_TIMEOUT_MS, windowsHide: true });
       return { ok: true, pid: parseWindowsNetstat(output, port) };
     } catch (err) {
       return { ok: false, reason: `netstat check failed: ${err instanceof Error ? err.message : String(err)}` };
     }
   }
   try {
-    const output = execFileSync('lsof', ['-i', `:${port}`, '-t', '-sTCP:LISTEN'], { encoding: 'utf8', timeout: 5_000 });
+    const output = execFileSync('lsof', ['-i', `:${port}`, '-t', '-sTCP:LISTEN'], { encoding: 'utf8', timeout: PORT_OWNER_CHECK_TIMEOUT_MS });
     return { ok: true, pid: parsePosixLsof(output) };
   } catch (err) {
     // lsof exits 1 (throwing under execFileSync) when nothing matches the

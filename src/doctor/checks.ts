@@ -1108,10 +1108,20 @@ function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
  * `ok: false` (WARN) is reserved for one specific, previously-silent failure
  * mode found live in production 2026-07-12: the hook is turned ON, the
  * daemon has real content in it (>= MEANINGFUL_USAGE_THRESHOLD active
- * memories from ANY source), and yet 0 of them ever came through
- * auto-capture — the trigger is wired but never actually fires. A brand-new
- * install below that floor stays silent (`ok: true`) so day-one users never
- * see a false alarm before they've had a chance to accumulate any activity.
+ * memories from ANY source), and yet 0 of them ever came through capture —
+ * the trigger is wired but never actually fires. A brand-new install below
+ * that floor stays silent (`ok: true`) so day-one users never see a false
+ * alarm before they've had a chance to accumulate any activity.
+ *
+ * 2026-07-12 provenance-mismatch fix: the count below now includes BOTH
+ * `capture_source = 'auto_capture'` (the denser-sampling trigger this row is
+ * nominally about) AND `'hook_close'` (the ordinary astramem-plugin
+ * close-capture hook — the only capture path that actually fires today; see
+ * src/cli/capture.ts). Before this fix, a user who enabled auto-capture but
+ * never got the (still-unbuilt) denser-sampling trigger would see a
+ * permanent false-positive WARN here even though ordinary close-capture was
+ * working perfectly — the canary was checking the wrong provenance value,
+ * not detecting a real wiring failure.
  */
 function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encryptionEnabled: boolean): Check {
   return {
@@ -1129,7 +1139,7 @@ function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encrypti
       try {
         const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const row = db
-          .prepare(`SELECT COUNT(*) AS count FROM memories WHERE capture_source = 'auto_capture' AND valid_to IS NULL`)
+          .prepare(`SELECT COUNT(*) AS count FROM memories WHERE capture_source IN ('auto_capture', 'hook_close') AND valid_to IS NULL`)
           .get() as { count: number } | undefined;
         const totalRow = db
           .prepare(`SELECT COUNT(*) AS count FROM memories WHERE valid_to IS NULL AND archived = 0`)
@@ -1142,10 +1152,11 @@ function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encrypti
           return {
             ok: false,
             message:
-              `auto-capture is ON but 0 memories have ever been auto-captured, despite ${totalActive} active ` +
-              `memories already in the store (>= ${MEANINGFUL_USAGE_THRESHOLD} threshold — this daemon has seen ` +
-              `real activity). The hook is likely wired but never firing (2026-07-12 "built, wired, never invoked" bug class).`,
-            fix: 'Verify the capture hook is actually installed and dispatching to this daemon (check the runner-plugin hook config, and daemon logs for incoming /ingest calls tagged capture_source=auto_capture).',
+              `auto-capture is ON but 0 memories have ever come through auto-capture or the close-capture hook, ` +
+              `despite ${totalActive} active memories already in the store (>= ${MEANINGFUL_USAGE_THRESHOLD} ` +
+              `threshold — this daemon has seen real activity). The hook is likely wired but never firing ` +
+              `(2026-07-12 "built, wired, never invoked" bug class).`,
+            fix: 'Verify the capture hook is actually installed and dispatching to this daemon (check the runner-plugin hook config, and daemon logs for incoming /ingest calls tagged capture_source=auto_capture or hook_close). Also check `astramem-local --version` on PATH — a stale global install predating the `capture` subcommand (e.g. 0.3.4) will silently no-op inside the hook.',
           };
         }
 

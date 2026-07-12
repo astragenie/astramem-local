@@ -72,6 +72,9 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   const event: ClaudeCaptureEvent = eventArg === 'session_end' ? 'session_end' : 'subagent_stop';
   // FEAT-455 / ADR-012 decision 1: the (future, plugin-repo, out of scope for
   // this slice) denser-sampling trigger calls this CLI with --auto-capture.
+  // The astramem-plugin close-capture hook is the ONLY caller today, and it
+  // never passes this flag (2026-07-12 doctor-canary provenance bug — see
+  // captureSource below).
   const autoCaptureFlag = args.includes('--auto-capture');
 
   if (!transcriptPath) {
@@ -96,7 +99,15 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   // for "never enabled implicitly" — even once a future hook fires
   // --auto-capture unconditionally, capture stays a no-op unless config.yaml
   // has the explicit opt-in (set only via the init wizard prompt).
-  let captureSource: 'auto_capture' | undefined;
+  //
+  // 2026-07-12 doctor-canary provenance fix: every invocation now stamps a
+  // provenance tag, not just the (still-unused) --auto-capture path.
+  // 'hook_close' is the default — the astramem-plugin close-capture hook is
+  // the ONLY caller today and never passes --auto-capture — so the doctor
+  // "Auto-capture" canary can tell real close-capture traffic apart from a
+  // genuinely wired-but-never-firing hook. --auto-capture overrides this to
+  // 'auto_capture' once its config opt-in gate (below) passes.
+  let captureSource: 'auto_capture' | 'hook_close' = 'hook_close';
   if (autoCaptureFlag) {
     const { cfg } = resolveRuntimeConfig();
     if (!cfg.capture.autoCapture.enabled) {
@@ -160,7 +171,9 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
  * (FEAT-455 / ADR-012 decision 4). Turning auto-capture off is always
  * immediate (config.yaml write, no daemon required); the purge OFFER is a
  * separate, explicit step — "offered, not forced" — scoped to
- * `capture_source = 'auto_capture'` atoms.
+ * `capture_source = 'auto_capture'` atoms ONLY. `hook_close` atoms (the
+ * ordinary close-capture hook — unrelated to this denser-sampling opt-in)
+ * are never queried or purged by this flow (2026-07-12).
  *
  * FEAT-467 retrofit (ADR-013 Decision 4): the purge itself now calls
  * `POST /capture/purge`, a reversible soft-delete batch (bounded restore
@@ -196,6 +209,9 @@ async function runAutoCaptureDisable(args: string[]): Promise<void> {
   }
 
   const { db } = openRuntimeDb();
+  // Literal 'auto_capture' only, deliberately NOT widened to include
+  // 'hook_close' — the ordinary close-capture hook's atoms are not part of
+  // this denser-sampling opt-in and must never be purged by this flow.
   const rows = db
     .prepare(`SELECT id FROM memories WHERE capture_source = 'auto_capture' AND valid_to IS NULL`)
     .all() as { id: string }[];

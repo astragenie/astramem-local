@@ -78,11 +78,16 @@ export const CanonicalIngestSchema = z.object({
   events: z.array(CanonicalEventItemSchema).min(1).max(500).optional(),
   /** Provenance (ADR-008 `tool` field). No default — record what's sent or null. */
   tool: z.string().optional(),
-  /** FEAT-455 / ADR-012 decision 4: set only by the hook-tap auto-capture
-   *  trigger's envelope builder (`buildClaudeEnvelope`'s optional
-   *  `captureSource` param) — every other client omits this field and the
-   *  transcripts/memories rows it flows into stay NULL (byte-identical). */
-  capture_source: z.literal('auto_capture').optional(),
+  /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12 (doctor canary
+   *  provenance fix): `'auto_capture'` from the hook-tap auto-capture
+   *  trigger, `'hook_close'` from the ordinary astramem-plugin close-capture
+   *  hook (`buildClaudeEnvelope`'s optional `captureSource` param) — every
+   *  other client omits this field and the transcripts/memories rows it
+   *  flows into stay NULL (byte-identical). Kept a closed enum rather than
+   *  an open string deliberately — an unrecognized value is a real client
+   *  bug worth surfacing as 400 on the direct `/ingest/transcript` path, not
+   *  something to silently coerce to null. */
+  capture_source: z.enum(['auto_capture', 'hook_close']).optional(),
   /** Aggregate scrub flag — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label for per-label breakdown but not deprecated. */
   client_scrub_applied: z.boolean(),
   /** Aggregate scrub hit count — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label sum for per-label breakdown but not deprecated. */
@@ -285,6 +290,9 @@ export function ingestCanonicalTranscript(
         : null,
       data.client_version ?? null,
       data.wire_version,
+      // Same schema instance runs on the HTTP route and the spool-drain
+      // worker (src/ingest/spool-drain.ts) — CanonicalIngestSchema.safeParse
+      // already rejected anything outside the enum above before this runs.
       data.capture_source ?? null,
     );
 
