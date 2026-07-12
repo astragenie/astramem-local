@@ -287,6 +287,39 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     secret: 'abcdefgh1234bare',
     expectedEventCount: 1,
   },
+  // FEAT-468: numeric-secret digit-run heuristic. Shannon entropy over a
+  // 10-symbol (digits-only) alphabet caps at log2(10) ≈ 3.32 bits/char, below
+  // the 4.0 default threshold, so an unlabeled all-digit secret was
+  // structurally invisible regardless of length — see entropy.ts
+  // `findNumericSecretRuns`. These fixtures are the exact FEAT-463
+  // final-review repro plus the FEAT's stated true-positive range
+  // (unlabeled 20-32 digit tokens); the false-positive corpus proving this
+  // doesn't overtrigger on phone numbers/timestamps/IDs lives in the
+  // dedicated describe block below (those all stay UNredacted).
+  {
+    name: 'FEAT-468: FEAT-463 final-review repro — bare unlabeled 26-digit string (entropy 3.295, previously leaked)',
+    input: 'account number 98765432109876543210987654 on file',
+    type: 'numeric_secret',
+    secret: '98765432109876543210987654',
+  },
+  {
+    name: 'FEAT-468: unlabeled 20-digit token (exact minimum-floor boundary — must redact)',
+    input: 'ref 12345678901234567890 confirmed',
+    type: 'numeric_secret',
+    secret: '12345678901234567890',
+  },
+  {
+    name: 'FEAT-468: unlabeled 32-digit token (upper end of stated true-positive range)',
+    input: 'legacy id 12345678901234567890123456789012 archived',
+    type: 'numeric_secret',
+    secret: '12345678901234567890123456789012',
+  },
+  {
+    name: 'FEAT-468: digit-heavy legacy token glued to a non-keyword alpha prefix (only the digit run is redacted, not the prefix)',
+    input: 'ACCT9876543210987654321098 rotate',
+    type: 'numeric_secret',
+    secret: '9876543210987654321098',
+  },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
@@ -532,6 +565,115 @@ describe('redactText — false-positive guards', () => {
     const placeholderCount = (text.match(/\[REDACTED:/g) ?? []).length;
     expect(placeholderCount).toBe(1);
     expect(events.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEAT-468: numeric-secret digit-run heuristic — false-positive corpus.
+// Every shape here is a realistic non-secret digit string that must stay
+// fully unredacted. The heuristic is length-only (>= 20 consecutive digits,
+// no separator), so the discriminator is: does this shape's raw digit run
+// ever reach 20 chars unbroken? None of these do, by construction of the
+// shape itself (either separator-formatted or simply shorter).
+// ---------------------------------------------------------------------------
+
+describe('redactText — FEAT-468 numeric-secret false-positive corpus', () => {
+  it('does not redact an unbroken 19-digit run (one below the minimum-floor boundary)', () => {
+    const input = 'ref 9876543210987654321 confirmed';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an intl phone number with parens/dashes/spaces', () => {
+    const input = 'call me at +1 (555) 123-4567 today';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an intl phone number, dash-grouped (RU-style)', () => {
+    const input = 'contact +7 916 123-45-67 for support';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed (no-separator) 10-digit domestic phone number', () => {
+    const input = 'reach us at 5551234567 anytime';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 10-digit unix timestamp (seconds)', () => {
+    const input = 'timestamp 1751935200 recorded';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 13-digit unix timestamp (milliseconds)', () => {
+    const input = 'event logged at 1751935200000 in the trace';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed ISO date+time (14 digits, no separators)', () => {
+    const input = 'snapshot id 20260710172500 taken';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed ISO date+time+milliseconds (17 digits)', () => {
+    const input = 'build tag 20260710172500123 published';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 16-digit credit-card-shaped test number (Visa test pattern)', () => {
+    const input = 'test card 4111111111111111 approved in sandbox';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 15-digit credit-card-shaped test number (Amex test pattern)', () => {
+    const input = 'test card 378282246310005 approved in sandbox';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed zip+4 (9 digits)', () => {
+    const input = 'ship to zip 123456789 please';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a dash-formatted order/invoice number', () => {
+    const input = 'order ORD-0001234567890 shipped';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a row of space-separated numeric table values', () => {
+    const input = 'totals: 1001 2002 3003 4004 5005 6006';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a comma-separated numeric CSV-style row', () => {
+    const input = '2026,07,10,17,25,00,1001,2002,3003';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
   });
 });
 

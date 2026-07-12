@@ -135,17 +135,17 @@ function isLabelWithSafeValueFollowing(token: string, text: string, end: number,
   return SAFE_VALUE_RE.test(nextValue);
 }
 
-// FEAT-463 final-review note (LOW, documented not fixed here — FEAT-468
-// tracks the real fix): this stage has a numeric-alphabet ceiling. A string
-// drawn uniformly from a 10-symbol alphabet (digits only) tops out at
-// log2(10) ≈ 3.32 bits/char no matter how long or "random" it is, which sits
-// below the 4.0 default `entropyThreshold` — so a purely-numeric secret
-// (e.g. a long numeric PIN, account number, or digit-only API key) is
-// invisible to this detector regardless of length. Digit strings can still
-// be caught upstream by a labeled pattern detector (detectors.ts) or by the
-// config-assignment/label guards above when they carry recognizable context;
-// this ceiling only affects an UNLABELED all-digit token relying on entropy
-// alone.
+// FEAT-463 final-review note, resolved by FEAT-468 below: this stage has a
+// numeric-alphabet ceiling. A string drawn uniformly from a 10-symbol
+// alphabet (digits only) tops out at log2(10) ≈ 3.32 bits/char no matter how
+// long or "random" it is, which sits below the 4.0 default
+// `entropyThreshold` — so a purely-numeric secret (e.g. a long numeric PIN,
+// account number, or digit-only API key) is invisible to Shannon entropy
+// regardless of length. Digit strings can still be caught upstream by a
+// labeled pattern detector (detectors.ts) or by the config-assignment/label
+// guards above when they carry recognizable context; the ceiling only
+// affects an UNLABELED all-digit token relying on entropy alone —
+// `findNumericSecretRuns` below is the dedicated fallback for that case.
 /** Shannon entropy in bits/char over the token's character distribution. */
 export function shannonEntropy(token: string): number {
   if (token.length === 0) return 0;
@@ -217,6 +217,75 @@ export function findEntropySecrets(text: string, threshold: number): EntropyMatc
     if (isGuarded(tok.value, text, tok.start, tok.end, threshold)) continue;
     if (shannonEntropy(tok.value) >= threshold) {
       matches.push({ start: tok.start, end: tok.end, value: tok.value });
+    }
+  }
+  return matches;
+}
+
+// ---------------------------------------------------------------------------
+// FEAT-468: numeric-secret digit-run heuristic (fixes the ceiling noted on
+// `shannonEntropy` above).
+//
+// Design choice: a maximal-digit-run length check, NOT a per-alphabet-
+// normalized entropy score. A normalized-entropy approach (divide by
+// log2(10) and compare to a ratio) was considered and rejected: it can't
+// tell a random-looking secret apart from a random-looking PHONE NUMBER or
+// ACCOUNT NUMBER, because both score close to the alphabet's own maximum —
+// there is no entropy-based signal that separates them. Length + "no
+// separator interrupts the run" is the discriminating signal instead: real
+// digit secrets in the wild (legacy numeric API tokens, long PINs) show up
+// as one unbroken run, while every FP-corpus shape below is either
+// separator-formatted (phone numbers, credit-card groups, zip+4) or simply
+// shorter than the floor (unix timestamps, order IDs, squashed ISO dates).
+//
+// `DIGIT_RUN_RE` finds every MAXIMAL run of digit characters in the text —
+// not tokenized on whitespace like `findEntropySecrets` above, so a digit
+// run embedded inside a larger non-whitespace-delimited token (e.g. a
+// digit-heavy legacy token glued to a short prefix) is still caught; only
+// the digit substring itself is redacted, not the surrounding characters.
+// ANY non-digit character — space, dash, paren, plus, dot, letter — ends a
+// run, so a formatted numeric shape is exempted for free, with no separate
+// separator-detection logic needed.
+//
+// Threshold: `MIN_TOKEN_LENGTH` (20), the same floor the entropy stage
+// already uses for unlabeled tokens. Chosen deliberately to sit strictly
+// above every non-secret digit-run length in the required FP corpus:
+//   - unix timestamps: 10 digits (seconds), 13 digits (ms)
+//   - squashed ISO date+time(+ms): up to ~17 digits (YYYYMMDDHHmmssSSS)
+//   - credit-card-shaped test numbers: 15 (Amex), 16 (Visa/Mastercard)
+//   - zip+4 (squashed): 9 digits
+//   - order/invoice/ID numbers: well under 20 in practice
+// A LABELED numeric secret (`TOKEN=1234567890123456789012345`) is already
+// caught earlier in `redactText` by the `generic_credential` pattern
+// detector (detectors.ts), which has no minimum length on its captured
+// value — this heuristic only covers the UNLABELED case, matching this
+// FEAT's stated scope (entropy's own blind spot, not a general numeric-PII
+// scanner). No separate config knob was added: unlike `entropyThreshold`
+// (which trades off against real deployment-specific noise), this floor is
+// fixed and corpus-validated rather than something an operator would need
+// to tune, and a knob here would mean touching the FEAT-461/465 config
+// round-trip machinery (buildFullyPopulatedConfig / findMissingConfigKeys)
+// for a heuristic that doesn't need per-deployment adjustment.
+const DIGIT_RUN_RE = /\d+/g;
+
+export interface NumericSecretMatch {
+  start: number;
+  end: number;
+  value: string;
+}
+
+/**
+ * Find every maximal run of `minLength`+ consecutive digit characters in
+ * `text`. Each match is the digit substring itself (not any surrounding
+ * non-digit characters in the same token).
+ */
+export function findNumericSecretRuns(text: string, minLength: number = MIN_TOKEN_LENGTH): NumericSecretMatch[] {
+  const matches: NumericSecretMatch[] = [];
+  DIGIT_RUN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DIGIT_RUN_RE.exec(text)) !== null) {
+    if (m[0].length >= minLength) {
+      matches.push({ start: m.index, end: m.index + m[0].length, value: m[0] });
     }
   }
   return matches;
