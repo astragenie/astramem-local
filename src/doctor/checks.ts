@@ -119,6 +119,12 @@ export interface DoctorCheckOpts {
   /** FEAT-455 / ADR-012 decision 4: current `capture.autoCapture.enabled`.
    * Defaults to `false` (the shipped default) when not supplied. */
   autoCaptureEnabled?: boolean;
+  /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.enabled`. Defaults to
+   * `false` (the shipped default) when not supplied. */
+  proxyEnabled?: boolean;
+  /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.capture.enabled`. Defaults
+   * to `false` (the shipped default) when not supplied. */
+  proxyCaptureEnabled?: boolean;
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
@@ -1167,6 +1173,69 @@ function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encrypti
   };
 }
 
+// ─── Check: LLM proxy (FEAT-458 S1-AC-2, ADR-013) ─────────────────────────────
+
+/**
+ * Visibility row for the LLM proxy relay (`astramem-local proxy serve`,
+ * src/proxy/server.ts). Same `ok: true`-in-every-state posture as
+ * `checkAutoCapture` above — proxy-enabled-and-running (with or without
+ * capture) is a deliberate opt-in per ADR-013 §5, never itself a
+ * misconfiguration, so this never reports `ok: false` on its own.
+ *
+ * S2 ships zero capture code (docs/specs/FEAT-458-S1-design.md §2.3): the
+ * `capture_source = 'proxy'` count is always 0 until FEAT-458 S3 lands the
+ * capture fork, but the row is still worth shipping now — it gives
+ * visibility into "the proxy is configured on" even before any capture
+ * write path exists, matching the S2/S3 split. There is deliberately no
+ * live reachability probe here (unlike `checkDaemonReachable`): S2's proxy
+ * has no HTTP control-plane route (src/cli/proxy.ts's own doc comment — no
+ * `/status`, no `/config`) and its one route transparently forwards
+ * whatever it's sent to `upstream`, so a doctor-side fetch would either hit
+ * a real (possibly billed) upstream or hang on an unreachable one. This
+ * check is config-state-only by design.
+ */
+function checkProxyCapture(
+  dataDir: string,
+  proxyEnabled: boolean,
+  captureEnabled: boolean,
+  encryptionEnabled: boolean,
+): Check {
+  return {
+    name: 'LLM proxy',
+    async run(): Promise<CheckResult> {
+      if (!proxyEnabled) {
+        return { ok: true, message: 'proxy: off (default)' };
+      }
+      if (!captureEnabled) {
+        return { ok: true, message: 'proxy is ON — capture is off (transparent forward only)' };
+      }
+
+      const dbPath = join(dataDir, 'memory.sqlite');
+      if (!existsSync(dbPath)) {
+        return { ok: true, message: 'proxy capture is ON — no DB yet, 0 proxy-captured memories' };
+      }
+
+      try {
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const row = db
+          .prepare(`SELECT COUNT(*) AS count FROM memories WHERE capture_source = 'proxy' AND valid_to IS NULL`)
+          .get() as { count: number } | undefined;
+        db.close();
+        const count = row?.count ?? 0;
+
+        return {
+          ok: true,
+          message: `proxy capture is ON — ${count} proxy-captured ${count === 1 ? 'memory' : 'memories'} currently stored`,
+        };
+      } catch (err) {
+        // Informational failure mode — never fail doctor over a count-query
+        // error, consistent with the other read-only DB checks above.
+        return { ok: true, message: `proxy capture is ON — count check error (non-fatal): ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Check: Schema drift (FEAT-439 AC-2/AC-5) ────────────────────────────────
 
 interface ServedSchemaVersion {
@@ -1309,6 +1378,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkMemoryHealth(dataDir, encryptionEnabled),
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
+    checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

@@ -25,6 +25,7 @@ import { memoryHealthCommand } from './memory-health.js';
 import { mcpStdio } from './mcp-stdio.js';
 import { mcpInstallCommand } from './mcp-install.js';
 import { demoCommand } from './demo.js';
+import { proxyCommand } from './proxy.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -263,6 +264,12 @@ async function main() {
       break;
     }
 
+    case 'proxy': {
+      // astramem-local proxy serve --port N --upstream <url> [--host H]
+      await proxyCommand(rest);
+      break;
+    }
+
     case 'demo': {
       // astramem-local demo — 30s zero-dependency trial: in-memory daemon,
       // mock embed/LLM providers (no Ollama), seeded example memories, one
@@ -384,6 +391,12 @@ Commands:
                                          existing file to .bak first); windsurf/vscode
                                          print manual instructions. --dry-run prints
                                          the would-be file contents only.
+  proxy serve --port N --upstream <url> [--host H]
+                                         OpenAI-compatible /v1/chat/completions
+                                         byte-transparent proxy (FEAT-458 S2,
+                                         ADR-013). Loopback-only bind; refuses a
+                                         non-loopback --host outright. Zero
+                                         capture in this slice — pure passthrough.
   demo                                    30-second zero-dependency trial: in-memory
                                          daemon, mock embed/LLM providers (no Ollama
                                          required), seeds a few example memories, runs
