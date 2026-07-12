@@ -32,6 +32,7 @@ import { persistEnvVars } from '../config/persist-envs.js';
 import { waitForHealth } from './wait-health.js';
 import { installServiceFlow } from '../service/install-flow.js';
 import { installMemoryPackHook } from './hook-install.js';
+import { activateGitHooks } from '../service/git-hooks-activate.js';
 
 // ─── Non-interactive env var map ─────────────────────────────────────────────
 
@@ -669,6 +670,24 @@ async function promptAutoCaptureOptIn(nonInteractive: boolean): Promise<boolean>
 export async function init(argv: string[] = []): Promise<void> {
   const nonInteractive = isNonInteractive();
   const noHookFlag = argv.includes('--no-hook');
+
+  // 0. Activate the git post-merge hook (FEAT-439 residual) — best-effort,
+  // silent no-op for npm-installed users (no .git/scripts/git-hooks at the
+  // resolved repo root). Independent of every other step below, so it runs
+  // first and can never be skipped by an early return further down.
+  try {
+    const hookActivation = activateGitHooks();
+    if (!nonInteractive) {
+      if (hookActivation.status === 'set') {
+        console.log('  ✓ git post-merge hook activated (core.hooksPath=scripts/git-hooks)');
+      } else if (hookActivation.status === 'error') {
+        console.log(`  ⚠ could not activate git post-merge hook: ${hookActivation.message}`);
+      }
+      // 'already-set' and 'not-a-git-checkout' are silent — nothing changed.
+    }
+  } catch {
+    /* never fail init over this */
+  }
 
   // 1. Gather answers
   const answers = nonInteractive ? gatherNonInteractive() : await gatherInteractive();

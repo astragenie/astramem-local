@@ -25,6 +25,10 @@ One command fixes/installs/repairs everything — idempotent, non-elevated OK:
 node dist/cli/index.js reinstall     # materialize release → stop → shim → XML task → start → verify version
 ```
 Upgrade flow: `git pull && bun install && bun run build && node dist/cli/index.js reinstall`.
+Both `init` and `reinstall` also idempotently run `git config core.hooksPath scripts/git-hooks`
+when invoked from a git checkout of this repo (`src/service/git-hooks-activate.ts`, FEAT-439
+residual) — activates the migration-merge-currency post-merge hook with no separate manual
+step; silent no-op for npm-installed users, who have no `.git` at their install location.
 
 Architecture: schtasks task `AstraMemoryD` points at a STABLE shim
 (`%LOCALAPPDATA%\Astramem\bin\astramemd.cmd` → `launch.cjs` → `current.json` pointer).

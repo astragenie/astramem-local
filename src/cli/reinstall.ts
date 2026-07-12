@@ -43,6 +43,7 @@ import {
   type ReleaseListEntry,
 } from '../service/release.js';
 import { shimPaths, writeShim, writePointer, type ShimPointer } from '../service/shim.js';
+import { activateGitHooks } from '../service/git-hooks-activate.js';
 
 function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
@@ -339,6 +340,21 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       steps.push({ step: 'prune-releases', ok: true, detail: `skipped (error: ${(err as Error).message})` });
       log(`  ⚠ prune-releases skipped: ${(err as Error).message}`);
     }
+  }
+
+  // 6.6. Activate the git post-merge hook (FEAT-439 residual) — best-effort,
+  // silent no-op for npm-installed users (no .git/scripts/git-hooks at the
+  // resolved repo root). Never affects the exit code.
+  try {
+    const hookActivation = activateGitHooks();
+    if (hookActivation.status === 'set') {
+      log('  · git post-merge hook: activated (core.hooksPath=scripts/git-hooks)');
+    } else if (hookActivation.status === 'error') {
+      log(`  ⚠ git post-merge hook: could not activate (${hookActivation.message})`);
+    }
+    // 'already-set' and 'not-a-git-checkout' are silent — nothing changed.
+  } catch {
+    /* never fail reinstall over this */
   }
 
   // 7. Sanity warnings (never fail the run — informational).
