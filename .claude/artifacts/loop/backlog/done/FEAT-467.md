@@ -1,6 +1,6 @@
 ---
 id: FEAT-467
-status: triaged
+status: done
 priority: P2
 category: feature
 target_release: null
