@@ -1,9 +1,9 @@
 ---
 id: FEAT-473
-status: triaged
+status: done
 priority: P2
 category: bug
-target_release: null
+target_release: v0.15.0
 created: 2026-07-10
 updated: 2026-07-12
 depends_on: []
@@ -40,3 +40,19 @@ out-of-scope in the FEAT-463 review.
   negatives; event-count assertions (expectedEventCount pattern).
 - ReDoS check unchanged (character-class addition only).
 - Perf: stay within redact-perf 20ms p95 budget.
+
+## Completion (2026-07-12)
+
+Shipped in **v0.15.0** via PR #157 (commit `5d0d8e8` — "fix(FEAT-473):
+recognize Unicode smart/curly quotes in credential labels").
+
+Landed signature: `ANY_QUOTE_CHAR` in `src/redact/detectors.ts:60` —
+`["'‘’“”]`, consumed by `QUOTED_LABEL_SEP` (line 105) and the
+`generic_credential_quoted` detector family (lines 224–274). Character-class
+addition only, as scoped; ReDoS surface unchanged.
+
+Closed via housekeeping, not the slice ceremony: the fix was implemented and
+merged directly through PR #157 during the v0.15.0 release session and never
+had a slice file, so `/runner:slice complete` had nothing to close. The
+backlog file was left stranded in `triaged/`. Verified already-landed before
+closing — NOT re-implemented.
