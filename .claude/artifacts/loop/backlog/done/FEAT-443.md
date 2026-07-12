@@ -1,6 +1,6 @@
 ---
 id: FEAT-443
-status: triaged
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -43,3 +43,13 @@ unset — this FEAT has not been scored yet. Run `/runner:triage`
 
 - SLICE-1: Systemd/launchd pointer-indirection + rollback port (5 pts)
 - SLICE-2: Hang-watchdog equivalent (sd_notify/WatchdogSec + launchd analog) (5 pts)
+
+## Closure note (2026-07-12)
+
+Both slices merged (systemd/launchd pointer-indirection + rollback port;
+watchdog probe with stopLockHolder-failure fix 581cc65, internal review
+APPROVED, 294/294 service+cli tests). Merged via 2377cf2 (merge concluded
+out-of-ceremony — content validated post-merge on main: build clean,
+328/328 service+consolidate+cli green). RESIDUAL: live systemd/launchd
+validation needs a real Linux/macOS host — unit/plist generation is
+snapshot-tested only.
