@@ -66,6 +66,7 @@ function buildFullyPopulatedConfig(): Config {
         enabled: true,
         relevanceGate: { minChars: 20, maxBytes: 131_072, dedupWindow: 40 },
       },
+      purge: { restoreWindowDays: 45 },
     },
     proxy: {
       enabled: true,
@@ -390,6 +391,43 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     const yaml = configToYaml(buildFullyPopulatedConfig());
     // 'sync' should never appear as a top-level YAML key (indent 0, own line).
     expect(yaml).not.toMatch(/^sync:/m);
+  });
+});
+
+// FEAT-470 AC-1 (SLICE-420 re-review residual): hasNothingToEmit extended to
+// treat an explicit empty string ('') the same as undefined, for
+// STRING-typed optional fields only — matching the emitter's own truthy-omit
+// conditionals (`cfg.azure.endpoint ? [...] : []`-style). Booleans/numbers
+// have no such conditional (always emitted unconditionally), so a genuinely
+// missing 0/false value must still be flagged.
+describe('FEAT-470 AC-1: hasNothingToEmit matches the emitter\'s falsy-omit semantics for string fields', () => {
+  it('does not flag an explicit empty-string optional field as missing', () => {
+    const cfg = defaultConfig();
+    cfg.azure.endpoint = '';
+    const yaml = configToYaml(cfg);
+    expect(yaml).not.toContain('endpoint:'); // emitter's truthy check omits it, same as undefined
+    const missing = findMissingConfigKeys(cfg, yaml);
+    expect(missing).not.toContain('azure.endpoint');
+  });
+
+  it('counter-test: a numeric 0 extra field is still flagged as missing (0 must not be treated as nothing-to-emit)', () => {
+    const cfg = defaultConfig() as unknown as Record<string, unknown>;
+    const withExtraNested = {
+      ...cfg,
+      consolidation: { ...(cfg['consolidation'] as Record<string, unknown>), futureNumericField: 0 },
+    } as unknown as Config;
+    const missing = findMissingConfigKeys(withExtraNested, configToYaml(withExtraNested));
+    expect(missing).toContain('consolidation.futureNumericField');
+  });
+
+  it('counter-test: a boolean false extra field is still flagged as missing (false must not be treated as nothing-to-emit)', () => {
+    const cfg = defaultConfig() as unknown as Record<string, unknown>;
+    const withExtraNested = {
+      ...cfg,
+      consolidation: { ...(cfg['consolidation'] as Record<string, unknown>), futureBooleanField: false },
+    } as unknown as Config;
+    const missing = findMissingConfigKeys(withExtraNested, configToYaml(withExtraNested));
+    expect(missing).toContain('consolidation.futureBooleanField');
   });
 });
 

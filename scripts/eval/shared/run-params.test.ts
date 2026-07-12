@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { hashDatasetFile, writeRunParams, checkRunParams, evaluateResumeGuard } from './run-params.js';
+import { hashDatasetFile, writeRunParams, checkRunParams, evaluateResumeGuard, diffRunParams, evaluateMultiRunParamsGuard } from './run-params.js';
 
 describe('run-params (FEAT-462 review fix — resume scope guard)', () => {
   let dir: string;
@@ -146,6 +146,123 @@ describe('run-params (FEAT-462 review fix — resume scope guard)', () => {
       const result = evaluateResumeGuard(runParamsPath, true, { datasetPath: 'a.json', datasetHash: 'new-hash', seed: 42, n: 50, shards: 1 });
       expect(result.action).toBe('refuse');
       if (result.action === 'refuse') expect(result.refuseMessage).toContain('datasetHash: original="old-hash", current="new-hash"');
+    });
+
+    // FEAT-470 AC-4 (462a re-review nit): a moved-but-identical dataset
+    // (same sha256, different path) still refuses --resume, because
+    // datasetPath is compared verbatim alongside datasetHash — this is
+    // intentional strictness (README's "Resume behavior" section), not a
+    // bug: the guard was never meant to be "only the hash matters."
+    it('refuses on a moved-but-identical dataset (same sha256, different path) -- intentional strictness, not a hash-only check', () => {
+      writeRunParams(runParamsPath, { datasetPath: 'a.json', datasetHash: 'same-hash', seed: 42, n: 50, shards: 1 });
+      const result = evaluateResumeGuard(runParamsPath, true, { datasetPath: 'moved/a.json', datasetHash: 'same-hash', seed: 42, n: 50, shards: 1 });
+      expect(result.action).toBe('refuse');
+      if (result.action === 'refuse') {
+        expect(result.refuseMessage).toContain('datasetPath: original="a.json", current="moved/a.json"');
+        expect(result.refuseMessage).not.toContain('datasetHash:'); // hash matched -- only path differs
+      }
+    });
+  });
+
+  describe('diffRunParams — pure key-by-key diff (extracted, FEAT-457 slice 1 review fix)', () => {
+    it('returns no diffs for identical param sets', () => {
+      expect(diffRunParams({ seed: 42, n: 50 }, { seed: 42, n: 50 })).toEqual([]);
+    });
+
+    it('reports every differing key with both values', () => {
+      const diffs = diffRunParams({ seed: 42, n: 50, shards: 1 }, { seed: 7, n: 30, shards: 1 });
+      expect(diffs.sort((a, b) => a.key.localeCompare(b.key))).toEqual([
+        { key: 'n', a: 50, b: 30 },
+        { key: 'seed', a: 42, b: 7 },
+      ]);
+    });
+
+    it('treats a missing key as null on either side (LoCoMo qaPerSample is optional)', () => {
+      expect(diffRunParams({ seed: 42, qaPerSample: null }, { seed: 42 })).toEqual([]);
+      expect(diffRunParams({ seed: 42 }, { seed: 42, qaPerSample: 10 })).toEqual([{ key: 'qaPerSample', a: null, b: 10 }]);
+    });
+  });
+
+  describe('evaluateMultiRunParamsGuard — judge.mts --run-dir cross-run comparability guard (FEAT-457 slice 1 review fix)', () => {
+    let dirs: string[];
+
+    beforeEach(() => {
+      dirs = [];
+    });
+
+    afterEach(() => {
+      for (const d of dirs) rmSync(d, { recursive: true, force: true });
+    });
+
+    function makeRunDir(params: Record<string, unknown> | null): string {
+      const d = mkdtempSync(join(tmpdir(), 'multirun-guard-test-'));
+      dirs.push(d);
+      if (params !== null) writeFileSync(join(d, 'run-params.json'), JSON.stringify(params), 'utf8');
+      return d;
+    }
+
+    it('(test) a single --run-dir needs no comparison and always proceeds, even with no run-params.json', () => {
+      const solo = makeRunDir(null);
+      expect(evaluateMultiRunParamsGuard([solo])).toEqual({ action: 'proceed' });
+      expect(evaluateMultiRunParamsGuard([])).toEqual({ action: 'proceed' });
+    });
+
+    it('(test a) two run dirs with identical params proceed', () => {
+      const a = makeRunDir({ datasetPath: 'x.json', datasetHash: 'abc', seed: 42, n: 10, shards: 1 });
+      const b = makeRunDir({ datasetPath: 'x.json', datasetHash: 'abc', seed: 42, n: 10, shards: 1 });
+      expect(evaluateMultiRunParamsGuard([a, b])).toEqual({ action: 'proceed' });
+    });
+
+    it('(test b) a mismatched --n refuses, naming the offending dir and the differing param', () => {
+      const a = makeRunDir({ seed: 42, n: 10 });
+      const b = makeRunDir({ seed: 42, n: 20 }); // smoke-test-sized dir mixed with a full run
+      const result = evaluateMultiRunParamsGuard([a, b]);
+      expect(result.action).toBe('refuse');
+      if (result.action === 'refuse') {
+        expect(result.refuseMessage).toContain(b);
+        expect(result.refuseMessage).toContain('n differs');
+        expect(result.refuseMessage).toContain('=10');
+        expect(result.refuseMessage).toContain('=20');
+      }
+    });
+
+    it('(test c) a mismatched --seed refuses', () => {
+      const a = makeRunDir({ seed: 42, n: 10 });
+      const b = makeRunDir({ seed: 7, n: 10 });
+      const result = evaluateMultiRunParamsGuard([a, b]);
+      expect(result.action).toBe('refuse');
+      if (result.action === 'refuse') expect(result.refuseMessage).toContain('seed differs');
+    });
+
+    it('(test c) a mismatched dataset hash refuses', () => {
+      const a = makeRunDir({ datasetHash: 'old-hash', seed: 42, n: 10 });
+      const b = makeRunDir({ datasetHash: 'new-hash', seed: 42, n: 10 });
+      const result = evaluateMultiRunParamsGuard([a, b]);
+      expect(result.action).toBe('refuse');
+      if (result.action === 'refuse') expect(result.refuseMessage).toContain('datasetHash differs');
+    });
+
+    it('(test d) any dir missing run-params.json refuses with a "predates" message, naming the dir', () => {
+      const a = makeRunDir({ seed: 42, n: 10 });
+      const b = makeRunDir(null); // predates FEAT-462
+      const result = evaluateMultiRunParamsGuard([a, b]);
+      expect(result.action).toBe('refuse');
+      if (result.action === 'refuse') {
+        expect(result.refuseMessage).toMatch(/predates FEAT-462's resume support/);
+        expect(result.refuseMessage).toContain(b);
+      }
+    });
+
+    it('flags every mismatching dir, not just the first, across 3+ run dirs', () => {
+      const a = makeRunDir({ seed: 42, n: 10 });
+      const b = makeRunDir({ seed: 42, n: 20 });
+      const c = makeRunDir({ seed: 42, n: 30 });
+      const result = evaluateMultiRunParamsGuard([a, b, c]);
+      expect(result.action).toBe('refuse');
+      if (result.action === 'refuse') {
+        expect(result.refuseMessage).toContain(b);
+        expect(result.refuseMessage).toContain(c);
+      }
     });
   });
 });

@@ -11,7 +11,7 @@
  * single-run report. The `runs`/`stats` fields only appear when more than
  * one run was collected.
  */
-import { mean, computeStats, compareMeans, formatStatsPct, type Stats } from './stats.js';
+import { mean, computeStats, compareMeans, formatStatsPct, type Stats } from '../../shared/stats.js';
 import type { FixtureScore, JudgeAtomIn, JudgeAgreementReport } from './judge.js';
 
 export interface FixtureReportRow {

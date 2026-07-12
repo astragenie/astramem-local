@@ -1,7 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   normalizeAnswer, f1Score, multiAnswerF1, isAbstentionPhrase, scoreHypothesis,
-  computeMetrics, scoreRun, type ScoredQa,
+  computeMetrics, scoreRun, combineMetricsReports, printMultiRunReport, type ScoredQa, type MetricsReport,
 } from './metrics.mts';
 import type { LoCoMoSample } from '../lib/types.js';
 
@@ -155,5 +155,113 @@ describe('scoreRun', () => {
     ];
     const report = scoreRun(hyps, references);
     expect(report.n_total).toBe(0);
+  });
+});
+
+describe('combineMetricsReports — AC-4 multi-run mean±stdev (FEAT-457 slice 1)', () => {
+  // run 1: category 4 scores [1, 0] -> accuracy 0.5, n=2; category 5 scores
+  // [1] -> accuracy 1, n=1. overall = 2/3, n_total=3, category_averaged=0.75.
+  const run1: MetricsReport = computeMetrics([
+    { qa_id: 'a#0', category: 4, score: 1 },
+    { qa_id: 'a#1', category: 4, score: 0 },
+    { qa_id: 'a#2', category: 5, score: 1 },
+  ]);
+  // run 2: category 4 scores [1, 1] -> accuracy 1, n=2; category 5 scores
+  // [0] -> accuracy 0, n=1. overall = 2/3, n_total=3, category_averaged=0.5.
+  const run2: MetricsReport = computeMetrics([
+    { qa_id: 'a#0', category: 4, score: 1 },
+    { qa_id: 'a#1', category: 4, score: 1 },
+    { qa_id: 'a#2', category: 5, score: 0 },
+  ]);
+
+  it('with exactly one report, returns it completely unchanged (no runs/*_stats keys) — backward compat', () => {
+    const combined = combineMetricsReports([run1]);
+    expect(combined).toBe(run1); // same object identity, zero transformation
+    expect('runs' in combined).toBe(false);
+    expect('category_stats' in combined).toBe(false);
+  });
+
+  it('throws on an empty report list', () => {
+    expect(() => combineMetricsReports([])).toThrow(/at least one run/);
+  });
+
+  it('with N>1 reports, computes mean±stdev per category by hand-checked values', () => {
+    const combined = combineMetricsReports([run1, run2]);
+    expect(combined.runs).toHaveLength(2);
+
+    // category 4: accuracies [0.5, 1] -> mean 0.75, sample stdev sqrt(0.125)
+    expect(combined.category_stats![4].accuracy.mean).toBeCloseTo(0.75, 10);
+    expect(combined.category_stats![4].accuracy.stdev).toBeCloseTo(Math.sqrt(0.125), 10);
+    expect(combined.per_category[4].n).toBe(4); // 2 + 2 pooled QA count
+    expect(combined.per_category[4].accuracy).toBeCloseTo(0.75, 10); // mean surfaced as the plain field too
+
+    // category 5: accuracies [1, 0] -> mean 0.5, sample stdev sqrt(0.5)
+    expect(combined.category_stats![5].accuracy.mean).toBeCloseTo(0.5, 10);
+    expect(combined.category_stats![5].accuracy.stdev).toBeCloseTo(Math.sqrt(0.5), 10);
+    expect(combined.per_category[5].n).toBe(2); // 1 + 1
+
+    // categories with zero QA in both runs stay NaN/empty, not a fabricated 0
+    expect(combined.per_category[1].n).toBe(0);
+    expect(Number.isNaN(combined.per_category[1].accuracy)).toBe(true);
+    expect(combined.category_stats![1].accuracy.n).toBe(0);
+    expect(combined.category_stats![1].accuracy.mean).toBeNull();
+
+    // category_averaged_accuracy per run: [0.75, 0.5] -> mean 0.625, stdev sqrt(0.03125)
+    expect(combined.category_averaged_accuracy).toBeCloseTo(0.625, 10);
+    expect(combined.category_averaged_accuracy_stats!.mean).toBeCloseTo(0.625, 10);
+    expect(combined.category_averaged_accuracy_stats!.stdev).toBeCloseTo(Math.sqrt(0.03125), 10);
+
+    // overall_accuracy is 2/3 in both runs -> mean 2/3, stdev 0 (identical runs)
+    expect(combined.overall_accuracy).toBeCloseTo(2 / 3, 10);
+    expect(combined.overall_accuracy_stats!.mean).toBeCloseTo(2 / 3, 10);
+    expect(combined.overall_accuracy_stats!.stdev).toBe(0);
+
+    // n_total pools across runs (3 + 3), not averaged
+    expect(combined.n_total).toBe(6);
+  });
+});
+
+describe('printMultiRunReport — runs-contributing annotation (review fix, low-severity observability nit)', () => {
+  function captureLogs(fn: () => void): string[] {
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, 'log').mockImplementation((msg?: unknown) => { logs.push(String(msg)); });
+    try {
+      fn();
+    } finally {
+      spy.mockRestore();
+    }
+    return logs;
+  }
+
+  it('appends "x/y runs" when a category is present in fewer runs than the total (e.g. emptied by a distill timeout)', () => {
+    // run A: only category 4 has QA. run B: only category 5 has QA -- so
+    // each category is contributed by exactly 1 of the 2 runs.
+    const runA = computeMetrics([{ qa_id: 'a#0', category: 4, score: 1 }]);
+    const runB = computeMetrics([{ qa_id: 'b#0', category: 5, score: 1 }]);
+    const combined = combineMetricsReports([runA, runB]);
+
+    const logs = captureLogs(() => printMultiRunReport(combined));
+    const cat4Line = logs.find(l => l.includes('(single-hop)'));
+    const cat5Line = logs.find(l => l.includes('(adversarial)'));
+    expect(cat4Line).toContain('1/2 runs');
+    expect(cat5Line).toContain('1/2 runs');
+  });
+
+  it('omits the runs-contributing note when every run contributed to a category', () => {
+    const runA = computeMetrics([{ qa_id: 'a#0', category: 4, score: 1 }, { qa_id: 'a#1', category: 4, score: 0 }]);
+    const runB = computeMetrics([{ qa_id: 'b#0', category: 4, score: 1 }]);
+    const combined = combineMetricsReports([runA, runB]);
+
+    const logs = captureLogs(() => printMultiRunReport(combined));
+    const cat4Line = logs.find(l => l.includes('(single-hop)'));
+    expect(cat4Line).not.toContain('runs)');
+    expect(cat4Line).toContain('n=3'); // pooled QA count (2 + 1), still shown
+  });
+
+  it('delegates a single-report (no runs/category_stats) straight to the single-run print path unchanged', () => {
+    const single = computeMetrics([{ qa_id: 'a#0', category: 4, score: 1 }]);
+    const logs = captureLogs(() => printMultiRunReport(single));
+    expect(logs.some(l => l.includes('mean ± stdev'))).toBe(false);
+    expect(logs.some(l => l.includes('runs)'))).toBe(false);
   });
 });

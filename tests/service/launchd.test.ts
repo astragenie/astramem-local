@@ -102,4 +102,38 @@ describe('LaunchdAdapter', () => {
     expect(s.installed).toBe(false);
     expect(s.running).toBe(false);
   });
+
+  // FEAT-443 SLICE-2 — hang-watchdog probe agent
+  describe('watchdog timer', () => {
+    it('installWatchdogTimer writes a StartInterval agent plist', async () => {
+      await adapter.installWatchdogTimer('/usr/local/bin/node /app/dist/cli/index.js', 180);
+
+      expect(fsMock.writeFileSync).toHaveBeenCalledOnce();
+      const [path, content] = fsMock.writeFileSync.mock.calls[0] as [string, string];
+      expect(path).toMatch(/com\.astragenie\.astra-memoryd-watchdog\.plist$/);
+      expect(content).toContain('<key>StartInterval</key>');
+      expect(content).toContain('<integer>180</integer>');
+      expect(content).toContain('service');
+      expect(content).toContain('watchdog-probe');
+      expect(content).not.toContain('<key>KeepAlive</key>');
+    });
+
+    it('installWatchdogTimer bootstraps via launchctl', async () => {
+      await adapter.installWatchdogTimer('/usr/local/bin/node /app/dist/cli/index.js', 180);
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      expect(cmds.some(c => c.includes('launchctl') && (c.includes('bootstrap') || c.includes('load')))).toBe(true);
+    });
+
+    it('uninstallWatchdogTimer unloads and removes the plist when present', async () => {
+      fsMock.existsSync.mockReturnValue(true);
+      await adapter.uninstallWatchdogTimer();
+      expect(fsMock.unlinkSync).toHaveBeenCalledOnce();
+    });
+
+    it('uninstallWatchdogTimer is a no-op when nothing was installed', async () => {
+      fsMock.existsSync.mockReturnValue(false);
+      await adapter.uninstallWatchdogTimer();
+      expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -34,6 +34,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 import { loadDataset, sampleStratified } from './lib/dataset.js';
 import { QUESTION_TYPES, isAbstention, type LongMemEvalQuestion } from './lib/types.js';
 import {
@@ -48,6 +49,9 @@ import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance, detectPossibleReload } from '../shared/ollama-tuning.js';
 import { ledgerCompletedMap } from '../shared/resume-ledger.js';
 import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
+import { evaluateDetachDecision, isDetachedChild, buildDetachedChildArgs, spawnDetached } from '../shared/detach.js';
+import { patchRunStatus, printRunStatus, shouldFlushProgress } from '../shared/run-status.js';
+import { writeDaemonManifest, type DaemonManifestEntry } from '../shared/daemon-manifest.js';
 
 const args = process.argv.slice(2);
 const get = (flag: string): string | undefined => {
@@ -71,6 +75,12 @@ const dryRunThroughput = has('--dry-run-throughput');
 // ingest ledger (scripts/eval/shared/resume-ledger.ts) is what actually
 // skips already-completed sessions — see runShard below.
 const resumeDir = get('--resume');
+// FEAT-462 slice B AC-2: launch this run detached (survives the invoking
+// terminal/session ending) -- see ../shared/detach.ts's header comment.
+const detachRequested = has('--detach');
+// FEAT-462 slice B AC-2: print run-status.json for an existing run dir and
+// exit -- bypasses everything else (sampling, Azure, daemons).
+const statusDir = get('--status');
 
 // Sampled-dataset extrapolation constants (README "Throughput" section) —
 // used only to print the 50q/500q projection table in dry-run mode, never to
@@ -80,7 +90,9 @@ const SAMPLE_50_SESSIONS = Math.round(50 * AVG_SESSIONS_PER_QUESTION);
 const FULL_500_SESSIONS = Math.round(500 * AVG_SESSIONS_PER_QUESTION);
 const DOCUMENTED_BASELINE_SECS_PER_SESSION = 50; // README measured midpoint (45-60s/session), single daemon, no sharding
 
-if (dryRunThroughput) {
+if (statusDir) {
+  process.exitCode = printRunStatus(statusDir);
+} else if (dryRunThroughput) {
   await runDryRunThroughput();
 } else {
   await runSmoke();
@@ -111,8 +123,20 @@ async function runShard(opts: {
    *  existing call site (including --dry-run-throughput) is unaffected —
    *  AC-7. */
   resume?: boolean;
+  /** FEAT-462 slice B AC-3: called once this shard's daemon has printed its
+   *  bound port, so the caller can accumulate + write daemon-manifest.json.
+   *  Optional -- every existing call site is unaffected (AC-7). */
+  onDaemonSpawned?: (entry: DaemonManifestEntry) => void;
+  /** FEAT-462 slice B AC-2: called on every ingest progress tick so the
+   *  caller can aggregate cross-shard sessions-done/total into
+   *  run-status.json. Optional -- every existing call site is unaffected
+   *  (AC-7). */
+  reportIngestProgress?: (shardIndex: number, done: number, total: number) => void;
 }): Promise<ShardResult> {
-  const { shardIndex, totalShards, questions, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false } = opts;
+  const {
+    shardIndex, totalShards, questions, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false,
+    onDaemonSpawned, reportIngestProgress,
+  } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
   const shardDir = label ? join(runDir, label) : runDir;
   const dataDir = join(shardDir, 'datadir');
@@ -154,6 +178,7 @@ async function runShard(opts: {
     await waitForHealthStatus(daemon.baseUrl, ['ok'], 60_000);
     timings.daemon_boot_ms = Date.now() - t;
     console.log(`${tag}daemon up at ${daemon.baseUrl} (${timings.daemon_boot_ms}ms)`);
+    onDaemonSpawned?.({ shard: shardIndex, label: label ?? 'single', pid: daemon.pid, port: daemon.port, datadir: dataDir });
 
     t = Date.now();
     const ingestManifest = await ingestQuestions(
@@ -163,7 +188,11 @@ async function runShard(opts: {
         concurrency,
         ledgerPath,
         resumeCompleted,
-        onProgress: (d, total) => { checkDaemonAlive(); if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`); },
+        onProgress: (d, total) => {
+          checkDaemonAlive();
+          reportIngestProgress?.(shardIndex, d, total);
+          if (d % 50 === 0 || d === total) process.stdout.write(`\r  ${tag}${d}/${total} sessions ingested`);
+        },
       },
     );
     process.stdout.write('\n');
@@ -250,6 +279,33 @@ async function runSmoke(): Promise<void> {
   mkdirSync(runDir, { recursive: true });
   console.log(resumeDir ? `Resuming run dir: ${runDir} (ledger-driven skip of already-ingested sessions)` : `Run dir: ${runDir}`);
 
+  // FEAT-462 slice B AC-2: --detach re-execs this exact invocation (pinned
+  // to this runDir) as a detached child, writes the initial run-status.json,
+  // and returns -- the detached child re-evaluates this same decision point
+  // and takes the 'run-inline' branch instead (env marker set by the spawn).
+  const detachDecision = evaluateDetachDecision({ detachRequested, alreadyDetached: isDetachedChild(process.env) });
+  const startedAt = new Date().toISOString();
+  if (detachDecision.action === 'spawn-detached') {
+    const child = spawnDetached({
+      scriptPath: fileURLToPath(import.meta.url),
+      args: buildDetachedChildArgs(args, runDir),
+      cwd: process.cwd(),
+      runDir,
+    });
+    patchRunStatus(runDir, {
+      status: 'running', phase: 'starting', orchestrator_pid: child.pid ?? -1, detached: true,
+      started_at: startedAt, sessions_done: 0, sessions_total: 0,
+    });
+    console.log(`Detached: orchestrator pid ${child.pid}, run dir ${runDir}`);
+    console.log(`Check progress:  bun scripts/eval/longmemeval/run-smoke.mts --status ${runDir}`);
+    console.log(`Detached stdout/stderr -> ${child.stdoutPath} / ${child.stderrPath}`);
+    return;
+  }
+  patchRunStatus(runDir, {
+    status: 'running', phase: 'starting', orchestrator_pid: process.pid, detached: isDetachedChild(process.env),
+    started_at: startedAt, sessions_done: 0, sessions_total: 0,
+  });
+
   // FEAT-462 review fix (finding 5): refuse a --resume whose sampling scope
   // doesn't match the original invocation -- see ../shared/run-params.ts's
   // header comment for the full incident this guards against (a smaller
@@ -261,6 +317,10 @@ async function runSmoke(): Promise<void> {
   const guard = evaluateResumeGuard(runParamsPath, Boolean(resumeDir), currentParams);
   if (guard.action === 'refuse') {
     console.error(`--resume ${resumeDir}: ${guard.refuseMessage}`);
+    patchRunStatus(runDir, {
+      status: 'failed', phase: 'failed', orchestrator_pid: process.pid, started_at: startedAt,
+      error: guard.refuseMessage, exit_code: 1,
+    });
     process.exitCode = 1;
     return;
   }
@@ -287,6 +347,10 @@ async function runSmoke(): Promise<void> {
     for (const t of QUESTION_TYPES) console.log(`  ${t}: ${counts[t] ?? 0}`);
     console.log(`  (of which _abs abstention: ${absCount})`);
   }
+  const totalSessionsSampled = sample.reduce((s, q) => s + q.haystack_session_ids.length, 0);
+  patchRunStatus(runDir, {
+    orchestrator_pid: process.pid, started_at: startedAt, phase: 'sampling', sessions_total: totalSessionsSampled,
+  });
 
   const ollamaStatus = await queryOllamaStatus(ollamaBaseUrl);
   printOllamaTuningGuidance(ollamaStatus, ollamaBaseUrl);
@@ -301,6 +365,34 @@ async function runSmoke(): Promise<void> {
   const azureCfg = resolveAzureConfig();
   console.log(`Answering via Azure deployment "${azureCfg.answererDeployment}" (reasoning_effort=minimal, k=${k})...`);
 
+  patchRunStatus(runDir, { orchestrator_pid: process.pid, started_at: startedAt, phase: 'ingesting' });
+
+  // FEAT-462 slice B AC-3: accumulate every shard's daemon {pid, port,
+  // datadir} into daemon-manifest.json as each one spawns -- synchronous
+  // push+write, safe under concurrent shard promises (single-threaded JS,
+  // no await between the two).
+  const daemonManifestEntries: DaemonManifestEntry[] = [];
+  const onDaemonSpawned = (entry: DaemonManifestEntry): void => {
+    daemonManifestEntries.push(entry);
+    writeDaemonManifest(runDir, [...daemonManifestEntries]);
+  };
+  // FEAT-462 slice B AC-2: throttled cross-shard ingest-progress aggregation
+  // into run-status.json's sessions_done/sessions_total.
+  const shardIngestProgress = new Map<number, { done: number; total: number }>();
+  let lastProgressFlushMs = 0;
+  const reportIngestProgress = (shardIndex: number, done: number, total: number): void => {
+    shardIngestProgress.set(shardIndex, { done, total });
+    const now = Date.now();
+    if (!shouldFlushProgress(lastProgressFlushMs, now)) return;
+    lastProgressFlushMs = now;
+    let sessionsDone = 0;
+    for (const v of shardIngestProgress.values()) sessionsDone += v.done;
+    patchRunStatus(runDir, {
+      orchestrator_pid: process.pid, started_at: startedAt, phase: 'ingesting',
+      sessions_done: sessionsDone, sessions_total: totalSessionsSampled,
+    });
+  };
+
   tStart = Date.now();
   const settled = await Promise.allSettled(
     shardBuckets.map((questions, i) => runShard({
@@ -313,6 +405,8 @@ async function runSmoke(): Promise<void> {
       k,
       azureCfg,
       resume: Boolean(resumeDir),
+      onDaemonSpawned,
+      reportIngestProgress,
     })),
   );
   timings.shards_wall_clock_ms = Date.now() - tStart;
@@ -380,6 +474,11 @@ async function runSmoke(): Promise<void> {
   console.log(`\nNext: judge the hypotheses, e.g.\n  bun scripts/eval/longmemeval/judge.mts --hyp ${hypPath} --ref ${datasetPath} --judge gpt-5-mini`);
 
   if (manifest.failed_count > 0 || distillResult.timed_out_question_ids.length > 0 || failedShards.length > 0) exitCode = 1;
+  patchRunStatus(runDir, {
+    status: exitCode === 0 ? 'completed' : 'failed', phase: exitCode === 0 ? 'completed' : 'failed',
+    orchestrator_pid: process.pid, started_at: startedAt,
+    sessions_done: manifest.ok_count, sessions_total: manifest.total_sessions, exit_code: exitCode,
+  });
   process.exitCode = exitCode;
 }
 

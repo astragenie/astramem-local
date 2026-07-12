@@ -318,6 +318,19 @@ export interface Config {
         dedupWindow: number;
       };
     };
+    /** Purge-batch reversible soft-delete (FEAT-467, ADR-013 Decision 4 —
+     *  hard prerequisite for FEAT-458's proxy capture tier). Governs the
+     *  default bounded restore window `MemoryEventRepo.purgeBatch()` opens
+     *  when a disable flow (auto-capture today, proxy capture later) purges
+     *  its capture-source-scoped atoms: reversible via restorePurgeBatch()
+     *  until `restoreWindowDays` elapses, after which finalizePurgeBatch()
+     *  hard-erases whatever is still unrestored (ADR-006 "erasure always
+     *  wins, eventually"). 30 days balances "long enough to notice
+     *  unexpected captured content" against "not an indefinite soft-deleted
+     *  shadow copy" — see docs/specs/FEAT-458-S1-design.md §1.3. */
+    purge: {
+      restoreWindowDays: number;
+    };
   };
   /** LLM proxy / auto-capture Tier 3 (FEAT-458, ADR-013). `enabled: false`
    *  (default, and the field's ABSENCE on an existing config.yaml) means no
@@ -392,6 +405,7 @@ export function defaultConfig(): Config {
         enabled: false,
         relevanceGate: { minChars: 8, maxBytes: 65536, dedupWindow: 20 },
       },
+      purge: { restoreWindowDays: 30 },
     },
     proxy: {
       enabled: false,

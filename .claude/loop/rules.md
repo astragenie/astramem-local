@@ -51,7 +51,7 @@ Open every slice through the canonical start command **before** beginning accept
 1. **Identify the next slice.** Check `docs/superpowers/plans/*.md` for unchecked `## Task N: SLICE_NN` headings first; else fall back to Cross-Slice Continuation.
 2. **`/runner:slice start --id SLICE-NN`** — rotates `currentRun` via `crew write-run-brief`, seeds the goal from `## Objective`, rewrites `.claude/state/crew/slice-progress.md`.
 3. **Inspect the return.** Confirm `runBrief.artifactPath` is populated and `workflow-state.json.currentRun.title` equals `SLICE-NN: <title>`. Surface errors and stop — do not proceed with a stale run.
-4. **Dispatch `crew:builder` subagent.** The `slice start` return includes a `dispatchInstruction` — hand it to a `crew:builder` subagent. Builder owns implementation only; when it returns, dispatch `crew:reviewer`, then `crew:validator` if behavior changed. **Do not implement inline.**
+4. **Dispatch a crew builder subagent.** The `slice start` return includes a `dispatchInstruction` — hand it to a crew builder subagent: `crew:fullstack-dev` (or the stack-specific `crew:backend-dev` / `crew:frontend-dev`), or generic `claude`. There is no agent literally named `crew:builder`. Builder owns implementation only; when it returns, dispatch `crew:reviewer`, then `crew:validator` if behavior changed. **Do not implement inline.**
 5. **Wait for builder, reviewer, and validator reports**, then run the Slice Close Ceremony.
 
 Exception: manual invocations may pass `--no-dispatch`. The autonomous loop should never pass `--no-dispatch`.
@@ -62,7 +62,7 @@ The autonomous loop is an **orchestrator**, not an implementer. Every code-beari
 
 | Situation                                                         | Dispatch                                                    |
 | ----------------------------------------------------------------- | ----------------------------------------------------------- |
-| Slice implementation (acceptance criteria work)                   | `crew:builder` subagent (parent loop gates review+validate) |
+| Slice implementation (acceptance criteria work)                   | a crew builder subagent — `crew:fullstack-dev` (or `crew:backend-dev` / `crew:frontend-dev`), or generic `claude` (parent loop gates review+validate) |
 | Bug found during slice (test fail, regression, integration error) | `/crew:fix` subagent                                        |
 | Independent code review pass                                      | `/crew:review` subagent (or the configured reviewer ladder) |
 | Behavior validation when something is runnable                    | `/crew:validate` subagent                                   |
@@ -77,7 +77,7 @@ Pivot triggers — any of these means **stop, dispatch `/crew:fix`, then resume*
 
 When in doubt, prefer dispatch. A subagent run produces its own artifact trail; an inline patch hides in the loop's conversation and loses cost/grade attribution.
 
-**Never use `caveman:*` agents for slice work.** They lack the full artifact protocol. Always use `crew:builder`, `crew:reviewer`, `crew:validator`, `crew:deployer`.
+**Never use `caveman:*` agents for slice work.** They lack the full artifact protocol. Always use a real crew builder (`crew:fullstack-dev`, `crew:backend-dev`, `crew:frontend-dev`), `crew:reviewer`, `crew:validator`, `crew:deployer` — never `crew:builder`, which is not an agent.
 
 - **Dispatch budget.** Maximum {{dispatchLimits.maxSubagentsPerSlice}} subagent dispatches per slice. Inline execution for: single-file edits, test fixes, lint fixes, format fixes. Subagent dispatch only for bounded independent tasks (full build, review, validation). Each cold-start re-derives context — avoid unless the task genuinely benefits from isolation.
 

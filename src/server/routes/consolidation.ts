@@ -40,6 +40,12 @@ const ListQuerySchema = z.object({
   kind: z.enum(['merge', 'contradiction']).optional(),
 });
 
+// FEAT-437 residual: `bulk` distinguishes the `consolidate accept --all` CLI
+// path from a single manual accept — see ProposalRepo.accept's `opts` param.
+// Ignored on reject (rejection carries no equivalent provenance to mark).
+// Optional so existing accept callers sending no body at all are unaffected.
+const AcceptBodySchema = z.object({ bulk: z.boolean().optional() }).optional();
+
 export function consolidationRoutes(db: DB, config: Config) {
   return async (app: FastifyInstance) => {
     const proposals = new ProposalRepo(db);
@@ -70,7 +76,10 @@ export function consolidationRoutes(db: DB, config: Config) {
       async (req: FastifyRequest, reply: FastifyReply) => {
         const { id } = req.params as { id: string };
         try {
-          return action === 'accept' ? proposals.accept(id) : proposals.reject(id);
+          if (action === 'reject') return proposals.reject(id);
+          const parsedBody = AcceptBodySchema.safeParse(req.body ?? {});
+          const bulk = parsedBody.success && parsedBody.data?.bulk === true;
+          return proposals.accept(id, undefined, bulk ? { bulkAccepted: true } : undefined);
         } catch (err) {
           if (err instanceof ProposalNotFoundError) return reply.code(404).send({ error: 'not found', id });
           if (err instanceof ProposalAlreadyResolvedError) return reply.code(409).send({ error: err.message, id });

@@ -97,6 +97,51 @@ describe('classifyDurability — rationale-bearing durable atoms are never gated
   }
 });
 
+// FEAT-448 AC-1/AC-3: RATIONALE_MARKER_RE was a bare keyword-presence check,
+// so an incidental marker exempted genuine junk that has no real causal
+// binding to the marker. These 5 examples (FF-1 re-review, FEAT-448.md) must
+// now GATE with their correct reason instead of persisting as null.
+describe('classifyDurability — incidental (non-causal) markers no longer exempt (FEAT-448 AC-1)', () => {
+  it('temporal "since" (a clock time) does not exempt an ephemeral_state atom', () => {
+    expect(classifyDurability('The build is currently green since 3pm.')).toBe('ephemeral_state');
+  });
+
+  it('temporal "since" ("since last week") does not exempt a git_derivable atom', () => {
+    expect(classifyDurability('Commit abc1234 merged since last week.')).toBe('git_derivable');
+  });
+
+  it('"because" glued onto a contentless one-word clause does not exempt', () => {
+    expect(classifyDurability('It is running because deploy.')).toBe('ephemeral_state');
+  });
+
+  it('"because reasons" (self-referential, contentless) does not exempt', () => {
+    expect(classifyDurability('Status is red because reasons.')).toBe('ephemeral_state');
+  });
+
+  it('a literal "--" from a CLI flag does not exempt (not dash punctuation)', () => {
+    expect(classifyDurability('Build is failing --verbose flag set.')).toBe('ephemeral_state');
+  });
+});
+
+// FEAT-448 fix round (review 20260712T160505Z, HIGH): the because/reason
+// contentless check must be scoped per marker OCCURRENCE, not one
+// whole-string existential test — otherwise a later throwaway
+// "because bug."/"reason: unclear." fragment can suppress the exemption
+// already earned by an earlier genuine cause in the same atom.
+describe('classifyDurability — multiple because/reason occurrences (FEAT-448 fix-round HIGH)', () => {
+  it('an earlier genuine cause persists even with a later contentless "because" fragment', () => {
+    expect(classifyDurability('Status is red because deploy broke it because bug.')).toBeNull();
+  });
+
+  it('an earlier genuine cause persists even with a later contentless "reason:" fragment', () => {
+    expect(classifyDurability('Build is green because tests passed, reason: unclear.')).toBeNull();
+  });
+
+  it('an atom where EVERY because/reason occurrence is contentless still gates', () => {
+    expect(classifyDurability('Status is red because reasons, reason: stuff.')).toBe('ephemeral_state');
+  });
+});
+
 describe('gateDurability — mode semantics', () => {
   it('off: never gates any pattern, regardless of content', () => {
     for (const { text } of EVIDENCE_SET) {

@@ -11,6 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 _Nothing yet._
 
+## [0.14.0] — 2026-07-10
+
+### Added
+- **Multi-run eval aggregation (FEAT-457, slice 1)** — the LoCoMo judge (`judge.mts`) now accepts repeated `--run-dir` inputs and reports mean ± sample-standard-deviation across runs (mean-of-run-means, correctly labeled), promoting the stats helpers to `scripts/eval/shared/stats.ts`. A cross-run comparability guard hard-refuses to combine run dirs sampled with different `--dataset`/`--seed`/`--n`/`--qa-per-sample` (each differing parameter named), extending FEAT-462a's "never silently publish a meaningless number" posture one layer up the pipeline. Single-run and no-`run-params.json` paths stay backward-compatible.
+- **Detached eval execution + scoped cleanup (FEAT-462, slice B)** — the LongMemEval and LoCoMo harnesses gain `--detach` (spawn a survives-the-session child), a throttled `run-status.json` progress file readable via `run-smoke.mts --status <run-dir>`, and a `daemon-manifest.json` recording each spawned daemon's PID + port. A new `kill-run.mts` operator CLI cleans up a stuck detached run and signals **only** the manifest's own daemons, guarded by a fail-closed PID-reuse identity check (`checkPortOwner` via `netstat`/`lsof`): if the recorded PID no longer owns its recorded port, the kill is skipped rather than risking an innocent process — the exact failure class CLAUDE.md's Do-NOT section records. Both eval READMEs gain a copy-pasteable "my detached run looks stuck" operator playbook.
+
+### Fixed
+- **extraction-bench imports repointed at `scripts/eval/shared` (FEAT-469)** — post-0.13.0 fix unblocking the FEAT-450 extraction sweep; no runtime behavior change to the daemon.
+
 ## [0.13.0] — 2026-07-10
 
 ### Added

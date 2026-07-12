@@ -160,10 +160,15 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
  * (FEAT-455 / ADR-012 decision 4). Turning auto-capture off is always
  * immediate (config.yaml write, no daemon required); the purge OFFER is a
  * separate, explicit step — "offered, not forced" — scoped to
- * `capture_source = 'auto_capture'` atoms via the SAME lifecycle primitive
- * `erase_memory` (MCP) / `DELETE /memory/:id` (REST) already exposes
- * (ADR-006), reused unmodified (spike checklist #5). A per-id try/catch means
- * one already-erased id doesn't fail the whole batch.
+ * `capture_source = 'auto_capture'` atoms.
+ *
+ * FEAT-467 retrofit (ADR-013 Decision 4): the purge itself now calls
+ * `POST /capture/purge`, a reversible soft-delete batch (bounded restore
+ * window, default 30 days — `capture.purge.restoreWindowDays`), NOT the
+ * irreversible `erase_memory`/`DELETE /memory/:id` path this used prior to
+ * FEAT-467. A batch left unrestored is hard-erased once the window elapses
+ * (`POST /capture/purge/:batchId/finalize`, explicit or via a scheduled
+ * sweep) — see docs/specs/FEAT-458-S1-design.md §1.
  */
 async function runAutoCaptureDisable(args: string[]): Promise<void> {
   const asJson = args.includes('--json');
@@ -215,7 +220,8 @@ async function runAutoCaptureDisable(args: string[]): Promise<void> {
     purge = await confirm({
       message:
         `${rows.length} auto-captured ${rows.length === 1 ? 'memory' : 'memories'} found. ` +
-        'Permanently erase them now? (No = keep them — auto-capture stays off either way)',
+        'Purge them now? (Reversible for a bounded window, then permanently erased — ' +
+        'No = keep them, auto-capture stays off either way)',
       default: false,
     });
   } else {
@@ -233,40 +239,51 @@ async function runAutoCaptureDisable(args: string[]): Promise<void> {
     return;
   }
 
-  // Purge: same REST surface erase_memory (MCP) / DELETE /memory/:id
-  // exposes — requires a running daemon. 404 (already erased) counts as
-  // done, not a failure (spike checklist #5 finding).
+  // FEAT-467 retrofit (ADR-013 Decision 4): purge is a reversible soft-delete
+  // batch, not an immediate hard erase — POST /capture/purge re-scopes to
+  // `capture_source = 'auto_capture' AND valid_to IS NULL` itself (same
+  // predicate `rows` above already used), so this is a single call rather
+  // than a per-id loop. Requires a running daemon.
   const baseUrl = process.env.ASTRA_MEMORY_URL ?? `http://127.0.0.1:${cfg.port}`;
   const token = process.env.ASTRA_MEMORY_TOKEN ?? 'devtok';
-  let erased = 0;
-  let alreadyGone = 0;
-  let failed = 0;
-  for (const { id } of rows) {
-    try {
-      const res = await fetch(`${baseUrl}/memory/${encodeURIComponent(id)}`, {
-        method: 'DELETE',
-        headers: { authorization: `Bearer ${token}` },
-      });
-      if (res.status === 200) erased++;
-      else if (res.status === 404) alreadyGone++;
-      else failed++;
-    } catch {
-      failed++;
+  let batchId: string | null = null;
+  let purgedCount = 0;
+  let failed = false;
+  try {
+    const res = await fetch(`${baseUrl}/capture/purge`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ capture_source: 'auto_capture' }),
+    });
+    if (res.status === 200) {
+      const body = (await res.json()) as { batch_id: string; count: number };
+      batchId = body.batch_id;
+      purgedCount = body.count;
+    } else {
+      failed = true;
     }
+  } catch {
+    failed = true;
   }
 
   if (asJson) {
     console.log(JSON.stringify(
-      { disabled: true, was_enabled: wasEnabled, auto_captured_count: rows.length, purge: 'completed', erased, already_gone: alreadyGone, failed },
+      {
+        disabled: true, was_enabled: wasEnabled, auto_captured_count: rows.length,
+        purge: failed ? 'failed' : 'completed', purged: purgedCount, batch_id: batchId,
+      },
       null, 2,
     ));
+  } else if (failed) {
+    console.log('Purge failed — is the daemon running? Re-run this command to retry.');
   } else {
-    console.log(`Purge complete: ${erased} erased, ${alreadyGone} already gone, ${failed} failed.`);
-    if (failed > 0) {
-      console.log('Some erasures failed — is the daemon running? Re-run this command to retry the remainder.');
-    }
+    console.log(
+      `Purge batch ${batchId}: ${purgedCount} ${purgedCount === 1 ? 'memory' : 'memories'} soft-purged — ` +
+      'restorable within the configured window (POST /capture/purge/:batchId/restore) before being ' +
+      'permanently erased.',
+    );
   }
-  if (failed > 0) process.exitCode = 1;
+  if (failed) process.exitCode = 1;
 }
 
 export async function captureCommand(args: string[]): Promise<void> {

@@ -135,6 +135,17 @@ function isLabelWithSafeValueFollowing(token: string, text: string, end: number,
   return SAFE_VALUE_RE.test(nextValue);
 }
 
+// FEAT-463 final-review note, resolved by FEAT-468 below: this stage has a
+// numeric-alphabet ceiling. A string drawn uniformly from a 10-symbol
+// alphabet (digits only) tops out at log2(10) ≈ 3.32 bits/char no matter how
+// long or "random" it is, which sits below the 4.0 default
+// `entropyThreshold` — so a purely-numeric secret (e.g. a long numeric PIN,
+// account number, or digit-only API key) is invisible to Shannon entropy
+// regardless of length. Digit strings can still be caught upstream by a
+// labeled pattern detector (detectors.ts) or by the config-assignment/label
+// guards above when they carry recognizable context; the ceiling only
+// affects an UNLABELED all-digit token relying on entropy alone —
+// `findNumericSecretRuns` below is the dedicated fallback for that case.
 /** Shannon entropy in bits/char over the token's character distribution. */
 export function shannonEntropy(token: string): number {
   if (token.length === 0) return 0;
@@ -206,6 +217,135 @@ export function findEntropySecrets(text: string, threshold: number): EntropyMatc
     if (isGuarded(tok.value, text, tok.start, tok.end, threshold)) continue;
     if (shannonEntropy(tok.value) >= threshold) {
       matches.push({ start: tok.start, end: tok.end, value: tok.value });
+    }
+  }
+  return matches;
+}
+
+// ---------------------------------------------------------------------------
+// FEAT-468: numeric-secret digit-run heuristic (fixes the ceiling noted on
+// `shannonEntropy` above).
+//
+// Design choice: a maximal-digit-run length check, NOT a per-alphabet-
+// normalized entropy score. A normalized-entropy approach (divide by
+// log2(10) and compare to a ratio) was considered and rejected: it can't
+// tell a random-looking secret apart from a random-looking PHONE NUMBER or
+// ACCOUNT NUMBER, because both score close to the alphabet's own maximum —
+// there is no entropy-based signal that separates them. Length + "no
+// separator interrupts the run" is the discriminating signal instead: real
+// digit secrets in the wild (legacy numeric API tokens, long PINs) show up
+// as one unbroken run, while every FP-corpus shape below is either
+// separator-formatted (phone numbers, credit-card groups, zip+4) or simply
+// shorter than the floor (unix timestamps, order IDs, squashed ISO dates).
+//
+// `DIGIT_RUN_RE` finds every MAXIMAL run of digit characters in the text —
+// not tokenized on whitespace like `findEntropySecrets` above, so a digit
+// run embedded inside a larger non-whitespace-delimited token (e.g. a
+// digit-heavy legacy token glued to a short prefix) is still caught; only
+// the digit substring itself is redacted, not the surrounding characters.
+// ANY non-digit character — space, dash, paren, plus, dot, letter — ends a
+// run, so a formatted numeric shape is exempted for free, with no separate
+// separator-detection logic needed.
+//
+// Threshold: FEAT-468 review round 1 (MEDIUM finding) reproduced real,
+// common, unlabeled 20-22 digit false positives that the original
+// MIN_TOKEN_LENGTH-derived floor (20) didn't dodge — USPS Certified Mail
+// tracking numbers are exactly 20 unbroken digits, USPS Priority/Express
+// tracking numbers are exactly 22. Raised to 23, FP-first: still strictly
+// above every non-secret digit-run length in the corpus —
+//   - unix timestamps: 10 digits (seconds), 13 digits (ms)
+//   - squashed ISO date+time(+ms): up to ~17 digits (YYYYMMDDHHmmssSSS)
+//   - credit-card-shaped test numbers: 15 (Amex), 16 (Visa/Mastercard)
+//   - zip+4 (squashed): 9 digits
+//   - order/invoice/ID numbers: well under 20 in practice
+//   - USPS Certified Mail (20) / Priority-Express (22) tracking numbers
+// — while the FEAT-463 26-digit repro (the original motivating case) still
+// clears it with margin. Accepted, documented residual: an unlabeled 20-22
+// digit secret (rarer than a 23+ digit one, and shorter than any of the
+// vendor-format secrets this stage's sibling detectors already catch) is
+// still invisible to this heuristic. No separate config knob: see the
+// stage-3 wiring note in index.ts for why.
+const NUMERIC_SECRET_MIN_LENGTH = 23;
+const DIGIT_RUN_RE = /\d+/g;
+
+// FEAT-468 review round 1 (HIGH finding): the original digit-run scan had
+// zero label-context awareness, so it corrupted ordinary labeled non-secret
+// content — `INVOICE_NUMBER=12345678901234567890`, `"orderId":
+// "12345678901234567890"`, `MAX_RETRIES=9999999999999999999999999` all got
+// redacted, directly contradicting this FEAT's own scope ("the gap is
+// UNLABELED numeric secrets only"). `LABEL_PREFIX_RE` mirrors the intent of
+// `CONFIG_ASSIGNMENT_RE`/`isLabelWithSafeValueFollowing` above (skip a
+// value that's clearly attached to a label) but generalized to
+// arbitrary-length digit values instead of only single digits/booleans,
+// since a numeric-run "value" is exactly the case those two guards don't
+// cover (they both fire on the ENTROPY check over a whole token, not on a
+// digit substring embedded inside one). Matches env-style (`KEY=`),
+// YAML-style (`key: `), and JSON-style (`"key": `) label shapes immediately
+// before the run, with an optional single layer of quoting on the label —
+// deliberately does NOT check whether the label itself is a "secret"
+// keyword: per this FEAT's scope, a labeled value (secret-shaped label or
+// not) is the pattern-detector stage's job upstream, not this stage's.  A
+// genuinely secret-labeled numeric value (`TOKEN=<26 digits>`) is still
+// redacted — by the stage-2 `generic_credential` pattern detector, before
+// stage 3 (this heuristic) ever sees the raw text; see
+// `tests/security/redact.test.ts` for the pinned counter-case proving that.
+//
+// Bias is deliberately FP-first here, per review direction: a label-shaped
+// prefix suppresses the heuristic even when the "label" is ordinary prose
+// punctuation that happens to look like one (e.g. `Total: <23-digit
+// number>`) — an unrealistic shape in practice, traded off against the
+// HIGH-severity risk of silently corrupting real labeled IDs/config/JSON.
+//
+// FEAT-468 review round 2 (HITL decision — SAME-LINE ONLY, fixed a 40-char
+// fixed-window design that was both too wide and too narrow at once):
+// `hasLabelPrefix` no longer takes a fixed character window. Instead it
+// looks back to the START OF THE CURRENT LINE (the nearest preceding `\n`,
+// or offset 0) and tests only that slice.
+//   - [MEDIUM, closed] the old window's `\s*` could cross a newline, so a
+//     transcript header like `Summary:\n<secret>` — routine LLM output
+//     formatting, not a real label on the secret — silently suppressed
+//     redaction of a genuinely unlabeled secret (a false NEGATIVE, the more
+//     dangerous direction for a redaction control). A digit run that starts
+//     a line has an EMPTY same-line prefix, which can never match
+//     `LABEL_PREFIX_RE`, so it can no longer be suppressed by anything on a
+//     previous line, full stop.
+//   - [LOW, closed] the old fixed 40-char window could push a real label
+//     out of range if enough whitespace padding sat between the separator
+//     and the value (e.g. fixed-width/aligned config: `ACCOUNT_NUMBER:
+//     <40 spaces>12345...`). Same-line scanning has no length cap, so
+//     `\s*` in `LABEL_PREFIX_RE` absorbs arbitrary same-line padding.
+const LABEL_PREFIX_RE = /(?<![A-Za-z0-9_])["']?[A-Za-z][A-Za-z0-9_]*["']?\s*[:=]\s*["']?$/;
+
+/** True if `text` immediately before offset `start`, on the SAME LINE only
+ * (never crossing a `\n`), looks like a `LABEL=`, `label: `, or `"label": `
+ * shape — i.e. `start` is the value side of a labeled assignment, not a
+ * bare unlabeled token. A digit run that opens a new line (nothing between
+ * the line start and the run) always returns false here, by construction —
+ * a label on a PREVIOUS line can never suppress it. */
+function hasLabelPrefix(text: string, start: number): boolean {
+  const lineStart = text.lastIndexOf('\n', start - 1) + 1;
+  return LABEL_PREFIX_RE.test(text.slice(lineStart, start));
+}
+
+export interface NumericSecretMatch {
+  start: number;
+  end: number;
+  value: string;
+}
+
+/**
+ * Find every maximal run of `minLength`+ consecutive digit characters in
+ * `text` that is NOT immediately preceded by a label shape (see
+ * `hasLabelPrefix`). Each match is the digit substring itself (not any
+ * surrounding non-digit characters in the same token).
+ */
+export function findNumericSecretRuns(text: string, minLength: number = NUMERIC_SECRET_MIN_LENGTH): NumericSecretMatch[] {
+  const matches: NumericSecretMatch[] = [];
+  DIGIT_RUN_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = DIGIT_RUN_RE.exec(text)) !== null) {
+    if (m[0].length >= minLength && !hasLabelPrefix(text, m.index)) {
+      matches.push({ start: m.index, end: m.index + m[0].length, value: m[0] });
     }
   }
   return matches;

@@ -92,9 +92,25 @@ const SYNC_EXCLUSION = new Set(['sync']);
  * consult, so the two checks can't drift out of sync with each other. A
  * value that IS defined (or a non-empty array) but still missing from the
  * emitted output is untouched by this and still flags correctly.
+ *
+ * FEAT-470 quickwin (SLICE-420 re-review residual): extended to also treat
+ * an explicit empty string (`''`) as "nothing to emit" for STRING-typed
+ * fields. Every optional-string block above (`cfg.azure.endpoint ? [...] :
+ * []`, `deployment`, `openaiCompatible.baseUrl`, `codexSubscription.authPath`,
+ * `crossEncoder.sidecarUrl`/`model`) uses a plain truthy check, so `''` is
+ * omitted by the emitter exactly like `undefined` is — the pre-fix predicate
+ * only recognized `undefined`, so a Config with one of these set to `''`
+ * (rather than the key never being set at all) produced the same
+ * false-positive "missing" warning this predicate exists to prevent. Scoped
+ * to `typeof value === 'string'` only: no optional field in `Config` is
+ * boolean- or number-typed with a truthy-omit conditional (every
+ * boolean/number field above is emitted unconditionally), so `0`/`false`
+ * must keep flagging as missing when genuinely absent from the output — see
+ * the counter-tests in tests/config/writer.test.ts.
  */
 function hasNothingToEmit(value: unknown): boolean {
   if (value === undefined) return true;
+  if (typeof value === 'string' && value === '') return true;
   if (Array.isArray(value) && value.length === 0) return true;
   return false;
 }
@@ -305,6 +321,10 @@ export function configToYaml(cfg: Config): string {
     line(3, 'minChars', cfg.capture.autoCapture.relevanceGate.minChars),
     line(3, 'maxBytes', cfg.capture.autoCapture.relevanceGate.maxBytes),
     line(3, 'dedupWindow', cfg.capture.autoCapture.relevanceGate.dedupWindow),
+    // Purge-batch reversible soft-delete (FEAT-467) — previously nonexistent;
+    // wired in from day one so it never joins the FEAT-461 dropped-field list.
+    line(1, 'purge'),
+    line(2, 'restoreWindowDays', (cfg.capture.purge ?? EMIT_DEFAULTS.capture.purge).restoreWindowDays),
     '',
     // LLM proxy (FEAT-458, ADR-013) — enabled: false (default) means no
     // proxy process starts implicitly; `upstream` is always emitted quoted

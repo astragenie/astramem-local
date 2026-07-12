@@ -36,11 +36,16 @@ lib/
   pipeline-direct.ts     Azure gpt-5-mini reference: in-process pipeline path
   azure-reasoning-provider.ts   LLMProvider adapter for gpt-5-mini (see below)
   judge.ts               Azure gpt-5-mini semantic judge + self-agreement (FEAT-450)
-  stats.ts               mean/stdev/noise-floor/significance math (FEAT-450) + stats.test.ts
   report.ts              aggregation, multi-run combine, markdown rendering (FEAT-450) + report.test.ts
   bun-sqlite.d.ts        ambient type decl for bun:sqlite (no bun-types installed)
 run-bench.mts         CLI entry point
 results/              output dir (results.json + report.md per run)
+
+../shared/stats.ts      mean/stdev/noise-floor/significance math (FEAT-450) +
+                        stats.test.ts — promoted out of this tree (FEAT-457
+                        slice 1) so scripts/eval/locomo/'s judge layer can
+                        reuse the identical math instead of a duplicate impl;
+                        this harness still imports the same single file.
 ```
 
 Reuses `scripts/eval/shared/spawn-daemon.ts` (isolated daemon spawn +
@@ -85,7 +90,7 @@ Flags:
   and adds a pairwise **Significance (F1)** section to `report.md` that
   labels a cross-model F1 delta "within noise / not significant" unless it
   exceeds a noise floor derived from the observed stdevs (2×
-  standard-error-of-the-difference — see `lib/stats.ts`'s `compareMeans`).
+  standard-error-of-the-difference — see `../shared/stats.ts`'s `compareMeans`).
 - `--judge-reasoning-effort <minimal|low|medium|high>` (default `low`,
   FEAT-450): reasoning effort for the Azure judge call. Raised from the
   original hardcoded `minimal` to cut judge-sampling noise (AC-4).

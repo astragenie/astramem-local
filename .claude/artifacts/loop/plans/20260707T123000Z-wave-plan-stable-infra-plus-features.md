@@ -3,7 +3,8 @@ title: Wave execution plan — stable-infra spine + feature waves
 created: 2026-07-07T12:30:00Z
 author: lead session 470adaf7 (2026-07-07)
 supersedes_scoring_for: [FEAT-429]
-status: active
+status: superseded
+superseded_by: 20260710T180000Z-wave-plan-drain-triaged-post-v014.md
 ---
 
 # Wave plan — 2026-07-07

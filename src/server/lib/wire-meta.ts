@@ -116,4 +116,9 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       docs/specs/FEAT-453-bitemporal-design.md §1.
 // 024 = transcripts.capture_source / memories.capture_source, additive
 //       nullable columns + partial index (FEAT-455, ADR-012 decision 4).
-export const SCHEMA_VERSION = 24 as const;
+// 025 = widen memory_events.event_type CHECK to add 'purge'/'unpurge'
+//       (FEAT-467 purge-batch reversal primitive, ADR-013 Decision 4 gate)
+//       -- same create-copy-swap pattern as 021/023 -- plus the additive
+//       nullable memories.purge_batch_id column + partial index, and the
+//       new purge_batches audit table.
+export const SCHEMA_VERSION = 25 as const;

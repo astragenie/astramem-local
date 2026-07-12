@@ -49,6 +49,32 @@ churn can restrand the daemon again) and prints a loud warning every time.
 `doctor` flags a dev-pinned install with a WARN row; run plain `reinstall`
 (no `--dev`) to return to a pinned release.
 
+### Unix service parity (FEAT-443)
+
+`service install` / `init` / `reinstall` share ONE install path
+(`install-flow.ts`) on all three platforms now: systemd units and launchd
+plists point at the same STABLE shim architecture Windows always used
+(`<dataDir>/bin/astramemd.sh` → `launch.cjs` → `current.json` pointer, see
+`shim.ts`) — upgrades repoint `current.json` only, the unit/plist is
+registered exactly once at first install, and `reinstall --rollback` works
+on linux/darwin exactly like it does on win32 (SLICE-1).
+
+`Restart=on-failure` (systemd) and `KeepAlive` (launchd) only fire when the
+daemon process actually exits — a daemon that's alive but wedged (blocked
+event loop, deadlocked native call) keeps holding `daemon.lock` and answering
+nothing, and neither mechanism ever notices (same blind spot Windows' PT5M
+keepalive has always had). SLICE-2 closes this for linux/darwin with a
+separate recurring hang-watchdog probe (systemd `OnUnitActiveSec` timer /
+launchd `StartInterval` agent, installed automatically alongside the main
+service — not opt-in) that hits `/health` every 3 minutes and, on failure,
+kills whatever actually holds `daemon.lock` and restarts via the adapter —
+see `src/service/watchdog-probe.ts` for why this shells out to a probe+kill
+cycle instead of genuine `sd_notify`/`WatchdogSec` (Node has no built-in Unix
+datagram socket support). Invoke by hand with
+`astramem-local service watchdog-probe`; remove with `service uninstall`.
+Windows is out of scope here — its PT5M keepalive has the same hang blind
+spot, unaddressed by this FEAT.
+
 **Package name: `astramem-local` on npmjs** — first published 2026-07-08 as v0.9.0
 (this repo, SQLCipher-capable). The OLD stale 0.4.0 lives under the scoped name
 `@astragenie/astramemory-local` on GitHub Packages (scope-mapped in ~/.npmrc) —
@@ -142,7 +168,7 @@ This repo runs the Wiggin Loop autonomously. Full rules: `.claude/loop/rules.md`
 - **Run until PASS.** Do not stop for confirmation. Stop only when every acceptance criterion is PASS with evidence, or the work is externally blocked.
 - **Auto mode (default — `loop.marathonMode: true`).** Loop walks the entire backlog. Stops only on backlog exhaustion, crew `escalated_to_human`, warn-severity pattern alerts, or high-severity cost alerts. Iteration cap and soft `blocked` badge are advisory in this mode — set `loop.marathonMode: false` in `.claude/loop.json` to restore the legacy five-condition gating.
 - **Slice start ceremony.** Every slice MUST open via `/runner:slice start --id SLICE-NN` (rotates `currentRun` so cost auto-emit attributes the work correctly + refreshes `.claude/state/crew/slice-progress.md`).
-- **Dispatch discipline.** The loop is an orchestrator, not an implementer. Hand the `slice start` return's `dispatchInstruction` to a `crew:builder` subagent (implementation only); after it returns, dispatch `crew:reviewer`, then `crew:validator` if behavior changed; pivot to `/crew:fix` on any needs_fix or fail. Inline implementation is reserved for trivial single-line fixups.
+- **Dispatch discipline.** The loop is an orchestrator, not an implementer. Hand the `slice start` return's `dispatchInstruction` to a crew builder subagent — `crew:fullstack-dev` (or the stack-specific `crew:backend-dev` / `crew:frontend-dev`), or generic `claude` (implementation only; there is no agent literally named `crew:builder`); after it returns, dispatch `crew:reviewer`, then `crew:validator` if behavior changed; pivot to `/crew:fix` on any needs_fix or fail. Inline implementation is reserved for trivial single-line fixups.
 - **Slice close ceremony.** Every slice MUST close via `/runner:slice complete --id SLICE-NN` (writes handoff + final-synthesis + cost-report + cost-advise) followed by `/runner:slice grade*`. Manual file moves + a `docs(slice): mark ... complete` commit are NOT a substitute.
 - **Build entry points.** `/crew:build` is the interactive single-slice path (lighter — no run-brief required). Autonomous loop is the unattended multi-slice path (full ceremony). Never run both against the same branch — they race on workflow-state.
 - **Auto-continue.** After the ceremony, scan `.claude/artifacts/loop/specs/` → `.claude/artifacts/loop/backlog/pending/` → `.claude/artifacts/loop/backlog/triaged/` and promote the next item without asking.

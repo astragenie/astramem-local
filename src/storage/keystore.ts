@@ -11,16 +11,18 @@
  *       secret-service/dbus session). Spec OQ-1 explicitly allows this
  *       fallback for v0.4.
  *
- * Credential-store identity is SCOPED by configDir (FEAT-466): the service
- * name is `astramem-local:<hash-of-configDir>`, not the bare `astramem-local`
- * used pre-FEAT-466. This closes a 2026-07-10 incident where a sandboxed
- * `init` run (pointed at a throwaway configDir) overwrote the PRODUCTION
- * daemon's bearer, because the OS credential store is keyed globally by
+ * Credential-store identity is SCOPED by configDir (FEAT-466; extended to the
+ * sync device token by FEAT-472): the service name is
+ * `astramem-local:<hash-of-configDir>`, not the bare `astramem-local` used
+ * pre-FEAT-466. This closes a 2026-07-10 incident where a sandboxed `init`
+ * run (pointed at a throwaway configDir) overwrote the PRODUCTION daemon's
+ * bearer, because the OS credential store is keyed globally by
  * service+account, not by configDir — two independent installs collided on
  * the exact same entry. Reads fall back read-only to the legacy unscoped
- * identity (service `'astramem-local'`, account `'db-key'`/`'bearer'`) so
- * pre-FEAT-466 installs keep working after upgrade with no re-init or
- * migration step; new writes always go to the scoped identity.
+ * identity (service `'astramem-local'`, account `'db-key'`/`'bearer'`/
+ * `'sync-device-token'`) so pre-FEAT-466/pre-FEAT-472 installs keep working
+ * after upgrade with no re-init/re-pair or migration step; new writes always
+ * go to the scoped identity.
  *
  * The key is a 32-byte cryptographically random value, hex-encoded (64 chars),
  * used as the SQLCipher passphrase via `PRAGMA key='<hex>'` — the exact
@@ -72,10 +74,16 @@ export interface KeyResult {
  * derives configDir from the single `defaultConfigDir()` function, so this
  * has no effect on current behavior; it only guards a future call site
  * that constructs configDir some other way.
+ *
+ * `platform` is injectable (FEAT-470 quickwin, FEAT-466 re-review LOW) so
+ * the non-win32 (case-preserving) branch has an executable test on every
+ * CI platform, not just whichever OS happens to run the suite — it defaults
+ * to `process.platform` for every real call site, so this has no effect on
+ * actual behavior.
  */
-function normalizeConfigDir(configDir: string): string {
+export function normalizeConfigDir(configDir: string, platform: NodeJS.Platform = process.platform): string {
   const resolved = resolve(configDir);
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+  return platform === 'win32' ? resolved.toLowerCase() : resolved;
 }
 
 /**
@@ -415,22 +423,88 @@ function lookupBearer(configDir: string): { token: string; source: 'credential-s
   return null;
 }
 
-// ─── Cloud sync device token ───────────────────────────────────────────────
+// ─── Cloud sync device token (FEAT-472; scoped per configDir) ─────────────
 //
-// NOTE (FEAT-466 scope): unlike the db-key and bearer above, the sync device
-// token identity is intentionally left unscoped for now — FEAT-466's ACs
-// cover storeBearer()/getOrCreateKey() only. It carries the same theoretical
-// collision risk; scoping it is a natural follow-up if a similar incident
-// ever touches sync auth.
+// FEAT-466 deliberately left this identity unscoped ("a natural follow-up if
+// a similar incident ever touches sync auth" — see the done FEAT-466 note
+// this comment used to carry). FEAT-472 does that follow-up: same collision
+// class as the bearer/db-key (a sandboxed `pair` pointed at a throwaway
+// configDir would otherwise clobber the production device token in the OS
+// credential store, which is keyed globally by service+account, not by
+// configDir) — so this mirrors storeBearer/readBearer above exactly: scoped
+// identity first, read-only legacy fallback (pre-FEAT-472 installs keep
+// working with no re-pair), and the same ASTRA_MEMORY_TEST_FORCE_KEYFILE
+// bypass.
+//
+// No `writeThroughLegacy` option (unlike storeBearer's StoreBearerOpts):
+// DEC-011's rollback trap is specifically a ROTATE hazard — a value gets
+// updated in place while an older binary still consults the legacy identity
+// first. The sync device token has no rotate flow (grep confirms `token
+// rotate` in cli/token.ts is bearer-only); `pair` is the only write path,
+// and it is a fresh/full re-provisioning action analogous to `init` — which
+// FEAT-466 deliberately does NOT write-through to legacy either, because a
+// sandboxed init writing the legacy identity is exactly the incident
+// mechanism this whole scoping scheme exists to prevent. If a rotate-style
+// operation is ever added for the sync token, revisit this the same way
+// DEC-011 did for the bearer.
+//
+// Authority note (sync.json vs this entry — see config/sync-settings.ts):
+// sync.json is authoritative for CONNECTION metadata (enabled/url/
+// workspaceId/tenantId); this keystore entry (or ASTRA_SYNC_TOKEN) is
+// authoritative for the CREDENTIAL itself. Neither ever holds the other's
+// data. A rollback to a pre-FEAT-472 binary after a fresh (post-FEAT-472)
+// `pair` finds no legacy-identity entry (pair never wrote one) and no
+// ASTRA_SYNC_TOKEN — the shipper/pull just log their existing "device-token
+// incomplete" warning and do nothing, same as any other unpaired install;
+// re-running `pair` recovers it. Low severity since sync is opt-in and this
+// mirrors the accepted-tradeoff shape of FEAT-466 AC-2, not a new hazard.
 
 const SYNC_TOKEN_ACCOUNT = 'sync-device-token';
 
-/** Store the cloud sync device token (ADR-003 auth) in the credential store. */
-export function storeSyncToken(token: string): BearerStoreResult {
+export function syncTokenFilePath(configDir: string): string {
+  return join(configDir, 'sync-token.key');
+}
+
+/** ASTRA_MEMORY_TEST_FORCE_KEYFILE bypass, sync-token flavor — see file header. */
+function storeSyncTokenFile(token: string, configDir: string): BearerStoreResult {
+  mkdirSync(configDir, { recursive: true });
+  const filePath = syncTokenFilePath(configDir);
+  writeFileSync(filePath, token, { mode: 0o600 });
   try {
-    const entry = new EntryCtor(SERVICE, SYNC_TOKEN_ACCOUNT);
+    chmodSync(filePath, 0o600);
+  } catch {
+    /* best-effort on platforms without POSIX permission bits */
+  }
+  restrictKeyFileAcl(filePath);
+  return { stored: true, source: 'key-file' };
+}
+
+/** ASTRA_MEMORY_TEST_FORCE_KEYFILE bypass, sync-token flavor — see file header. */
+function readSyncTokenFile(configDir: string): string | null {
+  const filePath = syncTokenFilePath(configDir);
+  if (!existsSync(filePath)) return null;
+  return readFileSync(filePath, 'utf8').trim();
+}
+
+/**
+ * Store the cloud sync device token (ADR-003 auth) in the OS credential
+ * store, under the identity scoped to `configDir` (FEAT-472, mirroring
+ * storeBearer). ASTRA_MEMORY_TEST_FORCE_KEYFILE=1 skips the OS credential
+ * store entirely, writing to `<configDir>/sync-token.key` instead.
+ */
+export function storeSyncToken(token: string, configDir: string): BearerStoreResult {
+  if (process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE === '1') {
+    console.warn(
+      '[astramem-local] WARNING: TEST-ONLY key-file bypass active ' +
+      '(ASTRA_MEMORY_TEST_FORCE_KEYFILE=1) — skipping the OS credential store for the sync device token. ' +
+      'Real serving environments must never set this variable.',
+    );
+    return storeSyncTokenFile(token, configDir);
+  }
+  try {
+    const entry = new EntryCtor(scopedService(configDir), SYNC_TOKEN_ACCOUNT);
     entry.setPassword(token);
-    return { stored: true, source: 'credential-store' };
+    return { stored: true, source: 'credential-store', identity: 'scoped' };
   } catch (err) {
     console.warn(
       `[astramem-local] WARNING: OS credential store unavailable (${errMessage(err)}); ` +
@@ -440,12 +514,48 @@ export function storeSyncToken(token: string): BearerStoreResult {
   }
 }
 
-/** Read the cloud sync device token; null when absent/unavailable. */
-export function readSyncToken(): string | null {
-  try {
-    const entry = new EntryCtor(SERVICE, SYNC_TOKEN_ACCOUNT);
-    return entry.getPassword();
-  } catch {
-    return null;
+/**
+ * Read the cloud sync device token: the identity scoped to `configDir`
+ * first, then a read-only fallback to the legacy unscoped identity (pre-
+ * FEAT-472 installs keep working with no re-pair). Null when absent under
+ * either identity or when the store is unavailable.
+ */
+export function readSyncToken(configDir: string): string | null {
+  return lookupSyncToken(configDir)?.token ?? null;
+}
+
+/**
+ * Doctor-facing variant of readSyncToken(): reports which identity (scoped
+ * vs legacy vs the test-only key-file bypass) the sync device token was
+ * actually read from, or 'none' when nothing is stored under any of them.
+ */
+export function getSyncTokenIdentity(configDir: string): KeyIdentity | 'key-file' | 'none' {
+  const result = lookupSyncToken(configDir);
+  if (!result) return 'none';
+  return result.identity ?? 'key-file'; // source lacks identity only for the key-file bypass
+}
+
+function lookupSyncToken(configDir: string): { token: string; source: 'credential-store' | 'key-file'; identity?: KeyIdentity } | null {
+  if (process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE === '1') {
+    const token = readSyncTokenFile(configDir);
+    return token ? { token, source: 'key-file' } : null;
   }
+
+  try {
+    const scopedEntry = new EntryCtor(scopedService(configDir), SYNC_TOKEN_ACCOUNT);
+    const scoped = scopedEntry.getPassword();
+    if (scoped) return { token: scoped, source: 'credential-store', identity: 'scoped' };
+  } catch {
+    // fall through to the legacy read below
+  }
+
+  try {
+    const legacyEntry = new EntryCtor(SERVICE, SYNC_TOKEN_ACCOUNT);
+    const legacy = legacyEntry.getPassword();
+    if (legacy) return { token: legacy, source: 'credential-store', identity: 'legacy' };
+  } catch {
+    // store unavailable, or no legacy entry — both mean "nothing to read"
+  }
+
+  return null;
 }
