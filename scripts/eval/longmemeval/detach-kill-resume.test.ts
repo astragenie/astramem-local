@@ -45,6 +45,20 @@ async function spawnFake(opts: { dataDir: string; token: string; stateFile: stri
   return daemon;
 }
 
+// FEAT-475: this test runs TWO full real daemon spawn/health-check/ingest
+// cycles plus a manifest-scoped kill (which now blocks on daemon-manifest.ts's
+// PORT_OWNER_CHECK_TIMEOUT_MS=15_000 netstat/lsof identity check before
+// signaling). Reproduced directly under concurrent parallel suite/agent
+// load: this test's own body measured up to 34.55s of actual execution time
+// (not process-startup overhead) in one observed load spike, already past
+// its old 20_000ms budget. Widened with ~1.7x headroom over that measured
+// worst case. The afterEach cleanup (killDaemon x2 + rmSync) failed via
+// vitest's DEFAULT hookTimeout (10_000ms, unset here) in the same run --
+// give it its own explicit budget too rather than relying on the default
+// tuned for lighter suites.
+const DETACH_RESUME_TEST_TIMEOUT_MS = 60_000;
+const DETACH_RESUME_HOOK_TIMEOUT_MS = 20_000;
+
 describe('manifest-scoped kill -> --resume handshake (FEAT-462 AC-3)', () => {
   let dir: string;
   const spawned: DaemonHandle[] = [];
@@ -52,7 +66,7 @@ describe('manifest-scoped kill -> --resume handshake (FEAT-462 AC-3)', () => {
   afterEach(async () => {
     for (const d of spawned.splice(0)) await killDaemon(d, 'SIGKILL', 3_000);
     rmSync(dir, { recursive: true, force: true });
-  });
+  }, DETACH_RESUME_HOOK_TIMEOUT_MS);
 
   it(
     'daemon killed via the daemon-manifest PID (not a direct handle) still leaves a resumable ledger',
@@ -114,6 +128,6 @@ describe('manifest-scoped kill -> --resume handshake (FEAT-462 AC-3)', () => {
       expect(finalManifestOnDisk.daemons[0]!.pid).toBe(daemon2.pid);
       expect(finalManifestOnDisk.daemons[0]!.pid).not.toBe(daemon1.pid);
     },
-    20_000,
+    DETACH_RESUME_TEST_TIMEOUT_MS,
   );
 });
