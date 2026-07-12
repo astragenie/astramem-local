@@ -15,12 +15,15 @@
  *   1. PEM private-key blocks (multiline, whole block)
  *   2. Vendor/pattern detectors (AWS, GitHub, Azure, GCP, Slack, generic
  *      key=value, JWT, connection-string userinfo) + config custom patterns
- *   3. Shannon-entropy detector over whatever text remains
+ *   3. Shannon-entropy detector + numeric-secret digit-run heuristic
+ *      (FEAT-468 — catches unlabeled digit-only secrets, which sit below
+ *      any Shannon-entropy threshold by construction; see entropy.ts) over
+ *      whatever text remains
  */
 
 import { createHash } from 'node:crypto';
 import { PEM_DETECTOR, PATTERN_DETECTORS, customDetector, type PatternDetector } from './detectors.js';
-import { findEntropySecrets } from './entropy.js';
+import { findEntropySecrets, findNumericSecretRuns } from './entropy.js';
 import type { Config } from '../config/config.js';
 
 export interface RedactionEvent {
@@ -180,13 +183,23 @@ export function redactText(input: string, opts: RedactOptions = {}): RedactResul
     allEvents.push(...applied.events);
   }
 
-  // ---- Stage 3: entropy detector over what remains ----
+  // ---- Stage 3: entropy detector + numeric-secret digit-run heuristic over what remains ----
   {
     const guard = protectedRanges(text);
     const entropySpans = findEntropySecrets(text, threshold)
       .filter(m => !overlapsAny(m.start, m.end, guard))
       .map(m => ({ type: 'high_entropy', start: m.start, end: m.end, value: m.value }));
-    const applied = applySpans(text, entropySpans);
+    // FEAT-468: digit-only secrets are structurally invisible to Shannon
+    // entropy (see entropy.ts doc comment) — this is a separate, additive
+    // detector over the same remaining text, tagged with its own type
+    // (`numeric_secret`) so redaction-log coverage stays observable by
+    // mechanism, same convention `high_entropy` itself already follows.
+    // `applySpans`' overlap dedup below means a span both stages happen to
+    // agree on is only ever redacted once.
+    const numericSpans = findNumericSecretRuns(text)
+      .filter(m => !overlapsAny(m.start, m.end, guard))
+      .map(m => ({ type: 'numeric_secret', start: m.start, end: m.end, value: m.value }));
+    const applied = applySpans(text, [...entropySpans, ...numericSpans]);
     text = applied.text;
     allEvents.push(...applied.events);
   }

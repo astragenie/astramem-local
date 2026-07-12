@@ -287,6 +287,73 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     secret: 'abcdefgh1234bare',
     expectedEventCount: 1,
   },
+  // FEAT-468: numeric-secret digit-run heuristic. Shannon entropy over a
+  // 10-symbol (digits-only) alphabet caps at log2(10) ≈ 3.32 bits/char, below
+  // the 4.0 default threshold, so an unlabeled all-digit secret was
+  // structurally invisible regardless of length — see entropy.ts
+  // `findNumericSecretRuns`. These fixtures are the exact FEAT-463
+  // final-review repro plus the FEAT's stated true-positive range; the
+  // false-positive corpus proving this doesn't overtrigger on phone
+  // numbers/timestamps/IDs/labeled values lives in the dedicated describe
+  // block below (those all stay UNredacted).
+  //
+  // FEAT-468 review round 1 (MEDIUM fix): the minimum floor moved 20 -> 23
+  // to dodge real unlabeled 20/22-digit USPS tracking-number shapes (see the
+  // FP corpus below) — the boundary fixtures here reflect the NEW floor.
+  {
+    name: 'FEAT-468: FEAT-463 final-review repro — bare unlabeled 26-digit string (entropy 3.295, previously leaked)',
+    input: 'account number 98765432109876543210987654 on file',
+    type: 'numeric_secret',
+    secret: '98765432109876543210987654',
+  },
+  {
+    name: 'FEAT-468: unlabeled 23-digit token (exact minimum-floor boundary post-review-fix — must redact)',
+    input: 'ref 12345678901234567890123 confirmed',
+    type: 'numeric_secret',
+    secret: '12345678901234567890123',
+  },
+  {
+    name: 'FEAT-468: unlabeled 32-digit token (upper end of stated true-positive range)',
+    input: 'legacy id 12345678901234567890123456789012 archived',
+    type: 'numeric_secret',
+    secret: '12345678901234567890123456789012',
+  },
+  {
+    name: 'FEAT-468: digit-heavy legacy token glued to a non-keyword alpha prefix (only the digit run is redacted, not the prefix)',
+    input: 'ACCT98765432109876543210987 rotate',
+    type: 'numeric_secret',
+    secret: '98765432109876543210987',
+  },
+  // FEAT-468 review round 1 (HIGH fix, counter-case): a genuinely
+  // SECRET-labeled numeric value must still be redacted — just by the
+  // upstream stage-2 pattern detector (generic_credential), not by the
+  // stage-3 numeric-secret heuristic this fix round scoped label-awareness
+  // into. Pins WHICH stage catches it so a future change can't silently
+  // drop coverage without a test noticing.
+  {
+    name: 'FEAT-468 review round 1 counter-case: TOKEN=<26 digits> is still redacted, by generic_credential (stage 2), not numeric_secret (stage 3)',
+    input: 'TOKEN=98765432109876543210987654',
+    type: 'generic_credential',
+    secret: '98765432109876543210987654',
+  },
+  // FEAT-468 review round 2 (MEDIUM fix, HITL decision: label guard is
+  // SAME-LINE ONLY): a transcript-header shape (`Summary:`/`Result:` on its
+  // own line, secret on the next) is NOT a real label on the value that
+  // follows it — it's routine LLM output formatting, and the value must
+  // still redact. This is the exact false-negative class round 1's
+  // cross-line-capable window let slip through.
+  {
+    name: 'FEAT-468 review round 2: "Summary:\\n<secret>" still redacts — a previous-line header is not a same-line label',
+    input: 'Summary:\n11223344556677889900112233',
+    type: 'numeric_secret',
+    secret: '11223344556677889900112233',
+  },
+  {
+    name: 'FEAT-468 review round 2: "Result:\\n<secret>" still redacts — a previous-line header is not a same-line label',
+    input: 'Result:\n99887766554433221100998877',
+    type: 'numeric_secret',
+    secret: '99887766554433221100998877',
+  },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
@@ -532,6 +599,197 @@ describe('redactText — false-positive guards', () => {
     const placeholderCount = (text.match(/\[REDACTED:/g) ?? []).length;
     expect(placeholderCount).toBe(1);
     expect(events.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEAT-468: numeric-secret digit-run heuristic — false-positive corpus.
+// Every shape here is a realistic non-secret digit string that must stay
+// fully unredacted. The heuristic is length-only (>= 23 consecutive digits,
+// no separator, no label prefix — see entropy.ts NUMERIC_SECRET_MIN_LENGTH
+// and LABEL_PREFIX_RE), so the discriminator is either: does this shape's
+// raw digit run ever reach 23 chars unbroken (timestamps/cards/zip+4/order
+// IDs/USPS tracking numbers below), or is it the value-side of a labeled
+// assignment (env/YAML/JSON label shapes below)?
+// ---------------------------------------------------------------------------
+
+describe('redactText — FEAT-468 numeric-secret false-positive corpus', () => {
+  it('does not redact an unbroken 22-digit run (one below the minimum-floor boundary, post-review-fix)', () => {
+    const input = 'ref 9876543210987654321098 confirmed';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 1 (MEDIUM finding): USPS tracking-number shapes,
+  // reproduced live by the reviewer against the un-fixed code — both are
+  // exactly the unbroken-unlabeled-digit-run shape this heuristic targets,
+  // and both now stay under the raised 23-digit floor.
+  it('does not redact a 22-digit USPS Priority/Express tracking number', () => {
+    const input = 'your package tracking number is 9400111899223197428490 for delivery';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 20-digit USPS Certified Mail tracking number', () => {
+    const input = 'certified mail 71967398271700000000 delivered';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 1 (HIGH finding): labeled numeric values — env
+  // style, JSON style, YAML style — must survive regardless of digit-run
+  // length. Reproduced live by the reviewer against the un-fixed code
+  // (all four leaked in full before the LABEL_PREFIX_RE guard was added).
+  it('does not redact an env-style LABEL=digits assignment (non-secret label, digit value far past the floor)', () => {
+    const input = 'MAX_RETRIES=9999999999999999999999999';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an env-style LABEL=digits assignment embedded in prose', () => {
+    const input = 'INVOICE_NUMBER=12345678901234567890 was issued last week';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an env-style LABEL=digits assignment, label containing a secret-adjacent word as a non-trailing shape', () => {
+    const input = 'please reference ACCOUNT_NUMBER=98765432109876543210 on your next call';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a JSON-style "label": "digits" value (both sides quoted)', () => {
+    const input = '"orderId": "12345678901234567890"';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a YAML-style label: digits value (no quotes, colon+space separator)', () => {
+    const input = 'trackingId: 12345678901234567890123 confirmed';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 2 (LOW fix): same-line scanning has no fixed
+  // character cap (unlike the old 40-char window), so arbitrary same-line
+  // whitespace padding between a label's separator and its value no longer
+  // pushes a real label out of range.
+  it('does not redact a labeled value with 40 spaces of same-line padding between separator and value (fixed-width/aligned config shape)', () => {
+    const input = `ACCOUNT_NUMBER: ${' '.repeat(40)}12345678901234567890123`;
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  // FEAT-468 review round 2: label-at-line-start with leading indentation —
+  // the same-line lookback still finds the label even when the label's own
+  // line begins with whitespace (a previous line's trailing newline plus
+  // indentation before the label itself), since the label-shape regex
+  // isn't anchored to the start of the line slice.
+  it('does not redact an indented labeled value on its own line (leading whitespace before the label)', () => {
+    const input = 'notes\n  ACCOUNT_NUMBER: 12345678901234567890123';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an intl phone number with parens/dashes/spaces', () => {
+    const input = 'call me at +1 (555) 123-4567 today';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact an intl phone number, dash-grouped (RU-style)', () => {
+    const input = 'contact +7 916 123-45-67 for support';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed (no-separator) 10-digit domestic phone number', () => {
+    const input = 'reach us at 5551234567 anytime';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 10-digit unix timestamp (seconds)', () => {
+    const input = 'timestamp 1751935200 recorded';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 13-digit unix timestamp (milliseconds)', () => {
+    const input = 'event logged at 1751935200000 in the trace';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed ISO date+time (14 digits, no separators)', () => {
+    const input = 'snapshot id 20260710172500 taken';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed ISO date+time+milliseconds (17 digits)', () => {
+    const input = 'build tag 20260710172500123 published';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 16-digit credit-card-shaped test number (Visa test pattern)', () => {
+    const input = 'test card 4111111111111111 approved in sandbox';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a 15-digit credit-card-shaped test number (Amex test pattern)', () => {
+    const input = 'test card 378282246310005 approved in sandbox';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a squashed zip+4 (9 digits)', () => {
+    const input = 'ship to zip 123456789 please';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a dash-formatted order/invoice number', () => {
+    const input = 'order ORD-0001234567890 shipped';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a row of space-separated numeric table values', () => {
+    const input = 'totals: 1001 2002 3003 4004 5005 6006';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not redact a comma-separated numeric CSV-style row', () => {
+    const input = '2026,07,10,17,25,00,1001,2002,3003';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
   });
 });
 
