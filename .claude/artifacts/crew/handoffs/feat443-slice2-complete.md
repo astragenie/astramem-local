@@ -1,7 +1,23 @@
 # FEAT-443 — Unix service parity — handoff
 
 **Worktree:** `C:\work\mega\astramemory-local-worktrees\w443` (branch `feat/w443-wave1`)
-**Commit:** `94bcec0` — "feat(service): hang-watchdog probe for systemd/launchd (FEAT-443 SLICE-2)"
+**Commits:** `94bcec0` (implementation) → `1997d0c` (handoff) → `581cc65` (review fix)
+
+## Review status
+
+`crew:reviewer` pass (`.claude/artifacts/crew/reviews/20260712T161143Z-review-result-feat-443-slice-2-watchdog-probe-review.md`)
+returned **REJECTED**: `runWatchdogProbe` ignored `stopResult.ok` and
+unconditionally called `adapter.start()` + reported `action:'restarted'` even
+when `stopLockHolder` failed to actually stop the hung PID (it never throws on
+failure — it returns `{ok:false, ...}`). On systemd, `adapter.start()` is a
+silent no-op against an already-"active" unit, so a genuinely-wedged daemon
+would get a false `'restarted'` report every ~3 minutes forever — a
+false-positive recovery signal from the exact mechanism whose job is honest
+hang reporting. Fixed in `581cc65`: skip `adapter.start()` and report
+`'restart-failed'` with an honest "NOT restarted" detail when `stopResult.ok`
+is false. Added a regression test isolating this exact case. Full suite
+re-verified: 294/294 passing. Re-review requested from the same reviewer
+agent before merge.
 
 ## Scope discovery: SLICE-1 was already done
 
