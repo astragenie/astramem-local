@@ -1,5 +1,50 @@
 # FEAT-474 / SLICE-425 — install.sh idempotent skip + /dev/tty reattach — build complete
 
+## Update — needs_fix addressed (commit 03ceb86)
+
+Review round 1 came back `needs_fix` on `install.sh:101`: the bare
+`exec < /dev/tty 2>/dev/null` in the reattach probe is fatal under dash,
+because `exec` is a POSIX special builtin and dash (unlike bash) does not
+exempt a special builtin's redirection failure from terminating the shell
+even inside an `if` condition. Reproduced the exact bug (isolated the
+before/after pattern, ran under `dash` in this sandbox): old pattern prints
+`before`, then dash's own `cannot open /dev/tty: No such device or address`,
+then dies with exit 2 — no fallback message ever printed. Fixed by wrapping
+the probe in a subshell — `if [ -e /dev/tty ] && (exec < /dev/tty)
+2>/dev/null; then exec < /dev/tty; ...` — so a failed open only kills the
+subshell; the real `exec < /dev/tty` runs afterward, once the probe has
+proven it's safe. Re-ran the same before/after harness under dash with the
+new pattern: reaches the fallback message cleanly, exit 0. Also re-verified
+under bash that the reattach-success path (substitute readable target
+standing in for `/dev/tty`) still reattaches and the fallback path still
+falls back, and confirmed stderr is fully suppressed under both shells (no
+raw "cannot open" line leaks to the user in either case).
+
+Separately, while trying to run the *complete* `install.sh` under literal
+`dash`/`sh` (not just the isolated snippet) to double-check, I found the
+script dies immediately at line 24 (`set -euo pipefail`) — `pipefail` is a
+bash-only `set` option dash doesn't support, so `sh install.sh` / `curl |
+sh` never even reaches the `/dev/tty` logic at all. Confirmed via `git log
+-p --follow -- install.sh` that this `set -euo pipefail` line predates this
+slice entirely (introduced in the original `a05415d` commit that added
+`install.sh`) — it is not a regression from this change, and it's a
+different, unrelated contract question (whole-script dash/`sh`
+compatibility vs. the specific `/dev/tty` idiom I was asked to fix), so I
+did not touch it. Flagging for visibility: in practice, a `curl | sh`
+invocation on a dash-as-`/bin/sh` host fails loudly and immediately with
+dash's own "Illegal option -o pipefail" error at line 24, not silently deep
+in the wizard step — a different (and arguably more diagnosable) failure
+mode than the one the review worried about, but still means `sh
+install.sh` doesn't work today regardless of this fix. Out of scope for
+this slice per the reviewer's own needs_fix scope (line 101 only); flagging
+as a possible follow-up if `sh`-compatibility (as opposed to
+`bash`-only, matching the script's own `#!/usr/bin/env bash` shebang and
+documented `curl | bash` usage) is ever a stated requirement.
+
+Committed locally on the same branch: commit `03ceb86`. Not pushed.
+
+---
+
 **Objective**: Make `install.sh` idempotent (skip reinstall when already at the
 npm-latest version, `FORCE=1` escape hatch) and keep the `init` wizard
 interactive when the script is piped stdin (`curl | bash`) by re-attaching
