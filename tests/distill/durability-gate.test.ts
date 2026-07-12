@@ -123,6 +123,25 @@ describe('classifyDurability — incidental (non-causal) markers no longer exemp
   });
 });
 
+// FEAT-448 fix round (review 20260712T160505Z, HIGH): the because/reason
+// contentless check must be scoped per marker OCCURRENCE, not one
+// whole-string existential test — otherwise a later throwaway
+// "because bug."/"reason: unclear." fragment can suppress the exemption
+// already earned by an earlier genuine cause in the same atom.
+describe('classifyDurability — multiple because/reason occurrences (FEAT-448 fix-round HIGH)', () => {
+  it('an earlier genuine cause persists even with a later contentless "because" fragment', () => {
+    expect(classifyDurability('Status is red because deploy broke it because bug.')).toBeNull();
+  });
+
+  it('an earlier genuine cause persists even with a later contentless "reason:" fragment', () => {
+    expect(classifyDurability('Build is green because tests passed, reason: unclear.')).toBeNull();
+  });
+
+  it('an atom where EVERY because/reason occurrence is contentless still gates', () => {
+    expect(classifyDurability('Status is red because reasons, reason: stuff.')).toBe('ephemeral_state');
+  });
+});
+
 describe('gateDurability — mode semantics', () => {
   it('off: never gates any pattern, regardless of content', () => {
     for (const { text } of EVIDENCE_SET) {

@@ -128,12 +128,31 @@ const BARE_SINCE_RE = /\bsince\b/i;
 const PUNCTUATION_DOUBLE_DASH_RE = /(?:\s|^)--(?:\s|$)/;
 
 /** "because"/"reason" bind a genuine cause only when at least two content
- *  words follow to the end of the clause — a bare "because deploy" or
- *  "because reasons" glues the marker on for form's sake with no actual
- *  reason attached. */
-const BARE_BECAUSE_OR_REASON_RE = /\b(?:because|reason)\b/i;
-const CONTENTLESS_CAUSAL_TAIL_RE =
-  /\b(?:because|reason)\b\s*:?\s*(?:\w+\s*){0,1}[.,;!?]?\s*$/i;
+ *  words follow before the next such marker (or the end of the atom) — a
+ *  bare "because deploy" or "because reasons" glues the marker on for
+ *  form's sake with no actual reason attached. Checked per OCCURRENCE, not
+ *  as one whole-string existential test: an atom can carry more than one
+ *  because/reason marker, and a later contentless fragment ("...because
+ *  bug.") must not suppress the exemption already earned by an earlier
+ *  genuine one ("because deploy broke it") in the same atom (fix-round
+ *  HIGH — the exemption is per-marker-occurrence, so it must hold as soon
+ *  as ANY occurrence is genuine, regardless of what a different occurrence
+ *  looks like). */
+const BECAUSE_OR_REASON_MARKER_RE = /\b(?:because|reason)\b\s*:?\s*/gi;
+
+function hasContentfulCausalMarker(text: string): boolean {
+  const matches = [...text.matchAll(BECAUSE_OR_REASON_MARKER_RE)];
+  for (let i = 0; i < matches.length; i++) {
+    const match = matches[i];
+    const next = matches[i + 1];
+    if (match === undefined || match.index === undefined) continue;
+    const clauseStart = match.index + match[0].length;
+    const clauseEnd = next?.index ?? text.length;
+    const clauseWords = text.slice(clauseStart, clauseEnd).split(/\s+/).filter(Boolean);
+    if (clauseWords.length >= 2) return true;
+  }
+  return false;
+}
 
 /** True when `text` carries a rationale marker in genuine causal proximity
  *  to the statement it's attached to — the single predicate both
@@ -142,7 +161,7 @@ function hasRationaleMarker(text: string): boolean {
   if (UNCONDITIONAL_MARKER_RE.test(text)) return true;
   if (PUNCTUATION_DOUBLE_DASH_RE.test(text)) return true;
   if (BARE_SINCE_RE.test(text) && !TEMPORAL_SINCE_RE.test(text)) return true;
-  if (BARE_BECAUSE_OR_REASON_RE.test(text) && !CONTENTLESS_CAUSAL_TAIL_RE.test(text)) return true;
+  if (hasContentfulCausalMarker(text)) return true;
   return false;
 }
 
