@@ -144,6 +144,45 @@ describe('installServiceFlow — cross-platform shim unification (FEAT-443 SLICE
     expect(content.startsWith('@echo off')).toBe(true);
   });
 
+  it('registers the hang-watchdog probe timer when the adapter supports it (FEAT-443 SLICE-2)', async () => {
+    const installWatchdogTimer = vi.fn(async () => {});
+    const uninstallWatchdogTimer = vi.fn(async () => {});
+    const adapter = { ...makeMockAdapter('linux'), installWatchdogTimer, uninstallWatchdogTimer };
+    vi.doMock('../../src/service/index.js', () => ({ getServiceAdapter: () => adapter }));
+    const { installServiceFlow } = await import('../../src/service/install-flow.js');
+    const { WATCHDOG_PROBE_INTERVAL_SEC } = await import('../../src/service/watchdog-probe.js');
+
+    const outcome = await installServiceFlow(7777, { entryJsOverride: fixtureEntry });
+
+    expect(installWatchdogTimer).toHaveBeenCalledWith(outcome.build.rawExecPath, WATCHDOG_PROBE_INTERVAL_SEC);
+  });
+
+  it('skips the watchdog timer silently when the adapter lacks it (plain mock, e.g. win32 today)', async () => {
+    // makeMockAdapter() deliberately does NOT implement installWatchdogTimer —
+    // this must not throw or otherwise affect the install outcome.
+    const adapter = makeMockAdapter('win32');
+    vi.doMock('../../src/service/index.js', () => ({ getServiceAdapter: () => adapter }));
+    const { installServiceFlow } = await import('../../src/service/install-flow.js');
+
+    await expect(installServiceFlow(7777, { entryJsOverride: fixtureEntry })).resolves.toBeDefined();
+  });
+
+  it('does not register the watchdog timer when install fell back to the Startup shortcut', async () => {
+    const installWatchdogTimer = vi.fn(async () => {});
+    const uninstallWatchdogTimer = vi.fn(async () => {});
+    const adapter = {
+      ...makeMockAdapter('win32', { kind: 'startup', path: 'C:\\Startup\\AstraMemoryD.cmd' }),
+      installWatchdogTimer,
+      uninstallWatchdogTimer,
+    };
+    vi.doMock('../../src/service/index.js', () => ({ getServiceAdapter: () => adapter }));
+    const { installServiceFlow } = await import('../../src/service/install-flow.js');
+
+    await installServiceFlow(7777, { entryJsOverride: fixtureEntry });
+
+    expect(installWatchdogTimer).not.toHaveBeenCalled();
+  });
+
   it('throws before writing anything if the resolved entry does not exist (unchanged guard)', async () => {
     const adapter = makeMockAdapter('linux');
     vi.doMock('../../src/service/index.js', () => ({ getServiceAdapter: () => adapter }));

@@ -8,6 +8,8 @@ const LABEL = 'com.astragenie.astra-memoryd';
 const PLIST_FILENAME = `${LABEL}.plist`;
 const BACKUP_LABEL = 'com.astragenie.astra-memoryd-backup';
 const BACKUP_PLIST_FILENAME = `${BACKUP_LABEL}.plist`;
+const WATCHDOG_LABEL = 'com.astragenie.astra-memoryd-watchdog';
+const WATCHDOG_PLIST_FILENAME = `${WATCHDOG_LABEL}.plist`;
 
 function agentsDir(): string {
   return join(homedir(), 'Library', 'LaunchAgents');
@@ -19,6 +21,10 @@ function plistPath(): string {
 
 function backupPlistPath(): string {
   return join(agentsDir(), BACKUP_PLIST_FILENAME);
+}
+
+function watchdogPlistPath(): string {
+  return join(agentsDir(), WATCHDOG_PLIST_FILENAME);
 }
 
 function xmlEscape(s: string): string {
@@ -59,6 +65,43 @@ ${argItems}
   <string>${homedir()}/Library/Logs/astra-memoryd-backup.out.log</string>
   <key>StandardErrorPath</key>
   <string>${homedir()}/Library/Logs/astra-memoryd-backup.err.log</string>
+</dict>
+</plist>
+`;
+}
+
+/**
+ * Hang-watchdog probe agent (FEAT-443 SLICE-2) — `StartInterval` runs
+ * `<execCmd> service watchdog-probe` (watchdog-probe.ts) every
+ * `intervalSec` seconds, independent of the main agent's own `KeepAlive`
+ * (which only fires on process exit, never a hang). No `RunAtLoad`: the
+ * first run fires after `intervalSec` from load time, same as a systemd
+ * `OnUnitActiveSec` timer with no matching `OnBootSec` — the daemon's own
+ * `RunAtLoad`/`KeepAlive` agent already covers "just booted".
+ */
+function buildWatchdogPlist(args: string[], intervalSec: number): string {
+  const argItems = args.map(a => `    <string>${xmlEscape(a)}</string>`).join('\n');
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>${WATCHDOG_LABEL}</string>
+
+  <key>ProgramArguments</key>
+  <array>
+${argItems}
+    <string>service</string>
+    <string>watchdog-probe</string>
+  </array>
+
+  <key>StartInterval</key>
+  <integer>${intervalSec}</integer>
+
+  <key>StandardOutPath</key>
+  <string>${homedir()}/Library/Logs/astra-memoryd-watchdog.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>${homedir()}/Library/Logs/astra-memoryd-watchdog.err.log</string>
 </dict>
 </plist>
 `;
@@ -196,6 +239,26 @@ export class LaunchdAdapter implements ServiceAdapter {
     if (existsSync(bp)) {
       try { await launchctlUnload(bp); } catch { /* ignore if not loaded */ }
       unlinkSync(bp);
+    }
+  }
+
+  /** FEAT-443 SLICE-2 — see watchdog-probe.ts header. Not part of
+   *  ServiceAdapter (see watchdog-probe.ts's hasWatchdogTimer guard) —
+   *  install-flow.ts and cli/service.ts detect it via duck typing. */
+  async installWatchdogTimer(execPath: string, intervalSec: number): Promise<void> {
+    mkdirSync(agentsDir(), { recursive: true });
+    const args = Array.from(execPath.matchAll(/"([^"]+)"|(\S+)/g))
+      .map(m => m[1] ?? m[2] ?? '')
+      .filter(a => a.length > 0);
+    writeFileSync(watchdogPlistPath(), buildWatchdogPlist(args, intervalSec), 'utf8');
+    await launchctlLoad(watchdogPlistPath());
+  }
+
+  async uninstallWatchdogTimer(): Promise<void> {
+    const wp = watchdogPlistPath();
+    if (existsSync(wp)) {
+      try { await launchctlUnload(wp); } catch { /* ignore if not loaded */ }
+      unlinkSync(wp);
     }
   }
 }

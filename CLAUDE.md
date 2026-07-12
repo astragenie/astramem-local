@@ -49,6 +49,32 @@ churn can restrand the daemon again) and prints a loud warning every time.
 `doctor` flags a dev-pinned install with a WARN row; run plain `reinstall`
 (no `--dev`) to return to a pinned release.
 
+### Unix service parity (FEAT-443)
+
+`service install` / `init` / `reinstall` share ONE install path
+(`install-flow.ts`) on all three platforms now: systemd units and launchd
+plists point at the same STABLE shim architecture Windows always used
+(`<dataDir>/bin/astramemd.sh` → `launch.cjs` → `current.json` pointer, see
+`shim.ts`) — upgrades repoint `current.json` only, the unit/plist is
+registered exactly once at first install, and `reinstall --rollback` works
+on linux/darwin exactly like it does on win32 (SLICE-1).
+
+`Restart=on-failure` (systemd) and `KeepAlive` (launchd) only fire when the
+daemon process actually exits — a daemon that's alive but wedged (blocked
+event loop, deadlocked native call) keeps holding `daemon.lock` and answering
+nothing, and neither mechanism ever notices (same blind spot Windows' PT5M
+keepalive has always had). SLICE-2 closes this for linux/darwin with a
+separate recurring hang-watchdog probe (systemd `OnUnitActiveSec` timer /
+launchd `StartInterval` agent, installed automatically alongside the main
+service — not opt-in) that hits `/health` every 3 minutes and, on failure,
+kills whatever actually holds `daemon.lock` and restarts via the adapter —
+see `src/service/watchdog-probe.ts` for why this shells out to a probe+kill
+cycle instead of genuine `sd_notify`/`WatchdogSec` (Node has no built-in Unix
+datagram socket support). Invoke by hand with
+`astramem-local service watchdog-probe`; remove with `service uninstall`.
+Windows is out of scope here — its PT5M keepalive has the same hang blind
+spot, unaddressed by this FEAT.
+
 **Package name: `astramem-local` on npmjs** — first published 2026-07-08 as v0.9.0
 (this repo, SQLCipher-capable). The OLD stale 0.4.0 lives under the scoped name
 `@astragenie/astramemory-local` on GitHub Packages (scope-mapped in ~/.npmrc) —

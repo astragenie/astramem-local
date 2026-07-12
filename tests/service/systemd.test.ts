@@ -108,4 +108,41 @@ describe('SystemdAdapter', () => {
     const s = await adapter.status();
     expect(s.installed).toBe(false);
   });
+
+  // FEAT-443 SLICE-2 — hang-watchdog probe timer
+  describe('watchdog timer', () => {
+    it('installWatchdogTimer writes a oneshot service + OnUnitActiveSec timer', async () => {
+      await adapter.installWatchdogTimer('/usr/local/bin/node /app/dist/cli/index.js', 180);
+
+      expect(fsMock.writeFileSync).toHaveBeenCalledTimes(2);
+      const [svcPath, svcContent] = fsMock.writeFileSync.mock.calls[0] as [string, string];
+      const [timerPath, timerContent] = fsMock.writeFileSync.mock.calls[1] as [string, string];
+
+      expect(svcPath).toMatch(/astra-memoryd-watchdog\.service$/);
+      expect(svcContent).toContain('Type=oneshot');
+      expect(svcContent).toContain('service watchdog-probe');
+
+      expect(timerPath).toMatch(/astra-memoryd-watchdog\.timer$/);
+      expect(timerContent).toContain('OnUnitActiveSec=180s');
+      expect(timerContent).toContain('[Timer]');
+    });
+
+    it('installWatchdogTimer enables the timer via systemctl --user', async () => {
+      await adapter.installWatchdogTimer('/usr/local/bin/node /app/dist/cli/index.js', 180);
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      expect(cmds.some(c => c.includes('systemctl --user') && c.includes('enable') && c.includes('watchdog.timer'))).toBe(true);
+    });
+
+    it('uninstallWatchdogTimer removes both unit files when present', async () => {
+      fsMock.existsSync.mockReturnValue(true);
+      await adapter.uninstallWatchdogTimer();
+      expect(fsMock.unlinkSync).toHaveBeenCalledTimes(2);
+    });
+
+    it('uninstallWatchdogTimer is a no-op when nothing was installed', async () => {
+      fsMock.existsSync.mockReturnValue(false);
+      await adapter.uninstallWatchdogTimer();
+      expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+    });
+  });
 });
