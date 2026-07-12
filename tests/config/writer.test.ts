@@ -387,6 +387,43 @@ describe('FEAT-461: configToYaml emit completeness', () => {
   });
 });
 
+// FEAT-470 AC-1 (SLICE-420 re-review residual): hasNothingToEmit extended to
+// treat an explicit empty string ('') the same as undefined, for
+// STRING-typed optional fields only — matching the emitter's own truthy-omit
+// conditionals (`cfg.azure.endpoint ? [...] : []`-style). Booleans/numbers
+// have no such conditional (always emitted unconditionally), so a genuinely
+// missing 0/false value must still be flagged.
+describe('FEAT-470 AC-1: hasNothingToEmit matches the emitter\'s falsy-omit semantics for string fields', () => {
+  it('does not flag an explicit empty-string optional field as missing', () => {
+    const cfg = defaultConfig();
+    cfg.azure.endpoint = '';
+    const yaml = configToYaml(cfg);
+    expect(yaml).not.toContain('endpoint:'); // emitter's truthy check omits it, same as undefined
+    const missing = findMissingConfigKeys(cfg, yaml);
+    expect(missing).not.toContain('azure.endpoint');
+  });
+
+  it('counter-test: a numeric 0 extra field is still flagged as missing (0 must not be treated as nothing-to-emit)', () => {
+    const cfg = defaultConfig() as unknown as Record<string, unknown>;
+    const withExtraNested = {
+      ...cfg,
+      consolidation: { ...(cfg['consolidation'] as Record<string, unknown>), futureNumericField: 0 },
+    } as unknown as Config;
+    const missing = findMissingConfigKeys(withExtraNested, configToYaml(withExtraNested));
+    expect(missing).toContain('consolidation.futureNumericField');
+  });
+
+  it('counter-test: a boolean false extra field is still flagged as missing (false must not be treated as nothing-to-emit)', () => {
+    const cfg = defaultConfig() as unknown as Record<string, unknown>;
+    const withExtraNested = {
+      ...cfg,
+      consolidation: { ...(cfg['consolidation'] as Record<string, unknown>), futureBooleanField: false },
+    } as unknown as Config;
+    const missing = findMissingConfigKeys(withExtraNested, configToYaml(withExtraNested));
+    expect(missing).toContain('consolidation.futureBooleanField');
+  });
+});
+
 // FEAT-461 review fix (Finding 1, HIGH): a config.yaml written by this
 // version and later read by an OLDER (pre-FEAT-461) daemon binary — e.g. via
 // `reinstall --rollback`, a first-class supported path per CLAUDE.md — must

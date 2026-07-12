@@ -320,6 +320,12 @@ assumes.
   created before this guard existed) also refuses to resume — there's no
   record of the original scope to verify against. There is no override
   flag: start a fresh run dir if you actually want different params.
+  `datasetPath` is compared verbatim (string equality), not just the content
+  hash — moving the same dataset file to a different path also refuses
+  `--resume` even though `datasetHash` still matches; this is intentional
+  strictness (a stricter guard than the scope-narrowing bug it was written
+  for, kept simple rather than special-cased to "hash matches, path
+  changed") — start a fresh run dir if the dataset moved.
   Implementation: `../shared/run-params.ts`'s `evaluateResumeGuard`.
 - **Judging** (`judge.mts`) is idempotent in the sense that it always
   overwrites `<hyp>.eval-results-<judge>` — re-running re-judges everything,
