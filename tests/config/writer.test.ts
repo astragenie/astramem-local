@@ -66,6 +66,7 @@ function buildFullyPopulatedConfig(): Config {
         enabled: true,
         relevanceGate: { minChars: 20, maxBytes: 131_072, dedupWindow: 40 },
       },
+      purge: { restoreWindowDays: 45 },
     },
   };
 }

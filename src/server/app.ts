@@ -9,6 +9,7 @@ import { ingestRoute } from './routes/ingest.js';
 import { searchRoute } from './routes/search.js';
 import { memoryRoute } from './routes/memory.js';
 import { lifecycleRoutes } from './routes/lifecycle.js';
+import { capturePurgeRoutes } from './routes/capture-purge.js';
 import { whyRoute } from './routes/why.js';
 import { agentsRoute } from './routes/agents.js';
 import { profileRoute } from './routes/profile.js';
@@ -153,6 +154,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(searchRoute(opts.db, embed, config));
   await app.register(memoryRoute(opts.db));
   await app.register(lifecycleRoutes(opts.db));
+  await app.register(capturePurgeRoutes(opts.db, config));
   await app.register(whyRoute(opts.db));
   await app.register(agentsRoute(opts.db));
   await app.register(profileRoute(opts.db));

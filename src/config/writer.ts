@@ -321,6 +321,10 @@ export function configToYaml(cfg: Config): string {
     line(3, 'minChars', cfg.capture.autoCapture.relevanceGate.minChars),
     line(3, 'maxBytes', cfg.capture.autoCapture.relevanceGate.maxBytes),
     line(3, 'dedupWindow', cfg.capture.autoCapture.relevanceGate.dedupWindow),
+    // Purge-batch reversible soft-delete (FEAT-467) — previously nonexistent;
+    // wired in from day one so it never joins the FEAT-461 dropped-field list.
+    line(1, 'purge'),
+    line(2, 'restoreWindowDays', (cfg.capture.purge ?? EMIT_DEFAULTS.capture.purge).restoreWindowDays),
     '',
   ];
   const yaml = lines.join('\n');
