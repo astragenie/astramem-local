@@ -1,0 +1,15 @@
+{
+  "id": "fx44-conversational-marcus-priya-life-updates",
+  "title": "Personal life updates — Marcus moving out, Priya starting a new school (SLICE-434 conversational-profile smoke fixture, promoted to a permanent file for SLICE-436's proof phase)",
+  "difficulty": "conversational",
+  "notes": "Authored to reproduce the exact live fx44 smoke used to validate SLICE-434 (FEAT-479 AC-9/AC-10) — see .claude/artifacts/crew/validations/20260713T125800Z-validation-result-slice-434-conversational.md: 'conversational profile extracted 4 personal atoms (Marcus moving out next week + sentiment, Priya starting new school in fall + sentiment) ... Engineering profile on the SAME fixture returned [] — correct profile divergence.' That validation ran this content ad hoc and never committed a fixture file, so this file did not exist under fixtures/ until SLICE-436. DELIBERATE PLACEMENT: this lives in a SIBLING directory (fixtures-conversational/), NOT fixtures/, and is intentionally excluded from lib/fixtures.ts's default loadFixtures() directory scan. Every existing/future run-bench.mts invocation with no --fixtures-dir override runs the ENGINEERING profile, under which this purely-personal transcript should legitimately extract nothing (gold_atoms: [] below) — dropping it into the shared default fixtures/ directory would silently and permanently penalize every future engineering-profile model comparison for correctly declining to extract personal chatter, which is exactly the behavior SLICE-434 designed for. gold_atoms is empty for that reason: this fixture is an over-extraction-restraint check (same role as fx09/fx30/fx31's 'nothing worth remembering' fixtures) under the engineering profile the SLICE-436 proof-phase 4-config comparison actually runs; it does NOT re-verify conversational-profile liberal extraction (SLICE-434's own validation already covers that, live, against this exact content).",
+  "turns": [
+    { "role": "user", "text": "Hey, been a minute. How's things at home?" },
+    { "role": "assistant", "text": "Pretty eventful actually. Marcus is moving out next week — he found his own place across town and is pretty excited about it, even though it's going to be quiet around here without him." },
+    { "role": "user", "text": "Oh wow, that's a big change. How are you feeling about it?" },
+    { "role": "assistant", "text": "Bittersweet, honestly. Proud of him for taking the step, but it's going to be an adjustment. On a happier note, Priya is starting at a new school this fall — she just got accepted and she's really looking forward to it." },
+    { "role": "user", "text": "That's great for her! Nervous or excited?" },
+    { "role": "assistant", "text": "Mostly excited, I think, though there's probably some first-day jitters mixed in. Anyway, nothing else new really, just the usual weekend stuff." }
+  ],
+  "gold_atoms": []
+}

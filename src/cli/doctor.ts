@@ -34,6 +34,13 @@ export async function doctorCommand(args: string[]): Promise<void> {
       encryptionEnabled: cfg.security.encryption.enabled,
       durabilityGateMode: cfg.distill.durabilityGate,
       extractProfile: cfg.distill.extractProfile,
+      // FEAT-479 AC-15 (SLICE-436): real configured cap (previously this
+      // call site never passed one, so checkBudget silently always assumed
+      // the getChecks() default of 10 regardless of the operator's actual
+      // config.yaml value) + the codex-subscription blind-spot predicate.
+      dailyBudgetUsd: cfg.budget.daily_usd,
+      codexSubscriptionInUse:
+        cfg.llm.compaction.provider === 'codex-subscription' || cfg.llm.extraction.provider === 'codex-subscription',
       autoCaptureEnabled: cfg.capture.autoCapture.enabled,
       proxyEnabled: cfg.proxy.enabled,
       proxyCaptureEnabled: cfg.proxy.capture.enabled,

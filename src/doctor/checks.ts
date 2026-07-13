@@ -141,6 +141,15 @@ export interface DoctorCheckOpts {
    * not `cfg.auth.devNoAuth` directly. Defaults to `false` when not
    * supplied. */
   devNoAuthActive?: boolean;
+  /** FEAT-479 AC-15 (SLICE-436): true when either `llm.compaction.provider`
+   * or `llm.extraction.provider` is `'codex-subscription'` — a cheap,
+   * config-only derivation (`cfg.llm.{compaction,extraction}.provider ===
+   * 'codex-subscription'`) that needs no provider instantiation, unlike the
+   * `llmProviders` opt above (which today's `doctorCommand` never actually
+   * populates, so a check gated on it alone would never run in production —
+   * deliberately NOT reusing that seam for this check). Defaults to `false`
+   * when not supplied. */
+  codexSubscriptionInUse?: boolean;
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
@@ -407,6 +416,51 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled:
       } catch (err) {
         return { ok: false, message: `Budget check error: ${err}` };
       }
+    },
+  };
+}
+
+// ─── Check: Budget cap blindness under codex-subscription (FEAT-479 AC-15) ──
+
+/**
+ * codex-subscription (`src/providers/llm/codex-subscription.ts`) always
+ * reports `usage.usd: 0` — a ChatGPT subscription has no per-token price, so
+ * there is nothing for `BudgetTracker` to meter (see that provider's own
+ * `chat()` comment: "Subscription-quota usage has no per-token USD price —
+ * always 0", matching `pricing.ts`'s "unknown model" convention rather than
+ * inventing a number). `checkBudget` above reads `budget_spend.usd_total`
+ * against `dailyBudgetUsd` and reports "under cap" — which is true but
+ * MEANINGLESS the moment either `llm.compaction` or `llm.extraction` is
+ * pinned to codex-subscription, because that provider's spend never moves
+ * the meter checkBudget is reading. An operator relying on the cap for cost
+ * control would see an all-green "$0.00 / $10.00" budget row and reasonably
+ * (and wrongly) conclude the cap is protecting them.
+ *
+ * Deliberately a SEPARATE, unconditional-while-configured check (same
+ * posture as `checkProxyCaptureReminder`/`checkDevNoAuth` above) rather than
+ * folded into `checkBudget` itself — the two checks answer different
+ * questions ("is today's metered spend under cap" vs "does the cap apply to
+ * this provider at all") and collapsing them would bury the second, more
+ * important one inside a check that stays green.
+ */
+function checkBudgetCapCodexBlind(dailyBudgetUsd: number, codexSubscriptionInUse: boolean): Check {
+  return {
+    name: 'Budget cap vs codex-subscription',
+    async run(): Promise<CheckResult> {
+      if (!codexSubscriptionInUse || dailyBudgetUsd <= 0) {
+        return { ok: true, message: 'budget cap applies normally (codex-subscription not in use)' };
+      }
+      return {
+        ok: false,
+        message:
+          `daily budget cap ($${dailyBudgetUsd.toFixed(2)}) does NOT meter codex-subscription — ` +
+          `it always reports usage.usd: 0 (ChatGPT subscription quota has no per-token price), so ` +
+          `extraction/compaction spend under this provider is invisible to the cap and will never ` +
+          `pause distillation.`,
+        fix:
+          'Cost control for codex-subscription is your ChatGPT plan quota, not config.budget.daily_usd — ' +
+          'monitor usage at chatgpt.com, not `astramem-local budget`.',
+      };
     },
   };
 }
@@ -1608,6 +1662,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkCrashLoop(dataDir),
     checkSchemaDrift(dataDir, encryptionEnabled, opts.servicePointerPath, opts.releasesRoot),
     checkBudget(dataDir, dailyBudgetUsd, encryptionEnabled),
+    checkBudgetCapCodexBlind(dailyBudgetUsd, opts.codexSubscriptionInUse ?? false),
     checkConfigDirDivergence(),
     checkRedaction(dataDir, opts.redactionEnabled ?? true, encryptionEnabled),
     checkEncryption(dataDir, encryptionEnabled),
