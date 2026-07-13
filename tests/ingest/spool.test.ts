@@ -5,6 +5,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, readdirSync, readFileSync, rmSync, existsSync, statSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir, platform } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import {
   spoolDir,
   spoolQuarantineDir,
@@ -287,6 +288,51 @@ describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine
     const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
     expect(rewritten).not.toContain(SECRET);
     expect(rewritten).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(() => JSON.parse(rewritten)).not.toThrow(); // "did the secret go" is not enough — "is it still a file"
+  });
+
+  it('review fix round 2 (JSON corruption): a realistic proxy-shaped envelope (session_id, nested unrecognized fields, a real secret) redacts safely without corrupting the JSON', () => {
+    // Round 1 fixed the coverage inversion by adding a second pass that ran
+    // redactIfEnabled over the fully SERIALIZED envelope text. That broke on
+    // exactly this shape: every real proxy envelope has a `session_id:
+    // proxy-${randomUUID()}` field (src/capture/proxy.ts buildProxyEnvelope).
+    // In pretty-printed JSON that value has no internal whitespace, so the
+    // entropy detector's whitespace tokenizer swept the surrounding quotes
+    // AND trailing comma into the "secret" span and replaced the whole thing
+    // with a bare, unquoted placeholder — corrupting the JSON while the
+    // sweep still reported `redacted: 1` (success). This is the fixture that
+    // proves round 2 (redactValuesDeep, walking the decoded value tree
+    // instead of scanning serialized text) actually closes that.
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = {
+      event: 'session_end',
+      session_id: `proxy-${randomUUID()}`, // the exact FP-prone shape that corrupted round 1
+      project_id: 'llm-proxy',
+      captured_at: new Date().toISOString(),
+      turns: [{ role: 'user', text: 'hello there' }],
+      // A real secret in a field CanonicalIngestSchema/redactSpoolEnvelope's
+      // allowlist has never heard of — the coverage-inversion case, nested
+      // two levels deep to also prove recursion.
+      debug: { upstream: { raw_headers: { authorization: `Bearer ${SECRET}` } } },
+    };
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(envelope, null, 2));
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+    expect(result.scanned).toBe(1);
+    expect(result.unparseable).toBe(0);
+    expect(result.failed).toBe(0);
+
+    const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    // The load-bearing assertion: still valid, parseable JSON. This is the
+    // one that would have caught round 1's bug — "did the secret go" was
+    // never sufficient on its own.
+    expect(() => JSON.parse(rewritten)).not.toThrow();
+    const parsedEnvelope = JSON.parse(rewritten) as { debug: { upstream: { raw_headers: { authorization: string } } }; turns: Array<{ text: string }> };
+    expect(rewritten).not.toContain(SECRET);
+    expect(parsedEnvelope.debug.upstream.raw_headers.authorization).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(parsedEnvelope.turns[0]!.text).toBe('hello there'); // untouched — no secret, no entropy false-positive here
   });
 
   it('review fix (coverage inversion): a well-formed but schema-invalid envelope with a secret in an UNRECOGNIZED field is still redacted', () => {
@@ -321,6 +367,7 @@ describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine
     const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
     expect(rewritten).not.toContain(SECRET);
     expect(rewritten).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(() => JSON.parse(rewritten)).not.toThrow();
   });
 
   it('is idempotent — a second sweep over already-redacted content is a no-op write', () => {
@@ -332,6 +379,7 @@ describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine
 
     sweepQuarantineRedaction(dataDir, defaultConfig());
     const afterFirst = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(() => JSON.parse(afterFirst)).not.toThrow();
 
     const second = sweepQuarantineRedaction(dataDir, defaultConfig());
     expect(second.scanned).toBe(1);
@@ -350,6 +398,7 @@ describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine
     const result = sweepQuarantineRedaction(dataDir, defaultConfig());
     expect(result.redacted).toBe(0);
     expect(readFileSync(join(qDir, `${K_A}.json`), 'utf8')).toBe(raw);
+    expect(() => JSON.parse(raw)).not.toThrow();
   });
 
   it('an unparseable quarantine file is redacted via the raw-text fallback — the secret does not survive, and the file is not deleted', () => {
@@ -389,6 +438,7 @@ describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine
     sweepQuarantineRedaction(dataDir, defaultConfig());
 
     expect(readFileSync(join(qDir, `${K_A}.reason.txt`), 'utf8')).toBe('schema validation failed\n');
+    expect(() => JSON.parse(readFileSync(join(qDir, `${K_A}.json`), 'utf8'))).not.toThrow();
   });
 });
 

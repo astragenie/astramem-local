@@ -251,6 +251,61 @@ export function redactSpoolEnvelope(body: unknown, config: Config): unknown {
 }
 
 /**
+ * Recursively redact every STRING VALUE in `value` — any field, any depth,
+ * through arrays and plain objects — leaving object KEYS and non-string
+ * primitives (numbers, booleans, null) untouched. Pure; never mutates
+ * `value`.
+ *
+ * Review fix (2026-07-13): the first cut of `sweepQuarantineRedaction`
+ * tried to be shape-agnostic by running `redactIfEnabled` over the fully
+ * SERIALIZED text of a parseable envelope (structural pass + second raw-
+ * text pass). That is unsafe for JSON: `redactIfEnabled`'s entropy detector
+ * tokenizes on whitespace, and a JSON value with no internal whitespace —
+ * e.g. `"session_id": "proxy-<uuid>",` — tokenizes as `"proxy-<uuid>",`
+ * INCLUDING the surrounding quotes and trailing comma, since nothing
+ * whitespace-separates them from the value. A high-entropy match on that
+ * token gets replaced WHOLESALE — quotes and comma included — with a bare,
+ * unquoted `[REDACTED:...]` placeholder, corrupting the JSON. Confirmed
+ * reproducible on every real proxy envelope (`session_id: proxy-${randomUUID()}`,
+ * src/capture/proxy.ts `buildProxyEnvelope`) — not an edge case, the common
+ * case. Worse, the sweep still reported `redacted: 1` (success) while having
+ * destroyed the file's structure.
+ *
+ * This function is the fix: it operates on the DECODED value tree, never on
+ * serialized text, so it structurally CANNOT touch a JSON delimiter —
+ * `redactIfEnabled` only ever receives one already-isolated string at a
+ * time, with no surrounding quote/comma/brace characters attached, and
+ * `JSON.stringify` re-quotes/re-escapes the result correctly afterward. It
+ * fully supersedes `redactSpoolEnvelope`'s four-field allowlist (it walks
+ * every field, not just `turns[].text` / `events[].text`/`evidence` /
+ * `content`) using the exact same `redactIfEnabled` primitive underneath —
+ * not a second redaction implementation, the same one applied at the
+ * correct granularity (values, not serialized bytes).
+ *
+ * Known residual, not a regression: `redactIfEnabled`'s entropy detector has
+ * pre-existing false positives on legitimate high-entropy identifiers (a
+ * bare `proxy-<uuid>` session_id, in isolation, still often scores above
+ * the entropy threshold and gets redacted into a placeholder). That is an
+ * existing property of the detector, not something this function
+ * introduces — the difference is that the result is now a VALID, still-
+ * parseable JSON file with an over-redacted field, instead of an INVALID
+ * file that silently claimed success. Over-redaction is the acceptable
+ * failure direction; corruption was not.
+ */
+export function redactValuesDeep(value: unknown, config: Config): unknown {
+  if (typeof value === 'string') return redactIfEnabled(value, config).text;
+  if (Array.isArray(value)) return value.map(v => redactValuesDeep(v, config));
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[k] = redactValuesDeep(v, config); // key itself untouched — structure, not content
+    }
+    return out;
+  }
+  return value; // numbers, booleans, null pass through untouched
+}
+
+/**
  * Write `body` (a JSON-serializable envelope) to the spool keyed by
  * `idempotencyKey`, via tmp-file + atomic rename — a reader can never
  * observe a torn/partial file. Re-writing the same key is a same-path
@@ -454,47 +509,49 @@ export interface QuarantineRedactionSweepResult {
  * nothing once every file in it has already been rewritten once.
  *
  * Idempotent by construction, so a repeat run (e.g. a second boot before
- * anything new was quarantined) is safe: `redactSpoolEnvelope` /
- * `redactIfEnabled` skip spans already occupied by a `[REDACTED:...]`
- * placeholder (src/redact/index.ts `protectedRanges`), so re-redacting
- * already-redacted content is a no-op and produces byte-identical output —
- * which this function detects and skips the write for.
+ * anything new was quarantined) is safe: `redactIfEnabled` skips spans
+ * already occupied by a `[REDACTED:...]` placeholder (src/redact/index.ts
+ * `protectedRanges`), so re-redacting already-redacted content is a no-op
+ * and produces byte-identical output — which this function detects and
+ * skips the write for.
  *
- * Unparseable-file policy (can't JSON.parse -> can't walk structured fields
- * the way `redactSpoolEnvelope` does): apply `redactIfEnabled` directly to
- * the RAW file text instead of deleting the file. Chosen over deletion
- * because (a) it reuses the exact same redactor rather than inventing a
- * second implementation — the raw-text path IS `redactIfEnabled`, just
- * without the structural field walk in front of it, since `redactText`
- * operates on a plain string and was never JSON-shape-aware to begin with;
- * (b) deletion destroys forensic value (the `.reason.txt` sidecar records
- * WHY the file failed to parse — losing the file loses the ability to ever
- * diagnose what broke, or to recover it if it turns out to hold a false
- * positive rather than a secret); (c) the module's whole selection-effect
- * argument is that unparseable content disproportionately correlates with
- * secrets, i.e. exactly the files a whole-text regex/entropy pass is best
- * suited to, not worst suited to — the structural walk in `redactSpoolEnvelope`
- * exists to avoid redacting the JSON delimiters/keys themselves, but there
- * are no such delimiters to protect once parsing has already failed.
+ * Two branches, deliberately using OPPOSITE redaction strategies — do not
+ * "simplify" them into one:
  *
- * Parseable-but-schema-invalid files get BOTH passes, not just the
- * structural one (2026-07-13 review fix — the first cut of this function
- * routed every parseable file through `redactSpoolEnvelope` alone, which is
- * a four-field ALLOWLIST — `turns[].text`, `events[].text/evidence`,
- * `content` — that spreads every other field through untouched via
- * `{...rec}`). That inverted the coverage: the DOMINANT quarantine
- * population (`spool-drain.ts`) is valid JSON that fails
- * `CanonicalIngestSchema` — a reshaped, legacy-drifted, or debug-augmented
- * envelope — which is exactly the population most likely to carry a field
- * the allowlist doesn't recognize, and it was getting the WEAK pass while
- * genuinely-unparseable JSON (the minority) got the thorough one. Fixed by
- * running `redactIfEnabled` — shape-agnostic, no allowlist, the same
- * regex/entropy scan the unparseable branch already uses — over the fully
- * serialized text AFTER the structural pass. Safe to layer: `redactText`
- * treats an already-inserted `[REDACTED:...]` placeholder as a protected
- * span (src/redact/index.ts `protectedRanges`), so the second pass cannot
- * double-redact anything the first pass already caught; it only catches
- * what the first pass's allowlist missed.
+ * - **Parseable** (the common case — see review-fix history below): walk
+ *   the DECODED value tree with `redactValuesDeep`, never the serialized
+ *   text. This is JSON-safe by construction (see that function's doc for
+ *   why a text-blob scan corrupts JSON) and fully shape-agnostic (every
+ *   field, any depth — no allowlist to miss a reshaped/debug-augmented
+ *   envelope).
+ * - **Unparseable** (can't JSON.parse -> there is no value tree to walk):
+ *   apply `redactIfEnabled` directly to the RAW file text instead. This is
+ *   the right tool here for the OPPOSITE reason it's wrong above: the file
+ *   is already structurally broken, so there are no delimiters left to
+ *   protect — corrupting further JSON structure that doesn't exist costs
+ *   nothing, while leaving a live credential in an unparseable file costs a
+ *   great deal. Chosen over deletion because (a) it reuses the exact same
+ *   redactor, not a second implementation; (b) deletion destroys forensic
+ *   value (the `.reason.txt` sidecar records WHY the file failed to parse —
+ *   losing the file loses the ability to ever diagnose what broke, or
+ *   recover it if it turns out to be a false positive rather than a
+ *   secret); (c) the module's own selection-effect argument is that
+ *   unparseable content disproportionately correlates with secrets — the
+ *   population a whole-text regex/entropy pass is best suited to, not
+ *   worst.
+ *
+ * Review-fix history (2026-07-13, two rounds): round 1 replaced a four-field
+ * ALLOWLIST (`redactSpoolEnvelope` alone) with that same allowlist plus a
+ * second raw-text `redactIfEnabled` pass over the fully SERIALIZED envelope
+ * — reasoning it was "the same shape-agnostic tool the unparseable branch
+ * already uses." That broke on real input: the entropy detector tokenizes
+ * on whitespace, and a JSON value with no internal whitespace — e.g.
+ * `"session_id": "proxy-<uuid>",` (every real proxy envelope has one, see
+ * `redactValuesDeep`'s doc) — tokenizes INCLUDING its surrounding quotes and
+ * comma, and a high-entropy match replaced the whole token, corrupting the
+ * JSON while the sweep still reported `redacted: 1` (success). Round 2 (this
+ * version) fixed it by never running the shape-agnostic pass over serialized
+ * text for valid JSON — only over isolated, already-decoded string values.
  *
  * Never loses a file on a write failure: writes via the same tmp-file +
  * atomic rename pattern `writeToSpool` uses, so a crash or an I/O error
@@ -530,18 +587,15 @@ export function sweepQuarantineRedaction(dataDir: string, config: Config = defau
     let wasUnparseable = false;
     try {
       const envelope: unknown = JSON.parse(raw);
-      const structurallyRedacted = JSON.stringify(redactSpoolEnvelope(envelope, config), null, 2);
-      // Second pass (see doc comment above): the structural walk only
-      // knows about a four-field allowlist. Run the shape-agnostic
-      // redactor over the whole serialized text too, so a secret in a
-      // field the allowlist doesn't recognize still gets caught.
-      rewritten = redactIfEnabled(structurallyRedacted, config).text;
+      // Walk the DECODED value tree (see doc comment above for why this
+      // must never be a scan over serialized text for valid JSON).
+      rewritten = JSON.stringify(redactValuesDeep(envelope, config), null, 2);
     } catch {
       wasUnparseable = true;
       rewritten = redactIfEnabled(raw, config).text;
     }
 
-    // Counts as redacted if EITHER pass changed anything relative to the
+    // Counts as redacted if the walk/scan changed anything relative to the
     // original bytes — a file the sweep examined but couldn't improve must
     // not be indistinguishable from a file it never looked at.
     if (rewritten === raw) continue; // already redacted (or genuinely nothing to redact) — no write needed
