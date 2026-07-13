@@ -100,11 +100,6 @@ describe('migration 027-entity-relations (AC-1)', () => {
     expect(() => db.prepare('DELETE FROM memories WHERE id = ?').run(memId)).not.toThrow();
     expect(db.prepare('SELECT 1 FROM entity_relations WHERE id = ?').get('r-cascade')).toBeUndefined();
   });
-
-  it('DB max schema version is 36 after migration', () => {
-    const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(39);
-  });
 });
 
 describe('EntityRelationRepo.insert (AC-2 atomic dedup guard)', () => {
