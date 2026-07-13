@@ -142,6 +142,46 @@ export interface Config {
      * sidecar hosts more than one model (provider === 'http' only). */
     model?: string;
   };
+  /** Multi-hop query decomposition (WS6, LoCoMo multi-hop workstream,
+   * src/search/decompose.ts). OFF by default — mirrors crossEncoder's
+   * governance style: a config-flagged, opt-in seam, never a default-on
+   * capability. When disabled, search() takes zero extra branches (same
+   * contract as `rerank: undefined`).
+   *
+   * `provider: 'mock'` is a deterministic, network-free heuristic splitter
+   * (no semantic understanding — see MockQueryDecomposer's doc comment),
+   * useful for tests and for exercising the stage without an LLM. `provider:
+   * 'llm'` reuses `config.llm.extraction`'s provider (`model` optionally
+   * overrides just the model) — no separate provider-selection surface.
+   *
+   * `minQueryWords` is a cheap, network-free skip: queries shorter than
+   * this never reach the decomposer (bounds cost for the common single-hop
+   * case). `maxSubQueries` caps the decomposer's own output. `timeoutMs` is
+   * a hard per-call budget — a slow/hung decomposer degrades to zero
+   * sub-queries (single-pass behavior) rather than blocking the request,
+   * same fallback posture as crossEncoder.timeoutMs.
+   *
+   * `maxSupplemental` and `supplementalWeight` bound the DILUTION risk
+   * (fuse.ts `normalizeScores` is a min-max over whatever candidate array
+   * it's given — adding candidates to the primary array would shift every
+   * candidate's normalized score). Supplemental (sub-query-sourced)
+   * candidates are fused in their own, separate pass and never touch the
+   * primary candidates' normalization; `maxSupplemental` caps how many of
+   * them can ever be added, and `supplementalWeight` (< 1) damps their
+   * score so they can never outscore an equally-strong direct hit. See
+   * search.ts's merge step. */
+  multiHop: {
+    enabled: boolean;
+    provider: 'mock' | 'llm';
+    minQueryWords: number;
+    maxSubQueries: number;
+    maxSupplemental: number;
+    supplementalWeight: number;
+    timeoutMs: number;
+    /** Optional model override when provider === 'llm'; defaults to
+     * config.llm.extraction.model on config.llm.extraction.provider. */
+    model?: string;
+  };
   recallPack: {
     enabled: boolean;
     budgetTokens: number;
@@ -497,6 +537,10 @@ export function defaultConfig(): Config {
       governance: { maxComponentWeight: 1.0 },
     },
     crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
+    multiHop: {
+      enabled: false, provider: 'mock', minQueryWords: 6, maxSubQueries: 3,
+      maxSupplemental: 5, supplementalWeight: 0.5, timeoutMs: 800,
+    },
     recallPack: {
       enabled: false,
       budgetTokens: 1500,
@@ -773,6 +817,49 @@ export function applyExtractProfileGovernance(
   return distill;
 }
 
+const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = new Set(['mock', 'llm']);
+
+/**
+ * WS6 governance (mirrors `applyContradictionDetectionGovernance`'s shape):
+ * config.yaml is hand-parsed scalars with no schema, and `loadConfig`'s
+ * top-level override merge is shallow, so a partial `multiHop` override (or
+ * a typo'd `provider`) would otherwise pass through unchecked. Never fatal —
+ * an invalid/missing block falls back to `enabled: false` (the documented
+ * default) plus the rest of `defaultConfig().multiHop`, logged, rather than
+ * risk booting with `enabled: true` and a broken provider selection.
+ * `supplementalWeight` out of [0,1] is clamped rather than rejected (same
+ * defense-in-depth `resolveDecomposeOpts` already applies at resolve time —
+ * this is belt-and-suspenders against a bad value ever being logged as
+ * "governed" while still being out of range downstream).
+ */
+export function applyMultiHopGovernance(
+  multiHop: Config['multiHop'],
+  opts: { log?: (message: string) => void } = {},
+): Config['multiHop'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().multiHop;
+
+  if (!multiHop || !VALID_MULTI_HOP_PROVIDERS.has(multiHop.provider)) {
+    log(
+      multiHop
+        ? `[multi-hop-governance] multiHop.provider=${JSON.stringify(multiHop.provider)} is not one of ` +
+          "'mock'|'llm' — falling back to defaults (enabled: false). See WS6 / src/search/decompose.ts."
+        : '[multi-hop-governance] multiHop is missing — falling back to defaults (enabled: false). ' +
+          'See WS6 / src/search/decompose.ts.',
+    );
+    return { ...fallback, ...multiHop, provider: fallback.provider, enabled: false };
+  }
+
+  const clampedWeight = Math.min(1, Math.max(0, multiHop.supplementalWeight));
+  if (clampedWeight !== multiHop.supplementalWeight) {
+    log(
+      `[multi-hop-governance] multiHop.supplementalWeight=${multiHop.supplementalWeight} is outside [0,1]; ` +
+      `clamping to ${clampedWeight}. See WS6 / src/search/decompose.ts.`,
+    );
+  }
+  return { ...multiHop, supplementalWeight: clampedWeight };
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
@@ -781,5 +868,6 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
     search: applyFusionGovernance(merged.search),
     distill: applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)),
     consolidation: applyContradictionDetectionGovernance(merged.consolidation),
+    multiHop: applyMultiHopGovernance(merged.multiHop),
   };
 }

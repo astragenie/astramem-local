@@ -41,6 +41,10 @@ function buildFullyPopulatedConfig(): Config {
       enabled: true, provider: 'http', topK: 77, timeoutMs: 450,
       sidecarUrl: 'http://sidecar:8080/rerank', model: 'rerank-v2',
     },
+    multiHop: {
+      enabled: true, provider: 'llm', minQueryWords: 4, maxSubQueries: 4,
+      maxSupplemental: 8, supplementalWeight: 0.6, timeoutMs: 900, model: 'decompose-model',
+    },
     recallPack: {
       enabled: true,
       budgetTokens: 2200,

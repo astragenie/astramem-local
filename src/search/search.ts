@@ -21,6 +21,7 @@ import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
 import { applyRerank, type RerankOpts } from './rerank.js';
+import { getSubQueries, type DecomposeOpts } from './decompose.js';
 // FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
@@ -203,6 +204,17 @@ export interface SearchOpts {
    * fusion breakdown, never reranked, since its purpose is explaining fusion.
    */
   rerank?: RerankOpts;
+  /**
+   * Optional multi-hop query-decomposition stage (WS6, src/search/decompose.ts).
+   * `undefined` (the default — see config.multiHop.enabled / resolveDecomposeOpts
+   * in decompose.ts) means the stage is never invoked and search() is
+   * byte-identical to pre-WS6 behavior. When present, sub-query-sourced
+   * candidates are fused in a SEPARATE pass (own normalization) and merged
+   * in as a capped, damped addition — see the merge step in search() for the
+   * dilution bound. debug:true is unaffected: it always reflects the primary
+   * fusion breakdown only, same posture as rerank's debug interaction.
+   */
+  decompose?: DecomposeOpts;
 }
 
 /**
@@ -365,6 +377,81 @@ function agentBonusForFilter(db: DB, agent: string | string[], candidateIds: Set
   return bonus;
 }
 
+/**
+ * Gather raw FTS5 + vector candidates for one query string — the exact
+ * steps 1-2 `search()` always ran inline before WS6. Extracted so the
+ * multi-hop decompose stage (below) can run the identical gathering logic
+ * for each sub-query, with the same RECALL-S1 query-prefix handling and the
+ * same FTS-unavailable/embed-unavailable degrade behavior, without
+ * duplicating it.
+ */
+async function gatherCandidates(
+  db: DB,
+  embed: EmbedProvider,
+  query: string,
+  vecK: number,
+): Promise<{ ftsHits: Array<{ id: string; bm25: number }>; vecHits: Array<{ id: string; cosine: number }> }> {
+  const ftsHits: Array<{ id: string; bm25: number }> = [];
+  if (query.trim()) {
+    const ftsQuery = escapeFtsQuery(query);
+    try {
+      const rows = db.prepare(`
+        SELECT m.id, bm25(memories_fts) AS bm25
+        FROM memories_fts
+        JOIN memories m ON m.rowid = memories_fts.rowid
+        WHERE memories_fts MATCH ?
+        ORDER BY bm25
+        LIMIT ?
+      `).all(ftsQuery, vecK) as Array<{ id: string; bm25: number }>;
+      ftsHits.push(...rows);
+    } catch {
+      // FTS5 rejected the query (rare with escapeFtsQuery sanitization).
+      // Fall through to vector-only path.
+    }
+  }
+
+  const vecHits: Array<{ id: string; cosine: number }> = [];
+  try {
+    const embedInput = embed.queryPrefix ? `${embed.queryPrefix}${query}` : query;
+    const vecs = await embed.embed([embedInput]);
+    const queryVec = vecs[0];
+    if (!queryVec) throw new Error('embed provider returned empty result');
+    const vecStore = new SqliteVecStore(db, embed.dim);
+    const raw = await vecStore.search(queryVec, vecK);
+    vecHits.push(...raw.map(h => ({ id: h.id, cosine: h.score })));
+  } catch {
+    // Vector search unavailable (no rows, no provider) — FTS-only mode
+  }
+
+  return { ftsHits, vecHits };
+}
+
+/**
+ * Intersect FTS/vec candidate hits with the entity filter (FEAT-402 slice 2
+ * AC-4 / FEAT-453 §3.3) — the exact logic `search()` always ran inline
+ * before WS6, extracted so the multi-hop decompose stage can apply the same
+ * entity-scoping to sub-query candidates (a caller-supplied `entity` filter
+ * must bound decomposition-sourced candidates exactly like it bounds the
+ * primary ones — WS6 must not be a way to escape an existing filter).
+ */
+function applyEntityFilter(
+  db: DB,
+  filters: SearchFilters,
+  ftsHits: Array<{ id: string; bm25: number }>,
+  vecHits: Array<{ id: string; cosine: number }>,
+): { ftsHits: Array<{ id: string; bm25: number }>; vecHits: Array<{ id: string; cosine: number }> } {
+  if (filters.entity === undefined) return { ftsHits, vecHits };
+  const entityRepo = new EntityRepo(db);
+  const entityIds = entityRepo.resolveIds(filters.entity);
+  const linkedIds = filters.as_of !== undefined
+    ? entityRepo.memoryIdsForEntitiesAsOf(entityIds, filters.as_of)
+    : entityRepo.memoryIdsForEntities(entityIds);
+  return {
+    ftsHits: ftsHits.filter(h => linkedIds.has(h.id)),
+    vecHits: vecHits.filter(h => linkedIds.has(h.id)),
+  };
+}
+
 export function search(
   query: string,
   filters: SearchFilters,
@@ -386,50 +473,10 @@ export async function search(
   const { db, embed, weights } = opts;
   const vecK = opts.vecK ?? Math.max(limit * 4, 50);
 
-  // 1. FTS5 BM25 — run only if query is non-empty
-  const ftsHits: Array<{ id: string; bm25: number }> = [];
-  if (query.trim()) {
-    const ftsQuery = escapeFtsQuery(query);
-    try {
-      const rows = db.prepare(`
-        SELECT m.id, bm25(memories_fts) AS bm25
-        FROM memories_fts
-        JOIN memories m ON m.rowid = memories_fts.rowid
-        WHERE memories_fts MATCH ?
-        ORDER BY bm25
-        LIMIT ?
-      `).all(ftsQuery, vecK) as Array<{ id: string; bm25: number }>;
-      ftsHits.push(...rows);
-    } catch {
-      // FTS5 rejected the query (rare with escapeFtsQuery sanitization).
-      // Fall through to vector-only path.
-    }
-  }
-
-  // 2. Vector search — always attempt; if embed fails, fall back to FTS-only
-  //
-  // RECALL-S1: the embedder-bound instruction prefix (resolved once at
-  // provider-construction time, see EmbedProvider.queryPrefix /
-  // resolveEmbedQueryPrefix in src/contracts/embed.ts) is prepended ONLY to
-  // the string handed to embed.embed() below — never to `query` itself, so
-  // `ftsQuery`/the FTS5 MATCH above is computed from the untouched raw
-  // query and is unaffected by this. `embed.queryPrefix` is '' for every
-  // model without a registered default and for every mock/test provider
-  // that doesn't set it, so this is a no-op unless a real prefix is
-  // resolved.
-  const vecHits: Array<{ id: string; cosine: number }> = [];
-  try {
-    const embedInput = embed.queryPrefix ? `${embed.queryPrefix}${query}` : query;
-    const vecs = await embed.embed([embedInput]);
-    const queryVec = vecs[0];
-    if (!queryVec) throw new Error('embed provider returned empty result');
-    const vecStore = new SqliteVecStore(db, embed.dim);
-    // Pass empty filter to vec adapter — post-fusion filters applied below
-    const raw = await vecStore.search(queryVec, vecK);
-    vecHits.push(...raw.map(h => ({ id: h.id, cosine: h.score })));
-  } catch {
-    // Vector search unavailable (no rows, no provider) — FTS-only mode
-  }
+  // 1-2. FTS5 BM25 + vector search — see gatherCandidates() above (RECALL-S1
+  // query-prefix handling and FTS/embed degrade behavior both live there,
+  // unchanged from pre-WS6 inline code).
+  const { ftsHits, vecHits } = await gatherCandidates(db, embed, query, vecK);
 
   // 2b. Entity filter (FEAT-402 slice 2 AC-4) — resolve `entity` to entity
   // ids (AC-9 normalize seam) and intersect the FTS+vec candidate set BEFORE
@@ -446,20 +493,41 @@ export async function search(
   // alone never reaches this step at all — §3.2's point A (plain temporal,
   // no entity filter) is projection-only and leaves memory selection
   // unchanged, so it is not implemented here.
-  let filteredFtsHits = ftsHits;
-  let filteredVecHits = vecHits;
-  if (filters.entity !== undefined) {
-    const entityRepo = new EntityRepo(db);
-    const entityIds = entityRepo.resolveIds(filters.entity);
-    const linkedIds = filters.as_of !== undefined
-      ? entityRepo.memoryIdsForEntitiesAsOf(entityIds, filters.as_of)
-      : entityRepo.memoryIdsForEntities(entityIds);
-    filteredFtsHits = ftsHits.filter(h => linkedIds.has(h.id));
-    filteredVecHits = vecHits.filter(h => linkedIds.has(h.id));
+  const { ftsHits: filteredFtsHits, vecHits: filteredVecHits } = applyEntityFilter(db, filters, ftsHits, vecHits);
+  const primaryIds = new Set([...filteredFtsHits.map(h => h.id), ...filteredVecHits.map(h => h.id)]);
+
+  // WS6 (multi-hop query decomposition, opt-in — src/search/decompose.ts):
+  // gather candidates for each sub-query the SAME way the primary query was
+  // gathered above (same entity-filter scoping), excluding any id already
+  // found by the primary pass or an earlier sub-query. Runs BEFORE the
+  // empty-candidate-set check below so it can rescue a query the primary
+  // pass misses entirely, not just pad one that already found something.
+  // `opts.decompose === undefined` (the default) means `getSubQueries` is
+  // never called and this whole block is skipped — zero extra branches
+  // beyond the one `if` below.
+  const subFtsHits: Array<{ id: string; bm25: number }> = [];
+  const subVecHits: Array<{ id: string; cosine: number }> = [];
+  if (opts.decompose) {
+    const subQueries = await getSubQueries(query, opts.decompose);
+    const seenIds = new Set(primaryIds);
+    for (const sq of subQueries) {
+      const gathered = await gatherCandidates(db, embed, sq, vecK);
+      const { ftsHits: sFts, vecHits: sVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
+      for (const h of sFts) {
+        if (seenIds.has(h.id)) continue;
+        seenIds.add(h.id);
+        subFtsHits.push(h);
+      }
+      for (const h of sVec) {
+        if (seenIds.has(h.id)) continue;
+        seenIds.add(h.id);
+        subVecHits.push(h);
+      }
+    }
   }
 
   // 3. Load meta for all candidate ids (importance + created_at for freshness)
-  const allIds = new Set([...filteredFtsHits.map(h => h.id), ...filteredVecHits.map(h => h.id)]);
+  const allIds = new Set([...primaryIds, ...subFtsHits.map(h => h.id), ...subVecHits.map(h => h.id)]);
   if (allIds.size === 0) return [];
 
   const placeholders = Array.from(allIds).map(() => '?').join(',');
@@ -487,6 +555,39 @@ export async function search(
     : undefined;
   const nowMs = Date.now();
   const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus);
+
+  // WS6 merge (dilution bound): supplemental (sub-query-sourced) candidates
+  // are fused in a SEPARATE fuseHits() call — `normalizeScores` (fuse.ts) is
+  // a min-max over whatever array it's given, so feeding subFtsHits/subVecHits
+  // into the SAME call as the primary candidates would shift every primary
+  // hit's normalized score too. This call's inputs are disjoint from the
+  // primary call's (subFtsHits/subVecHits exclude every primary id — see the
+  // gather loop above), so `fused` above is unaffected regardless of whether
+  // this block runs. Capped to `maxSupplemental` (ranked by the supplemental
+  // pass's own score) and damped by `supplementalWeight` (< 1), so a
+  // supplemental hit's score can never reach what an equally-strong DIRECT
+  // hit would have scored — it can only compete for slots a stronger primary
+  // hit isn't already occupying. `rankedFused` (not `fused`) is what
+  // everything downstream of the debug branch uses; the debug projection
+  // deliberately keeps reading `fused` so SearchDebugHit continues to
+  // explain only the primary fusion breakdown, unaffected by WS6.
+  // `supplementalRawScore` records each supplemental hit's own (undamped)
+  // fused score, keyed by id — surfaced in its ScoreExplanation as the
+  // `multi_hop` signal below so a supplemental hit's provenance and its
+  // damping are visible, not just its final (already-damped) score.
+  let rankedFused = fused;
+  const supplementalRawScore = new Map<string, number>();
+  if (opts.decompose && (subFtsHits.length > 0 || subVecHits.length > 0)) {
+    const supplementalFused = fuseHits(subFtsHits, subVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus);
+    const capped = supplementalFused
+      .slice(0, opts.decompose.maxSupplemental)
+      .map(h => {
+        const raw = Math.min(1, Math.max(0, h.score));
+        supplementalRawScore.set(h.id, raw);
+        return { ...h, score: raw * opts.decompose!.supplementalWeight };
+      });
+    rankedFused = [...fused, ...capped].sort((a, b) => b.score - a.score);
+  }
 
   // 5. Apply post-fusion SQL filters then join full memory records
   //    Build filter clauses dynamically
@@ -525,8 +626,11 @@ export async function search(
   filterClauses.push(...rangeClauses);
   filterParams.push(...rangeParams);
 
-  // Fetch full memory records in one query using IN clause
-  const fusedIds = fused.map(h => h.id);
+  // Fetch full memory records in one query using IN clause. Uses
+  // `rankedFused` (not `fused`) so a WS6 supplemental id also gets its
+  // memory row joined — the debug branch below only reads `fused`'s ids out
+  // of this map, so a supplemental row fetched-but-unused there is harmless.
+  const fusedIds = rankedFused.map(h => h.id);
   const idPlaceholders = fusedIds.map(() => '?').join(',');
   // Atom v3 (ADR-001): invalidated memories (valid_to set) must never surface
   // in a current-snapshot recall — why_memory can still fetch them by id
@@ -670,6 +774,14 @@ export async function search(
       const raw = agentBonus.get(id) ?? 0;
       signals.agent_bonus = { raw, weight: explainWeights.agent_bonus, final: raw * explainWeights.agent_bonus };
     }
+    // WS6: a supplemental (decomposition-sourced) hit carries its own
+    // undamped fused score as `raw`, `supplementalWeight` as `weight`, and
+    // the already-damped final score (same as top-level `score`) as
+    // `final` — makes the dilution bound visible on the wire instead of a
+    // silently-lower number with no explanation.
+    if (supplementalRawScore.has(id)) {
+      signals.multi_hop = { raw: supplementalRawScore.get(id)!, weight: opts.decompose?.supplementalWeight ?? 0, final: score };
+    }
     // final MUST equal the hit's top-level score (CONTRACT-FREEZE §2), even
     // though usefulness/entity_bonus/agent_bonus above already account for
     // it — this is not a re-derivation, `score` is the source of truth.
@@ -677,7 +789,7 @@ export async function search(
   }
 
   const results: SearchHit[] = [];
-  for (const hit of fused) {
+  for (const hit of rankedFused) {
     const mem = memMap.get(hit.id);
     if (!mem) continue;  // filtered out
     results.push({
