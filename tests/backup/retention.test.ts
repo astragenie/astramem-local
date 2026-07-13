@@ -57,8 +57,6 @@ function createFakeBackups(dir: string, count: number): string[] {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('pruneOldBackups', () => {
-  // DELIBERATE BREAK for issue #235 CI-goes-red proof — reverted immediately after.
-  const _deliberateTypeBreak: string = 12345;
   it('keeps newest N and deletes older ones (8 backups, keep=7)', () => {
     const dir = tmpDir();
     const paths = createFakeBackups(dir, 8); // paths[0]=oldest, paths[7]=newest
