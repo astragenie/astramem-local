@@ -47,8 +47,9 @@ describe('migrate', () => {
     // consolidation_judge_runs telemetry table, 032 = 2026-07-13 timezone-
     // offset bugfix (transcripts.captured_at_local_date), 033 = silent-error
     // audit's consolidation_judge_runs.judge_errors counter column, 034 =
-    // issue #207 entity_name_drops counter table.
-    expect(versions.n).toBe(34);
+    // issue #207 entity_name_drops counter table, 035 = issue #188
+    // schema_version.filename + schema_version.content_hash).
+    expect(versions.n).toBe(35);
   });
 
   it('enables WAL mode', () => {
@@ -103,13 +104,14 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    // See the "is idempotent — second run does nothing" test above: 34
+    // See the "is idempotent — second run does nothing" test above: 35
     // migration files (001-022 + 023 FEAT-453 + 024 FEAT-455 + 025 FEAT-467 +
     // 026 FEAT-458 S6 + 027 FEAT-481 SLICE-1 + 028 FEAT-479 D3 §3.2 +
     // 029 FEAT-481 SLICE-430 + 030 FEAT-485 + 031 FEAT-482 + 032 timezone-
     // offset bugfix + 033 silent-error audit's judge_errors column + 034
-    // issue #207 entity_name_drops).
-    expect(versions.n).toBe(34);
+    // issue #207 entity_name_drops + 035 issue #188 schema_version
+    // content-hash).
+    expect(versions.n).toBe(35);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -185,7 +187,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(34);
+    expect(versions.v).toBe(35);
   });
 
   it('allows inserting type note after migration', () => {
@@ -543,7 +545,7 @@ describe('migration 017-widen-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(34);
+    expect(versions.v).toBe(35);
   });
 
   it('accepts all 3 new canonical types (preference, task_result, summary)', () => {
@@ -682,7 +684,7 @@ describe('migration 018-jobs-distill-session-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(34);
+    expect(versions.v).toBe(35);
   });
 
   it('creates the partial expression index on jobs', () => {
@@ -750,7 +752,7 @@ describe('migration 019-health-agent-profile-indexes', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(34);
+    expect(versions.v).toBe(35);
   });
 
   it('creates both partial expression indexes on memory_events', () => {
@@ -851,7 +853,7 @@ describe('migration 020-agent-profile-corrections-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(34);
+    expect(versions.v).toBe(35);
   });
 
   it('creates the partial expression index on memory_events for invalidate/supersede', () => {
@@ -947,8 +949,103 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 34/,
+      /Schema-version constant drift: wire-meta says 999, DB says 35/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// schema_version content-hash tracking (issue #188, migration 035).
+//
+// #188 is the structural fix for the 2026-07-13 #185/#186 outage: schema_version
+// used to key a migration's identity on the NUMBER ALONE. Two migrations were
+// briefly both numbered 030 -- whichever applied first won, the other was
+// silently skipped (#185). The fix renumbered one 030 -> 031, which is unsafe
+// by construction for a DB that had already recorded 30 against the OTHER
+// migration's content -- the daemon would not boot (#186). These tests pin the
+// content-hash verify/backfill behavior that replaces the raw
+// `CREATE TABLE ... already exists` / "restore from a backup" misdiagnosis
+// with a precise one.
+// ---------------------------------------------------------------------------
+
+describe('migrate — schema_version content-hash tracking (issue #188)', () => {
+  it('records filename + a 64-char content_hash for every migration on a fresh DB', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const rows = db
+      .prepare('SELECT version, filename, content_hash FROM schema_version ORDER BY version')
+      .all() as { version: number; filename: string | null; content_hash: string | null }[];
+    expect(rows).toHaveLength(35);
+    for (const row of rows) {
+      expect(row.filename, `version ${row.version} missing filename`).toMatch(/^\d+-.+\.sql$/);
+      expect(row.content_hash, `version ${row.version} missing content_hash`).toMatch(/^[a-f0-9]{64}$/);
+    }
+  });
+
+  it('AC-3: backfills content_hash for a legacy row that predates the column — the operator\'s existing production-shaped DB keeps booting clean', () => {
+    const db = openDb(':memory:');
+    migrate(db); // establishes real baseline hashes for all 35 versions
+
+    // Simulate exactly what an existing production DB's schema_version looks
+    // like the moment migration 035 lands: the columns exist (just added),
+    // but nothing has ever populated them for pre-#188 rows. "Do not guess" —
+    // this must backfill from disk TODAY, not throw.
+    db.prepare('UPDATE schema_version SET filename = NULL, content_hash = NULL WHERE version = 30').run();
+
+    expect(() => migrate(db)).not.toThrow();
+
+    const row = db
+      .prepare('SELECT filename, content_hash FROM schema_version WHERE version = 30')
+      .get() as { filename: string; content_hash: string };
+    expect(row.filename).toBe('030-evidence-guard-drops.sql');
+    expect(row.content_hash).toMatch(/^[a-f0-9]{64}$/);
+
+    // A subsequent boot verifies the freshly-backfilled baseline against disk
+    // (nothing changed) and must still pass.
+    expect(() => migrate(db)).not.toThrow();
+  });
+
+  it('AC-4/AC-5: 030=evidence-guard-drops + 031=consolidation-judge-runs (the real recovered production state) keeps booting cleanly across repeated boots', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    migrate(db);
+    migrate(db);
+    const tables = db
+      .prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name IN ('evidence_guard_drops','consolidation_judge_runs')`)
+      .all()
+      .map(r => (r as { name: string }).name)
+      .sort();
+    expect(tables).toEqual(['consolidation_judge_runs', 'evidence_guard_drops']);
+  });
+
+  it('AC-4: a version renumbered/replaced after being applied produces the precise diagnosis — NOT a raw CREATE TABLE crash or "restore from a backup"', () => {
+    const db = openDb(':memory:');
+    migrate(db); // establishes real baseline hashes for all 35 versions, including 30
+
+    // Simulate the #185/#186 shape directly at the DB level: version 30 was
+    // actually recorded against a DIFFERENT migration's content than the file
+    // that occupies slot 30 on disk today (a renumber/replace after the fact) —
+    // without needing to touch real migration files on disk to reproduce it.
+    db.prepare('UPDATE schema_version SET filename = ?, content_hash = ? WHERE version = 30').run(
+      '030-consolidation-judge-runs.sql',
+      'f'.repeat(64),
+    );
+
+    let caught: unknown;
+    try {
+      migrate(db);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    expect(message).toMatch(/Migration 30 was applied as 'consolidation-judge-runs'/);
+    expect(message).toMatch(/30 on disk is now 'evidence-guard-drops'/);
+    expect(message).toMatch(/renumbered or replaced/);
+    // Must NOT be the misleading diagnoses this replaces.
+    expect(message).not.toMatch(/already exists/i);
+    expect(message).not.toMatch(/restore from a backup/i);
   });
 });
 
