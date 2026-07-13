@@ -83,11 +83,16 @@ export const CanonicalIngestSchema = z.object({
    *  trigger, `'hook_close'` from the ordinary astramem-plugin close-capture
    *  hook (`buildClaudeEnvelope`'s optional `captureSource` param) — every
    *  other client omits this field and the transcripts/memories rows it
-   *  flows into stay NULL (byte-identical). Kept a closed enum rather than
-   *  an open string deliberately — an unrecognized value is a real client
-   *  bug worth surfacing as 400 on the direct `/ingest/transcript` path, not
-   *  something to silently coerce to null. */
-  capture_source: z.enum(['auto_capture', 'hook_close']).optional(),
+   *  flows into stay NULL (byte-identical). Widened again FEAT-458 S3
+   *  (ADR-013): `'proxy'` from the LLM proxy relay's capture fork
+   *  (src/proxy/**), which spools envelopes through the SAME durable ingest
+   *  spool (src/ingest/spool.ts) drained by src/ingest/spool-drain.ts using
+   *  this exact schema instance — an unwidened enum here would silently
+   *  quarantine every proxy-captured envelope at drain time. Kept a closed
+   *  enum rather than an open string deliberately — an unrecognized value is
+   *  a real client bug worth surfacing as 400 on the direct
+   *  `/ingest/transcript` path, not something to silently coerce to null. */
+  capture_source: z.enum(['auto_capture', 'hook_close', 'proxy']).optional(),
   /** Aggregate scrub flag — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label for per-label breakdown but not deprecated. */
   client_scrub_applied: z.boolean(),
   /** Aggregate scrub hit count — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label sum for per-label breakdown but not deprecated. */

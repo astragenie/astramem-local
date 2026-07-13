@@ -298,6 +298,28 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
     expect(transcripts[0]!.capture_source).toBe('hook_close');
   });
 
+  // FEAT-458 S3 (ADR-013): 'proxy' is the LLM proxy relay's capture fork's
+  // provenance tag, widened onto the same schema/column alongside
+  // 'auto_capture' / 'hook_close'. Proxy-sourced envelopes drain through
+  // this exact CanonicalIngestSchema instance via src/ingest/spool-drain.ts
+  // (same code path /ingest/transcript uses) — an unwidened enum here would
+  // silently quarantine them at drain time rather than round-tripping.
+  it('capture_source: "proxy" round-trips onto the transcripts row', async () => {
+    const { db, app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-proxy-capture', capture_source: 'proxy' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const transcripts = db.prepare('SELECT capture_source FROM transcripts WHERE session_id = ?').all('sess-proxy-capture') as
+      { capture_source: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.capture_source).toBe('proxy');
+  });
+
   it('capture_source omitted (every non-auto-capture client): transcripts.capture_source stays NULL', async () => {
     const { db, app } = makeApp();
     const res = await (await app).inject({

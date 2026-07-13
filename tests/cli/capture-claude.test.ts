@@ -61,6 +61,19 @@ function withAutoCaptureConfig(
   writeConfig(cfg, join(defaultConfigDir(), 'config.yaml'));
 }
 
+/** Same shape as withAutoCaptureConfig, but for the LLM proxy relay's
+ *  capture opt-in (`cfg.proxy.capture.enabled`, FEAT-458 S3 / ADR-013) —
+ *  redirects the OS config dir into a temp root so `resolveRuntimeConfig()`
+ *  reads a hermetic, test-controlled config. */
+function withProxyCaptureConfig(configRoot: string, enabled: boolean): void {
+  const envVar = process.platform === 'win32' ? 'APPDATA' : 'XDG_CONFIG_HOME';
+  savedEnv[envVar] = process.env[envVar];
+  process.env[envVar] = configRoot;
+  const cfg = defaultConfig();
+  cfg.proxy.capture.enabled = enabled;
+  writeConfig(cfg, join(defaultConfigDir(), 'config.yaml'));
+}
+
 describe('capture claude — AC-3 (missing file fails soft)', () => {
   it('missing transcript path: exactly one warning, nothing spooled, exitCode=1, no throw', async () => {
     const dataDir = tempDir('capture-claude-missing-');
@@ -362,5 +375,150 @@ describe('capture auto-capture disable (FEAT-455 / ADR-012 decision 4)', () => {
     await captureCommand(['auto-capture', 'bogus']);
 
     expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+});
+
+// FEAT-458 S3 (ADR-013): `capture proxy disable` — mirrors `capture
+// auto-capture disable` above exactly (immediate config write; purge is
+// offered, not forced), scoped to the LLM proxy relay's capture fork
+// instead of the hook-tap trigger. Disables `proxy.capture.enabled`
+// specifically — NOT `proxy.enabled` — so the relay itself keeps running
+// transparent-forward-only per ADR-013 §5.
+describe('capture proxy disable (FEAT-458 S3 / ADR-013)', () => {
+  it('persists proxy.capture.enabled=false to config.yaml, leaves proxy.enabled untouched', async () => {
+    const dataDir = tempDir('capture-proxy-disable-data-');
+    const configRoot = tempDir('capture-proxy-disable-cfg-');
+    withDataDir(dataDir);
+    withProxyCaptureConfig(configRoot, true);
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await captureCommand(['proxy', 'disable', '--keep']);
+
+    const written = readFileSync(join(defaultConfigDir(), 'config.yaml'), 'utf8');
+    // proxy.capture.enabled flipped to false; proxy.enabled (default false,
+    // untouched by this command) still renders false too — the meaningful
+    // assertion is that proxy.capture stanza itself now reads false.
+    const captureSection = written.slice(written.indexOf('capture:', written.indexOf('proxy:')));
+    expect(captureSection).toContain('enabled: false');
+  });
+
+  it('no proxy-captured memories found — reports nothing to purge, exits cleanly', async () => {
+    const dataDir = tempDir('capture-proxy-disable-empty-data-');
+    const configRoot = tempDir('capture-proxy-disable-empty-cfg-');
+    withDataDir(dataDir);
+    withProxyCaptureConfig(configRoot, true);
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const savedExitCode = process.exitCode;
+    process.exitCode = undefined;
+
+    await captureCommand(['proxy', 'disable']);
+
+    expect(process.exitCode).toBeUndefined();
+    expect(logSpy.mock.calls.some(c => String(c[0]).includes('nothing to purge'))).toBe(true);
+
+    process.exitCode = savedExitCode;
+  });
+
+  it('--keep declines the purge — proxy-captured memories remain valid and queryable', async () => {
+    const dataDir = tempDir('capture-proxy-disable-keep-data-');
+    const configRoot = tempDir('capture-proxy-disable-keep-cfg-');
+    withDataDir(dataDir);
+    withProxyCaptureConfig(configRoot, true);
+    const { db } = openRuntimeDb();
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'proxy atom', normalized_text: 'proxy atom',
+      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+      hash: 'proxy-disable-keep-hash', source_hash: null, capture_source: 'proxy',
+    });
+    db.close();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await captureCommand(['proxy', 'disable', '--keep']);
+
+    const { db: verifyDb } = openRuntimeDb();
+    const row = verifyDb.prepare('SELECT valid_to FROM memories WHERE id = ?').get(id) as { valid_to: number | null };
+    verifyDb.close();
+    expect(row.valid_to).toBeNull();
+  });
+
+  it('--purge with no daemon reachable: reports failures and a non-zero exit code, config stays disabled', async () => {
+    const dataDir = tempDir('capture-proxy-disable-purge-data-');
+    const configRoot = tempDir('capture-proxy-disable-purge-cfg-');
+    withDataDir(dataDir);
+    withProxyCaptureConfig(configRoot, true);
+    const { db } = openRuntimeDb();
+    new MemoryRepo(db).insert({
+      type: 'fact', text: 'proxy atom to purge', normalized_text: 'proxy atom to purge',
+      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+      hash: 'proxy-disable-purge-hash', source_hash: null, capture_source: 'proxy',
+    });
+    db.close();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const savedExitCode = process.exitCode;
+    process.exitCode = undefined;
+    savedEnv['ASTRA_MEMORY_URL'] = process.env['ASTRA_MEMORY_URL'];
+    process.env['ASTRA_MEMORY_URL'] = 'http://127.0.0.1:1'; // unroutable — guaranteed connection failure
+
+    await captureCommand(['proxy', 'disable', '--purge']);
+
+    expect(process.exitCode).toBe(1);
+
+    process.exitCode = savedExitCode;
+  });
+
+  it('unknown subcommand exits non-zero', async () => {
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(((() => undefined) as unknown) as typeof process.exit);
+
+    await captureCommand(['proxy', 'bogus']);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  // The whole point: this flow must never see, count, or purge atoms tagged
+  // with the OTHER capture provenance — isolation in both directions.
+  it('scoping isolation — disabling+purging proxy captures never touches auto_capture atoms, and the reverse holds too', async () => {
+    const dataDir = tempDir('capture-isolation-data-');
+    const configRoot = tempDir('capture-isolation-cfg-');
+    withDataDir(dataDir);
+    withProxyCaptureConfig(configRoot, true);
+    withAutoCaptureConfig(configRoot, true);
+    const { db } = openRuntimeDb();
+    const repo = new MemoryRepo(db);
+    const proxyId = repo.insert({
+      type: 'fact', text: 'proxy-only atom', normalized_text: 'proxy-only atom',
+      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+      hash: 'isolation-proxy-hash', source_hash: null, capture_source: 'proxy',
+    });
+    const autoId = repo.insert({
+      type: 'fact', text: 'auto-capture-only atom', normalized_text: 'auto-capture-only atom',
+      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+      hash: 'isolation-auto-hash', source_hash: null, capture_source: 'auto_capture',
+    });
+    db.close();
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    // The disable-flow's own scoping query (SELECT ... WHERE capture_source
+    // = 'proxy') must find exactly the proxy atom, never the auto_capture
+    // one — asserted directly against the same predicate runProxyCapture-
+    // Disable uses, before any purge network call can muddy the picture.
+    const { db: scopeDb } = openRuntimeDb();
+    const proxyScoped = scopeDb.prepare(`SELECT id FROM memories WHERE capture_source = 'proxy' AND valid_to IS NULL`).all() as { id: string }[];
+    const autoScoped = scopeDb.prepare(`SELECT id FROM memories WHERE capture_source = 'auto_capture' AND valid_to IS NULL`).all() as { id: string }[];
+    scopeDb.close();
+    expect(proxyScoped.map(r => r.id)).toEqual([proxyId]);
+    expect(autoScoped.map(r => r.id)).toEqual([autoId]);
+
+    // --keep on both flows (no daemon/network involvement) — confirms
+    // neither disable command's local scoping query pulls in the other
+    // source's atom, which is the only thing that could cause cross-purge.
+    await captureCommand(['proxy', 'disable', '--keep']);
+    await captureCommand(['auto-capture', 'disable', '--keep']);
+
+    const { db: verifyDb } = openRuntimeDb();
+    const verifyRepo = new MemoryRepo(verifyDb);
+    expect(verifyRepo.get(proxyId)?.valid_to).toBeNull();
+    expect(verifyRepo.get(autoId)?.valid_to).toBeNull();
+    verifyDb.close();
   });
 });

@@ -44,10 +44,10 @@ export interface PipelineContext {
   sourceHash: string | null;
   /** See EmbedIndexContext.capturedAtMs — plumbed from the canonical envelope via distillHandler. */
   capturedAtMs?: number | null;
-  /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12: provenance tag
-   *  plumbed from the transcripts row via distillHandler — see
-   *  EmbedIndexContext.captureSource. */
-  captureSource?: 'auto_capture' | 'hook_close' | null;
+  /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12, widened again
+   *  FEAT-458 S3 (ADR-013): provenance tag plumbed from the transcripts row
+   *  via distillHandler — see EmbedIndexContext.captureSource. */
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null;
   /** FEAT-441 durability gate mode — undefined behaves as 'off' (AC-2). */
   durabilityGateMode?: DurabilityGateMode;
   /** Full runtime config, threaded through to EmbedIndexContext.redactConfig
