@@ -121,6 +121,17 @@ export interface SpawnDaemonOpts {
    *  boot-log-parsing, health-poll, and kill machinery the real harnesses
    *  use — never set by run-smoke.mts / run.mts themselves. */
   command?: string[];
+
+  /** ESCAPE HATCH — do not use without reading `assertIsolatedFromRealConfig` below.
+   *
+   *  When true, the spawned daemon is allowed to inherit the operator's REAL config
+   *  dir: their `sync.json` (cloud URL + tenant credentials), their credential-store
+   *  scope, everything. It can start the real sync shipper against their live tenant.
+   *
+   *  This exists so the guard is bypassable *deliberately and visibly*, never by
+   *  forgetting a call. If you find yourself reaching for it in a harness, you almost
+   *  certainly want `makeIsolatedEvalEnv()` instead. */
+  allowRealConfigDir?: boolean;
 }
 
 async function waitForBoundPort(
@@ -145,7 +156,73 @@ async function waitForBoundPort(
   throw new Error(`timed out after ${timeoutMs}ms waiting for the eval daemon to print its bound port\nstdout:\n${getStdout()}\nstderr:\n${getStderr()}`);
 }
 
+/**
+ * FAIL-CLOSED ISOLATION GUARD (added 2026-07-13 after a live incident).
+ *
+ * `spawnEvalDaemon` spreads `...process.env` into the child. `makeIsolatedEvalEnv`
+ * produces the APPDATA/HOME/XDG overrides that stop the child reading the operator's
+ * REAL config dir. **They were two separate opt-ins with nothing pairing them.**
+ *
+ * What happened: an agent called `spawnEvalDaemon` without `makeIsolatedEvalEnv`. The
+ * child inherited the real `APPDATA`, read the real `sync.json`
+ * (`enabled: true, url: https://api.astramemory.com`, a real tenantId), and may have
+ * started the sync shipper against the operator's live cloud tenant. Impact turned out
+ * to be low — but it was low by luck, not by design, and it was unprovable after the
+ * fact because the process died with its logs.
+ *
+ * A harness that can silently reach production credentials when you forget one call is
+ * not a harness, it is a trap. So: this now REFUSES to start unless the child's config
+ * dir is provably NOT the operator's. Forgetting is no longer possible; you now have to
+ * opt in to danger explicitly, in writing.
+ */
+function assertIsolatedFromRealConfig(opts: SpawnDaemonOpts): void {
+  // Only the REAL daemon reads the operator's config dir. A `command` override that
+  // points at a stub fixture (e.g. __fixtures__/fake-eval-daemon.mjs) implements just
+  // enough of the wire surface to be health-checked and never touches config.yaml,
+  // sync.json, or the credential store — so it carries none of the risk this guard
+  // exists for, and blocking it would be a false positive that trains people to reach
+  // for the escape hatch. Guard the real binary; leave the stubs alone.
+  const spawnsRealDaemon =
+    opts.command === undefined || opts.command.some((a) => a.includes('cli/index.js'));
+  if (!spawnsRealDaemon) return;
+
+  if (opts.allowRealConfigDir === true) {
+    // Explicit, documented, and loud. The caller has accepted that this child can read
+    // real credentials and start the real sync shipper.
+    console.warn(
+      '[spawn-daemon] WARNING: allowRealConfigDir=true — this daemon will read the ' +
+      "operator's REAL config dir, including sync.json and its cloud credentials.",
+    );
+    return;
+  }
+
+  const childEnv = { ...process.env, ...opts.env } as Record<string, string | undefined>;
+  const realHome = process.env.APPDATA ?? process.env.HOME ?? process.env.XDG_CONFIG_HOME;
+  const childHome = childEnv.APPDATA ?? childEnv.HOME ?? childEnv.XDG_CONFIG_HOME;
+
+  const isolated =
+    childEnv.ASTRA_MEMORY_ISOLATED === '1' ||
+    (realHome !== undefined && childHome !== undefined && childHome !== realHome);
+
+  if (!isolated) {
+    throw new Error(
+      'spawnEvalDaemon REFUSED to start: the child would inherit the real config dir.\n' +
+      `  real config dir  : ${realHome}\n` +
+      `  child config dir : ${childHome}  <-- same, so the child would read the operator's\n` +
+      "                     sync.json (cloud URL + tenant credentials) and could start the\n" +
+      '                     sync shipper against their live tenant.\n\n' +
+      'Fix: call makeIsolatedEvalEnv() and pass its dirEnvOverrides via opts.env.\n' +
+      '  const iso = makeIsolatedEvalEnv("my-eval");\n' +
+      '  await spawnEvalDaemon({ ...opts, env: { ...iso.dirEnvOverrides } });\n\n' +
+      'Or set ASTRA_MEMORY_ISOLATED=1 in opts.env (serve.ts\'s own second guard).\n' +
+      'If you REALLY mean to read the real config, pass allowRealConfigDir: true.',
+    );
+  }
+}
+
 export async function spawnEvalDaemon(opts: SpawnDaemonOpts): Promise<DaemonHandle> {
+  assertIsolatedFromRealConfig(opts);
+
   let stdout = '';
   let stderr = '';
   let exitCode: number | null = null;
