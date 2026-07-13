@@ -63,6 +63,7 @@ import {
 import { EntityRepo } from '../storage/entities.js';
 import { EntityRelationRepo } from '../storage/entity-relations.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
+import { JobRepo } from '../pipeline/job-repo.js';
 import { recordRecallServed, recordRecallUsed } from '../storage/usefulness.js';
 import { search, parseAsOf, type SearchFilters } from '../search/search.js';
 import { resolveRerankOpts } from '../search/rerank.js';
@@ -440,9 +441,12 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
 
       // Embed + upsert into vec store (non-fatal on failure — the memory is
       // already durably saved above). `vecIndexed` surfaces the degraded
-      // state in the response below instead of swallowing it: without this
-      // flag the caller has no way to know the memory is vector-search-blind
-      // until an operator manually runs `rebuild`/`reembed-dim`.
+      // state in the response below instead of swallowing it. Issue #209:
+      // that response field used to be the only record of the failure —
+      // nothing durable, nothing retried. Now a failure also marks
+      // needs_vec_index on the row and enqueues a `reembed` job, so the
+      // memory self-heals via the worker instead of waiting on an operator
+      // to notice and run `rebuild`/`reembed-dim`.
       let vecIndexed = true;
       try {
         const vecs = await embed.embed([text]);
@@ -451,13 +455,22 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         await vecStore.upsert(id, vecs[0]);
       } catch (err) {
         vecIndexed = false;
+        repo.markNeedsVecIndex(id);
+        try {
+          new JobRepo(db).enqueue('reembed', { kind: 'reembed', memory_id: id });
+        } catch (enqueueErr) {
+          childLogger({}).warn(
+            { error_message: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr), id },
+            'mcp remember: retry-job enqueue failed after vec upsert failure — needs_vec_index still set, cleanup sweep will catch it',
+          );
+        }
         childLogger({}).warn(
           {
             error_message:
               err instanceof Error ? err.message : String(err),
             id,
           },
-          'mcp remember: embed/vec upsert failed — memory saved but NOT vector-indexed; run `astramem-local rebuild` to backfill'
+          'mcp remember: embed/vec upsert failed — memory saved but NOT vector-indexed; needs_vec_index set, reembed job enqueued'
         );
       }
 

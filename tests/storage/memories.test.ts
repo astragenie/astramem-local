@@ -169,4 +169,56 @@ describe('MemoryRepo', () => {
       expect(m?.validity_extracted).toBe(true);
     });
   });
+
+  // Issue #209: durable vec-index retry marker (migrations/041-vec-index-retry.sql).
+  describe('needs_vec_index (issue #209)', () => {
+    function insertOne(hash: string): string {
+      return repo.insert({
+        type: 'fact', text: 'a memory', normalized_text: 'a memory', hash,
+        repo: null, project: null, branch: null, agent: null, session_id: null, source_hash: null,
+      });
+    }
+
+    it('defaults to false on a fresh insert — byte-identical to pre-fix rows', () => {
+      const id = insertOne('vecidx-default-1');
+      const m = repo.get(id);
+      expect(m?.needs_vec_index).toBe(false);
+    });
+
+    it('markNeedsVecIndex durably flags the row — does not silently report success', () => {
+      const id = insertOne('vecidx-mark-1');
+      repo.markNeedsVecIndex(id);
+      const m = repo.get(id);
+      expect(m?.needs_vec_index).toBe(true);
+    });
+
+    it('clearNeedsVecIndex un-flags a previously flagged row', () => {
+      const id = insertOne('vecidx-clear-1');
+      repo.markNeedsVecIndex(id);
+      expect(repo.get(id)?.needs_vec_index).toBe(true);
+      repo.clearNeedsVecIndex(id);
+      expect(repo.get(id)?.needs_vec_index).toBe(false);
+    });
+
+    it('clearNeedsVecIndex on a never-flagged row is a no-op', () => {
+      const id = insertOne('vecidx-clear-noop-1');
+      repo.clearNeedsVecIndex(id);
+      expect(repo.get(id)?.needs_vec_index).toBe(false);
+    });
+
+    it('listNeedingVecIndex returns only flagged rows, capped at limit', () => {
+      const a = insertOne('vecidx-list-a');
+      const b = insertOne('vecidx-list-b');
+      insertOne('vecidx-list-c'); // never flagged — must not appear
+      repo.markNeedsVecIndex(a);
+      repo.markNeedsVecIndex(b);
+
+      const all = repo.listNeedingVecIndex(10);
+      expect(all.slice().sort()).toEqual([a, b].sort());
+
+      const limited = repo.listNeedingVecIndex(1);
+      expect(limited).toHaveLength(1);
+      expect([a, b]).toContain(limited[0]);
+    });
+  });
 });

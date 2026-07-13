@@ -78,4 +78,33 @@ describe('reembed handler', () => {
       { db, config: defaultConfig() },
     )).rejects.toThrow(/extended handler context/);
   });
+
+  // Issue #209: reembed is the retry mechanism a failed inline vec upsert
+  // (08-embed-index.ts / POST /remember / MCP remember) enqueues itself as.
+  // This proves the "subsequently retried and becomes searchable" half of
+  // the fix — the "does not report success" half is proven at the
+  // write-site level in tests/distill/08-embed-index.test.ts.
+  it('clears needs_vec_index and makes the memory vector-searchable after a prior failure', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const { ctx } = makeCtx(db);
+
+    const memRepo = new MemoryRepo(db);
+    const id = memRepo.insert({
+      type: 'fact', text: 'a memory whose vec upsert failed at write time', normalized_text: 'a memory whose vec upsert failed',
+      repo: null, project: null, branch: null, agent: null, session_id: null, hash: 'h-re-vecidx-1', source_hash: null,
+    });
+    // Simulate the write-time failure path's durable marker — no memories_vec
+    // row exists yet for this id.
+    memRepo.markNeedsVecIndex(id);
+    expect(memRepo.get(id)?.needs_vec_index).toBe(true);
+    await expect(ctx.vecStore.search(makeFakeVec('v2:a memory whose vec upsert failed at write time'), 5))
+      .resolves.not.toContainEqual(expect.objectContaining({ id }));
+
+    await reembedHandler.handle({ kind: 'reembed', memory_id: id }, ctx);
+
+    expect(memRepo.get(id)?.needs_vec_index).toBe(false);
+    const hits = await ctx.vecStore.search(makeFakeVec('v2:a memory whose vec upsert failed at write time'), 5);
+    expect(hits.some(h => h.id === id)).toBe(true);
+  });
 });
