@@ -170,10 +170,7 @@ const openaiCompatibleAdapter: LLMProviderAdapter = {
     const messages = (body.messages ?? []) as Array<{ content: string }>;
     return messages.map((m) => m.content);
   },
-  // NOTE: unlike azure-openai and codex-subscription, this provider has NO
-  // json-word-hint guard (see openai-compatible.ts's chat()) — see the
-  // divergence flagged in the suite itself.
-  appendsJsonHintWhenMissing: false,
+  appendsJsonHintWhenMissing: true,
 };
 
 // ─── codex-subscription ─────────────────────────────────────────────────

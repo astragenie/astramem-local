@@ -93,9 +93,31 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     // "'messages' must contain the word 'json'". Every real JSON caller passes json: true
     // explicitly, so opt-in is safe.
     const useJson = opts?.json === true;
+
+    // Mirrors the guard in azure-openai.ts:121-131 and codex-subscription.ts:490. Real
+    // OpenAI (and Azure) hard-400 a `response_format: json_object` request whose messages
+    // never contain the literal word "json":
+    //
+    //   HTTP 400 — 'messages' must contain the word 'json' in some form, to use
+    //              'response_format' of type 'json_object'.
+    //
+    // This provider defaults its baseUrl at api.openai.com, so it is subject to that rule,
+    // but it was the one provider of the three WITHOUT the guard — an armed copy of the bug
+    // that poisoned every Azure distill job, undetonated only because nothing routes here
+    // live yet. Found 2026-07-13 by the cross-provider conformance suite (FEAT-483), which
+    // exists precisely because per-provider tests cannot see a divergence BETWEEN providers.
+    const outgoing: ChatMsg[] =
+      useJson && !messages.some((m) => /json/i.test(String(m.content)))
+        ? messages.map((m, i) =>
+            i === messages.length - 1
+              ? { role: m.role, content: `${m.content}\n\nRespond with valid JSON only.` }
+              : m,
+          )
+        : messages;
+
     const body = {
       model: this.model,
-      messages,
+      messages: outgoing,
       ...(useJson ? { response_format: { type: 'json_object' } } : {}),
       ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
       ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
