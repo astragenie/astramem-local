@@ -41,6 +41,33 @@ import { request as httpsRequestFn } from 'node:https';
 export type ProxyTeeEvent = { chunk: Buffer } | { end: true };
 export type ProxyTeeSink = (dir: 'req' | 'res', event: ProxyTeeEvent) => void;
 
+/**
+ * FEAT-458 S4 (ADR-013 Decision 2, "proxy down ≠ agent down"): a silently
+ * hanging upstream — no connection error, just nothing ever happens — is the
+ * one failure mode the S2 forward path left completely unhandled. Every
+ * other upstream failure (refused, DNS, TLS, 4xx/5xx) surfaces an 'error' or
+ * a real response on its own; a hang produces neither, so it needs an
+ * explicit timer. 30s is generous enough for a real provider's
+ * time-to-first-byte under normal load while still bounding how long one
+ * stuck request can occupy a socket.
+ */
+export const DEFAULT_UPSTREAM_TIMEOUT_MS = 30_000;
+
+/**
+ * Tags an error raised by the idle-timeout below so the `upstreamReq`
+ * 'error' handler can tell "the upstream went silent" apart from "the
+ * upstream connection genuinely failed" and answer with 504 (Gateway
+ * Timeout) instead of 502 (Bad Gateway) — same delivery mechanism (Node
+ * routes a `.destroy(err)` through the request's own 'error' event), just a
+ * more accurate status for the caller.
+ */
+class UpstreamTimeoutError extends Error {
+  constructor(ms: number) {
+    super(`proxy: upstream idle timeout after ${ms}ms`);
+    this.name = 'UpstreamTimeoutError';
+  }
+}
+
 export interface ProxyServeOpts {
   port: number;
   host: string;
@@ -56,6 +83,14 @@ export interface ProxyServeOpts {
    * listeners are attached and the forward path is identical to S2.
    */
   createTee?: () => ProxyTeeSink;
+  /**
+   * FEAT-458 S4 — per-request idle timeout applied to the upstream leg only
+   * (never the client leg). `undefined` uses `DEFAULT_UPSTREAM_TIMEOUT_MS`;
+   * `0` or a negative value disables the timeout entirely (matches the
+   * escape-hatch shape other `timeoutMs` config surfaces in this repo use,
+   * e.g. `crossEncoder.timeoutMs`).
+   */
+  upstreamTimeoutMs?: number;
 }
 
 export interface ProxyHandle {
@@ -102,11 +137,53 @@ function safeTee(tee: ProxyTeeSink, dir: 'req' | 'res', event: ProxyTeeEvent): v
   }
 }
 
+/**
+ * Arms a single idle-timeout on the upstream request. `request.setTimeout`
+ * is backed by the underlying socket's native idle timer (Node resets it on
+ * every byte read OR written on that socket) — one mechanism covers both
+ * failure rows in the matrix below:
+ *   - "upstream hangs before responding": the socket goes idle the instant
+ *     it connects and stays idle, so the timer fires before any response
+ *     event ever arrives.
+ *   - "upstream stalls mid-stream": the socket was active while headers +
+ *     partial body streamed, then goes idle when the upstream stops sending
+ *     — the timer fires exactly the same way, just later.
+ * The branch on `clientRes.headersSent` decides what "fail cleanly" means
+ * for each case, since a status code can only ever be sent once:
+ *   - Not sent yet -> destroy with a tagged error, which routes through the
+ *     existing `upstreamReq.on('error', ...)` handler below and answers 504.
+ *   - Already sent (actively streaming to the client) -> a fresh status is
+ *     no longer possible. The only honest option is to tear down BOTH legs
+ *     immediately via `.destroy()` (never `.end()`): destroying drops the
+ *     connection mid-chunk, which the client's HTTP stack reports as a
+ *     truncated/aborted read. Calling `.end()` instead would write the
+ *     terminating chunk and tell the client the transfer finished
+ *     successfully — fabricating a clean completion for a transfer that
+ *     actually died, exactly what ADR-013 Decision 2 forbids.
+ */
+function armUpstreamTimeout(
+  upstreamReq: ReturnType<typeof httpRequestFn>,
+  clientRes: ServerResponse,
+  timeoutMs: number,
+): void {
+  if (timeoutMs <= 0) return; // 0 or negative disables the timeout
+  upstreamReq.setTimeout(timeoutMs, () => {
+    const err = new UpstreamTimeoutError(timeoutMs);
+    if (!clientRes.headersSent) {
+      upstreamReq.destroy(err);
+    } else {
+      upstreamReq.destroy();
+      clientRes.destroy(err);
+    }
+  });
+}
+
 function forwardOneRequest(
   clientReq: IncomingMessage,
   clientRes: ServerResponse,
   upstreamUrl: URL,
   createTee?: () => ProxyTeeSink,
+  upstreamTimeoutMs: number = DEFAULT_UPSTREAM_TIMEOUT_MS,
 ): void {
   const isHttps = upstreamUrl.protocol === 'https:';
   const requestFn = isHttps ? httpsRequestFn : httpRequestFn;
@@ -137,6 +214,9 @@ function forwardOneRequest(
     method: clientReq.method,
     headers: { ...forwardHeaders, host: upstreamUrl.host },
   }, (upstreamRes) => {
+    // Response headers arrived — the socket was active, so the idle timer
+    // armed below has already been (and will keep being) reset by this same
+    // activity. No separate disarm call needed here.
     // ADR-013 Decision 2 (fail-open forwarding) / S2-AC-3: relay status,
     // headers, and body exactly as received — no proxy-side rewriting of an
     // upstream error response, same code path as a 2xx.
@@ -156,16 +236,21 @@ function forwardOneRequest(
     upstreamRes.pipe(clientRes);
   });
 
+  armUpstreamTimeout(upstreamReq, clientRes, upstreamTimeoutMs);
+
   upstreamReq.on('error', (err) => {
     // Upstream unreachable/timeout is NOT a proxy failure (ADR-013 Decision
     // 2, "Upstream unreachable is not a proxy failure at all") — the proxy
     // must not hang, retry, or apply its own error semantics; it stays up
-    // and serves the next request normally. A clean 502 lets the calling
+    // and serves the next request normally. A clean status lets the calling
     // agent's HTTP client see an ordinary error response rather than a
-    // connection that just dies.
+    // connection that just dies. 504 (not 502) specifically for the
+    // idle-timeout case (armUpstreamTimeout above) — the upstream never
+    // refused or errored, it just went silent past the deadline.
     if (!clientRes.headersSent) {
-      clientRes.writeHead(502, { 'content-type': 'text/plain' });
-      clientRes.end(`proxy: upstream unreachable (${err.message})`);
+      const status = err instanceof UpstreamTimeoutError ? 504 : 502;
+      clientRes.writeHead(status, { 'content-type': 'text/plain' });
+      clientRes.end(`proxy: upstream ${status === 504 ? 'timed out' : 'unreachable'} (${err.message})`);
     } else {
       clientRes.destroy();
     }
@@ -204,9 +289,10 @@ function forwardOneRequest(
  */
 export async function startProxyServer(opts: ProxyServeOpts): Promise<ProxyHandle> {
   const upstreamUrl = new URL(opts.upstream);
+  const upstreamTimeoutMs = opts.upstreamTimeoutMs ?? DEFAULT_UPSTREAM_TIMEOUT_MS;
 
   const server: Server = createHttpServer((clientReq, clientRes) => {
-    forwardOneRequest(clientReq, clientRes, upstreamUrl, opts.createTee);
+    forwardOneRequest(clientReq, clientRes, upstreamUrl, opts.createTee, upstreamTimeoutMs);
   });
 
   await new Promise<void>((resolve, reject) => {
