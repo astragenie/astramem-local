@@ -5,11 +5,10 @@
  * every-state posture as tests/doctor/auto-capture-check.test.ts's subject —
  * proxy-enabled-and-running (with or without capture) is a deliberate
  * opt-in, never itself a misconfiguration (see checkProxyCapture's doc
- * comment in src/doctor/checks.ts for why). S2 ships zero capture code, so
- * the "proxy capture is ON" count is exercised here via a raw INSERT that
- * bypasses InsertInput's `capture_source?: 'auto_capture' | null` type
- * (which deliberately does not know about `'proxy'` yet) — simulating what
- * FEAT-458 S3's capture fork will actually write.
+ * comment in src/doctor/checks.ts for why). S2 shipped zero capture code;
+ * FEAT-458 S3 widened InsertInput.capture_source to admit 'proxy', so the
+ * "proxy capture is ON" count below is now exercised via the same typed
+ * insert() path every other test in this suite uses, no bypass needed.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -108,17 +107,15 @@ describe('doctor "LLM proxy" check (FEAT-458 S1-AC-2 / ADR-013)', () => {
       repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
       hash: randomUUID(), source_hash: null, capture_source: 'auto_capture',
     });
-    // FEAT-458 S3 will add 'proxy' to InsertInput.capture_source's union;
-    // for now this is a raw write simulating that future producer.
     repo.insert({
       type: 'fact', text: 'proxy-captured atom one', normalized_text: 'proxy-captured atom one',
       repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
-      hash: randomUUID(), source_hash: null, capture_source: 'proxy' as unknown as 'auto_capture',
+      hash: randomUUID(), source_hash: null, capture_source: 'proxy',
     });
     repo.insert({
       type: 'fact', text: 'proxy-captured atom two', normalized_text: 'proxy-captured atom two',
       repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
-      hash: randomUUID(), source_hash: null, capture_source: 'proxy' as unknown as 'auto_capture',
+      hash: randomUUID(), source_hash: null, capture_source: 'proxy',
     });
     db.close();
 

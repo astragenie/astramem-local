@@ -37,8 +37,9 @@ interface TranscriptRow {
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12: 'auto_capture' when
    *  this transcript came from the hook-tap auto-capture trigger,
    *  'hook_close' when it came from the ordinary close-capture hook, NULL
-   *  for every other producer. */
-  capture_source: 'auto_capture' | 'hook_close' | null;
+   *  for every other producer. Widened again FEAT-458 S3 (ADR-013): 'proxy'
+   *  when it came from the LLM proxy relay's capture fork. */
+  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | null;
 }
 
 interface SessionRow {

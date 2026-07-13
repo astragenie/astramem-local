@@ -106,6 +106,8 @@ export interface Memory {
    *  from the hook-tap auto-capture trigger, `'hook_close'` from the
    *  ordinary astramem-plugin close-capture hook, `null` for every other
    *  write path (`/remember`, manual hook capture predating FEAT-449, Codex
-   *  capture — the vast majority of rows). See InsertInput.capture_source. */
-  capture_source: 'auto_capture' | 'hook_close' | null;
+   *  capture — the vast majority of rows). Widened again FEAT-458 S3:
+   *  `'proxy'` from the LLM proxy relay's capture fork (ADR-013). See
+   *  InsertInput.capture_source. */
+  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | null;
 }

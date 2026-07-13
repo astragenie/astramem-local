@@ -54,9 +54,12 @@ export interface EmbedIndexContext {
    * Passed straight through to `MemoryRepo.insertWithCreateEvent`'s
    * `capture_source` so every atom formed from a captured transcript is
    * itself scoped for the doctor "Auto-capture" canary's count query and the
-   * disable -> purge query.
+   * disable -> purge query. Widened again FEAT-458 S3 (ADR-013): `'proxy'`
+   * when captured by the LLM proxy relay's capture fork — scoped for its own
+   * "LLM proxy" doctor canary and its own disable -> purge query, isolated
+   * from the auto-capture ones above.
    */
-  captureSource?: 'auto_capture' | 'hook_close' | null;
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null;
   /**
    * FEAT-441: durability quality gate mode. Undefined/omitted behaves as
    * 'off' — every pre-FEAT-441 caller (and the existing test suite) that

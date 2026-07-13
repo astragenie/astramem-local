@@ -57,8 +57,20 @@ export interface InsertInput {
    * "Auto-capture" canary's count query (both values count as real capture
    * traffic) and the disable -> purge scoping query (`'auto_capture'` ONLY —
    * `'hook_close'` atoms are never purged by that flow).
+   *
+   * Widened again FEAT-458 S3 (ADR-013): `'proxy'` is set only by the LLM
+   * proxy relay's capture fork (`src/proxy/**`). It is a fully independent
+   * provenance value — never counted by the "Auto-capture" canary above
+   * (that query stays `IN ('auto_capture', 'hook_close')` deliberately, see
+   * src/doctor/checks.ts's `checkAutoCapture`) and never touched by the
+   * `capture auto-capture disable` -> purge flow (scoped to `'auto_capture'`
+   * ONLY, see src/cli/capture.ts's `runAutoCaptureDisable`). It has its own
+   * doctor row (`checkProxyCapture`) and its own disable -> purge flow
+   * (`capture proxy disable`, `runProxyCaptureDisable`) scoped to
+   * `'proxy'` ONLY — the two provenance values are isolated from each other
+   * in both directions by construction, not by a shared runtime check.
    */
-  capture_source?: 'auto_capture' | 'hook_close' | null;
+  capture_source?: 'auto_capture' | 'hook_close' | 'proxy' | null;
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
