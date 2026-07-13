@@ -26,15 +26,13 @@
 # bump a model tag here and the cache key changes automatically, forcing a
 # fresh pull instead of silently serving a stale blob.
 #
-# KNOWN RISK (documented, not fixed — out of this slice's scope): the live
-# block in tests/providers/ollama-embed.test.ts still hardcodes the model
-# name `nomic-embed-text-v2-moe` (pre-v0.2.1-hotfix reference). That model is
-# natively 768-dim; OllamaEmbedProvider defaults to expecting 1024
-# (DEFAULT_EMBED_DIM) regardless of which model string is passed, so a real
-# run of that specific test is expected to fail with a dimension-mismatch
-# error until the test itself is updated. This is exactly the class of drift
-# this lane exists to surface — see the nightly-live section of
-# .github/workflows/README.md for triage guidance.
+# Model policy: the live blocks name the PRODUCTION defaults (config.ts), never
+# pinned legacy tags. A stale pin means this lane exercises a model no user has,
+# while real drift in the actual default goes unnoticed — the exact failure the
+# lane exists to prevent. The former known-risk here (ollama-embed.test.ts
+# hardcoding the 768-dim nomic-embed-text-v2-moe against a 1024-dim provider)
+# was fixed in #50; ollama-llm.test.ts's legacy qwen2.5-coder:7b pin was fixed
+# on 2026-07-13 when qwen3:8b became the default.
 
 name: Nightly Live Provider CI
 
@@ -56,11 +54,16 @@ env:
   # Single source of truth for the models this lane needs. Space-separated;
   # also drives the actions/cache key below (OLLAMA_CACHE_VERSION-bump or a
   # model-tag change here invalidates the cache automatically).
-  # qwen3:8b is the production LLM default since 2026-07-13 — tests that spawn a
-  # daemon without a model override (e.g. tests/e2e/plugin-flow.test.ts) resolve to
-  # it, so the lane 404s without it here. qwen2.5-coder:7b stays: several suites
-  # still hardcode that exact tag as literal fixture data.
-  OLLAMA_MODELS: "mxbai-embed-large qwen3:8b qwen2.5-coder:7b nomic-embed-text-v2-moe"
+  # Exactly the models this lane actually calls — nothing else. Both are the real
+  # production defaults (config.ts), so the lane exercises what users run.
+  # Dropped 2026-07-13:
+  #   - qwen2.5-coder:7b — no longer the LLM default; the one live block that
+  #     named it (ollama-llm.test.ts) now uses qwen3:8b, the same
+  #     "test what production actually uses" fix #50 applied to the embed lane.
+  #   - nomic-embed-text-v2-moe — the live embed block stopped using it in #50
+  #     (768-dim model against a 1024-dim provider = guaranteed dim-mismatch).
+  #     Every surviving reference is a mocked unit test, which pulls nothing.
+  OLLAMA_MODELS: "mxbai-embed-large qwen3:8b"
   OLLAMA_CACHE_VERSION: v1
   OLLAMA_CONTAINER: ollama-nightly-live
 

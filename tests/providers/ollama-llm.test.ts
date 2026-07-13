@@ -253,8 +253,13 @@ describe('ollama-llm', () => {
   // Live integration (opt-in: INTEGRATION_LIVE=1)
   // ---------------------------------------------------------------------------
   describe.skipIf(!process.env.INTEGRATION_LIVE)('live integration', () => {
+    // Uses the production LLM default (config.ts), not a pinned legacy tag —
+    // the same "test what production actually runs" fix #50 applied to the
+    // embed lane. A stale pinned model here means the nightly lane pulls and
+    // exercises something no user has, while real drift in the default goes
+    // unnoticed. nightly-live.yml's OLLAMA_MODELS pulls exactly this set.
     it('actually calls ollama serve', async () => {
-      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const h = await p.health();
       expect(h.ok).toBe(true);
     }, 10_000);

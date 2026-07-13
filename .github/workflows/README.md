@@ -118,11 +118,15 @@ above in this same README).
 the workflow (single source of truth — also drives the cache key, so bumping
 a model tag there automatically busts the cache):
 - `mxbai-embed-large` — current production embed default
-- `qwen2.5-coder:7b` — NOT the production LLM default since 2026-07-13 (that's
-  now `qwen3:8b`); pulled here only because `tests/providers/ollama-llm.test.ts`
-  still hardcodes this exact tag as its literal test fixture
-- `nomic-embed-text-v2-moe` — referenced explicitly by the live block in
-  `ollama-embed.test.ts`; see the known-risk note below
+- `qwen3:8b` — current production LLM default (since 2026-07-13)
+
+Both live blocks now name the production defaults rather than pinned legacy
+tags, so this lane exercises what users actually run. `qwen2.5-coder:7b` and
+`nomic-embed-text-v2-moe` were dropped from the pull list on 2026-07-13: the
+former is no longer the default, and the latter's only live consumer stopped
+using it in #50 (it is 768-dim against a 1024-dim provider — a guaranteed
+dim-mismatch). Every surviving reference to either name is a mocked unit test,
+which pulls nothing.
 
 **Caching**: `actions/cache` keyed on
 `ollama-models-${OLLAMA_CACHE_VERSION}-${OLLAMA_MODELS}`, restoring into
