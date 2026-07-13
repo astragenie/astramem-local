@@ -1,6 +1,7 @@
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../contracts/llm.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
+import { parseRetryAfterMs } from './retry-after.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 10_000;
@@ -176,10 +177,14 @@ export class OllamaLLMProvider implements LLMProvider {
       const latency_ms = Date.now() - t0;
       log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 ? 'TransientError' : 'DeterministicError' }, 'ollama chat failed');
       if (res.status >= 500) {
-        throw new TransientError(`Ollama chat failed: HTTP ${res.status} — ${snippet}`);
+        throw new TransientError(`Ollama chat failed: HTTP ${res.status} — ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       if (res.status === 429) {
-        throw new TransientError(`Ollama chat rate-limited (429): ${snippet}`);
+        // Ollama is a local, unauthenticated single-model server — it has no
+        // documented rate-limit behavior and is not observed to send this
+        // header in practice. Parsed defensively for consistency with the
+        // other 3 providers; almost always resolves to undefined here.
+        throw new TransientError(`Ollama chat rate-limited (429): ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       throw new DeterministicError(`Ollama chat failed: HTTP ${res.status} — ${snippet}`);
     }

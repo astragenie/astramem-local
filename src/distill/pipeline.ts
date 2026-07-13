@@ -23,6 +23,7 @@ import { memoryNormalize } from './stages/07-memory-normalize.js';
 import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
 import { resolveChunkConcurrency } from './concurrency.js';
+import { chunkCheckpoints } from './chunk-checkpoint.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -115,11 +116,20 @@ export async function runPipeline(
   // clamp and the `chunkConcurrency: 1` sequential safety valve.
   const chunkConcurrency = resolveChunkConcurrency(ctx.config ?? defaultConfig());
 
+  // chunk-retry-amplification fix: sourceHash is a sha256 of the transcript
+  // content (computed once in distillHandler), so it is stable across every
+  // worker-level retry of THIS job while still being derived from content
+  // (not a fresh id per attempt) — it doubles as the checkpoint jobKey for
+  // compact()/extract() below. `undefined` (any caller that doesn't supply
+  // sourceHash, e.g. a test fixture) disables checkpointing entirely and
+  // reproduces pre-fix behavior — see chunk-checkpoint.ts.
+  const checkpointJobKey = ctx.sourceHash ?? undefined;
+
   // Stage 4: Compact (LLM, budget-gated)
   pipeLog.info({ stage: 'compact', chunk_count: chunks.length, chunk_concurrency: chunkConcurrency }, 'stage start');
   let compactedChunks: Array<{ index: number; text: string }>;
   try {
-    const compactResults = await compact(chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency);
+    const compactResults = await compact(chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey);
     compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
     pipeLog.info({ stage: 'compact', chunks_compacted: compactedChunks.length }, 'stage complete');
   } catch (err) {
@@ -144,7 +154,7 @@ export async function runPipeline(
   pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile, chunk_concurrency: chunkConcurrency }, 'stage start');
   let extractResults;
   try {
-    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency);
+    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey);
     const atomsExtracted = extractResults.reduce((sum, r) => sum + r.atoms.length, 0);
     pipeLog.info({ stage: 'extract', atoms_extracted: atomsExtracted }, 'stage complete');
   } catch (err) {
@@ -195,6 +205,13 @@ export async function runPipeline(
     { stage: 'embed-index', memories_created: created, memories_deduped: deduped, gatedOutCount: gatedOutCounter.count },
     'stage complete',
   );
+
+  // chunk-retry-amplification fix: the job reached terminal success — drop
+  // its checkpoint entries now rather than waiting for the FIFO eviction
+  // cap (chunk-checkpoint.ts) to reclaim them. A job that later gets
+  // re-ingested under the same content would otherwise (harmlessly, but
+  // pointlessly) hit stale cached results from this run.
+  if (checkpointJobKey) chunkCheckpoints.clear(checkpointJobKey);
 
   return {
     memoriesCreated: created,

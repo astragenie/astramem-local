@@ -574,3 +574,64 @@ describe('extract() concurrency (FEAT-482)', () => {
     expect(withExplicitOne).toEqual(withDefault);
   });
 });
+
+// chunk-retry-amplification fix: worker.ts retries a FAILED job at the JOB
+// level by re-invoking runPipeline() (and therefore extract()) from scratch.
+// Without checkpointing, one transient failure (rate limit, or a stochastic
+// JSON parse failure) on a late chunk replayed every earlier chunk's LLM
+// call too. See the parallel test in 04-compact.test.ts for the full
+// incident write-up.
+describe('extract() retry checkpointing (chunk-retry-amplification fix)', () => {
+  it('a retried extract() call with the same jobKey does not re-issue LLM calls for chunks that already succeeded', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const jobKey = 'session-hash-xyz789';
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ index: i, text: `chunk ${i} content` }));
+
+    let callCount = 0;
+    let rateLimitFired = false;
+    const RATE_LIMIT_AT_INDEX = 14;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[]): Promise<ChatResult> {
+        callCount++;
+        const userText = msgs.find(m => m.role === 'user')?.content ?? '';
+        const idx = Number(userText.match(/chunk (\d+) content/)?.[1]);
+        if (idx === RATE_LIMIT_AT_INDEX && !rateLimitFired) {
+          rateLimitFired = true;
+          throw new Error('rate limited (429)');
+        }
+        return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    await expect(extract(chunks, llm, budget, 10.0, 'engineering', 1, jobKey)).rejects.toThrow('rate limited');
+    expect(callCount).toBe(RATE_LIMIT_AT_INDEX + 1);
+
+    const callsAfterFirstAttempt = callCount;
+
+    const results = await extract(chunks, llm, budget, 10.0, 'engineering', 1, jobKey);
+
+    const callsOnRetry = callCount - callsAfterFirstAttempt;
+    expect(callsOnRetry).toBe(chunks.length - RATE_LIMIT_AT_INDEX); // 6, not 20
+    expect(results.length).toBe(20);
+    expect(results.map(r => r.chunkIndex)).toEqual(Array.from({ length: 20 }, (_, i) => i));
+  });
+
+  it('omitting jobKey preserves the old behavior — every call re-dispatches every chunk', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeMockLLM([VALID_EXTRACTION_JSON]);
+    const chatSpy = vi.spyOn(llm, 'chat');
+    const chunks = [{ index: 0, text: 'chunk one' }, { index: 1, text: 'chunk two' }];
+
+    await extract(chunks, llm, budget, 10.0); // no jobKey
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+    await extract(chunks, llm, budget, 10.0); // no jobKey — no caching, full re-dispatch
+    expect(chatSpy).toHaveBeenCalledTimes(4);
+  });
+});

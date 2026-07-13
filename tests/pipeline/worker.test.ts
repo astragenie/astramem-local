@@ -204,6 +204,72 @@ describe('Worker', () => {
     expect(callCount).toBe(3);
   });
 
+  it('honors a TransientError.retryAfterMs hint that exceeds the exponential backoff ceiling', async () => {
+    // Exponential backoff for attempt 1 is 1000ms (2^0 * 1000). A
+    // server-supplied Retry-After of 3000ms must win — the worker must not
+    // undercut an explicit "wait this long" hint with its own blind guess.
+    let callCount = 0;
+    const callTimestamps: number[] = [];
+    const handler: JobHandler = {
+      kind: 'reembed',
+      async handle(_payload, _ctx) {
+        callTimestamps.push(Date.now());
+        callCount++;
+        if (callCount === 1) throw new TransientError('rate limited', undefined, 3000);
+        // second call succeeds
+      },
+    };
+    registry.register(handler);
+
+    const id = repo.enqueue('reembed', { kind: 'reembed', memory_id: 'm1' });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id) as { state: string } | undefined;
+      return job?.state === 'completed';
+    }, 8000);
+
+    expect(callTimestamps.length).toBe(2);
+    const gapMs = (callTimestamps[1] as number) - (callTimestamps[0] as number);
+    // Must be at least the retryAfterMs hint (3000ms), not the shorter 1000ms
+    // exponential-backoff default. Generous lower bound for test/CI jitter.
+    expect(gapMs).toBeGreaterThanOrEqual(2900);
+  });
+
+  it('a retryAfterMs SHORTER than the exponential backoff does not shrink the delay', async () => {
+    // attempt 2's exponential backoff is 2000ms (2^1 * 1000). A
+    // retryAfterMs of 500ms must NOT shorten that — max(backoff, hint) wins,
+    // not the hint alone, so a stale/short server hint can't undercut our
+    // own conservative floor.
+    let callCount = 0;
+    const callTimestamps: number[] = [];
+    const handler: JobHandler = {
+      kind: 'reembed',
+      async handle(_payload, _ctx) {
+        callTimestamps.push(Date.now());
+        callCount++;
+        if (callCount <= 2) throw new TransientError('rate limited', undefined, 500);
+        // third call succeeds
+      },
+    };
+    registry.register(handler);
+
+    const id = repo.enqueue('reembed', { kind: 'reembed', memory_id: 'm1' });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs WHERE id = ?').get(id) as { state: string } | undefined;
+      return job?.state === 'completed';
+    }, 8000);
+
+    expect(callTimestamps.length).toBe(3);
+    const secondGapMs = (callTimestamps[2] as number) - (callTimestamps[1] as number);
+    // Exponential backoff for attempt 2 is 2000ms — the 500ms hint must not shrink it.
+    expect(secondGapMs).toBeGreaterThanOrEqual(1900);
+  });
+
   it('stop() halts the poll loop', async () => {
     let handlerCallCount = 0;
     const handler: JobHandler = {

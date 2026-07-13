@@ -3,6 +3,7 @@ import { computeCostUsd } from './pricing.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
 import { isReasoningModel } from './reasoning-model.js';
+import { parseRetryAfterMs } from './retry-after.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -159,10 +160,11 @@ export class AzureOpenAILLMProvider implements LLMProvider {
       const latency_ms = Date.now() - t0;
       log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 || res.status === 429 ? 'TransientError' : 'DeterministicError' }, 'azure-openai chat failed');
       if (res.status >= 500) {
-        throw new TransientError(`Azure OpenAI chat failed: HTTP ${res.status} — ${snippet}`);
+        throw new TransientError(`Azure OpenAI chat failed: HTTP ${res.status} — ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       if (res.status === 429) {
-        throw new TransientError(`Azure OpenAI chat rate-limited (429): ${snippet}`);
+        // Azure OpenAI documents Retry-After on 429 rate-limit responses.
+        throw new TransientError(`Azure OpenAI chat rate-limited (429): ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       throw new DeterministicError(`Azure OpenAI chat failed: HTTP ${res.status} — ${snippet}`);
     }
