@@ -81,10 +81,19 @@ function addDaysUtc(anchor: Date, days: number): Date {
   return d;
 }
 
+/**
+ * Bug fix (review finding, 2026-07-13): naive `d.setUTCMonth(d.getUTCMonth()
+ * + months)` on a `Date` still carrying the ANCHOR's day-of-month OVERFLOWS
+ * FORWARD whenever that day doesn't exist in the target month — e.g. a
+ * 2023-07-31 anchor asking for "+1 month" lands on the nonexistent
+ * "2023-08-31," which JS Date silently normalizes into 2023-09-XX instead of
+ * throwing. Every caller of this function only ever reads month/year
+ * (formatMonthYear discards the day), so there is no need to preserve
+ * day-of-month at all — construct the 1st of the target month directly via
+ * `Date.UTC` so there's no day value left to overflow.
+ */
 function addMonthsUtc(anchor: Date, months: number): Date {
-  const d = new Date(anchor.getTime());
-  d.setUTCMonth(d.getUTCMonth() + months);
-  return d;
+  return new Date(Date.UTC(anchor.getUTCFullYear(), anchor.getUTCMonth() + months, 1));
 }
 
 function addYearsUtc(anchor: Date, years: number): Date {

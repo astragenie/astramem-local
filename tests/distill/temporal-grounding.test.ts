@@ -123,4 +123,47 @@ describe('groundRelativeDates', () => {
       expect(r.text).toBe('She used an old-fashioned, yesteryear kind of phrase.');
     });
   });
+
+  describe('month-end anchors (review finding, 2026-07-13) — the whole rest of this suite only ever uses the 15th', () => {
+    // Regression coverage for a real bug: `setUTCMonth` on a Date still
+    // carrying the anchor's day-of-month overflows FORWARD when that day
+    // doesn't exist in the target month (e.g. Aug 31 doesn't exist -> rolls
+    // into September). Every case below anchors on the 29th/30th/31st
+    // specifically because the 15th (used everywhere else in this file) can
+    // NEVER trigger the bug — that blind spot is exactly why 307 previously-
+    // green tests didn't catch it.
+    it('last month from the 31st of a 31-day month does not collapse into the same month', () => {
+      const r = groundRelativeDates('It happened last month.', '2023-07-31');
+      expect(r.text).toBe('It happened June 2023.');
+    });
+
+    it('next month from the 31st does not skip a month', () => {
+      const r = groundRelativeDates('It happens next month.', '2023-07-31');
+      expect(r.text).toBe('It happens August 2023.');
+    });
+
+    it('next month from March 31st does not skip April entirely (April has 30 days)', () => {
+      const r = groundRelativeDates('It happens next month.', '2023-03-31');
+      expect(r.text).toBe('It happens April 2023.');
+    });
+
+    it('next month from January 31st does not skip February (28/29 days)', () => {
+      const r = groundRelativeDates('It happens next month.', '2023-01-31');
+      expect(r.text).toBe('It happens February 2023.');
+    });
+
+    it('last month from January 31st crosses the year boundary to December', () => {
+      const r = groundRelativeDates('It happened last month.', '2023-01-31');
+      expect(r.text).toBe('It happened December 2022.');
+    });
+
+    it('year arithmetic from a Feb 29 leap-day anchor still reports the correct year', () => {
+      // Only getUTCFullYear() is ever read for year resolution, so even
+      // though Date normalizes Feb 29 + 1 non-leap year into March 1, the
+      // YEAR value itself is unaffected — verified explicitly, not assumed.
+      expect(groundRelativeDates('It happens next year.', '2024-02-29').text).toBe('It happens 2025.');
+      expect(groundRelativeDates('It happened last year.', '2024-02-29').text).toBe('It happened 2023.');
+      expect(groundRelativeDates('It happens this year.', '2024-02-29').text).toBe('It happens 2024.');
+    });
+  });
 });
