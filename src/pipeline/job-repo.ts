@@ -134,6 +134,30 @@ export class JobRepo {
   }
 
   /**
+   * FEAT-482: requeue every 'paused' job back to 'pending' — the
+   * operator-triggered counterpart to `recoverOrphans` (that boot-time sweep
+   * deliberately LEAVES 'paused' alone; see its doc comment and
+   * job-recovery.test.ts). Called from `astramem-local budget --reset`
+   * (src/cli/budget.ts) right after `BudgetTracker.resetToday()` — until
+   * this existed, a job the worker paused on `BudgetPausedError` (see
+   * worker.ts / pipeline/errors.ts) had NO path back to 'pending' at all:
+   * `--reset` only zeroed the spend counter, so a paused job stayed paused
+   * forever even after the cap that paused it was cleared. Job-kind-agnostic
+   * by construction, like every other state transition here — applies
+   * equally to a paused `distill` job and a paused `consolidate` job.
+   * `attempts` is left untouched (mirrors `recoverOrphans`), so a job that
+   * was already partway through its retry budget before pausing doesn't get
+   * a free reset on poison eligibility.
+   */
+  requeuePaused(): number {
+    const now = Date.now();
+    return this.db.prepare(`
+      UPDATE jobs SET state = 'pending', updated_at = ?
+      WHERE state = 'paused'
+    `).run(now).changes;
+  }
+
+  /**
    * Retention purge: completed jobs are transient bookkeeping (7d), poison
    * jobs are kept longer (30d) for `queue` command forensics. Other states
    * are never touched.

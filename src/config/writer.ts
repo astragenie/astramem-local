@@ -291,6 +291,7 @@ export function configToYaml(cfg: Config): string {
     line(2, 'minSimilarity', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).minSimilarity),
     line(2, 'minConfidence', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).minConfidence),
     line(2, 'maxPerRun', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxPerRun),
+    line(2, 'maxWallClockMs', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxWallClockMs),
     '',
     // Memory TTL / archival tiers (FEAT-404) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) is OFF.

@@ -293,8 +293,8 @@ describe('Worker', () => {
 });
 
 describe('resolveWorkerConcurrency', () => {
-  it('defaults to 1 when pipeline.concurrency is 1 (default config)', () => {
-    expect(resolveWorkerConcurrency(defaultConfig())).toBe(1);
+  it('resolves the default config to 2 (FEAT-482: pipeline.concurrency default raised 1 -> 2)', () => {
+    expect(resolveWorkerConcurrency(defaultConfig())).toBe(2);
   });
 
   it('passes through values within [1, 8]', () => {
@@ -427,7 +427,7 @@ describe('Worker concurrency', () => {
     }
   });
 
-  it('default concurrency (1) preserves strict FIFO execution order', async () => {
+  it('concurrency: 1 preserves strict FIFO execution order (the pre-FEAT-482 shipped default; still the safety valve for restoring exact old single-loop behavior)', async () => {
     const executionOrder: string[] = [];
     const handler: JobHandler = {
       kind: 'cleanup',
@@ -444,9 +444,12 @@ describe('Worker concurrency', () => {
       repo.enqueue('cleanup', { kind: 'cleanup', older_than_days: 30, job_marker: m }),
     );
 
-    // No `pipeline` override — exercises the real default (concurrency: 1),
-    // byte-identical to pre-concurrency single-lane behavior.
-    const { stop } = startWorker({ pollMs: 20, registry, db, config: defaultConfig() });
+    // Explicit override: FEAT-482 raised the CONFIG default to 2 (see
+    // `pipeline.concurrency` in config.ts), so `defaultConfig()` alone no
+    // longer exercises single-lane FIFO — this test's whole point is
+    // concurrency: 1 specifically, so it must ask for it explicitly.
+    const config = { ...defaultConfig(), pipeline: { concurrency: 1 } };
+    const { stop } = startWorker({ pollMs: 20, registry, db, config });
     stopWorker = stop;
 
     await waitFor(() => {

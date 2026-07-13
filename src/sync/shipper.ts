@@ -302,6 +302,57 @@ export function backoffDelay(baseMs: number, consecutiveFailures: number): numbe
 }
 
 /**
+ * Describe a ship failure in terms a human can ACT on.
+ *
+ * The catch block used to log `(err as Error).message` and nothing else. For a
+ * failed `fetch`, Node/undici sets that message to the literal string
+ * **"fetch failed"** and puts the ACTUAL reason on `err.cause` — an
+ * `ECONNRESET`, `ECONNREFUSED`, `UND_ERR_CONNECT_TIMEOUT`, a TLS error, etc.
+ * Logging only `.message` therefore threw the diagnosis away and left:
+ *
+ *     { "err": { "error_message": "fetch failed", "error_kind": "Unknown" } }
+ *
+ * ...which is what the operator's daemon emitted 37 times. It says the request
+ * failed. It does not say why, and there was no other way to find out.
+ *
+ * Concretely: DNS resolved (api.astramemory.com -> ca-yarp-prod, 57.167.72.99),
+ * TCP/443 connected, TLS handshook, the cert was valid — every layer we could
+ * check by hand was healthy, and the log still only said "fetch failed". The
+ * one fact that would have identified the layer was on `.cause`, discarded.
+ *
+ * Walks the whole `cause` chain (undici nests them) and surfaces `code`/`errno`,
+ * which is the field that actually names the failing layer.
+ */
+export function describeShipError(err: unknown): {
+  err: string;
+  err_cause?: string;
+  err_code?: string;
+} {
+  const top = err instanceof Error ? err : new Error(String(err));
+
+  // Walk to the innermost cause — undici nests (TypeError -> AggregateError -> SystemError).
+  let cause: unknown = (top as Error & { cause?: unknown }).cause;
+  let innermost: Error | undefined;
+  const seen = new Set<unknown>(); // cycle guard; a self-referential cause would hang the loop
+  while (cause instanceof Error && !seen.has(cause)) {
+    seen.add(cause);
+    innermost = cause;
+    cause = (cause as Error & { cause?: unknown }).cause;
+  }
+
+  const code = innermost
+    ? ((innermost as Error & { code?: string; errno?: string }).code ??
+       (innermost as Error & { code?: string; errno?: string }).errno)
+    : undefined;
+
+  return {
+    err: top.message,
+    ...(innermost && innermost.message !== top.message ? { err_cause: innermost.message } : {}),
+    ...(code ? { err_code: code } : {}),
+  };
+}
+
+/**
  * Last-ship-ATTEMPT state (FEAT-434) — distinct from `lastShipAt`/
  * `countUnsynced` above, which only ever reflect SUCCESS (or ADR-009
  * eligibility). This is what lets `GET /sync/status` (FEAT-427) show
@@ -431,7 +482,7 @@ export function startShipper(opts: ShipperOpts): ShipperHandle {
       delay = backoffDelay(intervalMs, failures);
       recordShipFailure(opts.db, attemptAt, err, failures, attemptAt + delay, opts.token);
       logger.warn(
-        { err: (err as Error).message, consecutive_failures: failures },
+        { ...describeShipError(err), consecutive_failures: failures },
         'sync: ship failed — will retry with backoff',
       );
     }

@@ -232,16 +232,26 @@ export interface Config {
    * (`JobRepo.claimPending`), so raising this is safe from double-execution
    * by construction — see that method's doc comment.
    *
-   * Default 1 is BYTE-IDENTICAL to pre-concurrency behavior (a single lane
-   * is exactly the old single-loop worker). Clamped to [1, 8] wherever it is
+   * Default 2 (raised from 1, FEAT-482, 2026-07-13) — was BYTE-IDENTICAL to
+   * pre-concurrency behavior at 1 (a single lane is exactly the old
+   * single-loop worker). Raised because a single lane means one long-running
+   * job (e.g. a `consolidate` run's contradiction-judge sweep) starves EVERY
+   * other queued job for its entire duration — the FEAT-482 incident:
+   * distill sat at 32 pending / 0 running for 10+ minutes while the sole
+   * lane was wedged in the judge sweep. With 2 lanes, a second lane keeps
+   * draining the rest of the queue while the first is occupied; the
+   * starvation mode simply does not happen. Clamped to [1, 8] wherever it is
    * consumed (`resolveWorkerConcurrency` in worker.ts) — never fatal, a bad
-   * config value must not block daemon boot.
+   * config value must not block daemon boot; set to 1 to restore the exact
+   * pre-FEAT-482 single-loop behavior.
    *
    * WARNING: concurrency > 1 multiplies local Ollama load (each lane can
    * have an in-flight LLM/embed call simultaneously) — pair with
    * `OLLAMA_NUM_PARALLEL` (Ollama server env var) set to at least this value,
    * or lanes will simply queue behind Ollama's own single-slot default and
-   * you will not see the expected throughput gain. */
+   * you will not see the expected throughput gain. At the default of 2 this
+   * is a real but bounded tradeoff (2x max Ollama concurrency, not
+   * unbounded) — see FEAT-482 writeup for the accepted-risk reasoning. */
   pipeline: {
     concurrency: number;
   };
@@ -297,6 +307,20 @@ export interface Config {
        * merge-tier classification unchanged (`contradictionCapReached`
        * distinguishes "no contradictions found" from "ran out of budget"). */
       maxPerRun: number;
+      /** FEAT-482: wall-clock cap (ms) on the ENTIRE judge sweep within a
+       * single `runConsolidation()` call — bounds worst-case run duration
+       * even against a slow/rate-limited judge provider, which `maxPerRun`
+       * alone cannot: `maxPerRun` bounds call COUNT, not time, and the
+       * incident that motivated this field was ~245 calls at ~13/min
+       * against a throttled provider (10+ minutes, not a count problem).
+       * Same fall-through as `maxPerRun`: once exceeded, remaining
+       * judge-eligible pairs fall through to the existing merge-tier
+       * classification unchanged
+       * (`ConsolidateSummary.contradictionWallClockCapReached` distinguishes
+       * this from the count cap). Not governed at config-load time, same as
+       * `maxPerRun` above — any positive number is a legitimate cap choice,
+       * there's no "invalid range" to validate. Default 300_000 (5 min). */
+      maxWallClockMs: number;
       mode: 'off' | 'dry-run' | 'enabled';
     };
   };
@@ -486,7 +510,7 @@ export function defaultConfig(): Config {
     tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
     ingestIdempotency: { retentionDays: 7 },
-    pipeline: { concurrency: 1 },
+    pipeline: { concurrency: 2 },
     consolidation: {
       // autoAcceptThreshold stays NULL — deliberately, and against the obvious
       // instinct to just pick 0.92. Measured against the live store 2026-07-13:
@@ -512,7 +536,35 @@ export function defaultConfig(): Config {
       // SLICE-1); the eval has now happened — see tests/consolidate/
       // contradiction-e2e.test.ts, which pins the exact false-merge pairs found
       // in the live store.
-      contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 },
+      //
+      // Staying 'enabled' post-FEAT-482 (same day, hours later): the incident
+      // that flag caused was an UNBOUNDED judge — no budget cap, no
+      // wall-clock cap — not the judge being a bad idea. Both are now wired
+      // (see contradiction-judge.ts's BudgetTracker calls and
+      // maxWallClockMs below); 'enabled' with those two guards in place is a
+      // different, defensible risk profile than 'enabled' without them.
+      // Reverting to 'off'/'dry-run' would also throw away the whole point
+      // of this mode (see the eval note above) to guard against a bug that
+      // is now fixed at its actual source. NOTE: the operator has separately
+      // set `mode: 'off'` in their own live config.yaml as an immediate
+      // stopgap — that override takes precedence for their instance
+      // regardless of this default; this comment concerns the SHIPPED
+      // default only.
+      contradictionDetection: {
+        mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200,
+        // FEAT-482 incident (2026-07-13): mode flipped 'off' -> 'enabled' the
+        // day before this shipped with NO budget/duration guard on the judge
+        // call — it fired ~245 sequential LLM calls against a metered
+        // endpoint (codex-subscription, billed against the operator's
+        // personal ChatGPT quota) and wedged the sole worker lane for 10+
+        // minutes. `maxPerRun` alone doesn't bound WALL-CLOCK time against a
+        // slow/rate-limited provider (13 calls/min * 200 calls is >15min on
+        // its own); this is a second, independent guard. 5 minutes is short
+        // enough to keep a runaway sweep from ever repeating that incident's
+        // duration, long enough that a normal local-Ollama sweep (sub-second
+        // per call) never hits it in practice.
+        maxWallClockMs: 300_000,
+      },
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
@@ -659,7 +711,7 @@ const VALID_CONTRADICTION_DETECTION_MODES:
   new Set(['off', 'dry-run', 'enabled']);
 
 const DEFAULT_CONTRADICTION_DETECTION: Config['consolidation']['contradictionDetection'] =
-  { mode: 'off', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 };
+  { mode: 'off', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 300_000 };
 
 export function applyContradictionDetectionGovernance(
   consolidation: Config['consolidation'],

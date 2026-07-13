@@ -831,3 +831,99 @@ describe('stableStringify — canonical key-order serialization', () => {
     expect(a).toBe(b);
   });
 });
+
+// ---------------------------------------------------------------------------
+// A rejected ingest must say WHY. Before this, it could not.
+//
+// `z.union([Canonical, Legacy]).safeParse(bad)` collapses BOTH branches'
+// failures into one useless outer issue, and `.flatten()` on it yields
+// literally `{ formErrors: ["Invalid input"], fieldErrors: {} }` — no field,
+// no path, no reason. That was logged AND returned to clients, so a rejected
+// ingest was undiagnosable from either end. Observed live on the operator's
+// box: 2 of 4 ingest rejections carried exactly that and could not be explained.
+//
+// The route now picks the branch the caller was aiming at (canonical iff
+// `wire_version` is present — the same signal `isCanonical` already uses) and
+// reports THAT schema's issues, which name the offending field.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// A rejected ingest must say WHY.
+//
+// `z.union([Canonical, Legacy])` reports usable field errors ONLY when the
+// payload resembles one branch closely enough for zod to pick it. When it
+// matches neither well enough — not an object, an empty object, unknown keys
+// only, or a field of the wrong TYPE — zod gives up and flattens to literally:
+//
+//     { formErrors: ["Invalid input"], fieldErrors: {} }
+//
+// No field. No path. No reason. That was logged AND returned to the client, so
+// the rejection was undiagnosable from either end. Observed live on the
+// operator's box: 2 of 4 ingest rejections carried exactly this and could not
+// be explained.
+//
+// The route now routes on the same signal `isCanonical` already uses
+// (`wire_version` present => canonical) and reports THAT schema's issues, which
+// name the missing/offending fields even when the body is badly malformed.
+//
+// Each case below is verified to produce the blind union error WITHOUT the fix.
+// ---------------------------------------------------------------------------
+describe('a rejected ingest names the offending field (never a blind "Invalid input")', () => {
+  const blindEnough = (body: { details?: { formErrors: string[]; fieldErrors: Record<string, string[]> } }) =>
+    body.details?.formErrors.length === 0 && Object.keys(body.details?.fieldErrors ?? {}).length === 0;
+
+  const post = async (payload: unknown) => {
+    const { app } = makeApp();
+    return (await app).inject({ method: 'POST', url: '/ingest/transcript', headers: AUTH, payload: payload as object });
+  };
+
+  it('empty object: names the REQUIRED fields instead of "Invalid input"', async () => {
+    const res = await post({});
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { envelope?: string; details?: { formErrors: string[]; fieldErrors: Record<string, string[]> } };
+
+    // THE REGRESSION GUARD — this is exactly what the union produced.
+    expect(body.details?.formErrors).not.toEqual(['Invalid input']);
+    // Something concrete is named.
+    expect(blindEnough(body)).toBe(false);
+    expect(Object.keys(body.details?.fieldErrors ?? {}).length).toBeGreaterThan(0);
+  });
+
+  it('unknown keys only: still names what is missing', async () => {
+    const res = await post({ foo: 'bar' });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { details?: { formErrors: string[]; fieldErrors: Record<string, string[]> } };
+
+    expect(body.details?.formErrors).not.toEqual(['Invalid input']);
+    expect(Object.keys(body.details?.fieldErrors ?? {}).length).toBeGreaterThan(0);
+  });
+
+  it('wrong TYPE on a legacy field: names the field, not "Invalid input"', async () => {
+    // Legacy envelope is { session_id, source, content } — `content` a number,
+    // not a string. The union flattened this to a blind "Invalid input".
+    const res = await post({ session_id: 's', source: 'cli', content: 12345 });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { envelope?: string; details?: { formErrors: string[]; fieldErrors: Record<string, string[]> } };
+
+    expect(body.details?.formErrors).not.toEqual(['Invalid input']);
+    expect(Object.keys(body.details?.fieldErrors ?? {})).toContain('content');
+    expect(body.envelope).toBe('legacy');
+  });
+
+  it('canonical envelope (wire_version present) is judged as canonical and labelled so', async () => {
+    const res = await post({ wire_version: 'v1.0' }); // canonical-shaped, but nothing else
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { envelope?: string; details?: { fieldErrors: Record<string, string[]> } };
+
+    expect(body.envelope).toBe('canonical');
+    // Names the canonical required fields — a legacy-judged error would not.
+    const named = Object.keys(body.details?.fieldErrors ?? {});
+    expect(named).toContain('session_id');
+    expect(named).toContain('captured_at');
+  });
+
+  it('a VALID canonical payload is unaffected — only the failure path changed', async () => {
+    const res = await post({ ...CANONICAL_PAYLOAD, session_id: 'sess-still-valid' });
+    expect(res.statusCode).toBe(200);
+  });
+});

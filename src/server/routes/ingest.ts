@@ -154,6 +154,47 @@ const IngestSchema = z.union([CanonicalIngestSchema, LegacyIngestSchema]);
 
 type ParsedIngest = z.infer<typeof IngestSchema>;
 
+/**
+ * Parse an ingest body and, on failure, report an error a human can ACT on.
+ *
+ * `z.union([Canonical, Legacy]).safeParse(bad)` collapses both branches'
+ * failures into a single useless outer issue. `.flatten()` on that yields
+ * literally:
+ *
+ *     { formErrors: ["Invalid input"], fieldErrors: {} }
+ *
+ * No field. No path. No reason. That is what was being logged and returned to
+ * clients — a rejected ingest was undiagnosable from either end. (Observed on
+ * the operator's box: 2 of 4 ingest rejections carried exactly this and could
+ * not be explained; the one that WAS diagnosable came from a different path.)
+ *
+ * `z.discriminatedUnion` is not usable here: `CanonicalIngestSchema` carries a
+ * `.superRefine()` (so it is a ZodEffects, which discriminatedUnion rejects),
+ * and the discriminator is the PRESENCE of `wire_version`, not a literal value.
+ *
+ * So: route on the same signal `isCanonical` already uses — `wire_version` is
+ * required on canonical and absent from the legacy envelope — and then report
+ * the errors of the branch the caller was actually aiming at. A canonical
+ * envelope with a bad `captured_at` now says so, instead of "Invalid input".
+ *
+ * The success path is unchanged: same schemas, same parsed shape. Only the
+ * FAILURE path gets better, so a valid payload behaves byte-identically.
+ */
+function parseIngestBody(
+  body: unknown,
+): { success: true; data: ParsedIngest } | { success: false; error: z.ZodError } {
+  const looksCanonical =
+    body !== null && typeof body === 'object' && !Array.isArray(body) && 'wire_version' in body;
+
+  const schema = looksCanonical ? CanonicalIngestSchema : LegacyIngestSchema;
+  const result = schema.safeParse(body);
+  if (result.success) return { success: true, data: result.data as ParsedIngest };
+
+  // The body was aimed at `schema` and missed. Report THAT schema's issues —
+  // they name the offending field. Do not fall back to the union's blind error.
+  return { success: false, error: result.error };
+}
+
 function isCanonical(data: ParsedIngest): data is z.infer<typeof CanonicalIngestSchema> {
   // `turns` is now optional on the canonical schema (events kind omits it),
   // so discriminate on `wire_version` instead — required on canonical,
@@ -511,11 +552,19 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
   return async (app: FastifyInstance) => {
     app.post('/ingest/transcript', async (req, reply) => {
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
-      const parsed = IngestSchema.safeParse(req.body);
+      const parsed = parseIngestBody(req.body);
       if (!parsed.success) {
         const log = childLogger({ request_id: requestId ?? 'unknown' });
-        log.warn({ details: parsed.error.flatten() }, 'ingest validation failed');
-        return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
+        const flat = parsed.error.flatten();
+        // `envelope` tells the reader WHICH schema the body was judged against —
+        // without it, a `fieldErrors.turns` message is ambiguous between the two.
+        const envelope =
+          req.body !== null && typeof req.body === 'object' && !Array.isArray(req.body) &&
+          'wire_version' in (req.body as object)
+            ? 'canonical'
+            : 'legacy';
+        log.warn({ envelope, details: flat }, 'ingest validation failed');
+        return reply.code(400).send({ error: 'invalid', envelope, details: flat });
       }
 
       const data = parsed.data;

@@ -18,6 +18,9 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { judgeContradiction } from '../../src/consolidate/contradiction-judge.js';
 import { makeMockProviders } from '../../src/pipeline/mock-providers.js';
+import { BudgetTracker } from '../../src/budget/tracker.js';
+import { openDb } from '../../src/storage/db.js';
+import { migrate } from '../../src/storage/migrate.js';
 
 const FIXTURE_PATH = join(process.cwd(), 'contracts', 'fixtures', 'eval', 'contradiction-judge-pairs.json');
 
@@ -38,12 +41,17 @@ function loadFixturePairs(): FixturePair[] {
 describe('contradiction judge mock accuracy floor (FEAT-456 AC-8)', () => {
   const fixturePairs = loadFixturePairs();
   const judgeProvider = makeMockProviders().llm.extraction;
+  const db = openDb(':memory:');
+  migrate(db);
+  const budget = new BudgetTracker(db);
 
   it.each(fixturePairs.map(p => [p.id, p] as const))(
     'pair %s returns its labeled verdict',
     async (_id, pair) => {
       const verdict = await judgeContradiction(
         judgeProvider,
+        budget,
+        10,
         { text: pair.textA, created_at: 1_000 },
         { text: pair.textB, created_at: 2_000 },
       );

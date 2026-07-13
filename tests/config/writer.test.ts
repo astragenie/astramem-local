@@ -57,7 +57,7 @@ function buildFullyPopulatedConfig(): Config {
     pipeline: { concurrency: 4 },
     consolidation: {
       autoAcceptThreshold: 0.95,
-      contradictionDetection: { mode: 'enabled', minSimilarity: 0.5, minConfidence: 0.8, maxPerRun: 50 },
+      contradictionDetection: { mode: 'enabled', minSimilarity: 0.5, minConfidence: 0.8, maxPerRun: 50, maxWallClockMs: 120_000 },
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: true } },
     ingest: { spoolMaxBytes: 1_048_576 },
@@ -384,7 +384,7 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(yaml).toContain('  daily_usd: 10');
     expect(yaml).toContain('  alpha: 0.4');
     expect(yaml).toContain('  tier2Enabled: false');
-    expect(yaml).toContain('  concurrency: 1');
+    expect(yaml).toContain('  concurrency: 2'); // FEAT-482: default raised 1 -> 2
     expect(yaml).toContain('autoAcceptThreshold: null');
     expect(yaml).toContain('  enabled: false'); // capture.autoCapture.enabled (default)
   });

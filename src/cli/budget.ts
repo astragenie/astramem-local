@@ -2,10 +2,15 @@
  * `astramem-local budget [--reset]`
  *
  * Shows today's LLM spend and month total versus the configured cap.
- * --reset clears today's row (override, logged).
+ * --reset clears today's row (override, logged) AND requeues any job the
+ * worker paused on the cap that was just cleared (FEAT-482) — without this,
+ * `--reset` only zeroed the spend counter and a paused job (distill OR
+ * consolidate; see JobRepo.requeuePaused's doc comment) had no way back to
+ * 'pending' at all.
  */
 
 import { BudgetTracker } from '../budget/tracker.js';
+import { JobRepo } from '../pipeline/job-repo.js';
 import { openRuntimeDb } from './open-runtime-db.js';
 
 export async function budgetCommand(args: string[]): Promise<void> {
@@ -17,7 +22,11 @@ export async function budgetCommand(args: string[]): Promise<void> {
 
   if (doReset) {
     tracker.resetToday();
+    const requeued = new JobRepo(db).requeuePaused();
     console.log('Today\'s budget has been reset to $0.00.');
+    if (requeued > 0) {
+      console.log(`  ${requeued} paused job(s) requeued.`);
+    }
   }
 
   const today = tracker.today();

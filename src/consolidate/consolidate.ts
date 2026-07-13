@@ -42,6 +42,7 @@ import { MemoryEventRepo, type SupersedeProvenance } from '../storage/memory-eve
 import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
 import { judgeContradiction, type JudgeVerdict } from './contradiction-judge.js';
+import { BudgetTracker } from '../budget/tracker.js';
 
 export interface ConsolidateOpts {
   /** Cosine similarity at/above which a pair auto-merges. */
@@ -97,6 +98,18 @@ export interface ConsolidateOpts {
    * capability" governance pattern, see `resolveAutoAcceptThreshold`).
    */
   judgeProvider?: LLMProvider;
+  /**
+   * FEAT-482: BudgetTracker the contradiction judge must check before every
+   * LLM call and record actual spend against after — same tracker distill
+   * uses (one `budget_spend` table, one daily cap, shared across job kinds).
+   * Required only when `contradictionDetection.mode !== 'off'`; a missing
+   * tracker with mode on disables judging for THIS run only (logged,
+   * non-fatal — same governance shape as a missing `judgeProvider`).
+   */
+  budget?: BudgetTracker;
+  /** Daily USD cap to check `budget` against — mirrors `pipelineCtx.capUsd`
+   * (distill handler) exactly; both read `config.budget.daily_usd`. */
+  capUsd?: number;
   /** Injectable logger seam for tests; defaults to `console.warn`. */
   log?: (message: string) => void;
 }
@@ -141,6 +154,16 @@ export interface ConsolidateSummary {
    * pairs fall through to the existing merge-tier classification unchanged.
    */
   contradictionCapReached: boolean;
+  /**
+   * FEAT-482: true when `contradictionDetection.maxWallClockMs` elapsed
+   * before the scan finished — a SEPARATE guard from `contradictionCapReached`
+   * because a slow/rate-limited judge provider can blow the wall-clock
+   * budget long before `maxPerRun` calls are made (maxPerRun bounds call
+   * COUNT, not duration). Same fall-through as the count cap: remaining
+   * judge-eligible pairs fall through to the existing merge-tier
+   * classification unchanged.
+   */
+  contradictionWallClockCapReached: boolean;
 }
 
 interface AtomRow {
@@ -308,7 +331,10 @@ interface ResolvedContradictionDetection {
   minSimilarity: number;
   minConfidence: number;
   maxPerRun: number;
+  maxWallClockMs: number;
   judgeProvider: LLMProvider;
+  budget: BudgetTracker;
+  capUsd: number;
 }
 
 /**
@@ -319,10 +345,16 @@ interface ResolvedContradictionDetection {
  * for this run) when: mode is `'off'`/unset, `minSimilarity` is out of
  * `[0, mergeThreshold)`, `minConfidence` is out of `[0, 1]`, or no
  * `judgeProvider` was supplied despite mode being on.
+ *
+ * FEAT-482: also disables (same non-fatal shape) when no `budget` tracker or
+ * `capUsd` was supplied — the judge must never fire uncapped LLM calls, so a
+ * missing budget wiring is treated exactly like a missing judgeProvider.
  */
 function resolveContradictionDetection(
   raw: ConsolidateOpts['contradictionDetection'],
   judgeProvider: LLMProvider | undefined,
+  budget: BudgetTracker | undefined,
+  capUsd: number | undefined,
   mergeThreshold: number,
   log: (message: string) => void,
 ): ResolvedContradictionDetection | null {
@@ -348,9 +380,16 @@ function resolveContradictionDetection(
     );
     return null;
   }
+  if (!budget || capUsd === undefined) {
+    log(
+      `[consolidate] contradictionDetection.mode=${JSON.stringify(raw.mode)} but no budget tracker/capUsd was ` +
+      'supplied — contradiction detection disabled for this run (the judge must never fire uncapped LLM calls).',
+    );
+    return null;
+  }
   return {
     mode: raw.mode, minSimilarity: raw.minSimilarity, minConfidence: raw.minConfidence,
-    maxPerRun: raw.maxPerRun, judgeProvider,
+    maxPerRun: raw.maxPerRun, maxWallClockMs: raw.maxWallClockMs, judgeProvider, budget, capUsd,
   };
 }
 
@@ -407,14 +446,16 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   const log = opts.log ?? ((message: string) => console.warn(message));
   const autoAcceptThreshold = resolveAutoAcceptThreshold(opts.autoAcceptThreshold, proposeThreshold, log);
   const contradictionDetection = resolveContradictionDetection(
-    opts.contradictionDetection, opts.judgeProvider, mergeThreshold, log,
+    opts.contradictionDetection, opts.judgeProvider, opts.budget, opts.capUsd, mergeThreshold, log,
   );
   let judgeCallsThisRun = 0;
+  const judgeSweepStartedAt = Date.now();
 
   const summary: ConsolidateSummary = {
     groupsScanned: 0, groupsSkipped: [], merged: [], proposed: [],
     autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
     contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
+    contradictionWallClockCapReached: false,
   };
 
   if (autoMergeContained) {
@@ -484,9 +525,19 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
             // Cap exhausted — degrade gracefully: fall through to today's
             // merge-tier classification unchanged (§1.5).
             summary.contradictionCapReached = true;
+          } else if (Date.now() - judgeSweepStartedAt >= contradictionDetection.maxWallClockMs) {
+            // FEAT-482: wall-clock cap exhausted — same fall-through as the
+            // count cap above. Guards against a slow/rate-limited judge
+            // provider wedging the run indefinitely even though maxPerRun
+            // hasn't been hit yet (the FEAT-482 incident: ~245 calls at
+            // ~13/min against a throttled provider, not a count problem).
+            summary.contradictionWallClockCapReached = true;
           } else {
             judgeCallsThisRun++;
-            const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, { log });
+            const verdict = await judgeContradiction(
+              contradictionDetection.judgeProvider, contradictionDetection.budget, contradictionDetection.capUsd,
+              a, b, { log },
+            );
             if (verdict.verdict === 'contradicts' && verdict.confidence >= contradictionDetection.minConfidence) {
               // Directional: newer atom is the presumptive correction (§2.2)
               // — opposite of the merge tier's usefulness-based pick.
