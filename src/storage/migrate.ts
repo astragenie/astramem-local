@@ -66,6 +66,40 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
     .filter(f => f.endsWith('.sql'))
     .sort();
 
+  // --- issue #188 follow-up: duplicate-version-on-disk guard ---------------
+  // The content-hash check above (and migration-renumber.test.ts's static
+  // "no two files share a number" test) both protect against a migration
+  // being RENUMBERED after being applied. Neither protects against the
+  // OTHER shape of the 2026-07-13 incident: two files claiming the SAME
+  // number at once, on disk, RIGHT NOW -- e.g. two concurrent branches each
+  // adding their own "035-something.sql" and merging without anyone
+  // renumbering. Without this check, whichever file `readdirSync` happens to
+  // sort first "wins": its INSERT INTO schema_version (version) succeeds,
+  // and the second file's INSERT hits the `version` column's PRIMARY KEY
+  // constraint -- which the loop below reports as a "half-migrated or
+  // corrupted datadir" (FEAT-420 AC-3's diagnosis for a DIFFERENT failure
+  // mode entirely, and actively wrong here: nothing is corrupted, two files
+  // are just fighting over one slot). Catching it here, before any DDL runs,
+  // gives a precise, correct diagnosis on a fresh install too -- not just an
+  // already-migrated one.
+  const filesByVersion = new Map<number, string[]>();
+  for (const f of files) {
+    const version = parseInt(f.split('-')[0] ?? '', 10);
+    if (Number.isNaN(version)) continue; // reported below by the per-file bad-name check
+    const existing = filesByVersion.get(version);
+    if (existing) existing.push(f);
+    else filesByVersion.set(version, [f]);
+  }
+  for (const [version, sameVersionFiles] of filesByVersion) {
+    if (sameVersionFiles.length > 1) {
+      throw new Error(
+        `${sameVersionFiles.map(f => `migrations/${f}`).join(' and ')} share version ${version} -- ` +
+        `one of them will never run. migrate() keys a migration's identity on this number; give each ` +
+        `file a unique version (issue #188).`,
+      );
+    }
+  }
+
   for (const f of files) {
     const versionStr = f.split('-')[0];
     const version = parseInt(versionStr ?? '', 10);
@@ -125,10 +159,11 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
   // row is NULL going in) — the operator's existing 15k+-memory production DB
   // boots clean with zero risk of a false mismatch. Verification only starts
   // protecting from the SECOND boot onward, once a real baseline exists.
+  // (The duplicate-version guard above already proved every version maps to
+  // at most one file, so it's safe to flatten filesByVersion's arrays here.)
   const fileByVersion = new Map<number, string>();
-  for (const f of files) {
-    const version = parseInt(f.split('-')[0] ?? '', 10);
-    if (!Number.isNaN(version)) fileByVersion.set(version, f);
+  for (const [version, sameVersionFiles] of filesByVersion) {
+    fileByVersion.set(version, sameVersionFiles[0]!);
   }
 
   const versionRows = db

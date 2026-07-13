@@ -955,6 +955,71 @@ describe('migrate — schema-version drift guard', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Duplicate-version-on-disk guard (issue #188 follow-up, 2026-07-13 second
+// incident wave). The content-hash check protects against a migration being
+// RENUMBERED after being applied; this guard protects against the OTHER
+// shape -- two files claiming the same version number on disk AT ONCE,
+// e.g. two concurrent branches each adding their own "NNN-something.sql"
+// and merging without anyone renumbering. Without it, whichever file
+// `readdirSync` sorts first "wins" the INSERT and the second hits the
+// `version` PRIMARY KEY and throws a "half-migrated or corrupted datadir"
+// diagnosis -- wrong on a fresh install where nothing is corrupted, two
+// files are just fighting over one slot.
+// ---------------------------------------------------------------------------
+
+describe('migrate — duplicate-version-on-disk guard (issue #188 follow-up)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('throws a precise diagnosis when two files on disk share a version number — before any DDL runs, not a raw PRIMARY KEY/CREATE TABLE crash', async () => {
+    const actualFs = await vi.importActual<typeof import('node:fs')>('node:fs');
+    // Inject a fake file claiming the SAME version as the real, already-
+    // shipped 035 migration -- simulates two branches merging their own
+    // migration at the same number without anyone renumbering.
+    vi.doMock('node:fs', () => ({
+      ...actualFs,
+      readdirSync: (dir: Parameters<typeof actualFs.readdirSync>[0], opts?: unknown) => {
+        const real = actualFs.readdirSync(dir, opts as never) as string[];
+        return dir.toString().endsWith('migrations') ? [...real, '035-fake-duplicate.sql'] : real;
+      },
+    }));
+
+    const { migrate: migrateMocked } = await import('../../src/storage/migrate.js');
+    const db = openDb(':memory:');
+
+    let caught: unknown;
+    try {
+      migrateMocked(db);
+    } catch (err) {
+      caught = err;
+    }
+
+    expect(caught).toBeInstanceOf(Error);
+    const message = (caught as Error).message;
+    // migrate.ts sorts files alphabetically, so 'fake-duplicate' (f) sorts
+    // before 'schema-version-content-hash' (s) for the same number 35.
+    expect(message).toContain('migrations/035-fake-duplicate.sql');
+    expect(message).toContain('migrations/035-schema-version-content-hash.sql');
+    expect(message).toContain('share version 35');
+    expect(message).toContain('one of them will never run');
+    // Must NOT be the unrelated half-migrated/corrupted-datadir diagnosis or
+    // a raw SQLite constraint error.
+    expect(message).not.toMatch(/half-migrated|corrupted datadir|restore from a backup/i);
+    expect(message).not.toMatch(/PRIMARY KEY|UNIQUE constraint|already exists/i);
+  });
+
+  it('does not fire on the real, deduplicated migrations directory', () => {
+    const db = openDb(':memory:');
+    expect(() => migrate(db)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // schema_version content-hash tracking (issue #188, migration 035).
 //
 // #188 is the structural fix for the 2026-07-13 #185/#186 outage: schema_version
