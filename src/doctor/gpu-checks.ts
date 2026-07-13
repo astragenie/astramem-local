@@ -134,6 +134,14 @@ function checkOrphanedLlamaServer(opts: {
 }): Check {
   return {
     name: 'Orphaned llama-server processes',
+    // Not wired into getChecks()/coreChecks() — cli/doctor.ts combines this
+    // registry separately, outside schedule.ts's frequent/full split, so
+    // this tier value is currently inert for the 15-minute loop. Classified
+    // 'full' on its own merits regardless (network call to Ollama's
+    // /api/ps + an nvidia-smi subprocess spawn + OS process enumeration) so
+    // it can't silently start riding the frequent tier if this registry is
+    // ever folded into getChecks() later.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       let procs: ProcessInfo[];
       try {
@@ -202,6 +210,7 @@ function checkSilentCpuOffload(opts: {
 }): Check {
   return {
     name: 'Silent CPU offload',
+    tier: 'full', // network call to Ollama's /api/ps — see checkOrphanedLlamaServer's tier comment above
     async run(): Promise<CheckResult> {
       let models: OllamaPsModel[] | null;
       try {
@@ -253,6 +262,7 @@ function checkOllamaTuningEnvVars(opts: {
 }): Check {
   return {
     name: 'Ollama tuning env vars',
+    tier: 'cheap', // local registry/env read only, no network — see checkOrphanedLlamaServer's tier comment above
     async run(): Promise<CheckResult> {
       let persisted: Map<string, PersistedEnvValue> | null;
       try {

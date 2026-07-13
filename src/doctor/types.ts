@@ -22,6 +22,32 @@ export interface CheckResult {
 export interface Check {
   /** Short unique identifier used in output table and JSON */
   name: string;
+  /**
+   * Cost tier — REQUIRED so a check's cost classification is a compile-time
+   * decision, not an assumption inferred from which opts happen to be
+   * passed. #226 (2026-07-13) put two genuinely O(N) full-table-scan checks
+   * (checkMemoryHealth, checkEntityNameQuality) on a 15-minute unattended
+   * schedule because "frequent tier" was defined negatively — "whatever
+   * isn't gated behind llmProviders/embedProvider" — rather than by an
+   * explicit property each check declares. See src/doctor/schedule.ts's
+   * runFrequentDoctorChecks, which now selects `tier === 'cheap'` instead of
+   * inferring the frequent set from opts shape.
+   *
+   * - 'cheap': index-backed/bounded SQLite reads, filesystem stats, or a
+   *   loopback-only HTTP probe. Safe on a 15-minute interval, forever, on
+   *   any corpus size.
+   * - 'full': an unbounded/unindexed scan of a corpus-scale table
+   *   (memories, memory_events, entities, entity_relations — tables that
+   *   grow with usage rather than staying bounded by time or migration
+   *   count), per-row JS-side processing over such a scan, or a real
+   *   network/LLM/embed call. Reserved for the operator-invoked `doctor`
+   *   CLI and the existing >=24h piggyback tick (see schedule.ts's module
+   *   doc comment) — never the frequent schedule.
+   *
+   * A check author who forgets this field gets a TypeScript compile error,
+   * not a silent default into the frequent tier.
+   */
+  tier: 'cheap' | 'full';
   /** Execute the check and return a result */
   run(): Promise<CheckResult>;
 }

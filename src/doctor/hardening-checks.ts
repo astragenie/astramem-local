@@ -37,6 +37,13 @@ export function getHardeningChecks(opts: HardeningCheckOpts): Check[] {
 function checkPendingProposals(openDbReadonly: () => Promise<DB>): Check {
   return {
     name: 'Consolidation proposals reviewed',
+    // Not wired into getChecks()/coreChecks() — cli/doctor.ts combines this
+    // registry separately, outside schedule.ts's frequent/full split, so
+    // this tier value is currently inert for the 15-minute loop. Classified
+    // on its own merits so it can't silently start riding the frequent tier
+    // if this registry is ever folded into getChecks() later: a single
+    // COUNT(*) WHERE status = 'pending' aggregate — cheap regardless.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       let db: DB | null = null;
       try {
@@ -63,6 +70,7 @@ function checkPendingProposals(openDbReadonly: () => Promise<DB>): Check {
 function checkStrandedLegacyDb(dataDir: string): Check {
   return {
     name: 'No stranded legacy database',
+    tier: 'cheap', // fs.existsSync + fs.statSync only
     async run(): Promise<CheckResult> {
       const legacy = legacyDataDir();
       const legacyDb = join(legacy, 'memory.sqlite');
@@ -84,6 +92,7 @@ function checkStrandedLegacyDb(dataDir: string): Check {
 function checkPreEncryptionBak(dataDir: string): Check {
   return {
     name: 'No plaintext pre-encryption backup',
+    tier: 'cheap', // fs.existsSync + fs.statSync only
     async run(): Promise<CheckResult> {
       const bak = join(dataDir, 'memory.sqlite.pre-encryption.bak');
       if (!existsSync(bak)) return { ok: true, message: 'no pre-encryption backup present' };
@@ -101,6 +110,7 @@ function checkPreEncryptionBak(dataDir: string): Check {
 function checkServedVersion(port: number): Check {
   return {
     name: 'Served version matches this build',
+    tier: 'cheap', // loopback-only fetch (127.0.0.1:port) — same posture as checkDaemonReachable in checks.ts
     async run(): Promise<CheckResult> {
       let body: { version?: string };
       try {
@@ -125,6 +135,7 @@ function checkServedVersion(port: number): Check {
 function checkZombieLock(dataDir: string): Check {
   return {
     name: 'Instance lock healthy',
+    tier: 'cheap', // process.kill(pid, 0) signal-check + a loopback-only fetch
     async run(): Promise<CheckResult> {
       const holder = readLockInfo(dataDir);
       if (!holder) return { ok: true, message: 'no daemon.lock (daemon not running)' };
@@ -160,6 +171,7 @@ function checkZombieLock(dataDir: string): Check {
 function checkPoisonJobs(openDbReadonly: () => Promise<DB>): Check {
   return {
     name: 'No poisoned jobs',
+    tier: 'cheap', // COUNT(*) WHERE state = 'poison' rides idx_jobs_state (migration 001-init)
     async run(): Promise<CheckResult> {
       let db: DB | null = null;
       try {

@@ -189,6 +189,7 @@ export async function openProductionDbReadonly(dbPath: string, encryptionEnabled
 function checkSqliteWritable(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'SQLite writable + WAL',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       // Try to write a probe file in the datadir
       const probePath = join(dataDir, `.doctor-probe-${randomUUID()}`);
@@ -241,6 +242,7 @@ function checkSqliteWritable(dataDir: string, encryptionEnabled: boolean): Check
 function checkSqliteVec(): Check {
   return {
     name: 'sqlite-vec extension loadable',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         const { default: Database } = await import('better-sqlite3-multiple-ciphers');
@@ -267,6 +269,7 @@ function checkSqliteVec(): Check {
 function checkFts5(): Check {
   return {
     name: 'FTS5 available',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         const { default: Database } = await import('better-sqlite3-multiple-ciphers');
@@ -291,6 +294,9 @@ function checkFts5(): Check {
 function checkDaemonReachable(port: number): Check {
   return {
     name: `Daemon reachable on :${port}`,
+    // Loopback-only HTTP probe (127.0.0.1) — no network call leaves the box,
+    // matching schedule.ts's "cheap tier" definition.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         const controller = new AbortController();
@@ -330,6 +336,7 @@ const ONE_GB = 1024 * 1024 * 1024;
 function checkDiskFree(dataDir: string): Check {
   return {
     name: 'Disk free > 1GB in datadir',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         mkdirSync(dataDir, { recursive: true });
@@ -356,6 +363,7 @@ function checkDiskFree(dataDir: string): Check {
 function checkServiceUnit(serviceUnitPath: string | undefined): Check {
   return {
     name: 'Service unit present',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!serviceUnitPath) {
         return { ok: true, message: 'service install not checked (no unit path configured)' };
@@ -377,6 +385,7 @@ function checkServiceUnit(serviceUnitPath: string | undefined): Check {
 function checkDatadirWritable(dataDir: string): Check {
   return {
     name: 'Datadir exists and writable',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         mkdirSync(dataDir, { recursive: true });
@@ -398,6 +407,9 @@ function checkDatadirWritable(dataDir: string): Check {
 function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled: boolean): Check {
   return {
     name: 'Daily budget vs cap',
+    // Single-row lookup keyed by today's date (budget_spend.day) — bounded
+    // by day count, not corpus size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {
@@ -462,6 +474,7 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled:
 function checkBudgetCapCodexBlind(dailyBudgetUsd: number, codexSubscriptionInUse: boolean): Check {
   return {
     name: 'Budget cap vs codex-subscription',
+    tier: 'cheap', // config-only, no DB/network I/O
     async run(): Promise<CheckResult> {
       if (!codexSubscriptionInUse || dailyBudgetUsd <= 0) {
         return { ok: true, message: 'budget cap applies normally (codex-subscription not in use)' };
@@ -528,6 +541,9 @@ const POISON_RATE_ALARM = 0.25;
 function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: boolean): Check {
   return {
     name: 'Secret redaction',
+    // GROUP BY over a created_at >= ? window rides idx_redaction_log_created
+    // (migration 005) — bounded by the 7d window, not table size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!enabled) {
         return {
@@ -569,6 +585,10 @@ function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: bo
 function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Recall usefulness',
+    // usefulnessRate()/usefulnessByType() ride migration 019's partial
+    // covering indexes (idx_memory_events_usefulness_served/used) — bounded
+    // by the 7d window via an index range scan, not a memory_events scan.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {
@@ -648,6 +668,24 @@ function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
 function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Usefulness feedback loop',
+    // 'full', NOT 'cheap' — independently found during the #226 follow-up
+    // audit alongside the two CONFIRMED findings (checkMemoryHealth,
+    // checkEntityNameQuality): feedbackLoopSummary() (src/storage/
+    // usefulness.ts) computes correctedDistinct/correctedConsolidationDistinct/
+    // correctedExternalDistinct/correctedUnknownDistinct via four
+    // `event_type = 'usefulness' AND family = 'memory_corrected'` queries
+    // with NO covering index — that function's own doc comment says so
+    // explicitly ("no partial index covers memory_corrected... that query
+    // still scans... accepted unindexed rather than adding a migration for
+    // it"), on the reasoning that doctor's canary was operator-invoked. That
+    // reasoning stopped holding the moment #226 put this check on a
+    // 15-minute unattended schedule: memory_events grows ~1:1 with every
+    // recall/search call (one 'recall_served' row per returned atom, see
+    // migration 019's own measurement: 21ms -> 1179ms p50 from 1k -> 100k
+    // rows for the SAME shape of unindexed query). buildMemoryHealthCheap()
+    // (the other half of this check) is genuinely index-backed and would be
+    // fine alone — it's feedbackLoopSummary() that forces this to 'full'.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {
@@ -732,6 +770,15 @@ function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean
 function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Memory health',
+    // 'full' — CONFIRMED by the #226 follow-up audit. buildMemoryHealthFull()
+    // (src/server/queries/memory-health.ts) adds countsByTypeAndScope() and
+    // stalenessDistribution(), both genuine O(N) group-bys/scans over the
+    // full `memories` table with no covering index — that module's own file
+    // header documents the binding 2026-07-08 design-review split: the full
+    // tier is "reserved for the full (doctor/CLI) tier... both
+    // operator-invoked, off the hot path." #226 silently violated that by
+    // putting this check on the 15-minute unattended schedule.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {
@@ -804,6 +851,7 @@ function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): Check {
 function checkEncryption(dataDir: string, enabled: boolean): Check {
   return {
     name: 'Encryption at rest',
+    tier: 'cheap', // reads a 16-byte file header + keystore lookup, O(1)
     async run(): Promise<CheckResult> {
       if (!enabled) {
         return {
@@ -844,6 +892,7 @@ function checkEncryption(dataDir: string, enabled: boolean): Check {
 function checkBearerLocation(): Check {
   return {
     name: 'Bearer token location',
+    tier: 'cheap', // OS credential store / secrets.env lookup, O(1)
     async run(): Promise<CheckResult> {
       try {
         const configDir = defaultConfigDir();
@@ -877,6 +926,7 @@ function checkBearerLocation(): Check {
 function checkSyncTokenLocation(): Check {
   return {
     name: 'Sync device token location',
+    tier: 'cheap', // sync.json + OS credential store lookup, O(1)
     async run(): Promise<CheckResult> {
       try {
         const configDir = defaultConfigDir();
@@ -916,6 +966,7 @@ function checkSyncTokenLocation(): Check {
 function checkLLMChat(provider: LLMProvider, label: string): Check {
   return {
     name: `LLM chat probe (${label})`,
+    tier: 'full', // real, potentially metered LLM call
     async run(): Promise<CheckResult> {
       return llmChatProbe(provider);
     },
@@ -927,6 +978,7 @@ function checkLLMChat(provider: LLMProvider, label: string): Check {
 function checkEmbed(provider: EmbedProvider): Check {
   return {
     name: `Embed probe (${provider.dim}-dim)`,
+    tier: 'full', // real embed call
     async run(): Promise<CheckResult> {
       return embedProbe(provider);
     },
@@ -938,6 +990,10 @@ function checkEmbed(provider: EmbedProvider): Check {
 function checkOpenAICompatibleReachable(provider: OpenAICompatibleLLMProvider, label: string): Check {
   return {
     name: `OpenAI-compatible reachability (${label})`,
+    // Only ever added alongside checkLLMChat's llmProviders bundle (see
+    // coreChecks() below) — 'full' keeps the whole bundle on one tier rather
+    // than splitting a single opts-gated group across two schedules.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       return openAICompatibleReachabilityProbe(provider.baseUrl);
     },
@@ -947,6 +1003,7 @@ function checkOpenAICompatibleReachable(provider: OpenAICompatibleLLMProvider, l
 function checkCodexAuth(provider: CodexSubscriptionLLMProvider, label: string): Check {
   return {
     name: `Codex auth (${label})`,
+    tier: 'full', // same opts-gated LLM bundle as checkOpenAICompatibleReachable above
     async run(): Promise<CheckResult> {
       return codexAuthProbe(provider.authPath);
     },
@@ -958,6 +1015,7 @@ function checkCodexAuth(provider: CodexSubscriptionLLMProvider, label: string): 
 function checkPluginCoexistence(port: number): Check {
   return {
     name: 'Plugin config coexistence',
+    tier: 'cheap', // env var read + a bounded set of fs.existsSync/readFileSync checks
     async run(): Promise<CheckResult> {
       return pluginCoexistenceProbe(port);
     },
@@ -971,6 +1029,7 @@ const TWENTY_FOUR_HOURS_MS = 24 * 60 * 60 * 1000;
 function checkBackupRecency(backupsDir: string): Check {
   return {
     name: 'Backup recency',
+    tier: 'cheap', // fs.readdirSync + stat over a rotated/bounded backups dir
     async run(): Promise<CheckResult> {
       if (!existsSync(backupsDir)) {
         return {
@@ -1037,6 +1096,9 @@ function checkBackupRecency(backupsDir: string): Check {
 function checkSpoolQuarantine(dataDir: string): Check {
   return {
     name: 'Ingest spool quarantine',
+    // fs.readdirSync over the quarantine dir (kept small by the TTL sweep)
+    // + an O(1) stats-file read — never a DB query.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const qDir = spoolQuarantineDir(dataDir);
       let quarantined: string[];
@@ -1092,6 +1154,7 @@ function checkSpoolQuarantine(dataDir: string): Check {
 function checkConfigDirDivergence(): Check {
   return {
     name: 'Config dir divergence (Windows)',
+    tier: 'cheap', // a handful of fs.existsSync/readFileSync calls
     async run(): Promise<CheckResult> {
       // Only meaningful on Windows; canonical and legacy are identical elsewhere.
       if (platform() !== 'win32') {
@@ -1182,6 +1245,7 @@ function checkConfigDirDivergence(): Check {
 function checkServicePointer(pointerPathOverride?: string, releasesRootOverride?: string): Check {
   return {
     name: 'Service pointer',
+    tier: 'cheap', // one small JSON file read + a releases-dir existence check
     async run(): Promise<CheckResult> {
       const pointerPath = pointerPathOverride ?? shimPaths().pointerPath;
       if (!existsSync(pointerPath)) {
@@ -1239,9 +1303,58 @@ function checkServicePointer(pointerPathOverride?: string, releasesRootOverride?
  * carried in the record for a human/dashboard to eyeball, not used here as
  * a gate).
  */
-function checkCrashLoop(dataDir: string, threshold = 3): Check {
+/**
+ * Consecutive-non-zero-exit threshold shared by two independent consumers so
+ * they can never drift apart: `checkCrashLoop`'s own RED/GREEN finding below,
+ * and the full-tier LLM/embed boot-pass guard in schedule.ts's
+ * `runFullDoctorChecks` (2026-07-13 #226 follow-up finding 2 — a
+ * crash-looping daemon must not keep firing a metered LLM/embed call on
+ * every restart, indefinitely, with no operator in the loop).
+ */
+export const CRASH_LOOP_THRESHOLD = 3;
+
+/**
+ * Streak length of consecutive non-zero exits at the tail of
+ * exit-history.jsonl — the same walk `checkCrashLoop` performs for its own
+ * finding below, factored out so schedule.ts's crash-loop guard can reuse it
+ * without depending on `CheckResult`'s shape or duplicating the parse logic.
+ * Never throws: an unreadable/missing/malformed history degrades to 0 (no
+ * crash loop) — a doctor-history read glitch must never itself become the
+ * reason a genuine restart's LLM/embed probe silently never fires again.
+ */
+export function crashLoopStreakLength(dataDir: string): number {
+  const { historyPath } = exitHistoryPaths(dataDir);
+  if (!existsSync(historyPath)) return 0;
+
+  let entries: ExitHistoryEntry[];
+  try {
+    entries = readFileSync(historyPath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line): ExitHistoryEntry | null => {
+        try {
+          return JSON.parse(line) as ExitHistoryEntry;
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is ExitHistoryEntry => e !== null);
+  } catch {
+    return 0;
+  }
+
+  let streak = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]!.exitCode === 0) break;
+    streak++;
+  }
+  return streak;
+}
+
+function checkCrashLoop(dataDir: string, threshold = CRASH_LOOP_THRESHOLD): Check {
   return {
     name: 'Crash loop',
+    tier: 'cheap', // bounded fs read + parse of exit-history.jsonl
     async run(): Promise<CheckResult> {
       const { historyPath, crashLogPath } = exitHistoryPaths(dataDir);
       if (!existsSync(historyPath)) {
@@ -1320,6 +1433,7 @@ function checkCrashLoop(dataDir: string, threshold = 3): Check {
 function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
   return {
     name: 'Distill durability gate',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (mode === 'off') {
         return { ok: true, message: 'durability gate: off (default — no atoms are gated at persist time)' };
@@ -1344,6 +1458,7 @@ function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
 function checkExtractProfile(profile: ExtractProfile): Check {
   return {
     name: 'Extraction profile',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (profile === 'conversational') {
         return {
@@ -1399,6 +1514,16 @@ function checkEntityRelations(
 ): Check {
   return {
     name: 'Entity relations extraction',
+    // 'full' — independently found during the #226 follow-up audit.
+    // `totalRow` is `COUNT(*) FROM entity_relations` with NO WHERE clause —
+    // entity_relations is a corpus-scale table (grows with every extraction
+    // that finds a relation), so this visits every row with nothing to
+    // narrow the scan. `recentMemoriesRow` compounds this: `SELECT COUNT(*)
+    // FROM memories WHERE created_at >= ?` has no covering index either (see
+    // checkAtomValidityExtraction's tier comment below for the same gap on
+    // the same table) — this check does that same unindexed memories scan
+    // IN ADDITION to the entity_relations one.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {
@@ -1509,6 +1634,13 @@ const MIN_ENTITIES_FOR_JUNK_RATE = 20;
 function checkEntityNameQuality(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Entity name quality',
+    // 'full' — CONFIRMED by the #226 follow-up audit. `SELECT name, kind
+    // FROM entities` has no WHERE and no LIMIT: it materializes every row in
+    // the `entities` table into JS and runs classifyJunkEntityName() over
+    // each one. `entities` has no index at all beyond its own PK, so this is
+    // both an unindexed full-table scan AND O(N) JS-side processing on top
+    // of it — the worst-shaped query #226 put on the 15-minute schedule.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {
@@ -1621,6 +1753,16 @@ function checkEntityNameQuality(dataDir: string, encryptionEnabled: boolean): Ch
 function checkAtomValidityExtraction(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Atom validity extraction',
+    // 'full' — independently found during the #226 follow-up audit. Both
+    // queries below filter `memories` on `created_at >= ?` ALONE — no
+    // archived/valid_to/repo/type predicate. Every existing index on
+    // `memories` (idx_memories_repo_type, idx_memories_archival_candidates,
+    // idx_memories_agent, idx_memories_capture_source) has a DIFFERENT
+    // column as its leading term, so none of them can serve a bare
+    // created_at range here — this is an unindexed scan of the single
+    // largest, fastest-growing table in the schema, run unconditionally on
+    // every call.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {
@@ -1797,6 +1939,13 @@ const UNLINKED_RATE_WARN_THRESHOLD = 0.25;
 function checkEntityLinkRate(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Entity link rate',
+    // 'cheap' — landed via #215 after this PR's audit was written, but
+    // explicitly does NOT have the #226 follow-up's unbounded-scan problem:
+    // deliberately windowed to the most recent RECENT_MEMORY_WINDOW (100)
+    // memories via a LIMIT-tail query, not an all-time/unfiltered scan (see
+    // this function's own doc comment on why COUNT-tail was chosen over a
+    // calendar-time window). Bounded regardless of corpus size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {
@@ -1905,6 +2054,9 @@ function checkEntityLinkRate(dataDir: string, encryptionEnabled: boolean): Check
 function checkConsolidationJudgeTelemetry(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Consolidation judge',
+    // latestConsolidationJudgeRun() rides idx_consolidation_judge_runs_created
+    // (migration 031) — a single most-recent-row lookup, not a scan.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {
@@ -1997,6 +2149,11 @@ function checkConsolidationJudgeTelemetry(dataDir: string, encryptionEnabled: bo
 function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encryptionEnabled: boolean): Check {
   return {
     name: 'Auto-capture',
+    // Both count queries ride covering indexes: idx_memories_capture_source
+    // (migration 024, partial WHERE capture_source IS NOT NULL) for the
+    // capture_source IN (...) predicate, and idx_memories_archival_candidates
+    // (leading columns archived, valid_to) for the active-count query.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!autoCaptureEnabled) {
         return { ok: true, message: 'auto-capture: off (default)' };
@@ -2074,6 +2231,9 @@ function checkProxyCapture(
 ): Check {
   return {
     name: 'LLM proxy',
+    // capture_source = 'proxy' rides idx_memories_capture_source (migration
+    // 024) — an index range scan bounded by proxy-captured row count.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!proxyEnabled) {
         return { ok: true, message: 'proxy: off (default)' };
@@ -2134,6 +2294,7 @@ function checkProxyCapture(
 function checkProxyCaptureReminder(proxyEnabled: boolean, captureEnabled: boolean): Check {
   return {
     name: 'Proxy capture reminder',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (!proxyEnabled || !captureEnabled) {
         return { ok: true, message: 'proxy capture: off' };
@@ -2165,6 +2326,7 @@ function checkProxyCaptureReminder(proxyEnabled: boolean, captureEnabled: boolea
 function checkDevNoAuth(devNoAuthActive: boolean): Check {
   return {
     name: 'Dev no-auth mode',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (!devNoAuthActive) {
         return { ok: true, message: 'dev no-auth mode: off' };
@@ -2245,6 +2407,9 @@ function checkSchemaDrift(
 ): Check {
   return {
     name: 'Schema drift',
+    // MAX(version) FROM schema_version — one row per migration (~36 today),
+    // bounded by migration count, not corpus size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {

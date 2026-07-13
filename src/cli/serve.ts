@@ -327,6 +327,16 @@ export async function serve(opts: ServeOpts): Promise<void> {
         result.results.filter(r => !r.ok).map(r => r.name).join(', '),
       );
     }
+    // #226 follow-up finding 2: a crash-looping daemon skips the metered
+    // LLM/embed probes on this boot's full-tier pass (see schedule.ts's
+    // runFullDoctorChecks) — surface that explicitly so a green "0 failures"
+    // line isn't mistaken for "the LLM/embed probe passed" when it never ran.
+    if (result.llmTierSkippedForCrashLoop) {
+      console.warn(
+        `${ts()} [astramem-local] doctor (${result.tier}) skipped the LLM/embed probes — crash-loop streak ` +
+        `at/above threshold (see the "Crash loop" check finding for details).`,
+      );
+    }
   };
   let stopFrequentDoctor: (() => void) | null = null;
   if (dataDir !== ':memory:') {

@@ -46,6 +46,7 @@ export async function providersCommand(args: string[]): Promise<void> {
     const p = providers;
     checks.push({
       name: `LLM chat probe (compaction: ${p.llm.compaction.name}/${p.llm.compaction.model})`,
+      tier: 'full', // real, potentially metered LLM call — this CLI command's whole purpose
       run: () => llmChatProbe(p.llm.compaction),
     });
     const sameProvider =
@@ -53,16 +54,19 @@ export async function providersCommand(args: string[]): Promise<void> {
     if (!sameProvider) {
       checks.push({
         name: `LLM chat probe (extraction: ${p.llm.extraction.name}/${p.llm.extraction.model})`,
+        tier: 'full',
         run: () => llmChatProbe(p.llm.extraction),
       });
     }
     checks.push({
       name: `Embed probe (${p.embed.name}/${p.embed.model})`,
+      tier: 'full', // real embed call
       run: () => embedProbe(p.embed),
     });
   } else {
     checks.push({
       name: 'Provider construction',
+      tier: 'cheap', // no I/O — reports a construction error already in hand
       run: async () => ({
         ok: false,
         message: buildError ?? 'unknown provider construction error',
