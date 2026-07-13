@@ -975,7 +975,7 @@ describe('migrate — schema_version content-hash tracking (issue #188)', () => 
     const rows = db
       .prepare('SELECT version, filename, content_hash FROM schema_version ORDER BY version')
       .all() as { version: number; filename: string | null; content_hash: string | null }[];
-    expect(rows).toHaveLength(33);
+    expect(rows).toHaveLength(34);
     for (const row of rows) {
       expect(row.filename, `version ${row.version} missing filename`).toMatch(/^\d+-.+\.sql$/);
       expect(row.content_hash, `version ${row.version} missing content_hash`).toMatch(/^[a-f0-9]{64}$/);
