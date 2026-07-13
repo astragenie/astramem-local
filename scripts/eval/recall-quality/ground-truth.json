@@ -1,0 +1,119 @@
+{
+  "_doc": "Recall-quality ground truth. Each case is a question a developer would ACTUALLY ask, paired with (a) DISTINCTIVE marker terms that only a genuinely correct answer would contain, and (b) a literal-keyword variant of the same query. The plain-vs-literal comparison is the experiment: if literal wins and plain loses, the semantic half of retrieval is not contributing and we are running keyword search wearing a semantic costume.",
+  "_markers_warning": "Markers MUST be distinctive. A first draft used generic words ('deploy', 'schema', 'latency') and scored junk to-dos like 'deploy the changes to production' as correct answers — inflating the pass rate and flattering the system. If a marker would match a memory that does not actually ANSWER the question, it is too generic. The instrument must be able to return bad news.",
+  "cases": [
+    {
+      "id": "test-runner",
+      "plain": "what test runner does this repo use and why does bun test fail",
+      "literal": "vitest bun test better-sqlite3 hangs",
+      "markers": [
+        "vitest"
+      ],
+      "known_memory": "The Runner uses vitest: bunx vitest run — bun test hangs silently (better-sqlite3 incompat)"
+    },
+    {
+      "id": "header-exclusion",
+      "plain": "how do we stop the capture code from seeing my API key",
+      "literal": "capture fork headers ProxyTeeEvent body bytes",
+      "markers": [
+        "never receive header",
+        "must not receive header",
+        "proxyteeevent",
+        "body bytes"
+      ],
+      "known_memory": "Capture must never receive headers — ProxyTeeEvent = { chunk } | { end }"
+    },
+    {
+      "id": "gzip-capture",
+      "plain": "why did the proxy capture only save my question and not the answer",
+      "literal": "gzip compressed response capture assistant reply dropped",
+      "markers": [
+        "gzip",
+        "1f 8b",
+        "compress"
+      ],
+      "known_memory": "Anthropic gzips responses; the tee got 1f 8b and both parsers failed"
+    },
+    {
+      "id": "stale-branch",
+      "plain": "my branch is far behind main with junk merge commits, what should I do",
+      "literal": "cherry-pick rebase stale branch behind main",
+      "markers": [
+        "cherry-pick",
+        "cherry pick"
+      ],
+      "known_memory": "Cherry-pick the one work commit onto fresh main; take the files not the history"
+    },
+    {
+      "id": "zod-strip",
+      "plain": "I added a field to the envelope but it never reaches the database",
+      "literal": "zod strip mode unmodeled field silently deleted",
+      "markers": [
+        "strip",
+        "silently delet",
+        "unmodeled"
+      ],
+      "known_memory": "zod default mode is strip: an unmodeled field is silently DELETED at parse"
+    },
+    {
+      "id": "prod-deploy",
+      "plain": "how do I release to production",
+      "literal": "release merge push v tag deploy-azure-prod workflow_run",
+      "markers": [
+        "v* tag",
+        "v-tag",
+        "push v",
+        "workflow_run",
+        "tag, then stop"
+      ],
+      "known_memory": "release = merge + push v* tag, then STOP; prod deploy auto-fires on workflow_run"
+    },
+    {
+      "id": "kill-processes",
+      "plain": "is it safe to kill node processes on this machine",
+      "literal": "taskkill image name pkill node eval daemon",
+      "markers": [
+        "image name",
+        "pid-scoped",
+        "never kill"
+      ],
+      "known_memory": "NEVER kill by image name — the live daemon, Ollama, sibling agents share the box"
+    },
+    {
+      "id": "capture-default",
+      "plain": "is proxy capture turned on by default",
+      "literal": "proxy capture enabled default false opt-in",
+      "markers": [
+        "default false",
+        "defaults false",
+        "default-off",
+        "default off",
+        "off by default"
+      ],
+      "known_memory": "capture.enabled defaults false, independent of proxy.enabled"
+    },
+    {
+      "id": "spool-drain-poison",
+      "plain": "why would a spooled envelope silently disappear instead of erroring",
+      "literal": "spool drain safeParse quarantine poison capture_source enum",
+      "markers": [
+        "quarantin",
+        "poison"
+      ],
+      "known_memory": "spool-drain's zod enum quarantined capture_source:'proxy' envelopes as poison"
+    },
+    {
+      "id": "latency-budget",
+      "plain": "how much latency does the proxy add",
+      "literal": "proxy p50 overhead latency 10ms threshold",
+      "markers": [
+        "0.3",
+        "0.4",
+        "p50",
+        "10ms",
+        "overhead p50"
+      ],
+      "known_memory": "0.34ms p50 capture-off, ~0.4ms capture-on, vs a 10ms budget"
+    }
+  ]
+}
