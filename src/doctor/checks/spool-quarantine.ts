@@ -15,8 +15,9 @@ import { TWENTY_FOUR_HOURS_MS } from './shared.js';
  * means the TTL sweep (`pruneExpiredQuarantine`, run once per spool-drain
  * tick) failed to remove it — a real, actionable signal, not a restated
  * config value. Content in `.quarantine/` is already redacted at spool-write
- * time (src/ingest/spool.ts `redactSpoolEnvelope`) regardless of what this
- * check finds; this check is about retention hygiene, not secret exposure.
+ * time (src/ingest/spool-schema-guard.ts `redactSpooledEnvelope`, called from
+ * `writeToSpool`) regardless of what this check finds; this check is about
+ * retention hygiene, not secret exposure.
  *
  * Fast-follow (2026-07-13, Finding 3): the denominator N comes from
  * `SpoolStats.statsHealthy` now — a missing/corrupt `.stats.json` with real
