@@ -17,10 +17,32 @@
  * If it barely moves -> the semantic weakness is INDEPENDENT, and the plan's
  * sequencing is wrong.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import { classifyDurability } from '../../../dist/distill/durability-gate.js';
+
+// STALE-DIST GUARD. This script imports the compiled classifier from dist/, not
+// src/. If dist/ predates a change to the taxonomy, this silently measures the OLD
+// classifier and hands back a confidently wrong verdict — which is exactly what
+// happened: a reviewer re-ran this, got the PREVIOUS (already-refuted) +0.5pt
+// result, and only found the truth after rebuilding by hand. An instrument that
+// quietly tests a stale artifact is worse than no instrument.
+{
+  const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+  const src = join(root, 'src', 'distill', 'durability-gate.ts');
+  const built = join(root, 'dist', 'distill', 'durability-gate.js');
+  const srcAt = statSync(src).mtimeMs;
+  const builtAt = statSync(built).mtimeMs;
+  if (builtAt < srcAt) {
+    console.error('\nREFUSING TO RUN — dist/ is STALE.\n');
+    console.error(`  src/distill/durability-gate.ts  modified ${new Date(srcAt).toISOString()}`);
+    console.error(`  dist/distill/durability-gate.js  built   ${new Date(builtAt).toISOString()}`);
+    console.error('\nThis script would have measured the OLD classifier and reported it as fact.');
+    console.error('Run `bun run build` first.\n');
+    process.exit(1);
+  }
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const HOST = 'http://127.0.0.1:7777';
