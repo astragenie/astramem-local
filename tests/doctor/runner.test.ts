@@ -83,6 +83,43 @@ describe('formatJson', () => {
   });
 });
 
+// Silent-error audit (2026-07-13): a check whose own query/probe threw used
+// to return ok: true indistinguishably from a genuinely healthy result —
+// the exact "green boot, broken metric" shape issues #190/#200 were about.
+// inconclusive makes "we never verified this" visually and numerically
+// distinct from "we verified it's fine", without flipping doctor's exit code.
+describe('formatTable — inconclusive', () => {
+  it('shows a distinct icon for an inconclusive result, not the passing checkmark', () => {
+    const results = [
+      { name: 'Healthy check', ok: true, message: 'genuinely fine' },
+      { name: 'Broken-probe check', ok: true, inconclusive: true, message: 'probe error (non-fatal): boom' },
+    ];
+    const out = formatTable(results);
+    const healthyLine = out.split('\n').find(l => l.includes('Healthy check'));
+    const inconclusiveLine = out.split('\n').find(l => l.includes('Broken-probe check'));
+    expect(healthyLine).toContain('✓');
+    expect(inconclusiveLine).not.toContain('✓');
+    expect(inconclusiveLine).toContain('⚠');
+  });
+});
+
+describe('formatJson — inconclusive', () => {
+  it('splits inconclusive out of summary.ok instead of inflating the pass count', () => {
+    const results = [
+      { name: 'A', ok: true, message: 'fine' },
+      { name: 'B', ok: true, inconclusive: true, message: 'probe error (non-fatal)' },
+      { name: 'C', ok: false, message: 'really failed' },
+    ];
+    const out = formatJson(results);
+    const parsed = JSON.parse(out);
+    expect(parsed.summary.ok).toBe(1);
+    expect(parsed.summary.inconclusive).toBe(1);
+    expect(parsed.summary.fail).toBe(1);
+    expect(parsed.checks.find((c: { name: string }) => c.name === 'B').inconclusive).toBe(true);
+    expect(parsed.checks.find((c: { name: string }) => c.name === 'A').inconclusive).toBeUndefined();
+  });
+});
+
 describe('exit code logic', () => {
   it('summary fail count > 0 means exit 1 caller should use', async () => {
     const checks: Check[] = [

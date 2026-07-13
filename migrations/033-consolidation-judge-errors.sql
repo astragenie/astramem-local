@@ -1,0 +1,14 @@
+-- 033: consolidation_judge_runs.judge_errors (silent-error audit, 2026-07-13).
+--
+-- consolidation_judge_runs (migration 031) already tracks judge_calls, but
+-- not how many of those calls fell back to FALLBACK_VERDICT ('unrelated',
+-- confidence 0) due to a parse failure or thrown/rejected chat() call
+-- (src/consolidate/contradiction-judge.ts). A systemically broken judge
+-- provider (wrong model, broken JSON mode, network flakiness) would make
+-- EVERY call fall back and be indistinguishable from "genuinely no
+-- contradictions found" -- the same failure shape as issues #190 (feedback
+-- loop) and #200 (entity relations): a canary that counts activity, not
+-- success. judge_errors makes that distinction persisted and queryable so
+-- doctor's "Consolidation judge" check (src/doctor/checks.ts) can flag a
+-- 100%-fallback run instead of reporting it as healthy activity.
+ALTER TABLE consolidation_judge_runs ADD COLUMN judge_errors INTEGER NOT NULL DEFAULT 0;

@@ -431,20 +431,26 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         scope: args.scope,
       }, events);
 
-      // Embed + upsert into vec store (non-fatal on failure)
+      // Embed + upsert into vec store (non-fatal on failure — the memory is
+      // already durably saved above). `vecIndexed` surfaces the degraded
+      // state in the response below instead of swallowing it: without this
+      // flag the caller has no way to know the memory is vector-search-blind
+      // until an operator manually runs `rebuild`/`reembed-dim`.
+      let vecIndexed = true;
       try {
         const vecs = await embed.embed([text]);
         const vecStore = new SqliteVecStore(db, embed.dim);
         if (!vecs[0]) throw new Error('embed provider returned empty result');
         await vecStore.upsert(id, vecs[0]);
       } catch (err) {
+        vecIndexed = false;
         childLogger({}).warn(
           {
             error_message:
               err instanceof Error ? err.message : String(err),
             id,
           },
-          'mcp remember: embed/vec upsert failed'
+          'mcp remember: embed/vec upsert failed — memory saved but NOT vector-indexed; run `astramem-local rebuild` to backfill'
         );
       }
 
@@ -457,15 +463,15 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       if (args.decisionJson !== undefined) unsupportedFields.push('decisionJson');
       if (args.reviewJson !== undefined) unsupportedFields.push('reviewJson');
 
+      const resultBody: { id: string; ok: true; unsupported_fields?: string[]; vec_indexed?: false } = { id, ok: true };
+      if (unsupportedFields.length > 0) resultBody.unsupported_fields = unsupportedFields;
+      if (!vecIndexed) resultBody.vec_indexed = false;
+
       return {
         content: [
           {
             type: 'text' as const,
-            text: JSON.stringify(
-              unsupportedFields.length > 0
-                ? { id, ok: true, unsupported_fields: unsupportedFields }
-                : { id, ok: true }
-            ),
+            text: JSON.stringify(resultBody),
           },
         ],
       };

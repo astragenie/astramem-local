@@ -185,6 +185,44 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     expect(row).toBeDefined();
   });
 
+  // Silent-error audit (2026-07-13): a failed embed/vec-upsert used to be
+  // swallowed into a log line while the response still said {id, ok: true}
+  // unconditionally — the caller had no way to know the memory was saved
+  // FTS-only and not vector-indexed. vec_indexed: false now surfaces it.
+  it('embed/vec upsert failure: memory still saved, but response reports vec_indexed: false instead of lying', async () => {
+    const brokenEmbed: EmbedProvider = {
+      ...buildMockEmbed(),
+      embed: async () => { throw new Error('embed provider unreachable (test)'); },
+    };
+    const brokenApp = await buildApp({ db, token: TOKEN, embed: brokenEmbed });
+    await brokenApp.listen({ host: '127.0.0.1', port: 0 });
+    const addr = brokenApp.server.address();
+    if (!addr || typeof addr === 'string') throw new Error('unexpected server address');
+    const brokenBaseUrl = `http://127.0.0.1:${addr.port}`;
+
+    try {
+      const resp = await mcpPost(brokenBaseUrl, {
+        jsonrpc: '2.0',
+        method: 'tools/call',
+        params: { name: 'remember', arguments: { text: 'mcp remember with a broken embed provider', type: 'fact' } },
+        id: 4,
+      }) as { result?: { content?: Array<{ type: string; text: string }> } };
+      const text = resp.result?.content?.[0]?.text ?? '';
+      const payload = JSON.parse(text) as { id: string; ok: boolean; vec_indexed?: boolean };
+
+      expect(payload.ok).toBe(true);
+      expect(payload.vec_indexed).toBe(false);
+
+      const row = db.prepare('SELECT id FROM memories WHERE id = ?').get(payload.id);
+      expect(row).toBeDefined();
+      const rowid = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(payload.id) as { rowid: number };
+      const vecRow = db.prepare('SELECT rowid FROM memories_vec WHERE rowid = ?').get(BigInt(rowid.rowid));
+      expect(vecRow).toBeUndefined();
+    } finally {
+      await brokenApp.close();
+    }
+  });
+
   // astramem-local#84: content_hash must be a full 64-char sha256 hex digest
   // (contracts/schemas/sync-envelope.v1.schema.json pattern ^[a-f0-9]{64}$),
   // not the legacy 32-char truncation. Exercises the real MCP remember hash

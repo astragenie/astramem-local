@@ -14,7 +14,7 @@
  * openProductionDbReadonly.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -57,6 +57,22 @@ describe('doctor "Usefulness feedback loop" canary (2026-07-12 "never fired" bug
   function checkFor() {
     return findCheck(getChecks({ dataDir: dir, encryptionEnabled: false }), 'Usefulness feedback loop');
   }
+
+  // Silent-error audit (2026-07-13): a query error inside this check used to
+  // return ok:true indistinguishably from "genuinely no positive signal
+  // problem" — the exact "green boot, broken canary" shape this file's own
+  // 2026-07-12 bug was about, just one layer deeper (the exception path the
+  // #190 logic fix didn't touch).
+  it('DB file exists but has not been migrated (query hits a missing table) — inconclusive, not a clean bill of health', async () => {
+    // A valid-but-unmigrated DB (rather than a corrupt file) triggers the
+    // same "the query itself failed" catch without a Windows file-handle
+    // quirk on opening a non-SQLite file.
+    openDb(join(dir, 'memory.sqlite')).close();
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
+  });
 
   it('no DB file yet — ok:true, silent', async () => {
     const result = await checkFor().run();

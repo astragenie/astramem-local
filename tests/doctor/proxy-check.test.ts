@@ -11,7 +11,7 @@
  * insert() path every other test in this suite uses, no bypass needed.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -74,6 +74,19 @@ describe('doctor "LLM proxy" check (FEAT-458 S1-AC-2 / ADR-013)', () => {
     expect(result.ok).toBe(true);
     expect(result.message).toContain('no DB yet');
     expect(result.message).toContain('0');
+  });
+
+  // Silent-error audit (2026-07-13): a query error inside this check used to
+  // return ok:true indistinguishably from a genuinely healthy count.
+  it('proxy + capture enabled, DB file exists but has not been migrated — inconclusive', async () => {
+    // A valid-but-unmigrated DB (rather than a corrupt file) triggers the
+    // same "the query itself failed" catch without a Windows file-handle
+    // quirk on opening a non-SQLite file.
+    openDb(join(dir, 'memory.sqlite')).close();
+    const result = await checkFor(true, true).run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
   });
 
   it('proxy + capture enabled, DB exists with zero proxy-captured memories — ok:true, 0 count', async () => {

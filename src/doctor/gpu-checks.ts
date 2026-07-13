@@ -139,7 +139,10 @@ function checkOrphanedLlamaServer(opts: {
       try {
         procs = await opts.listProcesses();
       } catch (err) {
-        return { ok: true, message: `process enumeration unavailable (non-fatal): ${errMsg(err)}` };
+        // Enumeration itself failed — this did NOT verify there are no
+        // orphaned llama-server processes, so it must not render/count as
+        // if it had confirmed a clean state.
+        return { ok: true, inconclusive: true, message: `process enumeration unavailable (non-fatal): ${errMsg(err)}` };
       }
 
       const llamaServers = procs.filter((p) => LLAMA_SERVER_RE.test(p.name));

@@ -48,6 +48,17 @@ describe('doctor "Crash loop" check (FEAT-440 AC-3/AC-5)', () => {
     writeFileSync(historyPath, entries.map(e => JSON.stringify(e)).join('\n') + '\n', 'utf8');
   }
 
+  // Silent-error audit (2026-07-13): readFileSync itself failing (not just a
+  // malformed line, which the inner per-line catch already tolerates) used
+  // to return ok:true indistinguishably from "confirmed no crash loop".
+  it('history path is unreadable (a directory, not a file) — inconclusive, not a clean bill of health', async () => {
+    mkdirSync(historyPath);
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
+  });
+
   it('ok: no exit-history.jsonl yet', async () => {
     const res = await checkFor().run();
     expect(res.ok).toBe(true);

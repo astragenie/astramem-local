@@ -73,8 +73,11 @@ export async function doctorCommand(args: string[]): Promise<void> {
     console.log('\nAstraMemory Doctor\n');
     console.log(formatTable(results));
     const failCount = results.filter(r => !r.ok).length;
-    const okCount = results.filter(r => r.ok).length;
-    console.log(`\n  ${okCount} passed, ${failCount} failed\n`);
+    const inconclusiveCount = results.filter(r => r.inconclusive).length;
+    const okCount = results.filter(r => r.ok && !r.inconclusive).length;
+    console.log(
+      `\n  ${okCount} passed, ${inconclusiveCount} inconclusive, ${failCount} failed\n`,
+    );
   }
 
   const hasFailures = results.some(r => !r.ok);
