@@ -70,7 +70,16 @@ Usefulness feedback loop: active (0 used, 854 corrected)   <- reports GREEN
 
 - **Positive signal (`recall_used`) has NEVER fired.** 575 atoms served in 7 days, zero marked used. `submit_feedback`/`mark_memory_used` are exposed over MCP and work — **nothing in the real usage path calls them.** `src/doctor/checks.ts:612` already admits this verbatim.
 - **The 854 "corrections" are not external feedback.** `recordMemoryCorrected()` has **zero callers**. The events are emitted by `src/storage/memory-events.ts:320` on **supersede**, whose caller is `consolidate.ts`'s own **auto-merge**. The system is deduplicating itself and penalizing the loser.
-- **Consequence:** `fuse.ts` applies `ε · usefulness` (`epsilon: 0.1`), Laplace-neutral at 0.5. With `used = 0` forever and `corrected` only incrementing, an atom **can be demoted but can never be promoted.** ADR-010's "usefulness → ranking" is a **one-way punishment function** in production, and has been silently biasing retrieval.
+- **~~Consequence: ε is a one-way punishment term silently biasing retrieval.~~ CORRECTED — I was wrong (see PR #196).**
+
+  I claimed `ε · usefulness` was demoting corrected atoms and could never promote anything. **It isn't, and it can't.** Two reasons I failed to check:
+
+  1. **Corrected atoms are not in the candidate pool at all.** `supersede()`/`invalidate()` set `valid_to`, and `search.ts:276` filters `valid_to IS NULL` by default. The atom is **removed**, not demoted — the penalty has nothing to apply to. The one exception (an atom reopened via `unsupersede()`) measures as **~0.0006 NDCG noise**.
+  2. **With `used = 0` everywhere, `usefulness` is uniformly 0.5 for every candidate**, so ε adds an *identical constant* to every score — **provably rank-invariant.** Measured on the ADR-005 floors: `0.9545 / 0.8395`, **byte-identical** at ε=0.1 and ε=0.
+
+  **ε is inert, not harmful.** Recommendation (shipped): KEEP ε at 0.1 — zeroing it would silence the one channel that demonstrably works (`submit_feedback` correctly rewards an atom when actually called) for zero measured benefit.
+
+  **AUDITOR — the lesson matters more than the fact.** I reasoned from the formula and never checked whether the penalized rows reach the ranker. That is the *same* "inference where a measurement was available" failure as the prod-schema mis-scoping in §1. **Assume other claims in this document may share it, and verify before acting.**
 - **The canary is fooled.** `feedbackLoopSummary()` reports used+corrected; a nonzero sum reads as "active". 854 self-generated supersedes mask a completely dead positive half. **The canary built to catch `built-wired-never-invoked` is itself defeated by that exact pattern.**
 
 An agent (`fix-feedback-loop`) is running an ε=0.1 vs ε=0 experiment against the ADR-005 floors. **It was explicitly forbidden from fabricating a positive signal** — faking "used" would destroy the thing being measured.

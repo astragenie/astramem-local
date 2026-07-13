@@ -89,7 +89,48 @@ export async function answerConversations(
     }
   }
 
+  assertStoreNotEmpty(outcomes);
   return outcomes;
+}
+
+/** Thrown when every answered question retrieved ZERO memories — a broken run, not a result. */
+export class EmptyStoreError extends Error {
+  constructor(answered: number) {
+    super(
+      `LoCoMo run is INVALID: all ${answered} answered questions retrieved ZERO memories — the store is empty.\n\n` +
+        `This is not a score. It is a broken run, and it would look like a catastrophic regression.\n\n` +
+        `On 2026-07-13 exactly this happened: the daemon's embed preflight timed out (Ollama was\n` +
+        `saturated), it never left 'degraded', nothing was ingested, and the harness went on to write\n` +
+        `199 hypotheses against an empty database. Those would have scored ~22 token-F1 — which is\n` +
+        `NOT a low score, it is the ABSTAIN FLOOR: LoCoMo category 5 (adversarial) is ~22.5% of\n` +
+        `questions and its correct answer is "no information available", so a system with NO MEMORY\n` +
+        `AT ALL scores ~22.5 by abstaining on everything. A garbage run and a total regression are\n` +
+        `indistinguishable by score alone. Hence this guard.\n\n` +
+        `Check: did ingest+distill actually finish? Is /health 'ok' (not 'degraded')? Is Ollama\n` +
+        `responsive (an embed should take <1s, not 48s)?`,
+    );
+    this.name = 'EmptyStoreError';
+  }
+}
+
+/**
+ * Refuse to emit a score from an empty store (2026-07-13 incident).
+ *
+ * NOTE ON BENCHMARK INTEGRITY: this does NOT touch `buildAnswerPrompt`, the
+ * answerer model, or k. The fixed cheap answerer is unchanged — this only
+ * refuses to report a number that measures nothing. It makes the benchmark more
+ * honest, not easier.
+ *
+ * Only counts questions that were actually ANSWERED — conversations skipped for
+ * a distill timeout legitimately have 0 hits and are excluded, so a partial
+ * distill failure still surfaces as its own (separate) signal rather than
+ * tripping this.
+ */
+export function assertStoreNotEmpty(outcomes: AnswerOutcome[]): void {
+  const answered = outcomes.filter(o => !o.hypothesis.startsWith('(skipped:'));
+  if (answered.length === 0) return; // nothing was answered at all — a different failure
+  const totalHits = answered.reduce((n, o) => n + o.hit_count, 0);
+  if (totalHits === 0) throw new EmptyStoreError(answered.length);
 }
 
 export function writeHypothesesJsonl(outcomes: AnswerOutcome[], path: string): void {
