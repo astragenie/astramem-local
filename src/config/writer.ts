@@ -179,6 +179,12 @@ export function configToYaml(cfg: Config): string {
     line(0, 'network'),
     line(1, 'host', cfg.network.host),
     '',
+    // Dev no-auth mode — devNoAuth: false (default) is byte-identical to
+    // pre-this-FEAT behavior. Config-file-only by design (no env var
+    // override) — see Config['auth'] doc comment before enabling.
+    line(0, 'auth'),
+    line(1, 'devNoAuth', (cfg.auth ?? EMIT_DEFAULTS.auth).devNoAuth),
+    '',
     line(0, 'llm'),
     line(1, 'compaction'),
     line(2, 'provider', cfg.llm.compaction.provider),

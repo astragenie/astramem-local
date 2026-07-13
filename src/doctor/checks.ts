@@ -125,6 +125,14 @@ export interface DoctorCheckOpts {
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.capture.enabled`. Defaults
    * to `false` (the shipped default) when not supplied. */
   proxyCaptureEnabled?: boolean;
+  /** Whether dev no-auth mode is genuinely ACTIVE — i.e. `config.auth.
+   * devNoAuth === true` AND the bind is loopback (mirrors buildApp's
+   * `devNoAuthActive` in src/server/app.ts). NOT the same as the raw config
+   * value: `devNoAuth: true` against a non-loopback bind is refused at boot
+   * and stays inactive, so callers should pass the resolved/effective value,
+   * not `cfg.auth.devNoAuth` directly. Defaults to `false` when not
+   * supplied. */
+  devNoAuthActive?: boolean;
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
@@ -1276,6 +1284,37 @@ function checkProxyCaptureReminder(proxyEnabled: boolean, captureEnabled: boolea
   };
 }
 
+// ─── Check: Dev no-auth mode reminder (Config['auth'] devNoAuth) ─────────────
+
+/**
+ * Genuine, every-run WARN while `auth.devNoAuth` is active — same posture as
+ * `checkProxyCaptureReminder` above (an ongoing, disclosed risk the operator
+ * should be reminded of on every single `doctor` run for as long as it stays
+ * on, not a one-shot wiring canary). `devNoAuthActive` mirrors the exact
+ * predicate `buildApp` uses to decide whether the auth hook actually skips
+ * enforcement (`config.auth.devNoAuth === true && isLoopbackHost(host)`) —
+ * this check WARNs only when auth is genuinely bypassed, not merely
+ * configured-but-refused (the non-loopback-bind case already logs its own
+ * loud boot-time warning in app.ts and leaves Bearer enforcement in place).
+ */
+function checkDevNoAuth(devNoAuthActive: boolean): Check {
+  return {
+    name: 'Dev no-auth mode',
+    async run(): Promise<CheckResult> {
+      if (!devNoAuthActive) {
+        return { ok: true, message: 'dev no-auth mode: off' };
+      }
+      return {
+        ok: false,
+        message:
+          'auth disabled for local dev — every local process can read/write memories; ' +
+          'do not run with sync pairing to prod.',
+        fix: 'set auth.devNoAuth: false in config.yaml',
+      };
+    },
+  };
+}
+
 // ─── Check: Schema drift (FEAT-439 AC-2/AC-5) ────────────────────────────────
 
 interface ServedSchemaVersion {
@@ -1420,6 +1459,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),
+    checkDevNoAuth(opts.devNoAuthActive ?? false),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

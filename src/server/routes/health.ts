@@ -8,6 +8,7 @@ import {
 import { type Config, defaultConfig } from '../../config/config.js';
 import type { DB } from '../../storage/db.js';
 import type { HealthState } from '../health-state.js';
+import { isLoopbackHost } from '../lib/network.js';
 import { usefulnessRate } from '../../storage/usefulness.js';
 import { queryJobStates } from '../queries/dashboard.js';
 import { buildMemoryHealthCheap, type MemoryHealthReport } from '../queries/memory-health.js';
@@ -42,6 +43,14 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
           redaction: config.security.redaction.enabled,
           encryption: config.security.encryption.enabled,
         },
+        // Observable signal that dev no-auth mode is actually active (config
+        // says on AND network.host is loopback — see buildApp's devNoAuthActive
+        // in src/server/app.ts, the same predicate that gates the auth hook).
+        // Omitted entirely when inactive — additive, no shape change for the
+        // common case.
+        ...(config.auth?.devNoAuth === true && isLoopbackHost(config.network.host)
+          ? { auth: 'dev-no-auth' as const }
+          : {}),
         // ADR-010: recall-usefulness rate (v1: measure only, does not feed ranking).
         usefulness: {
           served_7d: rate.served,

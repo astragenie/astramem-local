@@ -21,6 +21,7 @@ function buildFullyPopulatedConfig(): Config {
     port: 8765,
     dataDir: 'C:\\custom\\astra-data',
     network: { host: '0.0.0.0' },
+    auth: { devNoAuth: true },
     llm: {
       compaction: { provider: 'azure-openai', model: 'gpt-4o-compact' },
       extraction: { provider: 'openai-compatible', model: 'gpt-4o-extract' },

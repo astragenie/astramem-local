@@ -364,6 +364,32 @@ token found only in `secrets.env` is opportunistically promoted into the credent
 time the daemon resolves it — `secrets.env` itself is never rewritten or deleted as part of that
 promotion.
 
+### Dev no-auth mode
+
+Set `auth.devNoAuth: true` in `config.yaml` to hit the API from local tools
+(curl, a browser, a script) without supplying `Authorization: Bearer <token>` at all. `/dashboard`
+is NOT affected — it keeps its own independent Bearer/cookie/`?token=` auth (see
+[Dashboard](#dashboard)) regardless of this flag. Config-file
+only — there is no env var for this, so it's always an explicit, visible line in config.yaml, never
+a stray shell variable someone forgot was set.
+
+What it protects against: the Bearer token doubles as a DNS-rebinding defense — without it, a
+malicious web page the operator's browser visits could `fetch('http://127.0.0.1:7777/...')` and
+read or write the whole memory store. `devNoAuth` keeps that defense by requiring every request's
+`Host` header to resolve to `127.0.0.1`, `localhost`, or `::1` (with or without a port) — anything
+else gets a `403`, not a silent pass-through.
+
+What it does **not** protect against: with `devNoAuth` on, **every other local process** — any
+script, any browser tab, any other application on the machine — can read and write your memories
+with no credential at all. That's the entire trade being made; only enable it on a machine you
+trust completely, and never alongside `sync` pairing to a prod workspace (`doctor` WARNs on this
+every run while it's on).
+
+It only ever activates on a loopback bind. If `network.host` is set to anything non-loopback (e.g.
+`0.0.0.0`), the daemon refuses to skip auth — it logs a loud warning and keeps Bearer enforcement in
+place on every route, rather than either exposing the whole LAN with no credential or refusing to
+start at all.
+
 ---
 
 ## Capture protocol
