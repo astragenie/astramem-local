@@ -297,18 +297,24 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         embedding_dim: embed.dim
       }, events);
 
-      // Embed + upsert into vec store
+      // Embed + upsert into vec store. Non-fatal: the memory itself is
+      // already durably saved above (FTS still works), but a caller that
+      // gets back `ok: true` unconditionally would have no way to know the
+      // memory is vector-search-blind until an operator manually runs
+      // `rebuild`/`reembed-dim` — see `vec_indexed` below, which makes that
+      // degraded state visible instead of silently swallowing it.
+      let vecIndexed = true;
       try {
         const vecs = await embed.embed([text]);
         const vecStore = new SqliteVecStore(db, embed.dim);
         if (!vecs[0]) throw new Error('embed provider returned empty result');
         await vecStore.upsert(id, vecs[0]);
       } catch (err) {
-        // Non-fatal: FTS still works; vec will be populated on reembed
-        childLogger({}).warn({ error_message: err instanceof Error ? err.message : String(err), id }, 'remember: embed/vec upsert failed');
+        vecIndexed = false;
+        childLogger({}).warn({ error_message: err instanceof Error ? err.message : String(err), id }, 'remember: embed/vec upsert failed — memory saved but NOT vector-indexed; run `astramem-local rebuild` to backfill');
       }
 
-      return { id, ok: true };
+      return vecIndexed ? { id, ok: true } : { id, ok: true, vec_indexed: false };
     });
   };
 }

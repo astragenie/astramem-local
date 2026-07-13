@@ -111,7 +111,11 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
       expect(result.message.toLowerCase()).toContain('unavailable');
     });
 
-    it('degrades gracefully (ok:true, "unavailable") when process enumeration itself fails', async () => {
+    // Silent-error audit (2026-07-13): enumeration failing means this check
+    // never verified there are no orphans — it must not render/count the
+    // same as a check that actually confirmed a clean state (ok:true alone,
+    // pre-fix, was indistinguishable from a real "no orphans found" result).
+    it('degrades gracefully but marks itself inconclusive when process enumeration itself fails', async () => {
       const checks = getGpuChecks({
         listProcesses: async () => {
           throw new Error('tasklist not found');
@@ -121,6 +125,7 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
       });
       const result = await findCheck(checks, 'Orphaned llama-server processes').run();
       expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
       expect(result.message.toLowerCase()).toContain('unavailable');
     });
   });

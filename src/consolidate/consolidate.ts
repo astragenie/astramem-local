@@ -458,6 +458,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     opts.contradictionDetection, opts.judgeProvider, mergeThreshold, log,
   );
   let judgeCallsThisRun = 0;
+  let judgeErrorsThisRun = 0;
   const judgeSweepStartedAt = Date.now();
 
   const summary: ConsolidateSummary = {
@@ -543,7 +544,10 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
             summary.contradictionWallClockCapReached = true;
           } else {
             judgeCallsThisRun++;
-            const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, { log });
+            const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, {
+              log,
+              onFallback: () => { judgeErrorsThisRun++; },
+            });
             if (verdict.verdict === 'contradicts' && verdict.confidence >= contradictionDetection.minConfidence) {
               // Directional: newer atom is the presumptive correction (§2.2)
               // — opposite of the merge tier's usefulness-based pick.
@@ -648,7 +652,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     log(
       `[consolidate] judge sweep: mode=${contradictionDetection.mode} calls=${summary.judgeCallsExecuted} ` +
       `elapsedMs=${summary.judgeSweepElapsedMs} capReached=${summary.contradictionCapReached} ` +
-      `wallClockCapReached=${summary.contradictionWallClockCapReached}`,
+      `wallClockCapReached=${summary.contradictionWallClockCapReached} errors=${judgeErrorsThisRun}`,
     );
     recordConsolidationJudgeRun(db, {
       mode: contradictionDetection.mode,
@@ -656,6 +660,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       elapsedMs: summary.judgeSweepElapsedMs,
       capReached: summary.contradictionCapReached,
       wallClockCapReached: summary.contradictionWallClockCapReached,
+      judgeErrors: judgeErrorsThisRun,
     });
   }
 

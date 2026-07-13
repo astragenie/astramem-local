@@ -12,7 +12,7 @@
  * `join(dataDir, 'memory.sqlite')` via openProductionDbReadonly.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -71,6 +71,21 @@ describe('doctor "Entity relations extraction" check (FEAT-481 SLICE-430 AC-12)'
     const result = await checkFor().run();
     expect(result.ok).toBe(true);
     expect(result.message).toContain('no DB yet');
+  });
+
+  // Silent-error audit (2026-07-13): a query error inside this check used to
+  // return ok:true indistinguishably from "genuinely healthy relations" —
+  // the same failure shape issue #200 itself was about, one layer deeper
+  // (the exception path the #200 logic fix didn't touch).
+  it('DB file exists but has not been migrated (query hits a missing table) — inconclusive, not a clean bill of health', async () => {
+    // A valid-but-unmigrated DB (rather than a corrupt file) triggers the
+    // same "the query itself failed" catch without a Windows file-handle
+    // quirk on opening a non-SQLite file.
+    openDb(join(dir, 'memory.sqlite')).close();
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
   });
 
   it('DB exists but below MEANINGFUL_USAGE_THRESHOLD — ok:true, not enough activity to judge', async () => {

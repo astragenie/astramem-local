@@ -539,6 +539,35 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     expect(new ProposalRepo(db).list()).toHaveLength(0);
   });
 
+  // Silent-error audit (2026-07-13): judgeCallsExecuted alone only proves the
+  // judge was invoked, not that it produced a real verdict — a systemically
+  // broken judge provider makes every call fall back to 'unrelated' and
+  // would otherwise be indistinguishable from "genuinely no contradictions
+  // found" in consolidation_judge_runs (same failure shape as issues
+  // #190/#200). runConsolidation must persist judgeErrors alongside
+  // judgeCalls so doctor's "Consolidation judge" check can tell the two apart.
+  it('a judge provider that always throws — judgeErrors == judgeCalls in the persisted run row', async () => {
+    await seedPair('Default port is 7777.', 'Default port is now 8888.', 'h-brokenjudge');
+    const brokenJudgeProvider: LLMProvider = {
+      name: 'ollama',
+      model: 'broken-test-model',
+      chat: async () => { throw new Error('judge provider unreachable (test)'); },
+      health: async () => ({ ok: true, model: 'broken-test-model', latency_ms: 0 }),
+    };
+    const summary = await runConsolidation(db, {
+      contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
+      judgeProvider: brokenJudgeProvider,
+    });
+    expect(summary.judgeCallsExecuted).toBe(1);
+    // The judge failing means the pair falls through to the merge-tier
+    // classification unchanged, never a contradiction proposal.
+    expect(summary.contradictionsProposed).toHaveLength(0);
+
+    const latest = latestConsolidationJudgeRun(db);
+    expect(latest?.judgeCalls).toBe(1);
+    expect(latest?.judgeErrors).toBe(1);
+  });
+
   it('AC-2: dry-run mode previews a confident contradiction without writing a row', async () => {
     const { older, newer } = await seedPair('Default port is 7777.', 'Default port is now 8888.', 'h-ac2');
     const summary = await runConsolidation(db, {

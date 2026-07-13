@@ -103,6 +103,68 @@ describe('doctor "Consolidation judge" check (FEAT-482)', () => {
     expect(result.message).toContain('call-count cap (maxPerRun) reached');
   });
 
+  // Silent-error audit (2026-07-13): judgeCalls alone only proves the judge
+  // was INVOKED, not that it produced a real verdict — a systemically broken
+  // judge provider makes every call fall back to 'unrelated' via
+  // contradiction-judge.ts's FALLBACK_VERDICT and would otherwise look
+  // identical to "genuinely no contradictions found" (the same failure shape
+  // as issues #190/#200). judgeErrors makes that distinction visible.
+  it('ALL judge calls fell back due to errors — ok:false, names the judge as not actually working', async () => {
+    const db = openDb(join(dir, 'memory.sqlite'));
+    migrate(db);
+    recordConsolidationJudgeRun(db, {
+      mode: 'enabled', judgeCalls: 10, elapsedMs: 1_000, capReached: false, wallClockCapReached: false,
+      judgeErrors: 10,
+    });
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('ALL of them fell back');
+    expect(result.fix).toBeDefined();
+  });
+
+  it('SOME judge calls fell back due to errors — still ok:true, but the count is visible in the message', async () => {
+    const db = openDb(join(dir, 'memory.sqlite'));
+    migrate(db);
+    recordConsolidationJudgeRun(db, {
+      mode: 'enabled', judgeCalls: 10, elapsedMs: 1_000, capReached: false, wallClockCapReached: false,
+      judgeErrors: 3,
+    });
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('3 fell back on error');
+  });
+
+  it('no judge errors (backward compatible with callers that omit judgeErrors) — message has no error note', async () => {
+    const db = openDb(join(dir, 'memory.sqlite'));
+    migrate(db);
+    recordConsolidationJudgeRun(db, {
+      mode: 'enabled', judgeCalls: 10, elapsedMs: 1_000, capReached: false, wallClockCapReached: false,
+    });
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.message).not.toContain('fell back');
+  });
+
+  // The check's own query erroring is a different failure mode than the
+  // judge itself failing — must not be conflated with either "healthy" or
+  // "judge broken", so it gets the generic inconclusive tier instead.
+  it('DB file exists but has not been migrated (query hits a missing table) — inconclusive, not a clean bill of health', async () => {
+    // A valid-but-unmigrated DB (rather than a corrupt file) triggers the
+    // same "the query itself failed" catch without a Windows file-handle
+    // quirk on opening a non-SQLite file.
+    openDb(join(dir, 'memory.sqlite')).close();
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
+  });
+
   it('multiple recorded runs — reports the MOST RECENT one, not the first', async () => {
     const db = openDb(join(dir, 'memory.sqlite'));
     migrate(db);

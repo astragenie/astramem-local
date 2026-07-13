@@ -28,11 +28,11 @@
  * "non-Windows platform: no-op" test is replaced with linux/darwin restore
  * scenarios that now mirror the win32 ones.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { restorePriorPointer, selectRollbackTarget, healthTimeoutMs } from '../../src/cli/reinstall.js';
+import { restorePriorPointer, selectRollbackTarget, healthTimeoutMs, finish, type StepResult } from '../../src/cli/reinstall.js';
 import { shimPaths, writePointer, type ShimPointer } from '../../src/service/shim.js';
 import type { ReleaseListEntry } from '../../src/service/release.js';
 
@@ -228,5 +228,60 @@ describe('selectRollbackTarget (FEAT-438 SLICE-418 AC-3)', () => {
     const releases = [entry('2.0.0+b'), entry('1.0.0+a')];
     const target = selectRollbackTarget(releases, '9.9.9+gone');
     expect(target?.id).toBe('2.0.0+b');
+  });
+});
+
+// Silent-error audit (2026-07-13): prune-releases used to report
+// `ok: true` even when it threw, specifically so it would never gate the
+// run — but that means a `--json` consumer (or any future automated check)
+// reading `steps` would see a green row for a step that actually failed,
+// indistinguishable from a real success. `soft: true` now lets a step be
+// honestly `ok: false` while still being excluded from the pass/fail gate.
+describe('finish() soft-failure gating (silent-error audit, 2026-07-13)', () => {
+  let exitSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);
+    logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    exitSpy.mockRestore();
+    logSpy.mockRestore();
+  });
+
+  it('a soft-failed step does not trigger process.exit(1) and is not counted in --json ok', () => {
+    const steps: StepResult[] = [
+      { step: 'resolve-config', ok: true },
+      { step: 'prune-releases', ok: false, soft: true, detail: 'skipped (error: disk full)' },
+    ];
+    finish(steps, /* jsonMode */ true);
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const printed = JSON.parse((logSpy.mock.calls[0]?.[0] as string) ?? '{}');
+    expect(printed.ok).toBe(true);
+    // The step itself is still reported honestly as failed ...
+    const pruneStep = printed.steps.find((s: StepResult) => s.step === 'prune-releases');
+    expect(pruneStep.ok).toBe(false);
+    expect(pruneStep.soft).toBe(true);
+  });
+
+  it('a hard-failed (non-soft) step DOES trigger process.exit(1)', () => {
+    const steps: StepResult[] = [
+      { step: 'resolve-config', ok: true },
+      { step: 'start-service', ok: false, detail: 'daemon did not start' },
+    ];
+    finish(steps, true);
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('a soft failure alongside a hard failure still exits 1 — soft only excuses itself, not other steps', () => {
+    const steps: StepResult[] = [
+      { step: 'prune-releases', ok: false, soft: true, detail: 'skipped (error: disk full)' },
+      { step: 'start-service', ok: false, detail: 'daemon did not start' },
+    ];
+    finish(steps, true);
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });

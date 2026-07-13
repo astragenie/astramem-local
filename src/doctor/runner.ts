@@ -27,7 +27,7 @@ export async function runChecks(checks: Check[]): Promise<CheckResultWithName[]>
 export function formatTable(results: CheckResultWithName[]): string {
   const lines: string[] = [];
   for (const r of results) {
-    const icon = r.ok ? '✓' : '✗';
+    const icon = !r.ok ? '✗' : r.inconclusive ? '⚠' : '✓';
     lines.push(`  ${icon} ${r.name}: ${r.message}`);
     if (!r.ok && r.fix) {
       lines.push(`      fix: ${r.fix}`);
@@ -38,7 +38,12 @@ export function formatTable(results: CheckResultWithName[]): string {
 
 /**
  * Format results as machine-readable JSON.
- * Shape: { checks: [{name, ok, message, fix?}], summary: {ok: N, fail: M} }
+ * Shape: { checks: [{name, ok, message, fix?, inconclusive?}], summary: {ok, inconclusive, fail} }
+ * `summary.ok` counts only checks that actually verified their metric —
+ * an `inconclusive` result (the check's own query/probe threw) is split out
+ * separately rather than folded into `ok`, so a consumer that only reads
+ * `summary.ok`/`summary.fail` can't mistake "we never checked" for "checked
+ * and it's fine".
  */
 export function formatJson(results: CheckResultWithName[]): string {
   const checks = results.map(r => {
@@ -48,10 +53,12 @@ export function formatJson(results: CheckResultWithName[]): string {
       message: r.message,
     };
     if (r.fix !== undefined) entry.fix = r.fix;
+    if (r.inconclusive) entry.inconclusive = true;
     return entry;
   });
   const summary = {
-    ok: results.filter(r => r.ok).length,
+    ok: results.filter(r => r.ok && !r.inconclusive).length,
+    inconclusive: results.filter(r => r.inconclusive).length,
     fail: results.filter(r => !r.ok).length,
   };
   return JSON.stringify({ checks, summary }, null, 2);

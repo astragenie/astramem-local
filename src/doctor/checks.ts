@@ -200,13 +200,13 @@ function checkSqliteWritable(dataDir: string, encryptionEnabled: boolean): Check
 
       // Check WAL by opening a test DB — key-aware so this doesn't false-fail
       // on an encrypted production DB (SEC-8).
+      let db: DB | undefined;
       try {
         const dbPath = join(dataDir, 'memory.sqlite');
         // DB may not exist yet — only check WAL if it does
         if (existsSync(dbPath)) {
-          const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+          db = await openProductionDbReadonly(dbPath, encryptionEnabled);
           const row = db.prepare('PRAGMA journal_mode').get() as { journal_mode: string };
-          db.close();
           if (row.journal_mode !== 'wal') {
             return {
               ok: false,
@@ -218,6 +218,13 @@ function checkSqliteWritable(dataDir: string, encryptionEnabled: boolean): Check
         return { ok: true, message: `datadir writable, WAL ok (${dataDir})` };
       } catch (err) {
         return { ok: false, message: `SQLite probe error: ${err}` };
+      } finally {
+        // Silent-error audit (2026-07-13): db.close() previously sat inline
+        // after the query — unreachable if the query itself threw, leaking
+        // the connection (and, on Windows, the underlying file handle) on
+        // every error path. A finally block closes it exactly once
+        // regardless of which path was taken.
+        db?.close();
       }
     },
   };
@@ -386,17 +393,17 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled:
   return {
     name: 'Daily budget vs cap',
     async run(): Promise<CheckResult> {
+      let db: DB | undefined;
       try {
         const dbPath = join(dataDir, 'memory.sqlite');
         if (!existsSync(dbPath)) {
           return { ok: true, message: 'budget check skipped (no DB yet)' };
         }
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const day = new Date().toISOString().slice(0, 10);
         const row = db.prepare('SELECT usd_total, calls FROM budget_spend WHERE day = ?').get(day) as
           | { usd_total: number; calls: number }
           | undefined;
-        db.close();
 
         const usd = row?.usd_total ?? 0;
         const calls = row?.calls ?? 0;
@@ -416,6 +423,8 @@ function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled:
         };
       } catch (err) {
         return { ok: false, message: `Budget check error: ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -494,17 +503,17 @@ function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: bo
         };
       }
 
+      let db: DB | undefined;
       try {
         const dbPath = join(dataDir, 'memory.sqlite');
         if (!existsSync(dbPath)) {
           return { ok: true, message: 'redaction: on (no DB yet — 0 secrets redacted)' };
         }
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const since = Date.now() - SEVEN_DAYS_MS;
         const rows = db
           .prepare('SELECT type, SUM(count) AS n FROM redaction_log WHERE created_at >= ? GROUP BY type ORDER BY n DESC')
           .all(since) as { type: string; n: number }[];
-        db.close();
 
         const total = rows.reduce((sum, r) => sum + r.n, 0);
         if (total === 0) {
@@ -514,6 +523,8 @@ function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: bo
         return { ok: true, message: `redaction: on — ${total} secrets redacted (${breakdown}) in last 7d` };
       } catch (err) {
         return { ok: false, message: `Redaction check error: ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -525,16 +536,16 @@ function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Recall usefulness',
     async run(): Promise<CheckResult> {
+      let db: DB | undefined;
       try {
         const dbPath = join(dataDir, 'memory.sqlite');
         if (!existsSync(dbPath)) {
           return { ok: true, message: 'recall usefulness: no DB yet (0 served, 0 used)' };
         }
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const since = Date.now() - SEVEN_DAYS_MS;
         const overall = usefulnessRate(db, { sinceMs: since });
         const byType = usefulnessByType(db, { sinceMs: since });
-        db.close();
 
         const rateStr = overall.rate === null ? 'n/a' : `${(overall.rate * 100).toFixed(1)}%`;
         const breakdown = byType.length > 0
@@ -545,8 +556,11 @@ function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
           message: `recall usefulness (7d): ${rateStr} (${overall.used}/${overall.served} atoms used/served)${breakdown}`,
         };
       } catch (err) {
-        // Informational check — never fail doctor over a metric query error.
-        return { ok: true, message: `Recall usefulness check error (non-fatal): ${err}` };
+        // The query itself failed — this did NOT verify recall usefulness is
+        // healthy, so it must not render/count the same as a check that did.
+        return { ok: true, inconclusive: true, message: `Recall usefulness check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -601,15 +615,15 @@ function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean
   return {
     name: 'Usefulness feedback loop',
     async run(): Promise<CheckResult> {
+      let db: DB | undefined;
       try {
         const dbPath = join(dataDir, 'memory.sqlite');
         if (!existsSync(dbPath)) {
           return { ok: true, message: 'usefulness feedback loop: no DB yet' };
         }
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const report = buildMemoryHealthCheap(db);
         const summary = feedbackLoopSummary(db);
-        db.close();
 
         // issue #190 AC-1: corrections — of ANY source — are not positive
         // signal. Only usedDistinct means the loop is actually learning.
@@ -650,9 +664,13 @@ function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean
           message: `usefulness feedback loop: active (${summary.usedDistinct} used, ${correctedBreakdown}, distinct atoms, all-time)`,
         };
       } catch (err) {
-        // Informational failure mode — never fail doctor over a metric query
-        // error, consistent with the other read-only DB checks above.
-        return { ok: true, message: `usefulness feedback loop check error (non-fatal): ${err}` };
+        // The query itself failed — this did NOT verify the feedback loop is
+        // healthy, so it must not render/count the same as a check that did
+        // (this is exactly the shape of bug issue #190 was about: a canary
+        // reporting green without having actually confirmed anything).
+        return { ok: true, inconclusive: true, message: `usefulness feedback loop check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -681,14 +699,14 @@ function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Memory health',
     async run(): Promise<CheckResult> {
+      let db: DB | undefined;
       try {
         const dbPath = join(dataDir, 'memory.sqlite');
         if (!existsSync(dbPath)) {
           return { ok: true, message: 'memory health: no DB yet (0 memories — clean slate)' };
         }
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const report = buildMemoryHealthFull(db);
-        db.close();
 
         if (report.activeCount === 0) {
           return { ok: true, message: 'memory health: no data yet (0 active memories)' };
@@ -710,7 +728,10 @@ function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): Check {
             `${report.poisonDistillSessions} poison-distill session(s), staleness [${staleTop}]`,
         };
       } catch (err) {
-        return { ok: true, message: `Memory health check error (non-fatal): ${err}` };
+        // The query itself failed — did not verify memory health.
+        return { ok: true, inconclusive: true, message: `Memory health check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -1121,9 +1142,9 @@ function checkCrashLoop(dataDir: string, threshold = 3): Check {
           })
           .filter((e): e is ExitHistoryEntry => e !== null);
       } catch (err) {
-        // Informational check — never fail doctor over a corrupt/unreadable
-        // history file; that's its own (non-fatal) signal, not a crash loop.
-        return { ok: true, message: `crash loop check error (non-fatal): ${err}` };
+        // Could not read/parse the crash history file — this did NOT verify
+        // there's no crash loop, so it must not render/count as if it had.
+        return { ok: true, inconclusive: true, message: `crash loop check error (non-fatal): ${err}` };
       }
 
       if (entries.length === 0) {
@@ -1264,8 +1285,9 @@ function checkEntityRelations(
         return { ok: true, message: 'entity relations: no DB yet' };
       }
 
+      let db: DB | undefined;
       try {
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const since = Date.now() - SEVEN_DAYS_MS;
 
         const totalRow = db.prepare('SELECT COUNT(*) AS n FROM entity_relations').get() as { n: number };
@@ -1280,7 +1302,6 @@ function checkEntityRelations(
         const newestAgeH = newestRow?.ts ? ((Date.now() - newestRow.ts) / 3_600_000).toFixed(1) : null;
 
         if (total > 0) {
-          db.close();
           const ageStr = newestAgeH !== null ? `, newest ${newestAgeH}h old` : '';
           return {
             ok: true,
@@ -1290,7 +1311,6 @@ function checkEntityRelations(
 
         // total === 0 from here down.
         if (extractProfile === 'conversational') {
-          db.close();
           return {
             ok: true,
             message:
@@ -1305,7 +1325,6 @@ function checkEntityRelations(
         const recentMemories = recentMemoriesRow.n;
 
         if (recentMemories < MEANINGFUL_USAGE_THRESHOLD) {
-          db.close();
           return {
             ok: true,
             message:
@@ -1315,7 +1334,6 @@ function checkEntityRelations(
         }
 
         const guardDrops7d = totalRelationGuardDrops(db, since);
-        db.close();
 
         return {
           ok: false,
@@ -1333,9 +1351,12 @@ function checkEntityRelations(
             'the engineering prompt.',
         };
       } catch (err) {
-        // Informational failure mode — never fail doctor over a metric query
-        // error, consistent with the other read-only DB checks above.
-        return { ok: true, message: `entity relations check error (non-fatal): ${err}` };
+        // The query itself failed — did NOT verify entity relations are
+        // healthy (this is the same failure shape issue #200 was about: a
+        // canary that can report green without having actually checked).
+        return { ok: true, inconclusive: true, message: `entity relations check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -1368,10 +1389,10 @@ function checkConsolidationJudgeTelemetry(dataDir: string, encryptionEnabled: bo
         return { ok: true, message: 'consolidation judge: no DB yet' };
       }
 
+      let db: DB | undefined;
       try {
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const latest = latestConsolidationJudgeRun(db);
-        db.close();
 
         if (!latest) {
           return {
@@ -1387,16 +1408,36 @@ function checkConsolidationJudgeTelemetry(dataDir: string, encryptionEnabled: bo
           : latest.wallClockCapReached
             ? ' — wall-clock cap (maxWallClockMs) reached'
             : '';
+
+        // issue #190/#200-shaped check: judgeCalls alone only proves the
+        // judge was INVOKED, not that it ever produced a real verdict — a
+        // systemically broken provider (wrong model, broken JSON mode,
+        // network flakiness) makes every call fall back to 'unrelated' and
+        // would otherwise look identical to "genuinely no contradictions
+        // found". Flag the all-fallback case explicitly.
+        if (latest.judgeCalls > 0 && latest.judgeErrors >= latest.judgeCalls) {
+          return {
+            ok: false,
+            message:
+              `consolidation judge: last run ${ageH}h ago (mode: ${latest.mode}) made ${latest.judgeCalls} ` +
+              `judge call(s) but ALL of them fell back to 'unrelated' due to errors — the judge is not ` +
+              `actually classifying anything; contradiction detection ran blind this pass.`,
+            fix: 'Check the configured llm.extraction provider is reachable and returns valid JSON — see contradiction-judge.ts server logs for the specific parse/call failures.',
+          };
+        }
+
+        const errorNote = latest.judgeErrors > 0 ? `, ${latest.judgeErrors} fell back on error` : '';
         return {
           ok: true,
           message:
             `consolidation judge: last run ${ageH}h ago (mode: ${latest.mode}) — ` +
-            `${latest.judgeCalls} judge call(s), ${elapsedS}s elapsed${caps}`,
+            `${latest.judgeCalls} judge call(s)${errorNote}, ${elapsedS}s elapsed${caps}`,
         };
       } catch (err) {
-        // Informational failure mode — never fail doctor over a metric query
-        // error, consistent with the other read-only DB checks above.
-        return { ok: true, message: `consolidation judge check error (non-fatal): ${err}` };
+        // The query itself failed — did NOT verify judge telemetry is healthy.
+        return { ok: true, inconclusive: true, message: `consolidation judge check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -1444,15 +1485,15 @@ function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encrypti
         return { ok: true, message: 'auto-capture is ON — no DB yet, 0 auto-captured memories' };
       }
 
+      let db: DB | undefined;
       try {
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const row = db
           .prepare(`SELECT COUNT(*) AS count FROM memories WHERE capture_source IN ('auto_capture', 'hook_close') AND valid_to IS NULL`)
           .get() as { count: number } | undefined;
         const totalRow = db
           .prepare(`SELECT COUNT(*) AS count FROM memories WHERE valid_to IS NULL AND archived = 0`)
           .get() as { count: number } | undefined;
-        db.close();
         const count = row?.count ?? 0;
         const totalActive = totalRow?.count ?? 0;
 
@@ -1473,9 +1514,10 @@ function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encrypti
           message: `auto-capture is ON — ${count} auto-captured ${count === 1 ? 'memory' : 'memories'} currently stored`,
         };
       } catch (err) {
-        // Informational failure mode — never fail doctor over a count-query
-        // error, consistent with the other read-only DB checks above.
-        return { ok: true, message: `auto-capture is ON — count check error (non-fatal): ${err}` };
+        // The count query itself failed — did not verify auto-capture activity.
+        return { ok: true, inconclusive: true, message: `auto-capture is ON — count check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -1523,12 +1565,12 @@ function checkProxyCapture(
         return { ok: true, message: 'proxy capture is ON — no DB yet, 0 proxy-captured memories' };
       }
 
+      let db: DB | undefined;
       try {
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const row = db
           .prepare(`SELECT COUNT(*) AS count FROM memories WHERE capture_source = 'proxy' AND valid_to IS NULL`)
           .get() as { count: number } | undefined;
-        db.close();
         const count = row?.count ?? 0;
 
         return {
@@ -1536,9 +1578,10 @@ function checkProxyCapture(
           message: `proxy capture is ON — ${count} proxy-captured ${count === 1 ? 'memory' : 'memories'} currently stored`,
         };
       } catch (err) {
-        // Informational failure mode — never fail doctor over a count-query
-        // error, consistent with the other read-only DB checks above.
-        return { ok: true, message: `proxy capture is ON — count check error (non-fatal): ${err}` };
+        // The count query itself failed — did not verify proxy capture activity.
+        return { ok: true, inconclusive: true, message: `proxy capture is ON — count check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
     },
   };
@@ -1687,24 +1730,24 @@ function checkSchemaDrift(
       }
 
       let dbSchemaVersion: number;
+      let db: DB | undefined;
       try {
-        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const tableExists = db
           .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schema_version'`)
           .get();
         if (!tableExists) {
-          db.close();
           return { ok: true, message: 'schema drift: DB not migrated yet (no schema_version table)' };
         }
         const row = db.prepare('SELECT MAX(version) AS max_version FROM schema_version').get() as
           | { max_version: number | null }
           | undefined;
-        db.close();
         dbSchemaVersion = row?.max_version ?? 0;
       } catch (err) {
-        // Informational failure mode — never fail doctor over a metric/probe
-        // query error, consistent with the other read-only DB checks above.
-        return { ok: true, message: `schema drift check error (non-fatal): ${err}` };
+        // The probe itself failed — did NOT verify there's no schema drift.
+        return { ok: true, inconclusive: true, message: `schema drift check error (non-fatal): ${err}` };
+      } finally {
+        db?.close();
       }
 
       const served = await resolveServedSchemaVersion(pointerPathOverride, releasesRootOverride);

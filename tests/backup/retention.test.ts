@@ -102,6 +102,20 @@ describe('pruneOldBackups', () => {
     }
   });
 
+  // Silent-error audit (2026-07-13): the pre-fix catch swallowed ANY
+  // readdirSync error (not just ENOENT) and reported "nothing to prune" —
+  // a real permissions/IO failure would be silently indistinguishable from
+  // an empty, healthy result. Only a genuinely-missing directory may take
+  // that path now; anything else must propagate.
+  it('rethrows a non-ENOENT readdirSync error instead of reporting an empty, clean result', () => {
+    const dir = tmpDir();
+    // A file (not a directory) makes readdirSync throw ENOTDIR, not ENOENT.
+    const notADir = join(dir, 'not-a-directory');
+    writeFileSync(notADir, 'this is a file, not a directory');
+
+    expect(() => pruneOldBackups(notADir, 7)).toThrow();
+  });
+
   it('returns empty arrays when directory does not exist', () => {
     const dir = join(tmpdir(), `nonexistent-${randomUUID()}`);
 

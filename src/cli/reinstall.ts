@@ -106,10 +106,23 @@ export function restorePriorPointer(
   }
 }
 
-interface StepResult {
+export interface StepResult {
   step: string;
   ok: boolean;
   detail?: string;
+  /**
+   * True for a step whose failure is deliberately never allowed to flip the
+   * overall run to failed (e.g. prune-releases: a full disk of old releases
+   * is undesirable but not broken). Such a step must still report `ok: false`
+   * — mislabeling it `ok: true` when it failed would be indistinguishable
+   * from a real success to any future consumer that filters `steps` by
+   * `.ok` (this is exactly the shape of bug this audit exists to catch:
+   * `--json` output, or a monitoring script, reading `steps` and seeing a
+   * green row for a step that actually threw). `finish()` excludes `soft`
+   * steps from the pass/fail gate instead, so the "never fail the run over
+   * this" behavior is preserved without lying about what happened.
+   */
+  soft?: boolean;
 }
 
 async function stopRunningDaemon(dataDir: string, port: number): Promise<StepResult> {
@@ -354,7 +367,7 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       steps.push({ step: 'prune-releases', ok: true, detail });
       log(`  · prune-releases: ${detail}`);
     } catch (err) {
-      steps.push({ step: 'prune-releases', ok: true, detail: `skipped (error: ${(err as Error).message})` });
+      steps.push({ step: 'prune-releases', ok: false, soft: true, detail: `skipped (error: ${(err as Error).message})` });
       log(`  ⚠ prune-releases skipped: ${(err as Error).message}`);
     }
   }
@@ -397,13 +410,18 @@ export async function reinstallCommand(args: string[]): Promise<void> {
   finish(steps, jsonMode, warnings);
 }
 
-function finish(
+/** Exported (alongside StepResult) so the soft-vs-hard failure gating logic
+ *  is directly unit-testable — see tests/cli/reinstall.test.ts's
+ *  "finish() soft-failure gating" block (silent-error audit, 2026-07-13). */
+export function finish(
   steps: StepResult[],
   jsonMode: boolean,
   warnings: string[] = [],
   successMessage = '✓ reinstall complete — service registered, daemon healthy.',
 ): void {
-  const failed = steps.filter(s => !s.ok);
+  // Soft-failed steps (e.g. prune-releases) are reported honestly as
+  // ok: false above but must never gate the run — only a hard failure does.
+  const failed = steps.filter(s => !s.ok && !s.soft);
   if (jsonMode) {
     console.log(JSON.stringify({ ok: failed.length === 0, version: PKG_VERSION, steps, warnings }, null, 2));
   } else {

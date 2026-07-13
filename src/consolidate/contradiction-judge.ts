@@ -74,7 +74,23 @@ export async function judgeContradiction(
   llm: LLMProvider,
   a: JudgeableAtom,
   b: JudgeableAtom,
-  opts: { log?: (message: string) => void } = {},
+  opts: {
+    log?: (message: string) => void;
+    /**
+     * Called exactly when this call falls back to FALLBACK_VERDICT (parse
+     * failure or thrown/rejected `chat()`), i.e. the pair was never actually
+     * judged. `log` alone made each individual failure visible in server
+     * logs, but nothing aggregated "how many of this run's judge calls were
+     * real verdicts vs silent fallbacks" — a systemically broken judge
+     * provider (wrong model, broken JSON mode, network flakiness) would
+     * make every call fall back to 'unrelated' and be indistinguishable
+     * from "genuinely no contradictions found" without this. The caller
+     * (consolidate.ts) uses this to persist a judgeErrors count alongside
+     * judgeCalls (migration 033) so doctor can tell the two apart — the
+     * same failure shape as issues #190/#200.
+     */
+    onFallback?: () => void;
+  } = {},
 ): Promise<JudgeVerdict> {
   const log = opts.log ?? ((message: string) => console.warn(message));
   try {
@@ -91,6 +107,7 @@ export async function judgeContradiction(
     const parsed = JudgeVerdictSchema.safeParse(JSON.parse(result.text));
     if (!parsed.success) {
       log(`[contradiction-judge] unparsable judge response — treating as unrelated: ${parsed.error.message}`);
+      opts.onFallback?.();
       return FALLBACK_VERDICT;
     }
     return parsed.data;
@@ -99,6 +116,7 @@ export async function judgeContradiction(
       `[contradiction-judge] judge call failed — treating as unrelated: ` +
       `${err instanceof Error ? err.message : String(err)}`,
     );
+    opts.onFallback?.();
     return FALLBACK_VERDICT;
   }
 }

@@ -63,6 +63,21 @@ describe('doctor "Schema drift" check (FEAT-439 AC-2/AC-5)', () => {
     );
   }
 
+  // Silent-error audit (2026-07-13): a query/probe error inside this check
+  // used to return ok:true indistinguishably from "confirmed no drift". Note:
+  // an unmigrated-but-valid DB is its own handled ok:true branch here ("DB
+  // not migrated yet"), not an exception — so unlike the other doctor checks
+  // in this audit, this one needs `memory.sqlite` to be something
+  // openProductionDbReadonly itself cannot open at all (a directory, not a
+  // file — fails at the OS level immediately, no lingering handle).
+  it('memory.sqlite path is a directory, not a file — inconclusive, not a clean bill of health', async () => {
+    mkdirSync(join(dataDir, 'memory.sqlite'));
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
+  });
+
   it('ok: no DB yet — nothing to compare', async () => {
     const res = await checkFor().run();
     expect(res.ok).toBe(true);

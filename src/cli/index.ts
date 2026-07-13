@@ -26,6 +26,7 @@ import { mcpStdio } from './mcp-stdio.js';
 import { mcpInstallCommand } from './mcp-install.js';
 import { demoCommand } from './demo.js';
 import { proxyCommand } from './proxy.js';
+import { installCliCrashHandlers } from './crash-handlers.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -42,6 +43,10 @@ function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
 }
+
+// See crash-handlers.ts for why this is a global-scope call to an imported
+// function rather than inline logic here.
+installCliCrashHandlers();
 
 async function main() {
   const [, , cmd, ...rest] = process.argv;

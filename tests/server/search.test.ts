@@ -543,6 +543,41 @@ describe('POST /remember', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  // Silent-error audit (2026-07-13): a failed embed/vec-upsert used to be
+  // swallowed into a log line while the response still said {id, ok: true}
+  // unconditionally — the caller had no way to know the memory was saved
+  // FTS-only and not vector-indexed. vec_indexed: false now surfaces it.
+  it('embed/vec upsert failure: memory still saved, but response reports vec_indexed: false instead of lying', async () => {
+    const brokenEmbedApp = await buildApp({
+      db,
+      token: 'tok',
+      embed: {
+        ...buildMockEmbed(),
+        embed: async () => { throw new Error('embed provider unreachable (test)'); },
+      },
+    });
+
+    const res = await brokenEmbedApp.inject({
+      method: 'POST',
+      url: '/remember',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'this memory should still be saved despite a broken embed provider', type: 'fact' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.ok).toBe(true);
+    expect(body.vec_indexed).toBe(false);
+
+    // The memory itself IS durably saved (FTS-searchable) ...
+    const row = db.prepare('SELECT id FROM memories WHERE id = ?').get(body.id);
+    expect(row).toBeDefined();
+    // ... but it never made it into the vector index.
+    const rowid = db.prepare('SELECT rowid FROM memories WHERE id = ?').get(body.id) as { rowid: number };
+    const vecRow = db.prepare('SELECT rowid FROM memories_vec WHERE rowid = ?').get(BigInt(rowid.rowid));
+    expect(vecRow).toBeUndefined();
+  });
+
   // FEAT-441 AC-5/AC-6: /remember writes a memory directly via
   // MemoryRepo.insertWithCreateEvent (search.ts:220) — it never routes
   // through the distill pipeline's embedAndIndex stage 8, so the durability

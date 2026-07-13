@@ -30,8 +30,15 @@ export function pruneOldBackups(dir: string, keep: number): RetentionResult {
   try {
     entries = readdirSync(dir);
   } catch (err) {
-    // Directory does not exist yet — nothing to prune
-    return { kept: [], deleted: [] };
+    // Only a missing directory means "nothing to prune yet" — anything else
+    // (permissions, a transient I/O error, disk unavailable) is a real
+    // failure that must not be silently reported as an empty, clean result;
+    // a caller/log that never sees it would assume pruning ran and found
+    // nothing, when it never actually checked.
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { kept: [], deleted: [] };
+    }
+    throw err;
   }
 
   const candidates = entries

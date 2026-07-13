@@ -9,7 +9,7 @@
  * what a real doctor invocation does.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -38,6 +38,19 @@ describe('doctor "Memory health" check (FEAT-444 AC-1)', () => {
   function checkFor() {
     return findCheck(getChecks({ dataDir: dir, encryptionEnabled: false }), 'Memory health');
   }
+
+  // Silent-error audit (2026-07-13): a query error inside this check used to
+  // return ok:true indistinguishably from a genuinely healthy result.
+  it('DB file exists but has not been migrated (query hits a missing table) — inconclusive, not a clean bill of health', async () => {
+    // A valid-but-unmigrated DB (rather than a corrupt file) triggers the
+    // same "the query itself failed" catch without a Windows file-handle
+    // quirk on opening a non-SQLite file.
+    openDb(join(dir, 'memory.sqlite')).close();
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
+  });
 
   it('no DB file yet — clean "no data yet" state, ok:true (AC-4)', async () => {
     const result = await checkFor().run();

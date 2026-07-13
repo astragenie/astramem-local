@@ -159,4 +159,10 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       NULL (falls back to the old UTC-derived behavior) for every row
 //       from before this fix and for the events-kind ingest path, which
 //       never runs extraction and so never needed this.
-export const SCHEMA_VERSION = 32 as const;
+// 033 = consolidation_judge_runs.judge_errors, additive NOT NULL DEFAULT 0
+//       column (silent-error audit, 2026-07-13) -- count of judgeCalls that
+//       fell back to FALLBACK_VERDICT due to a parse/call failure, so the
+//       "Consolidation judge" doctor check can tell "judge ran and found
+//       nothing" apart from "judge silently failed every call" (same shape
+//       as issues #190/#200). See migrations/033-consolidation-judge-errors.sql.
+export const SCHEMA_VERSION = 33 as const;

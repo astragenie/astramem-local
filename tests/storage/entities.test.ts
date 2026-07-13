@@ -52,7 +52,7 @@ describe('migration 012-entities schema (AC-2)', () => {
 
   it('DB max schema version is 32 after migration', () => {
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(32);
+    expect(row.v).toBe(33);
   });
 });
 
