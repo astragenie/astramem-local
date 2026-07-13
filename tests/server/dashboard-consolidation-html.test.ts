@@ -3,6 +3,8 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { ProposalRepo } from '../../src/consolidate/proposals.js';
+import { defaultConfig } from '../../src/config/config.js';
 import type { DB } from '../../src/storage/db.js';
 
 const TOKEN = 'testtoken';
@@ -71,27 +73,55 @@ describe('GET /dashboard/consolidation — pending list + accept/reject', () => 
   });
 
   // AC-3
-  it('row forms target the existing accept/reject endpoints verbatim, and a subsequent GET reflects the new status', async () => {
+  it('row forms target the dashboard-scoped accept/reject endpoints, and resolving via cookie reflects the new status on the next GET', async () => {
     const repo = new MemoryRepo(db);
     const winnerId = insertMemory(repo, 'winner text', 'h-w2');
     const loserId = insertMemory(repo, 'loser text', 'h-l2');
     insertProposal(db, { id: 'prop-2', winnerId, loserId, similarity: 0.8 });
 
     const before = await app.inject({ method: 'GET', url: '/dashboard/consolidation', headers: AUTH });
-    expect(before.body).toContain('action="/consolidation/proposals/prop-2/accept"');
-    expect(before.body).toContain('action="/consolidation/proposals/prop-2/reject"');
+    expect(before.body).toContain('action="/dashboard/consolidation/proposals/prop-2/accept"');
+    expect(before.body).toContain('action="/dashboard/consolidation/proposals/prop-2/reject"');
     expect(before.body).toContain('Consolidation — pending: 1');
+
+    // Real-browser flow: bootstrap the session cookie the way the dashboard's
+    // own nav does, then submit the row's own form target with only the
+    // cookie attached (no Authorization header — a plain <form> can't send one).
+    const boot = await app.inject({ method: 'GET', url: '/dashboard?token=testtoken' });
+    const cookie = String(boot.headers['set-cookie']).split(';')[0]!;
 
     const accept = await app.inject({
       method: 'POST',
-      url: '/consolidation/proposals/prop-2/accept',
-      headers: AUTH,
+      url: '/dashboard/consolidation/proposals/prop-2/accept',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: '',
     });
-    expect(accept.statusCode).toBe(200);
+    expect(accept.statusCode).toBe(303);
+    expect(accept.headers.location).toBe('/dashboard/consolidation');
 
     const after = await app.inject({ method: 'GET', url: '/dashboard/consolidation', headers: AUTH });
     expect(after.body).not.toContain('prop-2');
     expect(after.body.toLowerCase()).toContain('no pending proposals');
+  });
+
+  it('regression: the OLD Bearer-only API route (src/server/routes/consolidation.ts) still accepts a urlencoded form POST', async () => {
+    const repo = new MemoryRepo(db);
+    const winnerId = insertMemory(repo, 'winner text form', 'h-w3');
+    const loserId = insertMemory(repo, 'loser text form', 'h-l3');
+    insertProposal(db, { id: 'prop-form', winnerId, loserId, similarity: 0.8 });
+
+    // Exactly what a browser sends for <form method="post"> with no fields:
+    // urlencoded content-type and an empty body. Regression: this 415'd with
+    // FST_ERR_CTP_INVALID_MEDIA_TYPE before app.ts registered a parser. The
+    // dashboard's own forms no longer target this route (see AC-3 above),
+    // but it stays reachable verbatim for programmatic Bearer clients.
+    const accept = await app.inject({
+      method: 'POST',
+      url: '/consolidation/proposals/prop-form/accept',
+      headers: { ...AUTH, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: '',
+    });
+    expect(accept.statusCode).toBe(200);
   });
 
   // AC-4
@@ -154,5 +184,154 @@ describe('GET /dashboard/consolidation — pending list + accept/reject', () => 
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('class="kind-badge kind-merge"');
     expect(res.body).toContain('class="kind-badge kind-contradiction"');
+  });
+});
+
+// The buttons never worked from a real browser before this: a plain HTML
+// form can't send an Authorization header, the old /consolidation/...
+// routes are Bearer-only, and the astramem_dash cookie is scoped
+// Path=/dashboard so it wouldn't even attach to /consolidation/... anyway.
+// These dashboard-scoped routes close that gap end to end.
+describe('POST /dashboard/consolidation/proposals/:id/accept|reject — dashboard-scoped mutation routes', () => {
+  let db: DB;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    app = await buildApp({ db, token: TOKEN });
+  });
+
+  it('real browser flow: cookie-only accept actually resolves the proposal and 303s back to the list', async () => {
+    const repo = new MemoryRepo(db);
+    const winnerId = insertMemory(repo, 'winner browser accept', 'h-br-w1');
+    const loserId = insertMemory(repo, 'loser browser accept', 'h-br-l1');
+    insertProposal(db, { id: 'prop-browser-accept', winnerId, loserId, similarity: 0.9 });
+
+    const boot = await app.inject({ method: 'GET', url: '/dashboard?token=testtoken' });
+    const cookie = String(boot.headers['set-cookie']).split(';')[0]!;
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/prop-browser-accept/accept',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: '',
+    });
+
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe('/dashboard/consolidation');
+    expect(new ProposalRepo(db).get('prop-browser-accept')?.status).toBe('accepted');
+  });
+
+  it('real browser flow: cookie-only reject actually resolves the proposal and 303s back to the list', async () => {
+    const repo = new MemoryRepo(db);
+    const winnerId = insertMemory(repo, 'winner browser reject', 'h-br-w2');
+    const loserId = insertMemory(repo, 'loser browser reject', 'h-br-l2');
+    insertProposal(db, { id: 'prop-browser-reject', winnerId, loserId, similarity: 0.85 });
+
+    const boot = await app.inject({ method: 'GET', url: '/dashboard?token=testtoken' });
+    const cookie = String(boot.headers['set-cookie']).split(';')[0]!;
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/prop-browser-reject/reject',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: '',
+    });
+
+    expect(res.statusCode).toBe(303);
+    expect(res.headers.location).toBe('/dashboard/consolidation');
+    expect(new ProposalRepo(db).get('prop-browser-reject')?.status).toBe('rejected');
+  });
+
+  it('a not-found id 404s with a structured body instead of a raw crash', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/does-not-exist/accept',
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(404);
+    expect(JSON.parse(res.body)).toMatchObject({ error: 'not found', id: 'does-not-exist' });
+  });
+
+  it('Bearer also works directly on the dashboard-scoped route (not cookie-only)', async () => {
+    const repo = new MemoryRepo(db);
+    const winnerId = insertMemory(repo, 'winner bearer dash', 'h-br-w3');
+    const loserId = insertMemory(repo, 'loser bearer dash', 'h-br-l3');
+    insertProposal(db, { id: 'prop-bearer-dash', winnerId, loserId, similarity: 0.9 });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/prop-bearer-dash/accept',
+      headers: AUTH,
+    });
+    expect(res.statusCode).toBe(303);
+  });
+
+  it('devNoAuth off: no cookie, no bearer => 401', async () => {
+    insertProposal(db, { id: 'prop-dash-noauth', winnerId: 'w', loserId: 'l', similarity: 0.5 });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/prop-dash-noauth/accept',
+    });
+    expect(res.statusCode).toBe(401);
+  });
+});
+
+// CSRF hardening: with devNoAuth active, a urlencoded <form method="post"> is
+// a CORS "simple request" (no preflight) and the Host header on a form POST
+// is always the TARGET, not the calling page — so the loopback Host guard
+// alone cannot stop a malicious page from firing credential-free POSTs at
+// these mutating routes. See dashboard-auth.ts's checkDashboardAuth doc
+// comment and src/server/lib/origin-guard.ts.
+describe('devNoAuth CSRF hardening on the dashboard mutation routes', () => {
+  let db: DB;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    const config = { ...defaultConfig(), auth: { devNoAuth: true } };
+    app = await buildApp({ db, token: TOKEN, config });
+  });
+
+  it('no credentials, loopback Host, no Origin header => works (the dashboard\'s own form posts carry no Origin)', async () => {
+    const repo = new MemoryRepo(db);
+    const winnerId = insertMemory(repo, 'winner devnoauth ok', 'h-dna-w1');
+    const loserId = insertMemory(repo, 'loser devnoauth ok', 'h-dna-l1');
+    insertProposal(db, { id: 'prop-devnoauth-ok', winnerId, loserId, similarity: 0.9 });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/prop-devnoauth-ok/accept',
+      headers: { host: '127.0.0.1:7777' },
+    });
+    expect(res.statusCode).toBe(303);
+  });
+
+  it('Origin: https://evil.example.com => 403, and the proposal is left untouched', async () => {
+    insertProposal(db, { id: 'prop-devnoauth-evil', winnerId: 'w', loserId: 'l', similarity: 0.5 });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/prop-devnoauth-evil/accept',
+      headers: { host: '127.0.0.1:7777', origin: 'https://evil.example.com' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect(new ProposalRepo(db).get('prop-devnoauth-evil')?.status).toBe('pending');
+  });
+
+  it('Origin: http://127.0.0.1:7777 (loopback) => works', async () => {
+    const repo = new MemoryRepo(db);
+    const winnerId = insertMemory(repo, 'winner loopback origin', 'h-dna-w2');
+    const loserId = insertMemory(repo, 'loser loopback origin', 'h-dna-l2');
+    insertProposal(db, { id: 'prop-devnoauth-loopback-origin', winnerId, loserId, similarity: 0.9 });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/dashboard/consolidation/proposals/prop-devnoauth-loopback-origin/accept',
+      headers: { host: '127.0.0.1:7777', origin: 'http://127.0.0.1:7777' },
+    });
+    expect(res.statusCode).toBe(303);
   });
 });

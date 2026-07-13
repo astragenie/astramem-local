@@ -5,8 +5,32 @@ import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { logger } from '../../src/log/logger.js';
+import { MemoryRepo } from '../../src/storage/memories.js';
+import { ProposalRepo } from '../../src/consolidate/proposals.js';
 
 const TOKEN = 'devtok';
+
+function insertMemory(db: DB, text: string, hash: string): string {
+  return new MemoryRepo(db).insert({
+    type: 'fact',
+    text,
+    normalized_text: text.toLowerCase(),
+    repo: null, project: null, branch: null, agent: null, session_id: null,
+    hash, source_hash: null,
+  });
+}
+
+/** Real winner/loser memory rows behind the proposal — a genuine `accept`
+ *  (not just a status-code check) requires them to exist, since
+ *  `ProposalRepo.accept` runs `mergeAsSupersede` against both ids. */
+function insertRealProposal(db: DB, id: string): void {
+  const winnerId = insertMemory(db, `winner ${id}`, `h-${id}-w`);
+  const loserId = insertMemory(db, `loser ${id}`, `h-${id}-l`);
+  db.prepare(`
+    INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, resolved_at)
+    VALUES (?, 'merge', ?, ?, 0.9, 'pending', ?, NULL)
+  `).run(id, winnerId, loserId, Date.now());
+}
 
 /**
  * Dev no-auth mode (Config['auth'].devNoAuth) — token-free local access for
@@ -190,6 +214,102 @@ describe('dev no-auth mode', () => {
         headers: { host: 'evil.com' },
       });
       expect(res.statusCode).toBe(403);
+    });
+  });
+
+  // Empirically proven attack (security review, real app, devNoAuth on):
+  // POST /consolidation/proposals/<id>/accept with Host: 127.0.0.1:7777 (the
+  // real target — NOT a rebinding attempt), Origin: http://evil.example,
+  // Content-Type: application/x-www-form-urlencoded, no credentials => 200,
+  // proposal accepted. Root cause: Fastify parses the body BEFORE preHandler
+  // runs (the old 415 pre-parser-fix happened to kill this pre-auth as a
+  // side effect); urlencoded is a CORS "simple request" type, so a
+  // cross-site page's <form> triggers no preflight; and the Host header on
+  // a form POST is always the TARGET, never the page that fired it, so the
+  // existing loopback-Host guard alone cannot tell this apart from the
+  // dashboard's own forms. This is not consolidation-specific — it applies
+  // to every mutating route while devNoAuth is active, hence the guard
+  // lives in app.ts's devNoAuth preHandler branch (not just
+  // dashboard-auth.ts's checkDashboardAuth).
+  describe('CSRF: devNoAuth + urlencoded form POST at a real mutating API route (proven repro)', () => {
+    function buildDevNoAuthApp() {
+      const config = { ...defaultConfig(), auth: { devNoAuth: true } };
+      return buildApp({ db, token: TOKEN, config });
+    }
+
+    it('proven repro verbatim: loopback Host + foreign Origin + urlencoded + no creds => 403, not 200 — proposal left pending', async () => {
+      app = await buildDevNoAuthApp();
+      insertRealProposal(db, 'prop-csrf-repro');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/consolidation/proposals/prop-csrf-repro/accept',
+        headers: {
+          host: '127.0.0.1:7777',
+          origin: 'http://evil.example',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        payload: '',
+      });
+
+      expect(res.statusCode).toBe(403);
+      expect(new ProposalRepo(db).get('prop-csrf-repro')?.status).toBe('pending');
+    });
+
+    it('loopback Origin => passes through, proposal genuinely accepted', async () => {
+      app = await buildDevNoAuthApp();
+      insertRealProposal(db, 'prop-csrf-loopback-origin');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/consolidation/proposals/prop-csrf-loopback-origin/accept',
+        headers: {
+          host: '127.0.0.1:7777',
+          origin: 'http://127.0.0.1:7777',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        payload: '',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(new ProposalRepo(db).get('prop-csrf-loopback-origin')?.status).toBe('accepted');
+    });
+
+    it('absent Origin (curl/CLI legitimacy — the whole point of devNoAuth) => passes through, proposal genuinely accepted', async () => {
+      app = await buildDevNoAuthApp();
+      insertRealProposal(db, 'prop-csrf-no-origin');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/consolidation/proposals/prop-csrf-no-origin/accept',
+        headers: {
+          host: '127.0.0.1:7777',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        payload: '',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(new ProposalRepo(db).get('prop-csrf-no-origin')?.status).toBe('accepted');
+    });
+
+    it('Bearer mode (devNoAuth off) is unaffected by a foreign Origin header', async () => {
+      app = await buildApp({ db, token: TOKEN }); // defaultConfig() => auth.devNoAuth: false
+      insertRealProposal(db, 'prop-csrf-bearer-mode');
+
+      const res = await app.inject({
+        method: 'POST',
+        url: '/consolidation/proposals/prop-csrf-bearer-mode/accept',
+        headers: {
+          authorization: `Bearer ${TOKEN}`,
+          origin: 'http://evil.example',
+          'content-type': 'application/x-www-form-urlencoded',
+        },
+        payload: '',
+      });
+
+      expect(res.statusCode).toBe(200);
+      expect(new ProposalRepo(db).get('prop-csrf-bearer-mode')?.status).toBe('accepted');
     });
   });
 

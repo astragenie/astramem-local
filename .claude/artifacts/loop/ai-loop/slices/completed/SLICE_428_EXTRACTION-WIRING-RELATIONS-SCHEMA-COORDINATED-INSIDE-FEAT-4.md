@@ -1,7 +1,7 @@
 ---
 id: SLICE-428
 title: "Extraction wiring: relations schema (coordinated inside FEAT-479 builder scope)"
-status: pending
+status: completed
 feature: FEAT-481
 phase: null
 priority: P2
@@ -12,6 +12,7 @@ created: 2026-07-13
 updated: 2026-07-13
 effort_points: 2
 estimated_tokens: 100000
+completed_at: 2026-07-13
 ---
 # SLICE-428: Extraction wiring: relations schema (coordinated inside FEAT-479 builder scope)
 
@@ -32,9 +33,9 @@ Entity-to-entity relations table — close the 'one join short of a knowledge gr
 
 ## Acceptance criteria
 
-- [ ] AC-6: Given the shared extraction call runs on a chunk (this slice is blocked-by FEAT-479 per DEC-015), When an atom's `relations` field is populated, Then each triple validates against a closed `predicate` enum of exactly `uses | depends_on | replaces | supersedes | mentions | relates_to | part_of | owned_by | assigned_to | created_by | other` (lowercase `snake_case`, matching cloud's case-sensitive allow-list) — a triple whose predicate string doesn't match one of these 11 exact values is dropped from the array, not coerced or auto-mapped to `other`.
-- [ ] AC-7: Given an atom's extracted `relations[]` (no-hallucination guard), When a triple's `subject` or `object` name is not present in that same atom's own `entities[]` list, Then the triple is dropped and no new entity is auto-created from the relation side — this rule is scoped to the same atom only (a true relation whose two endpoints are named in two different atoms of the same chunk is an accepted, named v1 limitation, not a bug).
-- [ ] AC-8: Given `SLICE-2` is dispatched, When FEAT-479's prompt-architecture slice has not yet landed, Then SLICE-2 is not started as an independent parallel builder against `src/distill/prompts/extract.ts` — it is coordinated inside FEAT-479's builder scope per DEC-015, one owner at a time.
+- [x] AC-6: Given the shared extraction call runs on a chunk (this slice is blocked-by FEAT-479 per DEC-015), When an atom's `relations` field is populated, Then each triple validates against a closed `predicate` enum of exactly `uses | depends_on | replaces | supersedes | mentions | relates_to | part_of | owned_by | assigned_to | created_by | other` (lowercase `snake_case`, matching cloud's case-sensitive allow-list) — a triple whose predicate string doesn't match one of these 11 exact values is dropped from the array, not coerced or auto-mapped to `other`. — VERIFIED via SLICE-435 (rode per DEC-015): schema+guard+wiring merged PR #170; evidence in review 20260713T133000Z + validation 20260713T133500Z.
+- [x] AC-7: Given an atom's extracted `relations[]` (no-hallucination guard), When a triple's `subject` or `object` name is not present in that same atom's own `entities[]` list, Then the triple is dropped and no new entity is auto-created from the relation side — this rule is scoped to the same atom only (a true relation whose two endpoints are named in two different atoms of the same chunk is an accepted, named v1 limitation, not a bug). — VERIFIED via SLICE-435 (rode per DEC-015): schema+guard+wiring merged PR #170; evidence in review 20260713T133000Z + validation 20260713T133500Z.
+- [x] AC-8: Given `SLICE-2` is dispatched, When FEAT-479's prompt-architecture slice has not yet landed, Then SLICE-2 is not started as an independent parallel builder against `src/distill/prompts/extract.ts` — it is coordinated inside FEAT-479's builder scope per DEC-015, one owner at a time. — VERIFIED via SLICE-435 (rode per DEC-015): schema+guard+wiring merged PR #170; evidence in review 20260713T133000Z + validation 20260713T133500Z.
 
 ## Done When
 

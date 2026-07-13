@@ -23,6 +23,7 @@ import {
   ProposalRepo,
   ProposalNotFoundError,
   ProposalAlreadyResolvedError,
+  type ConsolidationProposal,
 } from '../../consolidate/proposals.js';
 import { MemoryConflictError, MemoryNotFoundError } from '../../storage/memory-events.js';
 
@@ -45,6 +46,40 @@ const ListQuerySchema = z.object({
 // Ignored on reject (rejection carries no equivalent provenance to mark).
 // Optional so existing accept callers sending no body at all are unaffected.
 const AcceptBodySchema = z.object({ bulk: z.boolean().optional() }).optional();
+
+export type ProposalResolveOutcome =
+  | { ok: true; proposal: ConsolidationProposal }
+  | { ok: false; status: 404 | 409; error: string; id: string };
+
+/**
+ * Shared accept/reject resolution — the ONE place that maps
+ * ProposalRepo's thrown errors to (status, body) shapes. Both the
+ * Bearer-gated API route below and the cookie-gated dashboard mutation
+ * route (dashboard-consolidation-html.ts) call this rather than each
+ * reimplementing not-found/conflict handling, so the two surfaces cannot
+ * drift on resolution semantics.
+ */
+export function resolveProposal(
+  proposals: ProposalRepo,
+  id: string,
+  action: 'accept' | 'reject',
+  acceptOpts?: { bulkAccepted?: boolean },
+): ProposalResolveOutcome {
+  try {
+    const proposal = action === 'reject'
+      ? proposals.reject(id)
+      : proposals.accept(id, undefined, acceptOpts);
+    return { ok: true, proposal };
+  } catch (err) {
+    if (err instanceof ProposalNotFoundError) return { ok: false, status: 404, error: 'not found', id };
+    if (err instanceof ProposalAlreadyResolvedError) return { ok: false, status: 409, error: err.message, id };
+    // Accept can hit lifecycle conflicts if an atom was merged/erased since
+    // the proposal was written — surface, don't 500.
+    if (err instanceof MemoryNotFoundError) return { ok: false, status: 409, error: err.message, id };
+    if (err instanceof MemoryConflictError) return { ok: false, status: 409, error: err.message, id };
+    throw err;
+  }
+}
 
 export function consolidationRoutes(db: DB, config: Config) {
   return async (app: FastifyInstance) => {
@@ -75,20 +110,15 @@ export function consolidationRoutes(db: DB, config: Config) {
     const resolveHandler = (action: 'accept' | 'reject') =>
       async (req: FastifyRequest, reply: FastifyReply) => {
         const { id } = req.params as { id: string };
-        try {
-          if (action === 'reject') return proposals.reject(id);
+        let acceptOpts: { bulkAccepted?: boolean } | undefined;
+        if (action === 'accept') {
           const parsedBody = AcceptBodySchema.safeParse(req.body ?? {});
           const bulk = parsedBody.success && parsedBody.data?.bulk === true;
-          return proposals.accept(id, undefined, bulk ? { bulkAccepted: true } : undefined);
-        } catch (err) {
-          if (err instanceof ProposalNotFoundError) return reply.code(404).send({ error: 'not found', id });
-          if (err instanceof ProposalAlreadyResolvedError) return reply.code(409).send({ error: err.message, id });
-          // Accept can hit lifecycle conflicts if an atom was merged/erased
-          // since the proposal was written — surface, don't 500.
-          if (err instanceof MemoryNotFoundError) return reply.code(409).send({ error: err.message, id });
-          if (err instanceof MemoryConflictError) return reply.code(409).send({ error: err.message, id });
-          throw err;
+          acceptOpts = bulk ? { bulkAccepted: true } : undefined;
         }
+        const outcome = resolveProposal(proposals, id, action, acceptOpts);
+        if (!outcome.ok) return reply.code(outcome.status).send({ error: outcome.error, id: outcome.id });
+        return outcome.proposal;
       };
 
     app.post('/consolidation/proposals/:id/accept', resolveHandler('accept'));

@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-13T12:58:56.347Z",
+  "updatedAt": "2026-07-13T13:00:44.412Z",
   "currentRun": {
-    "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
+    "title": "FEAT479 SLICE435: Relations[] additive output field (FEAT-481 SLICE-428 rides this)",
     "goal": "**Memories should be self-contained explanations, not trivia.**",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-13T12:58:56.347Z",
-    "updatedAt": "2026-07-13T12:58:56.347Z",
+    "startedAt": "2026-07-13T13:00:44.412Z",
+    "updatedAt": "2026-07-13T13:00:44.412Z",
     "next": "Begin implementation",
     "gates": {
       "review": null,
@@ -22,7 +22,7 @@
       "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T125856Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T130044Z-run-brief-feat479-slice435-relations-additive-output-field-feat-481-sl.md",
       "handoffs": [],
       "reviewResult": null,
       "validationPlan": null,
@@ -35,6 +35,40 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
+      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-13T12:58:56.347Z",
+      "updatedAt": "2026-07-13T12:58:56.347Z",
+      "completedAt": "2026-07-13T12:58:56.347Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T125856Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
       "goal": "**Memories should be self-contained explanations, not trivia.**",
@@ -164,40 +198,6 @@
       },
       "artifacts": {
         "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T103459Z-run-brief-feat479-slice431-codex-subscription-empty-sse-text-hardening.md",
-        "handoffs": [],
-        "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT481 SLICE427: Migration 027 + EntityRelationRepo (storage primitive, valid-time reuse)",
-      "goal": "SLICE-1: entity_relations storage — migration 027, repo class, JOIN-validity contract, atomic dedup, cascade semantics (AC-1..AC-5)",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-13T09:57:44.517Z",
-      "updatedAt": "2026-07-13T09:57:44.517Z",
-      "completedAt": "2026-07-13T09:57:44.517Z",
-      "next": "Begin implementation",
-      "gates": {
-        "review": null,
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null,
-        "help": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T095744Z-run-brief-feat481-slice427-migration-027-entityrelationrepo-storage-pr.md",
         "handoffs": [],
         "reviewResult": null,
         "validationPlan": null,

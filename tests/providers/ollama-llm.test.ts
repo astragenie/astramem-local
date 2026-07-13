@@ -166,6 +166,50 @@ describe('ollama-llm', () => {
       expect(res.text).toBe('ok');
       expect(callCount).toBe(2);
     });
+
+    // 2026-07-13 — the three OTHER providers (azure-llm, openai-compatible-llm,
+    // codex-subscription-llm) each have a test pinning Retry-After -> TransientError
+    // .retryAfterMs. Ollama has the identical wiring (parseRetryAfterMs is called on
+    // both the 5xx and 429 branches) but had no test proving it — a silent break here
+    // would only surface as astramem retrying too fast (or not honoring a server-
+    // requested backoff) against a real Ollama instance, never as a red test.
+    it('threads a Retry-After header (seconds) from a 429 onto TransientError.retryAfterMs', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: 'rate limited' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '45' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBe(45_000);
+    });
+
+    it('leaves retryAfterMs undefined when the 429 response carries no Retry-After header', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: 'rate limited' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBeUndefined();
+    });
   });
 
   // ---------------------------------------------------------------------------

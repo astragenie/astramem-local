@@ -50,6 +50,7 @@ function normalizedMem(
   hash: string,
   importance = 0.7,
   entities?: NormalizedMemory['entities'],
+  relations?: NormalizedMemory['relations'],
 ): NormalizedMemory {
   return {
     type: 'decision',
@@ -61,6 +62,7 @@ function normalizedMem(
     finalHash: hash,
     evidence: undefined,
     entities,
+    relations,
   };
 }
 
@@ -454,6 +456,124 @@ describe('embedAndIndex stage', () => {
 
       expect(gatedOutCounter.count).toBe(2);
       expect(results).toHaveLength(1);
+    });
+  });
+
+  // FEAT-481 (SLICE-2/SLICE-435): relation triples resolved to entity ids
+  // and persisted via EntityRelationRepo at the same site entities are
+  // linked (design doc §2.3 "resolveAtomRelations ... at stage 8").
+  describe('entity_relations wiring (FEAT-481)', () => {
+    it('persists a relation with correctly resolved entity ids and evidence_memory_id', async () => {
+      const embed = makeMockEmbed();
+      const mems = [
+        normalizedMem(
+          'astramemory-local uses SQLite for storage',
+          'v'.repeat(64),
+          0.8,
+          [
+            { name: 'astramemory-local', kind: 'project' },
+            { name: 'SQLite', kind: 'tech' },
+          ],
+          [{ subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 }],
+        ),
+      ];
+
+      const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+      const entityRepo = new EntityRepo(db);
+      const rows = db.prepare('SELECT * FROM entity_relations').all() as Array<{
+        subject_entity_id: string; predicate: string; object_entity_id: string;
+        evidence_memory_id: string; source_excerpt: string; confidence: number;
+      }>;
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.predicate).toBe('uses');
+      expect(rows[0]!.evidence_memory_id).toBe(results[0]!.memoryId);
+      expect(rows[0]!.confidence).toBe(0.9);
+
+      const linked = entityRepo.listForMemory(results[0]!.memoryId);
+      const subjEntity = linked.find(e => e.name === 'astramemory-local');
+      const objEntity = linked.find(e => e.name === 'sqlite');
+      expect(rows[0]!.subject_entity_id).toBe(subjEntity!.id);
+      expect(rows[0]!.object_entity_id).toBe(objEntity!.id);
+    });
+
+    it('falls back to the atom evidence, then text, for source_excerpt when the relation omits one', async () => {
+      const embed = makeMockEmbed();
+      const mems = [
+        normalizedMem(
+          'astramemory-local uses SQLite for storage',
+          'w'.repeat(64),
+          0.8,
+          [{ name: 'astramemory-local', kind: 'project' }, { name: 'SQLite', kind: 'tech' }],
+          [{ subject: 'astramemory-local', predicate: 'uses', object: 'SQLite' }], // no evidence
+        ),
+      ];
+
+      await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+      const row = db.prepare('SELECT source_excerpt, confidence FROM entity_relations').get() as
+        { source_excerpt: string; confidence: number };
+      expect(row.source_excerpt).toBe('astramemory-local uses SQLite for storage');
+      // confidence falls back to the atom's own confidence (0.8, the helper default)
+      expect(row.confidence).toBe(0.8);
+    });
+
+    it('a memory with no relations creates no entity_relations rows', async () => {
+      const embed = makeMockEmbed();
+      const mems = [normalizedMem('a fact with no relation', 'x'.repeat(64), 0.7, [{ name: 'Alice', kind: 'actor' }])];
+
+      await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+      const count = (db.prepare('SELECT COUNT(*) AS n FROM entity_relations').get() as { n: number }).n;
+      expect(count).toBe(0);
+    });
+
+    // Re-ingest / dedup: EntityRelationRepo.insert's atomic INSERT...SELECT
+    // WHERE NOT EXISTS guard (SLICE-427) means a re-distilled duplicate atom
+    // resolves to the SAME entity ids (via entities.name UNIQUE) and the
+    // dedup guard skips the second insert.
+    it('re-ingesting the identical atom+relation does not create a duplicate entity_relations row', async () => {
+      const embed = makeMockEmbed();
+      const mem = normalizedMem(
+        'astramemory-local uses SQLite for storage',
+        'y'.repeat(64),
+        0.8,
+        [{ name: 'astramemory-local', kind: 'project' }, { name: 'SQLite', kind: 'tech' }],
+        [{ subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 }],
+      );
+
+      // First ingest.
+      await embedAndIndex([mem], { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+      // Second ingest of the exact same atom (same hash -> dedup at the
+      // memories layer, but entity_relations.insert is exercised again with
+      // the SAME resolved entity ids since entities.name is UNIQUE).
+      await embedAndIndex([mem], { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+      const count = (db.prepare('SELECT COUNT(*) AS n FROM entity_relations').get() as { n: number }).n;
+      expect(count).toBe(1);
+    });
+
+    it('a relation whose entity somehow fails to resolve is skipped without throwing (defensive)', async () => {
+      const embed = makeMockEmbed();
+      // Construct a NormalizedMemory bypassing stage-5's filter (which would
+      // normally have dropped this) to exercise stage 8's own defensive
+      // fallback — an unresolvable relation must not crash the whole insert.
+      const mems = [
+        normalizedMem(
+          'a fact naming only one entity',
+          'z2'.repeat(32),
+          0.7,
+          [{ name: 'Alice', kind: 'actor' }],
+          [{ subject: 'Alice', predicate: 'relates_to', object: 'Bob' }], // "Bob" never in entities[]
+        ),
+      ];
+
+      await expect(
+        embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null }),
+      ).resolves.toBeTruthy();
+
+      const count = (db.prepare('SELECT COUNT(*) AS n FROM entity_relations').get() as { n: number }).n;
+      expect(count).toBe(0);
     });
   });
 });

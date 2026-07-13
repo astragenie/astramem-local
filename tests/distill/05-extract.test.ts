@@ -368,6 +368,250 @@ describe('extract stage', () => {
     expect(result.atoms[0].entities?.[0].valid_at).toBeUndefined();
     expect(result.atoms[0].entities?.[0].invalid_at).toBeUndefined();
   });
+
+  // FEAT-481 (SLICE-2/SLICE-435) AC-6/AC-7 — relations[] schema + guard.
+  describe('relations[] (FEAT-481)', () => {
+    it('parses a valid relation whose subject/object are both in this atom\'s entities[]', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const withRelation = JSON.stringify({
+        atoms: [
+          {
+            type: 'decision',
+            text: 'astramemory-local uses SQLite for storage',
+            importance: 0.8,
+            confidence: 0.9,
+            entities: [
+              { name: 'astramemory-local', kind: 'project' },
+              { name: 'SQLite', kind: 'tech' },
+            ],
+            relations: [
+              { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([withRelation]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].relations).toEqual([
+        { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
+      ]);
+    });
+
+    it('an atom with no relations field parses fine — absent is byte-identical to today (additive compatibility)', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const llm = makeMockLLM([VALID_EXTRACTION_JSON]); // no relations field anywhere
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(2);
+      expect(result.atoms[0].relations).toBeUndefined();
+      expect(result.atoms[1].relations).toBeUndefined();
+    });
+
+    it('drops a relation with an unknown predicate — NOT coerced to "other", NOT atom-fatal', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const badPredicate = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'Alice manages the deploy pipeline for the team',
+            importance: 0.6,
+            confidence: 0.7,
+            entities: [
+              { name: 'Alice', kind: 'actor' },
+              { name: 'the deploy pipeline', kind: 'concept' },
+            ],
+            relations: [
+              // 'manages' is not one of the 11 closed predicates
+              { subject: 'Alice', predicate: 'manages', object: 'the deploy pipeline' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([badPredicate]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      // The atom itself survives; only the bad relation is dropped.
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].text).toBe('Alice manages the deploy pipeline for the team');
+      expect(result.atoms[0].relations).toEqual([]);
+    });
+
+    it('drops a relation whose subject is not in this atom\'s own entities[] (no-hallucination guard, AC-7)', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const hallucinated = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'Alice owns the deploy script',
+            importance: 0.6,
+            confidence: 0.7,
+            entities: [{ name: 'Alice', kind: 'actor' }],
+            relations: [
+              // "the deploy script" was never listed in entities[] above
+              { subject: 'Alice', predicate: 'owned_by', object: 'the deploy script' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([hallucinated]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].relations).toEqual([]);
+    });
+
+    it('drops a relation whose object is not in this atom\'s own entities[]', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const hallucinated = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'the deploy script is owned by Alice',
+            importance: 0.6,
+            confidence: 0.7,
+            entities: [{ name: 'the deploy script', kind: 'concept' }],
+            relations: [
+              { subject: 'the deploy script', predicate: 'owned_by', object: 'Alice' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([hallucinated]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].relations).toEqual([]);
+    });
+
+    it('name-matching is case/whitespace-normalized (normalizeEntityName), same seam as entity linking', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const caseVariant = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'Astramemory-local uses SQLite',
+            importance: 0.6,
+            confidence: 0.7,
+            entities: [
+              { name: 'astramemory-local', kind: 'project' },
+              { name: '  SQLite  ', kind: 'tech' },
+            ],
+            relations: [
+              // different case/whitespace than the entities[] entries above
+              { subject: 'Astramemory-Local', predicate: 'uses', object: 'sqlite' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([caseVariant]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].relations).toEqual([
+        { subject: 'Astramemory-Local', predicate: 'uses', object: 'sqlite' },
+      ]);
+    });
+
+    it('drops a relation where subject === object', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const selfRelation = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'Alice is Alice',
+            importance: 0.3,
+            confidence: 0.5,
+            entities: [{ name: 'Alice', kind: 'actor' }],
+            relations: [
+              { subject: 'Alice', predicate: 'relates_to', object: 'Alice' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([selfRelation]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].relations).toEqual([]);
+    });
+
+    it('keeps valid relations while dropping only the invalid ones on the same atom', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const mixed = JSON.stringify({
+        atoms: [
+          {
+            type: 'decision',
+            text: 'astramemory-local uses SQLite instead of Postgres',
+            importance: 0.8,
+            confidence: 0.9,
+            entities: [
+              { name: 'astramemory-local', kind: 'project' },
+              { name: 'SQLite', kind: 'tech' },
+              { name: 'Postgres', kind: 'tech' },
+            ],
+            relations: [
+              { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
+              { subject: 'astramemory-local', predicate: 'replaces', object: 'Postgres' },
+              // hallucinated endpoint — not in entities[]
+              { subject: 'astramemory-local', predicate: 'uses', object: 'MongoDB' },
+              // unknown predicate
+              { subject: 'SQLite', predicate: 'beats', object: 'Postgres' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([mixed]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].relations).toEqual([
+        { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
+        { subject: 'astramemory-local', predicate: 'replaces', object: 'Postgres' },
+      ]);
+    });
+
+    it('accepts the local-only "other" predicate', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const otherPredicate = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'Alice and Bob are somehow connected',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [{ name: 'Alice', kind: 'actor' }, { name: 'Bob', kind: 'actor' }],
+            relations: [{ subject: 'Alice', predicate: 'other', object: 'Bob' }],
+          },
+        ],
+      });
+      const llm = makeMockLLM([otherPredicate]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].relations).toEqual([
+        { subject: 'Alice', predicate: 'other', object: 'Bob' },
+      ]);
+    });
+  });
 });
 
 // FEAT-479 (D3 §3.2) AC-2/AC-3/AC-4: per-run prompt resolution. The old
