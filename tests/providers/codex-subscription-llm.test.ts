@@ -370,11 +370,14 @@ describe('codex-subscription-llm', () => {
       await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(/HTTP 500/);
     });
 
-    // Empty-SSE poison gate (architect-review finding, 20260713T100000Z):
-    // an empty `text` with a 200/res.ok response is the same failure shape
-    // as the qwen3:8b empty-extract bug that previously poisoned distill —
-    // a "successful" ChatResult with vacuous content stored as if it were
-    // real. These prove that shape now throws instead of returning silently.
+    // Empty-SSE poison gate (architect-review finding, 20260713T100000Z;
+    // scope narrowed per NEEDS_FIX review 20260713T120000Z): an empty `text`
+    // with a 200/res.ok response in JSON-MODE is the same failure shape as
+    // the qwen3:8b empty-extract bug that previously poisoned distill — a
+    // "successful" ChatResult with vacuous content stored as if it were a
+    // real extraction. Plain-chat empty text is a DIFFERENT, legitimate case
+    // (04-compact.ts's filler-strip + pipeline.ts:108's fallback) and must
+    // stay a pass-through — see the doc comment on the gate itself.
     it('throws TransientError on empty SSE text for a json-mode request', async () => {
       const authPath = tmpAuthPath();
       writeAuthFile(authPath);
@@ -386,7 +389,7 @@ describe('codex-subscription-llm', () => {
       );
     });
 
-    it('throws TransientError on whitespace-only SSE text', async () => {
+    it('throws TransientError on whitespace-only SSE text in json mode', async () => {
       const authPath = tmpAuthPath();
       writeAuthFile(authPath);
       globalThis.fetch = vi.fn(async () => codexSseResponse('   \n\t  ')) as unknown as typeof fetch;
@@ -397,15 +400,15 @@ describe('codex-subscription-llm', () => {
       );
     });
 
-    it('throws TransientError on empty text for a plain-chat (non-json) request', async () => {
+    it('returns an empty-text ChatResult as a SUCCESS for a plain-chat (non-json) request — 04-compact filler-strip case', async () => {
       const authPath = tmpAuthPath();
       writeAuthFile(authPath);
-      globalThis.fetch = vi.fn(async () => codexSseResponse('')) as unknown as typeof fetch;
+      globalThis.fetch = vi.fn(async () => codexSseResponse('', 8, 0)) as unknown as typeof fetch;
 
       const p = new CodexSubscriptionLLMProvider({ authPath });
-      await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(
-        /codex-subscription returned empty text for a plain-chat request/,
-      );
+      const res = await p.chat([{ role: 'user', content: 'x' }]);
+      expect(res.text).toBe('');
+      expect(res.usage).toEqual({ in: 8, out: 0, usd: 0 });
     });
 
     it('passes valid non-empty text through unchanged', async () => {

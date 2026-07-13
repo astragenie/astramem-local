@@ -554,22 +554,35 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
     const { text, inputTokens: inTokens, outputTokens: outTokens } = parseSseResponse(raw);
     const latency_ms = Date.now() - t0;
 
-    // Poison gate: an empty (or whitespace-only) text is never a legitimate
-    // success for any call site of this provider. This is the same failure
-    // shape as the qwen3:8b empty-extract bug that previously poisoned
-    // distill — a 200 with vacuous content stored as if it were a real
-    // extraction. Here it would happen if OpenAI changes the SSE event
-    // shape (renames/drops the `message` output_item parseSseResponse looks
-    // for above) — `res.ok` stays true and `text` silently comes back ''
-    // with no error thrown. TransientError (not Deterministic) because this
-    // may be upstream flakiness rather than permanent drift, so the normal
-    // retry-then-poison job machinery gets a chance to recover first rather
-    // than a malformed/garbage result being stored outright.
-    if (text.trim().length === 0) {
-      const reqKind = opts?.json === true ? 'a json-mode' : 'a plain-chat';
+    // Poison gate: JSON-mode call sites (e.g. 05-extract.ts) always expect a
+    // parseable JSON payload back — an empty/whitespace-only text there is
+    // never a legitimate success. It's the same failure shape as the
+    // qwen3:8b empty-extract bug that previously poisoned distill: a 200
+    // with vacuous content stored as if it were a real extraction. It would
+    // happen here if OpenAI changes the SSE event shape (renames/drops the
+    // `message` output_item parseSseResponse looks for above) — `res.ok`
+    // stays true and `text` silently comes back '' with no error thrown.
+    // TransientError (not Deterministic) because this may be upstream
+    // flakiness rather than permanent drift, so the normal retry-then-poison
+    // job machinery gets a chance to recover first.
+    //
+    // Plain-chat (non-json) empty text is INTENTIONALLY left alone and
+    // passed through as a normal ChatResult — do not "fix" this back to a
+    // uniform throw. 04-compact.ts's compactChunk() sends plain-chat
+    // (no `json` opt) and its system prompt explicitly instructs the model
+    // to strip repeated/thinking-out-loud/filler content; a chunk that is
+    // ENTIRELY that kind of filler can legitimately compact down to an empty
+    // string. src/distill/pipeline.ts:108
+    // (`r.text || chunks[r.index]?.text || ''`) is the designed fallback for
+    // exactly that case — it re-substitutes the original chunk text. compact()
+    // has no per-chunk try/catch, so throwing here for plain-chat empties
+    // propagates out of the whole compact stage, retries, and then
+    // deterministically poisons the job once compaction.provider is set to
+    // codex-subscription (a live config path, not hypothetical).
+    if (opts?.json === true && text.trim().length === 0) {
       log.warn({ latency_ms }, 'codex-subscription returned empty text');
       throw new TransientError(
-        `codex-subscription returned empty text for ${reqKind} request — SSE shape drift or upstream failure`,
+        `codex-subscription returned empty text for a json-mode request — SSE shape drift or upstream failure`,
       );
     }
 
