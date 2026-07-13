@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-12T20:54:42.198Z",
+  "updatedAt": "2026-07-13T11:20:24.259Z",
   "currentRun": {
-    "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
-    "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
+    "title": "FEAT479 SLICE433: Engineering-rich prompt + type-conditioned richness + AtomSchema cap bump",
+    "goal": "**Memories should be self-contained explanations, not trivia.**",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-12T20:54:42.198Z",
-    "updatedAt": "2026-07-12T20:54:42.198Z",
+    "startedAt": "2026-07-13T11:20:24.258Z",
+    "updatedAt": "2026-07-13T11:20:24.258Z",
     "next": "Begin implementation",
     "gates": {
       "review": null,
@@ -22,7 +22,7 @@
       "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205442Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T112024Z-run-brief-feat479-slice433-engineering-rich-prompt-type-conditioned-ri.md",
       "handoffs": [],
       "reviewResult": null,
       "validationPlan": null,
@@ -35,6 +35,146 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT479 SLICE432: Prompt architecture + extractProfile config/envelope surface",
+      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-13T10:35:20.075Z",
+      "updatedAt": "2026-07-13T10:35:20.075Z",
+      "completedAt": "2026-07-13T10:35:20.075Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T103520Z-run-brief-feat479-slice432-prompt-architecture-extractprofile-config-e.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
+    {
+      "title": "FEAT479 SLICE431: codex-subscription empty-SSE-text hardening (pre-req, independent)",
+      "goal": "Prompt architecture + extractProfile config/envelope surface (skip SSE slice — already shipped 04143c7/ecd8c5f)",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-13T10:34:59.840Z",
+      "updatedAt": "2026-07-13T10:35:17.673Z",
+      "completedAt": "2026-07-13T10:35:17.673Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": {
+          "status": "skipped",
+          "updatedAt": "2026-07-13T10:35:17.673Z",
+          "note": "work shipped pre-slice: empty-SSE json-mode gate commit 04143c7 (review NEEDS_FIX->PASS, 27 tests) + json-opt-in compaction fix ecd8c5f (sibling session); no new code needed"
+        },
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T103459Z-run-brief-feat479-slice431-codex-subscription-empty-sse-text-hardening.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
+    {
+      "title": "FEAT481 SLICE427: Migration 027 + EntityRelationRepo (storage primitive, valid-time reuse)",
+      "goal": "SLICE-1: entity_relations storage — migration 027, repo class, JOIN-validity contract, atomic dedup, cascade semantics (AC-1..AC-5)",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-13T09:57:44.517Z",
+      "updatedAt": "2026-07-13T09:57:44.517Z",
+      "completedAt": "2026-07-13T09:57:44.517Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T095744Z-run-brief-feat481-slice427-migration-027-entityrelationrepo-storage-pr.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
+    {
+      "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
+      "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-12T20:54:42.198Z",
+      "updatedAt": "2026-07-12T20:54:42.198Z",
+      "completedAt": "2026-07-12T20:54:42.198Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205442Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
       "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
@@ -58,147 +198,6 @@
       },
       "artifacts": {
         "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205437Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
-        "handoffs": [],
-        "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT475 SLICE424: Implement FEAT-475",
-      "goal": "**Eval detach/daemon-manifest tests flake under parallel load** — sibling of",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-12T20:51:21.811Z",
-      "updatedAt": "2026-07-12T20:51:21.811Z",
-      "completedAt": "2026-07-12T20:51:21.811Z",
-      "next": "Begin implementation",
-      "gates": {
-        "review": null,
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null,
-        "help": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205121Z-run-brief-feat475-slice424-implement-feat-475.md",
-        "handoffs": [],
-        "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT466 SLICE422: Implement FEAT-466",
-      "goal": "",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-10T13:52:46.030Z",
-      "updatedAt": "2026-07-12T16:20:45.783Z",
-      "completedAt": "2026-07-12T16:20:45.783Z",
-      "next": "Add restore_deadline_at to the purge event payload in purgeBatch() (memory-events.ts, one-line addition -- restoreDeadlineAt is already computed in scope) so AC-6 is literally satisfied, and update capture-purge.test.ts's AC-6 assertions accordingly. Optional follow-ups: extend the lifecycle error-status conformance suite to cover the 3 new capture-purge verbs; mention the CLI --json shape change in release notes.",
-      "gates": {
-        "review": {
-          "status": "passed",
-          "updatedAt": "2026-07-12T16:20:45.783Z",
-          "note": "Purge-batch primitive is correctly built to spec on the mechanics that matter most (migration index preservation, transaction atomicity/savepoint nesting, capture_source non-branching, exhaustive error-edge-case coverage) — all independently re-verified, not just trusted. One HIGH finding: AC-6 (restore-deadline visible via history/why/memory_history) is not actually satisfied by the shipped code, despite the handoff's self-check claiming PASS; the fix is a one-line, isolated payload addition."
-        },
-        "validation": {
-          "status": "passed",
-          "updatedAt": "2026-07-12T16:13:53.538Z",
-          "note": "starting investigation"
-        },
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local-worktrees\\w466\\.claude\\artifacts\\crew\\runs\\20260710T135246Z-run-brief-feat466-slice422-implement-feat-466.md",
-        "handoffs": [],
-        "reviewResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\reviews\\20260712T161351Z-review-result-feat-467-purge-batch-reversible-soft-delete-review.md",
-        "validationPlan": null,
-        "validationResult": "C:\\work\\mega\\astramemory-local-worktrees\\w467\\.claude\\artifacts\\crew\\validations\\20260712T161353Z-validation-result-feat-467-purge-batch-validation.md",
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT463 SLICE421: Implement FEAT-463",
-      "goal": "**Stage-0 redaction: quoted/JSON label forms not detected** — the",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-10T12:45:36.387Z",
-      "updatedAt": "2026-07-10T12:45:36.387Z",
-      "completedAt": "2026-07-10T12:45:36.387Z",
-      "next": "Begin implementation",
-      "gates": {
-        "review": null,
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260710T124536Z-run-brief-feat463-slice421-implement-feat-463.md",
-        "handoffs": [],
-        "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT461 SLICE420: Implement FEAT-461",
-      "goal": "**configToYaml() silently drops newer Config fields on every writeConfig()** —",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-10T11:56:02.607Z",
-      "updatedAt": "2026-07-10T11:56:02.607Z",
-      "completedAt": "2026-07-10T11:56:02.607Z",
-      "next": "Begin implementation",
-      "gates": {
-        "review": null,
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260710T115602Z-run-brief-feat461-slice420-implement-feat-461.md",
         "handoffs": [],
         "reviewResult": null,
         "validationPlan": null,
