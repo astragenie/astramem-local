@@ -61,7 +61,7 @@ function buildFullyPopulatedConfig(): Config {
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: true } },
     ingest: { spoolMaxBytes: 1_048_576 },
-    distill: { durabilityGate: 'strict', extractProfile: 'conversational' },
+    distill: { durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5 },
     capture: {
       autoCapture: {
         enabled: true,

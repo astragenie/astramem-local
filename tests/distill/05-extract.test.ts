@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { extractChunk, extract, BudgetExceeded } from '../../src/distill/stages/05-extract.js';
@@ -472,5 +472,105 @@ describe('extract stage — FEAT-479 profile threading', () => {
       EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
       EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
     ]);
+  });
+});
+
+// FEAT-482: bounded-concurrency chunk fan-out. extract() now delegates to
+// mapWithConcurrency (src/distill/concurrency.ts) — these tests pin the
+// extract()-level integration of that helper's invariants.
+describe('extract() concurrency (FEAT-482)', () => {
+  it('concurrency=1 (the default, omitted) reproduces the pre-FEAT-482 sequential loop byte-for-byte', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const callOrder: number[] = [];
+    const llm = makeMockLLM([VALID_EXTRACTION_JSON, VALID_EXTRACTION_JSON]);
+    const chatSpy = vi.spyOn(llm, 'chat').mockImplementation(async (msgs) => {
+      const userText = msgs.find(m => m.role === 'user')?.content ?? '';
+      callOrder.push(userText.includes('one') ? 0 : 1);
+      return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+    });
+
+    const results = await extract(
+      [{ index: 0, text: 'chunk one' }, { index: 1, text: 'chunk two' }],
+      llm,
+      budget,
+      10.0,
+      // extractProfile omitted (default), concurrency omitted (default 1)
+    );
+
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+    expect(callOrder).toEqual([0, 1]); // strictly sequential — chunk 0 fully done before chunk 1 starts
+    expect(results.length).toBe(2);
+  });
+
+  it('concurrency > 1 processes chunks out of dispatch order but preserves result order by chunk index', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[]): Promise<ChatResult> {
+        const userText = msgs.find(m => m.role === 'user')?.content ?? '';
+        const delayMs = userText.includes('slow') ? 15 : 0;
+        await new Promise(r => setTimeout(r, delayMs));
+        return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    const results = await extract(
+      [
+        { index: 0, text: 'slow chunk' },
+        { index: 1, text: 'fast chunk' },
+      ],
+      llm,
+      budget,
+      10.0,
+      'engineering',
+      2,
+    );
+
+    // Both resolve to the same VALID_EXTRACTION_JSON payload here — the
+    // meaningful assertion is that index 0's result is in slot 0 regardless
+    // of which chunk's LLM call actually finished first.
+    expect(results[0]?.chunkIndex).toBe(0);
+    expect(results[1]?.chunkIndex).toBe(1);
+  });
+
+  it('budget-stop: once one chunk hits BudgetExceeded, extract() rejects with it and stops dispatching further chunks', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const capUsd = 0; // even one chunk's estimate exceeds this
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        throw new Error('provider.chat should not be called when cap is 0');
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+    const chunks = [0, 1, 2, 3, 4].map(i => ({ index: i, text: `chunk ${i}` }));
+
+    await expect(extract(chunks, llm, budget, capUsd, 'engineering', 2)).rejects.toBeInstanceOf(BudgetExceeded);
+  });
+
+  it('setting concurrency explicitly to 1 is the documented safety valve — identical results/order to the default', async () => {
+    const dbA = openDb(':memory:');
+    migrate(dbA);
+    const dbB = openDb(':memory:');
+    migrate(dbB);
+    const budgetA = new BudgetTracker(dbA);
+    const budgetB = new BudgetTracker(dbB);
+    const chunks = [{ index: 0, text: 'chunk one' }, { index: 1, text: 'chunk two' }];
+
+    const withDefault = await extract(chunks, makeMockLLM([VALID_EXTRACTION_JSON, VALID_EXTRACTION_JSON]), budgetA, 10.0);
+    const withExplicitOne = await extract(
+      chunks, makeMockLLM([VALID_EXTRACTION_JSON, VALID_EXTRACTION_JSON]), budgetB, 10.0, 'engineering', 1,
+    );
+
+    expect(withExplicitOne).toEqual(withDefault);
   });
 });

@@ -20,6 +20,7 @@ import {
 } from '../prompts/extract.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { TransientError } from '../../pipeline/errors.js';
+import { mapWithConcurrency } from '../concurrency.js';
 
 export type { ExtractProfile };
 
@@ -209,8 +210,18 @@ function tryParseAtoms(raw: string): Atom[] | null {
 }
 
 /**
- * Extract atoms from all compacted chunks.
- * Stops at first BudgetExceeded.
+ * Extract atoms from all compacted chunks, up to `concurrency` at a time
+ * (FEAT-482).
+ *
+ * Stops dispatching further chunks at the first BudgetExceeded (or any other
+ * error, e.g. a TransientError parse failure) — results stay in chunk-index
+ * order regardless of completion order. See src/distill/concurrency.ts for
+ * the full invariant contract `mapWithConcurrency` provides.
+ *
+ * `concurrency` defaults to 1 — BYTE-IDENTICAL to the pre-FEAT-482
+ * sequential `for…of await` loop this replaces. Production callers resolve
+ * the real value from config via `resolveChunkConcurrency`
+ * (src/distill/pipeline.ts).
  */
 export async function extract(
   chunks: Array<{ index: number; text: string }>,
@@ -218,10 +229,9 @@ export async function extract(
   budget: BudgetTracker,
   capUsd: number,
   extractProfile: ExtractProfile = 'engineering',
+  concurrency = 1,
 ): Promise<ExtractResult[]> {
-  const results: ExtractResult[] = [];
-  for (const chk of chunks) {
-    results.push(await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile));
-  }
-  return results;
+  return mapWithConcurrency(chunks, concurrency, (chk) =>
+    extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile),
+  );
 }

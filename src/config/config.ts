@@ -311,6 +311,19 @@ export interface Config {
    * section) — no hot reload. */
   distill: {
     durabilityGate: 'strict' | 'lenient' | 'off';
+    /** FEAT-482: how many chunks stage 4 (compact) / stage 5 (extract) fan
+     *  out to the LLM provider at once within a single pipeline run — see
+     *  `mapWithConcurrency` / `resolveChunkConcurrency`
+     *  (src/distill/concurrency.ts) for the dispatch/budget/ordering
+     *  invariants this controls. Default 2 matches the operator's measured
+     *  `OLLAMA_NUM_PARALLEL=2` sweet spot (1.67x speedup) — UNLIKE most flags
+     *  in this file, this default is NOT byte-identical to the pre-FEAT-482
+     *  behavior; set to 1 for the exact old sequential loop (the documented
+     *  safety valve, see resolveChunkConcurrency). Clamped to [1, 8] at
+     *  resolution time — a bad/hand-edited value never blocks a run. Pair a
+     *  value > 1 with the Ollama server's own `OLLAMA_NUM_PARALLEL` env var,
+     *  same caveat as `pipeline.concurrency` above. */
+    chunkConcurrency: number;
     /** FEAT-479 (D3 §3.2): which extraction prompt profile stage 5 (`05-
      *  extract.ts`) resolves per-run. `'engineering'` (default) is the
      *  existing shipped prompt (EXTRACTION_SYSTEM_PROMPT/_V2/_V3) — BYTE-
@@ -514,7 +527,7 @@ export function defaultConfig(): Config {
     // gates 4 of the 5 reasons and holds back only `git_derivable`, which carries
     // the highest false-positive risk (a terse commit reference can still be
     // meaningful in a way a bare imperative cannot).
-    distill: { durabilityGate: 'lenient', extractProfile: 'engineering' },
+    distill: { durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2 },
     capture: {
       autoCapture: {
         enabled: false,
