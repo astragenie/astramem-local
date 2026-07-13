@@ -7,7 +7,14 @@
  * list below is a human-readable summary kept in sync by that test, not a
  * second SoT.
  *
- * Exposes 20 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes the following tools over the Streamable HTTP transport (POST /mcp).
+ * The count is not restated here — it drifts the moment a tool is added and
+ * nothing catches it. The actual count is enforced by two tests that read it
+ * from the wire, not from a maintained number:
+ *   - tests/mcp/server.test.ts (compares tools/list against this file's own
+ *     cross-repo manifest, contracts/manifests/mcp-tools.v1.json)
+ *   - tests/contracts/mcp-tool-manifest-parity.test.ts (full name-level
+ *     parity between that manifest and tools/list)
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert

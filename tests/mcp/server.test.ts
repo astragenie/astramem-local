@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
@@ -20,6 +22,37 @@ import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../src/storage/db.js';
 
 const TOKEN = 'test-mcp-token';
+
+// The expected tool count is NOT a literal here (ADR-016 — a hand-maintained
+// aggregate over an enumerable set is exactly the pattern that let this
+// number drift silently in three other places: this test's own former
+// literal, the doc comment atop src/mcp/server.ts, and CLAUDE.md).
+//
+// The McpServer SDK does not expose a public way to ask "how many tools are
+// registered" — `McpServer#_registeredTools` (node_modules/@modelcontextprotocol/
+// sdk/dist/esm/server/mcp.d.ts) is typed `private`, so reading it here would
+// mean reaching into SDK internals with an `as any` cast that breaks the
+// moment the SDK changes its private field layout. That rules out "ask the
+// server object directly."
+//
+// So the count is derived by counting `server.registerTool(` call sites in
+// src/mcp/server.ts itself via a source-text scan, and compared against what
+// the server actually advertises over the wire (tools/list). This is a
+// source-regex, and a source-regex is admittedly brittle — but it beats a
+// literal because it cannot silently drift: add a registerTool( call and both
+// sides of the comparison move together, with zero edits required anywhere
+// else. Exact tool-NAME correctness (not just count) is a stronger,
+// independent guarantee already owned by
+// tests/contracts/mcp-tool-manifest-parity.test.ts, which cross-checks the
+// wire response against contracts/manifests/mcp-tools.v1.json (the cross-repo
+// SoT) — this test intentionally doesn't duplicate that list.
+const SERVER_SOURCE_PATH = join(__dirname, '../../src/mcp/server.ts');
+
+function countRegisterToolCallSites(): number {
+  const source = readFileSync(SERVER_SOURCE_PATH, 'utf-8');
+  const matches = source.match(/\bserver\.registerTool\(/g);
+  return matches ? matches.length : 0;
+}
 
 function buildMockEmbed(): EmbedProvider {
   return {
@@ -94,7 +127,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 20 tools', async () => {
+  it('initialize + tools/list count matches the number of registerTool( call sites in src/mcp/server.ts', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -107,35 +140,15 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(20);
-    const names = tools.map((t) => t.name).sort();
-    expect(names).toEqual([
-      'agent_profile',
-      'erase_memory',
-      // FEAT-481 SLICE-3 — entity-to-entity relations read surface.
-      'get_entity_related',
-      'get_entity_timeline',
-      'get_health',
-      'invalidate_memory',
-      'list_consolidation_proposals',
-      // U5 rename (astragenie/memory#671, astragenie/astramem-local#120):
-      // mark_memory_used is now a DEPRECATED one-release alias of
-      // submit_feedback — both are registered, same handler.
-      'mark_memory_used',
-      'memory_history',
-      'promote_memory',
-      'recall_memory',
-      'remember',
-      'resolve_consolidation_proposal',
-      'restore_memory',
-      'search_memory',
-      'session_digest',
-      'submit_feedback',
-      'supersede_memory',
-      // FEAT-451 slice 1 — daemon-wide profile, no agent filter.
-      'user_profile',
-      'why_memory',
-    ]);
+    // Two independently-derived values, not a tautology: what the server
+    // actually advertises over the wire (tools.length, from a live MCP
+    // request) vs. what the source registers (a static scan of
+    // src/mcp/server.ts, computed with no knowledge of the wire response).
+    expect(tools.length).toBe(countRegisterToolCallSites());
+    // Sanity: every advertised tool has a distinct name (catches an
+    // accidental duplicate registerTool( call the count alone would miss).
+    const names = tools.map((t) => t.name);
+    expect(new Set(names).size).toBe(names.length);
   });
 
   // -------------------------------------------------------------------------

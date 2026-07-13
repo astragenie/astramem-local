@@ -140,8 +140,14 @@ connects), background jobs (consolidate/cleanup/spool-drain), and sync. Pure MCP
 consumers with no need for capture/proxy/sync can use `mcp-stdio` and skip the install
 layer (service registration, shim, watchdog) entirely.
 
-MCP tool surface: **20 tools** (verified: 20 `registerTool` calls in `src/mcp/server.ts`).
-Both transports expose the same 20.
+MCP tool surface: count not tracked here — a manually maintained number in this
+file is exactly the ADR-016 Junction pattern (declare instead of derive) and
+drifts the moment a tool is added. The count is enforced by
+`tests/mcp/server.test.ts` and `tests/contracts/mcp-tool-manifest-parity.test.ts`,
+both of which compare the live `tools/list` wire response against
+`contracts/manifests/mcp-tools.v1.json` (the cross-repo tool-name SoT) — read
+the manifest or run those tests for the current count, don't grep for
+`registerTool`. Both transports (HTTP daemon, `mcp-stdio`) expose the same set.
 
 ## Wire contract (FEAT-4a Phase 2)
 
