@@ -8,6 +8,7 @@ import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { createHash } from 'node:crypto';
 import { drainIngestSpool, resetSpoolDrainFailureCounts } from '../../src/ingest/spool-drain.js';
 import { spoolDir, writeToSpool, listSpoolFiles } from '../../src/ingest/spool.js';
 import { buildClaudeEnvelope, claudeIdempotencyKey, parseClaudeTranscript } from '../../src/capture/claude.js';
@@ -114,6 +115,96 @@ describe('drainIngestSpool — AC-4 (drains + deletes on ack) / AC-6 (counts)', 
     expect(result.drained).toBe(1);
     expect(result.quarantined).toBe(0);
     expect(listSpoolFiles(dataDir)).toEqual([]);
+
+    db.close();
+  });
+});
+
+// FEAT-458 S3 (ADR-013): pins the actual drain-time integration boundary,
+// not just the CanonicalIngestSchema type union in isolation. Before this
+// slice, capture_source: 'proxy' would have failed CanonicalIngestSchema
+// .safeParse INSIDE drainIngestSpool (line 103 above) on every tick, and
+// after MAX_DRAIN_ATTEMPTS retries the envelope would be silently
+// quarantined — the exact failure mode this test proves closed. Builds a
+// raw canonical envelope directly (not via buildClaudeEnvelope/capture-
+// claude.ts, which are CLI-hook-exclusive and never emit 'proxy') to
+// simulate what the LLM proxy relay's capture fork (FEAT-458 S3 W3b,
+// src/proxy/**) will actually spool.
+describe('drainIngestSpool — FEAT-458 S3: capture_source "proxy" survives safeParse and lands in the DB', () => {
+  it('a proxy-sourced envelope drains through the SAME CanonicalIngestSchema instance /ingest/transcript uses, with zero quarantine', () => {
+    const dataDir = tempDataDir();
+    const db = makeDb();
+    const config = defaultConfig();
+
+    const envelope = {
+      event: 'session_end' as const,
+      session_id: 'sess-proxy-drain-1',
+      project_id: 'proj-proxy',
+      captured_at: '2026-07-12T12:00:00.000Z',
+      kind: 'transcript' as const,
+      turns: [
+        { role: 'user' as const, text: 'what should the retry budget be?' },
+        { role: 'assistant' as const, text: '3 attempts with exponential backoff' },
+      ],
+      client_scrub_applied: false,
+      client_scrub_hits: 0,
+      client_version: '0.16.0',
+      client_scrub_version: 'none',
+      wire_version: 'v1.0' as const,
+      capture_source: 'proxy' as const,
+    };
+    const key = createHash('sha256').update(JSON.stringify(envelope)).digest('hex');
+    writeToSpool(dataDir, key, envelope);
+
+    const result = drainIngestSpool(db, config, dataDir);
+
+    // The core assertion: NOT quarantined. Pre-fix, this envelope would have
+    // failed safeParse every tick and hit quarantine after MAX_DRAIN_ATTEMPTS
+    // — draining clean on the FIRST tick is what proves the schema gate
+    // actually admits 'proxy' at runtime, not just in the TS union.
+    expect(result).toEqual({ drained: 1, quarantined: 0, pending: 0 });
+    expect(listSpoolFiles(dataDir)).toEqual([]);
+    expect(existsSync(join(spoolDir(dataDir), '.quarantine'))).toBe(false);
+
+    const transcripts = db.prepare('SELECT capture_source FROM transcripts WHERE session_id = ?').all('sess-proxy-drain-1') as
+      { capture_source: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.capture_source).toBe('proxy');
+
+    db.close();
+  });
+
+  it('regression guard: an unparsable-as-proxy value ("proxied", a plausible typo) is still correctly rejected and quarantined, not silently widened to accept anything', () => {
+    const dataDir = tempDataDir();
+    const db = makeDb();
+    const config = defaultConfig();
+
+    const envelope = {
+      event: 'session_end' as const,
+      session_id: 'sess-proxy-typo-1',
+      project_id: 'proj-proxy',
+      captured_at: '2026-07-12T12:00:00.000Z',
+      kind: 'transcript' as const,
+      turns: [{ role: 'user' as const, text: 'hi' }],
+      client_scrub_applied: false,
+      client_scrub_hits: 0,
+      client_version: '0.16.0',
+      client_scrub_version: 'none',
+      wire_version: 'v1.0' as const,
+      capture_source: 'proxied', // not a member of the enum — must still 400/quarantine
+    };
+    const key = createHash('sha256').update(JSON.stringify(envelope)).digest('hex');
+    writeToSpool(dataDir, key, envelope);
+
+    let last = drainIngestSpool(db, config, dataDir);
+    for (let i = 0; i < 4; i++) {
+      last = drainIngestSpool(db, config, dataDir);
+    }
+
+    expect(last.quarantined).toBe(1);
+    expect(listSpoolFiles(dataDir)).toEqual([]);
+    const transcripts = db.prepare('SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?').get('sess-proxy-typo-1') as { n: number };
+    expect(transcripts.n).toBe(0);
 
     db.close();
   });
