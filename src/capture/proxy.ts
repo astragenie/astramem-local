@@ -27,13 +27,133 @@
  * this module were allowed to see headers, which it structurally is not).
  * See `extractResponseTurn` / `extractSseResponseTurn` for the per-format
  * detection logic.
+ *
+ * Decompression (FEAT-458 S7): every real upstream (Anthropic, OpenAI, ...)
+ * gzip-compresses response bodies by default, so the bytes this module's tee
+ * actually receives are compressed, not the plaintext JSON/SSE the parsers
+ * above expect. The obvious fix — read the response's Content-Encoding
+ * value — is exactly what the header-exclusion invariant above forbids: this
+ * module cannot see, and must never gain a way to see, ANY header, including
+ * that one. `decompressBody` below therefore detects and reverses
+ * compression from the BODY BYTES ALONE (magic-number sniffing, with a
+ * speculative fallback for brotli, which has no magic number at all) —
+ * never a transport-metadata channel. See its own doc for the full detail.
  */
 
 import { randomUUID, createHash } from 'node:crypto';
+import { gunzipSync, inflateSync, inflateRawSync, brotliDecompressSync } from 'node:zlib';
+import * as zlibFeatureProbe from 'node:zlib';
 import { stableStringify } from '../server/lib/stable-stringify.js';
 import { gateRelevance, recordCapturedTurnHash, type RelevanceGateOptions } from './relevance-gate.js';
 import { writeToSpool } from '../ingest/spool.js';
 import type { ProxyTeeSink } from '../proxy/server.js';
+
+/** Upper bound on a single decompressed body — a malformed or hostile
+ *  upstream response must never let this module inflate unbounded bytes
+ *  into memory (a "zip bomb"). Comfortably above any legitimate single-turn
+ *  LLM exchange. `node:zlib`'s synchronous decompressors enforce this
+ *  directly via their own `maxOutputLength` option — decompression aborts
+ *  (throws) the instant the limit would be exceeded, mid-stream, rather than
+ *  accumulating past it first. */
+const MAX_DECOMPRESSED_BODY_BYTES = 64 * 1024 * 1024;
+
+/** `zstdDecompressSync` landed in Node's runtime (22.15+ / 23.8+) ahead of
+ *  this repo's pinned `@types/node` — declared locally, purely so the
+ *  feature-probe below type-checks; the `typeof === 'function'` runtime
+ *  check right before every call site is what actually gates whether it's
+ *  safe to invoke on the Node build this process is running on. */
+type ZstdCapableZlib = typeof import('node:zlib') & {
+  zstdDecompressSync?: (buf: Buffer, opts?: { maxOutputLength?: number }) => Buffer;
+};
+
+const GZIP_MAGIC: readonly number[] = [0x1f, 0x8b];
+const ZSTD_MAGIC: readonly number[] = [0x28, 0xb5, 0x2f, 0xfd];
+/** zlib/deflate streams always start `0x78`; the second byte encodes the
+ *  compression level and is one of a small fixed set — `0x01` (fastest),
+ *  `0x9c` (default), `0xda` (best compression). */
+const ZLIB_SECOND_BYTE_CANDIDATES = new Set([0x01, 0x9c, 0xda]);
+
+function bytesStartWith(buf: Buffer, magic: readonly number[]): boolean {
+  if (buf.length < magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (buf[i] !== magic[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Reverse whatever compression (if any) a tee'd body is under — BODY BYTES
+ * ONLY, per this file's own exclusion invariant (module doc above): there is
+ * no transport-metadata channel this function reads or could read to learn
+ * the encoding; every candidate below is chosen purely by sniffing the bytes
+ * themselves.
+ *
+ * Order matters: gzip, zlib/deflate, and zstd each carry an unambiguous
+ * magic number, so those are sniffed and attempted directly. Brotli has NO
+ * magic number at all — the ONLY way to detect it from bytes alone is to
+ * speculatively attempt a brotli decode and see whether it succeeds; raw
+ * (headerless) deflate is the same story and is tried last. A plaintext
+ * body (the common case whenever a client requests no compression) matches
+ * none of the sniffable magics and reliably fails both speculative decodes
+ * (a compressed-format decoder rejects arbitrary text as structurally
+ * invalid input almost immediately) — so it falls through unchanged, exactly
+ * today's pre-decompression behavior.
+ *
+ * Every attempt is independently wrapped: a corrupt/truncated stream, a
+ * codec unavailable on the running Node build (zstd support is feature-
+ * probed, not assumed), or a decode that would exceed
+ * `MAX_DECOMPRESSED_BODY_BYTES` all fail the SAME way — silently, moving on
+ * to the next candidate, or, once every candidate is exhausted, returning
+ * the ORIGINAL bytes untouched. This function only ever operates on the
+ * caller's own copy of the tee'd bytes (see `finishCapture` below) — it has
+ * no way to reach, and never touches, the bytes already forwarded to the
+ * client.
+ */
+export function decompressBody(raw: Buffer): Buffer {
+  const opts = { maxOutputLength: MAX_DECOMPRESSED_BODY_BYTES };
+
+  if (bytesStartWith(raw, GZIP_MAGIC)) {
+    try {
+      return gunzipSync(raw, opts);
+    } catch {
+      /* corrupt/truncated/oversized gzip — fall through to plaintext below */
+    }
+  }
+
+  if (raw.length >= 2 && raw[0] === 0x78 && ZLIB_SECOND_BYTE_CANDIDATES.has(raw[1] as number)) {
+    try {
+      return inflateSync(raw, opts);
+    } catch {
+      /* fall through */
+    }
+  }
+
+  const zlibWithZstd = zlibFeatureProbe as ZstdCapableZlib;
+  if (bytesStartWith(raw, ZSTD_MAGIC) && typeof zlibWithZstd.zstdDecompressSync === 'function') {
+    try {
+      return zlibWithZstd.zstdDecompressSync(raw, opts);
+    } catch {
+      /* fall through */
+    }
+  }
+
+  // No magic number exists for brotli — reached only after every sniffable
+  // codec above has already been ruled out, and only kept if it succeeds.
+  try {
+    return brotliDecompressSync(raw, opts);
+  } catch {
+    /* fall through */
+  }
+
+  // Raw (headerless) deflate — same "no magic number" story as brotli.
+  try {
+    return inflateRawSync(raw, opts);
+  } catch {
+    /* fall through */
+  }
+
+  return raw; // not a recognized compressed shape — plaintext, unchanged.
+}
 
 export interface ProxyTurn {
   role: 'user' | 'assistant';
@@ -643,8 +763,14 @@ export function createProxyCaptureTee(opts: ProxyCaptureOptions): () => ProxyTee
     let finished = false;
 
     function finishCapture(): void {
-      const reqBody = Buffer.concat(reqChunks).toString('utf8');
-      const resBody = Buffer.concat(resChunks).toString('utf8');
+      // Decompress each direction's OWN copy of the tee'd bytes — never the
+      // bytes already forwarded to the client (see `decompressBody`'s own
+      // doc). A body that isn't actually compressed passes through
+      // unchanged, so this is safe to apply unconditionally to both
+      // directions rather than special-casing the response side, even
+      // though a request body is uncompressed in practice today.
+      const reqBody = decompressBody(Buffer.concat(reqChunks)).toString('utf8');
+      const resBody = decompressBody(Buffer.concat(resChunks)).toString('utf8');
 
       const turns: ProxyTurn[] = extractRequestTurns(reqBody);
       const assistantTurn = extractResponseTurn(resBody);
