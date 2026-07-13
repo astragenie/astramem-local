@@ -91,17 +91,131 @@ describe('dev no-auth mode', () => {
     // is covered directly against isLoopbackHostHeader('') in
     // tests/server/lib/network.test.ts instead.
 
-    it('/dashboard is unaffected — its own ?token=/cookie mechanism still governs, untouched by devNoAuth', async () => {
+    it('/dashboard: no credentials, loopback Host => 200 (auth skipped entirely, same as the API)', async () => {
       app = await buildDevNoAuthApp();
       const res = await app.inject({
         method: 'GET',
         url: '/dashboard',
-        headers: { host: 'evil.com' }, // even a hostile Host never reaches the global hook here
+        headers: { host: '127.0.0.1:7777' },
       });
-      // Dashboard's own auth still applies (missing token/cookie => 401 plain text),
-      // proving the request reached the route handler rather than the global hook.
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('/dashboard: no credentials, non-loopback Host => 403, not 401 — rejected by the Host guard', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard',
+        headers: { host: 'evil.com' },
+      });
+      expect(res.statusCode).toBe(403);
+      expect(res.headers['content-type']).toContain('text/plain');
+    });
+
+    it('/dashboard/jobs (sibling page): no credentials, loopback Host => 200', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/jobs',
+        headers: { host: 'localhost:7777' },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('/dashboard/jobs (sibling page): non-loopback Host => 403', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/jobs',
+        headers: { host: 'evil.com' },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('/dashboard/consolidation (sibling page): no credentials, loopback Host => 200', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/consolidation',
+        headers: { host: 'localhost:7777' },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('/dashboard/consolidation (sibling page): non-loopback Host => 403', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/consolidation',
+        headers: { host: 'evil.com' },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('/dashboard/search (sibling page): no credentials, loopback Host => 200', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/search',
+        headers: { host: 'localhost:7777' },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('/dashboard/search (sibling page): non-loopback Host => 403', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/search',
+        headers: { host: 'evil.com' },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+
+    it('/dashboard/api (sibling page): no credentials, loopback Host => 200', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/api',
+        headers: { host: 'localhost:7777' },
+      });
+      expect(res.statusCode).toBe(200);
+    });
+
+    it('/dashboard/api (sibling page): non-loopback Host => 403', async () => {
+      app = await buildDevNoAuthApp();
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard/api',
+        headers: { host: 'evil.com' },
+      });
+      expect(res.statusCode).toBe(403);
+    });
+  });
+
+  describe('/dashboard when devNoAuth is off — existing token/cookie behavior unchanged', () => {
+    it('no Authorization, no cookie, no ?token= => 401 plain text (default config)', async () => {
+      app = await buildApp({ db, token: TOKEN }); // defaultConfig() => auth.devNoAuth: false
+      const res = await app.inject({ method: 'GET', url: '/dashboard' });
       expect(res.statusCode).toBe(401);
       expect(res.headers['content-type']).toContain('text/plain');
+    });
+
+    it('?token=<bearer> bootstrap still redirects and sets the cookie', async () => {
+      app = await buildApp({ db, token: TOKEN });
+      const res = await app.inject({ method: 'GET', url: `/dashboard?token=${TOKEN}` });
+      expect(res.statusCode).toBe(302);
+      expect(res.headers['set-cookie']).toContain('astramem_dash=devtok');
+    });
+
+    it('Authorization: Bearer <token> is accepted (no cookie needed)', async () => {
+      app = await buildApp({ db, token: TOKEN });
+      const res = await app.inject({
+        method: 'GET',
+        url: '/dashboard',
+        headers: { authorization: `Bearer ${TOKEN}` },
+      });
+      expect(res.statusCode).toBe(200);
     });
   });
 

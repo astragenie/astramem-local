@@ -12,28 +12,32 @@ export interface Config {
    * decides both bind exposure and whether /health + /version require a
    * Bearer token). */
   network: { host: string };
-  /** Dev no-auth mode — token-free local access for the operator's own daemon
-   *  (API only; `/dashboard` keeps its own independent Bearer/cookie/?token=
-   *  auth regardless of this flag). `devNoAuth: false` (default, and the field's
-   *  ABSENCE on an existing config.yaml) is byte-identical to pre-this-FEAT
-   *  behavior. Deliberately config-file-only, NOT settable via env var — a
-   *  bearer bypass should be an explicit, inspectable choice sitting in
+  /** Dev no-auth mode — token-free local access for the operator's own daemon,
+   *  covering BOTH the API and `/dashboard` (+ its sub-pages). `dashboard`
+   *  keeps its own independent Bearer/cookie/?token= auth ONLY while this
+   *  flag is off. `devNoAuth: false` (default, and the field's ABSENCE on an
+   *  existing config.yaml) is byte-identical to pre-this-FEAT behavior.
+   *  Deliberately config-file-only, NOT settable via env var — a bearer
+   *  bypass should be an explicit, inspectable choice sitting in
    *  config.yaml, not something a stray env var can flip silently.
    *
    *  When active, `src/server/app.ts`'s auth `preHandler` hook skips Bearer/
-   *  cookie enforcement for API routes (the hook exempts `/dashboard*` before
-   *  this branch runs; dashboard routes enforce their own auth) but still requires the
-   *  request's `Host` header to resolve to loopback (`isLoopbackHostHeader`,
+   *  cookie enforcement for API routes, and the same boot-computed
+   *  `devNoAuthActive` condition is threaded into every dashboard route
+   *  factory (dashboard.ts + the dashboard-*-html.ts siblings), which use it
+   *  via the shared `checkDashboardAuth` helper (dashboard-auth.ts) — but
+   *  every route, API or dashboard, still requires the request's `Host`
+   *  header to resolve to loopback (`isLoopbackHostHeader`,
    *  `src/server/lib/network.ts`) — the bearer token was ALSO the
    *  DNS-rebinding defense (a malicious page loaded in the operator's own
    *  browser can `fetch('http://127.0.0.1:7777/...')`; without a Host guard
    *  every local process — and every website via rebinding — could read/write
-   *  the whole memory store). It is also refused (forced back to `false`,
-   *  loud log, daemon keeps booting) whenever `network.host` resolves
-   *  non-loopback: devNoAuth + a LAN/remote bind would mean credential-free
-   *  exposure to the whole network, which must be structurally impossible,
-   *  not just discouraged. See docs/configuration.md / README "Dev no-auth
-   *  mode" before enabling. */
+   *  the whole memory store, dashboard included). It is also refused (forced
+   *  back to `false`, loud log, daemon keeps booting) whenever `network.host`
+   *  resolves non-loopback: devNoAuth + a LAN/remote bind would mean
+   *  credential-free exposure to the whole network, which must be
+   *  structurally impossible, not just discouraged. See
+   *  docs/configuration.md / README "Dev no-auth mode" before enabling. */
   auth: { devNoAuth: boolean };
   llm: {
     compaction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };

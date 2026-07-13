@@ -6,15 +6,14 @@
  * SLICE-410-1's contract). The route registration in app.ts and the auth
  * wrapper below are unchanged from the SLICE-410-1 stub.
  *
- * Auth mirrors src/server/routes/dashboard.ts (Bearer header or the
- * HttpOnly `astramem_dash` cookie bootstrapped there) but the check is
- * duplicated locally by design — see dashboard-consolidation-html.ts for
- * the same rationale. CSS/esc/age-formatting helpers are likewise
- * duplicated locally rather than imported from dashboard-html.ts (out of
- * scope for this slice).
+ * Auth is the shared `checkDashboardAuth` helper (dashboard-auth.ts) — Bearer
+ * header, the HttpOnly `astramem_dash` cookie bootstrapped by
+ * src/server/routes/dashboard.ts, or (when active) devNoAuth's loopback-only
+ * bypass. CSS/esc/age-formatting helpers remain duplicated locally rather
+ * than imported from dashboard-html.ts (out of scope here).
  */
 
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import {
   queryJobStatesByKind,
@@ -22,19 +21,7 @@ import {
   type JobStateByKind,
   type RecentFailedJob,
 } from '../queries/dashboard.js';
-
-const COOKIE_NAME = 'astramem_dash';
-
-function readCookie(req: FastifyRequest, name: string): string | undefined {
-  const header = req.headers.cookie;
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
-  }
-  return undefined;
-}
+import { checkDashboardAuth } from './dashboard-auth.js';
 
 function esc(s: string): string {
   return s
@@ -181,18 +168,15 @@ function renderPage(jobStatesByKind: JobStateByKind[], failedJobs: RecentFailedJ
 </html>`;
 }
 
-export function dashboardJobsRoute(db: DB, token: string) {
+export function dashboardJobsRoute(db: DB, token: string, devNoAuthActive = false) {
   return async (app: FastifyInstance) => {
     app.get('/dashboard/jobs', async (req, reply) => {
-      const authHeader = req.headers.authorization;
-      const bearerOk = authHeader === `Bearer ${token}`;
-      const cookieOk = readCookie(req, COOKIE_NAME) === token;
-
-      if (!bearerOk && !cookieOk) {
+      const authResult = checkDashboardAuth(req, token, devNoAuthActive);
+      if (!authResult.allowed) {
         return reply
-          .code(401)
+          .code(authResult.status)
           .header('content-type', 'text/plain; charset=utf-8')
-          .send('401 Unauthorized');
+          .send(authResult.body);
       }
 
       const jobStatesByKind = queryJobStatesByKind(db);

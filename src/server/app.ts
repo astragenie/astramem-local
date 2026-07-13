@@ -102,8 +102,11 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
 
   // Auth check — scrub the Authorization header value from any error logs.
   // /dashboard and its sub-pages (/dashboard/consolidation, /dashboard/jobs,
-  // /dashboard/search — FEAT-410) validate their own token via ?token= query
-  // param or cookie — always exempt on prefix, not just the exact path.
+  // /dashboard/search — FEAT-410) validate their own auth via the shared
+  // checkDashboardAuth helper (dashboard-auth.ts) — Bearer, ?token=/cookie,
+  // or (when devNoAuthActive, computed below and threaded into each
+  // dashboard route factory) the same loopback-only no-auth bypass API
+  // routes get. Always exempt on prefix here, not just the exact path.
   // /health and /version are public ONLY while the daemon is bound to loopback
   // (default). FEAT-406: opting into a non-local bind (config.network.host set
   // to anything but 127.0.0.1/localhost/::1) requires Bearer auth on BOTH
@@ -205,11 +208,11 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(digestRoute(opts.db));
   await app.register(recallRoute(opts.db, config));
   await app.register(mcpRoute(opts.db, embed, config));
-  await app.register(dashboardRoute(opts.db, config, opts.token, opts.healthState));
-  await app.register(dashboardConsolidationRoute(opts.db, opts.token));
-  await app.register(dashboardJobsRoute(opts.db, opts.token));
-  await app.register(dashboardSearchRoute(opts.db, embed, opts.token));
-  await app.register(dashboardApiRoute(opts.token));
+  await app.register(dashboardRoute(opts.db, config, opts.token, opts.healthState, devNoAuthActive));
+  await app.register(dashboardConsolidationRoute(opts.db, opts.token, devNoAuthActive));
+  await app.register(dashboardJobsRoute(opts.db, opts.token, devNoAuthActive));
+  await app.register(dashboardSearchRoute(opts.db, embed, opts.token, devNoAuthActive));
+  await app.register(dashboardApiRoute(opts.token, devNoAuthActive));
   await app.register(memoryToolRoute(opts.db, config));
   await app.register(consolidationRoutes(opts.db, config));
   await app.register(entitiesRoute(opts.db));

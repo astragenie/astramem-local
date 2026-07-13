@@ -13,33 +13,21 @@
  * full-reload UX is the explicit design tradeoff recorded in
  * `.claude/artifacts/crew/runs/2026-07-04-dashboard-redesign-design.md` §7.
  *
- * Auth mirrors src/server/routes/dashboard.ts (Bearer header or the
- * HttpOnly `astramem_dash` cookie bootstrapped there) but the check is
- * duplicated locally by design — each dashboard page module stays
- * independently reviewable, and wave-2 slices are forbidden from touching
- * app.ts, so the auth wrapper here must be self-contained.
+ * Auth is the shared `checkDashboardAuth` helper (dashboard-auth.ts) — Bearer
+ * header, the HttpOnly `astramem_dash` cookie bootstrapped by
+ * src/server/routes/dashboard.ts, or (when active) devNoAuth's loopback-only
+ * bypass.
  */
 
-import type { FastifyInstance, FastifyRequest } from 'fastify';
+import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import { ProposalRepo, type ConsolidationProposal } from '../../consolidate/proposals.js';
 import { MemoryRepo } from '../../storage/memories.js';
+import { checkDashboardAuth } from './dashboard-auth.js';
 
-const COOKIE_NAME = 'astramem_dash';
 const RESOLVED_LIMIT = 100;
 
 type ProposalStatus = ConsolidationProposal['status'];
-
-function readCookie(req: FastifyRequest, name: string): string | undefined {
-  const header = req.headers.cookie;
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
-  }
-  return undefined;
-}
 
 // Locally duplicated rather than imported from dashboard-html.ts — that
 // module is module-private by design (see file header + slice scope).
@@ -91,18 +79,15 @@ nav .active{color:#fff;font-weight:bold}
 
 /** `db` backs the real proposal + memory lookups (SLICE-410-1's stub
  *  accepted but ignored it, keeping this factory's signature stable). */
-export function dashboardConsolidationRoute(db: DB, token: string) {
+export function dashboardConsolidationRoute(db: DB, token: string, devNoAuthActive = false) {
   return async (app: FastifyInstance) => {
     app.get('/dashboard/consolidation', async (req, reply) => {
-      const authHeader = req.headers.authorization;
-      const bearerOk = authHeader === `Bearer ${token}`;
-      const cookieOk = readCookie(req, COOKIE_NAME) === token;
-
-      if (!bearerOk && !cookieOk) {
+      const authResult = checkDashboardAuth(req, token, devNoAuthActive);
+      if (!authResult.allowed) {
         return reply
-          .code(401)
+          .code(authResult.status)
           .header('content-type', 'text/plain; charset=utf-8')
-          .send('401 Unauthorized');
+          .send(authResult.body);
       }
 
       const proposals = new ProposalRepo(db);
