@@ -327,6 +327,43 @@ and entity call in production**, since all three always pass both.
 Ollama request body. Any quality baseline measured before v0.16.0 ran with no
 temperature control and a truncated context — treat those numbers as invalid.
 
+### These knobs are OLLAMA-ONLY — codex silently ignores most of them
+
+`num_ctx` is an Ollama concept (a client-side window you allocate on a *local*
+runtime). `gpt-5.4-mini` has a large native context and no client-side window —
+**there is no 4096 ceiling on codex and none is needed.**
+
+But the codex-subscription endpoint **rejects `temperature` and `maxTokens` outright**
+(live-verified 2026-07-08, `src/providers/llm/codex-subscription.ts:515-523`):
+
+```
+temperature       -> HTTP 400 "Unsupported parameter: temperature"
+max_output_tokens -> HTTP 400 "Unsupported parameter: max_output_tokens"
+max_tokens        -> HTTP 400 (same)
+```
+
+So the provider deliberately does **not forward them** — in its own words, *"a
+caller-requested cap/temperature is silently unenforceable here rather than erroring
+the whole call."*
+
+| Knob | ollama | codex-subscription |
+|---|---|---|
+| `num_ctx` | sized per call (4096–16384) | n/a — no ceiling needed |
+| `temperature` | **enforced** (0.1 extract/compact, 0 judge) | **silently ignored** |
+| `maxTokens` | enforced (`num_predict`) | **silently ignored** |
+| budget/cost cap | metered | **invisible** (doctor WARNs — the AC-15 canary) |
+
+**The consequence that bites:** `ASTRA_EXTRACT_TEMP=0` is our documented lever for
+reducing stochastic JSON parse failures — **and it does nothing on codex.** Which
+matters, because the Zod/JSON parse failures in the poison queue are *from* codex
+extraction. The one knob designed to fix that failure class is unavailable on the
+provider producing it.
+
+**Practical guidance:** local Ollama = deterministic, cheap, fully controllable, cost-
+metered. codex = better raw extraction, but **no sampling control, no output cap, and
+no cost visibility — all three failing silently.** Choose deliberately; do not assume a
+temperature you set in config reached the model.
+
 ## Do NOT
 - Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
 - Do NOT spread `options` twice into an Ollama request body (see above) — the
