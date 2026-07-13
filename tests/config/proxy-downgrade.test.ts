@@ -39,6 +39,7 @@ describe('FEAT-458 S2: proxy config block does not break a pre-FEAT-458 loader',
       enabled: true,
       port: 7778,
       upstream: 'https://api.openai.com/v1',
+      upstreamTimeoutMs: 30_000,
       capture: { enabled: false },
     };
     const yaml = configToYaml(cfgWithProxy);
@@ -72,6 +73,7 @@ describe('FEAT-458 S2: proxy config block does not break a pre-FEAT-458 loader',
       enabled: true,
       port: 7778,
       upstream: 'https://api.openai.com/v1',
+      upstreamTimeoutMs: 30_000,
       capture: { enabled: false },
     });
   });

@@ -340,6 +340,7 @@ export function configToYaml(cfg: Config): string {
     line(1, 'enabled', (cfg.proxy ?? EMIT_DEFAULTS.proxy).enabled),
     line(1, 'port', (cfg.proxy ?? EMIT_DEFAULTS.proxy).port),
     line(1, 'upstream', (cfg.proxy ?? EMIT_DEFAULTS.proxy).upstream),
+    line(1, 'upstreamTimeoutMs', (cfg.proxy ?? EMIT_DEFAULTS.proxy).upstreamTimeoutMs),
     line(1, 'capture'),
     line(2, 'enabled', (cfg.proxy ?? EMIT_DEFAULTS.proxy).capture.enabled),
     '',

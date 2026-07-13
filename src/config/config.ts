@@ -348,6 +348,15 @@ export interface Config {
     enabled: boolean;
     port: number;
     upstream: string;
+    /** Idle deadline for an upstream request, in ms (FEAT-458 S4a). Armed at
+     *  request-creation time — NOT via `upstreamReq.setTimeout()`, which only
+     *  arms once a socket is connected and so leaves a hung DNS lookup or a
+     *  stuck TCP handshake entirely uncovered. Reset on every genuine byte of
+     *  activity in either direction. `0` or negative disables it.
+     *
+     *  A hung proxy hangs every agent turn routed through it — "proxy down !=
+     *  agent down" (ADR-013 Decision 2) is why this exists. */
+    upstreamTimeoutMs: number;
     capture: {
       /** Default false EVEN WHEN proxy.enabled is true — capture is a
        *  second, independent opt-in on top of running the proxy at all
@@ -411,6 +420,7 @@ export function defaultConfig(): Config {
       enabled: false,
       port: 7778,
       upstream: '',
+      upstreamTimeoutMs: 30_000,
       capture: { enabled: false },
     },
   };

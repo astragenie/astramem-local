@@ -104,7 +104,13 @@ export async function proxyCommand(rest: string[]): Promise<void> {
       })
     : undefined;
 
-  const handle = await startProxyServer({ port, host, upstream, createTee });
+  const handle = await startProxyServer({
+    port,
+    host,
+    upstream,
+    createTee,
+    upstreamTimeoutMs: cfg.proxy.upstreamTimeoutMs,
+  });
   console.log(`${ts()} astramem-local proxy serving on ${handle.host}:${handle.port} -> ${upstream}`);
   if (cfg.proxy.capture.enabled) {
     console.log(`${ts()} astramem-local proxy: capture is ON (capture_source=proxy) -> ${dataDir}`);
