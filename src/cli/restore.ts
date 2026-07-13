@@ -12,6 +12,18 @@
  *
  * Exit codes: 0 = restored + healthy (or restored, daemon left stopped);
  * 1 = any failure — the original DB is never deleted.
+ *
+ * --force / --force-mismatch: step 2's identity-verified stop
+ * (`stopLockHolder`) aborts by default on ANY failure. `--force` bypasses
+ * that abort ONLY for the "could not check" sub-cases (malformed lock, OS
+ * identity query unavailable, signal/stop-mechanics failures) — never the
+ * snapshot probe (step 1), the aside-copy (step 3), or the atomic swap
+ * (step 3-4), which stay unconditional. A CONFIRMED identity mismatch
+ * (`reason: 'identity-mismatch'` — the check ran and proved the live PID is
+ * NOT our daemon) additionally requires `--force-mismatch` alongside
+ * `--force`: that is a known-wrong-process finding, not an unverified risk,
+ * and deserves a second, differently-worded confirmation rather than being
+ * silently swallowed by the same flag that covers "the query failed".
  */
 import { existsSync, copyFileSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
@@ -49,8 +61,13 @@ function probeSnapshot(path: string, key?: string): { ok: boolean; error?: strin
 export async function restoreCommand(args: string[]): Promise<void> {
   const snapshotPath = args.find(a => !a.startsWith('-'));
   const noRestart = hasFlag(args, '--no-restart');
+  const force = hasFlag(args, '--force');
+  const forceMismatch = hasFlag(args, '--force-mismatch');
   if (!snapshotPath) {
-    console.error('restore: snapshot path required\nUsage: astramem-local restore <snapshot.sqlite> [--no-restart]');
+    console.error(
+      'restore: snapshot path required\n' +
+      'Usage: astramem-local restore <snapshot.sqlite> [--no-restart] [--force] [--force-mismatch]',
+    );
     process.exit(1);
   }
   if (!existsSync(snapshotPath)) {
@@ -87,9 +104,35 @@ export async function restoreCommand(args: string[]): Promise<void> {
   const stopResult = await stopLockHolder(dataDir, port);
   console.log(`  · stop daemon: ${stopResult.detail}`);
   if (!stopResult.ok) {
-    console.error(`✗ ${stopResult.detail}`);
-    console.error('  Nothing was changed. Confirm the daemon is stopped and retry.');
-    process.exit(1);
+    const isConfirmedMismatch = stopResult.reason === 'identity-mismatch';
+    // Plain --force covers every "could not check" sub-case (malformed lock,
+    // OS identity query unavailable, signal/stop-mechanics failures). A
+    // CONFIRMED mismatch is a different, stronger finding — the identity
+    // check RAN and proved this is NOT our daemon — so it needs the second
+    // flag too, not just --force alone.
+    const bypassed = force && (!isConfirmedMismatch || forceMismatch);
+    if (!bypassed) {
+      console.error(`✗ ${stopResult.detail}`);
+      if (isConfirmedMismatch) {
+        console.error('  This is a CONFIRMED mismatch, not an unverifiable check: the identity check');
+        console.error('  RAN and the OS reports the live process at this PID is NOT our daemon.');
+        console.error('  --force alone will not bypass this. If you have independently verified it is');
+        console.error('  safe to proceed anyway, rerun with --force --force-mismatch.');
+      } else if (!force) {
+        console.error('  If you have independently verified the daemon is actually stopped (e.g. the');
+        console.error('  identity query itself is unavailable in this environment), rerun with --force.');
+      }
+      console.error('  Nothing was changed. Confirm the daemon is stopped and retry.');
+      process.exit(1);
+    }
+    console.error(
+      `⚠ ${isConfirmedMismatch ? '--force --force-mismatch' : '--force'}: bypassing the identity-verification abort.`,
+    );
+    console.error(`  Reason bypassed: ${stopResult.detail}`);
+    console.error('  An unidentified process may still hold this lock and be writing to the database');
+    console.error('  that is about to be replaced — if so, this restore can corrupt the swapped-in');
+    console.error('  snapshot. Proceeding ONLY because the override flag(s) were passed; this is not a');
+    console.error('  substitute for confirming by other means that the real daemon is stopped.');
   }
 
   // 3+4. Set current DB aside, swap snapshot in atomically.

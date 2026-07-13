@@ -154,9 +154,34 @@ export function readLockInfo(dataDir: string): LockInfo | null {
   return readLock(lockPath(dataDir));
 }
 
+/**
+ * Machine-readable sub-case for a `StopLockHolderResult` with `ok: false`.
+ * `detail` is the human-readable message; `reason` is for callers (like
+ * `restore --force`) that need to tell "identity could not be checked" apart
+ * from "identity was checked and is confirmed wrong" without pattern-matching
+ * the prose.
+ *
+ *  - `identity-unverifiable` — the check could not run at all (malformed
+ *    lock, or the OS query itself failed). Identity is UNKNOWN, not wrong.
+ *  - `identity-mismatch`     — the check ran successfully and the OS-reported
+ *    start time does NOT match the lock's recorded one. Identity is
+ *    CONFIRMED wrong (almost certainly a recycled PID).
+ *  - `signal-failed`         — identity was confirmed fine; sending the
+ *    signal itself failed (OS-level, e.g. permissions).
+ *  - `stop-timeout`          — identity was confirmed fine and the signal was
+ *    sent, but the holder kept answering /health past the wait budget.
+ */
+export type StopLockHolderFailureReason =
+  | 'identity-unverifiable'
+  | 'identity-mismatch'
+  | 'signal-failed'
+  | 'stop-timeout';
+
 export interface StopLockHolderResult {
   ok: boolean;
   detail: string;
+  /** Present only when `ok: false` — see `StopLockHolderFailureReason`. */
+  reason?: StopLockHolderFailureReason;
 }
 
 export interface StopLockHolderOptions {
@@ -216,6 +241,7 @@ export async function stopLockHolder(
     return {
       ok: false,
       detail: `refusing to signal pid ${holder.pid}: lock has no valid startedAt to verify identity against`,
+      reason: 'identity-unverifiable',
     };
   }
   const actualStart = await resolveStartTime(holder.pid);
@@ -223,6 +249,7 @@ export async function stopLockHolder(
     return {
       ok: false,
       detail: `refusing to signal pid ${holder.pid}: could not verify process identity (unable to determine OS process start time)`,
+      reason: 'identity-unverifiable',
     };
   }
   const driftMs = Math.abs(actualStart.getTime() - recordedStart.getTime());
@@ -230,13 +257,14 @@ export async function stopLockHolder(
     return {
       ok: false,
       detail: `refusing to signal pid ${holder.pid}: process start time mismatch (lock says ${holder.startedAt}, OS says ${actualStart.toISOString()}, drift ${driftMs}ms > ${IDENTITY_TOLERANCE_MS}ms) — likely a recycled PID, not our daemon`,
+      reason: 'identity-mismatch',
     };
   }
 
   try {
     sendSignal(holder.pid, 'SIGTERM');
   } catch (err) {
-    return { ok: false, detail: `kill pid ${holder.pid} failed: ${(err as Error).message}` };
+    return { ok: false, detail: `kill pid ${holder.pid} failed: ${(err as Error).message}`, reason: 'signal-failed' };
   }
 
   const waitMs = opts.waitMs ?? 5000;
@@ -247,7 +275,7 @@ export async function stopLockHolder(
     if (!healthy) return { ok: true, detail: `stopped pid ${holder.pid}` };
     await new Promise(r => setTimeout(r, 250));
   }
-  return { ok: false, detail: `pid ${holder.pid} still serving after ${waitMs}ms` };
+  return { ok: false, detail: `pid ${holder.pid} still serving after ${waitMs}ms`, reason: 'stop-timeout' };
 }
 
 function readLock(path: string): LockInfo | null {

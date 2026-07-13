@@ -113,3 +113,91 @@ describe('restoreCommand stop-daemon path (A1 fifth-caller fix)', () => {
     expect(existsSync(join(dir, 'memory.sqlite'))).toBe(true);
   });
 });
+
+describe('restoreCommand --force / --force-mismatch (SLICE E8 escape hatch)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-restore-force-'));
+    vi.mocked(resolveRuntimeConfig).mockReturnValue({
+      cfg: { security: { encryption: { enabled: false } }, embedding: { dim: 1024 } } as never,
+      port: 7777,
+      dataDir: dir,
+      configDir: dir,
+      sources: { port: 'default', dataDir: 'default' } as never,
+      isolated: true,
+    });
+    vi.mocked(stopLockHolder).mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function seedSnapshot(): Promise<string> {
+    const db = openDb(join(dir, 'seed.sqlite'));
+    migrate(db);
+    const snapPath = join(dir, 'snap.sqlite');
+    await createSnapshot(db, snapPath);
+    db.close();
+    return snapPath;
+  }
+
+  it('--force bypasses a could-not-verify abort (reason: identity-unverifiable) and lets restore proceed', async () => {
+    const snapPath = await seedSnapshot();
+    const detail =
+      'refusing to signal pid 4242: could not verify process identity (unable to determine OS process start time)';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'identity-unverifiable' });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    // Must NOT throw / exit — --force bypasses the abort and the swap runs.
+    await restoreCommand([snapPath, '--no-restart', '--force']);
+
+    expect(stopLockHolder).toHaveBeenCalledTimes(1);
+    expect(existsSync(join(dir, 'memory.sqlite'))).toBe(true);
+    // Loud: the transcript must say what was bypassed and why it's dangerous.
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force') && String(c[0]).includes('bypassing'))).toBe(true);
+    expect(errSpy.mock.calls.some(c => String(c.join(' ')).includes('still hold this lock'))).toBe(true);
+  });
+
+  it('--force alone does NOT bypass a CONFIRMED identity mismatch (reason: identity-mismatch) — still aborts', async () => {
+    const snapPath = await seedSnapshot();
+    const detail =
+      'refusing to signal pid 4242: process start time mismatch (lock says 2020-01-01T00:00:00.000Z, ' +
+      'OS says 2026-07-13T12:00:00.000Z, drift 999999999ms > 60000ms) — likely a recycled PID, not our daemon';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'identity-mismatch' });
+
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); }) as never;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+
+    await expect(restoreCommand([snapPath, '--no-restart', '--force'])).rejects.toThrow('exit');
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    // Must never have touched the live DB.
+    expect(existsSync(join(dir, 'memory.sqlite.pre-restore.bak'))).toBe(false);
+    expect(existsSync(join(dir, 'memory.sqlite'))).toBe(false);
+    // The refusal message must explain --force alone is not enough here.
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('CONFIRMED mismatch'))).toBe(true);
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force-mismatch'))).toBe(true);
+  });
+
+  it('--force --force-mismatch together bypass a CONFIRMED identity mismatch and let restore proceed', async () => {
+    const snapPath = await seedSnapshot();
+    const detail =
+      'refusing to signal pid 4242: process start time mismatch (lock says 2020-01-01T00:00:00.000Z, ' +
+      'OS says 2026-07-13T12:00:00.000Z, drift 999999999ms > 60000ms) — likely a recycled PID, not our daemon';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'identity-mismatch' });
+
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await restoreCommand([snapPath, '--no-restart', '--force', '--force-mismatch']);
+
+    expect(existsSync(join(dir, 'memory.sqlite'))).toBe(true);
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force --force-mismatch') && String(c[0]).includes('bypassing'))).toBe(true);
+  });
+});
