@@ -1,0 +1,52 @@
+-- Migration 040: drop three day-one tables that nothing has ever written
+-- (issue: teardown-remediation-plan §2.5 / docs/research/20260713-teardown-and-reinvent.md #10).
+--
+-- `messages`, `artifacts`, and `provider_state` were all created in
+-- 001-init.sql, before the ingest pipeline that exists today was built.
+-- Each had a real intent at the time; each was superseded by a different
+-- implementation shortly after, and nothing ever removed them:
+--
+--   messages       (session_id, role, content, ts, kind) -- meant to store
+--                  conversation turns one row per turn. Superseded by
+--                  `transcripts`, which stores the whole turn array as a
+--                  single blob, plus flattenTranscriptContent() flattening
+--                  turns for the distiller rather than rowing them out.
+--
+--   artifacts      (job_id, kind, content_path, created_at) -- meant to
+--                  index files on disk produced by jobs. Superseded:
+--                  distill writes atoms straight to `memories`; no job in
+--                  this codebase's history has ever produced a file
+--                  artifact.
+--
+--   provider_state (provider, model, dim, last_health_ok, last_check_at)
+--                  -- meant to be a persistent cache of provider health/dim
+--                  so boot wouldn't re-probe. Superseded by live checks:
+--                  doctor probes and GET /health read provider state from
+--                  in-memory HealthState instead. provider_state was the
+--                  sharpest case of the three -- it had zero writers but
+--                  ONE live reader (src/server/queries/dashboard.ts's
+--                  queryProviders, feeding the dashboard's "Providers /
+--                  Storage" widget) -- so the widget had rendered
+--                  permanently empty since the day it shipped. This
+--                  migration lands together with the dashboard change that
+--                  repoints that widget at config.embedding + the live
+--                  HealthState.embed data instead of deleting it outright.
+--
+-- This is a speculative top-down schema that the bottom-up pipeline routed
+-- around. Confirmed zero writers by `grep -rn "INSERT INTO (messages|
+-- artifacts|provider_state)"` across all of src/ (zero matches) and a
+-- read-only COUNT(*) against the real production DB (17,654 memories,
+-- schema_version 39 at the time of the check): messages=0, artifacts=0,
+-- provider_state=0. `evidence_guard_drops` (migration 030) has zero writers
+-- too but is a DIFFERENT, in-flight case (a guard-drop counter table whose
+-- writer is still landing) -- it is deliberately NOT touched here.
+--
+-- IRREVERSIBLE: this is a DROP, not a code change. `reinstall --rollback`
+-- repoints the release pointer (code), not the SQLite schema -- rolling
+-- back the daemon version after this migration has applied does NOT bring
+-- these tables back. If either table's original intent is ever wanted
+-- again, it needs a fresh CREATE TABLE migration, not a rollback.
+
+DROP TABLE messages;
+DROP TABLE artifacts;
+DROP TABLE provider_state;

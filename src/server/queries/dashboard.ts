@@ -88,14 +88,6 @@ export interface HourlyThroughput {
   count: number;
 }
 
-export interface ProviderRow {
-  provider: string;
-  model: string;
-  dim: number | null;
-  last_health_ok: number;
-  last_check_at: number | null;
-}
-
 export interface BudgetSpendRow {
   day: string;
   usd_total: number;
@@ -108,7 +100,6 @@ export interface DashboardData {
   jobStates: JobStateCount[];
   jobStatesByKind: JobStateByKind[];
   hourlyThroughput: HourlyThroughput[];
-  providers: ProviderRow[];
   todaySpend: BudgetSpendRow | null;
   mtdSpend: number;
   mtdCalls: number;
@@ -240,12 +231,6 @@ export function queryHourlyThroughput(db: DB): HourlyThroughput[] {
   `).all(since24hMs) as HourlyThroughput[];
 }
 
-export function queryProviders(db: DB): ProviderRow[] {
-  return db.prepare<[], ProviderRow>(
-    'SELECT provider, model, dim, last_health_ok, last_check_at FROM provider_state',
-  ).all() as ProviderRow[];
-}
-
 export function queryBudget(db: DB): { today: BudgetSpendRow | null; mtdUsd: number; mtdCalls: number } {
   const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
   const monthPrefix = todayKey.slice(0, 7); // YYYY-MM
@@ -288,7 +273,6 @@ export async function queryDashboard(db: DB, healthState?: HealthState): Promise
   const jobStates = queryJobStates(db);
   const jobStatesByKind = queryJobStatesByKind(db);
   const hourlyThroughput = queryHourlyThroughput(db);
-  const providers = queryProviders(db);
   const budget = queryBudget(db);
   const usefulness = queryUsefulness(db);
   const consolidation = queryConsolidationSummary(db);
@@ -302,7 +286,6 @@ export async function queryDashboard(db: DB, healthState?: HealthState): Promise
     jobStates,
     jobStatesByKind,
     hourlyThroughput,
-    providers,
     todaySpend: budget.today,
     mtdSpend: budget.mtdUsd,
     mtdCalls: budget.mtdCalls,
