@@ -5,7 +5,7 @@
 // drains once it starts — the writer never touches the daemon/db at all).
 
 import { describe, it, expect, afterEach, beforeEach } from 'vitest';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
@@ -205,6 +205,72 @@ describe('drainIngestSpool — FEAT-458 S3: capture_source "proxy" survives safe
     expect(listSpoolFiles(dataDir)).toEqual([]);
     const transcripts = db.prepare('SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?').get('sess-proxy-typo-1') as { n: number };
     expect(transcripts.n).toBe(0);
+
+    db.close();
+  });
+});
+
+// Wave A slice A3: the whole point of this slice — a secret-bearing envelope
+// that FAILS schema validation must still land in .quarantine/ ALREADY
+// REDACTED. Pre-fix, quarantine happened before redaction ever ran, and
+// the selection effect (content that breaks a parser disproportionately
+// contains secrets) made quarantine the most likely place on disk for a
+// live credential to sit indefinitely.
+describe('drainIngestSpool — A3 (secret-bearing envelope quarantined already-redacted)', () => {
+  it('a schema-invalid envelope carrying a real-shaped secret is quarantined with the secret already replaced by a [REDACTED:...] placeholder', () => {
+    const dataDir = tempDataDir();
+    const db = makeDb();
+    const config = defaultConfig();
+
+    const secret = 'AKIAIOSFODNN7EXAMPLE'; // AWS access-key shape (src/redact/detectors.ts aws_access_key)
+    const envelope = {
+      event: 'session_end' as const,
+      session_id: 'sess-a3-secret-quarantine',
+      project_id: 'proj-a3',
+      captured_at: '2026-07-13T12:00:00.000Z',
+      kind: 'transcript' as const,
+      turns: [{ role: 'user' as const, text: `export AWS_ACCESS_KEY_ID=${secret}` }],
+      client_scrub_applied: false,
+      client_scrub_hits: 0,
+      client_version: '0.16.0',
+      client_scrub_version: 'none',
+      wire_version: 'v1.0' as const,
+      capture_source: 'proxied', // not a member of the enum — deliberately fails safeParse, same as the regression guard above
+    };
+    const key = createHash('sha256').update(JSON.stringify(envelope)).digest('hex');
+
+    // redaction happens INSIDE writeToSpool, before these bytes ever hit
+    // disk — this is the fix under test, not drainIngestSpool's behavior.
+    writeToSpool(dataDir, key, envelope, config);
+
+    // The file on disk right after spool-write, BEFORE any drain tick ever
+    // runs, must already be redacted — proves redaction happens at
+    // spool-write, not merely "eventually, once quarantined."
+    const spooledRaw = readFileSync(join(spoolDir(dataDir), `${key}.json`), 'utf8');
+    expect(spooledRaw).not.toContain(secret);
+    expect(spooledRaw).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+
+    // Drive it to quarantine (fails safeParse every tick — same mechanics as
+    // the regression-guard test above).
+    let last = drainIngestSpool(db, config, dataDir);
+    for (let i = 0; i < 4; i++) {
+      last = drainIngestSpool(db, config, dataDir);
+    }
+    expect(last.quarantined).toBe(1);
+    expect(listSpoolFiles(dataDir)).toEqual([]);
+
+    const quarantinedPath = join(spoolDir(dataDir), '.quarantine', `${key}.json`);
+    expect(existsSync(quarantinedPath)).toBe(true);
+    const quarantinedRaw = readFileSync(quarantinedPath, 'utf8');
+
+    // The core assertion: the raw secret never appears in the quarantined
+    // file, and a redaction placeholder does — quarantine received
+    // already-redacted content, not a second, deferred redaction pass.
+    expect(quarantinedRaw).not.toContain(secret);
+    expect(quarantinedRaw).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+
+    const transcripts = db.prepare('SELECT COUNT(*) AS n FROM transcripts WHERE session_id = ?').get('sess-a3-secret-quarantine') as { n: number };
+    expect(transcripts.n).toBe(0); // never ingested — quarantined, not stored
 
     db.close();
   });

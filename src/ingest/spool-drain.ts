@@ -36,6 +36,7 @@ import {
   listSpoolFiles,
   deleteSpoolFile,
   quarantineSpoolFile,
+  pruneExpiredQuarantine,
   type SpoolFile,
 } from './spool.js';
 import {
@@ -64,6 +65,17 @@ export function resetSpoolDrainFailureCounts(): void {
 
 export function drainIngestSpool(db: DB, config: Config, dataDir: string, maxPerTick = 50): DrainResult {
   const log = childLogger({ request_id: 'spool-drain' });
+
+  // A3 (Wave A): quarantine TTL sweep — piggybacks this tick's cadence rather
+  // than a separate timer (readdir + one stat per quarantined key; real
+  // installs quarantine rarely, so this is cheap). Not folded into
+  // DrainResult's shape — that return type is a public contract tests assert
+  // on with strict `toEqual`; prune is logged, not returned.
+  const prune = pruneExpiredQuarantine(dataDir);
+  if (prune.removed > 0) {
+    log.info({ removed: prune.removed, remaining: prune.remaining }, 'ingest-spool quarantine TTL prune');
+  }
+
   const files = listSpoolFiles(dataDir);
   const maxBytes = config.ingest.spoolMaxBytes;
 

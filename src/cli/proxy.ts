@@ -101,6 +101,11 @@ export async function proxyCommand(rest: string[]): Promise<void> {
         // src/capture/relevance-gate.ts's taxonomy and dedup window apply
         // identically here.
         relevanceGate: cfg.capture.autoCapture.relevanceGate,
+        // A3 (Wave A): the operator's real resolved config drives
+        // spool-write redaction (src/ingest/spool.ts writeToSpool) — same
+        // security.redaction.* settings the daemon's own ingest-time
+        // redaction honors, never a second drifting posture.
+        redactConfig: cfg,
       })
     : undefined;
 
