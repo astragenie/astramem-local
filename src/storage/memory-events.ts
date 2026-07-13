@@ -298,6 +298,13 @@ export class MemoryEventRepo {
       // FEAT-402 AC-3: zero orphan links — the superseded memory no longer
       // contributes to "everything about entity X".
       this.db.prepare('DELETE FROM memory_entities WHERE memory_id = ?').run(oldId);
+      // FEAT-481 SLICE-1 AC-4: same reasoning, one line over — a superseded
+      // memory's relation triples should stop counting as current evidence
+      // too, even though (like memory_entities) the memories row itself
+      // survives for audit. entity_relations.evidence_memory_id has no FK
+      // cascade path here (the memories row isn't deleted), so this is
+      // explicit, same as the memory_entities delete above.
+      this.db.prepare('DELETE FROM entity_relations WHERE evidence_memory_id = ?').run(oldId);
       const payload: Record<string, unknown> = { superseded_by: newId };
       if (provenance) {
         payload.auto_accepted = true;

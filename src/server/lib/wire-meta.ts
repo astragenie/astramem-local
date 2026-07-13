@@ -124,4 +124,9 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 // 026 = transcripts.proxy_usage_json, additive nullable column (FEAT-458 S6
 //       -- wires extractUsageMetadata's token/cost telemetry, S5-authored
 //       and previously unattached, into durable storage).
-export const SCHEMA_VERSION = 26 as const;
+// 027 = entity_relations table (FEAT-481 SLICE-1) -- entity-to-entity
+//       relation triples, cloud-parity schema (see migration file header and
+//       docs/specs/FEAT-481-design.md §1); ON DELETE CASCADE on all three
+//       FKs is a deliberate divergence from cloud's RESTRICT (ADR-006
+//       erase_memory).
+export const SCHEMA_VERSION = 27 as const;
