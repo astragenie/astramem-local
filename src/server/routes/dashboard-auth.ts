@@ -9,19 +9,34 @@
  *   1. `auth.devNoAuth` active (config true AND loopback bind — computed
  *      once in app.ts and threaded down to every dashboard route factory)
  *      AND the request's Host header resolves to loopback
- *      (`isLoopbackHostHeader`) => access granted, no token/cookie required.
+ *      (`isLoopbackHostHeader`) => access granted, no token/cookie required
+ *      (subject to the Origin check below).
  *   2. `devNoAuth` active but Host does NOT resolve to loopback => 403. This
  *      is the same DNS-rebinding defense app.ts's preHandler applies to API
  *      routes (see network.ts's isLoopbackHostHeader doc comment) — without
  *      it, a page a rebinding attack served under an attacker-controlled
  *      hostname could read memory titles/metrics off the dashboard.
- *   3. `devNoAuth` inactive => unchanged pre-existing behavior: Bearer header
+ *   3. `devNoAuth` active, Host is loopback, but an `Origin` header is
+ *      present and does NOT resolve to loopback => 403. A `<form
+ *      method="post">` on a malicious page is a CORS "simple request" — no
+ *      preflight — and on a form POST the Host header is always the
+ *      TARGET (this daemon, always loopback), never the page that fired
+ *      it, so check #1/#2 above cannot see that the request actually
+ *      originated from an attacker's page rather than the dashboard's own
+ *      forms. `Origin` is the one header a form POST carries that reflects
+ *      the calling page. With `devNoAuth` off this hole is already closed
+ *      by `SameSite=Strict` on the session cookie (a cross-site form POST
+ *      simply doesn't attach it), so this check only needs to run in the
+ *      devNoAuth branch. No `Origin` header at all (curl, scripts,
+ *      same-origin navigations) passes through unchanged.
+ *   4. `devNoAuth` inactive => unchanged pre-existing behavior: Bearer header
  *      or the HttpOnly `astramem_dash` cookie (bootstrapped once via
  *      dashboard.ts's `?token=` redirect) must match.
  */
 
 import type { FastifyRequest } from 'fastify';
 import { isLoopbackHostHeader } from '../lib/network.js';
+import { originIsLoopback } from '../lib/origin-guard.js';
 
 export const DASHBOARD_COOKIE_NAME = 'astramem_dash';
 
@@ -55,6 +70,10 @@ export function checkDashboardAuth(
     const hostHeader = req.headers.host ?? '';
     if (!isLoopbackHostHeader(hostHeader)) {
       return { allowed: false, status: 403, body: '403 Forbidden - non-loopback Host header' };
+    }
+    const origin = req.headers.origin;
+    if (origin && !originIsLoopback(origin)) {
+      return { allowed: false, status: 403, body: '403 Forbidden - non-loopback Origin header' };
     }
     return { allowed: true };
   }

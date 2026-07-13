@@ -31,6 +31,7 @@ import { newRequestId, runWithRequestId } from '../log/correlation.js';
 import { type Config, defaultConfig } from '../config/config.js';
 import type { HealthState } from './health-state.js';
 import { isLoopbackHost, isLoopbackHostHeader } from './lib/network.js';
+import { originIsLoopback } from './lib/origin-guard.js';
 import { safeBearerEqual } from './lib/secure-compare.js';
 
 /** Default no-op embed provider used when no real provider is injected.
@@ -75,6 +76,16 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   });
   const config = opts.config ?? defaultConfig();
   const embed = opts.embed ?? makeNoopEmbed(config.embedding.dim);
+
+  // The dashboard's accept/reject buttons are plain HTML <form method="post">
+  // elements (no JS on the dashboard by design), so the browser submits
+  // application/x-www-form-urlencoded. Fastify ships no parser for that type
+  // and 415s the request before the route runs (FST_ERR_CTP_INVALID_MEDIA_TYPE).
+  // Those routes take no meaningful body — parse to an empty object rather than
+  // pulling in @fastify/formbody for form fields nothing reads.
+  app.addContentTypeParser('application/x-www-form-urlencoded', { parseAs: 'string' }, (_req, _body, done) => {
+    done(null, {});
+  });
 
   // Assign a request_id to every incoming request and expose it on the reply header.
   app.addHook('onRequest', async (req, reply) => {
@@ -157,6 +168,19 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
           'dev no-auth mode: rejected non-loopback Host header',
         );
         return reply.code(403).send({ error: 'forbidden', reason: 'non-loopback Host header' });
+      }
+      // Same CSRF hole dashboard-auth.ts's checkDashboardAuth closes: a form
+      // POST's Host header is always the target (loopback), never the
+      // calling page, so a malicious page's credential-free POST would
+      // otherwise sail through here too. See lib/origin-guard.ts doc comment.
+      const origin = req.headers.origin;
+      if (origin && !originIsLoopback(origin)) {
+        const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
+        childLogger({ request_id: requestId ?? 'unknown' }).warn(
+          { method: req.method, path: req.url, origin },
+          'dev no-auth mode: rejected non-loopback Origin header',
+        );
+        return reply.code(403).send({ error: 'forbidden', reason: 'non-loopback Origin header' });
       }
       return;
     }

@@ -3,27 +3,36 @@
  * accept/reject (FEAT-410 wave 2, SLICE-410-2; replaces SLICE-410-1's stub
  * render internals).
  *
- * Each row is a plain `<form method="post">` targeting the EXISTING
- * `/consolidation/proposals/:id/accept|reject` endpoints
- * (src/server/routes/consolidation.ts) verbatim — no new mutation surface,
- * zero JS. Because those endpoints respond with JSON rather than a redirect
- * back to this page, resolving a proposal navigates away from the
- * dashboard; the operator returns to `/dashboard/consolidation` (nav link or
- * back button) to see the list reflect the new status. This zero-JS,
- * full-reload UX is the explicit design tradeoff recorded in
- * `.claude/artifacts/crew/runs/2026-07-04-dashboard-redesign-design.md` §7.
+ * POST /dashboard/consolidation/proposals/:id/accept|reject — the actual
+ * mutation targets for the row forms below. These are DASHBOARD-scoped
+ * routes, not the Bearer-only `/consolidation/proposals/:id/accept|reject`
+ * API routes in src/server/routes/consolidation.ts (which stay untouched
+ * for programmatic clients). The original design pointed the forms straight
+ * at the API routes, but that never worked from a real browser: a plain
+ * HTML form cannot send an `Authorization` header, the API routes are
+ * gated by app.ts's Bearer-only preHandler (which never reads cookies),
+ * and the `astramem_dash` session cookie is scoped `Path=/dashboard` so a
+ * browser wouldn't even attach it to `/consolidation/...`. These
+ * dashboard-scoped routes are gated by the same `checkDashboardAuth` helper
+ * every other /dashboard* route uses, so the cookie set by
+ * `GET /dashboard?token=` attaches naturally; resolution logic itself is
+ * NOT duplicated — both surfaces call `resolveProposal` (consolidation.ts).
+ * On success this redirects (303, POST-redirect-GET) back to
+ * `/dashboard/consolidation` so a page refresh doesn't resubmit the form.
  *
  * Auth is the shared `checkDashboardAuth` helper (dashboard-auth.ts) — Bearer
  * header, the HttpOnly `astramem_dash` cookie bootstrapped by
  * src/server/routes/dashboard.ts, or (when active) devNoAuth's loopback-only
- * bypass.
+ * bypass (itself hardened against the form-CSRF hole — see that helper's
+ * doc comment and lib/origin-guard.ts).
  */
 
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import { ProposalRepo, type ConsolidationProposal } from '../../consolidate/proposals.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { checkDashboardAuth } from './dashboard-auth.js';
+import { resolveProposal } from './consolidation.js';
 
 const RESOLVED_LIMIT = 100;
 
@@ -81,6 +90,9 @@ nav .active{color:#fff;font-weight:bold}
  *  accepted but ignored it, keeping this factory's signature stable). */
 export function dashboardConsolidationRoute(db: DB, token: string, devNoAuthActive = false) {
   return async (app: FastifyInstance) => {
+    const proposals = new ProposalRepo(db);
+    const memories = new MemoryRepo(db);
+
     app.get('/dashboard/consolidation', async (req, reply) => {
       const authResult = checkDashboardAuth(req, token, devNoAuthActive);
       if (!authResult.allowed) {
@@ -89,9 +101,6 @@ export function dashboardConsolidationRoute(db: DB, token: string, devNoAuthActi
           .header('content-type', 'text/plain; charset=utf-8')
           .send(authResult.body);
       }
-
-      const proposals = new ProposalRepo(db);
-      const memories = new MemoryRepo(db);
 
       const q = req.query as Record<string, string | undefined>;
       const status: ProposalStatus =
@@ -119,6 +128,29 @@ export function dashboardConsolidationRoute(db: DB, token: string, devNoAuthActi
         .header('cache-control', 'no-store')
         .send(renderPage(status, counts, rows, memories));
     });
+
+    const mutateHandler = (action: 'accept' | 'reject') =>
+      async (req: FastifyRequest, reply: FastifyReply) => {
+        const authResult = checkDashboardAuth(req, token, devNoAuthActive);
+        if (!authResult.allowed) {
+          return reply
+            .code(authResult.status)
+            .header('content-type', 'text/plain; charset=utf-8')
+            .send(authResult.body);
+        }
+
+        const { id } = req.params as { id: string };
+        const outcome = resolveProposal(proposals, id, action);
+        if (!outcome.ok) {
+          return reply.code(outcome.status).send({ error: outcome.error, id: outcome.id });
+        }
+        // POST-redirect-GET: a refresh after this replays the GET, not the
+        // mutating POST.
+        return reply.code(303).header('location', '/dashboard/consolidation').send();
+      };
+
+    app.post('/dashboard/consolidation/proposals/:id/accept', mutateHandler('accept'));
+    app.post('/dashboard/consolidation/proposals/:id/reject', mutateHandler('reject'));
   };
 }
 
@@ -139,8 +171,8 @@ function renderRow(p: ConsolidationProposal, memories: MemoryRepo): string {
 
   let lastCell: string;
   if (p.status === 'pending') {
-    const acceptAction = `/consolidation/proposals/${encodeURIComponent(p.id)}/accept`;
-    const rejectAction = `/consolidation/proposals/${encodeURIComponent(p.id)}/reject`;
+    const acceptAction = `/dashboard/consolidation/proposals/${encodeURIComponent(p.id)}/accept`;
+    const rejectAction = `/dashboard/consolidation/proposals/${encodeURIComponent(p.id)}/reject`;
     lastCell = `
       <form method="post" action="${esc(acceptAction)}" style="display:inline">
         <button type="submit">accept</button>
