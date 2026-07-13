@@ -356,6 +356,15 @@ hex chars of `SHA-256(secret value)` — so the same secret always redacts to th
 a 7-day breakdown, e.g. `redaction: on — 12 secrets redacted (3 aws_access_key, 9 generic_credential) in last 7d`.
 Toggle with `security.redaction.enabled` (default `true`).
 
+**Redaction is secrets-only, regardless of extraction profile.** `distill.extractProfile:
+conversational` (see `docs/configuration.md#distillextractprofile`) extracts far more non-secret
+personal detail (names, relationships, life events, preferences) than the default `engineering`
+profile — that is its entire purpose. This redaction pass is completely unchanged either way: it
+never redacts non-secret personal content under any profile, and everything it does not redact is
+written to the local SQLite store and (if a cloud LLM provider is configured for extraction) sent
+to that provider like any other transcript content. `astramem-local doctor` reports the active
+profile and this same disclosure in its "Extraction profile" row.
+
 ### Bearer token storage
 
 The daemon's Bearer token is stored the same way as the DB encryption key: OS credential store

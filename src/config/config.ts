@@ -313,14 +313,27 @@ export interface Config {
     durabilityGate: 'strict' | 'lenient' | 'off';
     /** FEAT-479 (D3 §3.2): which extraction prompt profile stage 5 (`05-
      *  extract.ts`) resolves per-run. `'engineering'` (default) is the
-     *  existing shipped prompt (EXTRACTION_SYSTEM_PROMPT/_V2) — BYTE-
+     *  existing shipped prompt (EXTRACTION_SYSTEM_PROMPT/_V2/_V3) — BYTE-
      *  IDENTICAL to pre-FEAT-479 behavior when no override is configured
      *  anywhere. `'conversational'` selects the mem0/Graphiti-pattern
-     *  liberal-extraction profile (AC-9/AC-10) — SLICE-434 supplies its
-     *  prompt text; until then `resolveExtractionPrompt`
-     *  (src/distill/prompts/extract.ts) falls back to the engineering
-     *  prompt behind a TODO marker, so this config surface is fully wired
-     *  and testable before that content exists.
+     *  liberal-extraction profile (AC-9/AC-10, SLICE-434 —
+     *  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL in src/distill/prompts/
+     *  extract.ts): self-contained personal-fact sentences, possessor
+     *  qualification, banned vague-summary/meta-commentary abstractions.
+     *
+     *  Redaction-posture disclosure (AC-10): switching to 'conversational'
+     *  does NOT change what gets redacted. `src/redact/index.ts` still only
+     *  strips SECRETS (tokens, keys, passwords, high-entropy strings) —
+     *  never non-secret personal content. The whole point of this profile is
+     *  to extract MORE personal detail (names, relationships, life events)
+     *  into stored memories, all of which stays on-device in the local
+     *  SQLite store like every other profile's output; it is never sent
+     *  anywhere except to whichever LLM provider is configured for
+     *  extraction itself (local Ollama by default, or a configured BYO cloud
+     *  provider — see docs/providers.md). Operators who want personal
+     *  content to never leave the box at all should keep the LLM provider
+     *  on Ollama; the redaction gate provides no privacy boundary for
+     *  ordinary personal facts under either profile.
      *
      *  Precedence at resolution time (`runPipeline`, src/distill/
      *  pipeline.ts): `ASTRA_EXTRACT_PROMPT` env var (highest — existing

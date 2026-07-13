@@ -5,8 +5,13 @@ import {
   EXTRACTION_SYSTEM_PROMPT,
   EXTRACTION_SYSTEM_PROMPT_V2,
   EXTRACTION_SYSTEM_PROMPT_V3,
-  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
 } from '../../../src/distill/prompts/extract.js';
+
+/** chars/4 token estimate — mirrors src/providers/llm/ollama.ts's
+ * CHARS_PER_TOKEN heuristic and src/distill/stages/03-chunk.ts's own
+ * ~800-token chunk target (800 tokens * 4 chars/token = 3200 chars). */
+const CHARS_PER_TOKEN = 4;
 
 function makeAtom(text: string) {
   return { type: 'lesson' as const, text, importance: 0.5, confidence: 0.5 };
@@ -59,19 +64,19 @@ describe('resolveExtractionPrompt', () => {
     expect(resolveExtractionPrompt('conversational', 'v1')).toBe(EXTRACTION_SYSTEM_PROMPT);
   });
 
-  it("profile 'conversational' (no override) resolves to the SLICE-434 pending-marker constant (not yet the real conversational prompt, and NOT v3)", () => {
+  it("profile 'conversational' (no override) resolves to the real SLICE-434 conversational prompt — NOT the engineering v1/v3 prompt", () => {
     expect(resolveExtractionPrompt('conversational', undefined)).toBe(
-      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
     );
-    // Today this is still textually identical to the OLD (pre-SLICE-433) v1
-    // engineering prompt — SLICE-434 owns replacing it with real
-    // conversational-profile content, and SLICE-433 deliberately left it
-    // pointed at v1 rather than v3 so the two prompt rewrites stay
-    // independently reviewable. Asserted explicitly so this test starts
-    // failing the moment SLICE-434 diverges the constant, as a reminder to
-    // revisit this assertion rather than silently passing.
-    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING).toBe(EXTRACTION_SYSTEM_PROMPT);
-    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING).not.toBe(EXTRACTION_SYSTEM_PROMPT_V3);
+    // SLICE-432/433 shipped a deliberate tripwire here: the pending-marker
+    // constant was byte-identical to EXTRACTION_SYSTEM_PROMPT (v1) until this
+    // slice landed real content. Now that it has, the constant MUST diverge
+    // from both engineering prompts — a regression back to aliasing either
+    // one would silently ship engineering-profile output under the
+    // conversational label.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toBe(EXTRACTION_SYSTEM_PROMPT);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toBe(EXTRACTION_SYSTEM_PROMPT_V2);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toBe(EXTRACTION_SYSTEM_PROMPT_V3);
   });
 
   it("AC-4: ASTRA_EXTRACT_PROMPT=v2 wins over profile 'engineering'", () => {
@@ -138,5 +143,79 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
 
   it('the JSON schema hint reflects the new 1000-char cap, not the old 500-char one', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/5-1000 chars/);
+  });
+});
+
+// FEAT-479 (D3 §3.2) AC-9/AC-10 (SLICE-434): mem0/Graphiti-pattern
+// conversational profile — content assertions mirror the V3-content
+// describe block above, but check the profile-specific rules this prompt
+// adds instead (liberal extraction, possessor qualification, banned
+// abstractions, conditional date grounding) rather than the engineering
+// richness rule, which this profile explicitly does NOT apply.
+describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
+  it('states the mem0-pattern liberal-extraction posture and the 15-80 word self-contained-sentence shape', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/mem0 pattern/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/15-80 words?/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Self-containment/);
+  });
+
+  it('states pronoun resolution and exact proper-noun preservation', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Resolve every pronoun/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Preserve proper nouns EXACTLY/);
+  });
+
+  it('states Graphiti-pattern possessor qualification explicitly', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Possessor qualification/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Graphiti pattern/);
+  });
+
+  it('states date grounding CONDITIONALLY — no captured_at is threaded into this call, so grounding only fires when the transcript itself carries an anchor', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Date grounding/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/if the transcript states or implies/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/keep the original relative phrasing/);
+  });
+
+  it('states the banned-abstractions negative list (vague summaries, meta-commentary, sentiment padding)', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Banned abstractions/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Vague summaries/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Meta-commentary/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Sentiment padding/);
+  });
+
+  it('explicitly does NOT apply the engineering profile\'s 300-800-char richness rule — conversational atoms stay atomic/short regardless of type', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/do NOT apply the engineering profile/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/300-800 characters/);
+  });
+
+  it('carries over the shared 7-type JSON output shape (same AtomSchema/EntityKindSchema contract validates every profile)', () => {
+    for (const marker of ['"decision"', '"fact"', '"lesson"', '"command"', '"todo"', '"note"', '"event"']) {
+      expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toContain(marker);
+    }
+  });
+
+  it('includes at least 3 few-shot examples plus a negative (WRONG vs RIGHT) example', () => {
+    const exampleCount = (EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL.match(/^\d+\. /gm) ?? []).length;
+    expect(exampleCount).toBeGreaterThanOrEqual(3);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/NEGATIVE EXAMPLE/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/WRONG/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/RIGHT/);
+  });
+
+  // SLICE-433's context-budget standing rule (the v3 prompt's own truncation
+  // bug — see ollama-llm.test.ts's "num_ctx sizing" describe block and
+  // src/providers/llm/ollama.ts's NUM_CTX_CAP) applies to every extraction
+  // profile, not just engineering: the real prompt + a real 800-token chunk
+  // + the 2500 maxTokens output budget must fit within the 16384 num_ctx
+  // cap, with room left for ollama.ts's own NUM_CTX_SLACK_TOKENS (512).
+  it('fits the Ollama NUM_CTX_CAP (16384) alongside an 800-token chunk and maxTokens 2500 (SLICE-433 context-budget rule)', () => {
+    const NUM_CTX_CAP = 16384;
+    const MAX_TOKENS = 2500;
+    const SLACK_TOKENS = 512;
+    const CHUNK_TOKENS = 800;
+
+    const promptTokens = EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL.length / CHARS_PER_TOKEN;
+    const estimatedTotal = promptTokens + CHUNK_TOKENS + MAX_TOKENS + SLACK_TOKENS;
+
+    expect(estimatedTotal).toBeLessThanOrEqual(NUM_CTX_CAP);
   });
 });
