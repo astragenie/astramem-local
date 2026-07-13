@@ -96,11 +96,18 @@ describe('recordRecallUsed + recordMemoryCorrected', () => {
     expect(payload).toEqual({ family: 'recall_used', surface: 'mcp', signal: 'explicit' });
   });
 
-  it('recordMemoryCorrected appends a memory_corrected event', () => {
+  it('recordMemoryCorrected appends a memory_corrected event, source defaults to external', () => {
     const id = insertMem(repo, 'us-corrected-a');
     recordMemoryCorrected(db, { atomId: id, action: 'demoted' });
     const payload = JSON.parse(events.listForAtom(id)[0]?.payload_json ?? '{}');
-    expect(payload).toEqual({ family: 'memory_corrected', action: 'demoted' });
+    expect(payload).toEqual({ family: 'memory_corrected', action: 'demoted', source: 'external' });
+  });
+
+  it('recordMemoryCorrected accepts an explicit source', () => {
+    const id = insertMem(repo, 'us-corrected-b');
+    recordMemoryCorrected(db, { atomId: id, action: 'demoted', source: 'consolidation_auto' });
+    const payload = JSON.parse(events.listForAtom(id)[0]?.payload_json ?? '{}');
+    expect(payload).toEqual({ family: 'memory_corrected', action: 'demoted', source: 'consolidation_auto' });
   });
 });
 
@@ -123,10 +130,11 @@ describe('MemoryEventRepo.invalidate/supersede also write memory_corrected', () 
     const log = events.listForAtom(id);
     expect(log.map(e => e.event_type)).toEqual(['invalidate', 'usefulness']);
     const payload = JSON.parse(log[1]?.payload_json ?? '{}');
-    expect(payload).toEqual({ family: 'memory_corrected', action: 'invalidated' });
+    // issue #190: invalidate() has no automated caller — always 'external'.
+    expect(payload).toEqual({ family: 'memory_corrected', action: 'invalidated', source: 'external' });
   });
 
-  it('supersede() appends supersede + usefulness/memory_corrected(superseded) on the old id', () => {
+  it('supersede() appends supersede + usefulness/memory_corrected(superseded) on the old id, default source external', () => {
     const oldId = insertMem(repo, 'us-sup-old');
     const newId = insertMem(repo, 'us-sup-new');
     events.supersede(oldId, newId);
@@ -134,10 +142,27 @@ describe('MemoryEventRepo.invalidate/supersede also write memory_corrected', () 
     const log = events.listForAtom(oldId);
     expect(log.map(e => e.event_type)).toEqual(['supersede', 'usefulness']);
     const payload = JSON.parse(log[1]?.payload_json ?? '{}');
-    expect(payload).toEqual({ family: 'memory_corrected', action: 'superseded' });
+    expect(payload).toEqual({ family: 'memory_corrected', action: 'superseded', source: 'external' });
 
     // new id is untouched by the correction event
     expect(events.listForAtom(newId).filter(e => e.event_type === 'usefulness')).toHaveLength(0);
+  });
+
+  // issue #190 AC-2: the 4th `correctionSource` param tags WHO decided this
+  // merge, independent of the FEAT-442 `provenance` autoAcceptThreshold marker
+  // (which stays untouched on the `supersede` event's own payload — see the
+  // `provenance param adds ...` test in memory-events.test.ts).
+  it('supersede() with correctionSource="consolidation_auto" tags the memory_corrected event, not the supersede event', () => {
+    const oldId = insertMem(repo, 'us-sup-auto-old');
+    const newId = insertMem(repo, 'us-sup-auto-new');
+    events.supersede(oldId, newId, undefined, 'consolidation_auto');
+
+    const log = events.listForAtom(oldId);
+    const supersedePayload = JSON.parse(log.find(e => e.event_type === 'supersede')?.payload_json ?? '{}');
+    expect(supersedePayload).toEqual({ superseded_by: newId }); // unaffected by correctionSource
+
+    const usefulnessPayload = JSON.parse(log.find(e => e.event_type === 'usefulness')?.payload_json ?? '{}');
+    expect(usefulnessPayload).toEqual({ family: 'memory_corrected', action: 'superseded', source: 'consolidation_auto' });
   });
 });
 
