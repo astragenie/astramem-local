@@ -11,7 +11,7 @@ import type { ExtendedHandlerCtx } from '../../../src/pipeline/handler-ctx-ext.j
 import type { DB } from '../../../src/storage/db.js';
 import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth, EmbedHealth } from '../../../src/contracts/index.js';
 import {
-  EXTRACTION_SYSTEM_PROMPT,
+  EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
 } from '../../../src/distill/prompts/extract.js';
 
@@ -387,7 +387,7 @@ describe('distillHandler', () => {
     }
   });
 
-  it('FEAT-479 AC-2 byte-identical default: transcripts.extract_profile NULL sends the engineering v1 prompt to the extraction LLM', async () => {
+  it('SLICE-433 default: transcripts.extract_profile NULL sends the v3 engineering-rich prompt to the extraction LLM (v1 no longer default)', async () => {
     const sessionId = randomUUID();
     const transcriptId = randomUUID();
     const { llm: capturingExtractionLLM, extractionSystemPrompts } = makeCapturingMockLLM();
@@ -408,7 +408,7 @@ describe('distillHandler', () => {
 
     expect(extractionSystemPrompts.length).toBeGreaterThanOrEqual(1);
     for (const sentPrompt of extractionSystemPrompts) {
-      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT);
+      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT_V3);
     }
   });
 });
