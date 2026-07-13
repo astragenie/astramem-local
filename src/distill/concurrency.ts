@@ -1,6 +1,6 @@
 /**
  * Bounded-concurrency map for the distill chunk-level LLM fan-out
- * (FEAT-482 — 04-compact.ts / 05-extract.ts). Hand-rolled — no dependency
+ * (FEAT-487 — 04-compact.ts / 05-extract.ts). Hand-rolled — no dependency
  * (p-limit et al) for something this small.
  *
  * INVARIANTS (see 04-compact.ts / 05-extract.ts callers for how these map
@@ -9,7 +9,7 @@
  * 1. Concurrency ceiling: at most `limit` calls to `fn` are ever in flight
  *    simultaneously. `limit=1` degenerates to a single worker draining
  *    items 0..n-1 strictly in order, one at a time — BYTE-IDENTICAL to the
- *    pre-FEAT-482 sequential `for…of await` loop this replaces.
+ *    pre-FEAT-487 sequential `for…of await` loop this replaces.
  *
  * 2. Result order: the returned array is indexed by INPUT position, not
  *    completion order — callers (compact()/extract()) index results by
@@ -26,7 +26,7 @@
  *    the queue never get a chance to also check-and-maybe-pass against a
  *    stale (not-yet-recorded) budget total.
  *
- *    KNOWN COMPROMISE (documented, not fixed here — see FEAT-482 handoff):
+ *    KNOWN COMPROMISE (documented, not fixed here — see FEAT-487 handoff):
  *    the check-then-record budget sequence still lives inside
  *    compactChunk()/extractChunk() themselves (out of scope for this helper
  *    to touch), so up to `limit - 1` chunks already in flight when the
@@ -97,7 +97,7 @@ const MAX_CHUNK_CONCURRENCY = 8;
  * pipeline run.
  *
  * Setting `distill.chunkConcurrency: 1` is the documented safety valve: it
- * reproduces the pre-FEAT-482 sequential compact()/extract() behavior
+ * reproduces the pre-FEAT-487 sequential compact()/extract() behavior
  * exactly (see mapWithConcurrency's limit=1 case above).
  */
 export function resolveChunkConcurrency(config: Config): number {

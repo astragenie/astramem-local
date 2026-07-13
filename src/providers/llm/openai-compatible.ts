@@ -106,7 +106,7 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     // This provider defaults its baseUrl at api.openai.com, so it is subject to that rule,
     // but it was the one provider of the three WITHOUT the guard — an armed copy of the bug
     // that poisoned every Azure distill job, undetonated only because nothing routes here
-    // live yet. Found 2026-07-13 by the cross-provider conformance suite (FEAT-483), which
+    // live yet. Found 2026-07-13 by the cross-provider conformance suite (FEAT-488), which
     // exists precisely because per-provider tests cannot see a divergence BETWEEN providers.
     const outgoing: ChatMsg[] =
       useJson && !messages.some((m) => /json/i.test(String(m.content)))

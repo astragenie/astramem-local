@@ -108,11 +108,11 @@ describe('compact stage', () => {
   });
 });
 
-// FEAT-482: bounded-concurrency chunk fan-out. compact() now delegates to
+// FEAT-487: bounded-concurrency chunk fan-out. compact() now delegates to
 // mapWithConcurrency (src/distill/concurrency.ts) — these tests pin the
 // compact()-level integration of that helper's invariants.
-describe('compact() concurrency (FEAT-482)', () => {
-  it('concurrency=1 (the default, omitted) reproduces the pre-FEAT-482 sequential loop byte-for-byte', async () => {
+describe('compact() concurrency (FEAT-487)', () => {
+  it('concurrency=1 (the default, omitted) reproduces the pre-FEAT-487 sequential loop byte-for-byte', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);

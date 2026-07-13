@@ -1,5 +1,5 @@
 /**
- * FEAT-483 — shared provider-contract conformance suite.
+ * FEAT-488 — shared provider-contract conformance suite.
  *
  * Runs the SAME assertions across every LLMProvider (src/contracts/llm.ts),
  * table-driven over tests/providers/_llm-provider-adapters.ts. Exists

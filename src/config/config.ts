@@ -311,13 +311,13 @@ export interface Config {
    * section) — no hot reload. */
   distill: {
     durabilityGate: 'strict' | 'lenient' | 'off';
-    /** FEAT-482: how many chunks stage 4 (compact) / stage 5 (extract) fan
+    /** FEAT-487: how many chunks stage 4 (compact) / stage 5 (extract) fan
      *  out to the LLM provider at once within a single pipeline run — see
      *  `mapWithConcurrency` / `resolveChunkConcurrency`
      *  (src/distill/concurrency.ts) for the dispatch/budget/ordering
      *  invariants this controls. Default 2 matches the operator's measured
      *  `OLLAMA_NUM_PARALLEL=2` sweet spot (1.67x speedup) — UNLIKE most flags
-     *  in this file, this default is NOT byte-identical to the pre-FEAT-482
+     *  in this file, this default is NOT byte-identical to the pre-FEAT-487
      *  behavior; set to 1 for the exact old sequential loop (the documented
      *  safety valve, see resolveChunkConcurrency). Clamped to [1, 8] at
      *  resolution time — a bad/hand-edited value never blocks a run. Pair a

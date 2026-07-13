@@ -92,14 +92,14 @@ export async function compactChunk(
 }
 
 /**
- * Compact all chunks, up to `concurrency` at a time (FEAT-482).
+ * Compact all chunks, up to `concurrency` at a time (FEAT-487).
  *
  * Stops dispatching further chunks at the first BudgetExceeded (or any other
  * error) — caller catches and pauses job. Results stay in chunk-index order
  * regardless of completion order. See src/distill/concurrency.ts for the
  * full invariant contract `mapWithConcurrency` provides.
  *
- * `concurrency` defaults to 1 — BYTE-IDENTICAL to the pre-FEAT-482
+ * `concurrency` defaults to 1 — BYTE-IDENTICAL to the pre-FEAT-487
  * sequential `for…of await` loop this replaces. Production callers resolve
  * the real value from config via `resolveChunkConcurrency`
  * (src/distill/pipeline.ts).

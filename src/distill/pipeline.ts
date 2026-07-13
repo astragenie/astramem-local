@@ -109,7 +109,7 @@ export async function runPipeline(
 
   const budget = new BudgetTracker(ctx.db);
 
-  // FEAT-482: chunk-level fan-out width for stages 4/5, resolved once per
+  // FEAT-487: chunk-level fan-out width for stages 4/5, resolved once per
   // run from config (falls back to defaultConfig() when ctx.config is
   // omitted — same convention as ctx.config's other consumer, stage 8's
   // redactConfig). See resolveChunkConcurrency's doc comment for the [1,8]

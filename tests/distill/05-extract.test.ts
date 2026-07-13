@@ -475,11 +475,11 @@ describe('extract stage — FEAT-479 profile threading', () => {
   });
 });
 
-// FEAT-482: bounded-concurrency chunk fan-out. extract() now delegates to
+// FEAT-487: bounded-concurrency chunk fan-out. extract() now delegates to
 // mapWithConcurrency (src/distill/concurrency.ts) — these tests pin the
 // extract()-level integration of that helper's invariants.
-describe('extract() concurrency (FEAT-482)', () => {
-  it('concurrency=1 (the default, omitted) reproduces the pre-FEAT-482 sequential loop byte-for-byte', async () => {
+describe('extract() concurrency (FEAT-487)', () => {
+  it('concurrency=1 (the default, omitted) reproduces the pre-FEAT-487 sequential loop byte-for-byte', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
