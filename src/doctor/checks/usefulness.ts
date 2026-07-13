@@ -10,6 +10,10 @@ import { openProductionDbReadonly, SEVEN_DAYS_MS } from './shared.js';
 export function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Recall usefulness',
+    // usefulnessRate()/usefulnessByType() ride migration 019's partial
+    // covering indexes (idx_memory_events_usefulness_served/used) — bounded
+    // by the 7d window via an index range scan, not a memory_events scan.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {

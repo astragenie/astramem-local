@@ -33,6 +33,9 @@ export function checkProxyCapture(
 ): Check {
   return {
     name: 'LLM proxy',
+    // capture_source = 'proxy' rides idx_memories_capture_source (migration
+    // 024) — an index range scan bounded by proxy-captured row count.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!proxyEnabled) {
         return { ok: true, message: 'proxy: off (default)' };

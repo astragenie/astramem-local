@@ -18,6 +18,7 @@ import { defaultConfigDir, legacyConfigDir } from '../../config/datadir.js';
 export function checkConfigDirDivergence(): Check {
   return {
     name: 'Config dir divergence (Windows)',
+    tier: 'cheap', // a handful of fs.existsSync/readFileSync calls
     async run(): Promise<CheckResult> {
       // Only meaningful on Windows; canonical and legacy are identical elsewhere.
       if (platform() !== 'win32') {

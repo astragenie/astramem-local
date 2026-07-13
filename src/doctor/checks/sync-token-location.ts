@@ -8,6 +8,7 @@ import { defaultConfigDir } from '../../config/datadir.js';
 export function checkSyncTokenLocation(): Check {
   return {
     name: 'Sync device token location',
+    tier: 'cheap', // sync.json + OS credential store lookup, O(1)
     async run(): Promise<CheckResult> {
       try {
         const configDir = defaultConfigDir();

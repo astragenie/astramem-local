@@ -9,6 +9,9 @@ import { openProductionDbReadonly, SEVEN_DAYS_MS } from './shared.js';
 export function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: boolean): Check {
   return {
     name: 'Secret redaction',
+    // GROUP BY over a created_at >= ? window rides idx_redaction_log_created
+    // (migration 005) — bounded by the 7d window, not table size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!enabled) {
         return {

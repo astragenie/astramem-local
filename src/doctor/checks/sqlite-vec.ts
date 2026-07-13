@@ -5,6 +5,7 @@ import type { Check, CheckResult } from '../types.js';
 export function checkSqliteVec(): Check {
   return {
     name: 'sqlite-vec extension loadable',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         const { default: Database } = await import('better-sqlite3-multiple-ciphers');

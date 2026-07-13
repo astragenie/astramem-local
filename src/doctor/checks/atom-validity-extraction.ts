@@ -50,6 +50,16 @@ const VALIDITY_EXTRACTION_WARN_FLOOR = 0.05;
 export function checkAtomValidityExtraction(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Atom validity extraction',
+    // 'full' — independently found during the #226 follow-up audit. Both
+    // queries below filter `memories` on `created_at >= ?` ALONE — no
+    // archived/valid_to/repo/type predicate. Every existing index on
+    // `memories` (idx_memories_repo_type, idx_memories_archival_candidates,
+    // idx_memories_agent, idx_memories_capture_source) has a DIFFERENT
+    // column as its leading term, so none of them can serve a bare
+    // created_at range here — this is an unindexed scan of the single
+    // largest, fastest-growing table in the schema, run unconditionally on
+    // every call.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {

@@ -27,6 +27,15 @@ import { openProductionDbReadonly, MEANINGFUL_USAGE_THRESHOLD, POISON_RATE_ALARM
 export function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Memory health',
+    // 'full' — CONFIRMED by the #226 follow-up audit. buildMemoryHealthFull()
+    // (src/server/queries/memory-health.ts) adds countsByTypeAndScope() and
+    // stalenessDistribution(), both genuine O(N) group-bys/scans over the
+    // full `memories` table with no covering index — that module's own file
+    // header documents the binding 2026-07-08 design-review split: the full
+    // tier is "reserved for the full (doctor/CLI) tier... both
+    // operator-invoked, off the hot path." #226 silently violated that by
+    // putting this check on the 15-minute unattended schedule.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {

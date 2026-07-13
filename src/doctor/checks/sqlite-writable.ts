@@ -10,6 +10,7 @@ import { openProductionDbReadonly } from './shared.js';
 export function checkSqliteWritable(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'SQLite writable + WAL',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       // Try to write a probe file in the datadir
       const probePath = join(dataDir, `.doctor-probe-${randomUUID()}`);

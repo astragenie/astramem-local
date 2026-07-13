@@ -25,6 +25,7 @@ import type { Check, CheckResult } from '../types.js';
 export function checkProxyCaptureReminder(proxyEnabled: boolean, captureEnabled: boolean): Check {
   return {
     name: 'Proxy capture reminder',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (!proxyEnabled || !captureEnabled) {
         return { ok: true, message: 'proxy capture: off' };

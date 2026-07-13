@@ -7,6 +7,7 @@ import { embedProbe } from '../probes/embed-probe.js';
 export function checkEmbed(provider: EmbedProvider): Check {
   return {
     name: `Embed probe (${provider.dim}-dim)`,
+    tier: 'full', // real embed call
     async run(): Promise<CheckResult> {
       return embedProbe(provider);
     },

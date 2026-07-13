@@ -7,6 +7,7 @@ import { ONE_GB } from './shared.js';
 export function checkDiskFree(dataDir: string): Check {
   return {
     name: 'Disk free > 1GB in datadir',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         mkdirSync(dataDir, { recursive: true });

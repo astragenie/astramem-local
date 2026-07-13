@@ -73,6 +73,9 @@ export function checkSchemaDrift(
 ): Check {
   return {
     name: 'Schema drift',
+    // MAX(version) FROM schema_version — one row per migration (~36 today),
+    // bounded by migration count, not corpus size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {

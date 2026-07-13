@@ -36,6 +36,11 @@ import { openProductionDbReadonly, MEANINGFUL_USAGE_THRESHOLD } from './shared.j
 export function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, encryptionEnabled: boolean): Check {
   return {
     name: 'Auto-capture',
+    // Both count queries ride covering indexes: idx_memories_capture_source
+    // (migration 024, partial WHERE capture_source IS NOT NULL) for the
+    // capture_source IN (...) predicate, and idx_memories_archival_candidates
+    // (leading columns archived, valid_to) for the active-count query.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!autoCaptureEnabled) {
         return { ok: true, message: 'auto-capture: off (default)' };

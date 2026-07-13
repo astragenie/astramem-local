@@ -5,6 +5,9 @@ import type { Check, CheckResult } from '../types.js';
 export function checkDaemonReachable(port: number): Check {
   return {
     name: `Daemon reachable on :${port}`,
+    // Loopback-only HTTP probe (127.0.0.1) — no network call leaves the box,
+    // matching schedule.ts's "cheap tier" definition.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         const controller = new AbortController();

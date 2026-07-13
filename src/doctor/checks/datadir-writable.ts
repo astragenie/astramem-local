@@ -6,6 +6,7 @@ import type { Check, CheckResult } from '../types.js';
 export function checkDatadirWritable(dataDir: string): Check {
   return {
     name: 'Datadir exists and writable',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       try {
         mkdirSync(dataDir, { recursive: true });

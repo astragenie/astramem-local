@@ -26,6 +26,7 @@ import type { Check, CheckResult } from '../types.js';
 export function checkBudgetCapCodexBlind(dailyBudgetUsd: number, codexSubscriptionInUse: boolean): Check {
   return {
     name: 'Budget cap vs codex-subscription',
+    tier: 'cheap', // config-only, no DB/network I/O
     async run(): Promise<CheckResult> {
       if (!codexSubscriptionInUse || dailyBudgetUsd <= 0) {
         return { ok: true, message: 'budget cap applies normally (codex-subscription not in use)' };

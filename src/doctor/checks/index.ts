@@ -87,6 +87,7 @@ import { checkDiskFree } from './disk-free.js';
 import { checkServiceUnit } from './service-unit.js';
 import { checkServicePointer } from './service-pointer.js';
 import { checkCrashLoop } from './crash-loop.js';
+export { crashLoopStreakLength, CRASH_LOOP_THRESHOLD } from './crash-loop.js';
 import { checkSchemaDrift } from './schema-drift.js';
 import { checkBudget } from './budget.js';
 import { checkBudgetCapCodexBlind } from './budget-cap-codex-blind.js';

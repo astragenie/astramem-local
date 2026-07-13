@@ -26,6 +26,9 @@ import { openProductionDbReadonly } from './shared.js';
 export function checkConsolidationJudgeTelemetry(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Consolidation judge',
+    // latestConsolidationJudgeRun() rides idx_consolidation_judge_runs_created
+    // (migration 031) — a single most-recent-row lookup, not a scan.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {

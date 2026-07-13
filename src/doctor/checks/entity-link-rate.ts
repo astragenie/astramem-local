@@ -74,6 +74,13 @@ const UNLINKED_RATE_WARN_THRESHOLD = 0.25;
 export function checkEntityLinkRate(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Entity link rate',
+    // 'cheap' — landed via #215 after this PR's audit was written, but
+    // explicitly does NOT have the #226 follow-up's unbounded-scan problem:
+    // deliberately windowed to the most recent RECENT_MEMORY_WINDOW (100)
+    // memories via a LIMIT-tail query, not an all-time/unfiltered scan (see
+    // this function's own doc comment on why COUNT-tail was chosen over a
+    // calendar-time window). Bounded regardless of corpus size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {

@@ -16,6 +16,7 @@ import type { ExtractProfile } from '../../distill/prompts/extract.js';
 export function checkExtractProfile(profile: ExtractProfile): Check {
   return {
     name: 'Extraction profile',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (profile === 'conversational') {
         return {

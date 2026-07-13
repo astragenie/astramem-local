@@ -15,9 +15,58 @@ import { exitHistoryPaths, type ExitHistoryEntry } from '../../service/shim.js';
  * carried in the record for a human/dashboard to eyeball, not used here as
  * a gate).
  */
-export function checkCrashLoop(dataDir: string, threshold = 3): Check {
+/**
+ * Consecutive-non-zero-exit threshold shared by two independent consumers so
+ * they can never drift apart: `checkCrashLoop`'s own RED/GREEN finding below,
+ * and the full-tier LLM/embed boot-pass guard in schedule.ts's
+ * `runFullDoctorChecks` (2026-07-13 #226 follow-up finding 2 — a
+ * crash-looping daemon must not keep firing a metered LLM/embed call on
+ * every restart, indefinitely, with no operator in the loop).
+ */
+export const CRASH_LOOP_THRESHOLD = 3;
+
+/**
+ * Streak length of consecutive non-zero exits at the tail of
+ * exit-history.jsonl — the same walk `checkCrashLoop` performs for its own
+ * finding below, factored out so schedule.ts's crash-loop guard can reuse it
+ * without depending on `CheckResult`'s shape or duplicating the parse logic.
+ * Never throws: an unreadable/missing/malformed history degrades to 0 (no
+ * crash loop) — a doctor-history read glitch must never itself become the
+ * reason a genuine restart's LLM/embed probe silently never fires again.
+ */
+export function crashLoopStreakLength(dataDir: string): number {
+  const { historyPath } = exitHistoryPaths(dataDir);
+  if (!existsSync(historyPath)) return 0;
+
+  let entries: ExitHistoryEntry[];
+  try {
+    entries = readFileSync(historyPath, 'utf8')
+      .split('\n')
+      .filter(Boolean)
+      .map((line): ExitHistoryEntry | null => {
+        try {
+          return JSON.parse(line) as ExitHistoryEntry;
+        } catch {
+          return null;
+        }
+      })
+      .filter((e): e is ExitHistoryEntry => e !== null);
+  } catch {
+    return 0;
+  }
+
+  let streak = 0;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i]!.exitCode === 0) break;
+    streak++;
+  }
+  return streak;
+}
+
+export function checkCrashLoop(dataDir: string, threshold = CRASH_LOOP_THRESHOLD): Check {
   return {
     name: 'Crash loop',
+    tier: 'cheap', // bounded fs read + parse of exit-history.jsonl
     async run(): Promise<CheckResult> {
       const { historyPath, crashLogPath } = exitHistoryPaths(dataDir);
       if (!existsSync(historyPath)) {

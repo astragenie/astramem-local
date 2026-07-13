@@ -45,6 +45,16 @@ export function checkEntityRelations(
 ): Check {
   return {
     name: 'Entity relations extraction',
+    // 'full' — independently found during the #226 follow-up audit.
+    // `totalRow` is `COUNT(*) FROM entity_relations` with NO WHERE clause —
+    // entity_relations is a corpus-scale table (grows with every extraction
+    // that finds a relation), so this visits every row with nothing to
+    // narrow the scan. `recentMemoriesRow` compounds this: `SELECT COUNT(*)
+    // FROM memories WHERE created_at >= ?` has no covering index either (see
+    // checkAtomValidityExtraction's tier comment below for the same gap on
+    // the same table) — this check does that same unindexed memories scan
+    // IN ADDITION to the entity_relations one.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {

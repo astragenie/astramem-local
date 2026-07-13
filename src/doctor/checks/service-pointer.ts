@@ -18,6 +18,7 @@ import { releaseIdFromEntryJs } from '../../service/release.js';
 export function checkServicePointer(pointerPathOverride?: string, releasesRootOverride?: string): Check {
   return {
     name: 'Service pointer',
+    tier: 'cheap', // one small JSON file read + a releases-dir existence check
     async run(): Promise<CheckResult> {
       const pointerPath = pointerPathOverride ?? shimPaths().pointerPath;
       if (!existsSync(pointerPath)) {

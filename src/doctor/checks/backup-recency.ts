@@ -8,6 +8,7 @@ import { TWENTY_FOUR_HOURS_MS } from './shared.js';
 export function checkBackupRecency(backupsDir: string): Check {
   return {
     name: 'Backup recency',
+    tier: 'cheap', // fs.readdirSync + stat over a rotated/bounded backups dir
     async run(): Promise<CheckResult> {
       if (!existsSync(backupsDir)) {
         return {

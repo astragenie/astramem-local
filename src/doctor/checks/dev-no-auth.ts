@@ -16,6 +16,7 @@ import type { Check, CheckResult } from '../types.js';
 export function checkDevNoAuth(devNoAuthActive: boolean): Check {
   return {
     name: 'Dev no-auth mode',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (!devNoAuthActive) {
         return { ok: true, message: 'dev no-auth mode: off' };

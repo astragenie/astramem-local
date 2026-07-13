@@ -9,6 +9,7 @@ import { defaultConfigDir } from '../../config/datadir.js';
 export function checkEncryption(dataDir: string, enabled: boolean): Check {
   return {
     name: 'Encryption at rest',
+    tier: 'cheap', // reads a 16-byte file header + keystore lookup, O(1)
     async run(): Promise<CheckResult> {
       if (!enabled) {
         return {

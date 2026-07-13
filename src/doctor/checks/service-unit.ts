@@ -6,6 +6,7 @@ import type { Check, CheckResult } from '../types.js';
 export function checkServiceUnit(serviceUnitPath: string | undefined): Check {
   return {
     name: 'Service unit present',
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       if (!serviceUnitPath) {
         return { ok: true, message: 'service install not checked (no unit path configured)' };

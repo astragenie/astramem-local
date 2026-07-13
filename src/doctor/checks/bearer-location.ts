@@ -8,6 +8,7 @@ import { defaultConfigDir } from '../../config/datadir.js';
 export function checkBearerLocation(): Check {
   return {
     name: 'Bearer token location',
+    tier: 'cheap', // OS credential store / secrets.env lookup, O(1)
     async run(): Promise<CheckResult> {
       try {
         const configDir = defaultConfigDir();

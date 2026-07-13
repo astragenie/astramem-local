@@ -32,6 +32,13 @@ const MIN_ENTITIES_FOR_JUNK_RATE = 20;
 export function checkEntityNameQuality(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Entity name quality',
+    // 'full' — CONFIRMED by the #226 follow-up audit. `SELECT name, kind
+    // FROM entities` has no WHERE and no LIMIT: it materializes every row in
+    // the `entities` table into JS and runs classifyJunkEntityName() over
+    // each one. `entities` has no index at all beyond its own PK, so this is
+    // both an unindexed full-table scan AND O(N) JS-side processing on top
+    // of it — the worst-shaped query #226 put on the 15-minute schedule.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {

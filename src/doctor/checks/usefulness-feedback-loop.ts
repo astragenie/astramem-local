@@ -54,6 +54,24 @@ import { openProductionDbReadonly, MEANINGFUL_USAGE_THRESHOLD } from './shared.j
 export function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Usefulness feedback loop',
+    // 'full', NOT 'cheap' — independently found during the #226 follow-up
+    // audit alongside the two CONFIRMED findings (checkMemoryHealth,
+    // checkEntityNameQuality): feedbackLoopSummary() (src/storage/
+    // usefulness.ts) computes correctedDistinct/correctedConsolidationDistinct/
+    // correctedExternalDistinct/correctedUnknownDistinct via four
+    // `event_type = 'usefulness' AND family = 'memory_corrected'` queries
+    // with NO covering index — that function's own doc comment says so
+    // explicitly ("no partial index covers memory_corrected... that query
+    // still scans... accepted unindexed rather than adding a migration for
+    // it"), on the reasoning that doctor's canary was operator-invoked. That
+    // reasoning stopped holding the moment #226 put this check on a
+    // 15-minute unattended schedule: memory_events grows ~1:1 with every
+    // recall/search call (one 'recall_served' row per returned atom, see
+    // migration 019's own measurement: 21ms -> 1179ms p50 from 1k -> 100k
+    // rows for the SAME shape of unindexed query). buildMemoryHealthCheap()
+    // (the other half of this check) is genuinely index-backed and would be
+    // fine alone — it's feedbackLoopSummary() that forces this to 'full'.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {

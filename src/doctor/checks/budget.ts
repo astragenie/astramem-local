@@ -9,6 +9,9 @@ import { openProductionDbReadonly } from './shared.js';
 export function checkBudget(dataDir: string, dailyBudgetUsd: number, encryptionEnabled: boolean): Check {
   return {
     name: 'Daily budget vs cap',
+    // Single-row lookup keyed by today's date (budget_spend.day) — bounded
+    // by day count, not corpus size.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       let db: DB | undefined;
       try {

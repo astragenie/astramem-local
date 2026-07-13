@@ -7,6 +7,7 @@ import { llmChatProbe } from '../probes/llm-chat-probe.js';
 export function checkLLMChat(provider: LLMProvider, label: string): Check {
   return {
     name: `LLM chat probe (${label})`,
+    tier: 'full', // real, potentially metered LLM call
     async run(): Promise<CheckResult> {
       return llmChatProbe(provider);
     },

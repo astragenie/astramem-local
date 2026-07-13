@@ -12,6 +12,7 @@ import type { DurabilityGateMode } from '../../distill/durability-gate.js';
 export function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
   return {
     name: 'Distill durability gate',
+    tier: 'cheap', // config-only, no I/O
     async run(): Promise<CheckResult> {
       if (mode === 'off') {
         return { ok: true, message: 'durability gate: off (default — no atoms are gated at persist time)' };

@@ -9,6 +9,10 @@ import { CodexSubscriptionLLMProvider } from '../../providers/llm/codex-subscrip
 export function checkOpenAICompatibleReachable(provider: OpenAICompatibleLLMProvider, label: string): Check {
   return {
     name: `OpenAI-compatible reachability (${label})`,
+    // Only ever added alongside checkLLMChat's llmProviders bundle (see
+    // coreChecks() below) — 'full' keeps the whole bundle on one tier rather
+    // than splitting a single opts-gated group across two schedules.
+    tier: 'full',
     async run(): Promise<CheckResult> {
       return openAICompatibleReachabilityProbe(provider.baseUrl);
     },
@@ -18,6 +22,7 @@ export function checkOpenAICompatibleReachable(provider: OpenAICompatibleLLMProv
 export function checkCodexAuth(provider: CodexSubscriptionLLMProvider, label: string): Check {
   return {
     name: `Codex auth (${label})`,
+    tier: 'full', // same opts-gated LLM bundle as checkOpenAICompatibleReachable above
     async run(): Promise<CheckResult> {
       return codexAuthProbe(provider.authPath);
     },
