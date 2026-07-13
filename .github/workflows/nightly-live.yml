@@ -26,15 +26,10 @@
 # bump a model tag here and the cache key changes automatically, forcing a
 # fresh pull instead of silently serving a stale blob.
 #
-# KNOWN RISK (documented, not fixed — out of this slice's scope): the live
-# block in tests/providers/ollama-embed.test.ts still hardcodes the model
-# name `nomic-embed-text-v2-moe` (pre-v0.2.1-hotfix reference). That model is
-# natively 768-dim; OllamaEmbedProvider defaults to expecting 1024
-# (DEFAULT_EMBED_DIM) regardless of which model string is passed, so a real
-# run of that specific test is expected to fail with a dimension-mismatch
-# error until the test itself is updated. This is exactly the class of drift
-# this lane exists to surface — see the nightly-live section of
-# .github/workflows/README.md for triage guidance.
+# Model policy: the live blocks name the PRODUCTION defaults (config.ts), never
+# pinned legacy tags. A stale pin means this lane exercises a model no user has
+# while real drift in the actual default goes unnoticed — the exact failure the
+# lane exists to prevent.
 
 name: Nightly Live Provider CI
 
@@ -56,7 +51,7 @@ env:
   # Single source of truth for the models this lane needs. Space-separated;
   # also drives the actions/cache key below (OLLAMA_CACHE_VERSION-bump or a
   # model-tag change here invalidates the cache automatically).
-  OLLAMA_MODELS: "mxbai-embed-large qwen2.5-coder:7b nomic-embed-text-v2-moe"
+  OLLAMA_MODELS: "mxbai-embed-large qwen3:8b"
   OLLAMA_CACHE_VERSION: v1
   OLLAMA_CONTAINER: ollama-nightly-live
 

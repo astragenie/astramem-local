@@ -88,7 +88,10 @@ describe('ollama-llm', () => {
   describe('chat()', () => {
     it('round-trip returns {text, usage: {in, out, usd:0}}', async () => {
       globalThis.fetch = mockFetch([chatResponse('hello', 20, 8)]) as unknown as typeof fetch;
-      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
+      // means this lane exercises a model no user runs while real drift in the
+      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const res = await p.chat([{ role: 'user', content: 'hi' }]);
       expect(res.text).toBe('hello');
       expect(res.usage.in).toBe(20);
@@ -280,7 +283,10 @@ describe('ollama-llm', () => {
   describe('health()', () => {
     it('returns ok:true when model present in tags', async () => {
       globalThis.fetch = mockFetch([tagsResponse(['qwen2.5-coder:7b', 'llama3'])]) as unknown as typeof fetch;
-      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
+      // means this lane exercises a model no user runs while real drift in the
+      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const h = await p.health();
       expect(h.ok).toBe(true);
       expect(h.model).toBe('qwen2.5-coder:7b');
@@ -290,7 +296,10 @@ describe('ollama-llm', () => {
 
     it('returns ok:false when model not in tags', async () => {
       globalThis.fetch = mockFetch([tagsResponse(['llama3'])]) as unknown as typeof fetch;
-      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
+      // means this lane exercises a model no user runs while real drift in the
+      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const h = await p.health();
       expect(h.ok).toBe(false);
       expect(h.error).toMatch(/not found/);
@@ -298,7 +307,10 @@ describe('ollama-llm', () => {
 
     it('returns ok:false on connection error', async () => {
       globalThis.fetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
-      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
+      // means this lane exercises a model no user runs while real drift in the
+      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const h = await p.health();
       expect(h.ok).toBe(false);
       expect(h.error).toMatch(/ECONNREFUSED/);
@@ -310,7 +322,10 @@ describe('ollama-llm', () => {
   // ---------------------------------------------------------------------------
   describe.skipIf(!process.env.INTEGRATION_LIVE)('live integration', () => {
     it('actually calls ollama serve', async () => {
-      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
+      // means this lane exercises a model no user runs while real drift in the
+      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const h = await p.health();
       expect(h.ok).toBe(true);
     }, 10_000);
