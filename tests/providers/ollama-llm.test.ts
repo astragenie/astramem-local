@@ -30,6 +30,20 @@ function chatResponse(content: string, promptTokens = 10, evalTokens = 5) {
   };
 }
 
+/** Same as chatResponse, but with a non-empty message.thinking field — the
+ * shape a hybrid-reasoning model sends when it burns its output budget on
+ * reasoning and leaves message.content empty (the qwen3 incident shape). */
+function thinkingChatResponse(thinking: string, content = '', promptTokens = 10, evalTokens = 5) {
+  return {
+    status: 200,
+    body: {
+      message: { role: 'assistant', content, thinking },
+      prompt_eval_count: promptTokens,
+      eval_count: evalTokens,
+    },
+  };
+}
+
 function tagsResponse(models: string[]) {
   return {
     status: 200,
@@ -274,6 +288,122 @@ describe('ollama-llm', () => {
       expect(options.temperature).toBe(0.1);
       expect(options.num_predict).toBe(2500);
       expect(options.num_ctx).toBeDefined();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Capability detection: explicit name-prefix list, not a regex (see
+  // KNOWN_THINKING_MODEL_PREFIXES in ollama.ts — no reliable capability
+  // signal exists from Ollama's API today; ollama/ollama#10966 is open and
+  // unresolved). deepseek-r1 previously reproduced the qwen3 incident
+  // exactly because the guard was `/^qwen3/i` only.
+  // ---------------------------------------------------------------------------
+  describe('known thinking models — think:false default', () => {
+    async function capturedThinkField(model: string) {
+      let captured: Record<string, unknown> | undefined;
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(chatResponse('{}').body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model });
+      await p.chat([{ role: 'user', content: 'x' }]);
+      return captured!.think;
+    }
+
+    it('sends think:false for qwen3 (with a tag suffix)', async () => {
+      expect(await capturedThinkField('qwen3:8b')).toBe(false);
+    });
+
+    it('sends think:false for deepseek-r1 — the model the old /^qwen3/i regex left unhandled', async () => {
+      expect(await capturedThinkField('deepseek-r1:32b')).toBe(false);
+    });
+
+    it('sends think:false for deepseek-v3.1', async () => {
+      expect(await capturedThinkField('deepseek-v3.1:latest')).toBe(false);
+    });
+
+    it('sends think:false for gpt-oss', async () => {
+      expect(await capturedThinkField('gpt-oss:20b')).toBe(false);
+    });
+
+    it('is case-insensitive', async () => {
+      expect(await capturedThinkField('DeepSeek-R1:32b')).toBe(false);
+    });
+
+    it('omits think entirely for a model not in the known list (per-model Ollama default applies)', async () => {
+      expect(await capturedThinkField('qwen2.5-coder:7b')).toBeUndefined();
+    });
+
+    it('explicit config.think overrides the known-list default', async () => {
+      let captured: Record<string, unknown> | undefined;
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(chatResponse('{}').body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b', think: true });
+      await p.chat([{ role: 'user', content: 'x' }]);
+      expect(captured!.think).toBe(true);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Loud-failure guard: an empty message.content under format:json is never a
+  // legitimate response (minimum valid JSON is 2 chars), so it must not be
+  // returned as a silent {text: '', usage} success indistinguishable from a
+  // well-formed {"atoms":[]} extraction. This is what protects against a
+  // hybrid-reasoning model we haven't added to the name list yet.
+  // ---------------------------------------------------------------------------
+  describe('empty content under format:json — loud-failure guard', () => {
+    it('throws TransientError (not a silent empty success) when content is empty and json:true', async () => {
+      globalThis.fetch = mockFetch([chatResponse('')]) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'some-unknown-thinking-model' });
+      await expect(p.chat([{ role: 'user', content: 'x' }], { json: true })).rejects.toThrow(TransientError);
+    });
+
+    it('error message names the model and flags the thinking/content conflict when message.thinking is non-empty', async () => {
+      globalThis.fetch = mockFetch([thinkingChatResponse('reasoning about the answer...', '')]) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'some-unknown-thinking-model' });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }], { json: true });
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).message).toMatch(/some-unknown-thinking-model/);
+      expect((caught as TransientError).message).toMatch(/hybrid-reasoning/);
+    });
+
+    it('does NOT throw for empty content when json is not requested (prose/compaction path is unaffected)', async () => {
+      globalThis.fetch = mockFetch([chatResponse('')]) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      const res = await p.chat([{ role: 'user', content: 'x' }]); // no json:true
+      expect(res.text).toBe('');
+    });
+
+    it('does NOT throw when json:true and content is non-empty, even if thin', async () => {
+      globalThis.fetch = mockFetch([chatResponse('{}')]) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      const res = await p.chat([{ role: 'user', content: 'x' }], { json: true });
+      expect(res.text).toBe('{}');
+    });
+
+    // Break-it-and-watch-it-fail proof (see git history / PR description for
+    // the before/after): removing the `useJson && text.trim().length === 0`
+    // guard block in ollama.ts's chat() makes this test fail with "resolved
+    // instead of rejected" — the empty content is returned as a normal
+    // {text: '', usage} success, which is exactly the silent failure mode
+    // this slice exists to close.
+    it('a model unknown to KNOWN_THINKING_MODEL_PREFIXES still fails loud, not silent', async () => {
+      globalThis.fetch = mockFetch([thinkingChatResponse('some hidden reasoning trace', '')]) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'brand-new-model-nobody-has-heard-of:4b' });
+      await expect(p.chat([{ role: 'user', content: 'x' }], { json: true })).rejects.toThrow(TransientError);
     });
   });
 
