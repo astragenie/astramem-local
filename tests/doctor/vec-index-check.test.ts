@@ -114,13 +114,41 @@ describe('doctor "Vec-index orphans" check (issue #209 follow-up)', () => {
     expect(result.message).toContain('0.000%');
   });
 
-  it('a handful of orphans below the alarm floor — ok:true but NOT silent about the count', async () => {
+  // ─── INCONCLUSIVE: orphans exist but this check cannot verify they're
+  // harmless ("ok: true" is reserved for VERIFIED healthy, not "not enough
+  // to page anyone") ─────────────────────────────────────────────────────────
+  it('a handful of orphans below the alarm floor — inconclusive, NOT verified healthy', async () => {
     seedMemories(join(dir, 'memory.sqlite'), 30, 3);
     const result = await check().run();
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(true); // never hard-fails doctor's exit code on this
+    expect(result.inconclusive).toBe(true); // but is NOT a clean bill of health
     expect(result.message).toContain('3 of 30');
     expect(result.message.toLowerCase()).toContain('cannot distinguish');
   });
+
+  // THE TEST THAT IS THE ENTIRE POINT OF THIS PR.
+  //
+  // The incident that motivated this canary (#209/#250): production had 13
+  // of 18,863 active memories (0.069%) permanently unrecallable by vector
+  // search, with every write returning a green response. 13 is well under
+  // any count-based alarm floor this check could defensibly set — so if
+  // this branch returned `ok: true`, the canary would be GREEN while
+  // replaying its own founding incident. That is precisely the "green
+  // while broken" shape ADR-015 exists to kill (see issue #200's ~87%
+  // entity-extraction failure, the ADR's own headline example).
+  //
+  // `inconclusive: true` is what makes 13 stuck orphans visible to anything
+  // that alarms on `inconclusive > 0` — `ok: true` alone would make them
+  // indistinguishable from zero to every machine-readable consumer
+  // (CI gates, alerting, an automated loop), even though a human reading
+  // full `doctor` table output would still see the count in the message.
+  it('replays the founding incident (13 of 18,863) — does NOT render as verified-healthy', async () => {
+    seedMemories(join(dir, 'memory.sqlite'), 18_863, 13);
+    const result = await check().run();
+    expect(result.ok).toBe(true); // not a hard failure — 13 is plausibly in-flight
+    expect(result.inconclusive).toBe(true); // but MUST NOT be indistinguishable from a real zero
+    expect(result.message).toContain('13 of 18863');
+  }, 20_000);
 
   // ─── RED: a meaningful, persistent-magnitude orphan rate ───────────────────
   it('orphan count at the alarm floor — ok:false, states numerator/denominator/rate', async () => {

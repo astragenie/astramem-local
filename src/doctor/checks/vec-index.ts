@@ -39,16 +39,25 @@ import { openProductionDbReadonly, MEANINGFUL_USAGE_THRESHOLD } from './shared.j
  * exists to catch). `MemoryRepo.markNeedsVecIndex` does not stamp a
  * flagged-at time, and `updated_at` is only touched by the SUCCESS path
  * (`reembedHandler` bumps it when it clears the flag) — there is no column
- * this check can read to compute an age. Rather than inventing a threshold
- * dressed up as an age measurement, the WARN floor below is a plain
- * MAGNITUDE proxy — "this many simultaneously in-flight orphans is
- * implausible given the retry design's speed" — reusing
- * MEANINGFUL_USAGE_THRESHOLD (the repo's existing "is this a real signal or
- * just noise" floor) rather than inventing a new number. It is deliberately
- * NOT claimed to detect "stuck for multiple sweeps" specifically; it
- * detects "too many to be transient." A future flagged-at column would let
- * a follow-up sharpen this into a true age-based check — see the doc
- * comment on `checkAtomValidityExtraction` for the same kind of
+ * this check can read to compute an age.
+ *
+ * That admission has a direct consequence for what `0 < orphanCount <
+ * MEANINGFUL_USAGE_THRESHOLD` is allowed to return: NOT `ok: true`.
+ * `src/doctor/types.ts`'s own contract reserves `ok: true` for "verified
+ * healthy" — and this branch explicitly has not verified that; it has
+ * verified the opposite, that it cannot tell in-flight from stuck. The
+ * founding incident this canary exists to catch was 13 orphans out of
+ * 18,863 — below any count-based floor this check could defensibly set —
+ * so treating "few and unaged" as healthy would make this canary blind to
+ * the exact failure that motivated it. `inconclusive: true` is the correct
+ * state for "I looked, I found some, and I genuinely cannot tell you
+ * whether that's fine" — visible to anything alarming on `inconclusive`
+ * counts, without paging anyone on a single transient in-flight row (which
+ * `ok: false` would). Only a floor-crossing count, which is implausible to
+ * be pure simultaneous in-flight noise given the retry design's speed,
+ * earns the harder `ok: false`. A future flagged-at column would let a
+ * follow-up sharpen the small-count branch into a true age-based check —
+ * see the doc comment on `checkAtomValidityExtraction` for the same kind of
  * denominator caveat named up front instead of hidden.
  */
 export function checkVecIndex(dataDir: string, encryptionEnabled: boolean): Check {
@@ -125,19 +134,24 @@ export function checkVecIndex(dataDir: string, encryptionEnabled: boolean): Chec
           };
         }
 
-        // Magnitude proxy, not an age measurement — see the file doc
-        // comment's "Persistence, named honestly" section for why this
-        // check cannot do better than that with the current schema.
+        // INCONCLUSIVE, not ok:true — see the file doc comment's
+        // "Persistence, named honestly" section. This check has verified
+        // that orphans exist and has explicitly NOT verified they are
+        // harmless; `ok: true` is reserved for verified healthy
+        // (src/doctor/types.ts), and claiming that here would make this
+        // canary blind to its own founding incident (13 orphans, well
+        // under this floor).
         if (orphanCount < MEANINGFUL_USAGE_THRESHOLD) {
           return {
             ok: true,
+            inconclusive: true,
             message:
               `vec-index orphans: ${orphanCount} of ${totalActive} active memories (${ratePct}%) currently ` +
-              `flagged needs_vec_index=1 — below the ${MEANINGFUL_USAGE_THRESHOLD}-row alarm floor and ` +
-              `plausibly still in-flight (immediate reembed enqueue on write-time failure, plus the cleanup ` +
-              `job's 24h sweep). This check cannot distinguish a row flagged moments ago from one stuck for ` +
-              `days — needs_vec_index has no flagged-at timestamp — so this floor is a magnitude proxy, not ` +
-              `a persistence measurement.`,
+              `flagged needs_vec_index=1 — below the ${MEANINGFUL_USAGE_THRESHOLD}-row alarm floor, so NOT ` +
+              `escalated to a hard failure, but NOT verified healthy either: this check cannot distinguish a ` +
+              `row flagged moments ago (normal — the retry hasn't reached it yet) from one stuck for days (the ` +
+              `retry path is broken) — needs_vec_index has no flagged-at timestamp. Re-run doctor later; a ` +
+              `count that never drains to 0 across repeated runs is the signal a single snapshot cannot give.`,
           };
         }
 
