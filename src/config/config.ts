@@ -421,7 +421,18 @@ export function defaultConfig(): Config {
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
-    distill: { durabilityGate: 'off' },
+    // 'lenient', not 'off' (2026-07-13). FEAT-441 shipped this gate disabled
+    // pending an eval; the eval has now happened. Measured against the live
+    // store: 8.0% of stored atoms are junk (task echoes like "deploy the changes
+    // to production", shell fragments like "$ bun run test"), and they are
+    // over-represented in what an agent actually SEES — 24% of top-5 search hits.
+    //
+    // 'lenient' rather than 'strict' because gate rejection is NOT reversible:
+    // the atom is never persisted at all, unlike archive()/restore(). Lenient
+    // gates 4 of the 5 reasons and holds back only `git_derivable`, which carries
+    // the highest false-positive risk (a terse commit reference can still be
+    // meaningful in a way a bare imperative cannot).
+    distill: { durabilityGate: 'lenient' },
     capture: {
       autoCapture: {
         enabled: false,
