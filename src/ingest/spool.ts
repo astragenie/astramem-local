@@ -282,23 +282,44 @@ export function redactSpoolEnvelope(body: unknown, config: Config): unknown {
  * not a second redaction implementation, the same one applied at the
  * correct granularity (values, not serialized bytes).
  *
- * Known residual, not a regression: `redactIfEnabled`'s entropy detector has
- * pre-existing false positives on legitimate high-entropy identifiers (a
- * bare `proxy-<uuid>` session_id, in isolation, still often scores above
- * the entropy threshold and gets redacted into a placeholder). That is an
- * existing property of the detector, not something this function
- * introduces — the difference is that the result is now a VALID, still-
- * parseable JSON file with an over-redacted field, instead of an INVALID
- * file that silently claimed success. Over-redaction is the acceptable
- * failure direction; corruption was not.
+ * Over-redaction note (quarantine only): the entropy detector has pre-existing
+ * false positives on legitimate high-entropy identifiers — a bare
+ * `proxy-<uuid>` session_id, scanned in isolation, often scores above the
+ * threshold and becomes a placeholder. That is tolerable HERE and only here,
+ * because quarantined files are dead: nothing reads them but this sweep. It
+ * would NOT be tolerable on the live write path, where `session_id` is a
+ * required identifier the drain uses for the session upsert — a placeholder
+ * still satisfies `z.string().min(1)`, so the schema would pass and session
+ * identity would be destroyed silently. `writeToSpool` therefore does NOT
+ * call this function.
+ *
+ * Depth: capped at MAX_WALK_DEPTH. Recursion is bounded by a number we chose,
+ * not by whatever the stack happens to allow — a RangeError's threshold varies
+ * with the runtime and with how deep the caller already is, and (crucially)
+ * vitest's worker stack is deeper than the daemon's, so an uncapped walk is
+ * untestable by construction. Exceeding the cap throws WalkTooDeepError, which
+ * the caller must NOT confuse with "this file isn't JSON".
  */
-export function redactValuesDeep(value: unknown, config: Config): unknown {
+export class WalkTooDeepError extends Error {
+  constructor(depth: number) {
+    super(`redactValuesDeep: nesting exceeded MAX_WALK_DEPTH (${depth}) — refusing to walk`);
+    this.name = 'WalkTooDeepError';
+  }
+}
+
+/** Bounded well below the ~1.8k depth at which a plain `node` process (how the
+ *  daemon actually runs) overflows its stack in this walk. Real envelopes nest
+ *  a handful of levels; anything past this is malformed or hostile. */
+export const MAX_WALK_DEPTH = 200;
+
+export function redactValuesDeep(value: unknown, config: Config, depth = 0): unknown {
+  if (depth > MAX_WALK_DEPTH) throw new WalkTooDeepError(MAX_WALK_DEPTH);
   if (typeof value === 'string') return redactIfEnabled(value, config).text;
-  if (Array.isArray(value)) return value.map(v => redactValuesDeep(v, config));
+  if (Array.isArray(value)) return value.map(v => redactValuesDeep(v, config, depth + 1));
   if (value && typeof value === 'object') {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      out[k] = redactValuesDeep(v, config); // key itself untouched — structure, not content
+      out[k] = redactValuesDeep(v, config, depth + 1); // key itself untouched — structure, not content
     }
     return out;
   }
@@ -492,6 +513,13 @@ export interface QuarantineRedactionSweepResult {
   /** Files that could not be read or safely rewritten — left untouched,
    *  original content intact (never deleted on a write failure). */
   failed: number;
+  /** Valid JSON that exceeded MAX_WALK_DEPTH and so could not be walked.
+   *
+   *  These are LEFT UNTOUCHED — deliberately NOT handed to the raw-text path.
+   *  Distinct from `unparseable`: that means "not JSON"; this means "JSON we
+   *  could not safely process". Collapsing the two is exactly the bug this
+   *  counter exists to make visible — see sweepQuarantineRedaction. */
+  unwalkable: number;
 }
 
 /**
@@ -564,13 +592,14 @@ export function sweepQuarantineRedaction(dataDir: string, config: Config = defau
   try {
     entries = readdirSync(qDir);
   } catch {
-    return { scanned: 0, redacted: 0, unparseable: 0, failed: 0 }; // no quarantine dir yet
+    return { scanned: 0, redacted: 0, unparseable: 0, failed: 0, unwalkable: 0 }; // no quarantine dir yet
   }
 
   let scanned = 0;
   let redacted = 0;
   let unparseable = 0;
   let failed = 0;
+  let unwalkable = 0;
 
   for (const name of entries.filter(n => n.endsWith('.json'))) {
     scanned++;
@@ -583,16 +612,38 @@ export function sweepQuarantineRedaction(dataDir: string, config: Config = defau
       continue;
     }
 
-    let rewritten: string;
+    // THREE outcomes, not two. Parsing and walking are separate failures and
+    // they need separate recoveries — folding them into one catch is how a
+    // valid-JSON file whose walk overflowed got handed to the raw-text path
+    // and corrupted. The raw-text path is safe ONLY because an unparseable
+    // file has no delimiters left to protect; that premise is false for a
+    // file that parsed fine and merely nested too deep.
+    let envelope: unknown;
     let wasUnparseable = false;
     try {
-      const envelope: unknown = JSON.parse(raw);
-      // Walk the DECODED value tree (see doc comment above for why this
-      // must never be a scan over serialized text for valid JSON).
-      rewritten = JSON.stringify(redactValuesDeep(envelope, config), null, 2);
+      envelope = JSON.parse(raw);
     } catch {
       wasUnparseable = true;
+    }
+
+    let rewritten: string;
+    if (wasUnparseable) {
+      // Genuinely not JSON. Raw-text redaction is correct here precisely
+      // because the input isn't JSON — the same reason it is WRONG below.
       rewritten = redactIfEnabled(raw, config).text;
+    } else {
+      try {
+        rewritten = JSON.stringify(redactValuesDeep(envelope, config), null, 2);
+      } catch (err) {
+        if (err instanceof WalkTooDeepError) {
+          // Valid JSON we could not safely process. Leave it EXACTLY as it is.
+          // Do not fall back to raw-text: that would corrupt a well-formed
+          // file. Do not count it as redacted: it wasn't. Surface it instead.
+          unwalkable++;
+          continue;
+        }
+        throw err; // unexpected — do not silently swallow
+      }
     }
 
     // Counts as redacted if the walk/scan changed anything relative to the
@@ -616,5 +667,5 @@ export function sweepQuarantineRedaction(dataDir: string, config: Config = defau
     }
   }
 
-  return { scanned, redacted, unparseable, failed };
+  return { scanned, redacted, unparseable, failed, unwalkable };
 }

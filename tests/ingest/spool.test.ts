@@ -18,6 +18,7 @@ import {
   pruneExpiredQuarantine,
   sweepQuarantineRedaction,
   DEFAULT_QUARANTINE_TTL_MS,
+  MAX_WALK_DEPTH,
 } from '../../src/ingest/spool.js';
 import { defaultConfig } from '../../src/config/config.js';
 
@@ -265,6 +266,66 @@ describe('Finding 1 — existing spool/quarantine dirs get hardened, not just ne
   });
 });
 
+describe('review round 3 — a walk failure is NOT a parse failure', () => {
+  const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+
+  // Regression guard for the bug that let rounds 1 and 2 both slip through:
+  // `JSON.parse` and the value-walk used to share one try/catch, so a walk
+  // that blew the stack on VALID JSON was silently reclassified as "this file
+  // isn't JSON" and handed to the raw-text path — the exact corruption
+  // mechanism round 2 fixed. Two different failures; one of them has a
+  // recovery that is destructive to the other.
+  //
+  // NOTE ON WHY THIS ASSERTS AGAINST MAX_WALK_DEPTH AND NOT THE REAL STACK:
+  // vitest's worker pool has a DEEPER stack than the daemon (`node
+  // dist/cli/index.js serve`), so a test that waits for a genuine RangeError
+  // would pass here and still overflow in production. The cap must be a number
+  // we chose, and the test must assert against that number.
+  const deeplyNested = (depth: number): unknown => {
+    let node: unknown = { text: `export AWS_ACCESS_KEY_ID=${SECRET}` };
+    for (let i = 0; i < depth; i++) node = { nested: node };
+    return node;
+  };
+
+  it('valid JSON past MAX_WALK_DEPTH is left EXACTLY as-is — not raw-text-mangled, not counted as redacted', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const original = JSON.stringify(deeplyNested(MAX_WALK_DEPTH + 50), null, 2);
+    writeFileSync(join(qDir, `${K_A}.json`), original);
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.scanned).toBe(1);
+    expect(result.unwalkable).toBe(1);
+    // Not silently claimed as a success...
+    expect(result.redacted).toBe(0);
+    // ...and NOT misfiled as "wasn't JSON" — it was perfectly valid JSON.
+    expect(result.unparseable).toBe(0);
+
+    // The file is byte-identical. Pre-fix, it went down the raw-text path and
+    // came back mangled (or silently under-redacted) while reporting success.
+    const after = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(after).toBe(original);
+    expect(() => JSON.parse(after)).not.toThrow();
+  });
+
+  it('a file just UNDER the cap is still walked and redacted normally', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(deeplyNested(MAX_WALK_DEPTH - 5), null, 2));
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.unwalkable).toBe(0);
+    expect(result.redacted).toBe(1);
+    const after = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(after).not.toContain(SECRET);
+    expect(() => JSON.parse(after)).not.toThrow(); // still valid JSON
+  });
+});
+
 describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine content in place', () => {
   const SECRET = 'AKIAIOSFODNN7EXAMPLE';
 
@@ -424,7 +485,7 @@ describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine
 
   it('returns all-zero on a missing quarantine dir — not an error', () => {
     const dataDir = tempDataDir();
-    expect(sweepQuarantineRedaction(dataDir, defaultConfig())).toEqual({ scanned: 0, redacted: 0, unparseable: 0, failed: 0 });
+    expect(sweepQuarantineRedaction(dataDir, defaultConfig())).toEqual({ scanned: 0, redacted: 0, unparseable: 0, failed: 0, unwalkable: 0 });
   });
 
   it('leaves the .reason.txt sidecar alone (out of scope for this sweep) while redacting the envelope', () => {
