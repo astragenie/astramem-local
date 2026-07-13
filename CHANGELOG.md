@@ -9,6 +9,114 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-07-13
+
+A stability release. Almost everything here is the same bug wearing different
+clothes: **a failure that looked like a success.** Nothing errored, nothing went
+red, and the damage was invisible until someone measured it. The fixes are less
+interesting than the reason they were all findable at once — see ADR-015.
+
+### Fixed — silent data loss
+
+- **A fact with a future end date was hidden from search** (#228). Atom-level
+  validity extraction (#216) started populating `memories.valid_to`, and the
+  default recall filter was `valid_to IS NULL` — which means *unbounded*, not
+  *currently valid*. So "the contract runs through March 2027" was extracted
+  correctly and then became **invisible to every normal search, immediately**.
+  The feature inverted: the better extraction got at finding real end dates, the
+  more live facts disappeared. Default recall now asks
+  `(valid_to IS NULL OR valid_to > now)`.
+- **A hallucinated date permanently deleted a memory** (#228). `invalid_at` was
+  `z.string()` fed to `Date.parse` — no format check, no range, no ordering.
+  One bad token from a 7B model wrote garbage into `valid_to` and the memory was
+  never retrievable again: row on disk, write reported success, nothing errored,
+  canary green. Now guarded — an implausible bound is refused and the atom is
+  **kept unbounded**. Keep the atom, drop the bound; never the atom. Refusals are
+  counted (`validity_guard_drops`, migration 038) so a model that starts
+  hallucinating dates is *measurable*, not silently absorbed.
+- **The junk-name filter was eating "C" and "R"** (#219) — real, commonly-used
+  programming languages, destroyed pre-persistence and counted as noise. The
+  guard is now kind-aware. (Entity names are stored lowercased, so the language
+  `C` is byte-identical to the `"c"` junk actually seen in production; only
+  `kind` distinguishes them.)
+- **The proxy spooled transcripts to disk before redaction** (#225) — the
+  quarantine directory was the single most likely place on the machine for a live
+  credential to sit indefinitely. Redaction now happens before the bytes land.
+- **Sync could never ship a promoted memory, and wedged the device forever**
+  (#210). A `create` event froze `scope: "private"` in its payload; promotion
+  changed the row but not the event, so the cloud rejected it every 30 seconds,
+  permanently, blocking everything queued behind it.
+
+### Fixed — canaries that could not fail
+
+- **Doctor never actually ran unattended** (#226). The canaries existed, were
+  wired, and nothing invoked them. They are now scheduled — and
+  `checkMemoryHealth`, which had exactly one return path (`{ok: true}`), can now
+  go red.
+- **The entity-link canary asked "does any success exist?"** (#215) — so it
+  reported green for weeks while ~87% of memories were receiving zero entities.
+  It now measures a **rate**. This is what made the extraction repair *provable*:
+  live production went from ~87% unlinked to **0.0% unlinked** in the most recent
+  100 memories.
+- **Nine doctor checks reported healthy when they could not run** (#208) —
+  `catch { return { ok: true } }`. A check that cannot run is not a check that
+  passed. They now return an `inconclusive` tier.
+- **The same bug was reintroduced four times within hours**, by authors who had
+  read ADR-015 and cited it in their own comments. Documentation cannot fix a bad
+  default, so #221 adds a test that **fails the build** on any catch block
+  returning `ok: true` without `inconclusive: true`. It has already caught one.
+- **An eval run where every question was skipped exited 0** (#204) — and the
+  guard written against silent failure had a silent failure ten lines from its
+  own throw.
+
+### Fixed — refuses to boot
+
+- **The migration hash guard halted the daemon over a carriage return** (#242).
+  It hashed raw bytes; Git's `core.autocrlf` (the Windows default) checks the
+  same committed file out as CRLF in one worktree and LF in another. Measured on
+  one file: 4593 bytes / 0 CR vs 4674 bytes / 81 CR, `git status` clean in both,
+  one commit, identical SHA once the CRs are stripped. The daemon refused to
+  start and told the operator to reconcile `schema_version` **by hand**. Migration
+  hashes are now computed on normalized content, and a legacy raw-byte hash
+  self-heals rather than flipping the bug onto the other half of users.
+- **Two migration files could claim the same version number** (#223) — the
+  second silently won, one migration never ran, and the daemon bricked at boot.
+  This happened in production this morning; recovery was by hand.
+- **A recycled PID was fair game for the watchdog** (#224) — it now verifies the
+  daemon's identity before killing anything.
+- **A 5s timeout on a 5.8s cold start failed closed on every call** (#237), and
+  nothing surfaced it.
+
+### Fixed — performance
+
+- **A 5s dashboard auto-refresh on an 8s render** stacked synchronous queries and
+  starved the daemon's event loop (#213). Left alone, it would have fed the new
+  hang-watchdog into a restart loop.
+- **Two unbounded full-table scans were promoted onto a 15-minute unattended
+  loop** (#232) by the very change that made the canaries run.
+
+### Added
+
+- `astramem-local entity-purge-junk` (#240) — removes junk entity rows written
+  before the write-path guard existed. Uses the **same rule** as the guard and the
+  doctor canary (importing the identical function, not a copy). Previews by
+  default; `--yes` to delete. Never deletes a memory, only entity rows.
+- Guard-drop counters as one readable family: `relation_guard_drops` (029),
+  `entity_name_drops` (034), `validity_guard_drops` (038), `entity_link_drops`
+  (039). Each exists so a **real zero** stays distinguishable from a **broken
+  zero**.
+- Windows hang-watchdog parity (#211) — a wedged-but-lock-holding daemon could
+  previously only be recovered by a human noticing and killing the PID.
+
+### Changed
+
+- `SCHEMA_VERSION` is **derived from the migrations directory** (#229). It had
+  been hand-maintained in nine places, which made every migration PR conflict with
+  every other one — the direct cause of **nine migration-number collisions in a
+  single day**, one of which bricked production.
+- The MCP tool count is derived rather than hand-maintained in three places
+  (#241).
+
 ## [0.16.0] - 2026-07-13
 
 ### Added
