@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import {
   extractRequestTurns,
   extractResponseTurn,
+  extractUsageMetadata,
   proxyIdempotencyKey,
   createProxyCaptureTee,
   type ProxyCaptureEnvelope,
@@ -43,6 +44,47 @@ function chatResponseBodyNonStreaming(assistantText: string): string {
 
 function chatResponseBodySSE(parts: string[]): string {
   const lines = parts.map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+  lines.push('data: [DONE]\n\n');
+  return lines.join('');
+}
+
+function chatResponseBodyNonStreamingWithUsage(
+  assistantText: string,
+  opts: { finishReason?: string; promptTokens?: number; completionTokens?: number; totalTokens?: number } = {},
+): string {
+  return JSON.stringify({
+    id: 'chatcmpl-1',
+    model: 'gpt-4',
+    choices: [{ message: { role: 'assistant', content: assistantText }, finish_reason: opts.finishReason ?? 'stop' }],
+    usage: {
+      prompt_tokens: opts.promptTokens ?? 12,
+      completion_tokens: opts.completionTokens ?? 8,
+      total_tokens: opts.totalTokens ?? 20,
+    },
+  });
+}
+
+/** A real OpenAI streaming sequence with `stream_options.include_usage`
+ *  set — the trailing chunk carries an empty `choices: []` alongside the
+ *  cumulative `usage` object, matching the actual wire shape (not folded
+ *  into the last content chunk). */
+function chatResponseBodySSEWithUsage(parts: string[], opts: { finishReason?: string; promptTokens?: number; completionTokens?: number; totalTokens?: number } = {}): string {
+  const lines = parts.map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+  lines.push(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: opts.finishReason ?? 'stop' }] })}\n\n`);
+  lines.push(
+    `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: opts.promptTokens ?? 12, completion_tokens: opts.completionTokens ?? 8, total_tokens: opts.totalTokens ?? 20 } })}\n\n`,
+  );
+  lines.push('data: [DONE]\n\n');
+  return lines.join('');
+}
+
+/** A real OpenAI streaming sequence WITHOUT `stream_options.include_usage`
+ *  — the far more common case in practice. `finish_reason` still arrives
+ *  on the terminal chunk (unrelated to that flag); no chunk ever carries a
+ *  `usage` field at all. */
+function chatResponseBodySSENoUsage(parts: string[], finishReason = 'stop'): string {
+  const lines = parts.map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+  lines.push(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`);
   lines.push('data: [DONE]\n\n');
   return lines.join('');
 }
@@ -118,6 +160,73 @@ function anthropicResponseBodyToolOnly(): string {
     stop_sequence: null,
     usage: { input_tokens: 10, output_tokens: 5 },
   });
+}
+
+function anthropicResponseBodyNonStreamingWithUsage(
+  assistantText: string,
+  opts: { stopReason?: string; inputTokens?: number; outputTokens?: number; cacheCreation?: number; cacheRead?: number } = {},
+): string {
+  return JSON.stringify({
+    id: 'msg_01',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-3-5-sonnet-20241022',
+    content: [{ type: 'text', text: assistantText }],
+    stop_reason: opts.stopReason ?? 'end_turn',
+    stop_sequence: null,
+    usage: {
+      input_tokens: opts.inputTokens ?? 500,
+      output_tokens: opts.outputTokens ?? 150,
+      cache_creation_input_tokens: opts.cacheCreation ?? 200,
+      cache_read_input_tokens: opts.cacheRead ?? 1800,
+    },
+  });
+}
+
+/** An Anthropic streaming sequence with real usage/cache fields on
+ *  message_start and the final stop_reason + cumulative output_tokens on
+ *  message_delta — the actual two-event split real traffic uses (usage
+ *  isn't all on one event). */
+function anthropicResponseBodySSEWithUsage(
+  parts: string[],
+  opts: { stopReason?: string; inputTokens?: number; cacheCreation?: number; cacheRead?: number; outputTokens?: number } = {},
+): string {
+  const lines: string[] = [];
+  lines.push('event: message_start\n');
+  lines.push(
+    `data: ${JSON.stringify({
+      type: 'message_start',
+      message: {
+        id: 'msg_01', type: 'message', role: 'assistant', content: [], model: 'claude-3-5-sonnet-20241022',
+        stop_reason: null, stop_sequence: null,
+        usage: {
+          input_tokens: opts.inputTokens ?? 500,
+          cache_creation_input_tokens: opts.cacheCreation ?? 200,
+          cache_read_input_tokens: opts.cacheRead ?? 1800,
+          output_tokens: 1,
+        },
+      },
+    })}\n\n`,
+  );
+  lines.push('event: content_block_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+  for (const p of parts) {
+    lines.push('event: content_block_delta\n');
+    lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: p } })}\n\n`);
+  }
+  lines.push('event: content_block_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+  lines.push('event: message_delta\n');
+  lines.push(
+    `data: ${JSON.stringify({
+      type: 'message_delta',
+      delta: { stop_reason: opts.stopReason ?? 'end_turn', stop_sequence: null },
+      usage: { output_tokens: opts.outputTokens ?? parts.join('').length },
+    })}\n\n`,
+  );
+  lines.push('event: message_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+  return lines.join('');
 }
 
 /** A minimal, real Anthropic streaming event sequence: message_start ->
@@ -313,6 +422,141 @@ describe('extractResponseTurn — Anthropic Messages API', () => {
 
   it('never throws on malformed input', () => {
     expect(() => extractResponseTurn('event: content_block_delta\ndata: {not json\n\n')).not.toThrow();
+  });
+});
+
+describe('extractUsageMetadata (FEAT-458 S5 scope add — usage/cost telemetry)', () => {
+  it('extracts model, cache fields (kept SEPARATE from input_tokens), and stop_reason from an Anthropic non-streaming response', () => {
+    const req = anthropicRequestBody('a question');
+    const res = anthropicResponseBodyNonStreamingWithUsage('an answer', {
+      inputTokens: 500, outputTokens: 150, cacheCreation: 200, cacheRead: 1800, stopReason: 'end_turn',
+    });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-20241022',
+      input_tokens: 500,
+      output_tokens: 150,
+      total_tokens: null,
+      cache_creation_input_tokens: 200,
+      cache_read_input_tokens: 1800,
+      stop_reason: 'end_turn',
+      truncated: false,
+    });
+  });
+
+  it('extracts usage from an Anthropic SSE stream (input/cache from message_start, output/stop_reason from message_delta)', () => {
+    const req = anthropicRequestBody('a question');
+    const res = anthropicResponseBodySSEWithUsage(['par', 't of ', 'the reply'], {
+      inputTokens: 500, cacheCreation: 200, cacheRead: 1800, outputTokens: 42, stopReason: 'end_turn',
+    });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-20241022',
+      input_tokens: 500,
+      output_tokens: 42,
+      total_tokens: null,
+      cache_creation_input_tokens: 200,
+      cache_read_input_tokens: 1800,
+      stop_reason: 'end_turn',
+      truncated: false,
+    });
+  });
+
+  it('flags a TRUNCATED reply (Anthropic stop_reason: "max_tokens") — non-streaming', () => {
+    const res = anthropicResponseBodyNonStreamingWithUsage('cut off mid-', { stopReason: 'max_tokens' });
+    const meta = extractUsageMetadata(anthropicRequestBody('a question'), res);
+    expect(meta?.stop_reason).toBe('max_tokens');
+    expect(meta?.truncated).toBe(true);
+  });
+
+  it('flags a TRUNCATED reply (Anthropic stop_reason: "max_tokens") — SSE streaming', () => {
+    const res = anthropicResponseBodySSEWithUsage(['cut off mid-'], { stopReason: 'max_tokens' });
+    const meta = extractUsageMetadata(anthropicRequestBody('a question'), res);
+    expect(meta?.stop_reason).toBe('max_tokens');
+    expect(meta?.truncated).toBe(true);
+  });
+
+  it('does NOT flag a normal end_turn/stop completion as truncated', () => {
+    const res = anthropicResponseBodyNonStreamingWithUsage('a complete answer', { stopReason: 'end_turn' });
+    expect(extractUsageMetadata(anthropicRequestBody('a question'), res)?.truncated).toBe(false);
+  });
+
+  it('extracts OpenAI usage parity fields (prompt/completion/total_tokens, finish_reason) — non-streaming', () => {
+    const req = chatRequestBody('a question');
+    const res = chatResponseBodyNonStreamingWithUsage('an answer', { promptTokens: 30, completionTokens: 10, totalTokens: 40, finishReason: 'stop' });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'openai',
+      model: 'gpt-4',
+      input_tokens: 30,
+      output_tokens: 10,
+      total_tokens: 40,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      stop_reason: 'stop',
+      truncated: false,
+    });
+  });
+
+  it('flags a TRUNCATED OpenAI reply (finish_reason: "length")', () => {
+    const res = chatResponseBodyNonStreamingWithUsage('cut off', { finishReason: 'length' });
+    expect(extractUsageMetadata(chatRequestBody('a question'), res)?.truncated).toBe(true);
+  });
+
+  it('extracts OpenAI usage from an SSE stream WHEN stream_options.include_usage was set', () => {
+    const req = chatRequestBody('a question');
+    const res = chatResponseBodySSEWithUsage(['par', 't of ', 'the reply'], { promptTokens: 30, completionTokens: 10, totalTokens: 40, finishReason: 'stop' });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'openai',
+      model: 'gpt-4',
+      input_tokens: 30,
+      output_tokens: 10,
+      total_tokens: 40,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      stop_reason: 'stop',
+      truncated: false,
+    });
+  });
+
+  it('MISSING usage (OpenAI streaming WITHOUT include_usage) yields null token counts, never fabricated zeros — the test that protects downstream cost math', () => {
+    const req = chatRequestBody('a question');
+    const res = chatResponseBodySSENoUsage(['par', 't of ', 'the reply'], 'stop');
+    const meta = extractUsageMetadata(req, res);
+    // model and stop_reason ARE available independent of include_usage —
+    // only the token counts are genuinely absent from the wire.
+    expect(meta).toEqual({
+      provider: 'openai',
+      model: 'gpt-4',
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      stop_reason: 'stop',
+      truncated: false,
+    });
+    // Belt-and-suspenders: explicitly not zero anywhere a real count is absent.
+    expect(meta?.input_tokens).not.toBe(0);
+    expect(meta?.output_tokens).not.toBe(0);
+    expect(meta?.total_tokens).not.toBe(0);
+  });
+
+  it('reads model from the REQUEST body only — never the response — for both formats', () => {
+    // The response body's own `model` field (if any) is deliberately never
+    // consulted; requestModel is the sole source (module doc rationale).
+    const req = anthropicRequestBody('a question');
+    const res = anthropicResponseBodyNonStreamingWithUsage('an answer');
+    expect(extractUsageMetadata(req, res)?.model).toBe('claude-3-5-sonnet-20241022');
+  });
+
+  it('returns null when the response body has no recognizable provider shape at all', () => {
+    expect(extractUsageMetadata(chatRequestBody('x'), '')).toBeNull();
+    expect(extractUsageMetadata(chatRequestBody('x'), 'not json and not sse {')).toBeNull();
+    expect(extractUsageMetadata(chatRequestBody('x'), JSON.stringify({ ok: true }))).toBeNull();
+  });
+
+  it('never throws on malformed input', () => {
+    expect(() => extractUsageMetadata('not json {', 'also not json {')).not.toThrow();
   });
 });
 

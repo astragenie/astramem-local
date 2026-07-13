@@ -313,6 +313,255 @@ function extractSseResponseTurn(trimmed: string): ProxyTurn | null {
   // tool-only/aborted stream, not an error.
 }
 
+/**
+ * Token/cost telemetry for one exchange — BODY BYTES ONLY, same visibility
+ * as turn extraction above, never headers.
+ *
+ * NOT YET WIRED into `ProxyCaptureEnvelope` / `finishCapture` below —
+ * `CanonicalIngestSchema` (src/server/routes/ingest.ts, owned by a
+ * different track) is a plain `z.object({...})` with neither `.strict()`
+ * nor `.passthrough()`, i.e. zod's default "strip" behavior: an unknown
+ * field on the envelope is silently REMOVED at drain-time `safeParse`, not
+ * rejected. Attaching this to the spooled envelope today would look wired
+ * up (the field would sit right there in the JSON on disk) while silently
+ * never reaching storage the moment the drain worker parses it — exactly
+ * the false-confidence failure mode this module already got bitten by once
+ * (module doc, S3). So this function is exported, fully covered by tests,
+ * and ready to attach the moment the schema gains a home for it (reported
+ * separately, not decided here) — deliberately not that decision.
+ *
+ * - `model`: read from the REQUEST body's top-level `model` field only,
+ *   for both wire formats — a client always specifies what to call, so
+ *   it's unconditionally present there, unlike the response side (an
+ *   Anthropic streaming response only echoes it inside the `message_start`
+ *   event, which a truncated/aborted capture might not have; some
+ *   gateways drop it from non-streaming responses entirely). One source of
+ *   truth, always populated when the request parsed at all.
+ * - `stop_reason`: Anthropic's `stop_reason` / OpenAI's `finish_reason`,
+ *   normalized into one field. `truncated` is derived from it: Anthropic
+ *   `"max_tokens"` / OpenAI `"length"` — both mean the reply was cut off
+ *   before the model finished, which the operator cares about regardless
+ *   of which API served it.
+ * - Cache fields (`cache_creation_input_tokens` / `cache_read_input_tokens`)
+ *   are Anthropic-only and kept SEPARATE from `input_tokens` rather than
+ *   folded in — this is the operator's single biggest lever on API cost
+ *   and collapsing it into one number would erase the signal that matters.
+ * - Every numeric field is `number | null` — `null` means "not present in
+ *   this body" and is never coerced to `0`. A fabricated zero here would
+ *   silently corrupt any cost aggregation built on top later; a missing
+ *   value must stay visibly missing. The clearest case is OpenAI streaming
+ *   without `stream_options.include_usage` set — no chunk ever carries a
+ *   `usage` field, so every token count stays `null` while `model` and
+ *   `stop_reason` (available independent of that flag) still populate.
+ * - No dollar-cost computation — a per-model pricing table rots the moment
+ *   prices change, and a confidently-wrong dollar figure is worse than raw
+ *   counts. Pricing is a deliberate, separate decision.
+ * - Returns `null` only when the response body itself carries no
+ *   recognizable provider shape at all (empty, malformed, or neither
+ *   `choices` nor `content`/Anthropic-event-typed) — matches
+ *   `extractResponseTurn`'s own "unrecognized shape → null" convention.
+ */
+export interface ProxyUsageMetadata {
+  provider: 'anthropic' | 'openai';
+  model: string | null;
+  input_tokens: number | null;
+  output_tokens: number | null;
+  /** OpenAI only (`usage.total_tokens`) — Anthropic doesn't report a
+   *  pre-summed total, and this module doesn't compute one itself (that
+   *  would be silently wrong the instant cache tokens are involved). */
+  total_tokens: number | null;
+  cache_creation_input_tokens: number | null;
+  cache_read_input_tokens: number | null;
+  stop_reason: string | null;
+  truncated: boolean;
+}
+
+function numberOrNull(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+function asRecord(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === 'object' ? (v as Record<string, unknown>) : null;
+}
+
+/** The request body's top-level `model` field — see the module-level
+ *  rationale above for why this, and never the response, is the source. */
+function extractRequestModel(rawBody: string): string | null {
+  try {
+    const parsed = JSON.parse(rawBody) as Record<string, unknown>;
+    const model = parsed['model'];
+    return typeof model === 'string' && model ? model : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Provider-shaped usage accumulated from an SSE stream — `model` is
+ *  deliberately absent here (always merged in from the request by the
+ *  caller, `extractUsageMetadata`), so this stays a pure accumulator over
+ *  `message_start`/`message_delta` (Anthropic) or the trailing usage chunk
+ *  (OpenAI, only present when the client opted in). */
+function extractSseUsageMetadata(trimmed: string): Omit<ProxyUsageMetadata, 'model' | 'truncated'> | null {
+  let sawOpenAI = false;
+  let sawAnthropic = false;
+  let openaiInputTokens: number | null = null;
+  let openaiOutputTokens: number | null = null;
+  let openaiTotalTokens: number | null = null;
+  let openaiFinishReason: string | null = null;
+  let anthropicInputTokens: number | null = null;
+  let anthropicOutputTokens: number | null = null;
+  let anthropicCacheCreation: number | null = null;
+  let anthropicCacheRead: number | null = null;
+  let anthropicStopReason: string | null = null;
+
+  for (const rawLine of trimmed.split('\n')) {
+    const line = rawLine.trim();
+    if (!line.startsWith('data:')) continue;
+    const payload = line.slice('data:'.length).trim();
+    if (payload === '' || payload === '[DONE]') continue;
+    let obj: unknown;
+    try {
+      obj = JSON.parse(payload);
+    } catch {
+      continue;
+    }
+    const rec = asRecord(obj);
+    if (!rec) continue;
+
+    const choices = rec['choices'];
+    if (Array.isArray(choices)) {
+      sawOpenAI = true;
+      if (choices.length > 0) {
+        const finishReason = asRecord(choices[0])?.['finish_reason'];
+        if (typeof finishReason === 'string') openaiFinishReason = finishReason;
+      }
+      const usage = asRecord(rec['usage']);
+      if (usage) {
+        // OpenAI only emits this on the final chunk when
+        // stream_options.include_usage was set — overwrite is safe since
+        // it's a one-shot cumulative total, never a running delta.
+        openaiInputTokens = numberOrNull(usage['prompt_tokens']);
+        openaiOutputTokens = numberOrNull(usage['completion_tokens']);
+        openaiTotalTokens = numberOrNull(usage['total_tokens']);
+      }
+      continue;
+    }
+
+    const type = rec['type'];
+    if (type === 'message_start') {
+      sawAnthropic = true;
+      const usage = asRecord(asRecord(rec['message'])?.['usage']);
+      if (usage) {
+        anthropicInputTokens = numberOrNull(usage['input_tokens']);
+        anthropicCacheCreation = numberOrNull(usage['cache_creation_input_tokens']);
+        anthropicCacheRead = numberOrNull(usage['cache_read_input_tokens']);
+        // A small placeholder output_tokens sometimes rides along here too
+        // (e.g. 1) — message_delta below carries the real cumulative total
+        // and overwrites it; only fall back to this if message_delta never
+        // arrives (an aborted stream).
+        if (anthropicOutputTokens === null) anthropicOutputTokens = numberOrNull(usage['output_tokens']);
+      }
+      continue;
+    }
+    if (type === 'message_delta') {
+      sawAnthropic = true;
+      const stopReason = asRecord(rec['delta'])?.['stop_reason'];
+      if (typeof stopReason === 'string') anthropicStopReason = stopReason;
+      const outputTokens = numberOrNull(asRecord(rec['usage'])?.['output_tokens']);
+      if (outputTokens !== null) anthropicOutputTokens = outputTokens;
+      continue;
+    }
+    // message_stop / content_block_* / ping — no usage payload, ignored.
+  }
+
+  if (sawAnthropic) {
+    return {
+      provider: 'anthropic',
+      input_tokens: anthropicInputTokens,
+      output_tokens: anthropicOutputTokens,
+      total_tokens: null,
+      cache_creation_input_tokens: anthropicCacheCreation,
+      cache_read_input_tokens: anthropicCacheRead,
+      stop_reason: anthropicStopReason,
+    };
+  }
+  if (sawOpenAI) {
+    return {
+      provider: 'openai',
+      input_tokens: openaiInputTokens,
+      output_tokens: openaiOutputTokens,
+      total_tokens: openaiTotalTokens,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      stop_reason: openaiFinishReason,
+    };
+  }
+  return null;
+}
+
+/** Public entry point — see the interface doc above for the full field
+ *  rationale. Mirrors `extractResponseTurn`'s own whole-JSON-then-SSE
+ *  detection order and per-shape branching, on the SAME accumulated
+ *  request/response body buffers (already fully reassembled — see
+ *  `createProxyCaptureTee` below). */
+export function extractUsageMetadata(reqBody: string, resBody: string): ProxyUsageMetadata | null {
+  const model = extractRequestModel(reqBody);
+  const trimmed = resBody.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
+
+    const choices = parsed['choices'];
+    if (Array.isArray(choices)) {
+      const usage = asRecord(parsed['usage']);
+      const finishReason = choices.length > 0 ? asRecord(choices[0])?.['finish_reason'] : null;
+      const stopReason = typeof finishReason === 'string' ? finishReason : null;
+      return {
+        provider: 'openai',
+        model,
+        input_tokens: usage ? numberOrNull(usage['prompt_tokens']) : null,
+        output_tokens: usage ? numberOrNull(usage['completion_tokens']) : null,
+        total_tokens: usage ? numberOrNull(usage['total_tokens']) : null,
+        cache_creation_input_tokens: null,
+        cache_read_input_tokens: null,
+        stop_reason: stopReason,
+        truncated: stopReason === 'length',
+      };
+    }
+
+    const content = parsed['content'];
+    if (Array.isArray(content)) {
+      const usage = asRecord(parsed['usage']);
+      const stopReasonRaw = parsed['stop_reason'];
+      const stopReason = typeof stopReasonRaw === 'string' ? stopReasonRaw : null;
+      return {
+        provider: 'anthropic',
+        model,
+        input_tokens: usage ? numberOrNull(usage['input_tokens']) : null,
+        output_tokens: usage ? numberOrNull(usage['output_tokens']) : null,
+        total_tokens: null,
+        cache_creation_input_tokens: usage ? numberOrNull(usage['cache_creation_input_tokens']) : null,
+        cache_read_input_tokens: usage ? numberOrNull(usage['cache_read_input_tokens']) : null,
+        stop_reason: stopReason,
+        truncated: stopReason === 'max_tokens',
+      };
+    }
+
+    return null;
+  } catch {
+    // Not whole-buffer JSON — fall through to SSE parsing below.
+  }
+
+  const sse = extractSseUsageMetadata(trimmed);
+  if (!sse) return null;
+  return {
+    ...sse,
+    model,
+    truncated: sse.provider === 'anthropic' ? sse.stop_reason === 'max_tokens' : sse.stop_reason === 'length',
+  };
+}
+
 function buildProxyEnvelope(
   turns: ProxyTurn[],
   clientVersion: string,
