@@ -27,6 +27,8 @@ import {
   sanitizeShipError,
   startShipper,
   readErrorBody,
+  countRejected,
+  clearRejected,
 } from '../../src/sync/shipper.js';
 
 function seedMemory(db: DB, scope: 'private' | 'team' | 'org', hash: string): string {
@@ -159,6 +161,51 @@ describe('buildEnvelope — wire conformance', () => {
     const envelope = buildEnvelope('device-1', 'ws-1', 0, listUnsynced(db, 100));
     expect(envelope.events[0]!.event_id).toMatch(/^[0-9a-f-]{36}$/);
   });
+
+  // sync-promote-wedge fix: reproduces the actual bug chain end-to-end at the
+  // envelope layer. `promoteScope` never rewrites the original `create`
+  // event's frozen payload — it only updates memories.scope and appends a
+  // NEW `promote_scope` event (memory-events.ts:626 doc comment). Before this
+  // fix, an atom created private then promoted to team/org would still ship
+  // its ORIGINAL create event with `payload_json.scope: 'private'`, which the
+  // cloud's DEC-048 guard rejects forever (SyncIngestService
+  // .IsPrivateScopedViolation reads exactly that frozen field). The fix
+  // corrects the payload's scope to the atom's CURRENT scope at ship time.
+  it('ships the ATOM\'S CURRENT scope on a create event, not the stale scope frozen in its payload at promotion time', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const events = new MemoryEventRepo(db);
+    const atom = seedMemory(db, 'private', 'h-promote-wedge');
+    // create event ships BEFORE promotion in real usage too (it's unsynced
+    // the whole time it sits private) — payload frozen with scope: 'private'.
+    events.append({ event_type: 'create', atom_id: atom, payload: { scope: 'private', text: 'secret then shared' } });
+    events.promoteScope(atom, 'team'); // memories.scope -> 'team'; create event's payload is untouched
+
+    const rows = listUnsynced(db, 100);
+    const createRow = rows.find(r => r.event_type === 'create');
+    expect(createRow).toBeDefined();
+    expect(createRow!.current_scope).toBe('team'); // listUnsynced now projects the live scope
+    expect(JSON.parse(createRow!.payload_json!).scope).toBe('private'); // ...but the stored payload is still stale
+
+    const envelope = buildEnvelope('device-1', 'ws-1', 0, rows);
+    const shippedCreate = envelope.events.find(e => e.event_type === 'create');
+    // The WIRE envelope must say the truth (team), never the frozen 'private'.
+    expect((shippedCreate!.payload_json as Record<string, unknown>).scope).toBe('team');
+  });
+
+  it('does not touch payload_json for event types other than create (promote_scope already carries its own accurate "to")', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const events = new MemoryEventRepo(db);
+    const atom = seedMemory(db, 'private', 'h-promote-wedge-2');
+    events.append({ event_type: 'create', atom_id: atom, payload: { scope: 'private' } });
+    events.promoteScope(atom, 'org');
+
+    const rows = listUnsynced(db, 100);
+    const envelope = buildEnvelope('device-1', 'ws-1', 0, rows);
+    const promoteEvent = envelope.events.find(e => e.event_type === 'promote_scope');
+    expect(promoteEvent!.payload_json).toEqual({ from: 'private', to: 'org' });
+  });
 });
 
 describe('shipOnce — ack cursor semantics', () => {
@@ -197,7 +244,7 @@ describe('shipOnce — ack cursor semantics', () => {
   it('full ack marks every shipped event synced', async () => {
     const { impl, calls } = fakeFetch({ body: { acked_seq: 3 } });
     const result = await shipOnce(baseOpts(impl));
-    expect(result).toEqual({ shipped: 3, acked: 3, idle: false });
+    expect(result).toEqual({ shipped: 3, acked: 3, rejected: 0, idle: false });
     expect(calls[0]!.url).toBe('https://cloud.example/sync/events');
     expect(listUnsynced(db, 100)).toHaveLength(0);
     expect(lastAckedSeq(db)).toBe(3);
@@ -262,6 +309,129 @@ describe('shipOnce — ack cursor semantics', () => {
     const result = await shipOnce(baseOpts(impl));
     expect(result.idle).toBe(true);
     expect(calls).toHaveLength(0);
+  });
+});
+
+// sync-promote-wedge fix, Part 2: a permanently-rejected event (DEC-048
+// invariant 1) must become TERMINAL client-side — never resent — instead of
+// being re-selected by listUnsynced forever. The cloud names rejected seqs
+// in an additive `rejected_seqs` response field; the client marks exactly
+// those `rejected_at` and excludes them from the unsynced set going forward.
+describe('shipOnce — terminal reject handling (sync-promote-wedge fix)', () => {
+  let db: DB;
+  let ids: string[];
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    const events = new MemoryEventRepo(db);
+    ids = [1, 2, 3].map(i => seedMemory(db, 'team', `h-reject-${i}`));
+    for (const id of ids) events.append({ event_type: 'create', atom_id: id });
+  });
+
+  function fakeFetch(body: unknown) {
+    const impl = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => body,
+      text: async () => JSON.stringify(body),
+    })) as unknown as typeof fetch;
+    return impl;
+  }
+
+  const baseOpts = (impl: typeof fetch) => ({
+    db, url: 'https://cloud.example', workspaceId: 'ws-1',
+    deviceId: 'dev-1', token: 'tok', fetchImpl: impl,
+  });
+
+  it('marks a named rejected seq rejected_at, not synced_at', async () => {
+    const impl = fakeFetch({ acked_seq: 3, rejected_seqs: [1] });
+    const result = await shipOnce(baseOpts(impl));
+    expect(result.rejected).toBe(1);
+
+    const row = db.prepare('SELECT synced_at, rejected_at FROM memory_events WHERE seq = 1').get() as
+      { synced_at: number | null; rejected_at: number | null };
+    expect(row.synced_at).toBeNull();
+    expect(row.rejected_at).not.toBeNull();
+  });
+
+  // This is the exact false-positive this fix closes: without rejected_seqs
+  // handling, `shippedAcked = rows.filter(r => r.seq <= ackedSeq)` would mark
+  // seq 1 (rejected) synced merely because seq 3 (a later, unrelated event)
+  // was accepted in the same batch — silently recording a lie (the cloud
+  // never persisted seq 1) and never making the reject visible again.
+  it('does not mark a rejected seq synced even when a later seq in the same batch is acked', async () => {
+    const impl = fakeFetch({ acked_seq: 3, rejected_seqs: [1] });
+    await shipOnce(baseOpts(impl));
+
+    const row = db.prepare('SELECT synced_at FROM memory_events WHERE seq = 1').get() as { synced_at: number | null };
+    expect(row.synced_at).toBeNull();
+    // seqs 2 and 3 (genuinely acked, not rejected) are unaffected.
+    const rest = db.prepare('SELECT seq FROM memory_events WHERE synced_at IS NOT NULL ORDER BY seq').all() as { seq: number }[];
+    expect(rest.map(r => r.seq)).toEqual([2, 3]);
+  });
+
+  it('a terminally-rejected row is excluded from the next listUnsynced call — the wedge is broken', async () => {
+    const impl = fakeFetch({ acked_seq: 0, rejected_seqs: [1, 2, 3] }); // whole batch rejected, nothing acked
+    const first = await shipOnce(baseOpts(impl));
+    expect(first.rejected).toBe(3);
+    expect(first.acked).toBe(0);
+
+    // Before this fix: listUnsynced would return the SAME 3 rows again,
+    // forever (the reproduction of the actual wedge). After the fix, they're
+    // excluded — the queue drains instead of looping.
+    expect(listUnsynced(db, 100)).toHaveLength(0);
+  });
+
+  // The one-way door must open both ways. `rejected_at` is set from the CLOUD's
+  // verdict, and the cloud can be wrong — a cloud bug that rejects events it should
+  // have accepted would otherwise strand them on this device permanently, with no
+  // code path able to reach them again (listUnsynced excludes them; backfill only
+  // touches payload_json IS NULL AND synced_at IS NULL rows). Retrying a correct
+  // reject is merely wasteful; being unable to retry an INCORRECT one is permanent
+  // data loss. `astramem-local sync unreject` is the escape hatch.
+  it('clearRejected re-enqueues wrongly-rejected events — the one-way door opens both ways', async () => {
+    const impl = fakeFetch({ acked_seq: 0, rejected_seqs: [1, 2, 3] });
+    await shipOnce(baseOpts(impl));
+    expect(countRejected(db)).toBe(3);
+    expect(listUnsynced(db, 100)).toHaveLength(0); // stranded
+
+    // Cloud bug found and fixed; operator runs `sync unreject`.
+    expect(clearRejected(db)).toBe(3);
+
+    expect(countRejected(db)).toBe(0);
+    expect(listUnsynced(db, 100)).toHaveLength(3); // shippable again — nothing was lost
+  });
+
+  it('clearRejected can target specific seqs, leaving correct rejects marked', async () => {
+    const impl = fakeFetch({ acked_seq: 0, rejected_seqs: [1, 2, 3] });
+    await shipOnce(baseOpts(impl));
+
+    expect(clearRejected(db, [2])).toBe(1);
+
+    expect(countRejected(db)).toBe(2);
+    expect(listUnsynced(db, 100).map(r => r.seq)).toEqual([2]);
+  });
+
+  it('clearRejected on a clean log is a no-op, not an error', async () => {
+    expect(countRejected(db)).toBe(0);
+    expect(clearRejected(db)).toBe(0);
+    expect(clearRejected(db, [])).toBe(0);
+    // A never-rejected event must not be disturbed by the escape hatch.
+    expect(listUnsynced(db, 100)).toHaveLength(3);
+  });
+
+  it('ignores a rejected_seqs entry that does not belong to this batch (defense-in-depth)', async () => {
+    const impl = fakeFetch({ acked_seq: 3, rejected_seqs: [999] });
+    const result = await shipOnce(baseOpts(impl));
+    expect(result.rejected).toBe(0);
+    expect(result.acked).toBe(3);
+  });
+
+  it('a cloud response with no rejected_seqs field behaves exactly as before (additive field, backward compatible)', async () => {
+    const impl = fakeFetch({ acked_seq: 3 });
+    const result = await shipOnce(baseOpts(impl));
+    expect(result).toEqual({ shipped: 3, acked: 3, rejected: 0, idle: false });
   });
 });
 

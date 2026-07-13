@@ -1,0 +1,24 @@
+-- 036: memory_events.rejected_at — terminal-reject marker (astramem-local
+-- sync-promote-wedge fix, paired with memory#<cloud PR>).
+--
+-- Bug this closes: a cloud-rejected event (DEC-048 invariant 1 — a `create`
+-- or `promote_scope` event whose payload declares a private/personal scope)
+-- was NEVER marked `synced_at` by the client (correctly — it was never
+-- durably persisted on the cloud side), which meant `listUnsynced`
+-- (src/sync/shipper.ts, ORDER BY seq ASC) kept re-selecting the exact same
+-- permanently-doomed row on every 30s round, FOREVER, blocking every
+-- unsynced event queued behind it in the same device's log. A permanent
+-- reject is not a transient failure — retrying it can never succeed, so it
+-- must be excluded from the unsynced set the same way a successfully-synced
+-- row is, without falsely claiming it as synced.
+--
+-- `rejected_at` is intentionally a SEPARATE column from `synced_at`, not a
+-- repurposed one: `synced_at` means "the cloud durably persisted this event"
+-- and observability code (lastShipAt/countUnsynced/GET /sync/status) reads
+-- it with that meaning. Overloading it to also mean "terminally rejected"
+-- would make a rejected event look like a successful ship in every read of
+-- that column. NULL for every existing row (nothing has ever been marked
+-- rejected before this migration) and NULL by default for every future
+-- event unless the cloud's POST /sync/events response explicitly names its
+-- seq in the new additive `rejected_seqs` field (see shipper.ts shipOnce).
+ALTER TABLE memory_events ADD COLUMN rejected_at INTEGER;
