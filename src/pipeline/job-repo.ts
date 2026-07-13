@@ -139,12 +139,16 @@ export class JobRepo {
    * deliberately LEAVES 'paused' alone; see its doc comment and
    * job-recovery.test.ts). Called from `astramem-local budget --reset`
    * (src/cli/budget.ts) right after `BudgetTracker.resetToday()` — until
-   * this existed, a job the worker paused on `BudgetPausedError` (see
-   * worker.ts / pipeline/errors.ts) had NO path back to 'pending' at all:
-   * `--reset` only zeroed the spend counter, so a paused job stayed paused
-   * forever even after the cap that paused it was cleared. Job-kind-agnostic
-   * by construction, like every other state transition here — applies
-   * equally to a paused `distill` job and a paused `consolidate` job.
+   * this existed, a job the worker paused on `DistillBudgetPausedError` (see
+   * worker.ts / pipeline/handlers/distill.ts) had NO path back to 'pending'
+   * at all: `--reset` only zeroed the spend counter, so a paused job stayed
+   * paused forever even after the cap that paused it was cleared. Today only
+   * `distill` jobs can actually reach 'paused' (the consolidate contradiction
+   * judge is bounded by call-count/wall-clock caps instead of a budget check
+   * — see contradiction-judge.ts's doc comment for why a dollar cap was tried
+   * and reverted there), but this method is job-kind-agnostic by
+   * construction, like every other state transition here, so any future job
+   * kind that adopts the same pause-on-budget pattern gets this for free.
    * `attempts` is left untouched (mirrors `recoverOrphans`), so a job that
    * was already partway through its retry budget before pausing doesn't get
    * a free reset on poison eligibility.

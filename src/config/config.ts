@@ -538,18 +538,20 @@ export function defaultConfig(): Config {
       // in the live store.
       //
       // Staying 'enabled' post-FEAT-482 (same day, hours later): the incident
-      // that flag caused was an UNBOUNDED judge — no budget cap, no
-      // wall-clock cap — not the judge being a bad idea. Both are now wired
-      // (see contradiction-judge.ts's BudgetTracker calls and
-      // maxWallClockMs below); 'enabled' with those two guards in place is a
-      // different, defensible risk profile than 'enabled' without them.
-      // Reverting to 'off'/'dry-run' would also throw away the whole point
-      // of this mode (see the eval note above) to guard against a bug that
-      // is now fixed at its actual source. NOTE: the operator has separately
-      // set `mode: 'off'` in their own live config.yaml as an immediate
-      // stopgap — that override takes precedence for their instance
-      // regardless of this default; this comment concerns the SHIPPED
-      // default only.
+      // that flag caused was an UNBOUNDED judge — no call-count cap enforced
+      // against a slow provider, no wall-clock cap — not the judge being a
+      // bad idea. A DOLLAR cap was tried first and reverted: every shipped
+      // LLM provider (Ollama, codex-subscription) reports `usage.usd: 0`, so
+      // a budget check could never trip (see contradiction-judge.ts's doc
+      // comment). `maxPerRun` + `maxWallClockMs` below are the real guards —
+      // 'enabled' with those two in place is a different, defensible risk
+      // profile than 'enabled' without them. Reverting to 'off'/'dry-run'
+      // would also throw away the whole point of this mode (see the eval
+      // note above) to guard against a bug that is now fixed at its actual
+      // source. NOTE: the operator has separately set `mode: 'off'` in their
+      // own live config.yaml as an immediate stopgap — that override takes
+      // precedence for their instance regardless of this default; this
+      // comment concerns the SHIPPED default only.
       contradictionDetection: {
         mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200,
         // FEAT-482 incident (2026-07-13): mode flipped 'off' -> 'enabled' the

@@ -3,8 +3,9 @@ import type { Config } from '../config/config.js';
 import type { HandlerCtx } from './handler.js';
 import type { HandlerRegistry } from './registry.js';
 import { JobRepo } from './job-repo.js';
+import { DistillBudgetPausedError } from './handlers/distill.js';
 import { classifyError } from './failure-classifier.js';
-import { TransientError, BudgetPausedError } from './errors.js';
+import { TransientError } from './errors.js';
 import { logger, childLogger } from '../log/logger.js';
 
 const MAX_ATTEMPTS = 3;
@@ -182,7 +183,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
         // Do NOT call fail() — that would increment attempts and eventually
         // poison the job after repeated daily cap hits, preventing recovery
         // when the user runs `astra-memory budget --reset`.
-        if (BudgetPausedError.is(err)) {
+        if (DistillBudgetPausedError.is(err)) {
           const errMsg = err instanceof Error ? err.message : String(err);
           repo.setLastError(job.id, errMsg);
           repo.pause(job.id);

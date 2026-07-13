@@ -141,4 +141,12 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       relations extraction" canary distinguish "model never emits a
 //       relation" from "model emits relations but the guard drops every one"
 //       -- see src/storage/relation-guard-log.ts.
-export const SCHEMA_VERSION = 29 as const;
+// 030 = consolidation_judge_runs table (FEAT-482) -- append-only telemetry
+//       (judge call count + wall-clock elapsed ms) for the contradiction
+//       judge's pairwise sweep (src/consolidate/consolidate.ts). Dollars
+//       cannot bound this judge -- both shipped LLM providers report
+//       `usage.usd: 0` -- so runConsolidation caps it by call count
+//       (maxPerRun) and wall-clock time (maxWallClockMs) instead, and this
+//       table makes the actual cost visible to the doctor "Consolidation
+//       judge" canary rather than gated behind a currency that can't see it.
+export const SCHEMA_VERSION = 30 as const;
