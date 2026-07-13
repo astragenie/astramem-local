@@ -25,6 +25,19 @@ export interface Config {
      * with live data requires `astramem-local reembed-dim`
      * (docs/embed-dim-migration.md). */
     dim: number;
+    /**
+     * RECALL-S1: explicit override for the query-side embedding instruction
+     * prefix (see `EmbedProvider.queryPrefix` / `resolveEmbedQueryPrefix`,
+     * src/contracts/embed.ts). Undefined (the default, and what
+     * `defaultConfig()` ships) means "use the built-in prefix for `model`
+     * if one is registered, else no prefix" — the single source of truth
+     * for per-model defaults lives in `QUERY_PREFIX_BY_MODEL`, not here or
+     * in the search path. Set explicitly (including `''`) only to override
+     * that default for a model, e.g. a new/unlisted model that also wants
+     * an instruction prefix, or to force no prefix for a listed one. Never
+     * applied to document embedding (08-embed-index.ts) — query-side only.
+     */
+    queryPrefix?: string;
   };
   vector: { store: 'sqlite-vec' | 'lancedb' };
   budget: { daily_usd: number };

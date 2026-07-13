@@ -12,6 +12,11 @@ export interface OllamaEmbedConfig {
   /** FEAT-409: expected output dim — defaults to DEFAULT_EMBED_DIM (1024).
    * Set from config.embedding.dim by providers/index.ts. */
   dim?: number;
+  /** RECALL-S1: query-side embedding instruction prefix — resolved by
+   * providers/index.ts via resolveEmbedQueryPrefix, not this constructor.
+   * See EmbedProvider.queryPrefix (src/contracts/embed.ts) for the full
+   * asymmetry contract. Defaults to '' (no prefix). */
+  queryPrefix?: string;
 }
 
 interface OllamaEmbedResponse {
@@ -53,12 +58,14 @@ export class OllamaEmbedProvider implements EmbedProvider {
   readonly name = 'ollama' as const;
   readonly model: string;
   readonly dim: number;
+  readonly queryPrefix: string;
   private readonly baseUrl: string;
 
   constructor(config: OllamaEmbedConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
     this.model = config.model ?? 'mxbai-embed-large';
     this.dim = config.dim ?? DEFAULT_EMBED_DIM;
+    this.queryPrefix = config.queryPrefix ?? '';
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {

@@ -191,6 +191,12 @@ export function configToYaml(cfg: Config): string {
     line(1, 'provider', cfg.embedding.provider),
     line(1, 'model', cfg.embedding.model),
     line(1, 'dim', cfg.embedding.dim),
+    // RECALL-S1: only emitted when the operator has explicitly overridden
+    // the per-model default (see Config['embedding']['queryPrefix'] doc) —
+    // omitted entirely keeps a freshly-init'd config.yaml byte-identical to
+    // pre-RECALL-S1 output, and lets the built-in QUERY_PREFIX_BY_MODEL
+    // default apply.
+    ...(cfg.embedding.queryPrefix !== undefined ? [line(1, 'queryPrefix', cfg.embedding.queryPrefix)] : []),
     '',
     line(0, 'vector'),
     line(1, 'store', cfg.vector.store),

@@ -1,5 +1,6 @@
 import type { LLMProvider } from '../contracts/llm.js';
 import type { EmbedProvider } from '../contracts/embed.js';
+import { resolveEmbedQueryPrefix } from '../contracts/embed.js';
 import type { Config } from '../config/config.js';
 import { OllamaLLMProvider } from './llm/ollama.js';
 import { AzureOpenAILLMProvider } from './llm/azure-openai.js';
@@ -80,9 +81,14 @@ function buildLLMProvider(
 
 function buildEmbedProvider(config: Config): EmbedProvider {
   const { provider, model, dim } = config.embedding;
+  // RECALL-S1: resolved once here (the ONE place an EmbedProvider is built
+  // from config) — never computed ad hoc at a call site. See
+  // resolveEmbedQueryPrefix's doc (src/contracts/embed.ts) for the
+  // override-vs-built-in-map precedence.
+  const queryPrefix = resolveEmbedQueryPrefix(model, config.embedding.queryPrefix);
 
   if (provider === 'ollama') {
-    return new OllamaEmbedProvider({ baseUrl: config.ollama.baseUrl, model, dim });
+    return new OllamaEmbedProvider({ baseUrl: config.ollama.baseUrl, model, dim, queryPrefix });
   }
 
   const endpoint = config.azure.endpoint ?? process.env.AZURE_OPENAI_ENDPOINT;
@@ -100,6 +106,7 @@ function buildEmbedProvider(config: Config): EmbedProvider {
     apiVersion: config.azure.apiVersion,
     model,
     dim,
+    queryPrefix,
   });
 }
 
