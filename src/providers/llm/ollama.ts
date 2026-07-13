@@ -78,7 +78,32 @@ export class OllamaLLMProvider implements LLMProvider {
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
     const log = childLogger({ provider: this.name, model: this.model });
     const t0 = Date.now();
-    const useJson = opts?.json ?? true;
+    // JSON must be OPT-IN, not the default (fixed 2026-07-13).
+    //
+    // `?? true` forced Ollama's `format: json` onto EVERY call — including COMPACTION
+    // (04-compact.ts), a PROSE transcript-compressor that passes no `json` flag and
+    // returns `result.text.trim()` verbatim into the extraction stage.
+    //
+    // Measured, with the real COMPACT_SYSTEM prompt and this transcript:
+    //   "user: Postgres or SQLite? / assistant: SQLite — the daemon is single-user and
+    //    local-first, so a server process would be pure overhead. Tradeoff: no
+    //    concurrent writers."
+    //
+    // What compaction actually emitted, and what extraction actually received:
+    //   {"tool": "sqlite3"}                              <- 11 tokens. ALL REASONING GONE.
+    //
+    // Extraction then dutifully produced "Use SQLite instead of Postgres." — the exact
+    // context-free trivia the operator has been complaining about. The rationale was
+    // destroyed one stage BEFORE extraction ever saw the transcript.
+    //
+    // This is also the likely source of INVERTED memories in the live store (e.g. a
+    // safety rule "NEVER kill processes by image name" stored as "...use taskkill /F /IM
+    // node.exe"): a compactor forced to emit JSON, or a code model asked to compress
+    // prose, does not compress — it confabulates.
+    //
+    // Every genuine JSON caller passes `json: true` explicitly (05-extract,
+    // contradiction-judge, extract-entities, tier2-infer), so opt-in is safe.
+    const useJson = opts?.json === true;
     const body = {
       model: this.model,
       messages,

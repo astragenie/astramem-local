@@ -87,7 +87,12 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
     const log = childLogger({ provider: this.name, model: this.model });
     const t0 = Date.now();
-    const useJson = opts?.json ?? true;
+    // JSON must be OPT-IN (fixed 2026-07-13) — same bug as azure-openai.ts had:
+    // `?? true` forces response_format onto prose calls like compaction, which never asks
+    // for JSON and returns its text verbatim. OpenAI-compatible backends reject that with
+    // "'messages' must contain the word 'json'". Every real JSON caller passes json: true
+    // explicitly, so opt-in is safe.
+    const useJson = opts?.json === true;
     const body = {
       model: this.model,
       messages,

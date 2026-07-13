@@ -99,10 +99,39 @@ export class AzureOpenAILLMProvider implements LLMProvider {
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
     const log = childLogger({ provider: this.name, model: this.model });
     const t0 = Date.now();
-    const useJson = opts?.json ?? true;
+    // JSON must be OPT-IN, not the default (fixed 2026-07-13).
+    //
+    // `?? true` forced `response_format: json_object` onto EVERY call — including
+    // compaction (04-compact.ts:77), which is a prose summariser: it passes no `json`
+    // flag and returns `result.text.trim()` verbatim. Azure then rejects it:
+    //
+    //   HTTP 400 — 'messages' must contain the word 'json' in some form,
+    //              to use 'response_format' of type 'json_object'.
+    //
+    // Result: EVERY distill job poisoned. The azure-openai provider has never worked for
+    // the distill pipeline. It went unnoticed because Ollama does not enforce that rule,
+    // and everyone runs Ollama locally — the bug is invisible on the default path and
+    // fatal on the cloud one. Found 2026-07-13 by actually running a LoCoMo arm on Azure:
+    // 19/19 distill jobs poisoned, 0 memories stored.
+    //
+    // Every genuine JSON caller passes `json: true` explicitly (05-extract,
+    // contradiction-judge, extract-entities, tier2-infer), so opt-in is safe.
+    const useJson = opts?.json === true;
+
+    // Belt-and-braces, mirroring the codex-subscription provider's existing guard
+    // (codex-subscription.ts:490): if JSON is requested but no message actually contains
+    // the word, Azure 400s. Append a minimal hint rather than fail.
+    const outgoing: ChatMsg[] =
+      useJson && !messages.some((m) => /json/i.test(String(m.content)))
+        ? messages.map((m, i) =>
+            i === messages.length - 1
+              ? { role: m.role, content: `${m.content}\n\nRespond with valid JSON only.` }
+              : m,
+          )
+        : messages;
     const reasoning = isReasoningModel(this.model);
     const body = {
-      messages,
+      messages: outgoing,
       ...(useJson ? { response_format: { type: 'json_object' } } : {}),
       // Reasoning models (gpt-5*/o-series) reject `temperature` outright —
       // they have no sampling-temperature knob — so it's omitted entirely
