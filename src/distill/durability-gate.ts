@@ -43,13 +43,33 @@
  *   - off:     never gates (classifyDurability is not even called) — the
  *              shipped default (AC-2: byte-identical to pre-FEAT-441).
  *   - strict:  gates on any of the 5 reasons.
- *   - lenient: gates only the 3 lowest-false-positive-risk reasons
- *              (ephemeral_state, vacuous_negative, path_fragment).
- *              git_derivable and bare_todo are held back from lenient
+ *   - lenient: gates 4 of the 5 reasons (ephemeral_state, vacuous_negative,
+ *              path_fragment, bare_todo). git_derivable alone is held back
  *              because a terse-but-durable decision or a rationale-bearing
  *              command referencing a commit SHA is more plausible than a
  *              terse-but-durable "is green" assertion (PM pre-mortem Q1,
  *              20260709T095000Z-pm-review-feat-441-deep-triage.md).
+ *
+ * RECALL-S2 (2026-07-13) moved `bare_todo` OUT of the lenient holdback and
+ * into the always-gated set. Recorded decision (RECALL-S2 brief's "decide
+ * deliberately" requirement): the live store's dominant junk class is
+ * task-echo imperatives ("Configure X", "Approve production deployment.",
+ * "$ bun run test") filed across command/todo/decision/event types alike —
+ * holding bare_todo back from the *recommended* lenient mode left the
+ * single biggest junk category ungated by default. A type-aware carve-out
+ * for `command`-typed atoms (threading `mem.type` into `gateDurability`)
+ * was considered and REJECTED: the evidence set's own "must die" examples
+ * ("Rebuild", "$ bun run test") are themselves plausible `command`-typed
+ * atoms, so a blanket type exemption would save exactly the junk it's
+ * meant to catch. The genuine reusable command that must survive ("Run
+ * tests with `bunx tsc --noEmit` for both tsconfig.json and
+ * tsconfig.test.json") already does — not via its type, but because it is
+ * content-rich enough to clear `BARE_TODO_MAX_WORDS` (11 words > the
+ * 10-word cap) — the same content-based guard that protects every other
+ * reason. `git_derivable` keeps its holdback unchanged: no counterexample
+ * in the evidence set required moving it, and a terse commit reference is
+ * still plausibly meaningful shorthand in a way a bare imperative rarely
+ * is.
  */
 
 export type GatedReason =
@@ -61,11 +81,13 @@ export type GatedReason =
 
 export type DurabilityGateMode = 'strict' | 'lenient' | 'off';
 
-/** Reasons gated under `lenient` mode — see module doc comment above. */
+/** Reasons gated under `lenient` mode — see module doc comment above.
+ *  `git_derivable` is the only reason held back (RECALL-S2). */
 const LENIENT_REASONS: ReadonlySet<GatedReason> = new Set([
   'ephemeral_state',
   'vacuous_negative',
   'path_fragment',
+  'bare_todo',
 ]);
 
 // ─── Pattern definitions (one home, per AC-6) ─────────────────────────────
@@ -78,11 +100,14 @@ const PATH_FRAGMENT_RE =
   /^(?:[A-Za-z]:[\\/])?[\w.\-]+(?:[\\/][\w.\-]+)+(?::\d+)?$/;
 
 /** Commit SHA referenced alongside a git-activity keyword, or a generic
- *  git-activity phrase ("N files changed", "merged into main"). */
+ *  git-activity phrase ("N files changed", "merged into main", "N commits
+ *  ahead/behind" — RECALL-S2 widened this to cover the git status-check
+ *  phrasing "There are 2 commits ahead of origin/main.", which the
+ *  original "branch X is/was ahead" shape didn't reach). */
 const GIT_SHA_WITH_KEYWORD_RE =
   /\b(commit|sha|revision)\s*[:#]?\s*[0-9a-f]{7,40}\b/i;
 const GIT_ACTIVITY_RE =
-  /\b(\d+\s+files?\s+changed|files?\s+changed|merged\s+(into|branch)|pushed\s+to|branch\s+\S+\s+(is|was)\s+(ahead|behind|merged))\b/i;
+  /\b(\d+\s+files?\s+changed|files?\s+changed|merged\s+(into|branch)|pushed\s+to|branch\s+\S+\s+(is|was)\s+(ahead|behind|merged)|\d+\s+commits?\s+(ahead|behind)|commits?\s+(ahead|behind)\s+of\s+\S+)\b/i;
 
 /** "no X identified/found/detected/present" — records an absent search
  *  result, not a proposition about the system. */
@@ -90,14 +115,38 @@ const VACUOUS_NEGATIVE_RE =
   /\bno\s+[a-z][\w\s]{0,40}?\b(identified|found|detected|present|available)\b/i;
 
 /** "X is/are/was/were (currently )?<state adjective>" — true only at the
- *  instant written. */
+ *  instant written. RECALL-S2 added "ready (for review/to merge/to ship)"
+ *  ("PR #485 is now ready for review.") to the adjective set — the regex
+ *  is an unanchored substring test, so a trailing phrase after "ready"
+ *  doesn't need its own alternative. */
 const EPHEMERAL_STATE_RE =
-  /\b(is|are|was|were)\s+(currently\s+)?(now\s+)?(green|red|passing|failing|running|active|in[- ]progress|ongoing|present|complete|completed|done|blocked|pending|live|stable|healthy|broken|up|down)\b/i;
+  /\b(is|are|was|were)\s+(currently\s+)?(now\s+)?(green|red|passing|failing|running|active|in[- ]progress|ongoing|present|complete|completed|done|blocked|pending|live|stable|healthy|broken|up|down|ready)\b/i;
 
-/** Short imperative command/todo with no rationale markers. */
+/** RECALL-S2: standalone operational checkpoint/status markers that don't
+ *  fit the "is/are/was/were <adjective>" shape but are the same kind of
+ *  transient-at-write-time scaffolding — e.g. "[CHECKPOINT] Self-verify
+ *  gates pass." Folded into the ephemeral_state reason rather than a new
+ *  taxonomy entry (the enum is fixed per the module doc comment). */
+const EPHEMERAL_CHECKPOINT_RE =
+  /^\[(?:checkpoint|check|status)\]|\bgates?\s+(pass|passed|fail|failed)\b/i;
+
+/** Short imperative command/todo with no rationale markers. RECALL-S2
+ *  widened the verb list (configure, approve, orchestrate, ensure,
+ *  address, raise, set up, finalize, search, rebuild) after auditing live
+ *  task-echo junk that slipped past the original 17-verb list — e.g.
+ *  "Configure 'capture_source' to 'proxy'." and "Approve production
+ *  deployment." (the latter filed as type `decision`, proving type alone
+ *  can't distinguish junk — see module doc comment). */
 const IMPERATIVE_VERB_RE =
-  /^(run|fix|check|update|add|remove|delete|verify|test|build|deploy|install|restart|revert|merge|push|pull|rename|bump|ship|execute|start|stop|kill)\b/i;
-const BARE_TODO_MAX_WORDS = 8;
+  /^(run|fix|check|update|add|remove|delete|verify|test|build|deploy|install|restart|revert|merge|push|pull|rename|bump|ship|execute|start|stop|kill|configure|approve|orchestrate|ensure|address|raise|set\s+up|finalize|search|rebuild)\b/i;
+
+/** RECALL-S2: a bare shell-prompt-prefixed command echo ("$ bun run
+ *  test") has no leading English imperative verb for IMPERATIVE_VERB_RE
+ *  to match, but is the same task-echo shape — the "$ " prompt marker
+ *  itself is the tell. */
+const SHELL_PROMPT_RE = /^\$\s+\S/;
+
+const BARE_TODO_MAX_WORDS = 10;
 
 // ─── Rationale-marker exemption (FEAT-448) ────────────────────────────────
 //
@@ -202,10 +251,10 @@ export function classifyDurability(text: string): GatedReason | null {
   if (!hasRationaleMarker(trimmed) && wordCount(trimmed) <= SHORT_ATOM_MAX_WORDS) {
     if (GIT_SHA_WITH_KEYWORD_RE.test(trimmed) || GIT_ACTIVITY_RE.test(trimmed)) return 'git_derivable';
     if (VACUOUS_NEGATIVE_RE.test(trimmed)) return 'vacuous_negative';
-    if (EPHEMERAL_STATE_RE.test(trimmed)) return 'ephemeral_state';
+    if (EPHEMERAL_STATE_RE.test(trimmed) || EPHEMERAL_CHECKPOINT_RE.test(trimmed)) return 'ephemeral_state';
   }
 
-  if (IMPERATIVE_VERB_RE.test(trimmed) && !hasRationaleMarker(trimmed)) {
+  if ((IMPERATIVE_VERB_RE.test(trimmed) || SHELL_PROMPT_RE.test(trimmed)) && !hasRationaleMarker(trimmed)) {
     if (wordCount(trimmed) <= BARE_TODO_MAX_WORDS) return 'bare_todo';
   }
 
