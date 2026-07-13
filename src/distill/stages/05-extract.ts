@@ -243,11 +243,36 @@ const BARE_NUMBER_RE = /^\d+$/;
  * never trip this — only a name that IS, in its entirety, a bare issue/PR
  * reference, a bare number, or below the length floor.
  */
-export function classifyJunkEntityName(name: string): string | null {
+export function classifyJunkEntityName(name: string, kind?: string): string | null {
   const trimmed = name.trim();
-  if (trimmed.length < MIN_ENTITY_NAME_LENGTH) return 'too_short';
+  if (trimmed.length === 0) return 'too_short';
   if (BARE_ISSUE_REF_RE.test(trimmed)) return 'bare_issue_ref';
   if (BARE_NUMBER_RE.test(trimmed)) return 'bare_number';
+
+  // Single-character names: KIND-AWARE, not a flat length floor.
+  //
+  // The original guard was `length < 2 -> too_short`, which silently dropped
+  // "C" and "R" — both real, commonly-referenced programming languages. That
+  // contradicted this function's own docstring ("a short but real word ...
+  // must never trip this") and would have discarded a legitimate fact
+  // ("I wrote this in C") permanently, pre-persistence, counting it in the
+  // junk-rate metric as though it were noise.
+  //
+  // The junk we actually observed in prod was `"a"`, `"b"`, `"c"` tagged as
+  // kind `repo` — single letters are implausible as a repository, an actor,
+  // an org, or a project, but entirely plausible as a `tech`. So gate on the
+  // KIND rather than on length alone: a one-character `tech` survives, a
+  // one-character anything-else does not.
+  //
+  // When `kind` is absent (a caller that has only the name — e.g. an older
+  // call site), fall back to accepting the letter, since a false ACCEPT here
+  // merely leaves one weak entity in the table, while a false REJECT destroys
+  // a real fact irrecoverably. Asymmetric costs, asymmetric default.
+  if (trimmed.length < MIN_ENTITY_NAME_LENGTH) {
+    if (kind !== undefined && kind !== 'tech') return 'too_short';
+    if (!/^\p{L}$/u.test(trimmed)) return 'too_short'; // punctuation/symbol, not a letter
+  }
+
   return null;
 }
 
@@ -298,9 +323,13 @@ function filterAtomEntities(raw: unknown, dropCounts: Record<string, number>): u
       bump('missing_name');
       return false;
     }
-    const reason = classifyJunkEntityName(name);
+    // Pass `kind` so a one-character `tech` ("C", "R") survives while a
+    // one-character repo/actor/org ("a", "b", "c" — the junk actually seen in
+    // prod) does not. See classifyJunkEntityName.
+    const kind = typeof e.kind === 'string' ? e.kind : undefined;
+    const reason = classifyJunkEntityName(name, kind);
     if (reason) {
-      log.debug({ name, reason }, 'entities[]: dropped — junk name');
+      log.debug({ name, kind, reason }, 'entities[]: dropped — junk name');
       bump(reason);
       return false;
     }
