@@ -11,6 +11,8 @@
 import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import type { Chunk } from './03-chunk.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
+import { mapWithConcurrency } from '../concurrency.js';
+import { chunkCheckpoints } from '../chunk-checkpoint.js';
 
 export { BudgetExceeded };
 
@@ -90,18 +92,53 @@ export async function compactChunk(
 }
 
 /**
- * Compact all chunks in sequence.
- * Stops at first BudgetExceeded — caller catches and pauses job.
+ * Compact all chunks, up to `concurrency` at a time (FEAT-487).
+ *
+ * Stops dispatching further chunks at the first BudgetExceeded (or any other
+ * error) — caller catches and pauses job. Results stay in chunk-index order
+ * regardless of completion order. See src/distill/concurrency.ts for the
+ * full invariant contract `mapWithConcurrency` provides.
+ *
+ * `concurrency` defaults to 1 — BYTE-IDENTICAL to the pre-FEAT-487
+ * sequential `for…of await` loop this replaces. Production callers resolve
+ * the real value from config via `resolveChunkConcurrency`
+ * (src/distill/pipeline.ts).
+ *
+ * `jobKey` (chunk-retry-amplification fix) opts into per-chunk
+ * checkpointing: chunks whose result is already cached under `jobKey` (from
+ * an earlier call — i.e. a worker-level job retry re-invoking compact() from
+ * scratch) are skipped entirely rather than re-dispatched, and every fresh
+ * success is cached before compact() returns. Omitted (the default), this
+ * function is byte-identical to its pre-fix behavior — no cache lookup, no
+ * cache write, every call re-dispatches every chunk. Production callers pass
+ * `ctx.sourceHash` (see pipeline.ts) — stable across retries of the same job
+ * because it's derived from transcript content, not a per-attempt id.
  */
 export async function compact(
   chunks: Chunk[],
   provider: LLMProvider,
   budget: BudgetTracker,
   capUsd: number,
+  concurrency = 1,
+  jobKey?: string,
 ): Promise<CompactResult[]> {
-  const results: CompactResult[] = [];
-  for (const chk of chunks) {
-    results.push(await compactChunk(chk, provider, budget, capUsd));
+  if (!jobKey) {
+    return mapWithConcurrency(chunks, concurrency, (chk) => compactChunk(chk, provider, budget, capUsd));
   }
-  return results;
+
+  const pending: Chunk[] = [];
+  const cached: CompactResult[] = [];
+  for (const chk of chunks) {
+    const hit = chunkCheckpoints.get<CompactResult>(jobKey, 'compact', chk.index);
+    if (hit !== undefined) cached.push(hit);
+    else pending.push(chk);
+  }
+
+  const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
+    const result = await compactChunk(chk, provider, budget, capUsd);
+    chunkCheckpoints.set(jobKey, 'compact', chk.index, result);
+    return result;
+  });
+
+  return [...cached, ...fresh].sort((a, b) => a.index - b.index);
 }

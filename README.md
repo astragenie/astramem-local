@@ -101,9 +101,13 @@ export MEMORY_BEARER=$(node dist/cli/index.js token print)
 ```
 
 > **First run takes 10-30 minutes if Ollama isn't installed yet.** The wizard's default Ollama
-> tier pulls `qwen2.5:7b` (~4.7 GB) plus `mxbai-embed-large` (~670 MB) — about **5.4 GB**
-> total — with no separate confirmation prompt. Install and start Ollama first
-> (see [docs/providers.md](docs/providers.md)) if you'd rather not wait mid-wizard.
+> tier pulls `qwen3:8b` (~5.2 GB) plus `mxbai-embed-large` (~670 MB) — about **5.9 GB**
+> download — with no separate confirmation prompt. Once running, `qwen3:8b` is heavier on RAM
+> than the prior default too: ~5.76 GB resident with flash-attention + a q8 KV cache (~6.2 GB
+> without), so the full local stack is roughly **~6.4 GB RAM** rather than the ~5.4 GB the
+> previous default needed — see [docs/providers.md](docs/providers.md) for the honest breakdown.
+> Install and start Ollama first (see [docs/providers.md](docs/providers.md)) if you'd rather not
+> wait mid-wizard.
 
 Restart Claude Code. All plugin hooks (PreCompact, SessionEnd, SubagentStop) now post to the
 local daemon. No other plugin changes needed.
@@ -211,8 +215,8 @@ but does not yet produce.
 
 | Concern         | Ollama (local, free)                     | Azure OpenAI (cloud)                         |
 |-----------------|------------------------------------------|----------------------------------------------|
-| LLM compaction  | qwen2.5:7b (default)              | gpt-4.1 or any deployment                   |
-| LLM extraction  | qwen2.5:7b (default)              | gpt-4.1 or any deployment                   |
+| LLM compaction  | qwen3:8b (default)              | gpt-4.1 or any deployment                   |
+| LLM extraction  | qwen3:8b (default)              | gpt-4.1 or any deployment                   |
 | Embedding       | mxbai-embed-large (1024-dim)             | text-embedding-3-small (1024 via dimensions) |
 | Cost            | $0 (local inference)                     | ~$0.02/1K tokens + $0.0001/1K embed tokens  |
 | Setup           | `ollama serve` + `ollama pull <model>`   | Azure portal + endpoint + deployment name    |

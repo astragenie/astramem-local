@@ -16,7 +16,17 @@
 export class TransientError extends Error {
   readonly kind = 'transient' as const;
 
-  constructor(message: string, public readonly cause?: unknown) {
+  constructor(
+    message: string,
+    public readonly cause?: unknown,
+    /** Milliseconds to wait before retrying, when the failure carried a
+     *  server-supplied `Retry-After` hint (HTTP 429/503) — see
+     *  src/providers/llm/retry-after.ts for the header parser LLM providers
+     *  use to populate this. `undefined` (the default, and every call site
+     *  that predates this field) means no such hint was available;
+     *  worker.ts falls back to its own exponential backoff in that case. */
+    public readonly retryAfterMs?: number,
+  ) {
     super(message);
     this.name = 'TransientError';
   }

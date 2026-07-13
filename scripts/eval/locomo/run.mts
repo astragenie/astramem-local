@@ -11,7 +11,14 @@
  * bun scripts/eval/locomo/run.mts [--dataset <path>] [--n <conversations>]
  *   [--qa-per-sample <cap>] [--seed 42] [--k 10] [--concurrency 4]
  *   [--distill-timeout-ms 900000] [--shards 1]
+ *   [--extraction-model <model>] [--compaction-model <model>]
  *   [--run-dir .eval-data/locomo/runs/<timestamp>] [--ollama-url <url>]
+ *
+ * --extraction-model/--compaction-model (additive, FEAT-457 postmortem):
+ * omit either (or both) to inherit defaultConfig()'s built-in model exactly
+ * as before these flags existed. Passing one pins the isolated eval
+ * daemon's model AND records the resolved value in run-manifest.json's
+ * config.models — see ../shared/spawn-daemon.ts's resolveEvalModels header.
  *
  * Resume a killed run (FEAT-462): re-attach to an existing --run-dir,
  * respawn shard daemons on their existing datadirs, and skip re-ingesting
@@ -35,7 +42,7 @@ import { loadDataset, sampleLocomo, ensureDatasetDownloaded } from './lib/datase
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, sessionNumbers, type LoCoMoSample } from './lib/types.js';
 import {
   spawnEvalDaemon, waitForHealthStatus, killDaemon, makeIsolatedEvalEnv, cleanupIsolatedEvalEnv,
-  type DaemonHandle,
+  resolveEvalModels, type DaemonHandle, type EvalModelOverrides,
 } from '../shared/spawn-daemon.js';
 import { ingestConversations, type IngestManifest } from './ingest.mts';
 import { waitForSamplesDistilled, type DistillWaitResult } from './distill-wait.mts';
@@ -62,6 +69,18 @@ const k = Number(get('--k') ?? '10');
 const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
+// Additive-only (FEAT-457 postmortem): omitting either flag reproduces
+// defaultConfig()'s built-in model exactly, byte-for-byte, same as before
+// these flags existed. Passing one pins the isolated eval daemon's model
+// AND records what it resolved to in the run/throughput manifest below —
+// closing the gap where a prior run silently used a different model than
+// the operator believed, discoverable only in postmortem.
+const extractionModelFlag = get('--extraction-model');
+const compactionModelFlag = get('--compaction-model');
+const modelOverrides: EvalModelOverrides | undefined =
+  (extractionModelFlag !== undefined || compactionModelFlag !== undefined)
+    ? { extraction: extractionModelFlag, compaction: compactionModelFlag }
+    : undefined;
 const dryRunThroughput = has('--dry-run-throughput');
 // FEAT-462 AC-1/AC-6: see ../longmemeval/run-smoke.mts's identical comment.
 const resumeDir = get('--resume');
@@ -86,6 +105,7 @@ interface ShardResult {
   ingestManifest: IngestManifest;
   distillResult: DistillWaitResult;
   outcomes: AnswerOutcome[] | null;
+  resolvedModels: { extraction: string; compaction: string };
 }
 
 async function runShard(opts: {
@@ -97,6 +117,9 @@ async function runShard(opts: {
   distillTimeoutMs: number;
   k: number;
   azureCfg: AzureConfig | null; // null => ingest+distill only, skip answer (dry-run-throughput mode)
+  /** Additive (see the flag-parsing comment near the top of this file) —
+   *  undefined reproduces pre-existing behavior exactly. */
+  modelOverrides?: EvalModelOverrides;
   /** FEAT-462 AC-1: see ../longmemeval/run-smoke.mts's identical option —
    *  defaults to false so every existing call site is unaffected (AC-7). */
   resume?: boolean;
@@ -106,8 +129,8 @@ async function runShard(opts: {
   reportIngestProgress?: (shardIndex: number, done: number, total: number) => void;
 }): Promise<ShardResult> {
   const {
-    shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false,
-    onDaemonSpawned, reportIngestProgress,
+    shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
+    resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
   const shardDir = label ? join(runDir, label) : runDir;
@@ -117,7 +140,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run');
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -187,7 +210,10 @@ async function runShard(opts: {
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);
     }
 
-    return { shard: shardIndex, sample_ids: samples.map(s => s.sample_id), timings, ingestManifest, distillResult, outcomes };
+    return {
+      shard: shardIndex, sample_ids: samples.map(s => s.sample_id), timings, ingestManifest, distillResult, outcomes,
+      resolvedModels: isolated.resolvedModels,
+    };
   } catch (err) {
     checkDaemonAlive();
     if (daemon && !reportedDeath) {
@@ -355,6 +381,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
+      modelOverrides,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -406,9 +433,23 @@ async function runFull(): Promise<void> {
   console.log(`Wrote ${allOutcomes.length} hypotheses -> ${hypPath}`);
 
   timings.total_ms = Date.now() - overallStart;
+  // Prefer an actually-observed shard's resolvedModels (what really booted);
+  // fall back to the pure resolution (what WOULD have booted) only if every
+  // shard failed before makeIsolatedEvalEnv ran — the manifest should never
+  // be silent about the model just because the run also failed.
+  const observedModels = settled.find(r => r.status === 'fulfilled')
+    ? (settled.find(r => r.status === 'fulfilled') as PromiseFulfilledResult<ShardResult>).value.resolvedModels
+    : resolveEvalModels(modelOverrides);
   const manifestOut = {
     run_dir: runDir,
-    config: { datasetPath, n: sample.length, seed, k, concurrency, distillTimeoutMs, shards: shardBuckets.length, answererDeployment: azureCfg.answererDeployment },
+    config: {
+      datasetPath, n: sample.length, seed, k, concurrency, distillTimeoutMs, shards: shardBuckets.length,
+      answererDeployment: azureCfg.answererDeployment,
+      // FEAT-457 postmortem: record what the eval daemon actually ran with,
+      // not just what defaultConfig() happens to hardcode today — a
+      // published number must be checkable against this field, not memory.
+      models: observedModels,
+    },
     counts: {
       sampled_conversations: sample.length,
       sampled_qa: sample.reduce((s, c) => s + c.qa.length, 0),
@@ -467,6 +508,7 @@ async function runDryRunThroughput(): Promise<void> {
     buckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: effectiveShards, samples, runDir: join(runDir, `shards-${effectiveShards}`), concurrency, distillTimeoutMs, k,
       azureCfg: null, // ingest+distill only
+      modelOverrides,
     })),
   );
   const ms = Date.now() - t0;
@@ -491,9 +533,12 @@ async function runDryRunThroughput(): Promise<void> {
     console.log(`No sessions completed within the ${distillTimeoutMs}ms distill timeout — raise --distill-timeout-ms and retry.`);
   }
 
+  const observedModels = results.find(r => r.status === 'fulfilled')
+    ? (results.find(r => r.status === 'fulfilled') as PromiseFulfilledResult<ShardResult>).value.resolvedModels
+    : resolveEvalModels(modelOverrides);
   const out = {
     run_dir: runDir,
-    config: { datasetPath, seed, dryRunConversations, effectiveShards, distillTimeoutMs },
+    config: { datasetPath, seed, dryRunConversations, effectiveShards, distillTimeoutMs, models: observedModels },
     sample_ids: sample.map(c => c.sample_id),
     total_sessions_sampled: totalSessions,
     ollama_status_before: statusBefore,

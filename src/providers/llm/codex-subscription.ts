@@ -4,6 +4,7 @@ import { homedir } from 'node:os';
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../contracts/llm.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
+import { parseRetryAfterMs } from './retry-after.js';
 
 /**
  * EXPERIMENTAL — reuses a user's existing `codex login` ("Sign in with
@@ -545,7 +546,12 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
         );
       }
       if (res.status >= 500 || res.status === 429) {
-        throw new TransientError(`codex-subscription chat failed: HTTP ${res.status} — ${snippet}`);
+        // UNVERIFIED whether this unofficial/reverse-engineered ChatGPT
+        // backend actually sends Retry-After — there is no documentation
+        // for this endpoint (see file doc comment). Parsed defensively: if
+        // present it's honored, if absent parseRetryAfterMs returns
+        // undefined and the caller falls back to its own backoff.
+        throw new TransientError(`codex-subscription chat failed: HTTP ${res.status} — ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       throw new DeterministicError(`codex-subscription chat failed: HTTP ${res.status} — ${snippet}`);
     }

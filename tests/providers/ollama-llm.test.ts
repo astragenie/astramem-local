@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OllamaLLMProvider } from '../../src/providers/llm/ollama.js';
+import { TransientError } from '../../src/pipeline/errors.js';
 import { runLLMContractSuite } from './_contract-suite.js';
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,17 @@ describe('ollama-llm', () => {
   afterEach(() => {
     restoreGlobal();
     vi.restoreAllMocks();
+  });
+
+  // 2026-07-13 operator standardization — the constructor's `model` fallback
+  // had no test asserting it (every other test here passes an explicit
+  // model), so the qwen2.5:7b -> qwen3:8b swap at src/providers/llm/ollama.ts
+  // would have silently drifted from the shipped default with nothing red.
+  describe('constructor defaults', () => {
+    it('falls back to qwen3:8b when no model is configured', () => {
+      const p = new OllamaLLMProvider({});
+      expect(p.model).toBe('qwen3:8b');
+    });
   });
 
   runLLMContractSuite('ollama', () => {
@@ -153,6 +165,50 @@ describe('ollama-llm', () => {
       const res = await p.chat([{ role: 'user', content: 'x' }]);
       expect(res.text).toBe('ok');
       expect(callCount).toBe(2);
+    });
+
+    // 2026-07-13 — the three OTHER providers (azure-llm, openai-compatible-llm,
+    // codex-subscription-llm) each have a test pinning Retry-After -> TransientError
+    // .retryAfterMs. Ollama has the identical wiring (parseRetryAfterMs is called on
+    // both the 5xx and 429 branches) but had no test proving it — a silent break here
+    // would only surface as astramem retrying too fast (or not honoring a server-
+    // requested backoff) against a real Ollama instance, never as a red test.
+    it('threads a Retry-After header (seconds) from a 429 onto TransientError.retryAfterMs', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: 'rate limited' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '45' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBe(45_000);
+    });
+
+    it('leaves retryAfterMs undefined when the 429 response carries no Retry-After header', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: 'rate limited' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBeUndefined();
     });
   });
 

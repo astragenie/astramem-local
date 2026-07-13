@@ -2,6 +2,8 @@ import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../.
 import { computeCostUsd } from './pricing.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
+import { isReasoningModel } from './reasoning-model.js';
+import { parseRetryAfterMs } from './retry-after.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -93,12 +95,44 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
     // "'messages' must contain the word 'json'". Every real JSON caller passes json: true
     // explicitly, so opt-in is safe.
     const useJson = opts?.json === true;
+
+    // Mirrors the guard in azure-openai.ts:121-131 and codex-subscription.ts:490. Real
+    // OpenAI (and Azure) hard-400 a `response_format: json_object` request whose messages
+    // never contain the literal word "json":
+    //
+    //   HTTP 400 — 'messages' must contain the word 'json' in some form, to use
+    //              'response_format' of type 'json_object'.
+    //
+    // This provider defaults its baseUrl at api.openai.com, so it is subject to that rule,
+    // but it was the one provider of the three WITHOUT the guard — an armed copy of the bug
+    // that poisoned every Azure distill job, undetonated only because nothing routes here
+    // live yet. Found 2026-07-13 by the cross-provider conformance suite (FEAT-488), which
+    // exists precisely because per-provider tests cannot see a divergence BETWEEN providers.
+    const outgoing: ChatMsg[] =
+      useJson && !messages.some((m) => /json/i.test(String(m.content)))
+        ? messages.map((m, i) =>
+            i === messages.length - 1
+              ? { role: m.role, content: `${m.content}\n\nRespond with valid JSON only.` }
+              : m,
+          )
+        : messages;
+
+    // OpenAI's reasoning-model family (o-series/gpt-5*) rejects the classic
+    // Chat Completions `temperature` and `max_tokens` params outright with
+    // HTTP 400 — same rule as azure-openai.ts, since this provider defaults
+    // its baseUrl at api.openai.com and hits the same real backends. See
+    // reasoning-model.ts for the shared detection + full rationale.
+    const reasoning = isReasoningModel(this.model);
     const body = {
       model: this.model,
-      messages,
+      messages: outgoing,
       ...(useJson ? { response_format: { type: 'json_object' } } : {}),
-      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...(!reasoning && opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      ...(opts?.maxTokens !== undefined
+        ? reasoning
+          ? { max_completion_tokens: opts.maxTokens }
+          : { max_tokens: opts.maxTokens }
+        : {}),
     };
 
     const res = await fetchWithRetry(
@@ -127,10 +161,15 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
       const latency_ms = Date.now() - t0;
       log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 || res.status === 429 ? 'TransientError' : 'DeterministicError' }, 'openai-compatible chat failed');
       if (res.status >= 500) {
-        throw new TransientError(`openai-compatible chat failed: HTTP ${res.status} — ${snippet}`);
+        throw new TransientError(`openai-compatible chat failed: HTTP ${res.status} — ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       if (res.status === 429) {
-        throw new TransientError(`openai-compatible chat rate-limited (429): ${snippet}`);
+        // The real OpenAI API (and Groq, which mirrors its headers) document
+        // Retry-After on 429 — self-hosted backends (vLLM, LM Studio) this
+        // provider can also point at typically do NOT send it, which is
+        // fine: parseRetryAfterMs returns undefined and the caller falls
+        // back to its own backoff.
+        throw new TransientError(`openai-compatible chat rate-limited (429): ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       throw new DeterministicError(`openai-compatible chat failed: HTTP ${res.status} — ${snippet}`);
     }
@@ -155,10 +194,13 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
 
   async health(): Promise<LLMHealth> {
     const t0 = Date.now();
+    // Ping with a minimal 1-token completion. Reasoning models reject
+    // `max_tokens` (HTTP 400) just like in chat() — same detection, same
+    // `max_completion_tokens` substitution.
     const body = {
       model: this.model,
       messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 1,
+      ...(isReasoningModel(this.model) ? { max_completion_tokens: 1 } : { max_tokens: 1 }),
     };
     try {
       const res = await fetch(this.chatUrl, {

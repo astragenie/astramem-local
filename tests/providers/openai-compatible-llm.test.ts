@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OpenAICompatibleLLMProvider } from '../../src/providers/llm/openai-compatible.js';
+import { isReasoningModel } from '../../src/providers/llm/reasoning-model.js';
+import { TransientError } from '../../src/pipeline/errors.js';
 import { runLLMContractSuite } from './_contract-suite.js';
 
 // ---------------------------------------------------------------------------
@@ -143,11 +145,137 @@ describe('openai-compatible-llm', () => {
       expect(callCount).toBe(2);
     });
 
+    it('threads a Retry-After header (seconds) from a 429 onto TransientError.retryAfterMs', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '20' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OpenAICompatibleLLMProvider({ ...FAKE_CREDS });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBe(20_000);
+    });
+
+    it('leaves retryAfterMs undefined when the 429 response carries no Retry-After header', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OpenAICompatibleLLMProvider({ ...FAKE_CREDS });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBeUndefined();
+    });
+
     it('usd is 0 for unknown model (not in pricing table)', async () => {
       globalThis.fetch = mockFetchSequence([chatResponse('hi', 10000, 5000)]);
       const p = new OpenAICompatibleLLMProvider({ ...FAKE_CREDS, model: 'llama-3.1-70b-versatile' });
       const res = await p.chat([{ role: 'user', content: 'x' }]);
       expect(res.usage.usd).toBe(0);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Reasoning models (gpt-5*/o-series) — max_completion_tokens, no temperature
+  //
+  // Mirrors azure-llm.test.ts's "reasoning-model request shape" block exactly.
+  // This provider defaults baseUrl at api.openai.com, so it hits the same
+  // real OpenAI-family reasoning models Azure does, and was previously the
+  // one HTTP provider with NO handling at all — every gpt-5*/o-series call
+  // through it 400s, including the health() probe.
+  // ---------------------------------------------------------------------------
+  describe('isReasoningModel()', () => {
+    it.each([
+      ['gpt-5-mini', true],
+      ['gpt-5', true],
+      ['gpt-5-nano', true],
+      ['o1', true],
+      ['o1-mini', true],
+      ['o1-preview', true],
+      ['o3', true],
+      ['o3-mini', true],
+      ['o4-mini', true],
+      ['gpt-4.1', false],
+      ['gpt-4.1-mini', false],
+      ['gpt-4o', false],
+      ['gpt-3.5-turbo', false],
+      ['unknown-model-xyz', false],
+    ])('%s -> %s', (model, expected) => {
+      expect(isReasoningModel(model)).toBe(expected);
+    });
+  });
+
+  describe('chat() — reasoning-model request shape', () => {
+    it('sends max_completion_tokens (not max_tokens) and omits temperature for gpt-5-mini', async () => {
+      let captured: Record<string, unknown> = {};
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(chatResponse('{}').body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OpenAICompatibleLLMProvider({ ...FAKE_CREDS, model: 'gpt-5-mini' });
+      await p.chat([{ role: 'user', content: 'x' }], { temperature: 0.7, maxTokens: 256, json: true });
+
+      expect(captured.max_completion_tokens).toBe(256);
+      expect(captured).not.toHaveProperty('max_tokens');
+      expect(captured).not.toHaveProperty('temperature');
+      // response_format is unaffected by reasoning-model detection
+      expect(captured.response_format).toEqual({ type: 'json_object' });
+    });
+
+    it('non-reasoning model (gpt-4.1) keeps sending max_tokens + temperature unchanged', async () => {
+      let captured: Record<string, unknown> = {};
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(chatResponse('{}').body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OpenAICompatibleLLMProvider({ ...FAKE_CREDS, model: 'gpt-4.1' });
+      await p.chat([{ role: 'user', content: 'x' }], { temperature: 0.7, maxTokens: 256 });
+
+      expect(captured.max_tokens).toBe(256);
+      expect(captured.temperature).toBe(0.7);
+      expect(captured).not.toHaveProperty('max_completion_tokens');
+    });
+
+    it('health() pings gpt-5-mini with max_completion_tokens instead of max_tokens', async () => {
+      let captured: Record<string, unknown> = {};
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(chatResponse('pong', 1, 1).body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new OpenAICompatibleLLMProvider({ ...FAKE_CREDS, model: 'gpt-5-mini' });
+      const h = await p.health();
+
+      expect(h.ok).toBe(true);
+      expect(captured.max_completion_tokens).toBe(1);
+      expect(captured).not.toHaveProperty('max_tokens');
     });
   });
 

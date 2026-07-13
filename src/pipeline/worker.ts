@@ -5,6 +5,7 @@ import type { HandlerRegistry } from './registry.js';
 import { JobRepo } from './job-repo.js';
 import { DistillBudgetPausedError } from './handlers/distill.js';
 import { classifyError } from './failure-classifier.js';
+import { TransientError } from './errors.js';
 import { logger, childLogger } from '../log/logger.js';
 
 const MAX_ATTEMPTS = 3;
@@ -207,8 +208,17 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
           } else {
             // Exponential backoff: 1s, 2s, 4s, … capped at 60s
             const attemptsSoFar = updated?.attempts ?? 1;
-            const delay = Math.min(1000 * Math.pow(2, attemptsSoFar - 1), 60_000);
-            jobLog.info({ error_message: errMsg.slice(0, 200), delay_ms: delay }, 'job requeued for retry');
+            const backoffDelay = Math.min(1000 * Math.pow(2, attemptsSoFar - 1), 60_000);
+            // Honor a server-supplied Retry-After hint (TransientError.retryAfterMs — see
+            // errors.ts / providers/llm/retry-after.ts): a 429 telling us to wait 90s must
+            // not be undercut by our own 1/2/4s exponential guess, so take whichever is
+            // LONGER. A hint SHORTER than the backoff does not shrink it either — the
+            // exponential floor is a deliberate conservative minimum, not just a default.
+            // Absent a hint (the common case — most transient failures carry none), this is
+            // a no-op: byte-identical to the prior fixed backoff.
+            const retryAfterMs = TransientError.is(err) ? err.retryAfterMs : undefined;
+            const delay = retryAfterMs !== undefined ? Math.max(backoffDelay, retryAfterMs) : backoffDelay;
+            jobLog.info({ error_message: errMsg.slice(0, 200), delay_ms: delay, retry_after_ms: retryAfterMs }, 'job requeued for retry');
             setTimeout(() => { repo.requeueForRetry(job.id); }, delay);
           }
         }

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { extractChunk, extract, BudgetExceeded } from '../../src/distill/stages/05-extract.js';
@@ -776,5 +776,166 @@ describe('extract stage — FEAT-479 profile threading', () => {
       EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
       EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
     ]);
+  });
+});
+
+// FEAT-487: bounded-concurrency chunk fan-out. extract() now delegates to
+// mapWithConcurrency (src/distill/concurrency.ts) — these tests pin the
+// extract()-level integration of that helper's invariants.
+describe('extract() concurrency (FEAT-487)', () => {
+  it('concurrency=1 (the default, omitted) reproduces the pre-FEAT-487 sequential loop byte-for-byte', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const callOrder: number[] = [];
+    const llm = makeMockLLM([VALID_EXTRACTION_JSON, VALID_EXTRACTION_JSON]);
+    const chatSpy = vi.spyOn(llm, 'chat').mockImplementation(async (msgs) => {
+      const userText = msgs.find(m => m.role === 'user')?.content ?? '';
+      callOrder.push(userText.includes('one') ? 0 : 1);
+      return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+    });
+
+    const results = await extract(
+      [{ index: 0, text: 'chunk one' }, { index: 1, text: 'chunk two' }],
+      llm,
+      budget,
+      10.0,
+      // extractProfile omitted (default), concurrency omitted (default 1)
+    );
+
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+    expect(callOrder).toEqual([0, 1]); // strictly sequential — chunk 0 fully done before chunk 1 starts
+    expect(results.length).toBe(2);
+  });
+
+  it('concurrency > 1 processes chunks out of dispatch order but preserves result order by chunk index', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[]): Promise<ChatResult> {
+        const userText = msgs.find(m => m.role === 'user')?.content ?? '';
+        const delayMs = userText.includes('slow') ? 15 : 0;
+        await new Promise(r => setTimeout(r, delayMs));
+        return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    const results = await extract(
+      [
+        { index: 0, text: 'slow chunk' },
+        { index: 1, text: 'fast chunk' },
+      ],
+      llm,
+      budget,
+      10.0,
+      'engineering',
+      2,
+    );
+
+    // Both resolve to the same VALID_EXTRACTION_JSON payload here — the
+    // meaningful assertion is that index 0's result is in slot 0 regardless
+    // of which chunk's LLM call actually finished first.
+    expect(results[0]?.chunkIndex).toBe(0);
+    expect(results[1]?.chunkIndex).toBe(1);
+  });
+
+  it('budget-stop: once one chunk hits BudgetExceeded, extract() rejects with it and stops dispatching further chunks', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const capUsd = 0; // even one chunk's estimate exceeds this
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        throw new Error('provider.chat should not be called when cap is 0');
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+    const chunks = [0, 1, 2, 3, 4].map(i => ({ index: i, text: `chunk ${i}` }));
+
+    await expect(extract(chunks, llm, budget, capUsd, 'engineering', 2)).rejects.toBeInstanceOf(BudgetExceeded);
+  });
+
+  it('setting concurrency explicitly to 1 is the documented safety valve — identical results/order to the default', async () => {
+    const dbA = openDb(':memory:');
+    migrate(dbA);
+    const dbB = openDb(':memory:');
+    migrate(dbB);
+    const budgetA = new BudgetTracker(dbA);
+    const budgetB = new BudgetTracker(dbB);
+    const chunks = [{ index: 0, text: 'chunk one' }, { index: 1, text: 'chunk two' }];
+
+    const withDefault = await extract(chunks, makeMockLLM([VALID_EXTRACTION_JSON, VALID_EXTRACTION_JSON]), budgetA, 10.0);
+    const withExplicitOne = await extract(
+      chunks, makeMockLLM([VALID_EXTRACTION_JSON, VALID_EXTRACTION_JSON]), budgetB, 10.0, 'engineering', 1,
+    );
+
+    expect(withExplicitOne).toEqual(withDefault);
+  });
+});
+
+// chunk-retry-amplification fix: worker.ts retries a FAILED job at the JOB
+// level by re-invoking runPipeline() (and therefore extract()) from scratch.
+// Without checkpointing, one transient failure (rate limit, or a stochastic
+// JSON parse failure) on a late chunk replayed every earlier chunk's LLM
+// call too. See the parallel test in 04-compact.test.ts for the full
+// incident write-up.
+describe('extract() retry checkpointing (chunk-retry-amplification fix)', () => {
+  it('a retried extract() call with the same jobKey does not re-issue LLM calls for chunks that already succeeded', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const jobKey = 'session-hash-xyz789';
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ index: i, text: `chunk ${i} content` }));
+
+    let callCount = 0;
+    let rateLimitFired = false;
+    const RATE_LIMIT_AT_INDEX = 14;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[]): Promise<ChatResult> {
+        callCount++;
+        const userText = msgs.find(m => m.role === 'user')?.content ?? '';
+        const idx = Number(userText.match(/chunk (\d+) content/)?.[1]);
+        if (idx === RATE_LIMIT_AT_INDEX && !rateLimitFired) {
+          rateLimitFired = true;
+          throw new Error('rate limited (429)');
+        }
+        return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    await expect(extract(chunks, llm, budget, 10.0, 'engineering', 1, jobKey)).rejects.toThrow('rate limited');
+    expect(callCount).toBe(RATE_LIMIT_AT_INDEX + 1);
+
+    const callsAfterFirstAttempt = callCount;
+
+    const results = await extract(chunks, llm, budget, 10.0, 'engineering', 1, jobKey);
+
+    const callsOnRetry = callCount - callsAfterFirstAttempt;
+    expect(callsOnRetry).toBe(chunks.length - RATE_LIMIT_AT_INDEX); // 6, not 20
+    expect(results.length).toBe(20);
+    expect(results.map(r => r.chunkIndex)).toEqual(Array.from({ length: 20 }, (_, i) => i));
+  });
+
+  it('omitting jobKey preserves the old behavior — every call re-dispatches every chunk', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeMockLLM([VALID_EXTRACTION_JSON]);
+    const chatSpy = vi.spyOn(llm, 'chat');
+    const chunks = [{ index: 0, text: 'chunk one' }, { index: 1, text: 'chunk two' }];
+
+    await extract(chunks, llm, budget, 10.0); // no jobKey
+    expect(chatSpy).toHaveBeenCalledTimes(2);
+    await extract(chunks, llm, budget, 10.0); // no jobKey — no caching, full re-dispatch
+    expect(chatSpy).toHaveBeenCalledTimes(4);
   });
 });

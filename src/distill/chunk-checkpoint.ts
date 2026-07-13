@@ -1,0 +1,122 @@
+/**
+ * In-memory per-chunk result cache — fixes the chunk-retry amplification bug
+ * (found 2026-07-13 via the codex-subscription failure path, but provider-
+ * agnostic): a distill job runs compact()/extract() over every chunk in a
+ * session with no per-chunk checkpointing. worker.ts retries a FAILED job at
+ * the JOB level (up to MAX_ATTEMPTS times) by re-invoking the handler from
+ * scratch, which re-runs runPipeline() from stage 1 — so one transient
+ * failure on, say, chunk 15 of 20 previously replayed chunks 1-14 too,
+ * multiplying a single rate-limit event into up to 3x the LLM calls. That is
+ * the exact opposite of what you want when the thing that failed was a rate
+ * limit: you retry HARDER into the limit that just rejected you.
+ *
+ * compact() and extract() (src/distill/stages/04-compact.ts,
+ * 05-extract.ts) consult this cache before dispatching an LLM call for a
+ * chunk; a hit skips provider.chat() (and budget.assertCanSpend/record)
+ * entirely and reuses the previously-computed result.
+ *
+ * Keyed by (jobKey, stage, chunkIndex). jobKey is the distill job's
+ * `sourceHash` (sha256 of the transcript content, computed once in
+ * distillHandler and threaded through PipelineContext.sourceHash) — stable
+ * across every retry of the SAME job because it is derived from content,
+ * not wall-clock time or a fresh id per attempt.
+ *
+ * Deliberately IN-MEMORY, not persisted to SQLite: it only needs to survive
+ * across the SAME running daemon process's own retry loop (worker.ts's
+ * setTimeout-based requeue calls the handler again in the same process) —
+ * not a daemon restart. A restart already replays partially-applied work by
+ * design (see JobRepo.recoverOrphans's doc comment: "Handlers must tolerate
+ * re-execution of partially-applied work"), so surviving a restart would
+ * only help the crash-recovery case, which full DB persistence (the
+ * stretch-goal alternative) would be needed for — out of scope for this fix.
+ */
+
+type Stage = 'compact' | 'extract';
+
+/** Safety net against unbounded growth if a caller forgets to clear() (or a
+ *  job is paused indefinitely on budget and never resumed): bounds memory to
+ *  a few thousand chunk results — each at most a few KB of text/atoms —
+ *  rather than growing without limit across the daemon's uptime. FIFO
+ *  eviction (oldest entry first) once the cap is hit. */
+const DEFAULT_MAX_ENTRIES = 5000;
+
+export interface ChunkCheckpointStoreOpts {
+  maxEntries?: number;
+}
+
+export class ChunkCheckpointStore {
+  private readonly cache = new Map<string, unknown>();
+  private readonly maxEntries: number;
+
+  constructor(opts: ChunkCheckpointStoreOpts = {}) {
+    this.maxEntries = opts.maxEntries ?? DEFAULT_MAX_ENTRIES;
+  }
+
+  /**
+   * `variant` disambiguates results that IDENTICAL transcript content can
+   * legitimately produce. It is not decoration — omitting it is a silent
+   * data-corruption bug, found in review 2026-07-13 before this shipped:
+   *
+   * jobKey is a sha256 of transcript CONTENT ONLY (`distill.ts`:
+   * `sourceHash = sha256(transcript.content)`). SLICE-434 shipped
+   * `extract_profile` ('engineering' | 'conversational') as a PER-TRANSCRIPT-ROW
+   * field, and ingest has no content-based dedup — so two rows with byte-identical
+   * content but different profiles are a normal outcome (duplicate capture, or a
+   * deliberate reprocess-under-another-profile, which is the feature's entire
+   * purpose). Meanwhile `clear()` fires only on terminal SUCCESS, and a
+   * BudgetExceeded job PAUSES indefinitely (worker.ts) instead of retrying — so a
+   * paused job's chunks can sit cached for an arbitrary wall-clock gap.
+   *
+   * Without `variant`: job A (engineering) pauses → job B (same content,
+   * conversational) is claimed → B silently reuses A's atoms, extracted under the
+   * WRONG prompt. No error, no log line, wrong data persisted. Reachable at the
+   * default concurrency=1, on every default install.
+   *
+   * The MODEL deliberately is NOT in the key: `getProviders(cfg)` runs once at
+   * daemon boot (serve.ts) and a restart re-imports this module singleton, wiping
+   * the cache — so the model cannot vary under a live cache. Same argument for the
+   * ASTRA_EXTRACT_PROMPT process-env override. If either ever becomes changeable
+   * in-process, it must join `variant`.
+   */
+  private key(jobKey: string, stage: Stage, index: number, variant: string): string {
+    // \0-separated — jobKey (a hex sha256 digest in production) never
+    // contains a null byte, so this can't collide across the parts.
+    return `${jobKey}\0${stage}\0${variant}\0${index}`;
+  }
+
+  get<T>(jobKey: string, stage: Stage, index: number, variant = ''): T | undefined {
+    return this.cache.get(this.key(jobKey, stage, index, variant)) as T | undefined;
+  }
+
+  set<T>(jobKey: string, stage: Stage, index: number, value: T, variant = ''): void {
+    const k = this.key(jobKey, stage, index, variant);
+    if (!this.cache.has(k) && this.cache.size >= this.maxEntries) {
+      // Map iterates in insertion order — the first key is the oldest.
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== undefined) this.cache.delete(oldest);
+    }
+    this.cache.set(k, value);
+  }
+
+  /** Drop every entry for a job — call once the job reaches terminal success
+   *  (see runPipeline in pipeline.ts) so its checkpoints don't linger in
+   *  memory for the rest of the process's uptime (belt-and-braces on top of
+   *  the maxEntries FIFO eviction above). */
+  clear(jobKey: string): void {
+    const prefix = `${jobKey}\0`;
+    for (const k of this.cache.keys()) {
+      if (k.startsWith(prefix)) this.cache.delete(k);
+    }
+  }
+
+  /** Test-only introspection — production code never needs this. */
+  size(): number {
+    return this.cache.size;
+  }
+}
+
+/** Process-wide singleton — MUST be a module-level instance (not
+ *  constructed per pipeline run) so it survives across the SEPARATE
+ *  runPipeline() invocations a worker-level job retry produces. See class
+ *  doc comment above. */
+export const chunkCheckpoints = new ChunkCheckpointStore();

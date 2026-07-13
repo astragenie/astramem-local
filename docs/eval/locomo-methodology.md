@@ -6,6 +6,15 @@ scored run has been completed yet. Do not cite a LoCoMo accuracy number for
 astramemory-local until a run command below has actually been executed and
 its `run-manifest.json` / metrics file are in hand — none exists today.**
 
+**2026-07-13 update: the shipped compaction/extraction default changed from
+`qwen2.5-coder:7b` to `qwen3:8b` (operator standardization). This harness has
+no per-run config override (it inherits `defaultConfig()`), so any run of the
+command below now uses `qwen3:8b`. The prerequisites table and throughput
+estimate further down in this doc were captured against `qwen2.5-coder:7b`
+and have NOT been re-verified against the new default — treat the "Pulled and
+currently loaded/resident" row and the 3.4-4.5 hour estimate as stale until
+someone re-runs `--dry-run-throughput` (see "Throughput estimate" below).**
+
 This doc is written to be executed by a human operator directly, not a
 coding agent. See "Why this must run from a plain terminal" below.
 
@@ -25,11 +34,12 @@ This prints a run directory (`.eval-data/locomo/runs/<ISO-timestamp>/`) and
 an orchestrator PID, then returns immediately. Real work continues in a
 detached child process.
 
-**Expected wall clock: roughly 3.5-5 hours**, dominated by local
-`qwen2.5-coder:7b` distill extraction (see "Throughput estimate" below — this
-is an extrapolation from a different benchmark's measured rate, not a
-LoCoMo-measured number; see that section for how to get a real one first if
-you have a spare 20-30 minutes).
+**Expected wall clock: roughly 3.5-5 hours**, dominated by local distill
+extraction (see "Throughput estimate" below — this is an extrapolation from a
+different benchmark's `qwen2.5-coder:7b` measured rate, not a LoCoMo-measured
+or `qwen3:8b`-measured number; the harness now runs `qwen3:8b` by default per
+the 2026-07-13 update above — see that section for how to get a real number
+first if you have a spare 20-30 minutes).
 
 Check on it any time, from any terminal, on this same machine:
 
@@ -348,5 +358,6 @@ Same isolation machinery as the LongMemEval adapter
 daemon gets a throwaway `APPDATA`/`LOCALAPPDATA`/`HOME` sandbox with no
 `sync.json`, so it never pairs to the live production SaaS tenant and never
 touches your real config dir, SQLite file, or Ollama models beyond the two
-it's configured to use (`qwen2.5-coder:7b`, `mxbai-embed-large` — the same
-production defaults, so the eval still exercises the real provider stack).
+it's configured to use (`qwen3:8b`, `mxbai-embed-large` — the same
+production defaults as of the 2026-07-13 update above, so the eval still
+exercises the real provider stack).
