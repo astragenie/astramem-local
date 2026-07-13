@@ -102,7 +102,12 @@ describe('doctor "Entity link rate" check (issue #200)', () => {
     const result = await checkFor().run();
     expect(result.ok).toBe(true);
     expect(result.inconclusive).toBe(true);
-    expect(result.message).toContain('check error (non-fatal)');
+    // Message wording is standardized across every inconclusive check (#219):
+    // "CHECK FAILED TO RUN (not a clean bill of health)". The old phrasing here
+    // was "check error (non-fatal)" — accurate, but "non-fatal" is exactly the
+    // word that talks an operator INTO ignoring it, which is how a canary that
+    // cannot run gets read as a canary that passed.
+    expect(result.message).toContain('CHECK FAILED TO RUN');
   });
 
   it('DB exists but below MEANINGFUL_USAGE_THRESHOLD — ok:true, not enough activity to judge', async () => {
