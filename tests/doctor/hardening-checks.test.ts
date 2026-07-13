@@ -96,4 +96,32 @@ describe('doctor hardening checks (W1.3)', () => {
     expect(res.ok).toBe(false);
     expect(res.message).toContain('1 poisoned job');
   });
+
+  // #256 review: these two DB-throw paths had zero coverage — a regression
+  // back to bare `ok: true` on either would not have been caught. Both were
+  // real, live ADR-015 violations found by widening the catch-scanner's
+  // scope past checks/ to include this file.
+  it('pending proposals: query failure is inconclusive, not a clean bill of health', async () => {
+    const failingChecks = getHardeningChecks({
+      dataDir: dir,
+      port: 1,
+      openDbReadonly: async () => { throw new Error('db unavailable'); },
+    });
+    const res = await findCheck(failingChecks, 'Consolidation proposals reviewed').run();
+    expect(res.ok).toBe(true);
+    expect(res.inconclusive).toBe(true);
+    expect(res.message).toContain('failed to run');
+  });
+
+  it('poison jobs: query failure is inconclusive, not a clean bill of health', async () => {
+    const failingChecks = getHardeningChecks({
+      dataDir: dir,
+      port: 1,
+      openDbReadonly: async () => { throw new Error('db unavailable'); },
+    });
+    const res = await findCheck(failingChecks, 'No poisoned jobs').run();
+    expect(res.ok).toBe(true);
+    expect(res.inconclusive).toBe(true);
+    expect(res.message).toContain('failed to run');
+  });
 });
