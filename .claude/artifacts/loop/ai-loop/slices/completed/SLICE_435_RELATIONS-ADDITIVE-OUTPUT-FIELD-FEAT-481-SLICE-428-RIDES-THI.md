@@ -1,7 +1,7 @@
 ---
 id: SLICE-435
 title: "Relations[] additive output field (FEAT-481 SLICE-428 rides this)"
-status: pending
+status: completed
 feature: FEAT-479
 phase: null
 priority: P1
@@ -12,6 +12,7 @@ created: 2026-07-13
 updated: 2026-07-13
 effort_points: 1
 estimated_tokens: 60000
+completed_at: 2026-07-13
 ---
 # SLICE-435: Relations[] additive output field (FEAT-481 SLICE-428 rides this)
 
@@ -32,7 +33,7 @@ Implements FEAT-479. See [feature file](../../../backlog/in-progress/FEAT-479.md
 
 ## Acceptance criteria
 
-- [ ] AC-11: Given FEAT-481's entity-relations design, When the shared `AtomSchema` is extended, Then an optional `relations[]` field is added nested inside each atom, each entry validated against a closed lowercase snake_case predicate enum (10 values + `other`) with a same-atom no-hallucination guard (subject/object must appear in that atom's own `entities[]` list) — matching FEAT-481 SLICE-428's AC-6/AC-7 exactly, since this is the shared-schema half of that dependent slice.
+- [x] AC-11: Given FEAT-481's entity-relations design, When the shared `AtomSchema` is extended, Then an optional `relations[]` field is added nested inside each atom, each entry validated against a closed lowercase snake_case predicate enum (10 values + `other`) with a same-atom no-hallucination guard (subject/object must appear in that atom's own `entities[]` list) — matching FEAT-481 SLICE-428's AC-6/AC-7 exactly, since this is the shared-schema half of that dependent slice. — VERIFIED: RELATION_PREDICATES byte-identical to design allow-list (review confirmed verbatim); AtomRelationSchema nested optional on AtomSchema; no-hallucination guard (same-atom entities[] name-match via shared normalizeEntityName) + drop-not-coerce, 9 targeted tests; live smoke 3 valid relations. Review artifact 20260713T133000Z, validation 20260713T133500Z, merged PR #170.
 
 ## Done When
 
