@@ -149,4 +149,4 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       (maxPerRun) and wall-clock time (maxWallClockMs) instead, and this
 //       table makes the actual cost visible to the doctor "Consolidation
 //       judge" canary rather than gated behind a currency that can't see it.
-export const SCHEMA_VERSION = 30 as const;
+export const SCHEMA_VERSION = 31 as const;

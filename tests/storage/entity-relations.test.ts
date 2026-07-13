@@ -103,7 +103,7 @@ describe('migration 027-entity-relations (AC-1)', () => {
 
   it('DB max schema version is 30 after migration', () => {
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(30);
+    expect(row.v).toBe(31);
   });
 });
 

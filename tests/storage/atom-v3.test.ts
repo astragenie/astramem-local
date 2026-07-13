@@ -62,7 +62,7 @@ describe('Atom v3 migration (006-atom-v3, ADR-001)', () => {
   it('DB max schema version is 30 after migration', () => {
     migrate(db);
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(30);
+    expect(row.v).toBe(31);
   });
 
   it('a new row inserted via the repo gets valid_from = created_at, scope private, valid_to null', () => {
