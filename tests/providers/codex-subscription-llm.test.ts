@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { CodexSubscriptionLLMProvider } from '../../src/providers/llm/codex-subscription.js';
+import { TransientError } from '../../src/pipeline/errors.js';
 import { runLLMContractSuite } from './_contract-suite.js';
 
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -368,6 +369,30 @@ describe('codex-subscription-llm', () => {
 
       const p = new CodexSubscriptionLLMProvider({ authPath });
       await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(/HTTP 500/);
+    });
+
+    // UNVERIFIED whether the real (unofficial) ChatGPT Codex backend ever
+    // actually sends this header — no documentation exists for this
+    // reverse-engineered endpoint (see file doc comment). This only proves
+    // the provider reads and threads it defensively WHEN present; it does
+    // not claim the real backend sends it.
+    it('threads a Retry-After header onto TransientError.retryAfterMs, if present on a 429', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath);
+      globalThis.fetch = vi.fn(async () => new Response(JSON.stringify({ error: 'rate limited' }), {
+        status: 429,
+        headers: { 'content-type': 'application/json', 'retry-after': '15' },
+      })) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBe(15_000);
     });
 
     // Empty-SSE poison gate (architect-review finding, 20260713T100000Z;

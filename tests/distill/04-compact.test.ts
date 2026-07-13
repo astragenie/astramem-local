@@ -226,3 +226,112 @@ describe('compact() concurrency (FEAT-482)', () => {
     expect(withExplicitOne).toEqual(withDefault);
   });
 });
+
+// chunk-retry-amplification fix: worker.ts retries a FAILED job at the JOB
+// level by re-invoking runPipeline() (and therefore compact()) from scratch.
+// Without checkpointing, one transient failure on a late chunk replayed
+// every earlier chunk's LLM call too, multiplying a single rate-limit event
+// into up to MAX_ATTEMPTS (3) x the calls. Passing the same `jobKey` across
+// two separate compact() invocations (simulating the worker's own retry —
+// same job, same content, two calls) must skip re-dispatching chunks that
+// already succeeded on the first call.
+describe('compact() retry checkpointing (chunk-retry-amplification fix)', () => {
+  it('a retried compact() call with the same jobKey does not re-issue LLM calls for chunks that already succeeded', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const jobKey = 'session-hash-abc123';
+    const chunks = Array.from({ length: 20 }, (_, i) => ({ index: i, text: `chunk ${i} content` }));
+
+    let callCount = 0;
+    let rateLimitFired = false;
+    const RATE_LIMIT_AT_INDEX = 14; // "chunk 15" (1-indexed) of a 20-chunk session
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test',
+      async chat(msgs: ChatMsg[]): Promise<ChatResult> {
+        callCount++;
+        const userText = msgs.find(m => m.role === 'user')?.content ?? '';
+        const idx = Number(userText.match(/chunk (\d+) content/)?.[1]);
+        // Fires exactly once — a real rate limit clears by the time the
+        // worker retries; the mock must not throw forever or it can't
+        // distinguish "checkpoint skipped this chunk" from "checkpoint
+        // still retries every chunk, including the bad one, and happens to
+        // fail the same way".
+        if (idx === RATE_LIMIT_AT_INDEX && !rateLimitFired) {
+          rateLimitFired = true;
+          throw new Error('rate limited (429)');
+        }
+        return { text: `compacted-${idx}`, usage: { in: 10, out: 5, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test', latency_ms: 0 }; },
+    };
+
+    // Attempt 1: fails at chunk 14 — chunks 0-13 succeeded first.
+    await expect(compact(chunks, llm, budget, 10.0, 1, jobKey)).rejects.toThrow('rate limited');
+    expect(callCount).toBe(RATE_LIMIT_AT_INDEX + 1); // chunks 0..14 attempted, 14 succeeded, 15th (idx 14) threw
+
+    const callsAfterFirstAttempt = callCount;
+
+    // Attempt 2 (the worker's retry, same job/content — same jobKey): the
+    // rate limit has cleared. This must NOT re-issue LLM calls for chunks
+    // 0-13, which already succeeded on attempt 1.
+    const results = await compact(chunks, llm, budget, 10.0, 1, jobKey);
+
+    const callsOnRetry = callCount - callsAfterFirstAttempt;
+    // Only chunks 14..19 (6 chunks) needed a fresh LLM call on the retry —
+    // NOT all 20. Total calls across both attempts: 15 (attempt 1) + 6
+    // (attempt 2) = 21, not 15 + 20 = 35, and nowhere near the naive
+    // MAX_ATTEMPTS=3 full-replay worst case of 3 x 20 = 60.
+    expect(callsOnRetry).toBe(chunks.length - RATE_LIMIT_AT_INDEX);
+    expect(results.length).toBe(20);
+    expect(results.map(r => r.index)).toEqual(Array.from({ length: 20 }, (_, i) => i));
+    expect(results[0]?.text).toBe('compacted-0');
+    expect(results[19]?.text).toBe('compacted-19');
+  });
+
+  it('a fresh jobKey (different job) does not reuse another job\'s checkpoints', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    let callCount = 0;
+    const llm = {
+      name: 'ollama' as const,
+      model: 'test',
+      async chat(): Promise<ChatResult> {
+        callCount++;
+        return { text: `compacted-${callCount}`, usage: { in: 10, out: 5, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test', latency_ms: 0 }; },
+    } satisfies LLMProvider;
+    const chunks = [{ index: 0, text: 'a' }, { index: 1, text: 'b' }];
+
+    await compact(chunks, llm, budget, 10.0, 1, 'job-A');
+    expect(callCount).toBe(2);
+
+    await compact(chunks, llm, budget, 10.0, 1, 'job-B');
+    expect(callCount).toBe(4); // a different job re-runs every chunk — no cross-job leakage
+  });
+
+  it('omitting jobKey preserves the old behavior — every call re-dispatches every chunk', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    let callCount = 0;
+    const llm = {
+      name: 'ollama' as const,
+      model: 'test',
+      async chat(): Promise<ChatResult> {
+        callCount++;
+        return { text: `compacted-${callCount}`, usage: { in: 10, out: 5, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test', latency_ms: 0 }; },
+    } satisfies LLMProvider;
+    const chunks = [{ index: 0, text: 'a' }, { index: 1, text: 'b' }];
+
+    await compact(chunks, llm, budget, 10.0); // no jobKey
+    expect(callCount).toBe(2);
+    await compact(chunks, llm, budget, 10.0); // no jobKey — no caching, full re-dispatch
+    expect(callCount).toBe(4);
+  });
+});

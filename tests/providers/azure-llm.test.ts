@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { AzureOpenAILLMProvider, isReasoningModel } from '../../src/providers/llm/azure-openai.js';
+import { TransientError } from '../../src/pipeline/errors.js';
 import { runLLMContractSuite } from './_contract-suite.js';
 
 // ---------------------------------------------------------------------------
@@ -146,6 +147,44 @@ describe('azure-llm', () => {
       const res = await p.chat([{ role: 'user', content: 'x' }]);
       expect(res.text).toBe('retried');
       expect(callCount).toBe(2);
+    });
+
+    it('threads a Retry-After header (seconds) from a 429 onto TransientError.retryAfterMs', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '45' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new AzureOpenAILLMProvider({ ...FAKE_CREDS, model: 'gpt-4.1' });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBe(45_000);
+    });
+
+    it('leaves retryAfterMs undefined when the 429 response carries no Retry-After header', async () => {
+      globalThis.fetch = vi.fn(async () => {
+        return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+          status: 429,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new AzureOpenAILLMProvider({ ...FAKE_CREDS, model: 'gpt-4.1' });
+      let caught: unknown;
+      try {
+        await p.chat([{ role: 'user', content: 'x' }]);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(TransientError);
+      expect((caught as TransientError).retryAfterMs).toBeUndefined();
     });
 
     it('usd is 0 for unknown model (not in pricing table)', async () => {

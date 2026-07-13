@@ -2,6 +2,7 @@ import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../.
 import { computeCostUsd } from './pricing.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
+import { parseRetryAfterMs } from './retry-after.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -127,10 +128,15 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
       const latency_ms = Date.now() - t0;
       log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 || res.status === 429 ? 'TransientError' : 'DeterministicError' }, 'openai-compatible chat failed');
       if (res.status >= 500) {
-        throw new TransientError(`openai-compatible chat failed: HTTP ${res.status} — ${snippet}`);
+        throw new TransientError(`openai-compatible chat failed: HTTP ${res.status} — ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       if (res.status === 429) {
-        throw new TransientError(`openai-compatible chat rate-limited (429): ${snippet}`);
+        // The real OpenAI API (and Groq, which mirrors its headers) document
+        // Retry-After on 429 — self-hosted backends (vLLM, LM Studio) this
+        // provider can also point at typically do NOT send it, which is
+        // fine: parseRetryAfterMs returns undefined and the caller falls
+        // back to its own backoff.
+        throw new TransientError(`openai-compatible chat rate-limited (429): ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       throw new DeterministicError(`openai-compatible chat failed: HTTP ${res.status} — ${snippet}`);
     }

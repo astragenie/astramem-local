@@ -21,6 +21,7 @@ import {
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { TransientError } from '../../pipeline/errors.js';
 import { mapWithConcurrency } from '../concurrency.js';
+import { chunkCheckpoints } from '../chunk-checkpoint.js';
 
 export type { ExtractProfile };
 
@@ -222,6 +223,14 @@ function tryParseAtoms(raw: string): Atom[] | null {
  * sequential `for…of await` loop this replaces. Production callers resolve
  * the real value from config via `resolveChunkConcurrency`
  * (src/distill/pipeline.ts).
+ *
+ * `jobKey` (chunk-retry-amplification fix) opts into per-chunk
+ * checkpointing — same contract as compact()'s `jobKey` param (see
+ * 04-compact.ts's doc comment for the full rationale): a chunk whose result
+ * is already cached under `jobKey` is skipped rather than re-dispatched, and
+ * every fresh success is cached before extract() returns. Omitted (the
+ * default), behavior is byte-identical to pre-fix — no cache lookup, no
+ * cache write, every call re-dispatches every chunk.
  */
 export async function extract(
   chunks: Array<{ index: number; text: string }>,
@@ -230,8 +239,27 @@ export async function extract(
   capUsd: number,
   extractProfile: ExtractProfile = 'engineering',
   concurrency = 1,
+  jobKey?: string,
 ): Promise<ExtractResult[]> {
-  return mapWithConcurrency(chunks, concurrency, (chk) =>
-    extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile),
-  );
+  if (!jobKey) {
+    return mapWithConcurrency(chunks, concurrency, (chk) =>
+      extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile),
+    );
+  }
+
+  const pending: Array<{ index: number; text: string }> = [];
+  const cached: ExtractResult[] = [];
+  for (const chk of chunks) {
+    const hit = chunkCheckpoints.get<ExtractResult>(jobKey, 'extract', chk.index);
+    if (hit !== undefined) cached.push(hit);
+    else pending.push(chk);
+  }
+
+  const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
+    const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile);
+    chunkCheckpoints.set(jobKey, 'extract', chk.index, result);
+    return result;
+  });
+
+  return [...cached, ...fresh].sort((a, b) => a.chunkIndex - b.chunkIndex);
 }
