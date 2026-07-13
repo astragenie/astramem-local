@@ -69,6 +69,25 @@ describe('groundRelativeDates', () => {
       expect(r.grounded).toBe(true);
       expect(r.text).toBe('Caroline signed up 14 July 2023, and mentioned the event happens August 2023.');
     });
+
+    it('bare "on <weekday>" (no last/next prefix) resolves to the nearest occurrence at or before the anchor', () => {
+      const r = groundRelativeDates(
+        'Melanie took her kids to a pottery workshop on Friday, where they made pots.',
+        ANCHOR,
+      );
+      expect(r.text).toBe('Melanie took her kids to a pottery workshop on 14 July 2023, where they made pots.');
+    });
+
+    it('bare "on <weekday>" includes the anchor day itself when the anchor IS that weekday', () => {
+      // ANCHOR (2023-07-15) is a Saturday.
+      const r = groundRelativeDates('The show was on Saturday.', ANCHOR);
+      expect(r.text).toBe('The show was on 15 July 2023.');
+    });
+
+    it('a bare weekday does not get double-resolved when "last <weekday>" already matched it', () => {
+      const r = groundRelativeDates('She met them last Friday and next Friday too.', ANCHOR);
+      expect(r.text).toBe('She met them 14 July 2023 and 21 July 2023 too.');
+    });
   });
 
   describe('does NOT hallucinate a date it was not given', () => {

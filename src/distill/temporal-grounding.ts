@@ -20,16 +20,35 @@
  *
  * Deliberately narrow scope — only patterns with ONE unambiguous absolute
  * resolution are handled: same-day (yesterday/today/tomorrow), month
- * (last/this/next month), year (last/this/next year), and named-weekday
- * (last/next `<Weekday>`). Week-granularity phrases ("last week", "this
- * weekend") are deliberately NOT resolved here: which day within the week to
- * anchor on (week-start Monday? Sunday? the anchor's own weekday?) has no
- * single unambiguous answer, and LoCoMo's own gold answers for that
- * granularity are themselves relative-to-a-later-reference-point phrasing
- * ("The week before 6 July 2023") rather than a clean absolute date — a
- * forced single-day guess is as likely to be wrong as the unresolved phrase.
- * Left as a follow-on once there is a concrete pattern to anchor the
- * granularity choice on, not attempted here.
+ * (last/this/next month), year (last/this/next year), named-weekday
+ * (last/next `<Weekday>`), and a BARE weekday used in past-tense narration
+ * ("...on Friday..." with no last/next prefix — resolved to the nearest
+ * occurrence AT OR BEFORE the anchor, since a bare weekday in narration
+ * almost always refers to a day already in the narrated past, unlike
+ * "last <Weekday>"/"next <Weekday>" which are explicit and directional).
+ *
+ * Week-granularity phrases ("last week", "this weekend") are deliberately
+ * NOT resolved here: which day within the week to anchor on (week-start
+ * Monday? Sunday? the anchor's own weekday?) has no single unambiguous
+ * answer, and LoCoMo's own gold answers for that granularity are themselves
+ * relative-to-a-later-reference-point phrasing ("The week before 6 July
+ * 2023") rather than a clean absolute date — a forced single-day guess is
+ * not obviously safer than the unresolved phrase. Left as a follow-on once
+ * there is a measured (not guessed) answer for which resolution style wins —
+ * see the WS1 handoff notes for the read-only F1 comparison run against real
+ * bucket-(b) cases before extending scope here.
+ *
+ * "recently" and other similarly vague temporal markers are deliberately
+ * EXCLUDED PERMANENTLY, not just deferred — there is no anchor-relative
+ * arithmetic that recovers a specific date from a word that carries no
+ * distance information at all. This is not a benchmark-scoring call: this
+ * module's output also lands in real users' production memory stores via
+ * the same extraction pipeline, not just the LoCoMo benchmark path. A
+ * hallucinated date silently written into a real memory is worse than an
+ * honest unresolved one — a user has no way to discover it's wrong, and it
+ * would be presented with the same confidence as a genuinely-grounded date.
+ * Never add a pattern here whose resolution is a guess rather than a
+ * deterministic consequence of the anchor.
  *
  * Output is natural-language ("D Month YYYY" / "Month YYYY" / "YYYY"), NOT
  * ISO-8601. This matters beyond style: LoCoMo's token-F1 scorer
@@ -89,6 +108,18 @@ function nextWeekday(anchor: Date, targetWeekday: number): Date {
   return addDaysUtc(anchor, diff);
 }
 
+/** Nearest occurrence of `targetWeekday` AT OR BEFORE `anchor` — unlike
+ * `lastWeekday`, DOES allow returning the anchor's own day (diff 0). Used
+ * only for the bare-weekday pattern ("...on Friday...", no last/next
+ * prefix): past-tense narration naming a weekday with no explicit
+ * last/next/this qualifier most naturally means the nearest such day not
+ * later than the observation point, including today itself if today
+ * happens to be that weekday. */
+function nearestPastOrSameWeekday(anchor: Date, targetWeekday: number): Date {
+  const diff = (anchor.getUTCDay() - targetWeekday + 7) % 7;
+  return addDaysUtc(anchor, -diff);
+}
+
 interface Pattern {
   re: RegExp;
   resolve: (match: RegExpMatchArray, anchor: Date) => string;
@@ -111,6 +142,15 @@ const PATTERNS: Pattern[] = [
   {
     re: /\bnext (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi,
     resolve: (m, anchor) => formatDay(nextWeekday(anchor, WEEKDAY_NAMES.indexOf(m[1]!.toLowerCase() as (typeof WEEKDAY_NAMES)[number]))),
+  },
+  // Bare weekday in past-tense narration ("...on Friday..."), no last/next
+  // qualifier. MUST run after the last/next weekday patterns above: by the
+  // time this pattern's turn comes, "last Friday"/"next Friday" have already
+  // been rewritten to an absolute date by the earlier patterns and no longer
+  // contain the bare word "Friday" for this one to (mis)match.
+  {
+    re: /\bon (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi,
+    resolve: (m, anchor) => `on ${formatDay(nearestPastOrSameWeekday(anchor, WEEKDAY_NAMES.indexOf(m[1]!.toLowerCase() as (typeof WEEKDAY_NAMES)[number])))}`,
   },
 ];
 
