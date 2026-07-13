@@ -94,7 +94,7 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
   // tools/list
   // -------------------------------------------------------------------------
 
-  it('initialize + tools/list returns 18 tools', async () => {
+  it('initialize + tools/list returns 20 tools', async () => {
     // MCP requires an initialize handshake first in stateful mode.
     // In stateless mode (sessionIdGenerator: undefined) the SDK processes
     // each request independently, so tools/list works without initialize.
@@ -107,11 +107,14 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
 
     expect(resp).toHaveProperty('result');
     const tools = resp.result?.tools ?? [];
-    expect(tools.length).toBe(18);
+    expect(tools.length).toBe(20);
     const names = tools.map((t) => t.name).sort();
     expect(names).toEqual([
       'agent_profile',
       'erase_memory',
+      // FEAT-481 SLICE-3 — entity-to-entity relations read surface.
+      'get_entity_related',
+      'get_entity_timeline',
       'get_health',
       'invalidate_memory',
       'list_consolidation_proposals',

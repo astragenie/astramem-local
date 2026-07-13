@@ -39,13 +39,13 @@
     },
     {
       "name": "get_entity_related",
-      "owner": "cloud",
+      "owner": "both",
       "description": "Entity relationships (bitemporal as-of aware).",
       "status": "stable"
     },
     {
       "name": "get_entity_timeline",
-      "owner": "cloud",
+      "owner": "both",
       "description": "Memories mentioning an entity over time.",
       "status": "stable"
     },

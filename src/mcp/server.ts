@@ -7,7 +7,7 @@
  * list below is a human-readable summary kept in sync by that test, not a
  * second SoT.
  *
- * Exposes 18 tools over the Streamable HTTP transport (POST /mcp):
+ * Exposes 20 tools over the Streamable HTTP transport (POST /mcp):
  *   - search_memory      — hybrid FTS + vector search
  *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
  *   - remember           — direct memory insert
@@ -16,6 +16,8 @@
  *   - session_digest     — per-session "what I learned" summary (derived at read time)
  *   - agent_profile      — per-agent "what has this agent learned" summary (derived at read time)
  *   - user_profile       — daemon-wide "what does this owner keep coming back to" summary (FEAT-451, derived at read time)
+ *   - get_entity_related — FEAT-481 SLICE-3: entity-to-entity relations (subject/object/both, bitemporal as_of), field-for-field parity with cloud's EntityTools.cs
+ *   - get_entity_timeline — FEAT-481 SLICE-3: memories mentioning an entity, newest-first, optional since (epoch-ms) lower bound
  *   - invalidate_memory  — lifecycle: mark a memory invalid (ADR-002 memory_events log)
  *   - supersede_memory   — lifecycle: replace one memory with another
  *   - promote_memory     — lifecycle: upward-only scope promotion (ADR-009)
@@ -50,6 +52,9 @@ import {
   MemoryConflictError,
   InvalidScopeTransitionError,
 } from '../storage/memory-events.js';
+// FEAT-481 SLICE-3: get_entity_related / get_entity_timeline read surface.
+import { EntityRepo } from '../storage/entities.js';
+import { EntityRelationRepo } from '../storage/entity-relations.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { recordRecallServed, recordRecallUsed } from '../storage/usefulness.js';
 import { search, parseAsOf, type SearchFilters } from '../search/search.js';
@@ -593,6 +598,160 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       // untyped query string.
       const profile = buildUserProfile(db, args.scope ?? 'private');
       return { content: [{ type: 'text' as const, text: JSON.stringify(profile) }] };
+    }
+  );
+
+  // ---- get_entity_related ---------------------------------------------------
+  // FEAT-481 SLICE-3 (design doc §4.1). Field names mirror cloud's shipped
+  // get_entity_related (src/AstraMemory.Mcp/Tools/EntityTools.cs:67-143)
+  // byte-for-byte: predicate/evidence_memory_id, not relation_type/
+  // source_memory_id — zero client-side mapping needed to speak to either.
+  // Storage layer (EntityRelationRepo.getForEntity, entity-relations.ts)
+  // already implements the JOIN-with-memories effective-validity contract
+  // (§4.1) that makes a relation sourced from an invalidate()d memory stop
+  // reading as valid past that memory's own valid_to.
+  server.registerTool(
+    'get_entity_related',
+    {
+      description:
+        'Entity relationships (bitemporal as-of aware) — walks the subject-predicate-object triple ' +
+        'store. Use to answer "what does X depend on" or "what uses Y". direction: subject (entity is ' +
+        'the subject), object (entity is the object), both (default).',
+      inputSchema: z.object({
+        entityId: z.string().min(1).describe('Entity id to get relationships for'),
+        asOf: z
+          .string()
+          .optional()
+          .describe('Optional ISO-8601 timestamp for bitemporal as-of query (omit for currently valid)'),
+        direction: z
+          .enum(['subject', 'object', 'both'])
+          .default('both')
+          .describe('Direction filter: subject | object | both (default both)'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(500)
+          .default(50)
+          .describe('Maximum relationships to return (default 50, max 500)'),
+      }),
+    },
+    async (args) => {
+      const entityRepo = new EntityRepo(db);
+      const entity = entityRepo.getById(args.entityId);
+      if (!entity) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', entity_id: args.entityId }) }],
+          isError: true,
+        };
+      }
+
+      let asOf: number | undefined;
+      try {
+        asOf = parseAsOf(args.asOf);
+      } catch (err) {
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify({ error: err instanceof Error ? err.message : 'invalid asOf' }) },
+          ],
+          isError: true,
+        };
+      }
+
+      const relationRepo = new EntityRelationRepo(db);
+      const rows = relationRepo.getForEntity(args.entityId, { asOf, limit: args.limit, direction: args.direction });
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              entity_id: args.entityId,
+              relationships: rows.map((r) => ({
+                id: r.id,
+                subject_entity_id: r.subject_entity_id,
+                predicate: r.predicate,
+                object_entity_id: r.object_entity_id,
+                evidence_memory_id: r.evidence_memory_id,
+                source_excerpt: r.source_excerpt,
+                confidence: r.confidence,
+                valid_from: r.valid_from,
+                valid_to: r.valid_to,
+              })),
+            }),
+          },
+        ],
+      };
+    }
+  );
+
+  // ---- get_entity_timeline ---------------------------------------------------
+  // FEAT-481 SLICE-3 (design doc §4.1). Not new machinery — reuses
+  // EntityRepo.memoryIdsForEntities (entities.ts), same "currently linked"
+  // semantics as GET /entities/:id/memories (src/server/routes/entities.ts),
+  // joined back to memories for content/type/created_at. `since` is
+  // epoch-ms (matches search_memory/recall_memory's own `since` filter
+  // convention in this repo), unlike cloud's ISO-8601 `since` on
+  // EntityTools.cs:147-196 — see handoff notes for the deviation rationale.
+  server.registerTool(
+    'get_entity_timeline',
+    {
+      description:
+        'Timeline of memories mentioning a specific entity, newest-first. Optional since (epoch-ms ' +
+        'lower bound on created_at). Reuses EntityRepo.memoryIdsForEntities — no new table, no new ' +
+        'time-tracking machinery.',
+      inputSchema: z.object({
+        entityId: z.string().min(1).describe('Entity id'),
+        since: z
+          .number()
+          .optional()
+          .describe('Epoch-ms lower bound — only return memories created at or after this time'),
+        limit: z
+          .number()
+          .int()
+          .positive()
+          .max(200)
+          .default(20)
+          .describe('Maximum results to return (default 20, max 200)'),
+      }),
+    },
+    async (args) => {
+      const entityRepo = new EntityRepo(db);
+      const entity = entityRepo.getById(args.entityId);
+      if (!entity) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({ error: 'not found', entity_id: args.entityId }) }],
+          isError: true,
+        };
+      }
+
+      const memRepo = new MemoryRepo(db);
+      const memoryIds = entityRepo.memoryIdsForEntities([args.entityId]);
+      // Currently-valid only (valid_to IS NULL) — same semantics as
+      // GET /entities/:id/memories: a superseded/invalidated/archived
+      // memory is retired, not "currently linked", even though the
+      // memory_entities row itself still points at it.
+      const memories = Array.from(memoryIds)
+        .map((mid) => memRepo.get(mid))
+        .filter((m): m is NonNullable<typeof m> => m !== null && m.valid_to === null)
+        .filter((m) => args.since === undefined || m.created_at >= args.since)
+        .sort((a, b) => b.created_at - a.created_at)
+        .slice(0, args.limit)
+        .map((m) => ({ id: m.id, content: m.text, type: m.type, created_at: m.created_at }));
+
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              entity_id: args.entityId,
+              entity_name: entity.name,
+              count: memories.length,
+              memories,
+            }),
+          },
+        ],
+      };
     }
   );
 

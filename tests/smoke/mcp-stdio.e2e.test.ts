@@ -37,6 +37,9 @@ import {
 const EXPECTED_TOOL_NAMES = [
   'agent_profile',
   'erase_memory',
+  // FEAT-481 SLICE-3 — entity-to-entity relations read surface.
+  'get_entity_related',
+  'get_entity_timeline',
   'get_health',
   'invalidate_memory',
   'list_consolidation_proposals',
