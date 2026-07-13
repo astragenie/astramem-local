@@ -118,13 +118,21 @@ above in this same README).
 the workflow (single source of truth — also drives the cache key, so bumping
 a model tag there automatically busts the cache):
 - `mxbai-embed-large` — current production embed default
-- `qwen2.5-coder:7b` — hardcoded model tag in `tests/providers/ollama-llm.test.ts`'s
-  live-mode fixtures and `tests/e2e/plugin-flow.test.ts` (NOT the production
-  LLM default as of the 2026-07-13 qwen3:8b operator standardization — kept
-  here because the live tests themselves still construct providers against
-  this literal tag; update both if that ever changes)
-- `nomic-embed-text-v2-moe` — referenced explicitly by the live block in
-  `ollama-embed.test.ts`; see the known-risk note below
+- `qwen3:8b` — current production LLM default (since 2026-07-13)
+
+Both live blocks now construct providers against the **production defaults**
+(`config.ts`) rather than pinned legacy tags, so this lane exercises what users
+actually run. Dropped from the pull list on 2026-07-13: `qwen2.5-coder:7b` (no
+longer the default — `ollama-llm.test.ts` was updated to `qwen3:8b`, and
+`plugin-flow.test.ts` spawns a daemon with no model override, so it resolves to
+the default too) and `nomic-embed-text-v2-moe` (its only live consumer stopped
+using it — it is 768-dim against a 1024-dim provider, a guaranteed
+dim-mismatch). Every surviving reference to either name is a **mocked** unit
+test, which pulls nothing.
+
+A stale pin here is worse than useless: the lane burns CI pulling a model no
+user has, while real drift in the actual default — the thing this lane exists to
+catch — goes unnoticed.
 
 **Caching**: `actions/cache` keyed on
 `ollama-models-${OLLAMA_CACHE_VERSION}-${OLLAMA_MODELS}`, restoring into

@@ -309,8 +309,15 @@ describe('ollama-llm', () => {
   // Live integration (opt-in: INTEGRATION_LIVE=1)
   // ---------------------------------------------------------------------------
   describe.skipIf(!process.env.INTEGRATION_LIVE)('live integration', () => {
+    // The PRODUCTION default (config.ts) — not a pinned legacy tag. This is the
+    // only block in this file that pulls a real model, so nightly-live.yml's
+    // OLLAMA_MODELS must list exactly what it names. A stale pin here means the
+    // lane exercises a model no user runs while real drift in the actual default
+    // goes unnoticed — the failure this lane exists to catch. (Every other
+    // occurrence in this file is a mocked fixture whose tag is arbitrary and
+    // pulls nothing.)
     it('actually calls ollama serve', async () => {
-      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const h = await p.health();
       expect(h.ok).toBe(true);
     }, 10_000);
