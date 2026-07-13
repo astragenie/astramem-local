@@ -2,6 +2,7 @@ import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../.
 import { computeCostUsd } from './pricing.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
+import { isReasoningModel } from './reasoning-model.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -115,12 +116,22 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
           )
         : messages;
 
+    // OpenAI's reasoning-model family (o-series/gpt-5*) rejects the classic
+    // Chat Completions `temperature` and `max_tokens` params outright with
+    // HTTP 400 — same rule as azure-openai.ts, since this provider defaults
+    // its baseUrl at api.openai.com and hits the same real backends. See
+    // reasoning-model.ts for the shared detection + full rationale.
+    const reasoning = isReasoningModel(this.model);
     const body = {
       model: this.model,
       messages: outgoing,
       ...(useJson ? { response_format: { type: 'json_object' } } : {}),
-      ...(opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
-      ...(opts?.maxTokens !== undefined ? { max_tokens: opts.maxTokens } : {}),
+      ...(!reasoning && opts?.temperature !== undefined ? { temperature: opts.temperature } : {}),
+      ...(opts?.maxTokens !== undefined
+        ? reasoning
+          ? { max_completion_tokens: opts.maxTokens }
+          : { max_tokens: opts.maxTokens }
+        : {}),
     };
 
     const res = await fetchWithRetry(
@@ -177,10 +188,13 @@ export class OpenAICompatibleLLMProvider implements LLMProvider {
 
   async health(): Promise<LLMHealth> {
     const t0 = Date.now();
+    // Ping with a minimal 1-token completion. Reasoning models reject
+    // `max_tokens` (HTTP 400) just like in chat() — same detection, same
+    // `max_completion_tokens` substitution.
     const body = {
       model: this.model,
       messages: [{ role: 'user', content: 'ping' }],
-      max_tokens: 1,
+      ...(isReasoningModel(this.model) ? { max_completion_tokens: 1 } : { max_tokens: 1 }),
     };
     try {
       const res = await fetch(this.chatUrl, {

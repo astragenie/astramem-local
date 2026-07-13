@@ -2,6 +2,7 @@ import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../.
 import { computeCostUsd } from './pricing.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
+import { isReasoningModel } from './reasoning-model.js';
 
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -14,29 +15,15 @@ export interface AzureOpenAILLMConfig {
   model?: string;
 }
 
-// ─── Reasoning-model detection ───────────────────────────────────────────────
-//
-// Azure OpenAI's "reasoning" model family — the o-series (o1, o1-mini,
-// o1-preview, o1-pro, o3, o3-mini, o3-pro, o4-mini, ...) plus gpt-5* — rejects
-// the classic Chat Completions `temperature` and `max_tokens` parameters
-// outright with HTTP 400 (e.g. gpt-5-mini: "Unsupported parameter:
-// 'max_tokens' is not supported with this model. Use 'max_completion_tokens'
-// instead."). These models don't take a sampling-temperature knob at all, so
-// `temperature` is simply omitted rather than mapped to anything.
-// Non-reasoning models (gpt-4*, gpt-3.5*, ...) are unaffected and keep the
-// classic parameters unchanged.
-//
-// Matched by model-name prefix (case-insensitive). The check runs against
-// `this.model`, which defaults to the Azure deployment name when no explicit
-// `model` override is passed to the constructor — so a deployment whose name
-// doesn't start with one of these prefixes (e.g. a custom deployment name for
-// an o-series model) must pass `model` explicitly for detection to work.
-const REASONING_MODEL_PREFIXES = [/^o1(?:-|$)/i, /^o3(?:-|$)/i, /^o4(?:-|$)/i, /^gpt-5/i];
-
-/** Is `model` one of Azure OpenAI's reasoning models (o-series / gpt-5*)? */
-export function isReasoningModel(model: string): boolean {
-  return REASONING_MODEL_PREFIXES.some((re) => re.test(model));
-}
+// Re-exported for existing callers/tests importing from this module. Canonical
+// definition + detection rationale live in reasoning-model.ts, shared with
+// openai-compatible.ts (both speak the classic Chat Completions wire shape).
+// The check runs against `this.model`, which defaults to the Azure deployment
+// name when no explicit `model` override is passed to the constructor — so a
+// deployment whose name doesn't start with one of the matched prefixes (e.g. a
+// custom deployment name for an o-series model) must pass `model` explicitly
+// for detection to work.
+export { isReasoningModel } from './reasoning-model.js';
 
 interface AzureChatResponse {
   choices?: Array<{ message?: { content?: string | null } }>;

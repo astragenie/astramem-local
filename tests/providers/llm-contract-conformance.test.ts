@@ -144,6 +144,73 @@ describe.each(ALL_LLM_ADAPTERS)('LLM provider contract conformance — $name', (
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// Reasoning-model (o-series/gpt-5*) parameter handling.
+//
+// Only providers speaking the classic OpenAI Chat Completions wire shape
+// (azure-openai, openai-compatible — see `reasoningParams` on the adapter)
+// are subject to this: reasoning models hard-400 on `temperature` and on
+// `max_tokens` (they require `max_completion_tokens` instead). This is the
+// third instance of the same drift pattern the json-opt-in bug above
+// documents: azure-openai got a fix for this, openai-compatible didn't,
+// until this suite closed the gap. Ollama and codex-subscription are
+// excluded (no `reasoningParams`) because their wire shapes don't have this
+// rejection rule at all.
+// ─────────────────────────────────────────────────────────────────────────
+const REASONING_PARAM_ADAPTERS = ALL_LLM_ADAPTERS.filter((a) => a.reasoningParams);
+
+describe.each(REASONING_PARAM_ADAPTERS)(
+  'LLM provider contract conformance — reasoning-model params — $name',
+  (adapter) => {
+    const rp = adapter.reasoningParams!;
+
+    it('omits temperature and sends max_completion_tokens (not max_tokens) for a reasoning model (gpt-5-mini)', async () => {
+      let captured: Record<string, unknown> | undefined;
+      const provider = rp.createProviderWithModel('gpt-5-mini', (req) => {
+        captured = req.body;
+        return adapter.successResponse('ok');
+      });
+
+      await provider.chat([{ role: 'user', content: 'x' }], { temperature: 0.7, maxTokens: 256 });
+
+      expect(captured).toBeDefined();
+      expect(rp.maxCompletionTokens(captured!)).toBe(256);
+      expect(rp.maxTokens(captured!)).toBeUndefined();
+      expect(rp.temperature(captured!)).toBeUndefined();
+    });
+
+    it('keeps temperature and max_tokens unchanged for a non-reasoning model (gpt-4.1)', async () => {
+      let captured: Record<string, unknown> | undefined;
+      const provider = rp.createProviderWithModel('gpt-4.1', (req) => {
+        captured = req.body;
+        return adapter.successResponse('ok');
+      });
+
+      await provider.chat([{ role: 'user', content: 'x' }], { temperature: 0.7, maxTokens: 256 });
+
+      expect(captured).toBeDefined();
+      expect(rp.maxTokens(captured!)).toBe(256);
+      expect(rp.temperature(captured!)).toBe(0.7);
+      expect(rp.maxCompletionTokens(captured!)).toBeUndefined();
+    });
+
+    it('health() pings a reasoning model with max_completion_tokens instead of max_tokens', async () => {
+      let captured: Record<string, unknown> | undefined;
+      const provider = rp.createProviderWithModel('gpt-5-mini', (req) => {
+        captured = req.body;
+        return adapter.successResponse('pong', 1, 1);
+      });
+
+      const h = await provider.health();
+
+      expect(h.ok).toBe(true);
+      expect(captured).toBeDefined();
+      expect(rp.maxCompletionTokens(captured!)).toBe(1);
+      expect(rp.maxTokens(captured!)).toBeUndefined();
+    });
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────
 // Live tier — a couple of tiny prompts against a REAL Ollama host only.
 // Skips (not fails) when unreachable, per contradiction-e2e.test.ts's
 // pattern: a skipped honest test beats a passing dishonest one. Ollama was

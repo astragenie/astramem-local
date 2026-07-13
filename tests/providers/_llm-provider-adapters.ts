@@ -60,6 +60,28 @@ export interface LLMProviderAdapter {
    * the word. Azure and codex-subscription's real backends 400 without the
    * literal word present; this guard is how each provider avoids that. */
   appendsJsonHintWhenMissing: boolean;
+  /** Optional — only present for providers that speak the classic OpenAI
+   * `/v1/chat/completions` wire shape (azure-openai, openai-compatible).
+   * These are the providers subject to the reasoning-model (o-series/gpt-5*)
+   * `temperature`/`max_tokens` rejection rule; ollama (`options.num_predict`)
+   * and codex-subscription (Responses API, fixed `reasoning.effort`) have
+   * structurally different request shapes where this rule doesn't apply, so
+   * they omit this field rather than force-fitting an assertion that would
+   * be meaningless for them. */
+  reasoningParams?: {
+    /** Build a provider instance pinned to `model`, wired to a fetch mock
+     * exactly like createProvider(). */
+    createProviderWithModel(
+      model: string,
+      responder: (req: CapturedRequest) => Response | Promise<Response>,
+    ): LLMProvider;
+    /** Read back the classic `max_tokens` field, if present. */
+    maxTokens(body: Record<string, unknown>): number | undefined;
+    /** Read back the reasoning-model `max_completion_tokens` field, if present. */
+    maxCompletionTokens(body: Record<string, unknown>): number | undefined;
+    /** Read back the `temperature` field, if present. */
+    temperature(body: Record<string, unknown>): number | undefined;
+  };
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -136,6 +158,30 @@ const azureAdapter: LLMProviderAdapter = {
     return messages.map((m) => m.content);
   },
   appendsJsonHintWhenMissing: true,
+  reasoningParams: {
+    createProviderWithModel(model, responder) {
+      const fetchMock = vi.fn(async (url: unknown, init?: unknown): Promise<Response> => {
+        const body = JSON.parse((init as RequestInit).body as string) as Record<string, unknown>;
+        return responder({ url: String(url), init: init as RequestInit, body });
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      return new AzureOpenAILLMProvider({
+        endpoint: 'https://my-resource.openai.azure.com',
+        deployment: model,
+        apiKey: 'test-key',
+        model,
+      });
+    },
+    maxTokens(body) {
+      return body.max_tokens as number | undefined;
+    },
+    maxCompletionTokens(body) {
+      return body.max_completion_tokens as number | undefined;
+    },
+    temperature(body) {
+      return body.temperature as number | undefined;
+    },
+  },
 };
 
 // ─── openai-compatible ───────────────────────────────────────────────────
@@ -171,6 +217,29 @@ const openaiCompatibleAdapter: LLMProviderAdapter = {
     return messages.map((m) => m.content);
   },
   appendsJsonHintWhenMissing: true,
+  reasoningParams: {
+    createProviderWithModel(model, responder) {
+      const fetchMock = vi.fn(async (url: unknown, init?: unknown): Promise<Response> => {
+        const body = JSON.parse((init as RequestInit).body as string) as Record<string, unknown>;
+        return responder({ url: String(url), init: init as RequestInit, body });
+      });
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      return new OpenAICompatibleLLMProvider({
+        baseUrl: 'https://api.openai.com/v1',
+        model,
+        apiKey: 'sk-test',
+      });
+    },
+    maxTokens(body) {
+      return body.max_tokens as number | undefined;
+    },
+    maxCompletionTokens(body) {
+      return body.max_completion_tokens as number | undefined;
+    },
+    temperature(body) {
+      return body.temperature as number | undefined;
+    },
+  },
 };
 
 // ─── codex-subscription ─────────────────────────────────────────────────
