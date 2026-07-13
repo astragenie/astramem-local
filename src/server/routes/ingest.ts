@@ -93,6 +93,29 @@ export const CanonicalIngestSchema = z.object({
    *  a real client bug worth surfacing as 400 on the direct
    *  `/ingest/transcript` path, not something to silently coerce to null. */
   capture_source: z.enum(['auto_capture', 'hook_close', 'proxy']).optional(),
+  /** FEAT-458 S6 — token/cost telemetry from the LLM proxy capture fork
+   *  (`extractUsageMetadata`, src/capture/proxy.ts). Optional: every
+   *  non-proxy client omits it and `transcripts.proxy_usage_json` stays
+   *  NULL (migration 026, byte-identical to today). `.optional()` alone is
+   *  what makes this field survive zod's default STRIP mode instead of
+   *  being silently deleted before `ingestCanonicalTranscript` ever sees it
+   *  — see that file's own S5 module-doc warning about this exact hazard.
+   *  Every numeric field stays `number | null` end-to-end — `null` must
+   *  never become `0` (a fabricated zero would silently corrupt cost
+   *  aggregation built on this data later, FEAT-476). Cache fields are
+   *  Anthropic-only and kept structurally separate from `input_tokens` —
+   *  never summed — because they bill at very different rates. */
+  proxy_usage: z.object({
+    provider: z.enum(['anthropic', 'openai']),
+    model: z.string().nullable(),
+    input_tokens: z.number().int().nonnegative().nullable(),
+    output_tokens: z.number().int().nonnegative().nullable(),
+    total_tokens: z.number().int().nonnegative().nullable(),
+    cache_creation_input_tokens: z.number().int().nonnegative().nullable(),
+    cache_read_input_tokens: z.number().int().nonnegative().nullable(),
+    stop_reason: z.string().nullable(),
+    truncated: z.boolean(),
+  }).optional(),
   /** Aggregate scrub flag — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label for per-label breakdown but not deprecated. */
   client_scrub_applied: z.boolean(),
   /** Aggregate scrub hit count — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label sum for per-label breakdown but not deprecated. */
@@ -211,13 +234,14 @@ export function ingestCanonicalTranscript(
     string, number, number, number,
     string | null, string | null,
     string | null, string, string | null,
+    string | null,
   ]>(`
     INSERT INTO transcripts (
       id, session_id, source, content, ingested_at,
       event, captured_at, client_scrub_applied, client_scrub_hits,
       client_scrub_version, client_scrub_hits_by_label_json,
-      client_version, wire_version, capture_source
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      client_version, wire_version, capture_source, proxy_usage_json
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const stmtInsertJob = db.prepare<[string, string, number, number]>(`
     INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
@@ -299,6 +323,11 @@ export function ingestCanonicalTranscript(
       // worker (src/ingest/spool-drain.ts) — CanonicalIngestSchema.safeParse
       // already rejected anything outside the enum above before this runs.
       data.capture_source ?? null,
+      // FEAT-458 S6 — verbatim JSON serialization of the zod-validated
+      // proxy_usage object (numeric fields already nullable at the schema
+      // boundary above, so JSON.stringify preserves `null` as JSON null,
+      // never coerces it to 0). Absent on every non-proxy envelope -> NULL.
+      data.proxy_usage != null ? JSON.stringify(data.proxy_usage) : null,
     );
 
     recordRedactionEvents(db, redactionEvents, data.session_id);

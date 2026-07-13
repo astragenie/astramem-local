@@ -1,0 +1,22 @@
+-- 026: LLM proxy token/cost telemetry storage (FEAT-458 S6).
+--
+-- `extractUsageMetadata` (src/capture/proxy.ts, FEAT-458 S5) already parses
+-- provider/model/token-count telemetry out of a captured proxy exchange but
+-- has nowhere to write it -- `transcripts` has no generic json/metadata
+-- column (checked: migration 001-init.sql's original CREATE TABLE, plus
+-- every ALTER TABLE ADD COLUMN since). One additive nullable column, same
+-- ALTER TABLE ADD COLUMN pattern migrations 022/024/025 used -- NULL on
+-- every existing row and on every future row from a write path that isn't
+-- the proxy capture fork (auto-capture, hook-close, Codex capture, direct
+-- POST /ingest/transcript). Byte-identical to today for all of those.
+--
+-- Stored as a JSON TEXT blob (mirrors client_scrub_hits_by_label_json,
+-- migration 002) rather than one column per field: the shape
+-- (ProxyUsageMetadata, src/capture/proxy.ts) is producer-owned and this
+-- column is a read-back-verbatim sink, not something SQL ever filters or
+-- aggregates on today -- FEAT-476 (pricing) reads and interprets it at
+-- query time from the immutable stored JSON rather than this migration
+-- committing to a per-field schema up front. No CHECK constraint -- the
+-- envelope shape is validated at the zod boundary (CanonicalIngestSchema,
+-- src/server/routes/ingest.ts), not by SQLite.
+ALTER TABLE transcripts ADD COLUMN proxy_usage_json TEXT;

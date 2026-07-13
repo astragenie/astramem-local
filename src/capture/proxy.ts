@@ -83,6 +83,12 @@ export interface ProxyCaptureEnvelope {
   client_scrub_version: string;
   wire_version: 'v1.0';
   capture_source: 'proxy';
+  /** FEAT-458 S6 — omitted entirely (not `null`) when `extractUsageMetadata`
+   *  returns null (no recognized provider shape in the response body) so
+   *  the field round-trips through `CanonicalIngestSchema`'s `.optional()`
+   *  (src/server/routes/ingest.ts) rather than failing zod validation with
+   *  a literal null against an object schema. */
+  proxy_usage?: ProxyUsageMetadata;
 }
 
 /** Extract conversational text from a chat `content` field — a plain
@@ -317,18 +323,14 @@ function extractSseResponseTurn(trimmed: string): ProxyTurn | null {
  * Token/cost telemetry for one exchange — BODY BYTES ONLY, same visibility
  * as turn extraction above, never headers.
  *
- * NOT YET WIRED into `ProxyCaptureEnvelope` / `finishCapture` below —
- * `CanonicalIngestSchema` (src/server/routes/ingest.ts, owned by a
- * different track) is a plain `z.object({...})` with neither `.strict()`
- * nor `.passthrough()`, i.e. zod's default "strip" behavior: an unknown
- * field on the envelope is silently REMOVED at drain-time `safeParse`, not
- * rejected. Attaching this to the spooled envelope today would look wired
- * up (the field would sit right there in the JSON on disk) while silently
- * never reaching storage the moment the drain worker parses it — exactly
- * the false-confidence failure mode this module already got bitten by once
- * (module doc, S3). So this function is exported, fully covered by tests,
- * and ready to attach the moment the schema gains a home for it (reported
- * separately, not decided here) — deliberately not that decision.
+ * WIRED into `ProxyCaptureEnvelope` / `finishCapture` below as of FEAT-458
+ * S6 — `CanonicalIngestSchema` (src/server/routes/ingest.ts) now carries an
+ * explicit optional `proxy_usage` field, so the previously-documented strip-
+ * mode hazard (an unknown envelope field silently REMOVED by zod's default
+ * "strip" behavior at drain-time `safeParse`, not rejected — the false-
+ * confidence failure mode this module already got bitten by once, module
+ * doc, S3) is closed: the field now has a schema home before it is ever
+ * attached, not after.
  *
  * - `model`: read from the REQUEST body's top-level `model` field only,
  *   for both wire formats — a client always specifies what to call, so
@@ -565,6 +567,7 @@ export function extractUsageMetadata(reqBody: string, resBody: string): ProxyUsa
 function buildProxyEnvelope(
   turns: ProxyTurn[],
   clientVersion: string,
+  usage: ProxyUsageMetadata | null,
   capturedAt = new Date().toISOString(),
 ): ProxyCaptureEnvelope {
   return {
@@ -584,6 +587,10 @@ function buildProxyEnvelope(
     client_scrub_version: 'none',
     wire_version: 'v1.0',
     capture_source: 'proxy',
+    // Omitted (not null) when extraction found no recognized provider shape
+    // — see ProxyCaptureEnvelope.proxy_usage doc for why that distinction
+    // matters against CanonicalIngestSchema's `.optional()` field.
+    ...(usage != null ? { proxy_usage: usage } : {}),
   };
 }
 
@@ -652,7 +659,12 @@ export function createProxyCaptureTee(opts: ProxyCaptureOptions): () => ProxyTee
       }
       if (gated.length === 0) return;
 
-      const envelope = buildProxyEnvelope(gated, opts.clientVersion);
+      // Usage extraction runs independent of the relevance gate above — it's
+      // exchange-level telemetry, not turn content, so it's computed once on
+      // the full (pre-gate) bodies regardless of which individual turns
+      // survived gating.
+      const usage = extractUsageMetadata(reqBody, resBody);
+      const envelope = buildProxyEnvelope(gated, opts.clientVersion, usage);
       const key = proxyIdempotencyKey(envelope);
       writeToSpool(opts.dataDir, key, envelope);
     }
