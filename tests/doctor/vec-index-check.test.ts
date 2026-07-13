@@ -142,13 +142,23 @@ describe('doctor "Vec-index orphans" check (issue #209 follow-up)', () => {
   // indistinguishable from zero to every machine-readable consumer
   // (CI gates, alerting, an automated loop), even though a human reading
   // full `doctor` table output would still see the count in the message.
-  it('replays the founding incident (13 of 18,863) — does NOT render as verified-healthy', async () => {
-    seedMemories(join(dir, 'memory.sqlite'), 18_863, 13);
+  //
+  // 13 IS THE LOAD-BEARING NUMBER (it's below the MEANINGFUL_USAGE_THRESHOLD
+  // floor of 20) — the branch under test only cares about "orphanCount <
+  // floor", not corpus size, so the denominator here is a small, fast stand-
+  // in (~60 total) rather than the real production 18,863. Do NOT "restore
+  // realism" by inflating this back up — the real figure is already on the
+  // record in vec-index.ts's file doc comment, and paying 18,863 real
+  // sequential inserts through the repo write path costs ~20-30s per run
+  // (proven flaky in review: it exceeded its own 20s timeout on a loaded
+  // box) for zero additional proof.
+  it('replays the founding incident (13 orphans, below the alarm floor) — does NOT render as verified-healthy', async () => {
+    seedMemories(join(dir, 'memory.sqlite'), 60, 13);
     const result = await check().run();
     expect(result.ok).toBe(true); // not a hard failure — 13 is plausibly in-flight
     expect(result.inconclusive).toBe(true); // but MUST NOT be indistinguishable from a real zero
-    expect(result.message).toContain('13 of 18863');
-  }, 20_000);
+    expect(result.message).toContain('13 of 60');
+  });
 
   // ─── RED: a meaningful, persistent-magnitude orphan rate ───────────────────
   it('orphan count at the alarm floor — ok:false, states numerator/denominator/rate', async () => {
