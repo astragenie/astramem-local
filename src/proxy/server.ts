@@ -137,26 +137,41 @@ function safeTee(tee: ProxyTeeSink, dir: 'req' | 'res', event: ProxyTeeEvent): v
   }
 }
 
+interface UpstreamTimeoutHandle {
+  /** Restart the deadline — call on every unit of genuine upstream activity. */
+  reset(): void;
+  /** Permanently disarm — call on every terminal path (success or failure) so
+   *  no stray timer can fire, and so it can never keep the process alive. */
+  clear(): void;
+}
+
+const NOOP_TIMEOUT_HANDLE: UpstreamTimeoutHandle = { reset() {}, clear() {} };
+
 /**
- * Arms a single idle-timeout on the upstream request. `request.setTimeout`
- * is backed by the underlying socket's native idle timer (Node resets it on
- * every byte read OR written on that socket) — one mechanism covers both
- * failure rows in the matrix below:
- *   - "upstream hangs before responding": the socket goes idle the instant
- *     it connects and stays idle, so the timer fires before any response
- *     event ever arrives.
- *   - "upstream stalls mid-stream": the socket was active while headers +
- *     partial body streamed, then goes idle when the upstream stops sending
- *     — the timer fires exactly the same way, just later.
- * The branch on `clientRes.headersSent` decides what "fail cleanly" means
- * for each case, since a status code can only ever be sent once:
- *   - Not sent yet -> destroy with a tagged error, which routes through the
- *     existing `upstreamReq.on('error', ...)` handler below and answers 504.
- *   - Already sent (actively streaming to the client) -> a fresh status is
- *     no longer possible. The only honest option is to tear down BOTH legs
- *     immediately via `.destroy()` (never `.end()`): destroying drops the
- *     connection mid-chunk, which the client's HTTP stack reports as a
- *     truncated/aborted read. Calling `.end()` instead would write the
+ * Arms a self-resetting idle-deadline covering the upstream leg's ENTIRE
+ * lifecycle — DNS lookup, TCP connect, waiting on response headers, and
+ * streaming the response body — as one mechanism, via a manual `setTimeout`
+ * armed immediately at call time and restarted by the caller on each byte of
+ * genuine activity (see the `reset()` call sites in `forwardOneRequest`).
+ *
+ * This is deliberately NOT `upstreamReq.setTimeout()` (Node's built-in
+ * request timeout): that API only starts counting once a socket is assigned
+ * AND connected, so it silently does not cover a hung DNS lookup or a stuck
+ * TCP handshake — confirmed empirically while building this (a `.invalid`
+ * hostname hung past both a 3s backstop and a 10s test timeout with the
+ * built-in API, because no socket-level timer was ever armed). A plain timer
+ * that starts at request-creation time has no such blind spot.
+ *
+ * One mechanism, two outcomes depending on how far the exchange got before
+ * going silent (`clientRes.headersSent` can only ever be true or false once):
+ *   - Not sent yet (dead during DNS/connect/wait-for-headers) -> destroy with
+ *     a tagged error, which routes through the existing `upstreamReq.on(
+ *     'error', ...)` handler and answers 504.
+ *   - Already sent (actively streaming to the client) -> a fresh status can
+ *     never be sent retroactively. The only honest option is to tear down
+ *     BOTH legs immediately via `.destroy()` (never `.end()`): destroying
+ *     drops the connection mid-chunk, which the client's HTTP stack reports
+ *     as a truncated/aborted read. Calling `.end()` instead would write the
  *     terminating chunk and tell the client the transfer finished
  *     successfully — fabricating a clean completion for a transfer that
  *     actually died, exactly what ADR-013 Decision 2 forbids.
@@ -165,9 +180,12 @@ function armUpstreamTimeout(
   upstreamReq: ReturnType<typeof httpRequestFn>,
   clientRes: ServerResponse,
   timeoutMs: number,
-): void {
-  if (timeoutMs <= 0) return; // 0 or negative disables the timeout
-  upstreamReq.setTimeout(timeoutMs, () => {
+): UpstreamTimeoutHandle {
+  if (timeoutMs <= 0) return NOOP_TIMEOUT_HANDLE; // 0 or negative disables the timeout
+
+  let timer: NodeJS.Timeout | undefined;
+
+  const fire = () => {
     const err = new UpstreamTimeoutError(timeoutMs);
     if (!clientRes.headersSent) {
       upstreamReq.destroy(err);
@@ -175,7 +193,24 @@ function armUpstreamTimeout(
       upstreamReq.destroy();
       clientRes.destroy(err);
     }
-  });
+  };
+
+  const reset = () => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(fire, timeoutMs);
+    // A leftover timer must never be the reason the process (or a test's
+    // event loop) fails to exit — every real termination path below calls
+    // clear() explicitly, this is defense-in-depth only.
+    timer.unref?.();
+  };
+
+  const clear = () => {
+    if (timer) clearTimeout(timer);
+    timer = undefined;
+  };
+
+  reset(); // armed immediately — covers DNS lookup + TCP connect from t=0
+  return { reset, clear };
 }
 
 function forwardOneRequest(
@@ -214,9 +249,9 @@ function forwardOneRequest(
     method: clientReq.method,
     headers: { ...forwardHeaders, host: upstreamUrl.host },
   }, (upstreamRes) => {
-    // Response headers arrived — the socket was active, so the idle timer
-    // armed below has already been (and will keep being) reset by this same
-    // activity. No separate disarm call needed here.
+    // Response headers arrived — genuine activity, restart the deadline
+    // before the body streaming phase begins.
+    upstreamTimeout.reset();
     // ADR-013 Decision 2 (fail-open forwarding) / S2-AC-3: relay status,
     // headers, and body exactly as received — no proxy-side rewriting of an
     // upstream error response, same code path as a 2xx.
@@ -230,15 +265,23 @@ function forwardOneRequest(
       upstreamRes.on('data', (chunk: Buffer) => safeTee(t, 'res', { chunk }));
       upstreamRes.on('end', () => safeTee(t, 'res', { end: true }));
     }
+    // Every response chunk restarts the deadline — this is what makes it an
+    // IDLE timeout rather than a fixed total-duration cap: a long-running
+    // but actively-streaming completion never trips it, only genuine
+    // silence does.
+    upstreamRes.on('data', () => upstreamTimeout.reset());
+    // A normal, complete response disarms the deadline for good.
+    upstreamRes.on('end', () => upstreamTimeout.clear());
     // Single chunk-pipe, never buffered whole (ADR-013 Decision 3): identical
     // code path for a normal JSON body and an SSE stream — pipe() relays
     // each 'data' chunk to the client as soon as it arrives upstream.
     upstreamRes.pipe(clientRes);
   });
 
-  armUpstreamTimeout(upstreamReq, clientRes, upstreamTimeoutMs);
+  const upstreamTimeout = armUpstreamTimeout(upstreamReq, clientRes, upstreamTimeoutMs);
 
   upstreamReq.on('error', (err) => {
+    upstreamTimeout.clear();
     // Upstream unreachable/timeout is NOT a proxy failure (ADR-013 Decision
     // 2, "Upstream unreachable is not a proxy failure at all") — the proxy
     // must not hang, retry, or apply its own error semantics; it stays up
@@ -257,12 +300,14 @@ function forwardOneRequest(
   });
 
   clientRes.on('close', () => {
+    upstreamTimeout.clear();
     // Client disconnected mid-stream — stop pulling from upstream rather
     // than leaking the in-flight request.
     if (!upstreamReq.destroyed) upstreamReq.destroy();
   });
 
   clientReq.on('error', () => {
+    upstreamTimeout.clear();
     if (!upstreamReq.destroyed) upstreamReq.destroy();
   });
 
@@ -272,6 +317,10 @@ function forwardOneRequest(
     clientReq.on('data', (chunk: Buffer) => safeTee(t, 'req', { chunk }));
     clientReq.on('end', () => safeTee(t, 'req', { end: true }));
   }
+  // Bytes flowing FROM the client TO the upstream are activity too — a slow
+  // but genuinely-progressing upload must not trip the upstream deadline
+  // before the upstream has even seen the full request.
+  clientReq.on('data', () => upstreamTimeout.reset());
   // Single chunk-pipe from client to upstream — a request body forwards
   // byte-for-byte with no intermediate buffering, symmetric with the
   // response-side pipe above.
