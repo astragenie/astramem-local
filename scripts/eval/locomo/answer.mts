@@ -121,16 +121,46 @@ export class EmptyStoreError extends Error {
  * refuses to report a number that measures nothing. It makes the benchmark more
  * honest, not easier.
  *
- * Only counts questions that were actually ANSWERED — conversations skipped for
- * a distill timeout legitimately have 0 hits and are excluded, so a partial
- * distill failure still surfaces as its own (separate) signal rather than
- * tripping this.
+ * Two distinct broken-run shapes are caught here. The second was added after the
+ * first shipped WITH THIS EXACT HOLE IN IT (2026-07-13): the original version
+ * returned early on `answered.length === 0` with the comment "a different
+ * failure" — and that different failure was then surfaced NOWHERE. A run whose
+ * distill timed out skipped all 199 questions, scored n=0, wrote a metrics file
+ * reading `n/a`, and **exited 0**. The guard against silent failure had a silent
+ * failure in it, ten lines from the throw.
  */
 export function assertStoreNotEmpty(outcomes: AnswerOutcome[]): void {
+  if (outcomes.length === 0) return;
+
   const answered = outcomes.filter(o => !o.hypothesis.startsWith('(skipped:'));
-  if (answered.length === 0) return; // nothing was answered at all — a different failure
+  const skipped = outcomes.length - answered.length;
+
+  // Shape 2: everything (or nearly everything) was skipped — typically a distill
+  // timeout. There is no score to report, and reporting `n/a` at exit 0 is exactly
+  // the "broken run wearing a real result's costume" this file exists to prevent.
+  if (answered.length === 0) throw new AllSkippedError(skipped, outcomes.length);
+
+  // Shape 1: questions WERE answered, but every one retrieved zero memories.
   const totalHits = answered.reduce((n, o) => n + o.hit_count, 0);
   if (totalHits === 0) throw new EmptyStoreError(answered.length);
+}
+
+/** Thrown when every question was skipped (e.g. distill never finished) — no score exists. */
+export class AllSkippedError extends Error {
+  constructor(skipped: number, total: number) {
+    super(
+      `LoCoMo run is INVALID: ${skipped}/${total} questions were SKIPPED — no conversation finished ` +
+        `distilling, so there is nothing to score.\n\n` +
+        `This is not a low score. It is the ABSENCE of a score, and the harness previously reported it ` +
+        `as "n/a" while exiting 0 — indistinguishable from a successful run to anything reading the ` +
+        `exit code.\n\n` +
+        `Most likely cause: --distill-timeout-ms is too short for the sample. A 19-session conversation ` +
+        `needs roughly 19 x per-session distill time; the 900s default is NOT enough on a contended box ` +
+        `(2026-07-13: wall clock 910s against a 900s timeout -> all 199 questions skipped).\n\n` +
+        `Check: is Ollama saturated (an embed should take <1s, not 48s)? Raise --distill-timeout-ms.`,
+    );
+    this.name = 'AllSkippedError';
+  }
 }
 
 export function writeHypothesesJsonl(outcomes: AnswerOutcome[], path: string): void {

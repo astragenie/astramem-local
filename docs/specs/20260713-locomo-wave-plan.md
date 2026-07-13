@@ -51,6 +51,65 @@ holds WS2-WS5.
 - WS2 fix (direction chosen by the diagnosis, not guessed).
 - WS4 / WS5 re-measure. WS5 is very likely downstream of WS1-2, not independent.
 
+## WS7 — turn ON the ranking signals that ship at ZERO (queued, run after the current eval)
+
+**Nothing was removed. It was never turned on.** Default fusion weights
+(`src/config/config.ts:559`), and prod has no override, so these are LIVE:
+
+```
+alpha 0.4 (bm25)   beta 0.4 (cosine)   gamma 0.1 (importance)
+delta 0.1 (freshness)   epsilon 0.1 (usefulness)
+zeta  0  <- ENTITY relevance   OFF
+eta   0  <- AGENT match        OFF
+```
+
+`search.ts:546`: `const entityBonus = zeta > 0 ? entityBonusForQuery(...) : undefined;`
+— the entity signal is computed only if it would count, and **it never counts.**
+
+**Why this was RIGHT until today, and is wrong now.** Entity extraction was ~87%
+broken until 13:00 UTC today (#200). ζ=0 was a sane default while the table
+underneath it was three-quarters empty. That changed: entities now land on ~95-99%
+of new memories, and `entity_relations` shipped 2026-07-12. **For the first time
+there is real entity data under that weight — and the weight is zero.**
+
+This is `built-wired-never-invoked` in its most expensive form: we built the entity
+extractor, the entity table, the relation graph, the MCP traversal tools, AND the
+ranking term — and multiply the ranking term by zero.
+
+**Experiment (cheap — one config value, existing harness, no new code):**
+- ζ ∈ {0, 0.05, 0.1}, η ∈ {0, 0.05}
+- Gate on ADR-005 floors (recall@10 ≥ 0.9, NDCG@10 ≥ 0.7) AND LoCoMo per-category.
+- **Dilution risk is real:** `entityBonusForQuery` is a blunt substring match
+  (`q.includes(r.name)`), so a boost can promote coincidental name collisions over
+  semantically better hits. Single-hop (35% of questions) is what would pay for it.
+
+**Run it in an ISOLATED eval daemon** (own port, own datadir). It cannot touch prod:
+config is read once per process at boot, and the eval spawns its own daemon. The only
+real constraint is **Ollama contention** — serialize it after the current run.
+
+## WS8 — evidence-population REGRESSION (not a new feature)
+
+Measured on the live store:
+
+```
+2026-07-03    64%   <- peak
+2026-07-08    40%
+2026-07-09    17%   <- cliff
+2026-07-13    18%
+```
+
+**Evidence went 64% -> 17%.** Specifically `evidence` — `session_id`, `repo`, `agent`,
+`confidence` are all ~100%, so this is not a general provenance failure.
+
+**This reframes FEAT-485.** It was filed as "add evidence requirements." It is not a
+new feature — **it is a regression fix.** Evidence worked better a week ago. Nobody
+noticed because nothing errors when the model omits the field: the atom saves fine,
+just thinner. (Same ADR-015 shape as everything else.)
+
+Cliff sits between 07-08 and 07-09. Candidates in that window include #152
+(entity-kind coercion) and #150 (codex/qwen3 extraction fixes). **NOT yet bisected —
+do not name a culprit without measuring.**
+
 ## WS3 — KILLED (2026-07-13)
 
 Verdict: **KILL**. See `20260713-ws3-graph-expansion-decision.md`.
