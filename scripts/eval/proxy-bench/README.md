@@ -53,7 +53,7 @@ bun scripts/eval/proxy-bench/bench.mts \
   [--proxy-entry <path to dist/cli/index.js>] [--require-proxy] \
   [--requests 200] [--warmup 20] [--concurrency 1] \
   [--body-size 1024] [--upstream-delay-ms 0] \
-  [--threshold-ms 10] [--gate] \
+  [--threshold-ms 10] [--gate] [--capture] \
   [--out <path>]
 ```
 
@@ -72,6 +72,22 @@ bun scripts/eval/proxy-bench/bench.mts \
   gate on a proxy that doesn't exist here yet).
 - `--out`: JSON result path. Defaults under
   `.eval-data/proxy-bench/runs/<timestamp>.json`.
+- `--capture` (FEAT-458 S4b, S4-AC-2): bench the proxy with
+  `proxy.capture.enabled=true` instead of the capture-free forward path.
+  `src/cli/proxy.ts` has no `--capture` CLI flag itself (config-driven only,
+  ADR-013 §5) — this harness's flag drives `lib/capture-sandbox.ts` to spawn
+  the proxy against a throwaway config/data dir carrying that setting for
+  one run only; the shipped default (`false`) is never touched. Every proxy
+  spawn (capture on OR off) now goes through that sandbox, which also closes
+  a latent hazard: an unsandboxed spawn previously inherited whatever real
+  `%APPDATA%\Astramem\config.yaml` exists on the box running the bench. The
+  harness's request/response bodies are also real OpenAI chat-completion
+  shapes (not an empty `{}`/raw byte blob) specifically so
+  `src/capture/proxy.ts`'s turn extraction recognizes them and the real
+  synchronous spool write (`writeToSpool`) actually fires on every proxied
+  request when `--capture` is set — a capture-on bench that never exercises
+  that write would be a false PASS against ADR-013 Decision 2 (capture must
+  never backpressure the forward path).
 
 ### Sample output
 
@@ -120,11 +136,16 @@ scripts/eval/proxy-bench/
   bench.mts                    CLI entrypoint (this is what you run)
   bench.test.ts                CLI-level integration tests
   lib/
-    upstream-stub.ts           synthetic node:http upstream (canned body, optional delay)
+    upstream-stub.ts           synthetic node:http upstream (canned body, optional delay,
+                                optional chatShape for real chat-completion JSON)
     upstream-stub.test.ts
     proxy-driver.ts            spawn/boot-wait/kill for the proxy CLI under test
     proxy-driver.test.ts
-    latency.ts                 warmup-aware sample collection + percentile summary + delta
+    capture-sandbox.ts         throwaway config/data sandbox driving proxy.capture.enabled
+                                for one spawn (FEAT-458 S4b) — never the real OS dirs
+    capture-sandbox.test.ts
+    latency.ts                 warmup-aware sample collection + percentile summary +
+                                PER-REQUEST-PAIR overhead delta
     latency.test.ts
     __fixtures__/
       fake-proxy-cli.mjs       test-only stand-in for the real proxy CLI
