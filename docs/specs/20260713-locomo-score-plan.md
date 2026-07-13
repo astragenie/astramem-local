@@ -13,29 +13,36 @@ mxbai-embed-large. Overall token-F1 **0.4540**.
 > an earlier revision of this block claimed.**
 >
 > An earlier edit asserted that 0.4540 was the **codex-BYO (cloud)** number and that the
-> qwen3:8b label "was wrong." **That is inverted.** Verified against the run manifests
-> themselves (ground truth, not a hand-maintained doc line):
+> qwen3:8b label "was wrong." **That is inverted.** A later edit then claimed the manifests
+> below **do not exist** and must not be cited. **They do exist.** Both claims are settled by
+> the artifacts themselves — **THESE ARE FULL PATHS, CHECK THEM BEFORE RE-LITIGATING:**
 >
 > ```
-> .eval-data/locomo/runs/2026-07-13T14-59-21-798Z/run-manifest.json
->   "extractionProvider": "ollama"             -> overall_F1 = 0.4540
-> .eval-data/locomo/runs/2026-07-13T15-49-03-443Z/run-manifest.json
->   "extractionProvider": "codex-subscription" -> overall_F1 = 0.4278
+> .claude/worktrees/agent-a0112287d8dd8d401/.eval-data/locomo/runs/
+>   2026-07-13T14-59-21-798Z/run-manifest.json   (1018 bytes)
+>     "extractionProvider": "ollama"              -> overall_F1 = 0.45401051750038257
+>   2026-07-13T15-49-03-443Z/run-manifest.json   (1032 bytes)
+>     "extractionProvider": "codex-subscription"  -> overall_F1 = 0.42777774404596336
 > ```
 >
-> **0.4540 is the LOCAL, zero-account Ollama number, and it BEAT the cloud config (0.4278).**
-> Both runs used `extractProfile: conversational` and `compactionProvider: ollama`; the only
-> variable was the extractor.
+> (F1 from each run's sibling `hypotheses.jsonl.metrics.json`.)
 >
-> The labeling discipline the earlier edit called for is **correct and retained** — every
-> published figure must state its extraction config inline, and the two configs do not score
-> the same. Only the direction was wrong, and the real news is better: the zero-account story
-> is the stronger one, not the weaker one.
+> **Why an "exhaustive search" of `C:\work\mega\**` reported them missing:** the path is nested
+> under **two dot-directories** — `.claude/worktrees/.../.eval-data/` — and `find`/glob skip
+> hidden directories by default. The skepticism was right; the search was wrong. **Do not skip
+> dot-dirs.**
 >
-> Caveat that survives regardless: n=199, one conversation. The gap (0.4540 vs 0.4278) is
-> within noise at this sample size — **do not claim "local beats cloud" as a finding.** The
-> honest claim is "local is not worse," which is already a strong result. The full-sample
-> rerun should report **both** configs.
+> **Conclusion: 0.4540 is the LOCAL, zero-account Ollama (qwen3:8b) number.** The codex-subscription
+> run scored 0.4278. Both used `extractProfile: conversational` + `compactionProvider: ollama`;
+> the only variable was the extractor.
+>
+> **Do NOT read that as "local beats cloud."** At n=199 / one conversation, a 0.026 gap is
+> **within noise**. The only defensible claim is **"local is not worse"** — which is already a
+> strong result for the zero-account story, and is the claim to make publicly.
+>
+> The labeling discipline both earlier edits demanded is **correct and retained**: every published
+> figure must state its extraction config inline. The full-sample rerun should report **both**
+> configs, each cited from its own manifest.
 >
 > **Durable fix (this part of the earlier edit stands):** a hand-maintained config line in a
 > spec is exactly how this error propagated. **The rerun must emit its config from the run
