@@ -154,7 +154,7 @@ describe('GET /search and POST /recall — serialization boundary (mocked search
   });
 
   it('AC-2: a hit above 1 is clamped to 1 at the response boundary, warning logged, status 200', async () => {
-    fakeHits.value = [{ id: 'hit-1', type: 'decision', text: 'x', score: 1.9, source: 'fts' }];
+    fakeHits.value = [{ id: 'hit-1', type: 'decision', text: 'x', score: 1.9, source: 'fts' }] as SearchHit[];
     const res = await app.inject({
       method: 'GET',
       url: '/search?q=anything',
@@ -167,7 +167,7 @@ describe('GET /search and POST /recall — serialization boundary (mocked search
   });
 
   it('AC-2: a hit below 0 is clamped to 0 at the response boundary via POST /recall, warning logged, status 200', async () => {
-    fakeHits.value = [{ id: 'hit-2', type: 'fact', text: 'x', score: -0.4, source: 'vec' }];
+    fakeHits.value = [{ id: 'hit-2', type: 'fact', text: 'x', score: -0.4, source: 'vec' }] as SearchHit[];
     const res = await app.inject({
       method: 'POST',
       url: '/recall',
@@ -181,7 +181,7 @@ describe('GET /search and POST /recall — serialization boundary (mocked search
   });
 
   it('AC-3: a NaN hit score serializes as a finite 0, warning logged, status still 200', async () => {
-    fakeHits.value = [{ id: 'hit-3', type: 'decision', text: 'x', score: NaN, source: 'both' }];
+    fakeHits.value = [{ id: 'hit-3', type: 'decision', text: 'x', score: NaN, source: 'both' }] as SearchHit[];
     const res = await app.inject({
       method: 'GET',
       url: '/search?q=anything',
@@ -199,7 +199,7 @@ describe('GET /search and POST /recall — serialization boundary (mocked search
       { id: 'hit-4', type: 'decision', text: 'x', score: 0.73, source: 'fts' },
       { id: 'hit-5', type: 'fact', text: 'y', score: 0, source: 'vec' },
       { id: 'hit-6', type: 'lesson', text: 'z', score: 1, source: 'both' },
-    ];
+    ] as SearchHit[];
     const res = await app.inject({
       method: 'GET',
       url: '/search?q=anything',
@@ -212,7 +212,7 @@ describe('GET /search and POST /recall — serialization boundary (mocked search
   });
 
   it('AC-4: in-contract scores pass through bit-identical with NO warning on POST /recall', async () => {
-    fakeHits.value = [{ id: 'hit-7', type: 'decision', text: 'x', score: 0.11, source: 'fts' }];
+    fakeHits.value = [{ id: 'hit-7', type: 'decision', text: 'x', score: 0.11, source: 'fts' }] as SearchHit[];
     const res = await app.inject({
       method: 'POST',
       url: '/recall',

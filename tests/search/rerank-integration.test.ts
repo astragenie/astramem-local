@@ -151,7 +151,7 @@ describe('search() + cross-encoder rerank stage (issue #26)', () => {
     for (const hit of reranked) {
       expect(hit.reranked).toBe(true);
       expect(typeof hit.rerank_score).toBe('number');
-      expect(hit.explanation?.signals.cross_encoder.final).toBe(hit.rerank_score);
+      expect(hit.explanation.signals.cross_encoder?.final).toBe(hit.rerank_score);
       // `score` is untouched by rerank — still whatever fusion produced,
       // matching the un-reranked baseline for the same id.
       const baselineHit = baseline.find(b => b.id === hit.id)!;
@@ -159,7 +159,7 @@ describe('search() + cross-encoder rerank stage (issue #26)', () => {
     }
   });
 
-  it('FEAT-452: rerank disabled (default) — hits carry no rerank fields at all', async () => {
+  it('FEAT-452: rerank disabled (default) — hits carry no rerank-specific fields, but always carry a base ScoreExplanation (retrieval@1 adoption, 2026-07-13)', async () => {
     const db = setupDb();
     await seedWithVec(db, 'sqlite-vec hybrid bm25 fusion search', 'fx-c');
 
@@ -171,7 +171,12 @@ describe('search() + cross-encoder rerank stage (issue #26)', () => {
     for (const hit of hits) {
       expect('reranked' in hit).toBe(false);
       expect('rerank_score' in hit).toBe(false);
-      expect('explanation' in hit).toBe(false);
+      // CONTRACT-FREEZE (astragenie/memory#759): ScoreExplanation is no
+      // longer rerank-only — every hit carries the base fusion breakdown.
+      expect(hit.explanation.final).toBe(hit.score);
+      expect(hit.explanation.signals.importance).toBeDefined();
+      expect(hit.explanation.signals.freshness).toBeDefined();
+      expect('cross_encoder' in hit.explanation.signals).toBe(false);
     }
   });
 

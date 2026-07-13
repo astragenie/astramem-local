@@ -14,13 +14,13 @@
 
 import type { DB } from '../storage/db.js';
 import type { EmbedProvider } from '../contracts/index.js';
-import type { Memory, MemoryType } from '../contracts/index.js';
+import type { Memory, MemoryType, MemoryScope } from '../contracts/index.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { fuseHits, normalizeScores, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
-import { applyRerank, type RerankOpts, type RerankSignal } from './rerank.js';
+import { applyRerank, type RerankOpts } from './rerank.js';
 // FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
@@ -92,12 +92,76 @@ export interface SearchFilters {
   entity?: string;
 }
 
+/**
+ * Astramem-retrieval-result@1 `ScoreExplanation.signals[name]` shape
+ * (contracts/schemas/retrieval-result.v1.schema.json) — per-signal raw
+ * score, effective weight, and this signal's contribution to the fused
+ * score (`final`). `raw` is the true un-normalized value (e.g. the negated
+ * SQLite bm25() score, the raw cosine similarity); `final` is
+ * `normalized(raw) * weight`, i.e. this signal's actual share of `score`.
+ */
+export interface ScoreSignal {
+  raw: number;
+  weight: number;
+  final: number;
+}
+
+/**
+ * Astramem-retrieval-result@1 `ScoreExplanation` (ADR-005 debugging/trust
+ * surface). `final` always equals the hit's top-level `score` — CONTRACT-
+ * FREEZE §2 (astragenie/memory#759) requires this invariant regardless of
+ * which signals happen to be present.
+ */
+export interface ScoreExplanation {
+  final: number;
+  signals: Record<string, ScoreSignal>;
+}
+
 export interface SearchHit {
   id: string;
   type: MemoryType;
   text: string;
   score: number;
+  /**
+   * Fusion-leg indicator: which candidate-gathering stage(s) produced this
+   * id (FTS5 BM25, vector search, or both) — an INTERNAL local-only
+   * debugging field distinct from the canonical wire contract's `source`
+   * (which means memory *provenance*, see `capture_source` below). Never
+   * renamed here to avoid breaking existing consumers (CLI table, dashboard
+   * debug page, tests) that predate the retrieval@1 contract adoption.
+   */
   source: 'fts' | 'vec' | 'both';
+  /** ADR-009 memory scope (private|team|org). Always present — `memories.scope` is NOT NULL. */
+  scope: MemoryScope;
+  /** `memories.importance` [0,1]. Always present — NOT NULL DEFAULT 0.5. */
+  importance: number;
+  /** `memories.confidence` [0,1]. Always present — NOT NULL DEFAULT 0.5. */
+  confidence: number;
+  /** `memories.created_at`, ISO-8601 (wire-ready — contracts/schemas/retrieval-result.v1.schema.json `created_at` is `format: date-time`). */
+  created_at: string;
+  /**
+   * `memories.capture_source` (migration 024) — CONTRACT-FREEZE §1 maps
+   * this to the canonical wire `source` field ("origin of the memory").
+   * Named `capture_source` here, not `source`, to avoid colliding with the
+   * pre-existing fusion-leg `source` field above; a route/wire-serialization
+   * layer is the natural place to rename it to `source` on the JSON
+   * response, which is out of this change's scope (contracts/ + src/search/
+   * only — see astragenie/astramem-local PR for retrieval@1 adoption).
+   * Omitted (not `null`) when the memory has no capture_source, since the
+   * canonical schema's `source` is `{type: "string"}` with no null variant.
+   */
+  capture_source?: string;
+  /**
+   * ScoreExplanation (ADR-005/CONTRACT-FREEZE §2) — ALWAYS present as of
+   * the retrieval@1 adoption (2026-07-13), not just when reranked. Base
+   * signals are bm25/cosine (only when that leg produced a candidate for
+   * this id)/importance/freshness/usefulness, plus entity_bonus/agent_bonus
+   * when their weight (zeta/eta) is active. Gains a `cross_encoder` signal
+   * (merged in, not replacing the base signals) when the rerank stage
+   * (FEAT-452) actually scored this hit — see `reranked`/`rerank_score`
+   * below.
+   */
+  explanation: ScoreExplanation;
   /**
    * FEAT-452: present + `reranked: true` only when the cross-encoder rerank
    * stage (issue #26, src/search/rerank.ts) actually scored this hit this
@@ -111,7 +175,6 @@ export interface SearchHit {
    */
   reranked?: true;
   rerank_score?: number;
-  explanation?: { signals: { cross_encoder: RerankSignal } };
 }
 
 export interface SearchOpts {
@@ -461,8 +524,21 @@ export async function search(
   // can surface again for a point-in-time query.
   const { clause: validityClause, params: validityParams } = validityFilterClause(filters.as_of);
   const whereFilter = filterClauses.length > 0 ? ` AND ${filterClauses.join(' AND ')}` : '';
-  const sql = `SELECT id, type, text FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
-  const memRows = db.prepare(sql).all(...fusedIds, ...validityParams, ...filterParams) as Array<{ id: string; type: MemoryType; text: string }>;
+  // retrieval@1 adoption (2026-07-13, CONTRACT-FREEZE astragenie/memory#759):
+  // scope/importance/confidence/created_at/capture_source added to the
+  // SELECT so the wire-facing SearchHit below can populate the canonical
+  // optional fields from real columns instead of projecting them away.
+  const sql = `SELECT id, type, text, scope, importance, confidence, created_at, capture_source FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
+  const memRows = db.prepare(sql).all(...fusedIds, ...validityParams, ...filterParams) as Array<{
+    id: string;
+    type: MemoryType;
+    text: string;
+    scope: MemoryScope;
+    importance: number;
+    confidence: number;
+    created_at: number;
+    capture_source: string | null;
+  }>;
 
   const memMap = new Map(memRows.map(r => [r.id, r]));
 
@@ -535,6 +611,60 @@ export async function search(
   // When disabled (the default), buildLimit === limit — byte-identical to
   // pre-rerank behavior.
   const buildLimit = opts.rerank ? Math.max(limit, opts.rerank.topK) : limit;
+
+  // retrieval@1 adoption (2026-07-13, CONTRACT-FREEZE astragenie/memory#759):
+  // ScoreExplanation is now built for every hit, not just debug:true — this
+  // is a SEPARATE computation from the 6a debug block above (deliberately
+  // not shared/refactored out of it) so debug:true's existing output and
+  // tests/search/search-debug.test.ts are byte-identical to before this
+  // change; only this main (non-debug) path changes shape.
+  const bm25RawForExplain = new Map(filteredFtsHits.map(h => [h.id, -h.bm25]));
+  const normBm25Arr3 = normalizeScores(filteredFtsHits.map(h => -h.bm25));
+  const normBm25ForExplain = new Map(filteredFtsHits.map((h, i) => [h.id, normBm25Arr3[i] ?? 0]));
+  const cosineRawForExplain = new Map(filteredVecHits.map(h => [h.id, h.cosine]));
+  const normCosineArr3 = normalizeScores(filteredVecHits.map(h => h.cosine));
+  const normCosineForExplain = new Map(filteredVecHits.map((h, i) => [h.id, normCosineArr3[i] ?? 0]));
+  const explainWeightSumRaw =
+    weights.alpha + weights.beta + weights.gamma + weights.delta + (weights.epsilon ?? 0) + zeta + eta;
+  const explainWeightSum = explainWeightSumRaw === 0 ? 1 : explainWeightSumRaw;
+  const explainWeights = {
+    bm25: weights.alpha / explainWeightSum,
+    cosine: weights.beta / explainWeightSum,
+    importance: weights.gamma / explainWeightSum,
+    freshness: weights.delta / explainWeightSum,
+    usefulness: (weights.epsilon ?? 0) / explainWeightSum,
+    entity_bonus: zeta / explainWeightSum,
+    agent_bonus: eta / explainWeightSum,
+  };
+
+  function buildExplanation(id: string, score: number, importance: number, createdAtMs: number): ScoreExplanation {
+    const ageDays = (nowMs - createdAtMs) / (24 * 60 * 60 * 1000);
+    const freshness = Math.min(1, Math.exp(-ageDays / 30));
+    const signals: Record<string, ScoreSignal> = {};
+    if (bm25RawForExplain.has(id)) {
+      signals.bm25 = { raw: bm25RawForExplain.get(id)!, weight: explainWeights.bm25, final: (normBm25ForExplain.get(id) ?? 0) * explainWeights.bm25 };
+    }
+    if (cosineRawForExplain.has(id)) {
+      signals.cosine = { raw: cosineRawForExplain.get(id)!, weight: explainWeights.cosine, final: (normCosineForExplain.get(id) ?? 0) * explainWeights.cosine };
+    }
+    signals.importance = { raw: importance, weight: explainWeights.importance, final: importance * explainWeights.importance };
+    signals.freshness = { raw: freshness, weight: explainWeights.freshness, final: freshness * explainWeights.freshness };
+    const usefulnessRaw = usefulness.get(id) ?? 0.5;
+    signals.usefulness = { raw: usefulnessRaw, weight: explainWeights.usefulness, final: usefulnessRaw * explainWeights.usefulness };
+    if (entityBonus) {
+      const raw = entityBonus.get(id) ?? 0;
+      signals.entity_bonus = { raw, weight: explainWeights.entity_bonus, final: raw * explainWeights.entity_bonus };
+    }
+    if (agentBonus) {
+      const raw = agentBonus.get(id) ?? 0;
+      signals.agent_bonus = { raw, weight: explainWeights.agent_bonus, final: raw * explainWeights.agent_bonus };
+    }
+    // final MUST equal the hit's top-level score (CONTRACT-FREEZE §2), even
+    // though usefulness/entity_bonus/agent_bonus above already account for
+    // it — this is not a re-derivation, `score` is the source of truth.
+    return { final: score, signals };
+  }
+
   const results: SearchHit[] = [];
   for (const hit of fused) {
     const mem = memMap.get(hit.id);
@@ -544,14 +674,40 @@ export async function search(
       type: mem.type,
       text: mem.text,
       score: hit.score,
-      source: hit.source
+      source: hit.source,
+      scope: mem.scope,
+      importance: mem.importance,
+      confidence: mem.confidence,
+      created_at: new Date(mem.created_at).toISOString(),
+      ...(mem.capture_source !== null ? { capture_source: mem.capture_source } : {}),
+      explanation: buildExplanation(hit.id, hit.score, mem.importance, mem.created_at),
     });
     if (results.length >= buildLimit) break;
   }
 
   if (opts.rerank) {
     const reranked = await applyRerank(query, results, opts.rerank);
-    return reranked.slice(0, limit);
+    // applyRerank (src/search/rerank.ts) is a generic, independently-tested
+    // utility that OVERWRITES `explanation` with just `{signals:
+    // {cross_encoder}}}` — by design, so its own unit tests
+    // (tests/search/rerank.test.ts) can exercise it against bare
+    // `{id,text,score}` candidates with no pre-existing explanation. Here,
+    // where every hit already carries a real base ScoreExplanation, merge
+    // the cross_encoder signal IN rather than let it clobber the base
+    // signals — `final` stays the fused `score` (rerank never changes it).
+    const merged = reranked.map(hit => {
+      if (!hit.reranked) return hit;
+      const crossEncoder = hit.explanation!.signals.cross_encoder!;
+      const base = results.find(r => r.id === hit.id)!;
+      return {
+        ...hit,
+        explanation: {
+          final: hit.score,
+          signals: { ...base.explanation.signals, cross_encoder: crossEncoder },
+        },
+      };
+    });
+    return merged.slice(0, limit);
   }
 
   return results;
