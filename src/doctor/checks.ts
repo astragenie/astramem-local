@@ -38,6 +38,8 @@ import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
 import { readSyncSettings } from '../config/sync-settings.js';
 import { usefulnessRate, usefulnessByType, feedbackLoopSummary } from '../storage/usefulness.js';
 import { totalRelationGuardDrops } from '../storage/relation-guard-log.js';
+import { totalEntityGuardDrops } from '../storage/entity-guard-log.js';
+import { classifyJunkEntityName } from '../distill/stages/05-extract.js';
 import { latestConsolidationJudgeRun } from '../storage/consolidation-judge-log.js';
 import { buildMemoryHealthFull, buildMemoryHealthCheap } from '../server/queries/memory-health.js';
 import type { DB } from '../storage/db.js';
@@ -1362,6 +1364,92 @@ function checkEntityRelations(
   };
 }
 
+// ─── Check: Entity name quality (issue #207) ─────────────────────────────────
+
+/**
+ * Measures the junk rate already sitting in the `entities` table — a bare
+ * issue/PR reference ("#110"), a bare number ("123"), or a name below the
+ * length floor (classifyJunkEntityName, src/distill/stages/05-extract.ts,
+ * the same rule filterAtomEntities enforces on NEW writes going forward).
+ *
+ * This is deliberately a snapshot of EXISTING rows, not just an activity
+ * counter: issue #207 was filed against a live corpus (4,221 entities, an
+ * unknown but non-trivial junk fraction) that the forward-only guard added
+ * alongside this check does NOT retroactively clean — `EntityRepo.upsert` is
+ * first-writer-wins on `kind` and never revisits a name once it exists. A
+ * canary that only reported "0 drops this week" would silently miss that the
+ * pre-existing junk is still sitting there and still polluting any future ζ
+ * (zeta) ranking sweep — the exact "canary measures the wrong thing" failure
+ * #200 documents.
+ *
+ * Gated on a minimum total-entity floor (mirrors the MEANINGFUL_USAGE_
+ * THRESHOLD spirit other checks use) so a fresh/near-empty install's small
+ * sample size doesn't produce a noisy WARN on 1-2 entities.
+ */
+const MIN_ENTITIES_FOR_JUNK_RATE = 20;
+
+function checkEntityNameQuality(dataDir: string, encryptionEnabled: boolean): Check {
+  return {
+    name: 'Entity name quality',
+    async run(): Promise<CheckResult> {
+      const dbPath = join(dataDir, 'memory.sqlite');
+      if (!existsSync(dbPath)) {
+        return { ok: true, message: 'entity name quality: no DB yet' };
+      }
+
+      try {
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const since = Date.now() - SEVEN_DAYS_MS;
+
+        const rows = db.prepare('SELECT name FROM entities').all() as Array<{ name: string }>;
+        const total = rows.length;
+        const drops7d = totalEntityGuardDrops(db, since);
+        db.close();
+
+        if (total === 0) {
+          return { ok: true, message: 'entity name quality: no entities yet' };
+        }
+
+        const junkCount = rows.filter((r) => classifyJunkEntityName(r.name) !== null).length;
+
+        if (total < MIN_ENTITIES_FOR_JUNK_RATE) {
+          return {
+            ok: true,
+            message:
+              `entity name quality: ${junkCount}/${total} junk — too few entities to judge a rate yet ` +
+              `(${drops7d} guard-drop(s) recorded in last 7d)`,
+          };
+        }
+
+        if (junkCount === 0) {
+          return {
+            ok: true,
+            message: `entity name quality: 0/${total} existing entities are junk (${drops7d} guard-drop(s) in last 7d)`,
+          };
+        }
+
+        const ratePct = ((junkCount / total) * 100).toFixed(1);
+        return {
+          ok: false,
+          message:
+            `entity name quality: ${junkCount}/${total} (${ratePct}%) existing entities are junk ` +
+            `(bare issue/PR ref, bare number, or below the length floor) — the forward guard ` +
+            `(filterAtomEntities, issue #207) blocks NEW junk from being written (${drops7d} dropped ` +
+            `in last 7d) but does not retroactively clean rows written before it existed.`,
+          fix:
+            'Existing junk entities do not self-correct — a one-off cleanup pass over the `entities` table ' +
+            '(purging rows matching classifyJunkEntityName in src/distill/stages/05-extract.ts) is a separate, ' +
+            'not-yet-built follow-up if this rate matters before running a ζ (zeta) ranking sweep.',
+        };
+      } catch (err) {
+        // Informational failure mode — never fail doctor over a metric query
+        // error, consistent with the other read-only DB checks above.
+        return { ok: true, message: `entity name quality check error (non-fatal): ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Check: Consolidation judge telemetry (FEAT-482) ─────────────────────────
 
 /**
@@ -1802,6 +1890,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkExtractProfile(opts.extractProfile ?? 'engineering'),
     checkEntityRelations(dataDir, opts.extractProfile ?? 'engineering', encryptionEnabled),
+    checkEntityNameQuality(dataDir, encryptionEnabled),
     checkConsolidationJudgeTelemetry(dataDir, encryptionEnabled),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),

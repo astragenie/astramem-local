@@ -165,4 +165,11 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       "Consolidation judge" doctor check can tell "judge ran and found
 //       nothing" apart from "judge silently failed every call" (same shape
 //       as issues #190/#200). See migrations/033-consolidation-judge-errors.sql.
-export const SCHEMA_VERSION = 33 as const;
+// 034 = entity_name_drops table (issue #207) -- append-only guard-drop
+//       counters for filterAtomEntities (src/distill/stages/05-extract.ts),
+//       a SEPARATE table from relation_guard_drops (029) so that table's own
+//       sum stays scoped to relation-guard reasons only. Lets the doctor
+//       "Entity name quality" canary distinguish "the guard has stopped
+//       seeing new junk names" from "the guard is actively catching junk on
+//       an ongoing basis" -- see src/storage/entity-guard-log.ts.
+export const SCHEMA_VERSION = 34 as const;

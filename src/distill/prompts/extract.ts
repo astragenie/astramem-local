@@ -132,6 +132,9 @@ For each candidate item, pick type in this order — stop at the first match:
 
 Entities: list every specific named thing the atom is ABOUT (not every word
 mentioned) — a person, agent, team, technology, product, or piece of work.
+Never extract a bare number or unqualified issue/PR reference (e.g. "#110",
+"123") as a standalone entity — without a name, repo, or subject attached it
+is not a durable, identifiable thing; omit it rather than inventing one.
 kind is one of:
 - actor: a named human OR AI agent (e.g. "Sergey", "Claude Code", "the reviewer bot") —
   set subtype to "human" or "ai" when you can tell which; omit subtype when unsure
@@ -141,7 +144,10 @@ kind is one of:
   "memory") — NOT the same as the product it ships; use this for "which repo"
 - product: a named product or app the project builds or depends on as a product
   (e.g. "AstraMemory", "GitHub Copilot", "Claude Code" the app rather than the agent)
-- workitem: a FEAT/PR/issue/ticket id (e.g. "FEAT-402", "#145")
+- workitem: a FEAT/PR/issue/ticket id, always WITH the context that identifies
+  it (e.g. "FEAT-402", "the #145 PR for the auth refactor") — never a bare,
+  unqualified number or hash-number like "#145" or "110" alone; skip it if you
+  cannot name what repo/feature it belongs to
 - decision: a DEC/ADR reference (e.g. "DEC-048", "ADR-001")
 - tech: a language/framework/library/protocol the stack depends on (e.g. "Postgres",
   "TypeScript", "sqlite-vec")
@@ -411,6 +417,9 @@ For each candidate item, pick type in this order — stop at the first match:
 
 Entities: list every specific named thing the atom is ABOUT (not every word
 mentioned) — a person, agent, team, technology, product, or piece of work.
+Never extract a bare number or unqualified issue/PR reference (e.g. "#110",
+"123") as a standalone entity — without a name, repo, or subject attached it
+is not a durable, identifiable thing; omit it rather than inventing one.
 kind is one of:
 - actor: a named human OR AI agent (e.g. "Sergey", "Claude Code", "the reviewer bot") —
   set subtype to "human" or "ai" when you can tell which; omit subtype when unsure
@@ -420,7 +429,10 @@ kind is one of:
   "memory") — NOT the same as the product it ships; use this for "which repo"
 - product: a named product or app the project builds or depends on as a product
   (e.g. "AstraMemory", "GitHub Copilot", "Claude Code" the app rather than the agent)
-- workitem: a FEAT/PR/issue/ticket id (e.g. "FEAT-402", "#145")
+- workitem: a FEAT/PR/issue/ticket id, always WITH the context that identifies
+  it (e.g. "FEAT-402", "the #145 PR for the auth refactor") — never a bare,
+  unqualified number or hash-number like "#145" or "110" alone; skip it if you
+  cannot name what repo/feature it belongs to
 - decision: a DEC/ADR reference (e.g. "DEC-048", "ADR-001")
 - tech: a language/framework/library/protocol the stack depends on (e.g. "Postgres",
   "TypeScript", "sqlite-vec")
@@ -605,6 +617,9 @@ For each candidate item, pick type in this order — stop at the first match:
 
 Entities: list every specific named thing the atom is ABOUT (not every word
 mentioned) — a person, agent, team, technology, product, or piece of work.
+Never extract a bare number or unqualified issue/PR reference (e.g. "#110",
+"123") as a standalone entity — without a name, repo, or subject attached it
+is not a durable, identifiable thing; omit it rather than inventing one.
 kind is one of:
 - actor: a named human OR AI agent (e.g. "Sergey", "Claude Code", "the reviewer bot") —
   set subtype to "human" or "ai" when you can tell which; omit subtype when unsure
@@ -614,7 +629,10 @@ kind is one of:
   "memory") — NOT the same as the product it ships; use this for "which repo"
 - product: a named product or app the project builds or depends on as a product
   (e.g. "AstraMemory", "GitHub Copilot", "Claude Code" the app rather than the agent)
-- workitem: a FEAT/PR/issue/ticket id (e.g. "FEAT-402", "#145")
+- workitem: a FEAT/PR/issue/ticket id, always WITH the context that identifies
+  it (e.g. "FEAT-402", "the #145 PR for the auth refactor") — never a bare,
+  unqualified number or hash-number like "#145" or "110" alone; skip it if you
+  cannot name what repo/feature it belongs to
 - decision: a DEC/ADR reference (e.g. "DEC-048", "ADR-001")
 - tech: a language/framework/library/protocol the stack depends on (e.g. "Postgres",
   "TypeScript", "sqlite-vec")

@@ -672,6 +672,214 @@ describe('extract stage', () => {
       ]);
     });
   });
+
+  // Issue #207 — entity extraction was emitting garbage names ("#110" as a
+  // "repo" entity, live from production). filterAtomEntities is the
+  // code-level backstop (the prompt is stochastic and cannot be relied on
+  // alone) that drops bare issue/PR references, bare numbers, and names
+  // below the length floor BEFORE they become permanent `entities` rows.
+  describe('entities[] name-quality guard (issue #207)', () => {
+    it('drops a bare issue/PR reference ("#110") but keeps a legitimate entity on the same atom', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const withJunk = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'Postgres was discussed in #110',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [
+              { name: '#110', kind: 'workitem' },
+              { name: 'Postgres', kind: 'tech' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([withJunk]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+    });
+
+    it('drops a bare number ("123") entity name', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const withJunk = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'the value is 123',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [{ name: '123', kind: 'other' }],
+          },
+        ],
+      });
+      const llm = makeMockLLM([withJunk]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([]);
+    });
+
+    it('drops a single-character entity name ("x") — below the length floor', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const withJunk = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'set x to true',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [{ name: 'x', kind: 'other' }],
+          },
+        ],
+      });
+      const llm = makeMockLLM([withJunk]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([]);
+    });
+
+    it('keeps a legitimate 2-char entity name ("Go") — the length floor must not reject real short words', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const legit = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'the service is written in Go',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [{ name: 'Go', kind: 'tech' }],
+          },
+        ],
+      });
+      const llm = makeMockLLM([legit]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([{ name: 'Go', kind: 'tech' }]);
+    });
+
+    it('keeps legitimate multi-char entity names unaffected ("Postgres", "astramem-local")', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const legit = JSON.stringify({
+        atoms: [
+          {
+            type: 'decision',
+            text: 'astramem-local uses Postgres',
+            importance: 0.7,
+            confidence: 0.8,
+            entities: [
+              { name: 'astramem-local', kind: 'project' },
+              { name: 'Postgres', kind: 'tech' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([legit]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([
+        { name: 'astramem-local', kind: 'project' },
+        { name: 'Postgres', kind: 'tech' },
+      ]);
+    });
+
+    it('a relation naming an already-dropped junk entity is caught by the existing no-hallucination guard (cascading drop)', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const cascading = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'Alice mentioned #110',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [
+              { name: 'Alice', kind: 'actor' },
+              { name: '#110', kind: 'workitem' },
+            ],
+            relations: [
+              { subject: 'Alice', predicate: 'mentions', object: '#110' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([cascading]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([{ name: 'Alice', kind: 'actor' }]);
+      // The relation's object ("#110") no longer exists in entities[] once
+      // filterAtomEntities drops it, so filterAtomRelations' pre-existing
+      // no-hallucination guard drops the relation too — no separate check
+      // needed for this cascade.
+      expect(result.atoms[0].relations).toEqual([]);
+    });
+
+    it('entityDropCounts tallies one entry per drop reason', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const mixed = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'various junk and one real entity',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [
+              { name: '#110', kind: 'workitem' },
+              { name: '123', kind: 'other' },
+              { name: 'x', kind: 'other' },
+              { name: 'Postgres', kind: 'tech' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([mixed]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.entityDropCounts).toEqual({
+        bare_issue_ref: 1,
+        bare_number: 1,
+        too_short: 1,
+      });
+      expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+    });
+
+    it('entityDropCounts is {} when every entity name in the chunk survives filtering', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const clean = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact', text: 'astramem-local uses Postgres', importance: 0.6, confidence: 0.7,
+            entities: [{ name: 'astramem-local', kind: 'project' }, { name: 'Postgres', kind: 'tech' }],
+          },
+        ],
+      });
+      const llm = makeMockLLM([clean]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.entityDropCounts).toEqual({});
+    });
+  });
 });
 
 // FEAT-479 (D3 §3.2) AC-2/AC-3/AC-4: per-run prompt resolution. The old

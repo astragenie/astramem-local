@@ -47,9 +47,9 @@ describe('migration 023-entity-link-validity', () => {
     expect(invalidAtCol.notnull).toBe(0);
   });
 
-  it('DB max schema version is 33 after migration (023 FEAT-453 + 024 FEAT-455 + 025 FEAT-467 + 026 FEAT-458 S6 + 027 FEAT-481 + 028 FEAT-479 + 029 FEAT-481 SLICE-430 + 030 FEAT-485 + 031 FEAT-482 + 032 timezone-offset bugfix + 033 consolidation_judge_runs.judge_errors, all applied by migrate())', () => {
+  it('DB max schema version is 34 after migration (023 FEAT-453 + 024 FEAT-455 + 025 FEAT-467 + 026 FEAT-458 S6 + 027 FEAT-481 + 028 FEAT-479 + 029 FEAT-481 SLICE-430 + 030 FEAT-485 + 031 FEAT-482 + 032 timezone-offset bugfix + 033 consolidation_judge_runs.judge_errors + 034 issue #207 entity_name_drops, all applied by migrate())', () => {
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(33);
+    expect(row.v).toBe(34);
   });
 
   // AC-1: migration preserves existing links, generating a fresh id and
