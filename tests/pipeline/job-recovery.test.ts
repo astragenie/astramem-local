@@ -55,6 +55,41 @@ describe('JobRepo boot recovery + retention', () => {
     }
   });
 
+  // FEAT-482: `recoverOrphans` above deliberately leaves 'paused' alone (a
+  // budget pause is not a crash) — before `requeuePaused` existed, that left
+  // NO path back to 'pending' at all: `budget --reset` only zeroed the spend
+  // counter (src/cli/budget.ts), so a paused job stayed paused forever even
+  // after the cap that paused it was cleared. This proves the fix, and that
+  // it's job-kind-agnostic — a 'consolidate' job pauses/resumes exactly like
+  // a 'distill' job, since both go through the same jobs table state machine.
+  it('requeuePaused() moves every paused job back to pending, regardless of kind, and leaves attempts untouched', () => {
+    const distillId = repo.enqueue('distill', {});
+    setJob(db, distillId, 'paused', 1);
+    const consolidateId = repo.enqueue('consolidate', {});
+    setJob(db, consolidateId, 'paused', 0);
+
+    const n = repo.requeuePaused();
+
+    expect(n).toBe(2);
+    expect(repo.get(distillId)?.state).toBe('pending');
+    expect(repo.get(distillId)?.attempts).toBe(1); // attempts preserved, mirrors recoverOrphans
+    expect(repo.get(consolidateId)?.state).toBe('pending');
+  });
+
+  it('requeuePaused() does not touch pending/running/completed/failed/poison', () => {
+    for (const state of ['pending', 'running', 'completed', 'failed', 'poison']) {
+      const id = repo.enqueue('distill', {});
+      setJob(db, id, state, 0);
+      repo.requeuePaused();
+      expect(repo.get(id)?.state).toBe(state);
+    }
+  });
+
+  it('requeuePaused() returns 0 when no job is paused', () => {
+    repo.enqueue('distill', {});
+    expect(repo.requeuePaused()).toBe(0);
+  });
+
   it('purgeOld deletes old completed (7d) and old poison (30d), keeps recent', () => {
     const oldCompleted = repo.enqueue('distill', {});
     setJob(db, oldCompleted, 'completed', 1, Date.now() - 8 * DAY_MS);

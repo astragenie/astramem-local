@@ -26,6 +26,9 @@ import { describe, it, expect, beforeAll } from 'vitest';
 import { judgeContradiction, type JudgeableAtom } from '../../src/consolidate/contradiction-judge.js';
 import { getProviders } from '../../src/providers/index.js';
 import { defaultConfig } from '../../src/config/config.js';
+import { BudgetTracker } from '../../src/budget/tracker.js';
+import { openDb } from '../../src/storage/db.js';
+import { migrate } from '../../src/storage/migrate.js';
 
 const atom = (text: string): JudgeableAtom => ({ text, created_at: Date.now() });
 
@@ -67,6 +70,10 @@ const REAL_TRUE_DUPLICATES = [
 ];
 
 describe('contradiction judge — REAL model, REAL false-merge pairs from the live store', () => {
+  const db = openDb(':memory:');
+  migrate(db);
+  const budget = new BudgetTracker(db);
+
   for (const pair of REAL_FALSE_MERGES) {
     it(`does NOT say 'agrees': ${pair.name}`, async () => {
       if (!ollamaUp) {
@@ -75,7 +82,7 @@ describe('contradiction judge — REAL model, REAL false-merge pairs from the li
       }
       const { llm } = getProviders(defaultConfig());
       const judge = llm.extraction;
-      const v = await judgeContradiction(judge, atom(pair.a), atom(pair.b));
+      const v = await judgeContradiction(judge, budget, 10, atom(pair.a), atom(pair.b));
 
       // 'agrees' means "same fact" — the verdict that would let these merge and destroy
       // the one word carrying all the meaning (Colorado vs EU; telemetry vs learnings).
@@ -93,7 +100,7 @@ describe('contradiction judge — REAL model, REAL false-merge pairs from the li
       }
       const { llm } = getProviders(defaultConfig());
       const judge = llm.extraction;
-      const v = await judgeContradiction(judge, atom(pair.a), atom(pair.b));
+      const v = await judgeContradiction(judge, budget, 10, atom(pair.a), atom(pair.b));
 
       // THE CONTROL. An always-say-no judge would pass every test above and be useless.
       // A judge is only worth having if it can still say yes.

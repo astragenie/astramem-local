@@ -48,3 +48,31 @@ export class DeterministicError extends Error {
     return err instanceof Error && (err as { kind?: unknown }).kind === 'deterministic';
   }
 }
+
+/**
+ * Sentinel error a job handler throws when a `BudgetTracker` cap (see
+ * src/budget/tracker.ts) blocks a mid-job LLM call. The worker (worker.ts)
+ * checks for this AHEAD of the transient/deterministic classification above
+ * and moves the job to 'paused' instead of 'failed' — attempts are NOT
+ * incremented, so repeated daily-cap hits never poison the job, and it sits
+ * paused until the operator runs `astramem-local budget --reset` (which
+ * both zeroes today's spend AND requeues paused jobs — see
+ * `JobRepo.requeuePaused` / src/cli/budget.ts).
+ *
+ * Originally distill-only (named `DistillBudgetPausedError`); FEAT-482
+ * generalized it when the consolidate contradiction judge (src/consolidate/
+ * contradiction-judge.ts) was wired through the same BudgetTracker. Any job
+ * handler that calls `BudgetTracker.assertCanSpend` mid-handle should catch
+ * the resulting `BudgetExceeded` and rethrow this, the same way
+ * pipeline/handlers/distill.ts and pipeline/handlers/consolidate.ts do.
+ */
+export class BudgetPausedError extends Error {
+  constructor(budgetMessage: string) {
+    super(`BUDGET_PAUSED:${budgetMessage}`);
+    this.name = 'BudgetPausedError';
+  }
+
+  static is(err: unknown): err is BudgetPausedError {
+    return err instanceof BudgetPausedError;
+  }
+}

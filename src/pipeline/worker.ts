@@ -3,9 +3,8 @@ import type { Config } from '../config/config.js';
 import type { HandlerCtx } from './handler.js';
 import type { HandlerRegistry } from './registry.js';
 import { JobRepo } from './job-repo.js';
-import { DistillBudgetPausedError } from './handlers/distill.js';
 import { classifyError } from './failure-classifier.js';
-import { TransientError } from './errors.js';
+import { TransientError, BudgetPausedError } from './errors.js';
 import { logger, childLogger } from '../log/logger.js';
 
 const MAX_ATTEMPTS = 3;
@@ -58,7 +57,10 @@ export interface WorkerHandle {
  * Start the worker poll loop in-process.
  *
  * Runs `resolveWorkerConcurrency(config)` independent claim-execute lanes
- * (default 1 — byte-identical to the pre-concurrency single-loop worker).
+ * (config default 2 as of FEAT-482 — see `pipeline.concurrency`'s doc
+ * comment in config.ts; a lane count of 1 is byte-identical to the original
+ * pre-concurrency single-loop worker and remains the resolver's own
+ * fallback for a malformed config value).
  * Each lane runs the exact same tick loop below and all lanes share one
  * `JobRepo` bound to the same `db`, so lanes race on the SAME atomic
  * pending→running claim (`JobRepo.claimPending`) rather than each getting
@@ -180,7 +182,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
         // Do NOT call fail() — that would increment attempts and eventually
         // poison the job after repeated daily cap hits, preventing recovery
         // when the user runs `astra-memory budget --reset`.
-        if (DistillBudgetPausedError.is(err)) {
+        if (BudgetPausedError.is(err)) {
           const errMsg = err instanceof Error ? err.message : String(err);
           repo.setLastError(job.id, errMsg);
           repo.pause(job.id);

@@ -1,8 +1,9 @@
 /**
  * FEAT-456 SLICE-1: contradiction judge — a single-pair LLM classification
- * call wired into the pairwise scan in consolidate.ts. Pure, side-effect-
- * free: this module never touches the DB, never persists anything; the
- * caller (consolidate.ts) owns what happens with the verdict.
+ * call wired into the pairwise scan in consolidate.ts. Side-effect-free
+ * w.r.t. the DB (never touches it, never persists anything — the caller
+ * owns what happens with the verdict), but DOES record LLM spend via the
+ * injected BudgetTracker (FEAT-482) — see the budget check below.
  *
  * Reuses `ProviderSet.llm.extraction` (the same provider already used for
  * structured JSON extraction, stage 5) — no new `llm.judge` config surface
@@ -11,6 +12,9 @@
 
 import { z } from 'zod';
 import type { LLMProvider } from '../contracts/llm.js';
+import { BudgetTracker, BudgetExceeded } from '../budget/tracker.js';
+
+export { BudgetExceeded };
 
 /**
  * Stable marker embedded in the system prompt so mock-providers.ts's
@@ -56,22 +60,39 @@ export interface JudgeableAtom {
 
 export async function judgeContradiction(
   llm: LLMProvider,
+  budget: BudgetTracker,
+  capUsd: number,
   a: JudgeableAtom,
   b: JudgeableAtom,
   opts: { log?: (message: string) => void } = {},
 ): Promise<JudgeVerdict> {
   const log = opts.log ?? ((message: string) => console.warn(message));
+  const userContent = `Statement A (${a.created_at}): ${a.text}\nStatement B (${b.created_at}): ${b.text}`;
+
+  // Estimate + assert BEFORE the try block below, mirroring 04-compact.ts /
+  // 05-extract.ts. This must NOT be inside the try/catch: that catch treats
+  // every other failure (network error, unparsable response) as a soft
+  // "unrelated" fallback so one bad sample never blocks a consolidation run
+  // — but a budget cap hit must propagate all the way to the worker's
+  // job-pause path (see pipeline/handlers/consolidate.ts). Catching
+  // BudgetExceeded here too would silently turn "cap hit" into "every
+  // remaining pair looks unrelated", burning through the whole pairwise scan
+  // without ever pausing the job — the FEAT-482 incident in a new shape.
+  const promptChars = SYSTEM_PROMPT.length + userContent.length;
+  const estimateUsd = BudgetTracker.estimateUsd(promptChars, 0.000002, 0.000002);
+  budget.assertCanSpend(estimateUsd, capUsd);
+
   try {
     const result = await llm.chat(
       [
         { role: 'system', content: SYSTEM_PROMPT },
-        {
-          role: 'user',
-          content: `Statement A (${a.created_at}): ${a.text}\nStatement B (${b.created_at}): ${b.text}`,
-        },
+        { role: 'user', content: userContent },
       ],
       { temperature: 0, json: true },
     );
+    // Record actual cost even if the response below fails to parse — we were
+    // billed for the call regardless (mirrors 05-extract.ts).
+    budget.record(result.usage.usd);
     const parsed = JudgeVerdictSchema.safeParse(JSON.parse(result.text));
     if (!parsed.success) {
       log(`[contradiction-judge] unparsable judge response — treating as unrelated: ${parsed.error.message}`);
