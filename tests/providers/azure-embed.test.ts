@@ -163,7 +163,7 @@ describe('azure-embed', () => {
 
       const p = new AzureOpenAIEmbedProvider({ ...FAKE_CREDS });
       const res = await p.embed(['x']);
-      expect(res[0].length).toBe(1024);
+      expect(res[0]!.length).toBe(1024);
       expect(callCount).toBe(2);
     });
 
@@ -186,7 +186,7 @@ describe('azure-embed', () => {
       const res = await p.embed(['a', 'b', 'c']);
       // Should be sorted by index
       const expected0 = makeVec(1024, 0);
-      expect(res[0][0]).toBeCloseTo(expected0[0], 10);
+      expect(res[0]![0]).toBeCloseTo(expected0[0]!, 10);
     });
   });
 
@@ -217,7 +217,7 @@ describe('azure-embed', () => {
       if (!endpoint || !apiKey) return;
       const p = new AzureOpenAIEmbedProvider({ endpoint, deployment, apiKey });
       const vecs = await p.embed(['integration test']);
-      expect(vecs[0].length).toBe(1024);
+      expect(vecs[0]!.length).toBe(1024);
     }, 15_000);
   });
 });

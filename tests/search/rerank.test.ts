@@ -113,7 +113,7 @@ describe('HttpCrossEncoderProvider', () => {
     expect(scores.get('a')).toBe(0.95);
     expect(scores.get('b')).toBe(0.2);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0] as [string, RequestInit];
     expect(url).toBe('http://sidecar/rerank');
     const body = JSON.parse(init.body as string);
     expect(body).toEqual({ query: 'sqlite vec hybrid search', texts: candidates.map(c => c.text) });
@@ -142,7 +142,7 @@ describe('HttpCrossEncoderProvider', () => {
 
     await provider.score('query', candidates);
 
-    const [, init] = fetchImpl.mock.calls[0] as [string, RequestInit];
+    const [, init] = vi.mocked(fetchImpl).mock.calls[0] as [string, RequestInit];
     const body = JSON.parse(init.body as string);
     expect(body.model).toBe('bge-reranker-v2-m3');
   });

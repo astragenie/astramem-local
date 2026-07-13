@@ -119,18 +119,18 @@ describe('embedAndIndex stage', () => {
     });
 
     expect(results.length).toBe(1);
-    expect(results[0].created).toBe(true);
-    expect(typeof results[0].memoryId).toBe('string');
+    expect(results[0]!.created).toBe(true);
+    expect(typeof results[0]!.memoryId).toBe('string');
 
     // Verify row in memories table
-    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0].memoryId) as any;
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
     expect(row).toBeTruthy();
     expect(row.embedding_provider).toBe('ollama');
     expect(row.embedding_model).toBe('test-embed-model');
     expect(row.embedding_dim).toBe(1024);
 
     // Verify vec row exists
-    const vecRow = db.prepare('SELECT rowid FROM memories_vec WHERE rowid = (SELECT rowid FROM memories WHERE id = ?)').get(results[0].memoryId) as any;
+    const vecRow = db.prepare('SELECT rowid FROM memories_vec WHERE rowid = (SELECT rowid FROM memories WHERE id = ?)').get(results[0]!.memoryId) as any;
     expect(vecRow).toBeTruthy();
   });
 
@@ -141,9 +141,9 @@ describe('embedAndIndex stage', () => {
     const r1 = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
     const r2 = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    expect(r1[0].created).toBe(true);
-    expect(r2[0].created).toBe(false);
-    expect(r1[0].memoryId).toBe(r2[0].memoryId);
+    expect(r1[0]!.created).toBe(true);
+    expect(r2[0]!.created).toBe(false);
+    expect(r1[0]!.memoryId).toBe(r2[0]!.memoryId);
   });
 
   it('handles multiple memories in a batch', async () => {
@@ -244,7 +244,7 @@ describe('embedAndIndex stage', () => {
       sourceHash: 'src123',
     });
 
-    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0].memoryId) as any;
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
     expect(row.session_id).toBe('sess-1');
     expect(row.repo).toBe('my-repo');
     expect(row.agent).toBe('claude-code');
@@ -259,7 +259,7 @@ describe('embedAndIndex stage', () => {
       sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
       captureSource: 'auto_capture',
     });
-    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0].memoryId) as { capture_source: string | null };
+    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0]!.memoryId) as { capture_source: string | null };
     expect(row.capture_source).toBe('auto_capture');
   });
 
@@ -270,7 +270,7 @@ describe('embedAndIndex stage', () => {
       db, embed,
       sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
     });
-    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0].memoryId) as { capture_source: string | null };
+    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0]!.memoryId) as { capture_source: string | null };
     expect(row.capture_source).toBeNull();
   });
 
@@ -285,10 +285,10 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const linked = new EntityRepo(db).listForMemory(results[0].memoryId);
+    const linked = new EntityRepo(db).listForMemory(results[0]!.memoryId);
     expect(linked).toHaveLength(1);
-    expect(linked[0].name).toBe('postgres'); // AC-9 normalized
-    expect(linked[0].kind).toBe('tech');
+    expect(linked[0]!.name).toBe('postgres'); // AC-9 normalized
+    expect(linked[0]!.kind).toBe('tech');
   });
 
   it('a memory with no entities creates no memory_entities rows', async () => {
@@ -297,7 +297,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const linked = new EntityRepo(db).listForMemory(results[0].memoryId);
+    const linked = new EntityRepo(db).listForMemory(results[0]!.memoryId);
     expect(linked).toEqual([]);
   });
 
@@ -326,7 +326,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0]!.memoryId) as
       { valid_at: number | null; invalid_at: number | null };
     expect(row.valid_at).toBe(Date.parse('2026-01-01T00:00:00.000Z'));
     expect(row.invalid_at).toBe(Date.parse('2026-03-01T00:00:00.000Z'));
@@ -345,7 +345,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0]!.memoryId) as
       { valid_at: number | null; invalid_at: number | null };
     expect(row.valid_at).toBeNull();
     expect(row.invalid_at).toBeNull();
@@ -361,7 +361,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0]!.memoryId) as
       { valid_at: number | null; invalid_at: number | null };
     expect(row.valid_at).toBeNull();
     expect(row.invalid_at).toBeNull();
@@ -405,9 +405,9 @@ describe('embedAndIndex stage', () => {
 
       expect(gatedOutCounter.count).toBe(6);
       expect(results).toHaveLength(1);
-      expect(typeof results[0].memoryId).toBe('string');
+      expect(typeof results[0]!.memoryId).toBe('string');
 
-      const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(results[0].memoryId) as any;
+      const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
       expect(row.text).toContain('Chose PostgreSQL over MongoDB');
 
       // Every gated atom's row must be absent from the store entirely.
@@ -462,7 +462,7 @@ describe('embedAndIndex stage', () => {
         db: dbOff, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
         durabilityGateMode: 'off',
       });
-      const offRow = dbOff.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(offResults[0].memoryId) as any;
+      const offRow = dbOff.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(offResults[0]!.memoryId) as any;
 
       const dbStrict = openDb(':memory:');
       migrate(dbStrict);
@@ -470,7 +470,7 @@ describe('embedAndIndex stage', () => {
         db: dbStrict, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
         durabilityGateMode: 'strict',
       });
-      const strictRow = dbStrict.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(strictResults[0].memoryId) as any;
+      const strictRow = dbStrict.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(strictResults[0]!.memoryId) as any;
 
       expect(strictRow.normalized_text).toBe(offRow.normalized_text);
       expect(strictRow.hash).toBe(offRow.hash);
@@ -503,8 +503,8 @@ describe('embedAndIndex stage', () => {
 
       expect(results).toHaveLength(0); // gated, never persisted
       expect(warnCalls).toHaveLength(1);
-      expect(warnCalls[0].fields.gatedReason).toBe('bare_todo');
-      const loggedText = warnCalls[0].fields.text as string;
+      expect(warnCalls[0]!.fields.gatedReason).toBe('bare_todo');
+      const loggedText = warnCalls[0]!.fields.text as string;
       expect(loggedText).not.toContain('TESTSECRET-99999');
       expect(loggedText).toContain('[REDACTED:custom:');
     });
@@ -521,7 +521,7 @@ describe('embedAndIndex stage', () => {
       });
 
       expect(warnCalls).toHaveLength(1);
-      expect(warnCalls[0].fields.gatedReason).toBe('bare_todo');
+      expect(warnCalls[0]!.fields.gatedReason).toBe('bare_todo');
     });
 
     // AC-4: gatedOutCounter is the observability out-param the caller

@@ -145,7 +145,8 @@ describe('ollama-embed', () => {
 
       const p = new OllamaEmbedProvider({ model: 'test-model' });
       const res = await p.embed(['x']);
-      expect(res[0].length).toBe(1024);
+      expect(res.length).toBe(1);
+      expect(res[0]!.length).toBe(1024);
       expect(callCount).toBe(2);
     });
   });
@@ -183,7 +184,8 @@ describe('ollama-embed', () => {
     it('actually calls ollama embeddings', async () => {
       const p = new OllamaEmbedProvider({ model: 'mxbai-embed-large' });
       const vecs = await p.embed(['hello from integration test']);
-      expect(vecs[0].length).toBe(1024);
+      expect(vecs.length).toBe(1);
+      expect(vecs[0]!.length).toBe(1024);
     }, 60_000);
   });
 });

@@ -226,8 +226,8 @@ describe('fuseScores wire-contract invariant (memory-plugin#8)', () => {
       NOW,
     );
     expect(hits).toHaveLength(1);
-    expect(hits[0].score).toBeLessThanOrEqual(1);
-    expect(hits[0].score).toBeGreaterThan(0);
+    expect(hits[0]!.score).toBeLessThanOrEqual(1);
+    expect(hits[0]!.score).toBeGreaterThan(0);
   });
 
   it('fuseScores output is hard-capped at 1 even if a component regresses past its bound', () => {

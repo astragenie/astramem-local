@@ -156,7 +156,7 @@ describe('Plugin flow E2E — ingest → distill → search', () => {
       // ── 4. Assert at least one decision memory mentions sqlite-vec ──────────
 
       expect(hits.length).toBeGreaterThan(0);
-      const hit = hits[0];
+      const hit = hits[0]!;
       expect(hit.type).toBe('decision');
       expect(hit.text.toLowerCase()).toContain('sqlite-vec');
       expect(hit.score).toBeGreaterThan(0);
@@ -183,15 +183,15 @@ describe('Plugin flow E2E — ingest → distill → search', () => {
     const parsed = JSON.parse(result.text) as { atoms: Array<{ type: string; text: string }> };
     expect(Array.isArray(parsed.atoms)).toBe(true);
     expect(parsed.atoms.length).toBeGreaterThan(0);
-    expect(parsed.atoms[0].type).toBe('decision');
-    expect(parsed.atoms[0].text.toLowerCase()).toContain('sqlite-vec');
+    expect(parsed.atoms[0]!.type).toBe('decision');
+    expect(parsed.atoms[0]!.text.toLowerCase()).toContain('sqlite-vec');
 
     // Embed provider satisfies the contract
     const embed = providers.embed;
     expect(embed.dim).toBe(1024);
     const vecs = await embed.embed(['use sqlite-vec for v1']);
     expect(vecs.length).toBe(1);
-    expect(vecs[0].length).toBe(1024);
+    expect(vecs[0]!.length).toBe(1024);
     // Same text → same vector (deterministic)
     const vecs2 = await embed.embed(['use sqlite-vec for v1']);
     expect(vecs2[0]).toEqual(vecs[0]);
