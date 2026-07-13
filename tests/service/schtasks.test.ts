@@ -345,6 +345,56 @@ describe('SchtasksAdapter', () => {
       expect(s.installed).toBe(false);
       expect(s.running).toBe(false);
     });
+
+    // B3 review (2026-07-13): status() used to report `installed: false`
+    // on ANY query failure, INCLUDING a timeout — for a task that could
+    // have been genuinely installed and simply slow to answer. That is a
+    // confident, wrong, actionable instruction ("Service: not installed.
+    // Run 'astramem-local service install' to install.") produced by a
+    // timeout (ADR-015 rule 4) — the worst instance in the sweep, since
+    // the other two adapters at least kept `installed` correct. These pin
+    // the fix.
+    it('a timeout on the schtasks query reports inconclusive, NEVER a confident "not installed"', async () => {
+      execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+        const err = Object.assign(new Error('Command failed: schtasks /query /tn "AstraMemoryD" /fo LIST\nETIMEDOUT'), {
+          signal: 'SIGTERM',
+          code: null,
+        });
+        cb(err, '', '');
+      });
+      fsMock.existsSync.mockReturnValue(false); // no startup-shortcut fallback either
+
+      const s = await adapter.status();
+      expect(s.inconclusive).toBe(true);
+      // The pre-fix bug, pinned directly: must NEVER be a confident false.
+      expect(s.installed).not.toBe(false);
+    });
+
+    it('schtasks binary missing (ENOENT) also reports inconclusive, never "not installed"', async () => {
+      execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+        const err = Object.assign(new Error('spawn schtasks ENOENT'), { code: 'ENOENT', signal: null });
+        cb(err, '', '');
+      });
+      fsMock.existsSync.mockReturnValue(false);
+
+      const s = await adapter.status();
+      expect(s.inconclusive).toBe(true);
+    });
+
+    it('a genuine "task not found" (schtasks completed, exit 1, no signal) is still reported as a real not-installed, not inconclusive', async () => {
+      execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+        const err = Object.assign(new Error('ERROR: The system cannot find the file specified'), {
+          code: 1,
+          signal: null,
+        });
+        cb(err, '', 'ERROR: The system cannot find the file specified');
+      });
+      fsMock.existsSync.mockReturnValue(false);
+
+      const s = await adapter.status();
+      expect(s.inconclusive).toBeFalsy();
+      expect(s.installed).toBe(false);
+    });
   });
 
   // ---------------------------------------------------------------------------

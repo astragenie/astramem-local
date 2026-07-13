@@ -180,12 +180,16 @@ function runCaptured(cmd: string, args: string[], cwd: string, timeoutMs = GIT_T
   const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutMs });
   const stderrParts = [res.stderr ?? ''];
   if (res.error) stderrParts.push(res.error.message);
-  // spawnSync's timeout kill leaves `status: null` and `signal: 'SIGTERM'`
-  // with NO res.error and often empty stderr — indistinguishable from "the
-  // command ran, printed nothing, and was killed by something else" unless
-  // this is called out explicitly. Per ADR-015: a timeout must never look
-  // like a silent, signal-free zero.
-  if (res.signal && !res.error) {
+  // Empirically verified on this runtime (Node on this box): spawnSync's
+  // own timeout kill sets BOTH `res.error` (message contains 'ETIMEDOUT')
+  // AND `res.signal` ('SIGTERM') together — never signal alone. An earlier
+  // version of this branch checked `res.signal && !res.error`, which can
+  // never fire on this runtime and was dead code (caught in review). The
+  // raw `res.error.message` already says "...ETIMEDOUT", but it doesn't
+  // name which of this file's several timeoutMs values was in effect —
+  // this note adds that, matching git-hooks-activate.ts's `error && signal`
+  // condition for the same shape.
+  if (res.error && res.signal) {
     stderrParts.push(`[runCaptured] process received signal ${res.signal} (likely killed by the ${timeoutMs}ms timeout)`);
   }
   return {

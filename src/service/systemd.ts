@@ -122,13 +122,45 @@ function buildWatchdogTimer(intervalSec: number): string {
   ].join('\n');
 }
 
+/** Rejection shape from runCmd() — carries the ORIGINAL exec() error's
+ *  `.code`/`.signal` alongside whatever the command printed before it
+ *  failed, so callers can tell "the command ran and reported a real
+ *  negative state" apart from "we could not run/finish the query at all". */
+export interface RunCmdError extends Error {
+  code?: string | number | null;
+  signal?: NodeJS.Signals | null;
+  stdout?: string;
+}
+
 function runCmd(cmd: string): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(cmd, { timeout: 10_000 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`Command failed: ${cmd}\n${stderr || err.message}`));
-      else resolve(stdout.trim());
+      if (err) {
+        const wrapped: RunCmdError = new Error(`Command failed: ${cmd}\n${stderr || err.message}`);
+        wrapped.code = err.code;
+        wrapped.signal = err.signal;
+        wrapped.stdout = stdout;
+        reject(wrapped);
+      } else {
+        resolve(stdout.trim());
+      }
     });
   });
+}
+
+/**
+ * True when a runCmd() rejection means "we could not determine the
+ * answer" (our own timeout killed it, or `systemctl` itself is missing)
+ * rather than "the command ran to completion and reported a real
+ * non-'active' state" (e.g. `systemctl is-active` exits non-zero for
+ * inactive/failed/activating — a genuine answer, not a query failure).
+ * Collapsing these two was the exact bug this check exists to fix: a
+ * transient/timeout failure used to render identically to a confirmed
+ * "not running".
+ */
+function isInconclusiveFailure(err: unknown): boolean {
+  const e = err as RunCmdError;
+  return e?.signal != null || e?.code === 'ENOENT';
 }
 
 export class SystemdAdapter implements ServiceAdapter {
@@ -167,8 +199,21 @@ export class SystemdAdapter implements ServiceAdapter {
       const out = await runCmd(`systemctl --user is-active ${SERVICE_NAME}`);
       const running = out === 'active';
       return { installed, running, detail: out };
-    } catch {
-      return { installed, running: false, detail: 'inactive' };
+    } catch (err) {
+      if (isInconclusiveFailure(err)) {
+        return {
+          installed,
+          running: false,
+          inconclusive: true,
+          detail: `could not determine running state (systemctl query failed): ${(err as RunCmdError).message}`,
+        };
+      }
+      // `is-active` exits non-zero for every state OTHER than 'active'
+      // (inactive, failed, activating, ...) but still PRINTS that state —
+      // a genuine answer, not a query failure. Report it instead of a
+      // hardcoded 'inactive' so 'failed'/'activating' aren't misreported.
+      const reported = (err as RunCmdError).stdout?.trim();
+      return { installed, running: false, detail: reported || 'inactive' };
     }
   }
 

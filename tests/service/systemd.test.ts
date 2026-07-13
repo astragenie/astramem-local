@@ -109,6 +109,59 @@ describe('SystemdAdapter', () => {
     expect(s.installed).toBe(false);
   });
 
+  // B3 review (2026-07-13): status() used to collapse EVERY is-active
+  // failure (timeout, missing binary, DBus down, or a genuine 'inactive')
+  // into a hardcoded `running: false, detail: 'inactive'` — a query
+  // failure and a confirmed-inactive service were the same observable
+  // state. These pin the fix.
+  it('a timeout on the is-active query reports inconclusive, NOT a confident "inactive"', async () => {
+    fsMock.existsSync.mockReturnValue(true);
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      const err = Object.assign(new Error('Command failed: systemctl --user is-active astra-memoryd\nETIMEDOUT'), {
+        signal: 'SIGTERM',
+        code: null,
+      });
+      cb(err, '', '');
+    });
+
+    const s = await adapter.status();
+    expect(s.installed).toBe(true);
+    expect(s.inconclusive).toBe(true);
+    expect(s.running).toBe(false);
+    // Must never claim the pre-fix hardcoded "inactive" — that would be
+    // indistinguishable from a real query success.
+    expect(s.detail).not.toBe('inactive');
+  });
+
+  it('systemctl binary missing (ENOENT) also reports inconclusive', async () => {
+    fsMock.existsSync.mockReturnValue(true);
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      const err = Object.assign(new Error('spawn systemctl ENOENT'), { code: 'ENOENT', signal: null });
+      cb(err, '', '');
+    });
+
+    const s = await adapter.status();
+    expect(s.inconclusive).toBe(true);
+  });
+
+  it('a genuine non-active state (systemctl completed, exited non-zero) is reported as a real "inactive", not inconclusive', async () => {
+    fsMock.existsSync.mockReturnValue(true);
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      // is-active exits non-zero for 'inactive' but still prints it — no
+      // signal, no ENOENT: the command ran to completion and answered.
+      const err = Object.assign(new Error('Command failed: systemctl --user is-active astra-memoryd'), {
+        code: 3,
+        signal: null,
+      });
+      cb(err, 'inactive', '');
+    });
+
+    const s = await adapter.status();
+    expect(s.inconclusive).toBeFalsy();
+    expect(s.running).toBe(false);
+    expect(s.detail).toBe('inactive');
+  });
+
   // FEAT-443 SLICE-2 — hang-watchdog probe timer
   describe('watchdog timer', () => {
     it('installWatchdogTimer writes a oneshot service + OnUnitActiveSec timer', async () => {

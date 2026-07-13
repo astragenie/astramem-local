@@ -107,7 +107,16 @@ export async function serviceCommand(args: string[]): Promise<void> {
 
     case 'status': {
       const status = await adapter.status();
-      if (status.installed) {
+      if (status.inconclusive) {
+        // The OS query itself failed (timeout, missing scheduler binary,
+        // DBus/launchd unavailable) — `installed`/`running` below are NOT
+        // confirmed. Printing "not installed" here would be a confident,
+        // wrong, actionable instruction produced by a timeout (ADR-015
+        // rule 4) — say plainly that the query failed instead.
+        console.log('Service: could not determine (status query failed — this is NOT confirmation the service is uninstalled or stopped)');
+        if (status.detail) console.log(`  Detail: ${status.detail}`);
+        console.log('  Try again, or check manually via the OS scheduler directly.');
+      } else if (status.installed) {
         const state = status.running ? 'running' : 'stopped';
         console.log(`Service: installed, ${state}${status.pid ? ` (pid ${status.pid})` : ''}`);
         if (status.detail) console.log(`  Detail: ${status.detail}`);
