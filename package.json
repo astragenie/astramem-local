@@ -1,7 +1,7 @@
 {
   "name": "astramem-local",
   "version": "0.15.1",
-  "description": "Local-first, encrypted memory daemon for AI coding agents — hybrid retrieval, provenance receipts, MCP tools, SQLCipher at rest",
+  "description": "Local-first, encrypted memory daemon for AI coding agents \u2014 hybrid retrieval, provenance receipts, MCP tools, SQLCipher at rest",
   "keywords": [
     "mcp",
     "claude-code",
@@ -23,7 +23,8 @@
     "migrations",
     "README.md",
     "CHANGELOG.md",
-    "LICENSE"
+    "LICENSE",
+    "bun.lock"
   ],
   "scripts": {
     "build": "tsc -p .",
