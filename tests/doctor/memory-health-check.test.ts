@@ -17,6 +17,7 @@ import { getChecks } from '../../src/doctor/checks.js';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
+import { JobRepo } from '../../src/pipeline/job-repo.js';
 
 function findCheck(checks: ReturnType<typeof getChecks>, name: string) {
   const c = checks.find(c => c.name === name);
@@ -119,5 +120,74 @@ describe('doctor "Memory health" check (FEAT-444 AC-1)', () => {
     verifyDb.close();
 
     expect(after).toEqual(before);
+  });
+
+  // A2-lite (ADR-015 rule 6/2): checkMemoryHealth previously had exactly one
+  // return path, {ok: true} — a 100% poison rate reported "memory health:
+  // OK". These four cases prove the new branch goes red on a genuine
+  // failure rate AND stays green both below the volume floor and below the
+  // rate floor — the "cries wolf on a fresh/quiet install" failure mode the
+  // MEANINGFUL_USAGE_THRESHOLD gate exists to prevent.
+
+  /** Seeds `n` distill jobs, each a distinct session, `poisonCount` of them
+   *  permanently poisoned and the rest completed. */
+  function seedDistillSessions(db: ReturnType<typeof openDb>, n: number, poisonCount: number): void {
+    const repo = new JobRepo(db);
+    for (let i = 0; i < n; i++) {
+      const id = repo.enqueue('distill', { session_id: `s${i}` });
+      if (i < poisonCount) repo.markPoison(id);
+      else repo.complete(id);
+    }
+  }
+
+  it('high poison rate with enough volume — RED (ok:false), states the K-of-N denominator', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    // 20 terminal sessions (== MEANINGFUL_USAGE_THRESHOLD), 6 poisoned = 30%,
+    // above the 25% POISON_RATE_ALARM floor.
+    seedDistillSessions(db, 20, 6);
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('6 of 20 terminal distill sessions');
+    expect(result.message).toContain('30.0%');
+  });
+
+  it('same 100% poison rate but below the volume floor — stays GREEN (no cry-wolf on a quiet install)', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    // Only 3 terminal sessions, all poisoned — below MEANINGFUL_USAGE_THRESHOLD
+    // (20), so there isn't enough volume yet for a rate to mean anything.
+    seedDistillSessions(db, 3, 3);
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+  });
+
+  it('plenty of volume but a low poison rate — stays GREEN (occasional failures are normal noise)', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    // 25 terminal sessions, 2 poisoned = 8%, below the 25% alarm floor.
+    seedDistillSessions(db, 25, 2);
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+  });
+
+  it('genuinely quiet/empty install (0 distill activity at all) — stays GREEN', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('no data yet');
   });
 });

@@ -42,7 +42,7 @@ import { spoolQuarantineDir, readSpoolStats, DEFAULT_QUARANTINE_TTL_MS } from '.
 import { totalEntityGuardDrops } from '../storage/entity-guard-log.js';
 import { classifyJunkEntityName } from '../distill/stages/05-extract.js';
 import { latestConsolidationJudgeRun } from '../storage/consolidation-judge-log.js';
-import { buildMemoryHealthFull, buildMemoryHealthCheap } from '../server/queries/memory-health.js';
+import { buildMemoryHealthFull, buildMemoryHealthCheap, distillSessionStats } from '../server/queries/memory-health.js';
 import type { DB } from '../storage/db.js';
 import type { DurabilityGateMode } from '../distill/durability-gate.js';
 import type { ExtractProfile } from '../distill/prompts/extract.js';
@@ -494,6 +494,19 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
  */
 const MEANINGFUL_USAGE_THRESHOLD = 20;
 
+/**
+ * Poison-rate alarm floor for checkMemoryHealth's ok:false branch (ADR-015
+ * rule 6/2, A2-lite). A handful of permanently-failed distill sessions out
+ * of a meaningful sample is normal noise (one genuinely garbled transcript,
+ * a one-off OOM); a QUARTER of every terminal session poisoning is not — it
+ * is the same shape as the #200 entity-extraction incident (broken
+ * model/config, not broken input). Gated behind MEANINGFUL_USAGE_THRESHOLD
+ * terminal sessions (see distillSessionStats, src/server/queries/
+ * memory-health.ts) so a fresh install's first one or two poison jobs never
+ * trips this before there is enough volume for a rate to mean anything.
+ */
+const POISON_RATE_ALARM = 0.25;
+
 function checkRedaction(dataDir: string, enabled: boolean, encryptionEnabled: boolean): Check {
   return {
     name: 'Secret redaction',
@@ -710,6 +723,33 @@ function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): Check {
         }
         db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const report = buildMemoryHealthFull(db);
+        const distill = distillSessionStats(db);
+
+        // ADR-015 rule 6/2: check the FAILURE RATE before the "0 active =
+        // quiet week" short-circuit below. A pipeline that poisons every
+        // session never produces an active memory — gating this behind
+        // activeCount > 0 would make the exact failure this branch exists
+        // to catch report as "no data yet" instead of red. This is the
+        // fix for the counterexample ADR-015 names by name: checkMemoryHealth
+        // previously had exactly one return path, {ok: true}.
+        if (
+          distill.terminal >= MEANINGFUL_USAGE_THRESHOLD &&
+          distill.poisonRate !== null &&
+          distill.poisonRate >= POISON_RATE_ALARM
+        ) {
+          return {
+            ok: false,
+            message:
+              `memory health: ${distill.poison} of ${distill.terminal} terminal distill sessions ` +
+              `(${(distill.poisonRate * 100).toFixed(1)}%) permanently poisoned — at/above the ` +
+              `${(POISON_RATE_ALARM * 100).toFixed(0)}% alarm floor. A well-formed but broken ` +
+              `extraction pipeline looks identical to a run of genuinely bad transcripts without ` +
+              `this counter.`,
+            fix:
+              'Run `astramem-local doctor` for the LLM chat probe result and `astramem-local queue` to ' +
+              'inspect poisoned sessions — a broken model/config produces this shape, not bad transcripts alone.',
+          };
+        }
 
         if (report.activeCount === 0) {
           return { ok: true, message: 'memory health: no data yet (0 active memories)' };
@@ -728,7 +768,8 @@ function checkMemoryHealth(dataDir: string, encryptionEnabled: boolean): Check {
           message:
             `memory health: ${report.activeCount} active / ${report.archivedCount} archived — ` +
             `usefulness coverage ${coverageStr}, correction rate ${correctionStr}, ` +
-            `${report.poisonDistillSessions} poison-distill session(s), staleness [${staleTop}]`,
+            `${report.poisonDistillSessions} poison-distill session(s) (${distill.poison}/${distill.terminal} ` +
+            `terminal), staleness [${staleTop}]`,
         };
       } catch (err) {
         // The query itself failed — did not verify memory health.

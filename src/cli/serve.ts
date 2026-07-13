@@ -28,6 +28,9 @@ import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
 import { MemoryRepo } from '../storage/memories.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { drainIngestSpool } from '../ingest/spool-drain.js';
+import type { DoctorCheckOpts } from '../doctor/checks.js';
+import { startFrequentDoctorSchedule, runFullDoctorChecks, type DoctorScheduleResult } from '../doctor/schedule.js';
+import { isLoopbackHost } from '../server/lib/network.js';
 
 export interface ServeOpts {
   port?: number;
@@ -270,6 +273,66 @@ export async function serve(opts: ServeOpts): Promise<void> {
     stopPreflight = startEmbedPreflight(providers.embed as EmbedProvider, healthState, schemaDim);
   }
 
+  // Unattended doctor scheduling (A2-lite, ADR-015): src/doctor/schedule.ts's
+  // two-tier split — cheap DB-only checks on a frequent cadence; the LLM
+  // chat probe + embed probe piggyback the EXISTING 24h cleanup tick below
+  // (see the `enqueueCleanup` closure) rather than a new interval — a tight
+  // interval on a real LLM call is a self-DoS on a shared GPU and, on a
+  // metered endpoint, the FEAT-482 incident class (see CLAUDE.md). Skipped
+  // under the :memory: dev/test datadir, same convention every other
+  // background timer below follows.
+  const codexSubscriptionInUse =
+    cfg.llm.compaction.provider === 'codex-subscription' || cfg.llm.extraction.provider === 'codex-subscription';
+  const baseDoctorOpts: DoctorCheckOpts = {
+    port: actualPort,
+    dataDir,
+    redactionEnabled: cfg.security.redaction.enabled,
+    encryptionEnabled: cfg.security.encryption.enabled,
+    durabilityGateMode: cfg.distill.durabilityGate,
+    extractProfile: cfg.distill.extractProfile,
+    dailyBudgetUsd: cfg.budget.daily_usd,
+    codexSubscriptionInUse,
+    autoCaptureEnabled: cfg.capture.autoCapture.enabled,
+    proxyEnabled: cfg.proxy.enabled,
+    proxyCaptureEnabled: cfg.proxy.capture.enabled,
+    // Mirrors buildApp's devNoAuthActive — a non-loopback bind refuses
+    // devNoAuth at boot, so the scheduled run must apply the same gate
+    // rather than reporting the raw config value (same reasoning as
+    // cli/doctor.ts's on-demand construction of this option).
+    devNoAuthActive: cfg.auth.devNoAuth === true && isLoopbackHost(cfg.network.host),
+  };
+  // Full-tier opts add the real providers — used ONLY on the 24h piggyback
+  // below, never on the frequent tick. Safe under ASTRA_MEMORY_MOCK_PROVIDERS
+  // (the mock LLM/embed providers never touch Ollama).
+  const fullDoctorOpts: DoctorCheckOpts = {
+    ...baseDoctorOpts,
+    llmProviders: { compaction: providers.llm.compaction, extraction: providers.llm.extraction },
+    embedProvider: providers.embed,
+  };
+  const handleDoctorResult = (result: DoctorScheduleResult): void => {
+    healthState.doctor = {
+      lastRunAt: result.ranAt,
+      lastTier: result.tier,
+      lastFailCount: result.failCount,
+      lastInconclusiveCount: result.inconclusiveCount,
+      lastFailNames: result.results.filter(r => !r.ok).map(r => r.name),
+    };
+    // ADR-015: a scheduled red that only reaches a log file nobody tails is
+    // the same failure this ADR exists to kill — but it must ALSO land in a
+    // structured, greppable log line for anyone who IS watching, not only
+    // /health (healthState.doctor above). Both, not either.
+    if (result.failCount > 0) {
+      console.warn(
+        `${ts()} [astramem-local] doctor (${result.tier}) FAILED ${result.failCount}/${result.results.length}: ` +
+        result.results.filter(r => !r.ok).map(r => r.name).join(', '),
+      );
+    }
+  };
+  let stopFrequentDoctor: (() => void) | null = null;
+  if (dataDir !== ':memory:') {
+    stopFrequentDoctor = startFrequentDoctorSchedule(baseDoctorOpts, handleDoctorResult);
+  }
+
   // Consolidation cadence: the `consolidate` handler existed since Wave 4b
   // but nothing ever enqueued it — near-duplicate memories accumulated until
   // someone called POST /consolidation/run by hand. The pass is deterministic
@@ -306,6 +369,12 @@ export async function serve(opts: ServeOpts): Promise<void> {
       } catch (err) {
         console.warn(`${ts()} [astramem-local] cleanup enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
       }
+      // Full-tier doctor pass (LLM chat probe + embed probe): piggybacked on
+      // THIS SAME 24h timer deliberately — see the doctor-scheduling comment
+      // above. Independent of the cleanup-enqueue outcome above, so neither
+      // failing blocks the other. Fire-and-forget: runFullDoctorChecks never
+      // throws (runChecks() catches per-check errors internally).
+      void runFullDoctorChecks(fullDoctorOpts, handleDoctorResult).catch(() => {});
     };
     enqueueCleanup(); // boot pass — catches anything a downtime window skipped
     cleanupTimer = setInterval(enqueueCleanup, CLEANUP_INTERVAL_MS);
@@ -362,6 +431,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const shutdown = async () => {
     try {
       stopPreflight?.();
+      stopFrequentDoctor?.();
       if (walTimer) clearInterval(walTimer);
       if (consolidateTimer) clearInterval(consolidateTimer);
       if (cleanupTimer) clearInterval(cleanupTimer);
