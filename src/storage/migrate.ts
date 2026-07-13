@@ -171,12 +171,47 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
     'UPDATE schema_version SET filename = ?, content_hash = ? WHERE version = ?',
   );
 
+  /**
+   * Hash a migration file's LOGICAL content — line endings normalized to LF.
+   *
+   * NOT `contentHash(raw)`. Hashing raw bytes made this guard fire on a file
+   * that had not changed at all:
+   *
+   *   Migration 27 was applied as 'entity-relations' (hash 9e35fb0024e3),
+   *   but 27 on disk is now 'entity-relations' (hash 4b5e9ced33da).
+   *   A migration was renumbered or replaced after being applied.
+   *
+   * It was not. Git's `core.autocrlf=true` (the Windows default, and set on the
+   * maintainer's box) checks the same committed file out as CRLF in one working
+   * tree and LF in another. Measured on 027-entity-relations.sql: 4593 bytes /
+   * 0 CR in one checkout, 4674 bytes / 81 CR in another, `git status` clean in
+   * both, and identical SHA once the CRs are stripped. Same file. Same commit.
+   * Different bytes.
+   *
+   * That made this a REFUSE-TO-BOOT bug: a daemon whose hashes were recorded
+   * from an LF checkout, upgraded to a release materialized from a CRLF
+   * checkout, halts at startup and tells the operator to "reconcile
+   * schema_version by hand" over a difference that does not exist.
+   *
+   * Normalizing is safe *for this purpose*: SQLite does not care about line
+   * endings, so two migration files differing only in CR bytes apply the exact
+   * same schema. The guard exists to catch a migration being RENUMBERED or
+   * REPLACED after it was applied — a semantic change — and a CR byte is not
+   * one. Every real tampering case still trips it.
+   *
+   * Deliberately a LOCAL helper, not a change to `contentHash`: that function
+   * also hashes MEMORY text for dedup (astramem-local#84), where the raw bytes
+   * are the contract. Normalizing there would silently re-key every existing
+   * memory and break dedup across the whole store.
+   */
+  const migrationFileHash = (raw: string): string => contentHash(raw.replace(/\r\n/g, '\n'));
+
   const verifyAndBackfill = db.transaction(() => {
     for (const row of versionRows) {
       const diskFile = fileByVersion.get(row.version);
       if (!diskFile) continue; // no file on disk for this version anymore — nothing to check against
 
-      const diskHash = contentHash(readFileSync(join(MIGRATIONS_DIR, diskFile), 'utf8'));
+      const diskHash = migrationFileHash(readFileSync(join(MIGRATIONS_DIR, diskFile), 'utf8'));
 
       if (row.content_hash == null) {
         backfillStmt.run(diskFile, diskHash, row.version);
@@ -184,6 +219,25 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
       }
 
       if (row.content_hash !== diskHash) {
+        // SELF-HEAL a legacy RAW-byte hash before deciding this is tampering.
+        //
+        // Rows written by the original #212 guard hashed raw bytes. On a CRLF
+        // checkout that recorded a CRLF hash; normalizing (above) would now
+        // reject those DBs at boot — flipping the bug onto the other half of
+        // users instead of fixing it. So: if the stored hash matches this
+        // file's RAW bytes, the only difference is line endings, the schema is
+        // provably identical, and there is nothing to warn about. Rewrite the
+        // row to the normalized hash and move on.
+        //
+        // This narrows over time (every boot upgrades one row) and cannot mask
+        // real tampering: a renumbered or edited migration matches NEITHER the
+        // raw nor the normalized hash, and still throws below.
+        const rawHash = contentHash(readFileSync(join(MIGRATIONS_DIR, diskFile), 'utf8'));
+        if (row.content_hash === rawHash) {
+          backfillStmt.run(diskFile, diskHash, row.version);
+          continue;
+        }
+
         throw new Error(
           `Migration ${row.version} was applied as '${migrationSlug(row.filename ?? '(unknown)')}' ` +
           `(hash ${row.content_hash.slice(0, 12)}), but ${row.version} on disk is now ` +
