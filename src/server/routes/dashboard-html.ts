@@ -7,7 +7,14 @@
  * field names.
  *
  * Zero runtime dependencies: pure string concatenation.
- * No JS in output. <meta refresh> drives auto-poll.
+ * No JS in output, ONE deliberate exception: a single delegated <script>
+ * block (bottom of renderDashboard) powers the "copy full text" button on
+ * the Recent activity / errors feed — clipboard access has no HTML/CSS
+ * equivalent, so this is the one interaction that cannot stay declarative.
+ * See renderExpandable() below for the full reasoning; everything else on
+ * the page (including the reveal-full-text disclosure itself) stays
+ * <details>/<summary>, needing no script at all.
+ * <meta refresh> drives auto-poll.
  * Target: < 20 KB gzipped.
  */
 
@@ -104,7 +111,14 @@ td{padding:4px 8px;border-bottom:1px solid #252525;font-variant-numeric:tabular-
 tr:nth-child(odd) td{background:#1e1e1e}
 .badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px}
 .num{text-align:right;font-variant-numeric:tabular-nums}
-.trunc{max-width:360px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.trunc{max-width:460px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:13px}
+details>summary{cursor:pointer;list-style-position:outside}
+details>summary:hover{color:#fff}
+details[open]>summary{color:#fff;white-space:normal;overflow:visible;text-overflow:clip;max-width:none}
+.full-text-wrap{margin-top:6px;display:flex;align-items:flex-start;gap:8px;max-width:640px}
+.full-text{white-space:pre-wrap;word-break:break-word;background:#141414;border:1px solid #2a2a2a;border-radius:4px;padding:6px 8px;flex:1;font-family:monospace;font-size:12px;color:#ddd;max-height:240px;overflow:auto}
+.copy-btn{font-family:monospace;font-size:11px;padding:2px 8px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:3px;cursor:pointer;white-space:nowrap;align-self:flex-start}
+.copy-btn:hover{background:#333}
 .ok{color:#2ecc71}
 .warn{color:#f39c12}
 .err{color:#e74c3c}
@@ -294,6 +308,41 @@ function renderUsefulnessTile(usefulness: DashboardData['usefulness']): string {
 
 type FeedRow = { ts: number; html: string };
 
+const INFO_PREVIEW_MAX = 90;
+
+/** Expandable INFO cell for the activity feed (operator request: the old
+ *  single-line ellipsis truncation gave no way to read or copy the full
+ *  memory/error text — see the screenshot in the originating handoff).
+ *
+ *  Reveal is pure <details>/<summary> — no JS needed, and it composes fine
+ *  with the existing <meta refresh> auto-poll: a refresh always re-renders
+ *  <details> closed (there's no server-side "was this row open" state to
+ *  restore), so an expanded row collapses at the next 5s tick. That's an
+ *  accepted tradeoff, not an oversight: the copy button below completes its
+ *  job (writing to the clipboard) in a single click well inside the 5s
+ *  window, so the collapse never interrupts the actual copy action — it
+ *  just means a row left open purely to keep reading has to be re-clicked
+ *  every ~5s. Pausing/cancelling the refresh only while a <details> is open
+ *  is possible in principle but requires script that fights the browser's
+ *  own scheduled navigation (unreliable across engines) for a marginal
+ *  reading-comfort win, so it was left alone.
+ *
+ *  Copy-to-clipboard has no HTML/CSS equivalent (no declarative way to reach
+ *  navigator.clipboard), so the button is the one deliberate exception to
+ *  this page's zero-JS rule — see the single <script> block at the bottom of
+ *  renderDashboard(). The button never has the memory text embedded into a
+ *  JS string: it reads its sibling <pre>'s already-escaped `.textContent` at
+ *  click time, so there's no JS-string-escaping context for backticks,
+ *  quotes, or anything else in stored memory text to break out of. */
+function renderExpandable(fullText: string): string {
+  const preview = esc(truncate(fullText, INFO_PREVIEW_MAX));
+  const full = esc(fullText);
+  return `<details>
+        <summary class="trunc">${preview}</summary>
+        <div class="full-text-wrap"><pre class="full-text">${full}</pre><button type="button" class="copy-btn">copy</button></div>
+      </details>`;
+}
+
 /** AC-5: replaces the old full 25-row "recent captures" table with a merged
  *  feed of failures (from recentFailedJobs) and a handful of new memories
  *  (from recentMemories), newest first. Individual consolidation proposals
@@ -306,14 +355,14 @@ function renderActivityFeed(data: DashboardData): string {
 
   for (const job of data.recentFailedJobs) {
     const stateCls = job.state === 'poison' ? 'err' : 'warn';
-    const err = job.last_error ? esc(truncate(job.last_error, 60)) : '<span class="muted">(no error text)</span>';
+    const err = job.last_error ? renderExpandable(job.last_error) : '<span class="muted">(no error text)</span>';
     rows.push({
       ts: job.updated_at,
       html: `<tr>
         <td class="muted" style="width:90px">${esc(fmtTime(job.updated_at))}</td>
         <td><span class="badge ${stateCls}">${esc(job.state)}</span></td>
         <td>${esc(job.kind)}</td>
-        <td class="trunc">${err}</td>
+        <td>${err}</td>
       </tr>`,
     });
   }
@@ -325,7 +374,7 @@ function renderActivityFeed(data: DashboardData): string {
         <td class="muted" style="width:90px">${esc(fmtTime(mem.created_at))}</td>
         <td><span class="badge" style="background:#2a2a2a;color:#aaa">memory</span></td>
         <td>${esc(mem.type)}</td>
-        <td class="trunc">${esc(truncate(mem.text, 70))}</td>
+        <td>${renderExpandable(mem.text)}</td>
       </tr>`,
     });
   }
@@ -342,6 +391,41 @@ function renderActivityFeed(data: DashboardData): string {
   <tbody>${trs}</tbody>
 </table>`;
 }
+
+// ---------------------------------------------------------------------------
+// Copy-to-clipboard script (the one deliberate zero-JS exception — see
+// renderExpandable() above for why). One delegated listener handles every
+// row's button, so this block's size is fixed regardless of row count, and
+// it never touches memory text as a JS string — only `.textContent` reads
+// off the already-escaped <pre> the button sits next to. No external src,
+// no eval, no innerHTML: safe under a future strict CSP that allows this
+// single inline block (e.g. via nonce) without allowing arbitrary inline JS
+// elsewhere.
+// ---------------------------------------------------------------------------
+
+const COPY_SCRIPT = `
+document.addEventListener('click', function (e) {
+  var btn = e.target.closest('.copy-btn');
+  if (!btn) return;
+  var pre = btn.previousElementSibling;
+  if (!pre) return;
+  // navigator.clipboard is undefined on insecure origins (127.0.0.1 is a
+  // secure context everywhere mainstream, but a reverse-proxied non-TLS host
+  // is not) — and calling through undefined THROWS synchronously, so a
+  // .catch() alone would never fire. Guard first.
+  if (!navigator.clipboard) {
+    btn.textContent = 'copy unavailable';
+    return;
+  }
+  navigator.clipboard.writeText(pre.textContent).then(function () {
+    var was = btn.textContent;
+    btn.textContent = 'copied!';
+    setTimeout(function () { btn.textContent = was; }, 1200);
+  }).catch(function () {
+    btn.textContent = 'copy failed';
+  });
+});
+`.trim();
 
 // ---------------------------------------------------------------------------
 // Main export
@@ -403,6 +487,7 @@ ${renderUsefulnessTile(data.usefulness)}
 <h2 style="font-size:14px;color:#aaa;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Recent activity / errors</h2>
 ${renderActivityFeed(data)}
 </section>
+<script>${COPY_SCRIPT}</script>
 </body>
 </html>`;
 }

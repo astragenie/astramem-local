@@ -14,7 +14,11 @@
  * Returns 401 plain text on missing/wrong credentials; the 401 log strips the
  * query string so wrong-token attempts don't persist candidate secrets.
  *
- * No JS, no external assets. <meta refresh content="5"> drives auto-poll.
+ * No JS, no external assets, with one deliberate exception: a small inline
+ * copy-to-clipboard script for the Recent activity / errors feed (clipboard
+ * access has no declarative equivalent) — see dashboard-html.ts's header and
+ * renderExpandable() for the reasoning. <meta refresh content="5"> drives
+ * auto-poll.
  */
 
 import type { FastifyInstance } from 'fastify';
