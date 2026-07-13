@@ -113,4 +113,33 @@ describe('computeOverhead — proxied minus direct delta', () => {
     const overhead = computeOverhead(direct, proxied);
     expect(overhead.p50).toBeLessThan(0);
   });
+
+  it('computes the delta PER-REQUEST-PAIR, not as a difference of two independently-computed aggregate percentiles (FEAT-458-S1-design.md §3.2)', () => {
+    // A single outlier at index 0 only. The buggy aggregate-subtraction
+    // implementation (proxied.p50 - direct.p50) reports a 1ms "systemic" p50
+    // overhead here because sorting each series independently shifts BOTH
+    // medians by one position (direct's sorted median 3 -> proxied's sorted
+    // median 4), even though only ONE request actually saw any overhead at
+    // all. The correct per-pair delta is [99, 0, 0, 0, 0], whose p50 is 0 —
+    // the outlier shows up at p95/p99, not p50, which is the whole point of
+    // measuring per-pair rather than per-aggregate.
+    const direct = summarizeExtended([1, 2, 3, 4, 5]);
+    const proxied = summarizeExtended([100, 2, 3, 4, 5]);
+
+    // Sanity-check the aggregate percentiles really do differ by 1ms, so this
+    // test would have caught the old implementation.
+    expect(proxied.p50 - direct.p50).toBe(1);
+
+    const overhead = computeOverhead(direct, proxied);
+    expect(overhead.p50).toBe(0);
+    expect(overhead.p95).toBe(99);
+    expect(overhead.p99).toBe(99);
+    expect(overhead.mean).toBeCloseTo(99 / 5, 10);
+  });
+
+  it('throws on mismatched sample counts — per-pair delta is undefined without index alignment', () => {
+    const direct = summarizeExtended([1, 2, 3]);
+    const proxied = summarizeExtended([1, 2, 3, 4]);
+    expect(() => computeOverhead(direct, proxied)).toThrow(/index-aligned/);
+  });
 });

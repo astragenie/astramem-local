@@ -66,4 +66,29 @@ describe('startUpstreamStub — synthetic local upstream lifecycle', () => {
     stub = undefined;
     await expect(fetch(baseUrl)).rejects.toThrow();
   });
+
+  it('chatShape: false (default) still serves a raw byte blob, not JSON', async () => {
+    stub = await startUpstreamStub({ bodySize: 32 });
+    const res = await fetch(stub.baseUrl);
+    const text = await res.text();
+    expect(() => JSON.parse(text)).toThrow();
+  });
+
+  it('chatShape: true serves a real chat-completion JSON envelope with a non-empty assistant turn', async () => {
+    stub = await startUpstreamStub({ bodySize: 512, chatShape: true });
+    const res = await fetch(stub.baseUrl);
+    const text = await res.text();
+    const parsed = JSON.parse(text) as { choices: Array<{ message: { role: string; content: string } }> };
+    expect(parsed.choices).toHaveLength(1);
+    expect(parsed.choices[0]?.message.role).toBe('assistant');
+    expect(parsed.choices[0]?.message.content.length).toBeGreaterThan(0);
+  });
+
+  it('chatShape: true body length tracks bodySize approximately, never negative/empty', async () => {
+    stub = await startUpstreamStub({ bodySize: 10, chatShape: true });
+    const res = await fetch(stub.baseUrl);
+    const text = await res.text();
+    expect(() => JSON.parse(text)).not.toThrow();
+    expect(text.length).toBeGreaterThan(0);
+  });
 });

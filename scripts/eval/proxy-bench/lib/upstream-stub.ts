@@ -18,8 +18,23 @@ export interface UpstreamStubOpts {
   /** Artificial handler delay before responding, simulating upstream
    *  processing time. Default 0 (respond as fast as possible). */
   delayMs?: number;
-  /** Fill byte for the canned body. Default 'x'. */
+  /** Fill byte for the canned body. Default 'x'. Ignored when `chatShape`
+   *  is true. */
   fillChar?: string;
+  /**
+   * FEAT-458 S4b: when true, respond with a REAL OpenAI chat-completion JSON
+   * envelope (`{choices:[{message:{role:'assistant',content:'<padding>'}}]}`,
+   * padded to approximately `bodySize`) instead of a raw byte blob. Needed
+   * so `src/capture/proxy.ts`'s `extractResponseTurn` recognizes the body as
+   * an assistant turn and the capture fork's synchronous spool write
+   * (`writeToSpool`) actually fires. A raw byte blob (the default) parses as
+   * neither JSON nor SSE, produces zero turns, and `finishCapture` returns
+   * before ever touching disk — which would make a capture-ON bench run
+   * that never exercises the real write path a false PASS. Default false —
+   * every other caller of this stub (forward-path-only S2 bench, the raw
+   * synthetic byte tests below) keeps today's behavior unchanged.
+   */
+  chatShape?: boolean;
 }
 
 export interface UpstreamStubHandle {
@@ -31,11 +46,26 @@ export interface UpstreamStubHandle {
   close(): Promise<void>;
 }
 
+/** Real OpenAI chat-completion JSON shape, `content` padded so the total
+ *  body is approximately `targetSize` bytes — exact match isn't needed
+ *  (unlike the raw-fill mode, nothing asserts an exact byte count for
+ *  `chatShape`), just something `extractResponseTurn` recognizes as a
+ *  non-empty assistant turn. */
+function buildChatShapeBody(targetSize: number): Buffer {
+  const envelopeOverheadEstimate = 140; // JSON scaffolding around `content`
+  const padLength = Math.max(1, targetSize - envelopeOverheadEstimate);
+  return Buffer.from(JSON.stringify({
+    id: 'proxy-bench-stub-completion',
+    object: 'chat.completion',
+    choices: [{ index: 0, message: { role: 'assistant', content: 'x'.repeat(padLength) }, finish_reason: 'stop' }],
+  }), 'utf8');
+}
+
 export async function startUpstreamStub(opts: UpstreamStubOpts = {}): Promise<UpstreamStubHandle> {
   const bodySize = opts.bodySize ?? 1024;
   const delayMs = opts.delayMs ?? 0;
   const fillChar = opts.fillChar ?? 'x';
-  const body = Buffer.alloc(bodySize, fillChar);
+  const body = opts.chatShape ? buildChatShapeBody(bodySize) : Buffer.alloc(bodySize, fillChar);
   let count = 0;
 
   const handler = (req: IncomingMessage, res: ServerResponse): void => {
