@@ -70,6 +70,14 @@ export interface ExtractResult {
    * src/storage/relation-guard-log.ts for why this is persisted.
    */
   relationDropCounts: Record<string, number>;
+  /**
+   * Issue #207: per-reason drop counts from this chunk's filterAtomEntities
+   * pass -- 'too_short', 'bare_issue_ref', 'bare_number', 'missing_name',
+   * 'not_an_object'. Same shape/semantics as relationDropCounts above (empty
+   * object when nothing was dropped, never a zero-count entry). See
+   * src/storage/entity-guard-log.ts for why this is persisted.
+   */
+  entityDropCounts: Record<string, number>;
 }
 
 /**
@@ -112,7 +120,7 @@ export async function extractChunk(
   sessionDateIso?: string,
 ): Promise<ExtractResult> {
   if (!text.trim()) {
-    return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {} };
+    return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {} };
   }
 
   const activePrompt = resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
@@ -132,6 +140,7 @@ export async function extractChunk(
       usageUsd: result.usageUsd,
       retried: false,
       relationDropCounts: parsed.relationDropCounts,
+      entityDropCounts: parsed.entityDropCounts,
     };
   }
 
@@ -199,6 +208,103 @@ function coerceEntityKinds(raw: unknown): unknown {
     const e = entity as Record<string, unknown>;
     if (EntityKindSchema.safeParse(e.kind).success) return entity;
     return { ...e, kind: 'other' };
+  });
+
+  return { ...atom, entities };
+}
+
+/**
+ * Issue #207: minimum non-whitespace length for an entity name to be kept. A
+ * single character ("x") carries no useful identity signal on its own.
+ */
+const MIN_ENTITY_NAME_LENGTH = 2;
+
+/** A bare GitHub-style issue/PR reference with NO qualifying context at all
+ * — e.g. "#110". Meaningless without a repo/subject attached (see the
+ * prompt's own workitem-kind wording, updated alongside this guard in
+ * prompts/extract.ts) — this is the exact shape issue #207 reported live
+ * from production (`{"name":"#110","kind":"repo"}`). */
+const BARE_ISSUE_REF_RE = /^#\d+$/;
+
+/** A name that is nothing but digits — e.g. "123". Never a real entity on
+ * its own; a version or port number always carries a qualifying word
+ * alongside it ("v2", "port 7777") and is unaffected by this check, since
+ * THIS regex only matches when the ENTIRE trimmed name is digits. */
+const BARE_NUMBER_RE = /^\d+$/;
+
+/**
+ * Classify a candidate entity name as junk, or return null if it's fine.
+ * Exported so the doctor "Entity name quality" canary (src/doctor/checks.ts)
+ * can apply the identical rule to existing `entities` rows and measure the
+ * junk rate already sitting in the corpus, not just guard new writes.
+ *
+ * Deliberately narrow: a name that merely CONTAINS a number ("FEAT-402",
+ * "sqlite-vec", "Node 20") or is a short but real word ("Go", "C#") must
+ * never trip this — only a name that IS, in its entirety, a bare issue/PR
+ * reference, a bare number, or below the length floor.
+ */
+export function classifyJunkEntityName(name: string): string | null {
+  const trimmed = name.trim();
+  if (trimmed.length < MIN_ENTITY_NAME_LENGTH) return 'too_short';
+  if (BARE_ISSUE_REF_RE.test(trimmed)) return 'bare_issue_ref';
+  if (BARE_NUMBER_RE.test(trimmed)) return 'bare_number';
+  return null;
+}
+
+/**
+ * Filter an atom's raw `entities[]` BEFORE `AtomSchema.safeParse` runs (issue
+ * #207): drop names that are pure issue/PR references, bare numbers, or
+ * below the minimum length, instead of letting them become permanent
+ * `entities` rows that then poison ζ ranking (src/search/search.ts's
+ * entityBonusForQuery) via naked substring matching. This is the code-level
+ * backstop for the prompt-level guidance in prompts/extract.ts's workitem-
+ * kind wording — the prompt is stochastic and cannot be relied on alone.
+ *
+ * Deliberately DROPS rather than coerces — mirrors filterAtomRelations, not
+ * coerceEntityKinds: there is no safe-narrow value for a bad NAME the way
+ * 'other' is for kind (renaming "#110" to some placeholder would still be a
+ * meaningless entity, just under a different label).
+ *
+ * Runs BEFORE filterAtomRelations in the tryParseAtoms chain below, so a
+ * relation naming a just-dropped junk entity is caught for free by
+ * filterAtomRelations' existing no-hallucination guard (the dropped name is
+ * no longer in this atom's surviving entities[]) — no separate check needed
+ * here.
+ *
+ * `dropCounts` (mirrors filterAtomRelations' own param) is mutated in place,
+ * one increment per dropped entity, keyed by reason — persisted via
+ * src/storage/entity-guard-log.ts so the doctor canary can distinguish "the
+ * model/guard have stopped producing new junk" from "the guard is actively
+ * catching junk on an ongoing basis," the same distinction relation_guard_
+ * drops draws for relations[].
+ */
+function filterAtomEntities(raw: unknown, dropCounts: Record<string, number>): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const atom = raw as Record<string, unknown>;
+  if (!Array.isArray(atom.entities)) return raw;
+
+  const log = childLogger({ stage: 'extract' });
+  const bump = (reason: string) => { dropCounts[reason] = (dropCounts[reason] ?? 0) + 1; };
+  const entities = atom.entities.filter((entity) => {
+    if (entity === null || typeof entity !== 'object' || Array.isArray(entity)) {
+      log.debug({ entity }, 'entities[]: dropped non-object entry');
+      bump('not_an_object');
+      return false;
+    }
+    const e = entity as Record<string, unknown>;
+    const name = typeof e.name === 'string' ? e.name : null;
+    if (!name) {
+      log.debug({ entity: e }, 'entities[]: dropped — missing name');
+      bump('missing_name');
+      return false;
+    }
+    const reason = classifyJunkEntityName(name);
+    if (reason) {
+      log.debug({ name, reason }, 'entities[]: dropped — junk name');
+      bump(reason);
+      return false;
+    }
+    return true;
   });
 
   return { ...atom, entities };
@@ -309,8 +415,17 @@ function filterAtomRelations(raw: unknown, dropCounts: Record<string, number>): 
  * per-reason drop counts across every atom in this chunk's response — always
  * present (possibly `{}`) on a non-null return, absent (never populated) on
  * a null return since nothing was parsed to drop anything from.
+ *
+ * `entityDropCounts` (issue #207) is the same accumulation for
+ * filterAtomEntities, applied BEFORE filterAtomRelations so a relation
+ * naming an already-dropped junk entity is caught by the relation guard's
+ * existing no-hallucination check.
  */
-function tryParseAtoms(raw: string): { atoms: Atom[]; relationDropCounts: Record<string, number> } | null {
+function tryParseAtoms(raw: string): {
+  atoms: Atom[];
+  relationDropCounts: Record<string, number>;
+  entityDropCounts: Record<string, number>;
+} | null {
   try {
     let text = raw.trim();
 
@@ -334,11 +449,13 @@ function tryParseAtoms(raw: string): { atoms: Atom[]; relationDropCounts: Record
     // repair a recoverable per-entity issue (unknown kind) so it doesn't
     // take the whole atom down with it.
     const relationDropCounts: Record<string, number> = {};
+    const entityDropCounts: Record<string, number> = {};
     const atoms = wrapper.data.atoms
       .map(coerceEntityKinds)
+      .map((atom) => filterAtomEntities(atom, entityDropCounts))
       .map((atom) => filterAtomRelations(atom, relationDropCounts))
       .filter((a) => AtomSchema.safeParse(a).success) as Atom[];
-    return { atoms, relationDropCounts };
+    return { atoms, relationDropCounts, entityDropCounts };
   } catch {
     return null;
   }

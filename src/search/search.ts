@@ -325,21 +325,48 @@ export function makeFakeVec(text: string, dim: number = DEFAULT_EMBED_DIM): Floa
   return v;
 }
 
+/** Escape regex metacharacters in an entity name before embedding it in a
+ * dynamically-built pattern (entity names can contain them verbatim, e.g.
+ * "C++", "C#", "node.js"). */
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * True when `name` appears in `query` as a whole word/phrase — bounded by a
+ * non-alphanumeric character (or the string start/end) on both sides — not
+ * merely as a raw substring (issue #207 AC-3: naked `query.includes(name)`
+ * let an entity named "go" match inside "going"). Both inputs are expected
+ * already lowercased/normalized by the caller. Uses Unicode letter/number
+ * classes (not `\w`, which is ASCII-only and would treat non-ASCII letters
+ * as boundaries) so this behaves correctly for non-English entity names too.
+ * Exported so tests can pin down the matching rule directly, without going
+ * through the full fuse.ts weighted-normalization pipeline (where turning
+ * zeta on at all dilutes every candidate's score via the shared denominator,
+ * independent of whether a real bonus applied — a confound when testing
+ * match/no-match through an end-to-end search() call).
+ */
+export function entityNameMatchesQuery(query: string, name: string): boolean {
+  if (!name) return false;
+  const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?:$|[^\\p{L}\\p{N}])`, 'u');
+  return pattern.test(query);
+}
+
 /**
  * Compute the ζ entity-relevance bonus map (FEAT-402 slice 2 AC-6): for
- * every known entity whose normalized name appears as a substring of the
- * (lowercased) query text, any candidate id linked to that entity gets a
- * bonus of 1. Only called when `search.zeta > 0` — with the default
- * zeta=0 this function never runs, which is what makes the AC-6 snapshot
- * guarantee (identical ranking at zeta=0) hold structurally, not just
- * numerically.
+ * every known entity whose normalized name appears as a WHOLE-WORD/PHRASE
+ * match in the (lowercased) query text — see entityNameMatchesQuery, issue
+ * #207 AC-3 — any candidate id linked to that entity gets a bonus of 1. Only
+ * called when `search.zeta > 0` — with the default zeta=0 this function
+ * never runs, which is what makes the AC-6 snapshot guarantee (identical
+ * ranking at zeta=0) hold structurally, not just numerically.
  */
 function entityBonusForQuery(db: DB, query: string, candidateIds: Set<string>): Map<string, number> {
   const q = query.trim().toLowerCase();
   if (!q || candidateIds.size === 0) return new Map();
 
   const entityRows = db.prepare('SELECT id, name FROM entities').all() as Array<{ id: string; name: string }>;
-  const matchedEntityIds = entityRows.filter(r => r.name && q.includes(r.name)).map(r => r.id);
+  const matchedEntityIds = entityRows.filter(r => entityNameMatchesQuery(q, r.name)).map(r => r.id);
   if (matchedEntityIds.length === 0) return new Map();
 
   const idPh = Array.from(candidateIds).map(() => '?').join(',');

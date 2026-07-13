@@ -7,7 +7,7 @@ import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { EntityRepo } from '../../src/storage/entities.js';
 import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
-import { search, makeFakeVec } from '../../src/search/search.js';
+import { search, makeFakeVec, entityNameMatchesQuery } from '../../src/search/search.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import { defaultConfig } from '../../src/config/config.js';
 
@@ -148,6 +148,45 @@ describe('search() entity + as_of composition (FEAT-453 AC-6)', () => {
   });
 });
 
+// Issue #207 AC-3/AC-6: entityBonusForQuery used to match via naked
+// `query.includes(entityName)` — an entity named "go" would spuriously match
+// any query containing "going". Direct unit tests on the exported matching
+// helper, isolated from fuse.ts's weighted-normalization pipeline (where
+// turning zeta on at all changes every candidate's score via a shared
+// denominator, independent of whether a real bonus applied).
+describe('entityNameMatchesQuery (issue #207 AC-3)', () => {
+  it('does NOT match a substring inside a larger word ("go" inside "going")', () => {
+    expect(entityNameMatchesQuery('going forward with the plan', 'go')).toBe(false);
+  });
+
+  it('matches when the name appears as its own word', () => {
+    expect(entityNameMatchesQuery('go database tooling', 'go')).toBe(true);
+    expect(entityNameMatchesQuery('database tooling for go', 'go')).toBe(true);
+    expect(entityNameMatchesQuery('using go for the backend', 'go')).toBe(true);
+  });
+
+  it('matches a multi-word entity name as a whole phrase', () => {
+    expect(entityNameMatchesQuery('claude code helped with this', 'claude code')).toBe(true);
+    expect(entityNameMatchesQuery('claude codebase helped with this', 'claude code')).toBe(false);
+  });
+
+  it('matches a hyphenated entity name bounded correctly ("sqlite-vec")', () => {
+    expect(entityNameMatchesQuery('sqlite-vec database tooling', 'sqlite-vec')).toBe(true);
+    expect(entityNameMatchesQuery('sqlite-vector database tooling', 'sqlite-vec')).toBe(false);
+  });
+
+  it('handles regex-metacharacter entity names literally, not as regex syntax ("c#", "node.js")', () => {
+    expect(entityNameMatchesQuery('written in c# for the backend', 'c#')).toBe(true);
+    expect(entityNameMatchesQuery('written in c for the backend', 'c#')).toBe(false);
+    expect(entityNameMatchesQuery('built with node.js', 'node.js')).toBe(true);
+    expect(entityNameMatchesQuery('built with nodexjs', 'node.js')).toBe(false);
+  });
+
+  it('an empty name never matches', () => {
+    expect(entityNameMatchesQuery('anything at all', '')).toBe(false);
+  });
+});
+
 describe('search() zeta ranking safety (AC-6)', () => {
   // Freshness (the δ component) is computed from Date.now() at call time —
   // two back-to-back search() calls a few ms apart would otherwise produce
@@ -223,6 +262,63 @@ describe('search() zeta ranking safety (AC-6)', () => {
     });
 
     expect(withoutZeta.map(h => h.id).sort()).toEqual([plain, boosted].sort());
+
+    const boostedScoreWithout = withoutZeta.find(h => h.id === boosted)?.score ?? 0;
+    const boostedScoreWith = withZeta.find(h => h.id === boosted)?.score ?? 0;
+    expect(boostedScoreWith).toBeGreaterThan(boostedScoreWithout);
+    expect(withZeta.map(h => h.id)).toContain(plain);
+  });
+
+  // Issue #207 AC-3: entityBonusForQuery used to match via naked
+  // `query.includes(entityName)` — an entity named "go" would spuriously
+  // match any query containing "going", "algorithm" would match "go", etc.
+  // This is independent of the garbage-entity-name bug (#207's other half):
+  // even a perfectly clean entity named "go" would incorrectly boost every
+  // query containing "going" under the old substring logic.
+  it('an entity named "go" does NOT boost a query containing "going" (word-boundary, not substring)', async () => {
+    const db = setupDb();
+    const goLinked = await seedWithVec(db, 'unrelated content linked to the go entity', 'h-z-7');
+    const entities = new EntityRepo(db);
+    entities.link(goLinked, entities.upsert('go', 'tech'));
+
+    const frozenNow = Date.now();
+    vi.spyOn(Date, 'now').mockReturnValue(frozenNow);
+
+    const withoutZeta = await search('going forward with the plan', {}, 10, {
+      db, embed: fakeEmbed, weights: { ...defaultConfig().search, zeta: 0 },
+    });
+    const withZeta = await search('going forward with the plan', {}, 10, {
+      db, embed: fakeEmbed, weights: { ...defaultConfig().search, zeta: 5 },
+    });
+
+    // "go" must not match inside "going" — with NO real bonus applied, the
+    // score can only ever go DOWN (not up) between zeta=0 and zeta=5, since
+    // turning zeta on alone dilutes every other weighted component via the
+    // fuse.ts normalization denominator (see the zeta>0 no-op-on-unmatched
+    // case). A genuine bonus, in contrast, overrides that dilution and
+    // produces a net INCREASE — exactly what the previous test above
+    // ('DOES boost') demonstrates for an actual whole-word match at the same
+    // zeta=5 weight. Under the old naked-substring bug, "go" would have
+    // incorrectly matched inside "going" and produced that same increase
+    // here too — this assertion is what would have caught it.
+    const goLinkedScoreWithout = withoutZeta.find(h => h.id === goLinked)?.score ?? 0;
+    const goLinkedScoreWith = withZeta.find(h => h.id === goLinked)?.score ?? 0;
+    expect(goLinkedScoreWith).toBeLessThanOrEqual(goLinkedScoreWithout);
+  });
+
+  it('an entity named "go" DOES boost a query where "go" appears as its own word', async () => {
+    const db = setupDb();
+    const plain = await seedWithVec(db, 'general database tooling notes for the platform team', 'h-z-9');
+    const boosted = await seedWithVec(db, 'go', 'h-z-10');
+    const entities = new EntityRepo(db);
+    entities.link(boosted, entities.upsert('go', 'tech'));
+
+    const withoutZeta = await search('go database tooling', {}, 10, {
+      db, embed: fakeEmbed, weights: { ...defaultConfig().search, zeta: 0 },
+    });
+    const withZeta = await search('go database tooling', {}, 10, {
+      db, embed: fakeEmbed, weights: { ...defaultConfig().search, zeta: 5 },
+    });
 
     const boostedScoreWithout = withoutZeta.find(h => h.id === boosted)?.score ?? 0;
     const boostedScoreWith = withZeta.find(h => h.id === boosted)?.score ?? 0;

@@ -1,0 +1,32 @@
+# Task Handoff: FEAT-207 entity-quality pipeline trace: prompt, parse, write, search bonus, guard idiom
+
+- Created: 2026-07-13T19:06:49.441Z
+- From: researcher
+- To: dispatcher
+- Objective: Kind:repo entities (e.g. #110) are almost certainly STALE data from before the 2026-07-09 atom@2 kind retag, not a live emission path — the current prompt correctly tags workitems like #110 as kind:workitem, and the ONLY kind-repair mechanism in code (coerceEntityKinds, 05-extract.ts:192-205) coerces any out-of-enum kind (repo included) to 'other', never to 'repo'; there is zero name validation anywhere in the write path (normalizeEntityName only lowercases/trims; EntityRepo.upsert inserts whatever name string it gets), so garbage names like bare numbers or #NNN sail through untouched regardless of kind.
+- Allowed Scope:
+  - Read-only trace of entity extraction pipeline: prompt (src/distill/prompts/extract.ts)
+  - parse/coercion (src/distill/stages/05-extract.ts)
+  - DB write (src/storage/entities.ts
+  - src/entity/normalize.ts)
+  - search bonus (src/search/search.ts entityBonusForQuery)
+  - filterAtomRelations idiom
+  - relation_guard_drops migration/table (029) + doctor canary
+  - and current migrations/ lay of the land. No files edited.
+- Forbidden Scope: -
+- Deliverable: Full citation-backed answers to all 8 questions, inline in final chat response: prompt text (extract.ts:105-160, kind enum at :116/:135-152, workitem kind explicitly covers '#145'-style refs at :144), coerceEntityKinds (05-extract.ts:184-205) confirmed as the only kind-repair path (coerces to 'other', never 'repo'), EntityRepo.upsert (entities.ts:36-46) confirmed zero name validation, full entityBonusForQuery quote (search.ts:337-354, q = trim().toLowerCase(), substring-match against ALL entities table rows via q.includes(r.name)), full filterAtomRelations quote (05-extract.ts:239-292, drop-not-coerce idiom with per-reason dropCounts bump()), relation_guard_drops schema (migration 029) + relation-guard-log.ts read/write functions + doctor checkEntityRelations (checks.ts:1254+) as the exact pattern to mirror for entity_name_drops, and migrations/ listing showing 032 is the latest (SCHEMA_VERSION=32 in wire-meta.ts:162) so 033 is the next free number as of this trace.
+- Changed Files:
+  - src/distill/prompts/extract.ts
+  - src/distill/stages/05-extract.ts
+  - src/storage/entities.ts
+  - src/entity/normalize.ts
+  - src/search/search.ts
+  - migrations/029-relation-guard-drops.sql
+  - src/storage/relation-guard-log.ts
+  - src/doctor/checks.ts
+  - src/contracts/entity.ts
+  - src/server/lib/wire-meta.ts
+- Confidence: high
+- Risks: The 'stale data, not live emission' conclusion for kind:repo is inferred from code absence (no path currently writes 'repo') plus the dated retag comment — I did not query the live prod DB itself to confirm entities.created_at predates 2026-07-09 for the #110-style rows; if AC work needs airtight proof, a quick prod DB query (SELECT MIN(created_at) FROM memory_entities me JOIN entities e ON e.id=me.entity_id WHERE e.kind='repo') would settle it. Also note EntityRepo.upsert is first-writer-wins on kind (line 32-34 comment) — even after a filterAtomEntities guard ships, existing bad rows need a backfill/cleanup pass, not just a forward guard. Migration 033 is free as of this read but fix-188-schema-hash and fix-205-validity are sibling in-progress branches per the dispatcher's own note — a fresh migrations/ ls immediately before claiming 033 is cheap insurance against a collision.
+- Suggested Next Handoff: Architect/builder can design filterAtomEntities mirroring filterAtomRelations (drop bare-number/#NNN/single-char names, log reason, bump dropCounts) plus an entity_name_drops table (migration 033) mirroring relation_guard_drops (029) and a doctor canary mirroring checkEntityRelations; separately a one-off backfill/cleanup command should purge or re-kind existing garbage entities already in prod (4,221 total, unknown-but-nonzero fraction repo/bare-number noise).
+

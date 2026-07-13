@@ -30,6 +30,7 @@ import { defaultConfig, type Config } from '../config/config.js';
 import type { DurabilityGateMode } from './durability-gate.js';
 import { childLogger } from '../log/logger.js';
 import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
+import { recordEntityGuardDrops } from '../storage/entity-guard-log.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
 
@@ -231,6 +232,30 @@ export async function runPipeline(
     pipeLog.warn(
       { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
       'relation guard-drop counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
+    );
+  }
+
+  // Issue #207: persist filterAtomEntities' per-reason drop counts (aggregated
+  // across every chunk this run), same diagnostic-only posture as the
+  // relation-guard-drop write immediately above — its own try/catch, never
+  // re-thrown, so a counter-write failure can never be mistaken for the
+  // extract stage itself failing.
+  try {
+    const entityDropTotals: Record<string, number> = {};
+    for (const r of extractResults) {
+      for (const [reason, count] of Object.entries(r.entityDropCounts)) {
+        entityDropTotals[reason] = (entityDropTotals[reason] ?? 0) + count;
+      }
+    }
+    recordEntityGuardDrops(
+      ctx.db,
+      Object.entries(entityDropTotals).map(([reason, count]) => ({ reason, count })),
+      ctx.sessionId,
+    );
+  } catch (err) {
+    pipeLog.warn(
+      { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'entity-name guard-drop counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
     );
   }
 
