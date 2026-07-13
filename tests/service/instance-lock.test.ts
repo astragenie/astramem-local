@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { acquireInstanceLock, AlreadyRunningError, lockPath, stopLockHolder, getProcessStartTime } from '../../src/service/instance-lock.js';
 
 /** A fixed, arbitrary start-time used across identity-check tests. */
@@ -242,5 +243,126 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
       const estimatedStart = Date.now() - process.uptime() * 1000;
       expect(Math.abs((resolved as Date).getTime() - estimatedStart)).toBeLessThan(30_000);
     }, 20_000); // real powershell.exe/ps/proc query — cold PowerShell+CIM start measured ~5.8s, budget generously
+  });
+
+  // B2 (docs/specs/20260713-stability-wave-plan.md) — every test above injects
+  // BOTH `signal` and `processStartTime`, so none of them exercises the real
+  // default path: real `process.kill` actually delivering a signal, and real
+  // `getProcessStartTime` actually resolving via `stopLockHolder`'s own
+  // internal call (not just called directly against `process.pid`, as the
+  // single real-query test above does). A mocked test proves the branch
+  // logic; it does not prove the OS query is wired correctly end-to-end, or
+  // that a real drift is actually measured and actually refused. This
+  // describe block closes that gap against a real, disposable child process
+  // this suite spawns and owns — never against `process.pid`/`process.ppid`
+  // (the test runner itself) or any process this suite didn't start.
+  //
+  // What this DOES prove: the real OS start-time query wired through
+  // `stopLockHolder`'s default `processStartTime`, a real refusal on a real
+  // mismatch (innocent process survives), and a real `process.kill` signal
+  // delivered on a real match (the process actually dies). What this does
+  // NOT prove: an actual OS PID-reuse (recycling a specific numeric PID for
+  // an unrelated process) — that cannot be forced deterministically in a
+  // test. That scenario is Wave D2's manual E2E (SIGKILL the daemon, recycle
+  // the PID, run `service stop`/watchdog, assert the innocent process
+  // survives) and remains unautomated; this describe block is the closest
+  // in-process approximation, not a substitute for it.
+  describe('end-to-end against a REAL spawned process (no injected signal or processStartTime)', () => {
+    const children: ChildProcess[] = [];
+
+    /** A disposable process this suite owns end-to-end: spawned here, never
+     *  left running past this describe block's afterEach, regardless of
+     *  whether the test under it passes, fails, or throws. Does nothing but
+     *  keep its event loop alive — no port, no file writes, no astramem code
+     *  loaded — so there is nothing to isolate via ASTRA_MEMORY_DATADIR/etc,
+     *  and nothing at risk beyond the PID itself. */
+    function spawnThrowaway(): ChildProcess {
+      const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1 << 30);'], { stdio: 'ignore' });
+      children.push(child);
+      return child;
+    }
+
+    function isAlive(pid: number): boolean {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    afterEach(() => {
+      // Force-kill every PID this describe block spawned, whether or not the
+      // test above already stopped it — SIGKILL on an already-dead PID just
+      // throws (ESRCH-equivalent), swallowed here. This runs on test failure
+      // too (afterEach, not inline cleanup at the end of the happy path) —
+      // required on a box that also runs the production daemon, Ollama, and
+      // sibling agents' own processes.
+      while (children.length) {
+        const child = children.pop()!;
+        if (child.pid && isAlive(child.pid)) {
+          try { process.kill(child.pid, 'SIGKILL'); } catch { /* already gone */ }
+        }
+      }
+    });
+
+    it('REFUSES to signal a real spawned process when the forged startedAt does not match its real OS start time — and the process survives', async () => {
+      const child = spawnThrowaway();
+      // Give the OS a moment to finish registering the new process before we
+      // query it — spawn() returning does not guarantee every OS bookkeeping
+      // path (e.g. Windows CIM's view) is immediately consistent.
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(child.pid).toBeDefined();
+      const pid = child.pid!;
+
+      writeFileSync(lockPath(dir), JSON.stringify({
+        pid, port: 9100, startedAt: new Date(0).toISOString(), version: '0.9.0',
+      }));
+
+      // No injected `signal` or `processStartTime` — real process.kill, real getProcessStartTime.
+      const result = await stopLockHolder(dir, 9100);
+
+      expect(result.ok).toBe(false);
+      expect(result.detail).toContain('process start time mismatch');
+      // The proof: an innocent process, checked with a real OS query, refused
+      // by the real code path — not an injected stub asserting on itself.
+      expect(isAlive(pid)).toBe(true);
+    }, 30_000); // one real OS start-time query inside stopLockHolder; budget as generously as the single-query test above
+
+    it('DOES signal a real spawned process when the recorded startedAt matches its real OS start time', async () => {
+      const child = spawnThrowaway();
+      await new Promise(resolve => setTimeout(resolve, 200));
+      const pid = child.pid!;
+
+      const realStart = await getProcessStartTime(pid);
+      // Sanity gate: if the OS query itself can't resolve a start time for
+      // our own freshly-spawned child, this test cannot mean anything either
+      // way — fail loudly here rather than silently asserting on a null.
+      expect(realStart).not.toBeNull();
+
+      writeFileSync(lockPath(dir), JSON.stringify({
+        pid, port: 9101, startedAt: (realStart as Date).toISOString(), version: '0.9.0',
+      }));
+
+      const exited = new Promise<void>(resolve => child.once('exit', () => resolve()));
+
+      // No injected `signal` or `processStartTime` — real process.kill(pid,
+      // 'SIGTERM'), which force-terminates on Windows (stopLockHolder's own
+      // doc comment). `healthProbe` IS injected (always unhealthy): the
+      // /health-polling loop itself is already exhaustively covered by the
+      // injected-probe tests above — what this test proves is the identity
+      // check plus real signal delivery, not the polling loop a second time.
+      const result = await stopLockHolder(dir, 9101, { healthProbe: async () => false });
+
+      await Promise.race([
+        exited,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('child did not exit within 5s of signal')), 5_000)),
+      ]);
+
+      expect(result.ok).toBe(true);
+      expect(result.detail).toBe(`stopped pid ${pid}`);
+      // The proof: the process is actually gone, not just reported gone.
+      expect(isAlive(pid)).toBe(false);
+    }, 40_000); // two real OS start-time queries (pre-seed + stopLockHolder's own) plus signal-delivery wait
   });
 });
