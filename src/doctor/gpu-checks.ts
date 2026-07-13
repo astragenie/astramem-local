@@ -1,0 +1,263 @@
+/**
+ * gpu-checks.ts — FEAT-485: doctor checks for the two silent GPU/VRAM
+ * failure modes that cost an entire debugging night on 2026-07-13.
+ *
+ * FAILURE MODE 1 — orphaned llama-server processes. When Ollama is
+ * force-killed, its `llama-server` child process SURVIVES and keeps its GPU
+ * allocation. Six accumulated on the operator's box, leaking ~6.8 GB of an
+ * 8 GB card. Ollama then loaded qwen2.5:7b with only 0.59 GB of 4.99 GB
+ * actually on the GPU — silently running the rest on CPU. Everything got
+ * ~4x slower and presented as "this model is slow", sending the operator on
+ * a multi-hour wild goose chase into model selection. Nothing said a word.
+ *
+ * FAILURE MODE 2 — silent CPU offload. Ollama's GET /api/ps returns loaded
+ * models with both `size` and `size_vram`. When `size_vram` << `size`, part
+ * of the model is on CPU. This is THE tell, and it is invisible from
+ * latency alone.
+ *
+ * DIAGNOSTIC ONLY. Neither this module nor src/doctor/probes/gpu-vram-
+ * probe.ts contains a kill path — no `process.kill`, no `taskkill`, no
+ * `pkill`, nothing that terminates a process. This whole feature exists
+ * BECAUSE of a process-kill accident; auto-killing a `llama-server` that
+ * Ollama legitimately owns would nuke a running model mid-inference. Checks
+ * below only ever report PIDs and print the command the OPERATOR can choose
+ * to run themselves.
+ */
+import { platform } from 'node:os';
+import type { Check, CheckResult } from './types.js';
+import {
+  listProcesses as defaultListProcesses,
+  queryNvidiaSmiUsedMemory,
+  fetchOllamaPs as defaultFetchOllamaPs,
+  type ProcessInfo,
+  type OllamaPsModel,
+} from './probes/gpu-vram-probe.js';
+
+export interface GpuCheckOpts {
+  /** Base URL of the Ollama API. Default http://127.0.0.1:11434. */
+  ollamaBaseUrl?: string;
+  /** Injectable process lister — tests substitute a stub instead of a real
+   *  OS enumeration. Defaults to the real cross-platform implementation. */
+  listProcesses?: () => Promise<ProcessInfo[]>;
+  /** Injectable nvidia-smi VRAM-by-PID lookup — tests substitute a stub;
+   *  `null` means "unavailable" (no NVIDIA GPU / nvidia-smi not on PATH). */
+  queryGpuMemory?: (pids: number[]) => Promise<Map<number, number> | null>;
+  /** Injectable Ollama /api/ps fetch — tests substitute a stub; `null`
+   *  means Ollama is unreachable. */
+  fetchOllamaPs?: (baseUrl: string) => Promise<OllamaPsModel[] | null>;
+  /** Injectable environment map for the tuning-vars row. Defaults to
+   *  `process.env`. */
+  env?: NodeJS.ProcessEnv;
+}
+
+const LLAMA_SERVER_RE = /^llama-server(\.exe)?$/i;
+const OLLAMA_RE = /^ollama(\.exe)?$/i;
+
+/** Below this fraction of a loaded model's bytes resident in VRAM, doctor
+ *  WARNs — this is the exact 2026-07-13 signature (0.59/4.99 ≈ 0.12). */
+const CPU_OFFLOAD_RATIO_FLOOR = 0.9;
+
+const TUNING_VARS = [
+  'OLLAMA_NUM_PARALLEL',
+  'OLLAMA_MAX_LOADED_MODELS',
+  'OLLAMA_FLASH_ATTENTION',
+  'OLLAMA_KV_CACHE_TYPE',
+  'OLLAMA_KEEP_ALIVE',
+] as const;
+
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function bytesToGb(bytes: number): string {
+  return (bytes / 1024 ** 3).toFixed(2);
+}
+
+function mibToGb(mib: number): string {
+  return (mib / 1024).toFixed(2);
+}
+
+/** Advisory-only text: the exact command an operator could run to terminate
+ *  the given PIDs. Never executed by this code — see module doc comment. */
+function killHint(pids: number[]): string {
+  if (platform() === 'win32') {
+    return pids.map((pid) => `taskkill /PID ${pid} /F`).join('  ');
+  }
+  return pids.map((pid) => `kill ${pid}`).join('  ');
+}
+
+async function reportOrphans(
+  orphans: ProcessInfo[],
+  queryGpuMemory: (pids: number[]) => Promise<Map<number, number> | null>,
+): Promise<CheckResult> {
+  const pidList = orphans.map((p) => p.pid).join(', ');
+
+  let vramMap: Map<number, number> | null;
+  try {
+    vramMap = await queryGpuMemory(orphans.map((p) => p.pid));
+  } catch {
+    vramMap = null;
+  }
+
+  const vramMsg = vramMap
+    ? ` — approx ${mibToGb(orphans.reduce((sum, p) => sum + (vramMap!.get(p.pid) ?? 0), 0))} GB of VRAM reclaimable`
+    : ' — VRAM usage unavailable (nvidia-smi not found, no NVIDIA GPU, or unreadable)';
+
+  return {
+    ok: false,
+    message: `${orphans.length} orphaned llama-server process(es) with no live Ollama parent: PID ${pidList}${vramMsg}`,
+    fix:
+      'These PIDs appear orphaned (their parent Ollama process is gone). Diagnostic only — verify before ' +
+      'acting; astramem doctor never kills anything itself. If confirmed orphaned, the operator can run: ' +
+      killHint(orphans.map((p) => p.pid)),
+  };
+}
+
+// ─── Check: Orphaned llama-server processes ──────────────────────────────
+
+function checkOrphanedLlamaServer(opts: {
+  ollamaBaseUrl: string;
+  listProcesses: () => Promise<ProcessInfo[]>;
+  queryGpuMemory: (pids: number[]) => Promise<Map<number, number> | null>;
+  fetchOllamaPs: (baseUrl: string) => Promise<OllamaPsModel[] | null>;
+}): Check {
+  return {
+    name: 'Orphaned llama-server processes',
+    async run(): Promise<CheckResult> {
+      let procs: ProcessInfo[];
+      try {
+        procs = await opts.listProcesses();
+      } catch (err) {
+        return { ok: true, message: `process enumeration unavailable (non-fatal): ${errMsg(err)}` };
+      }
+
+      const llamaServers = procs.filter((p) => LLAMA_SERVER_RE.test(p.name));
+      if (llamaServers.length === 0) {
+        return { ok: true, message: 'no llama-server processes running' };
+      }
+
+      const ollamaPids = new Set(procs.filter((p) => OLLAMA_RE.test(p.name)).map((p) => p.pid));
+      const noParentOrphans = llamaServers.filter((p) => p.ppid === null || !ollamaPids.has(p.ppid));
+
+      let models: OllamaPsModel[] | null;
+      try {
+        models = await opts.fetchOllamaPs(opts.ollamaBaseUrl);
+      } catch {
+        models = null;
+      }
+
+      // Highest-confidence signal: no live Ollama parent at all.
+      if (noParentOrphans.length > 0) {
+        return reportOrphans(noParentOrphans, opts.queryGpuMemory);
+      }
+
+      // Lower-confidence signal: every llama-server resolves to a live
+      // Ollama parent, but there are more llama-server processes than
+      // Ollama reports as currently loaded — some are very likely stale
+      // grandchildren of an earlier force-killed daemon (parent PID reuse
+      // can hide the orphan from the ppid check above).
+      if (models !== null && llamaServers.length > models.length) {
+        const pidList = llamaServers.map((p) => p.pid).join(', ');
+        return {
+          ok: false,
+          message:
+            `${llamaServers.length} llama-server process(es) running [PID ${pidList}] but Ollama reports only ` +
+            `${models.length} model(s) currently loaded — likely stale/orphaned process(es) among them even ` +
+            `though all currently resolve to a live Ollama parent (parent PID reuse can produce this).`,
+          fix:
+            'Cross-check these PIDs against `ollama ps` output, then terminate manually if confirmed orphaned — ' +
+            'this check will never do it for you: ' + killHint(llamaServers.map((p) => p.pid)),
+        };
+      }
+
+      return {
+        ok: true,
+        message:
+          `${llamaServers.length} llama-server process(es), all owned by a live Ollama parent` +
+          (models !== null ? ` (matches ${models.length} loaded model(s))` : ''),
+      };
+    },
+  };
+}
+
+// ─── Check: Silent CPU offload ────────────────────────────────────────────
+
+function checkSilentCpuOffload(opts: {
+  ollamaBaseUrl: string;
+  fetchOllamaPs: (baseUrl: string) => Promise<OllamaPsModel[] | null>;
+}): Check {
+  return {
+    name: 'Silent CPU offload',
+    async run(): Promise<CheckResult> {
+      let models: OllamaPsModel[] | null;
+      try {
+        models = await opts.fetchOllamaPs(opts.ollamaBaseUrl);
+      } catch {
+        models = null;
+      }
+
+      if (models === null) {
+        return { ok: true, message: 'Ollama /api/ps unreachable — CPU offload check skipped (is Ollama running?)' };
+      }
+      if (models.length === 0) {
+        return { ok: true, message: 'no models currently loaded in Ollama' };
+      }
+
+      const rows = models.map((m) => ({
+        ...m,
+        ratio: m.size > 0 ? m.size_vram / m.size : 1,
+      }));
+      const fmt = (r: (typeof rows)[number]) =>
+        `${r.name}: ${(r.ratio * 100).toFixed(1)}% on GPU (ratio ${r.ratio.toFixed(2)}, ${bytesToGb(r.size_vram)}/${bytesToGb(r.size)} GB)`;
+
+      const offloaded = rows.filter((r) => r.ratio < CPU_OFFLOAD_RATIO_FLOOR);
+      if (offloaded.length > 0) {
+        return {
+          ok: false,
+          message: `${offloaded.length} model(s) partially offloaded to CPU: ${offloaded.map(fmt).join('; ')}`,
+          fix:
+            'Free VRAM (see "Orphaned llama-server processes" above), lower OLLAMA_MAX_LOADED_MODELS, or use a ' +
+            'smaller/quantized model so the whole thing fits in VRAM — otherwise inference silently runs ~4x ' +
+            'slower with no error, ever, telling you why.',
+        };
+      }
+
+      return { ok: true, message: `all loaded model(s) fully on GPU: ${rows.map(fmt).join('; ')}` };
+    },
+  };
+}
+
+// ─── Check: Ollama tuning env vars (informational) ───────────────────────
+
+function checkOllamaTuningEnvVars(env: NodeJS.ProcessEnv): Check {
+  return {
+    name: 'Ollama tuning env vars',
+    async run(): Promise<CheckResult> {
+      const parts = TUNING_VARS.map((v) => `${v}=${env[v] ?? '(unset)'}`);
+      return {
+        ok: true,
+        message:
+          `${parts.join(', ')} — these materially affect Ollama throughput/VRAM fit (flash-attn + q8 KV cache ` +
+          `dropped qwen3:8b from 6.2 to 5.76 GB on the operator's box, the difference between fitting and not ` +
+          `fitting on 8 GB). Reflects the environment this doctor process itself sees, not necessarily the ` +
+          `running Ollama server's own environment if it was launched from a different shell/service.`,
+      };
+    },
+  };
+}
+
+// ─── Registry entry point ─────────────────────────────────────────────────
+
+export function getGpuChecks(rawOpts: GpuCheckOpts = {}): Check[] {
+  const ollamaBaseUrl = rawOpts.ollamaBaseUrl ?? 'http://127.0.0.1:11434';
+  const listProcesses = rawOpts.listProcesses ?? defaultListProcesses;
+  const queryGpuMemory = rawOpts.queryGpuMemory ?? (() => queryNvidiaSmiUsedMemory());
+  const fetchOllamaPs = rawOpts.fetchOllamaPs ?? defaultFetchOllamaPs;
+  const env = rawOpts.env ?? process.env;
+
+  return [
+    checkOrphanedLlamaServer({ ollamaBaseUrl, listProcesses, queryGpuMemory, fetchOllamaPs }),
+    checkSilentCpuOffload({ ollamaBaseUrl, fetchOllamaPs }),
+    checkOllamaTuningEnvVars(env),
+  ];
+}
