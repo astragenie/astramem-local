@@ -88,7 +88,7 @@ export class OllamaLLMProvider implements LLMProvider {
 
   constructor(config: OllamaLLMConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
-    this.model = config.model ?? 'qwen2.5:7b';
+    this.model = config.model ?? 'qwen3:8b';
     // Disable thinking for qwen3* by default (see OllamaLLMConfig.think) so
     // structured `format:json` extraction gets JSON in message.content instead
     // of an empty body. Explicit config.think wins.

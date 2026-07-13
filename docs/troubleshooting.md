@@ -69,7 +69,7 @@ astramem-local doctor
 
 ```
 astramem-local providers test ollama
-  FAIL  LLM (ollama / qwen2.5-coder:7b)  error: connect ECONNREFUSED 127.0.0.1:11434
+  FAIL  LLM (ollama / qwen3:8b)  error: connect ECONNREFUSED 127.0.0.1:11434
 ```
 
 or doctor shows:
@@ -126,7 +126,7 @@ ollama:
 
 ```bash
 ollama list    # check what is installed
-ollama pull qwen2.5-coder:7b
+ollama pull qwen3:8b
 ollama pull mxbai-embed-large
 ```
 
@@ -175,8 +175,8 @@ transcripts are queued and will distill automatically tomorrow (UTC midnight res
 4. **Switch to Ollama** to eliminate Azure cost entirely:
    ```yaml
    llm:
-     compaction: { provider: ollama, model: qwen2.5-coder:7b }
-     extraction: { provider: ollama, model: qwen2.5-coder:7b }
+     compaction: { provider: ollama, model: qwen3:8b }
+     extraction: { provider: ollama, model: qwen3:8b }
    ```
    Restart the daemon; paused jobs retry automatically.
 

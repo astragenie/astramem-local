@@ -34,7 +34,7 @@
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { loadFixtures, type GoldFixture } from './lib/fixtures.js';
-import { runOllamaCandidate, type DaemonFixtureResult } from './lib/daemon-runner.js';
+import { runOllamaCandidate, DEFAULT_COMPACTION_MODEL, type DaemonFixtureResult } from './lib/daemon-runner.js';
 import { runDirectPipeline } from './lib/pipeline-direct.js';
 import { AzureReasoningLLMProvider } from './lib/azure-reasoning-provider.js';
 import { NuExtractAdapterProvider } from './lib/nuextract-adapter-provider.js';
@@ -103,6 +103,7 @@ if (!modelsArg) {
   console.error('  Ollama candidate: bare tag, e.g. qwen2.5-coder:7b');
   console.error('  Azure reference:  azure:<deployment>, e.g. azure:gpt-5-mini');
   console.error('  --runs N (default 1): re-run extraction+judging N times per model; N>1 reports mean±stdev and a pairwise significance gate (FEAT-450).');
+  console.error(`  --compaction-model <tag> (default ${DEFAULT_COMPACTION_MODEL}): compaction model held constant across every candidate.`);
   process.exit(1);
 }
 const models = modelsArg.split(',').map(s => s.trim()).filter(Boolean);
@@ -118,6 +119,11 @@ const judgeReasoningEffort = (get('--judge-reasoning-effort') ?? 'low') as Judge
 const judgeAgreementFixturesN = Math.max(0, Math.trunc(Number(get('--judge-agreement-fixtures') ?? '2') || 0));
 const judgeAgreementRepeats = Math.max(0, Math.trunc(Number(get('--judge-agreement-repeats') ?? '3') || 0));
 const skipJudgeAgreement = has('--skip-judge-agreement');
+// --compaction-model (2026-07-13, qwen3:8b operator standardization): compaction
+// was five hardcoded 'qwen2.5-coder:7b' literals scattered through this file —
+// now one named default (lib/daemon-runner.ts's DEFAULT_COMPACTION_MODEL),
+// overridable here so a future model swap doesn't repeat the hunt.
+const compactionModel = get('--compaction-model') ?? DEFAULT_COMPACTION_MODEL;
 
 interface ModelAtomsByFixture {
   model: string;
@@ -128,9 +134,9 @@ interface ModelAtomsByFixture {
 async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Promise<ModelAtomsByFixture> {
   if (model.startsWith('azure:')) {
     const deployment = model.slice('azure:'.length);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=azure/${deployment}) ===`);
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=azure/${deployment}) ===`);
     const azureCfg = resolveAzureConfig({ answererDeployment: deployment });
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    const llmCompaction = new OllamaLLMProvider({ model: compactionModel });
     const llmExtraction = new AzureReasoningLLMProvider({ cfg: azureCfg, model: deployment, reasoningEffort: 'minimal' });
 
     const perFixture: ModelAtomsByFixture['perFixture'] = {};
@@ -164,8 +170,8 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
     if (!a) throw new Error(`unknown openai alias '${alias}' — known: ${Object.keys(OPENAI_ALIASES).join(', ')}`);
     const apiKey = process.env[a.envKey];
     if (!apiKey) throw new Error(`${a.envKey} not set (add it to .bench-keys.env) — required for ${model}`);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=openai-compat ${alias}/${extractModel}) ===`);
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=openai-compat ${alias}/${extractModel}) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: compactionModel });
     const llmExtraction = new OpenAICompatibleLLMProvider({ baseUrl: a.baseUrl, model: extractModel, apiKey });
     return collectDirect(model, llmCompaction, llmExtraction, fixtures);
   }
@@ -173,15 +179,15 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   if (model.startsWith('codex:')) {
     // codex:<model> — uses the machine's existing ~/.codex login (no key).
     const codexModel = model.slice('codex:'.length);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=codex-subscription/${codexModel}) ===`);
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=codex-subscription/${codexModel}) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: compactionModel });
     const llmExtraction = new CodexSubscriptionLLMProvider({ model: codexModel });
     return collectDirect(model, llmCompaction, llmExtraction, fixtures);
   }
 
   if (model === 'nuextract:adapted') {
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=ollama/nuextract via bench-side template adapter) ===`);
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=ollama/nuextract via bench-side template adapter) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: compactionModel });
     const llmExtraction = new NuExtractAdapterProvider({ model: 'nuextract' });
 
     const perFixture: ModelAtomsByFixture['perFixture'] = {};
@@ -205,8 +211,8 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
     return { model, perFixture, daemonBootMs: null };
   }
 
-  console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/qwen2.5-coder:7b, extraction=ollama/${model}) ===`);
-  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs });
+  console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/${compactionModel}, extraction=ollama/${model}) ===`);
+  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel });
   console.log(`  daemon boot: ${run.daemonBootMs}ms`);
   const perFixture: ModelAtomsByFixture['perFixture'] = {};
   for (const r of run.results as DaemonFixtureResult[]) {

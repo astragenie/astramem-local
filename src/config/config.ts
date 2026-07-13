@@ -458,8 +458,8 @@ export function defaultConfig(): Config {
     network: { host: '127.0.0.1' },
     auth: { devNoAuth: false },
     llm: {
-      compaction: { provider: 'ollama', model: 'qwen2.5:7b' },
-      extraction: { provider: 'ollama', model: 'qwen2.5:7b' }
+      compaction: { provider: 'ollama', model: 'qwen3:8b' },
+      extraction: { provider: 'ollama', model: 'qwen3:8b' }
     },
     embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
     vector: { store: 'sqlite-vec' },

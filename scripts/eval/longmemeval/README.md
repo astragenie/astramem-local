@@ -466,10 +466,10 @@ this adapter must not import test-only code). A fresh config dir has no
 `security.encryption.enabled: false` override (same reasoning as that test
 helper: skip the real OS credential store too). `defaultConfig()` already
 points `llm`/`embedding` at the real local Ollama models
-(`qwen2.5-coder:7b` extraction/compaction, `mxbai-embed-large` embeddings),
-so the eval daemon still exercises the real provider stack — only the
-config/data directories and the bearer token are sandboxed, never the
-model backend.
+(`qwen3:8b` extraction/compaction as of the 2026-07-13 operator
+standardization, `mxbai-embed-large` embeddings), so the eval daemon still
+exercises the real provider stack — only the config/data directories and the
+bearer token are sandboxed, never the model backend.
 
 ## Throughput — measured, not estimated (2026-07-08)
 

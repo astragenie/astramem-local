@@ -34,11 +34,11 @@ dataDir: ~/.local/share/astra-memory    # Linux default
 llm:
   compaction:
     provider: ollama            # ollama | azure-openai
-    model: qwen2.5-coder:7b    # any model available in Ollama or Azure deployment name
+    model: qwen3:8b    # any model available in Ollama or Azure deployment name
 
   extraction:
     provider: ollama
-    model: qwen2.5-coder:7b
+    model: qwen3:8b
 
 # Embedding provider — system-wide.
 # Changing provider or model at the SAME dim requires: astramem-local rebuild
@@ -167,7 +167,7 @@ These two stages may use different providers and models. Compaction reduces redu
 transcript chunks; extraction emits typed memory atoms in JSON mode.
 
 Recommended models:
-- Ollama: `qwen2.5-coder:7b` (fast), `llama3.1:8b` (more reasoning)
+- Ollama: `qwen3:8b` (current default, 2026-07-13 operator standardization), `llama3.1:8b` (more reasoning)
 - Azure: any GPT-4.1 deployment
 
 ### `embedding`

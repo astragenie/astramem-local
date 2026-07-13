@@ -25,6 +25,15 @@ describe('loadConfig', () => {
     expect(defaultConfig().auth.devNoAuth).toBe(false);
   });
 
+  // 2026-07-13 operator standardization (qwen3:8b, was qwen2.5:7b) — a
+  // shipped default with no assertion is how it silently drifts; see the
+  // CHANGELOG [Unreleased] entry for why this isn't an A/B-benchmarked swap.
+  it('llm.compaction/extraction default to qwen3:8b', () => {
+    const cfg = defaultConfig();
+    expect(cfg.llm.compaction.model).toBe('qwen3:8b');
+    expect(cfg.llm.extraction.model).toBe('qwen3:8b');
+  });
+
   it('default config search weights are unchanged by governance (default behavior preserved)', () => {
     const cfg = loadConfig(undefined);
     expect(cfg.search).toEqual(defaultConfig().search);
