@@ -90,7 +90,7 @@ describe('GET /dashboard', () => {
     'pipeline',
     'jobs',
     'consolidation',
-    'providers / storage',
+    'embedding',
     'usefulness',
     'budget',
     'recent activity',

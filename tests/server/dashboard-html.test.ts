@@ -15,7 +15,6 @@ function baseData(overrides: Partial<DashboardData> = {}): DashboardData {
     jobStates: [],
     jobStatesByKind: [],
     hourlyThroughput: [],
-    providers: [],
     todaySpend: null,
     mtdSpend: 0,
     mtdCalls: 0,
@@ -261,5 +260,51 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     expect(html).toContain('/dashboard/jobs');
     expect(html).toContain('/dashboard/consolidation');
     expect(html).toContain('/dashboard/search');
+  });
+
+  // Migration 040: provider_state (zero writers, ever) is dropped and the
+  // strip that used to read it is repointed at config.embedding + the live
+  // HealthState.embed data instead of being deleted outright.
+  describe('Embedding strip (migration 040 repoint)', () => {
+    it('renders provider/model/dim from config — never blank, unlike the old provider_state-backed widget', () => {
+      const html = renderDashboard(baseData({ health: null }), config);
+      expect(html).toContain('<h3>Embedding</h3>');
+      expect(html).toContain('ollama/mxbai-embed-large');
+      expect(html).toContain('1024-dim');
+      // The old "no providers registered" empty state must be gone entirely
+      // — the panel always has something true to show now.
+      expect(html).not.toContain('no providers registered');
+      expect(html).not.toContain('Providers / Storage');
+    });
+
+    it('shows OK when health.embed.ok is true', () => {
+      const html = renderDashboard(baseData({ health: healthyHealth() }), config);
+      const section = html.slice(html.indexOf('<h3>Embedding</h3>'), html.indexOf('</section>', html.indexOf('<h3>Embedding</h3>')));
+      expect(section).toContain('<span class="ok">OK</span>');
+    });
+
+    it('shows FAIL with the truncated error when health.embed.ok is false', () => {
+      const html = renderDashboard(baseData({
+        health: degradedHealth({ embed: { ok: false, lastOkAt: null, lastError: 'ollama unreachable', attempts: 3 } }),
+      }), config);
+      const section = html.slice(html.indexOf('<h3>Embedding</h3>'), html.indexOf('</section>', html.indexOf('<h3>Embedding</h3>')));
+      expect(section).toContain('FAIL');
+      expect(section).toContain('ollama unreachable');
+    });
+
+    it('shows a starting/muted state, not OK or FAIL, when health is null (bare test apps) or embed.ok is null', () => {
+      const html = renderDashboard(baseData({ health: null }), config);
+      const section = html.slice(html.indexOf('<h3>Embedding</h3>'), html.indexOf('</section>', html.indexOf('<h3>Embedding</h3>')));
+      expect(section).toContain('starting');
+      expect(section).not.toContain('class="ok"');
+      expect(section).not.toContain('class="err"');
+    });
+
+    it('layout stays coherent — the strips row still renders exactly 3 strip divs, no orphaned/collapsed grid cell', () => {
+      const html = renderDashboard(baseData({ health: healthyHealth() }), config);
+      const stripsSection = html.slice(html.indexOf('class="strips"'), html.indexOf('class="strips2"'));
+      const stripDivs = stripsSection.match(/<div class="strip">/g) ?? [];
+      expect(stripDivs.length).toBe(3);
+    });
   });
 });

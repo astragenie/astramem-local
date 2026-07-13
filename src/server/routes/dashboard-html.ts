@@ -263,21 +263,28 @@ function renderConsolidationStrip(data: DashboardData): string {
 </div>`;
 }
 
-function renderProvidersStrip(data: DashboardData): string {
-  if (data.providers.length === 0) {
-    return `<div class="strip">
-  <h3>Providers / Storage</h3>
-  <div class="muted">no providers registered</div>
-</div>`;
-  }
-  const rows = data.providers.map(p => {
-    const ok = p.last_health_ok ? '<span class="ok">OK</span>' : '<span class="err">FAIL</span>';
-    const dim = p.dim ?? '—';
-    return `<div>${esc(p.provider)}/${esc(p.model)} <span class="muted">${dim}-dim</span> &middot; ${ok}</div>`;
-  }).join('');
+/** Repointed 2026-07-13 (migration 040) to the LIVE source of truth instead
+ *  of the always-empty `provider_state` table: `config.embedding` gives the
+ *  configured provider/model/dim (never stale — there's nothing to "check",
+ *  it's simply what boot resolved), and `health.embed` (the same HealthState
+ *  instance /health reads) gives the live last-probe outcome. See migration
+ *  040's header for why the old table-backed version never had anything to
+ *  show. */
+function renderEmbeddingStrip(config: Config, health: DashboardHealth | null): string {
+  const { provider, model, dim } = config.embedding;
+  const embed = health?.embed;
+  const statusLabel = embed === undefined || embed.ok === null
+    ? '<span class="muted">starting</span>'
+    : embed.ok
+      ? '<span class="ok">OK</span>'
+      : `<span class="err">FAIL${embed.lastError ? ` (${esc(truncate(embed.lastError, 40))})` : ''}</span>`;
+  const checkedLabel = embed?.lastOkAt != null
+    ? `<div class="muted">checked ${fmtAgeMs(Date.now() - embed.lastOkAt)} ago</div>`
+    : '';
   return `<div class="strip">
-  <h3>Providers / Storage</h3>
-  ${rows}
+  <h3>Embedding</h3>
+  <div>${esc(provider)}/${esc(model)} <span class="muted">${dim}-dim</span> &middot; ${statusLabel}</div>
+  ${checkedLabel}
 </div>`;
 }
 
@@ -493,7 +500,7 @@ ${renderPipeline(data)}
 <section class="strips">
 ${renderJobsStrip(data)}
 ${renderConsolidationStrip(data)}
-${renderProvidersStrip(data)}
+${renderEmbeddingStrip(config, data.health)}
 </section>
 
 <section class="strips2">

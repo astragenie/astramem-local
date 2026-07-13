@@ -14,14 +14,18 @@ describe('migrate', () => {
     const names = tables.map(t => t.name);
     expect(names).toContain('schema_version');
     expect(names).toContain('sessions');
-    expect(names).toContain('messages');
     expect(names).toContain('transcripts');
     expect(names).toContain('memories');
     expect(names).toContain('jobs');
-    expect(names).toContain('artifacts');
-    expect(names).toContain('provider_state');
     expect(names).toContain('budget_spend');
     expect(names).toContain('redaction_log');
+    // Migration 040 (issue: teardown-remediation-plan §2.5) drops these three
+    // day-one (001-init.sql) tables — 001 still creates them (a fresh DB
+    // replays every migration file in order), but 040 drops them again later
+    // in the same migrate() call, so a fresh DB never has them at rest.
+    expect(names).not.toContain('messages');
+    expect(names).not.toContain('artifacts');
+    expect(names).not.toContain('provider_state');
   });
 
   it('is idempotent — second run does nothing', () => {
@@ -885,6 +889,80 @@ describe('migration 020-agent-profile-corrections-index', () => {
     migrate(db);
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 20').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Migration 040 — DROP TABLE messages / artifacts / provider_state
+// (teardown-remediation-plan §2.5, finding #10). Zero-writer day-one tables;
+// provider_state's one reader (dashboard queryProviders) is repointed at
+// config.embedding + live HealthState.embed in the same PR. IRREVERSIBLE —
+// see the migration file's own header.
+// ---------------------------------------------------------------------------
+
+describe('migration 040-drop-dead-tables', () => {
+  it('applies cleanly on a fresh DB — the three tables are absent and MAX(version) is SCHEMA_VERSION', () => {
+    const db = openDb(':memory:');
+    expect(() => migrate(db)).not.toThrow();
+
+    const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(versions.v).toBe(SCHEMA_VERSION);
+
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+    const names = tables.map(t => t.name);
+    expect(names).not.toContain('messages');
+    expect(names).not.toContain('artifacts');
+    expect(names).not.toContain('provider_state');
+  });
+
+  it('applies cleanly on the upgrade path — a DB that HAS the three tables (pre-040 state) drops them without error', () => {
+    const db = openDb(':memory:');
+    migrate(db); // fresh DB: 001 creates the tables, 040 drops them again in the same call
+
+    // Simulate a pre-040 production-shaped DB: recreate the three tables
+    // (with a row in each, matching what an operator's real datadir could
+    // have on disk even though this repo never wrote to them) and mark 040
+    // as not-yet-applied, mirroring migrations 015/016/017's own
+    // "delete the schema_version row" idiom for exercising a migration
+    // against its actual pre-migration starting shape.
+    db.exec(`
+      CREATE TABLE messages (
+        id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL,
+        content TEXT NOT NULL, ts INTEGER NOT NULL, kind TEXT
+      );
+      CREATE TABLE artifacts (
+        id TEXT PRIMARY KEY, job_id TEXT NOT NULL, kind TEXT NOT NULL,
+        content_path TEXT NOT NULL, created_at INTEGER NOT NULL
+      );
+      CREATE TABLE provider_state (
+        provider TEXT NOT NULL, model TEXT NOT NULL, dim INTEGER,
+        last_health_ok INTEGER NOT NULL DEFAULT 0, last_check_at INTEGER,
+        PRIMARY KEY (provider, model)
+      );
+    `);
+    db.prepare("INSERT INTO messages (id, session_id, role, content, ts) VALUES ('m1', 's1', 'user', 'hi', 1)").run();
+    db.prepare("INSERT INTO artifacts (id, job_id, kind, content_path, created_at) VALUES ('a1', 'j1', 'log', '/tmp/x', 1)").run();
+    db.prepare("INSERT INTO provider_state (provider, model, last_health_ok) VALUES ('ollama', 'mxbai-embed-large', 1)").run();
+    db.prepare('DELETE FROM schema_version WHERE version = 40').run();
+
+    expect(() => migrate(db)).not.toThrow();
+
+    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as { name: string }[];
+    const names = tables.map(t => t.name);
+    expect(names).not.toContain('messages');
+    expect(names).not.toContain('artifacts');
+    expect(names).not.toContain('provider_state');
+
+    const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
+    expect(versions.v).toBe(SCHEMA_VERSION);
+  });
+
+  it('is idempotent — re-running after 040 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 40').get() as { n: number };
     expect(versions.n).toBe(1);
   });
 });
