@@ -18,10 +18,11 @@
 > "Corrections to the record" below.
 
 **Status:** Proposed
-**Date:** 2026-07-13 · **Confidence:** High for Instance 1 and the `--ours` rebase footgun
-(both directly reproduced in `git log`); Medium for the generalized pattern claim, because
-its second instance (`checks.ts`) is evidenced by real same-day collisions but its
-sharpest illustrative anecdote did not hold up under verification (see below).
+**Date:** 2026-07-13 · **Confidence:** High for both instances. Getting here took two
+rounds of correction on Instance 2's near-miss anecdote — first an overstated claim
+("nothing would have caught it"), then an under-verified rebuttal of it (a commit
+timestamp mistaken for a merge-base) — both documented in §4, both directly reproducible
+against `git log` and `git merge-base`.
 **Context:** Two failures landed in this repo on 2026-07-13, in different subsystems,
 authored by different agents, discovered independently — and turned out to be the same
 defect wearing two disguises. An architecture review recommended naming the pattern once,
@@ -150,51 +151,73 @@ The fix — PR #231, `refactor/doctor-checks-registry`, currently **open, draft*
 site keeps working. Adding a canary now costs one new file plus a two-line touch to
 `index.ts`, not an edit inside a shared function body. Not yet merged as of this ADR.
 
-### 4. Corrections to the record — what the initiating brief for this ADR got wrong
+### 4. Corrections to the record — two unverified claims, from two different people, while writing the section about verification
 
-This ADR was commissioned with a specific "near-miss" scenario attached: that PR #231's
-modify/delete conflict, if resolved with "keep my version, the split is the whole point,"
+This ADR was commissioned with a specific "near-miss" scenario: that PR #231's
+modify/delete conflict, resolved with "keep my version, the split is the whole point,"
 would have silently deleted `checkEntityLinkRate` and the atom-validity rate gate,
 reverting both to a known-bad `extracted === 0` existence check — and that **nothing in
 the repo would have caught it**, because `checkEntityLinkRate` supposedly had no test at
 all, and the atom-validity tests supposedly never exercised the `0 < rate < 5%` band where
 the two gates disagree.
 
-**Verified against the live repo, this does not hold:**
+**Round one (this author's first draft).** `tests/doctor/entity-link-rate-check.test.ts`
+exists, has 8 cases, and directly exercises the disagreement band (`'87% of recent
+memories unlinked — WARN'`, `'2% of recent memories unlinked — PASS (healthy)'`).
+`tests/doctor/atom-validity-extraction-check.test.ts` has a case literally named
+**"coverage COLLAPSES to 2% — WARN, not a green 'well, it is not zero'"**, whose own
+comment states it is *"THE TEST WHOSE ABSENCE LET THE BUG SHIP"* — this exact gap was
+identified and closed in PR #228, the same day. **"Nothing would have caught it" was
+false, and stays retracted: both canaries have dedicated boundary-band regression tests
+today, and a naive revert would fail loudly.**
 
-- `tests/doctor/entity-link-rate-check.test.ts` exists, has 8 cases, and directly
-  exercises the disagreement band: `'87% of recent memories unlinked — WARN'` and
-  `'2% of recent memories unlinked — PASS (healthy)'` are both present.
-- `tests/doctor/atom-validity-extraction-check.test.ts` has a case literally named
-  **"coverage COLLAPSES to 2% — WARN, not a green 'well, it is not zero'"**, whose own
-  comment states it is *"THE TEST WHOSE ABSENCE LET THE BUG SHIP"* — i.e. this exact gap
-  was identified and closed, in PR #228, the same day.
-- PR #231's own commits are timestamped `2026-07-13T20:46–20:47Z`, several hours after
-  PR #215 (15:42) and PR #228 (15:33) merged — so the branch was cut from a `main` that
-  already contained both fixes and both tests. There is no window in which #231 could
-  modify-vs-delete-conflict against a pre-fix version of these checks; its own diff does
-  not touch either test file, and its stated verification run (`tests/doctor/` +
-  `tests/hygiene/` — 30 files, 218 tests, all green) already includes both.
+But this author then over-corrected, on a second unverified claim: that because PR #231's
+commits carry an authored timestamp roughly five hours after PR #215 and PR #228 merged,
+"there is no window in which #231 could modify-vs-delete-conflict against a pre-fix
+version of these checks." **That reasoning is wrong, and it was never checked before being
+written down** — a commit's author-date does not establish what commit its branch forked
+from; only `git merge-base` does, and `git rebase` explicitly preserves the original
+author-date of a replayed commit while moving it to sit on a different, later parent. This
+was caught by direct review, not by this author.
 
-**This is not a minor correction — it is itself evidence for a different, real rule that
-belongs in this ADR anyway (rule 5, below): a claim about how a system would fail, handed
-down without being checked, is exactly the kind of claim this repo's own culture (ADR-015
-§5) says must be verified the same way a claim about success is verified.** The
-initiating brief's version of events was plausible, well-constructed, and wrong in its
-specifics. A failed verification here is not a failure of this ADR — catching it is what
-this ADR's own rule 5 demands.
+**What direct verification (`git merge-base`, `git show <sha>:path | grep`) actually
+shows, reproduced independently for this revision:**
 
-**What is NOT weakened by this correction:** the underlying structural fact — that
-`checks.ts` is a junction three unrelated slices collided in on the same day, that a
-names-and-order diff genuinely cannot prove semantic equivalence (see rule 4 below), and
-that PR #231 exists specifically to remove the junction — is independently verified and
-stands. What does not stand is the specific claim that this particular near-miss would
-have gone undetected. It likely would not have: the tests that would catch it already
-exist and already ran.
+```
+$ git show 24f1762:src/doctor/checks.ts | grep -c "checkEntityLinkRate\|VALIDITY_EXTRACTION_WARN_FLOOR"
+0
+```
 
-**The real, already-happened instance of "a green suite is not proof a rebase preserved
-semantics" is Instance 1's `--ours` incident**, above — not a hypothetical about
-`checks.ts`. That incident is the one to cite when this rule needs a citation.
+`24f1762` is PR #227 ("add B3 + B4 to the wave plan"), merged **15:18:43** — before PR
+#215 (15:42) and PR #228 (15:33). At that point in the repo's history, `checks.ts`
+genuinely contained neither canary. `24f1762` is an ancestor of PR #231's current branch
+tip (`git merge-base --is-ancestor` confirms it), which is consistent with the branch
+having been built from a point in history that predated both fixes — **the modify/delete
+conflict was real**, not a hypothetical. The branch has since been rebased: its *current*
+merge-base against `origin/main` is `7f70ba1` (PR #224, 15:53:26), which already contains
+both canaries (5 matches for the same grep), and the branch's own split tree now correctly
+contains `src/doctor/checks/entity-link-rate.ts` with the rate-based `ZERO linked
+entities` / `MEANINGFUL_USAGE_THRESHOLD` logic intact — restored, not left reverted.
+
+**So the accurate account, verified in both directions, is narrower than either version
+that came before it:**
+
+- **The collision: REAL.** At the point the split was built from, `checks.ts` on the
+  branch genuinely lacked both canaries that had landed on `main` in the meantime. The
+  natural resolution of that modify/delete conflict — take the branch's version, since the
+  split *is* the branch's entire point — would have shipped without them.
+- **"Silent / nothing would catch it": FALSE, still.** The dedicated boundary-band tests
+  for both canaries exist and would fail loudly against a version missing the rate logic.
+  Consistent with that: the branch's current state has both correctly restored, not
+  dropped.
+
+**This double correction is itself the strongest illustration of rule 5, better than
+either single version of events would have been.** Two different people, in the same
+session, each asserted a confident negative from a plausible-looking signal — a
+reviewer's summarized report, and a commit timestamp — and neither ran the one command
+that actually settles it (`git merge-base`, or the grep against the cited SHA) before
+writing the claim down. **That is the rule this ADR states, demonstrated twice, inside the
+document that states it.** Use this, not a hypothetical, when rule 5 needs a citation.
 
 ### 5. The binding rules
 
@@ -224,10 +247,13 @@ semantics" is Instance 1's `--ours` incident**, above — not a hypothetical abo
    today; rely on it explicitly, not on the order diff alone.
 5. **A claim about how the system would fail is a claim about the system, and must be
    verified the same way a claim about success is verified — restated from ADR-015 §5,
-   because this ADR's own commissioning brief violated it and had to be corrected in §4
-   above.** A confident, well-written failure scenario is not evidence until it is checked
-   against the actual state of the repo, including timestamps: a branch cut after a fix
-   merged cannot modify-delete-conflict against the pre-fix version of that fix.
+   because writing THIS ADR needed the rule twice, from two different authors, in the same
+   session (§4 above).** A confident, well-written failure scenario is not evidence until
+   it is checked against the actual state of the repo — and neither is a confident,
+   well-written *correction* of one. Specifically: a commit's author-date is not its
+   branch's fork point; only `git merge-base` (or an ancestry check against the cited SHA)
+   establishes what a branch did or didn't contain when it diverged. Run that command
+   before asserting either "this would have collided" or "this couldn't have collided."
 6. **During a `git rebase`, `--ours` means the upstream/base side, not the commits being
    replayed — the inverse of a normal merge.** This is a rule of its own because it is not
    intuitive, it silently discards the replayed side's real work, and it already produced
@@ -358,9 +384,14 @@ exactly the failure mode `runner-plugin#508` is tracking at the dispatcher level
 - PR #231 (`refactor/doctor-checks-registry`, open/draft as of this ADR) — Instance 2's
   fix; its own description independently names the "junction, not a subsystem"
   diagnostic this ADR generalizes.
+- Commits `24f1762` (PR #227, an ancestor of PR #231's branch, predates the two canary
+  fixes) and `7f70ba1` (PR #224, PR #231's current merge-base against `origin/main`,
+  postdates them) — the `git merge-base` evidence behind §4's second-round correction.
 - `tests/doctor/entity-link-rate-check.test.ts`,
   `tests/doctor/atom-validity-extraction-check.test.ts` — the existing boundary-band
-  regression coverage that corrects §4's initiating near-miss claim.
+  regression coverage that would have caught a silent revert; corrects the "nothing would
+  have caught it" half of §4's initiating near-miss claim, not the "there was no real
+  collision" half, which independent verification confirmed was real.
 - `runner-plugin#508` (`astragenie/runner-plugin`, open) — the dispatcher-level half of
   Instance 1: no allocation protocol for globally-scarce values across parallel
   worktrees. Independent of this ADR's repo-side fixes; both are needed.
