@@ -20,8 +20,8 @@
  * from the real OS config dir and its sync.json pairing (the hazard
  * ASTRA_MEMORY_ISOLATED=1 exists to guard against), so it is not needed here.
  *
- * llm.compaction is deliberately held constant at ollama/qwen2.5-coder:7b
- * (the current production default) across every candidate — only
+ * llm.compaction is deliberately held constant at ollama/qwen3:8b
+ * (the current production default as of 2026-07-13) across every candidate — only
  * llm.extraction.model varies. This isolates "which model extracts atoms
  * best" as the one variable under test; letting compaction vary too would
  * confound the comparison (a worse compaction pass can starve an otherwise-
@@ -37,7 +37,7 @@ import {
 } from '../../shared/spawn-daemon.js';
 import type { GoldFixture } from './fixtures.js';
 
-const COMPACTION_MODEL = 'qwen2.5-coder:7b';
+const COMPACTION_MODEL = 'qwen3:8b';
 const BENCH_PROJECT_ID = 'extraction-bench';
 
 export interface DaemonAtom {

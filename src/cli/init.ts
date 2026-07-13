@@ -68,8 +68,14 @@ function defaultCodexAuthPath(): string {
  * Swapped from qwen2.5-coder:7b after the 2026-07-08 A/B benchmark: the
  * instruct sibling scores F1 67% / precision 99% / junk 1% vs the coder
  * variant's 59%/90%/8% on the extraction task (prompt v2), at ~21.6s vs
- * ~8.7s per session — quality-per-watt winner for a background daemon. */
-const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5:7b';
+ * ~8.7s per session — quality-per-watt winner for a background daemon.
+ * Swapped again 2026-07-13 (operator decision): qwen2.5-coder:7b is no
+ * longer even installed on this box, and qwen3:8b's old empty-extract bug
+ * is fixed (ollama.ts auto-sets think:false for qwen3* — operator-verified
+ * extraction returns valid JSON in ~1.8s, compaction in ~0.7s). qwen3:8b
+ * has NOT been through the extraction A/B benchmark yet; qwen2.5:7b stays
+ * selectable and keeps its measured stats below. */
+const DEFAULT_OLLAMA_LLM_MODEL = 'qwen3:8b';
 
 /** Default Ollama embedding model (fixed — the wizard doesn't offer a tier
  * picker for embeddings, only for the extraction/compaction LLM). */
@@ -86,12 +92,21 @@ const DEFAULT_OLLAMA_EMBED_MODEL = 'mxbai-embed-large';
  * ab-run-2026-07-08/). `qwen2.5-coder:14b` was dropped entirely (20%
  * permanent-failure/poison rate, 72.7s/session); `llama3.1:8b` was dropped
  * per operator decision (~3x latency for results the instruct sibling now
- * beats). `qwen2.5:7b` is the recommended default: F1 67%, precision 99%,
- * junk 1% at ~21.6s/session vs the coder variant's F1 59% at ~8.7s.
+ * beats).
+ *
+ * 2026-07-13 (operator decision): `qwen3:8b` is now the recommended
+ * default, and `qwen2.5-coder:7b` was dropped from the curated list — it is
+ * no longer even installed on this box, and it already scored worse than
+ * `qwen2.5:7b` in the 2026-07-08 A/B benchmark above (F1 59% vs 67%).
+ * `qwen3:8b` has NOT been through that A/B benchmark, so no F1 figure is
+ * claimed for it here — the operator live-probed it separately (valid JSON
+ * extraction in ~1.8s, compaction in ~0.7s) after ollama.ts's think:false
+ * fix closed its old empty-extract bug. `qwen2.5:7b` stays selectable and
+ * keeps its real measured stats.
  */
 const OLLAMA_EXTRACTION_TIERS: { value: string; label: string; size: string; ram: string; stats: string }[] = [
-  { value: 'qwen2.5:7b', label: 'RECOMMENDED (default)', size: '~4.7 GB', ram: '16 GB', stats: 'F1 67%, precision 99%, ~21.6s/session' },
-  { value: 'qwen2.5-coder:7b', label: 'fastest', size: '~5 GB', ram: '16 GB', stats: 'F1 59%, ~8.7s/session' },
+  { value: 'qwen3:8b', label: 'RECOMMENDED (default)', size: '~5.2 GB', ram: '16 GB', stats: 'not yet benchmarked here — operator-verified working extraction/compaction (see ollama.ts think:false fix)' },
+  { value: 'qwen2.5:7b', label: 'previous default', size: '~4.7 GB', ram: '16 GB', stats: 'F1 67%, precision 99%, ~21.6s/session' },
 ];
 
 /** Sentinel values for the non-model tier-picker choices (item 3/4). One of
@@ -227,7 +242,7 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   // user then picks (see promptOllamaModelTier / OLLAMA_TIER_BYO_CLOUD).
   let llmProvider = (await promptSelect(
     'LLM provider:',
-    [{ name: 'ollama (qwen2.5:7b)', value: 'ollama' }, ...cloudLlmChoices],
+    [{ name: 'ollama (qwen3:8b)', value: 'ollama' }, ...cloudLlmChoices],
     'ollama'
   )) as LlmProviderChoice;
 
@@ -328,10 +343,10 @@ async function promptOllamaModelTier(): Promise<string> {
     { name: 'BYO cloud (azure-openai — best type-accuracy, no local resource cost)', value: OLLAMA_TIER_BYO_CLOUD },
     { name: 'custom (enter your own Ollama model tag)', value: OLLAMA_TIER_CUSTOM },
   ];
-  // Recommended tier ("llama3.1:8b") is the pre-highlighted choice; the
+  // Recommended tier ("qwen3:8b") is the pre-highlighted choice; the
   // config-level DEFAULT_OLLAMA_LLM_MODEL fallback (used when nothing is
-  // chosen at all, e.g. non-interactive mode) stays qwen2.5:7b.
-  const choice = await promptSelect('Extraction model (Ollama):', choices, 'llama3.1:8b');
+  // chosen at all, e.g. non-interactive mode) matches it.
+  const choice = await promptSelect('Extraction model (Ollama):', choices, 'qwen3:8b');
   if (choice === OLLAMA_TIER_CUSTOM) {
     return promptInput('Custom Ollama model tag:', DEFAULT_OLLAMA_LLM_MODEL);
   }
@@ -571,7 +586,7 @@ function defaultLlmModelFor(provider: LlmProviderChoice): string {
     case 'azure-openai': return 'gpt-4.1';
     case 'openai-compatible': return 'gpt-4o-mini';
     case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
-    case 'ollama': default: return 'qwen2.5:7b';
+    case 'ollama': default: return 'qwen3:8b';
   }
 }
 

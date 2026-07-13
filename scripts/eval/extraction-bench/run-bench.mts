@@ -128,9 +128,9 @@ interface ModelAtomsByFixture {
 async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Promise<ModelAtomsByFixture> {
   if (model.startsWith('azure:')) {
     const deployment = model.slice('azure:'.length);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=azure/${deployment}) ===`);
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen3:8b, extraction=azure/${deployment}) ===`);
     const azureCfg = resolveAzureConfig({ answererDeployment: deployment });
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    const llmCompaction = new OllamaLLMProvider({ model: 'qwen3:8b' });
     const llmExtraction = new AzureReasoningLLMProvider({ cfg: azureCfg, model: deployment, reasoningEffort: 'minimal' });
 
     const perFixture: ModelAtomsByFixture['perFixture'] = {};
@@ -164,8 +164,8 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
     if (!a) throw new Error(`unknown openai alias '${alias}' — known: ${Object.keys(OPENAI_ALIASES).join(', ')}`);
     const apiKey = process.env[a.envKey];
     if (!apiKey) throw new Error(`${a.envKey} not set (add it to .bench-keys.env) — required for ${model}`);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=openai-compat ${alias}/${extractModel}) ===`);
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen3:8b, extraction=openai-compat ${alias}/${extractModel}) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: 'qwen3:8b' });
     const llmExtraction = new OpenAICompatibleLLMProvider({ baseUrl: a.baseUrl, model: extractModel, apiKey });
     return collectDirect(model, llmCompaction, llmExtraction, fixtures);
   }
@@ -173,15 +173,15 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   if (model.startsWith('codex:')) {
     // codex:<model> — uses the machine's existing ~/.codex login (no key).
     const codexModel = model.slice('codex:'.length);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=codex-subscription/${codexModel}) ===`);
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen3:8b, extraction=codex-subscription/${codexModel}) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: 'qwen3:8b' });
     const llmExtraction = new CodexSubscriptionLLMProvider({ model: codexModel });
     return collectDirect(model, llmCompaction, llmExtraction, fixtures);
   }
 
   if (model === 'nuextract:adapted') {
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen2.5-coder:7b, extraction=ollama/nuextract via bench-side template adapter) ===`);
-    const llmCompaction = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/qwen3:8b, extraction=ollama/nuextract via bench-side template adapter) ===`);
+    const llmCompaction = new OllamaLLMProvider({ model: 'qwen3:8b' });
     const llmExtraction = new NuExtractAdapterProvider({ model: 'nuextract' });
 
     const perFixture: ModelAtomsByFixture['perFixture'] = {};
@@ -205,7 +205,7 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
     return { model, perFixture, daemonBootMs: null };
   }
 
-  console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/qwen2.5-coder:7b, extraction=ollama/${model}) ===`);
+  console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/qwen3:8b, extraction=ollama/${model}) ===`);
   const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs });
   console.log(`  daemon boot: ${run.daemonBootMs}ms`);
   const perFixture: ModelAtomsByFixture['perFixture'] = {};

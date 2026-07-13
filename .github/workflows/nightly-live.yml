@@ -56,7 +56,11 @@ env:
   # Single source of truth for the models this lane needs. Space-separated;
   # also drives the actions/cache key below (OLLAMA_CACHE_VERSION-bump or a
   # model-tag change here invalidates the cache automatically).
-  OLLAMA_MODELS: "mxbai-embed-large qwen2.5-coder:7b nomic-embed-text-v2-moe"
+  # qwen3:8b is the production LLM default since 2026-07-13 — tests that spawn a
+  # daemon without a model override (e.g. tests/e2e/plugin-flow.test.ts) resolve to
+  # it, so the lane 404s without it here. qwen2.5-coder:7b stays: several suites
+  # still hardcode that exact tag as literal fixture data.
+  OLLAMA_MODELS: "mxbai-embed-large qwen3:8b qwen2.5-coder:7b nomic-embed-text-v2-moe"
   OLLAMA_CACHE_VERSION: v1
   OLLAMA_CONTAINER: ollama-nightly-live
 

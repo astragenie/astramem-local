@@ -44,7 +44,7 @@ astramem-local init
 The wizard asks:
 - **Vector store** — leave as `sqlite-vec` (recommended).
 - **Embedding provider** — pick `ollama` (free, local) or `azure-openai`.
-- **LLM provider** — pick `ollama` (qwen2.5-coder:7b) or `azure-openai`.
+- **LLM provider** — pick `ollama` (qwen3:8b) or `azure-openai`.
 - **Data directory** — accepts the default (`~/.local/share/astra-memory` on Linux/macOS,
   `%LOCALAPPDATA%\Astramem` on Windows).
 - **Daemon port** — leave as `7777` unless that port is taken.

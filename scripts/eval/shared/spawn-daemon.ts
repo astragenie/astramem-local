@@ -26,7 +26,7 @@
  * `security.encryption.enabled: false` (same as that test helper) so boot
  * never touches the real OS credential store either. `defaultConfig()`
  * already points llm/embedding at the real local Ollama models
- * (qwen2.5-coder:7b / mxbai-embed-large) — no config.yaml overrides needed
+ * (qwen3:8b / mxbai-embed-large) — no config.yaml overrides needed
  * for those, so the eval daemon still exercises the real provider stack.
  */
 import { spawn, type ChildProcess } from 'node:child_process';

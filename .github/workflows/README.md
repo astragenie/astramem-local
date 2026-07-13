@@ -118,7 +118,9 @@ above in this same README).
 the workflow (single source of truth — also drives the cache key, so bumping
 a model tag there automatically busts the cache):
 - `mxbai-embed-large` — current production embed default
-- `qwen2.5-coder:7b` — current production LLM default (compaction/extraction)
+- `qwen2.5-coder:7b` — NOT the production LLM default since 2026-07-13 (that's
+  now `qwen3:8b`); pulled here only because `tests/providers/ollama-llm.test.ts`
+  still hardcodes this exact tag as its literal test fixture
 - `nomic-embed-text-v2-moe` — referenced explicitly by the live block in
   `ollama-embed.test.ts`; see the known-risk note below
 
