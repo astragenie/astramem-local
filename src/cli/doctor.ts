@@ -33,6 +33,7 @@ export async function doctorCommand(args: string[]): Promise<void> {
       redactionEnabled: cfg.security.redaction.enabled,
       encryptionEnabled: cfg.security.encryption.enabled,
       durabilityGateMode: cfg.distill.durabilityGate,
+      extractProfile: cfg.distill.extractProfile,
       autoCaptureEnabled: cfg.capture.autoCapture.enabled,
       proxyEnabled: cfg.proxy.enabled,
       proxyCaptureEnabled: cfg.proxy.capture.enabled,

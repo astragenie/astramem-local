@@ -40,6 +40,7 @@ import { usefulnessRate, usefulnessByType, feedbackLoopSummary } from '../storag
 import { buildMemoryHealthFull, buildMemoryHealthCheap } from '../server/queries/memory-health.js';
 import type { DB } from '../storage/db.js';
 import type { DurabilityGateMode } from '../distill/durability-gate.js';
+import type { ExtractProfile } from '../distill/prompts/extract.js';
 
 export type { Check, CheckResult };
 
@@ -116,6 +117,12 @@ export interface DoctorCheckOpts {
   /** FEAT-441 AC-8: current `distill.durabilityGate` mode. Defaults to
    * 'off' (the shipped default) when not supplied. */
   durabilityGateMode?: DurabilityGateMode;
+  /** FEAT-479 AC-10 (SLICE-434): current `distill.extractProfile`. Defaults
+   * to 'engineering' (the shipped default) when not supplied. Surfaced so
+   * an operator running `conversational` sees the redaction-posture
+   * disclosure every doctor run, not just buried in a config comment — see
+   * `checkExtractProfile` below. */
+  extractProfile?: ExtractProfile;
   /** FEAT-455 / ADR-012 decision 4: current `capture.autoCapture.enabled`.
    * Defaults to `false` (the shipped default) when not supplied. */
   autoCaptureEnabled?: boolean;
@@ -1102,6 +1109,37 @@ function checkDurabilityGateMode(mode: DurabilityGateMode): Check {
   };
 }
 
+// ─── Check: Extraction profile (FEAT-479 AC-10 / SLICE-434) ──────────────────
+
+/**
+ * Informational-only row (`ok: true` always — mirrors `checkDurabilityGateMode`'s
+ * precedent: a deliberate, disclosed config choice is never itself a WARN).
+ * Its whole job is the redaction-posture disclosure: `conversational` extracts
+ * MUCH more personal detail (names, relationships, life events) than
+ * `engineering` does, and `src/redact/index.ts` is unchanged either way — it
+ * only strips SECRETS (tokens/keys/passwords/high-entropy strings), never
+ * non-secret personal content. Every operator running `conversational`
+ * should see this on every `doctor` run, not only in a config.yaml comment.
+ */
+function checkExtractProfile(profile: ExtractProfile): Check {
+  return {
+    name: 'Extraction profile',
+    async run(): Promise<CheckResult> {
+      if (profile === 'conversational') {
+        return {
+          ok: true,
+          message:
+            'extraction profile: conversational — extracts personal facts/relationships/events liberally. ' +
+            'Redaction is UNCHANGED (secrets only — tokens/keys/passwords); non-secret personal content is ' +
+            'NOT redacted and stays on-device in the local SQLite store, same as the engineering profile ' +
+            '(see FEAT-479 / src/distill/prompts/extract.ts).',
+        };
+      }
+      return { ok: true, message: 'extraction profile: engineering (default)' };
+    },
+  };
+}
+
 // ─── Check: Auto-capture (FEAT-455 / ADR-012 decision 4) ─────────────────────
 
 /**
@@ -1456,6 +1494,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkUsefulnessFeedbackLoop(dataDir, encryptionEnabled),
     checkMemoryHealth(dataDir, encryptionEnabled),
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
+    checkExtractProfile(opts.extractProfile ?? 'engineering'),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),

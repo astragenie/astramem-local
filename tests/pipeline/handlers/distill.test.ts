@@ -12,7 +12,7 @@ import type { DB } from '../../../src/storage/db.js';
 import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth, EmbedHealth } from '../../../src/contracts/index.js';
 import {
   EXTRACTION_SYSTEM_PROMPT_V3,
-  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
 } from '../../../src/distill/prompts/extract.js';
 
 // ---------------------------------------------------------------------------
@@ -383,7 +383,7 @@ describe('distillHandler', () => {
 
     expect(extractionSystemPrompts.length).toBeGreaterThanOrEqual(1);
     for (const sentPrompt of extractionSystemPrompts) {
-      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING);
+      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL);
     }
   });
 

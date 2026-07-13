@@ -199,3 +199,40 @@ Score fusion weights. Must sum to approximately 1.0 (the engine normalizes each 
 [0, 1] before weighting). Increase `alpha` for more keyword precision. Increase `beta` for more
 semantic relevance. Increase `gamma` to prefer high-importance memories. Increase `delta` to
 prefer recent memories.
+
+### `distill.extractProfile`
+
+Type: `'engineering' | 'conversational'`. Default: `'engineering'`.
+
+```yaml
+distill:
+  extractProfile: engineering   # engineering | conversational
+```
+
+Selects which extraction prompt the distillation pipeline's LLM extraction stage uses:
+
+- **`engineering`** (default) — tuned for AI coding-agent transcripts. Extracts decisions,
+  facts, lessons, commands, todos, and events about code, config, and architecture. Rich
+  (300-800 char) claim + rationale + consequence + provenance shape for lesson/decision atoms.
+- **`conversational`** — tuned for personal chats, journals, and voice-note transcripts (the
+  mem0/Graphiti-pattern liberal-extraction profile). Extracts personal facts, preferences,
+  relationships, life events, and plans as short (roughly 15-80 word) self-contained sentences,
+  with pronouns resolved to named people and facts attributed to their owner (e.g. "Sergey's
+  daughter Alice starts kindergarten in September", never a bare "daughter starts school").
+
+An override can also be set per-ingested transcript via the wire envelope's `extract_profile`
+field, taking precedence over this config default (see `docs/contracts.md`).
+
+**Threat-model difference between the two profiles — read before switching to `conversational`:**
+secret redaction (`security.redaction`, see "Stage-0 secret redaction" in the top-level README)
+is **completely unaffected by this setting**. It only ever strips SECRETS — tokens, API keys,
+passwords, and high-entropy strings — under BOTH profiles, identically. The `conversational`
+profile does not add any additional redaction; its entire purpose is the opposite: to extract
+and durably store MORE non-secret personal content (names, relationships, health/life events,
+preferences) than the `engineering` profile would ever attempt to. That content is written to
+the same local SQLite store as everything else and is never sent anywhere except to whichever
+LLM provider is configured for extraction (local Ollama by default, or a configured BYO cloud
+provider — see `docs/providers.md`). If you want personal content captured under this profile
+to never leave the machine, keep `llm.extraction.provider: ollama`; switching extraction to a
+cloud provider sends that transcript content to that provider regardless of which extraction
+profile is selected.

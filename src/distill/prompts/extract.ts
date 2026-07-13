@@ -170,18 +170,117 @@ CRITICAL: Output ONLY valid JSON. No markdown, no prose, no code fences. The res
 export type ExtractProfile = 'engineering' | 'conversational';
 
 /**
- * TODO SLICE-434: replace with the real conversational-profile prompt text
- * (mem0-pattern liberal extraction — 15-80 word self-contained sentences,
- * pronouns resolved, proper nouns preserved, relative dates grounded to an
- * explicit observation date — plus Graphiti-pattern possessor qualification
- * and a banned-abstractions negative list; design doc §3.2, AC-9/AC-10).
- * Falls back to the engineering v1 prompt verbatim until that content lands,
- * so `resolveExtractionPrompt` below is fully wired and testable before
- * SLICE-434 ships — never used to silently pass off engineering-profile
- * output as conversational; callers that need to detect "still pending" can
- * compare this constant's identity to EXTRACTION_SYSTEM_PROMPT.
+ * FEAT-479 (D3 S3.2) AC-9/AC-10 (SLICE-434) - the mem0/Graphiti-pattern
+ * liberal-extraction profile for conversational (non-engineering) transcripts.
+ * Memories here are self-contained explanations, not contextless trivia -
+ * mem0-pattern liberal extraction (15-80 word standalone sentences, pronouns
+ * resolved, proper nouns preserved, relative dates grounded to an in-
+ * transcript observation date when one exists) plus Graphiti-pattern
+ * possessor qualification (attribute every fact to its owner by name) and an
+ * explicit banned-abstractions negative list (no vague summaries, no
+ * meta-commentary, no sentiment padding). Unlike the engineering v3 prompt's
+ * type-conditioned richness rule (300-800 chars for lesson/decision), EVERY
+ * atom here stays atomic/short (~15-80 words) regardless of type - personal
+ * facts are frequently superseded as life moves on, so a single clean,
+ * independently-replaceable sentence beats a rich paragraph. The 7-type
+ * taxonomy and AtomEntitySchema/EntityKindSchema contract are unchanged -
+ * only the entity-kind description text below is trimmed to the kinds that
+ * actually recur in personal conversation (actor/org/product/event/other);
+ * the full 12-kind enum still validates whatever the model emits.
+ *
+ * captured_at is NOT currently threaded into this call (05-extract.ts's
+ * extractChunk receives no timestamp - only PipelineContext.capturedAtMs,
+ * plumbed to the embed-index stage, see pipeline.ts), so the date-grounding
+ * rule below is stated CONDITIONALLY ("if the transcript states or implies
+ * an explicit ... date") rather than pointing at a real injected value -
+ * grounding only fires when the transcript itself carries a date anchor.
+ * Wiring an actual captured_at into the extraction prompt is a natural
+ * follow-up once a real anchor value is threaded this deep.
  */
-export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING = EXTRACTION_SYSTEM_PROMPT;
+export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL = `You extract durable PERSONAL knowledge from conversational transcripts — chats, journals, voice-note transcripts, casual check-ins between a person and an assistant — not engineering or coding sessions.
+
+Output STRICT JSON matching:
+{
+  "atoms": [
+    {
+      "type": "decision" | "fact" | "lesson" | "command" | "todo" | "note" | "event",
+      "text": "<one self-contained sentence, roughly 15-80 words>",
+      "importance": 0.0-1.0,
+      "confidence": 0.0-1.0,
+      "evidence": "<optional, short excerpt from source>",
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }]
+    }
+  ]
+}
+
+Liberal extraction (mem0 pattern) — a DIFFERENT posture from engineering transcripts: capture EVERY durable personal fact, preference, relationship, plan, or event mentioned, not only the highest-value few. A stated preference, a named relationship, or a planned date is cheap to keep and expensive to lose — bias toward extracting whenever a candidate is genuinely durable, rather than filtering it out because it seems minor.
+
+Self-containment — every atom must read as ONE complete, standalone sentence of roughly 15-80 words, true on its own without the rest of the conversation:
+- Resolve every pronoun to the actual named person before writing the atom. Never emit "she started her new job", "his sister called him", or "they're moving in June" — write the real names: "Priya started her new job", "Marcus's sister called him", "the Nguyen family is moving in June".
+- Preserve proper nouns EXACTLY as given — people's names, place names, employer and school names, product and brand names. Never substitute a generic noun ("her employer", "the city") for a name you were actually told.
+- Possessor qualification (Graphiti pattern): whenever a fact belongs to a specific person, name that owner inside the sentence itself. Write "Sergey's daughter Alice starts kindergarten in September, moving up from the preschool she has attended the past two years", never a bare "daughter starts kindergarten in September" or "starts school in the fall" — a reader must never have to guess whose fact this is.
+
+Date grounding: if the transcript states or implies an explicit observation/capture date (a timestamp, a line like "today is 2026-07-13", a dated header), resolve relative dates ("yesterday", "last week", "next month") to an absolute date against that anchor. If no such anchor appears anywhere in the transcript, keep the original relative phrasing rather than inventing an absolute date you were not given — a guessed date is worse than an honest relative one.
+
+Banned abstractions — NEVER emit these shapes, even when a summary version is technically accurate:
+- Vague summaries: "discussed plans for the weekend", "talked about work stuff", "had a conversation about the move" — these describe the CONVERSATION itself, not a fact about the person's life; extract the actual plan, fact, or decision underneath instead, or emit nothing if there genuinely isn't one.
+- Meta-commentary: "the user shared an update", "mentioned something about the family" — never describe that a topic came up; state plainly what was actually said.
+- Sentiment padding: "seemed happy about it", "expressed some excitement" — skip a standalone mood observation unless the feeling itself is the durable, recurring fact (an ongoing preference or aversion belongs in "note", not a one-off reaction).
+
+Type-conditioned shape: conversational content maps mostly onto fact, note, event, and decision (a settled plan or choice); command and todo apply only when the source is literally a task, chore, or reminder, and lesson only when the person explicitly names something they personally learned. Regardless of type, every atom here stays atomic, single-valued, and roughly 15-80 words — do NOT apply the engineering profile's 300-800-character rich-shape rule (claim + rationale + consequence + provenance). Personal facts — a job, a relationship status, an address, a due date — are frequently corrected or superseded as life moves on, so keep each one a single clean, independently replaceable statement rather than a multi-clause paragraph.
+
+For each candidate item, pick type in this order — stop at the first match:
+1. event: something that happened, or is scheduled to happen, at a specific point in time (a birth, a move, a wedding, a diagnosis, a graduation, a trip)
+2. decision: a stated choice settled between real alternatives (a school picked, a job offer accepted, a name chosen)
+3. todo: an explicit pending personal task, errand, or reminder ("pick up the dry cleaning Thursday")
+4. command: a literal recipe, routine, or set of steps the person follows step by step (rare in personal conversation — most personal content is NOT this)
+5. fact: a current, stable property of a person's life (job, employer, address, relationship status, age, a health condition, a pet's name)
+6. note: a stated preference, opinion, aversion, or recurring habit (a favorite food, a dislike of crowds, always running on Sunday mornings)
+7. lesson: something the person explicitly names as a takeaway they personally learned from an experience
+
+Entities: list every specific named person, place, organization, or thing the atom is about. kind is one of:
+- actor: a named person — set subtype to "human" unless the transcript makes clear it is an AI/assistant
+- org: a named company, school, or organization
+- product: a named brand, app, or product
+- event: a named happening (e.g. "Alice's graduation")
+- other: a specific named thing that doesn't fit above (a place, a pet's name, a named condition)
+Omit "entities" entirely when the atom names nothing specific.
+valid_at/invalid_at: omit both unless the source explicitly states a start and/or end date for that entity's relationship to the atom.
+
+Skip noise: greetings, small talk with no durable content, filler acknowledgments ("cool", "got it", "haha", "yeah totally").
+Skip secrets: passwords, tokens, financial account numbers, government ID numbers.
+Confidence reflects how clearly and directly the fact was stated: an explicit, unambiguous statement = 0.9; a hedge or maybe = 0.4.
+Importance reflects how durable and personally significant the fact is: a life event, relationship, or major decision = 0.8; a minor passing preference = 0.4.
+
+Recall: enumerate every distinct durable personal item in the chunk, not just the first one — a single real conversation often yields a life event, a couple of facts, and a preference or two across different topics.
+Empty is valid: if the chunk truly contains nothing durable (small talk, filler, no stated fact/plan/preference), output "atoms": [] — do not invent an atom just to have output.
+
+Examples (illustrative only, not exhaustive — the shape of these IS the spec: one self-contained sentence per atom, names resolved, possessor stated):
+
+1. Input: "My daughter Alice is starting kindergarten in September, I honestly can't believe it — she's moving up from the same preschool she's been at for two years." ->
+{"atoms":[
+  {"type":"event","text":"Sergey's daughter Alice is starting kindergarten in September, moving up from the same preschool she has attended for the past two years.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
+]}
+
+2. Input: "I moved to Austin last month for a new job at Anthropic. Honestly loving the move so far, way better weather than where I was before." ->
+{"atoms":[
+  {"type":"fact","text":"Sergey moved to Austin last month to start a new job at Anthropic, relocating from where he had been living before.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"},{"name":"Anthropic","kind":"org"}]},
+  {"type":"note","text":"Sergey has been enjoying his recent move to Austin so far, and prefers the weather there over where he lived previously.","importance":0.4,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]}
+]}
+
+3. Input: "We ended up going with the Montessori school down the street for Alice instead of the public one, mostly because of the smaller class sizes." ->
+{"atoms":[
+  {"type":"decision","text":"Sergey and his wife chose the Montessori school down the street for their daughter Alice instead of the local public school, mainly because of its smaller class sizes.","importance":0.7,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
+]}
+
+4. Input: "Yeah we just talked about the weekend and stuff, nothing major, haha." ->
+{"atoms":[]}
+
+5. NEGATIVE EXAMPLE — what NOT to produce. Input: "We talked about my new job for a bit and how my sister Priya's been dealing with a lot lately with her divorce." ->
+WRONG (vague summary + unresolved possessor + meta-commentary about the conversation itself — this is exactly the failure mode the banned-abstractions and possessor-qualification rules above exist to prevent):
+{"type":"note","text":"Discussed work stuff and some family things, sister going through something hard.","importance":0.5,"confidence":0.5}
+RIGHT (self-contained, possessor-qualified, states the actual fact instead of describing the conversation):
+{"type":"fact","text":"Sergey's sister Priya is currently going through a divorce, and has been having a difficult time with it lately.","importance":0.7,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}`;
 
 /**
  * Resolve the extraction system prompt for one pipeline run. Precedence
@@ -195,12 +294,11 @@ export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING = EXTRACTION_SYSTEM
  *    (pre-SLICE-433) engineering prompt verbatim, now that it is no longer
  *    the default — an explicit escape hatch back to the old shape if v3
  *    regresses recall or a local model can't follow the richer instructions.
- * 3. `profile === 'conversational'` — the mem0/Graphiti-pattern profile.
- *    Currently returns the pending-marker constant above (SLICE-434 not yet
- *    landed), which is still byte-identical to the OLD (v1) engineering
- *    prompt — NOT the new v3 default. SLICE-434 owns replacing this with its
- *    own conversational-profile content; SLICE-433 deliberately does not
- *    touch it so the two prompt rewrites stay independently reviewable.
+ * 3. `profile === 'conversational'` — the mem0/Graphiti-pattern liberal-
+ *    extraction profile (FEAT-479 AC-9/AC-10, SLICE-434). Self-contained
+ *    personal-fact sentences, possessor qualification, banned-abstractions
+ *    negative list — see EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL's own doc
+ *    comment for the full design rationale.
  * 4. Otherwise (`'engineering'`, `null`, or `undefined`) — the SLICE-433
  *    engineering-rich v3 prompt (FEAT-479 AC-5/AC-6). v3 REPLACES v1 as the
  *    engineering default (design doc §3.2 / review item 3): v1 produced the
@@ -215,7 +313,7 @@ export function resolveExtractionPrompt(
 ): string {
   if (envOverride === 'v2') return EXTRACTION_SYSTEM_PROMPT_V2;
   if (envOverride === 'v1') return EXTRACTION_SYSTEM_PROMPT;
-  if (profile === 'conversational') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING;
+  if (profile === 'conversational') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL;
   return EXTRACTION_SYSTEM_PROMPT_V3;
 }
 

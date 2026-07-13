@@ -6,7 +6,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT,
   EXTRACTION_SYSTEM_PROMPT_V2,
   EXTRACTION_SYSTEM_PROMPT_V3,
-  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
 } from '../../src/distill/prompts/extract.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
 import { TransientError } from '../../src/pipeline/errors.js';
@@ -433,7 +433,7 @@ describe('extract stage — FEAT-479 profile threading', () => {
 
     await extractChunk(0, 'chunk text', llm, budget, 10.0, 'conversational');
 
-    expect(systemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING);
+    expect(systemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL);
   });
 
   it('AC-4: ASTRA_EXTRACT_PROMPT=v2 env override wins over an explicit profile, per call (not cached at module load)', async () => {
@@ -469,8 +469,8 @@ describe('extract stage — FEAT-479 profile threading', () => {
     );
 
     expect(systemPrompts).toEqual([
-      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
-      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
     ]);
   });
 });
