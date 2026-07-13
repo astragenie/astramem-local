@@ -184,11 +184,76 @@ process.exit(0);
 
     expect(second.releaseDir).toBe(first.releaseDir);
     expect(second.manifest).toEqual(first.manifest);
+    expect(second.outcome).toBe('reused');
 
     // Only one final release dir should exist — no duplicate or stray tmp dirs.
     const entries = readdirSync(releasesRoot);
     const validLooking = entries.filter(e => !e.startsWith('.tmp-') && !e.endsWith('.failed'));
     expect(validLooking).toEqual(['3.3.3+nogit']);
+  }, SPAWN_HEAVY_TIMEOUT_MS);
+
+  it('FEAT-486: a same-id release whose CONTENT has changed (uncommitted source edits under an unmoved pkgversion+gitsha) is rebuilt, not silently reused', () => {
+    // Reproduces the 2026-07-13 incident: a migration file + a SCHEMA_VERSION
+    // bump landed in the checkout WITHOUT a commit. The git sha didn't move
+    // (this fixture checkout isn't a git repo at all — gitsha is always
+    // 'nogit', the same "identity didn't move" shape as an uncommitted change
+    // in a real repo) and the package.json version wasn't bumped either, so
+    // the computed id is byte-identical between the two materializations —
+    // exactly what let `reinstall` silently re-serve the stale build three
+    // times in a row.
+    makeFixtureCheckout(checkoutDir, { version: '6.6.6' });
+    const first = materializeRelease({ checkoutDir, releasesRoot });
+    expect(first.outcome).toBe('fresh');
+
+    // Simulate the uncommitted change: a new migration file lands in the
+    // checkout. Nothing about pkgversion or gitsha changes.
+    writeFileSync(
+      join(checkoutDir, 'migrations', '002-added-later.sql'),
+      'CREATE TABLE IF NOT EXISTS _added_later (id INTEGER);\n',
+      'utf8',
+    );
+
+    const second = materializeRelease({ checkoutDir, releasesRoot });
+
+    // Same id/dir as before — this is the collision the incident hinged on.
+    expect(second.manifest.id).toBe(first.manifest.id);
+    expect(second.releaseDir).toBe(first.releaseDir);
+
+    // But it must NOT have been silently reused: content differs, so it must
+    // be reported as rebuilt, with evidence.
+    expect(second.outcome).toBe('rebuilt');
+    expect(second.rebuiltReason).toMatch(/contentHash/i);
+    expect(second.manifest.contentHash).not.toBe(first.manifest.contentHash);
+
+    // The on-disk dir must actually carry the NEW migration — proof the
+    // fresh (correct) content won, not the stale reused one.
+    expect(existsSync(join(second.releaseDir, 'migrations', '002-added-later.sql'))).toBe(true);
+
+    // Still exactly one valid-looking release dir — the rebuild replaced
+    // in place, it didn't leave a duplicate.
+    const entries = readdirSync(releasesRoot);
+    const validLooking = entries.filter(e => !e.startsWith('.tmp-') && !e.endsWith('.failed'));
+    expect(validLooking).toEqual(['6.6.6+nogit']);
+  }, SPAWN_HEAVY_TIMEOUT_MS);
+
+  it('FEAT-486: a release.json materialized before contentHash existed is treated as unverifiable and rebuilt, not trusted', () => {
+    makeFixtureCheckout(checkoutDir, { version: '7.7.7' });
+    const first = materializeRelease({ checkoutDir, releasesRoot });
+    expect(first.outcome).toBe('fresh');
+
+    // Simulate a pre-FEAT-486 release.json: strip contentHash from the
+    // existing manifest on disk, as a real release materialized by the old
+    // code would look.
+    const manifestPath = join(first.releaseDir, 'release.json');
+    const legacy = JSON.parse(readFileSync(manifestPath, 'utf8'));
+    delete legacy.contentHash;
+    writeFileSync(manifestPath, JSON.stringify(legacy, null, 2) + '\n', 'utf8');
+
+    const second = materializeRelease({ checkoutDir, releasesRoot });
+
+    // Cannot prove the legacy dir is safe to reuse -> rebuild, not trust.
+    expect(second.outcome).toBe('rebuilt');
+    expect(second.manifest.contentHash).toBeTruthy();
   }, SPAWN_HEAVY_TIMEOUT_MS);
 
   it('AC-3 (SLICE-417 carry-forward): re-verifies a pre-existing same-id release dir instead of trusting it blindly, and self-heals if it is corrupted', () => {
