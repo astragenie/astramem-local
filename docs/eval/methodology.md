@@ -48,7 +48,9 @@ deliberately shipped without moving the default floors.
 [`scripts/eval/extraction-bench/`](../../scripts/eval/extraction-bench/README.md) measures which
 LLM produces the best typed-atom extraction for the distill pipeline's extract stage
 (`src/distill/stages/05-extract.ts`), given the current production default is
-`qwen2.5-coder:7b`. It is a manual benchmark you run on demand — not part of CI — because it
+`qwen3:8b` (2026-07-13 operator standardization — no F1 evidence for this
+model yet; the table below predates the swap, see the note under it). It is a
+manual benchmark you run on demand — not part of CI — because it
 calls a real Ollama model (or Azure) per fixture and takes real wall-clock time and (for the
 Azure judge) real spend.
 
@@ -65,10 +67,18 @@ Most recent published run (`scripts/eval/extraction-bench/results/real-run-2026-
 
 | Model | Recall | Precision | F1 | Junk rate | Type acc | Over-extract | Avg s/session |
 |---|---|---|---|---|---|---|---|
-| qwen2.5-coder:7b (current default) | 43% | 87% | 57% | 12% | 31% | 0 | 9.9s |
+| qwen2.5-coder:7b (default at the time of this run) | 43% | 87% | 57% | 12% | 31% | 0 | 9.9s |
 | llama3.1:8b | 53% | 87% | 66% | 10% | 37% | 2 | 29.8s |
 | qwen2.5-coder:14b | 41% | 95% | 57% | 3% | 42% | 0 | 72.7s |
 | azure:gpt-5-mini (reference) | 55% | 86% | 67% | 13% | 57% | 1 | 8.7s |
+
+> This table is the historical 2026-07-08 result set — left byte-identical to
+> `results/real-run-2026-07-08/report.md`, not rewritten. It predates two
+> defaults since: `qwen2.5:7b` (2026-07-08 A/B benchmark, see
+> `results/ab-run-2026-07-08/`) and now `qwen3:8b` (2026-07-13 operator
+> standardization, no F1 run yet). Neither newer default appears in this
+> table — do not read `qwen2.5-coder:7b`'s row as describing current
+> production quality.
 
 **Reproduce it:**
 

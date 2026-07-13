@@ -5,7 +5,8 @@ Extraction-quality + speed benchmark for astramemory-local's distill pipeline
 only needs stages 1-7, since atom quality is fully decided before stage 8's
 embed+index). Answers: **which local Ollama extraction model (or the Azure
 API reference) produces the best typed-atom extraction**, given the current
-production default is `qwen2.5-coder:7b`.
+production default is `qwen3:8b` (2026-07-13 operator standardization — no
+F1 evidence for this model yet; see "What it measures" below).
 
 ## What it measures
 
@@ -21,10 +22,12 @@ with nothing worth remembering — an **over-extraction count**. Aggregated
 per model: recall / precision / F1 / junk-rate / avg wall-clock per session,
 optionally as **mean ± stdev across N runs** with `--runs N` (FEAT-450).
 
-`llm.compaction` is held constant at `ollama/qwen2.5-coder:7b` (the current
-production default) for every candidate — only `llm.extraction.model` varies.
-This isolates "which model extracts atoms best" as the one variable under
-test; letting compaction vary too would confound the comparison.
+`llm.compaction` is held constant (default `ollama/qwen3:8b`, the current
+production default — overridable via `--compaction-model`, see
+`lib/daemon-runner.ts`'s `DEFAULT_COMPACTION_MODEL`) for every candidate —
+only `llm.extraction.model` varies. This isolates "which model extracts atoms
+best" as the one variable under test; letting compaction vary too would
+confound the comparison.
 
 ## Layout
 

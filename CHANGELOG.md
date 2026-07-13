@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+- **Default extraction/compaction model: `qwen3:8b`** (was `qwen2.5:7b`; the wizard's retired "fastest" tier `qwen2.5-coder:7b` is also swept). Operator standardization, 2026-07-13 — not an A/B-benchmarked swap: there is no F1 evidence yet for `qwen3:8b` on the extraction bench (the 2026-07-08 A/B run's `qwen3:8b` row is invalid — it predates the `think:false` fix in commit `1915521`, so it ran with thinking on + `format:json` and returned empty bodies). A fresh benchmark run is pending; `astramem-local init`'s tier picker now shows "benchmark pending" instead of carrying over the old model's measured stats under the new name. Existing installs keep their configured model. `qwen3:8b` is heavier on RAM than the retired defaults (~5.76 GB resident with flash-attention + q8 KV cache, ~6.2 GB without, vs ~5 GB for `qwen2.5-coder:7b`) — see docs/providers.md for the updated total.
 
 ## [0.15.1] — 2026-07-12
 

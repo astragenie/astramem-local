@@ -20,12 +20,13 @@
  * from the real OS config dir and its sync.json pairing (the hazard
  * ASTRA_MEMORY_ISOLATED=1 exists to guard against), so it is not needed here.
  *
- * llm.compaction is deliberately held constant at ollama/qwen2.5-coder:7b
- * (the current production default) across every candidate — only
- * llm.extraction.model varies. This isolates "which model extracts atoms
- * best" as the one variable under test; letting compaction vary too would
- * confound the comparison (a worse compaction pass can starve an otherwise-
- * strong extraction model of signal).
+ * llm.compaction is deliberately held constant (DEFAULT_COMPACTION_MODEL,
+ * overridable via runOllamaCandidate's `compactionModel` opt / run-bench.mts's
+ * --compaction-model flag) across every candidate — only llm.extraction.model
+ * varies. This isolates "which model extracts atoms best" as the one variable
+ * under test; letting compaction vary too would confound the comparison (a
+ * worse compaction pass can starve an otherwise-strong extraction model of
+ * signal).
  */
 import { randomBytes, randomUUID } from 'node:crypto';
 import { writeFileSync, mkdirSync } from 'node:fs';
@@ -37,7 +38,12 @@ import {
 } from '../../shared/spawn-daemon.js';
 import type { GoldFixture } from './fixtures.js';
 
-const COMPACTION_MODEL = 'qwen2.5-coder:7b';
+/** Default compaction model held constant across every extraction candidate
+ * (see the module comment above). Named + exported so callers (run-bench.mts's
+ * --compaction-model flag) can override it in one place instead of hunting
+ * string literals — was a bare 'qwen2.5-coder:7b' literal here until the
+ * 2026-07-13 qwen3:8b operator standardization swept it. */
+export const DEFAULT_COMPACTION_MODEL = 'qwen3:8b';
 const BENCH_PROJECT_ID = 'extraction-bench';
 
 export interface DaemonAtom {
@@ -86,9 +92,10 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
+  const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;
   const tag = opts.runTag ?? extractionModel.replace(/[^a-z0-9.-]/gi, '_');
   const isolated = makeIsolatedEvalEnv(`extraction-bench-${tag}`);
 
@@ -103,7 +110,7 @@ export async function runOllamaCandidate(
     'llm:',
     '  compaction:',
     '    provider: ollama',
-    `    model: '${COMPACTION_MODEL}'`,
+    `    model: '${compactionModel}'`,
     '  extraction:',
     '    provider: ollama',
     `    model: '${extractionModel}'`,

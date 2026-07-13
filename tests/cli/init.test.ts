@@ -275,6 +275,36 @@ describe('init wizard — non-TTY mode', () => {
 
   // ─── Ollama on-demand overrides (item 2 model tier + item 1 base URL) ───────
 
+  // 2026-07-13: no existing test asserted the SHIPPED default model tag
+  // reaches config.yaml when the operator doesn't override it — a shipped
+  // default with no test is how it silently drifts (see the ASTRA_MEMORY_
+  // INIT_OLLAMA_MODEL_TAG test right below, which only covers the override
+  // path).
+  it('non-TTY init with no model-tag override writes the shipped default (qwen3:8b) to config.yaml', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17792',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    await withEnv(envPatch, async () => { await init(); });
+
+    const configPath = findFile(cfgDir, 'config.yaml');
+    expect(configPath, 'config.yaml must exist').toBeDefined();
+    const content = readFileSync(configPath!, 'utf8');
+    expect(content).toContain("model: 'qwen3:8b'");
+  });
+
   it('ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG overrides compaction/extraction model in config.yaml', async () => {
     const dataDir = makeTmpDir();
     const cfgDir = makeTmpDir();
