@@ -24,6 +24,7 @@ import { childLogger } from '../../log/logger.js';
 import { gateDurability, type DurabilityGateMode, type GatedReason } from '../durability-gate.js';
 import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
+import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
 
 export interface IndexResult {
   memoryId: string;
@@ -122,6 +123,14 @@ export async function embedAndIndex(
     invalid_at_implausible: 0,
     invalid_at_before_valid_at: 0,
   };
+  // issue #200 AC-3: counts a per-entity upsert/link write that throws
+  // (see the try/catch around entityRepo.upsert/linkWithValidity below) —
+  // the only point after extraction where an entity the model DID emit can
+  // still fail to reach `memory_entities`. Distinguishes "the model emitted
+  // no entities[] for this atom" (a real zero — this counter stays 0) from
+  // "the model emitted entities but a write attempt failed" (a broken zero
+  // — this counter is > 0), same shape as unresolvableRelationDrops above.
+  let entityLinkWriteDrops = 0;
 
   for (let i = 0; i < memories.length; i++) {
     const mem = memories[i];
@@ -276,12 +285,27 @@ export async function embedAndIndex(
     // second DB round trip per name.
     const entityIdByName = new Map<string, string>();
     for (const entity of mem.entities ?? []) {
-      const entityId = entityRepo.upsert(entity.name, entity.kind);
-      entityIdByName.set(normalizeEntityName(entity.name), entityId);
-      entityRepo.linkWithValidity(memoryId, entityId, {
-        validAt: parseIsoToMs(entity.valid_at),
-        invalidAt: parseIsoToMs(entity.invalid_at),
-      });
+      // issue #200 AC-3: one entity's upsert/link failing (e.g. a locked or
+      // busy DB handle) must never sink this atom's insert, its other
+      // entities, or its relations — same "never let one item sink the
+      // whole memory" posture as the relation write loop below. Skipped
+      // entities are counted (entityLinkWriteDrops) rather than silently
+      // lost, so a future write-time regression here is distinguishable
+      // from the model simply emitting no entities[] at all.
+      try {
+        const entityId = entityRepo.upsert(entity.name, entity.kind);
+        entityIdByName.set(normalizeEntityName(entity.name), entityId);
+        entityRepo.linkWithValidity(memoryId, entityId, {
+          validAt: parseIsoToMs(entity.valid_at),
+          invalidAt: parseIsoToMs(entity.invalid_at),
+        });
+      } catch (err) {
+        entityLinkWriteDrops++;
+        childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+          { error_message: err instanceof Error ? err.message : String(err), entity_kind: entity.kind },
+          'entity link: upsert/link failed for one entity — skipped, atom otherwise persisted',
+        );
+      }
     }
 
     // FEAT-481 (SLICE-2/SLICE-435): persist entity-to-entity relation triples
@@ -362,6 +386,26 @@ export async function embedAndIndex(
       childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
         { error_message: err instanceof Error ? err.message : String(err) },
         'validity guard-drop counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
+      );
+    }
+  }
+
+  // issue #200 AC-3: same fail-open, isolated-try/catch posture as the
+  // relation guard-drop write above — this is a diagnostic counter write
+  // running after every real stage-8 write for this call has already
+  // succeeded, so a failure here must never surface as if stage 8 itself
+  // failed.
+  if (entityLinkWriteDrops > 0) {
+    try {
+      recordEntityLinkDrops(
+        ctx.db,
+        [{ reason: 'link_write_error', count: entityLinkWriteDrops }],
+        ctx.sessionId,
+      );
+    } catch (err) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err) },
+        'entity link-drop counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
       );
     }
   }

@@ -220,4 +220,20 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       from "the model states end dates and every one is garbage" (broken
 //       zero). Same shape as relation_guard_drops (029) / entity_name_drops
 //       (034), deliberately -- one readable family of guard canaries.
-export const SCHEMA_VERSION = 38 as const;
+export const SCHEMA_VERSION = 39 as const;
+// 039 = entity_link_drops table (issue #200 AC-3) -- same reason/count/
+//       session_id/created_at shape as relation_guard_drops (029),
+//       entity_name_drops (034) and validity_guard_drops (038). Lets the
+//       doctor "Entity link rate" canary distinguish "the model emitted no
+//       entities[] for this atom" (a REAL zero) from "the model emitted
+//       entities but the write failed" (a BROKEN zero) -- see
+//       src/storage/entity-link-log.ts.
+//
+// Numbering note (2026-07-13): NINE collisions on this range in ONE DAY, one
+// of which bricked production. Take the number from
+// `git ls-tree origin/main -- migrations/` immediately before pushing -- never
+// from a teammate's message, never from your branch's history, and never from
+// a green CI check (a green check on a stale base is what caused the outage).
+// tests/storage/migration-renumber.test.ts is the only authority that cannot
+// go stale. The real fix is to stop minting these by coordination at all --
+// see the timestamp-id proposal in the architecture review.

@@ -51,7 +51,7 @@ describe('migrate', () => {
     // schema_version.filename + schema_version.content_hash, 036 =
     // memory_events.rejected_at sync-promote-wedge fix, 037 = issue #205
     // memories.validity_extracted provenance column).
-    expect(versions.n).toBe(38);
+    expect(versions.n).toBe(39);
   });
 
   it('enables WAL mode', () => {
@@ -114,7 +114,7 @@ describe('migration 002-wire-v1', () => {
     // issue #207 entity_name_drops + 035 issue #188 schema_version
     // content-hash + 036 sync rejected_at + 037 issue #205
     // validity_extracted).
-    expect(versions.n).toBe(38);
+    expect(versions.n).toBe(39);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -190,7 +190,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(38);
+    expect(versions.v).toBe(39);
   });
 
   it('allows inserting type note after migration', () => {
@@ -548,7 +548,7 @@ describe('migration 017-widen-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(38);
+    expect(versions.v).toBe(39);
   });
 
   it('accepts all 3 new canonical types (preference, task_result, summary)', () => {
@@ -687,7 +687,7 @@ describe('migration 018-jobs-distill-session-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(38);
+    expect(versions.v).toBe(39);
   });
 
   it('creates the partial expression index on jobs', () => {
@@ -755,7 +755,7 @@ describe('migration 019-health-agent-profile-indexes', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(38);
+    expect(versions.v).toBe(39);
   });
 
   it('creates both partial expression indexes on memory_events', () => {
@@ -856,7 +856,7 @@ describe('migration 020-agent-profile-corrections-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(38);
+    expect(versions.v).toBe(39);
   });
 
   it('creates the partial expression index on memory_events for invalidate/supersede', () => {
@@ -952,7 +952,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 38/,
+      /Schema-version constant drift: wire-meta says 999, DB says 39/,
     );
   });
 });
@@ -1043,7 +1043,7 @@ describe('migrate — schema_version content-hash tracking (issue #188)', () => 
     const rows = db
       .prepare('SELECT version, filename, content_hash FROM schema_version ORDER BY version')
       .all() as { version: number; filename: string | null; content_hash: string | null }[];
-    expect(rows).toHaveLength(38);
+    expect(rows).toHaveLength(39);
     for (const row of rows) {
       expect(row.filename, `version ${row.version} missing filename`).toMatch(/^\d+-.+\.sql$/);
       expect(row.content_hash, `version ${row.version} missing content_hash`).toMatch(/^[a-f0-9]{64}$/);
