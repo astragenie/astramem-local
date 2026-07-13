@@ -344,9 +344,20 @@ export async function search(
   }
 
   // 2. Vector search — always attempt; if embed fails, fall back to FTS-only
+  //
+  // RECALL-S1: the embedder-bound instruction prefix (resolved once at
+  // provider-construction time, see EmbedProvider.queryPrefix /
+  // resolveEmbedQueryPrefix in src/contracts/embed.ts) is prepended ONLY to
+  // the string handed to embed.embed() below — never to `query` itself, so
+  // `ftsQuery`/the FTS5 MATCH above is computed from the untouched raw
+  // query and is unaffected by this. `embed.queryPrefix` is '' for every
+  // model without a registered default and for every mock/test provider
+  // that doesn't set it, so this is a no-op unless a real prefix is
+  // resolved.
   const vecHits: Array<{ id: string; cosine: number }> = [];
   try {
-    const vecs = await embed.embed([query]);
+    const embedInput = embed.queryPrefix ? `${embed.queryPrefix}${query}` : query;
+    const vecs = await embed.embed([embedInput]);
     const queryVec = vecs[0];
     if (!queryVec) throw new Error('embed provider returned empty result');
     const vecStore = new SqliteVecStore(db, embed.dim);

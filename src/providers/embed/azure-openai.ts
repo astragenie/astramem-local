@@ -17,6 +17,11 @@ export interface AzureOpenAIEmbedConfig {
    * DEFAULT_EMBED_DIM (1024). Set from config.embedding.dim by
    * providers/index.ts. Sent as the Azure `dimensions` request param. */
   dim?: number;
+  /** RECALL-S1: query-side embedding instruction prefix — resolved by
+   * providers/index.ts via resolveEmbedQueryPrefix, not this constructor.
+   * See EmbedProvider.queryPrefix (src/contracts/embed.ts) for the full
+   * asymmetry contract. Defaults to '' (no prefix). */
+  queryPrefix?: string;
 }
 
 interface AzureEmbedResponse {
@@ -54,6 +59,7 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
   readonly name = 'azure-openai' as const;
   readonly model: string;
   readonly dim: number;
+  readonly queryPrefix: string;
   private readonly endpoint: string;
   private readonly deployment: string;
   private readonly apiKey: string;
@@ -66,6 +72,7 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
     this.apiVersion = config.apiVersion ?? '2024-10-21';
     this.model = config.model ?? DEFAULT_MODEL;
     this.dim = config.dim ?? DEFAULT_EMBED_DIM;
+    this.queryPrefix = config.queryPrefix ?? '';
   }
 
   private get embedUrl(): string {
