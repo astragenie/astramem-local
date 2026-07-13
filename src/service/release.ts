@@ -56,7 +56,7 @@ import {
   statSync,
 } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, isAbsolute } from 'node:path';
 import { defaultDataDir } from '../config/datadir.js';
@@ -78,7 +78,12 @@ export interface MaterializeReleaseOptions {
 }
 
 export interface ReleaseManifest {
-  /** `${pkgversion}+${gitsha}` — also the final directory's basename. */
+  /** `${pkgversion}+${gitsha}` — also the final directory's basename. NOT a
+   *  reliable content identity on its own: `gitsha` is only as fresh as the
+   *  last commit, so an uncommitted change (a bumped SCHEMA_VERSION, a new
+   *  migration file, ...) leaves `id` unchanged even though the build output
+   *  has changed. `contentHash` below is the actual identity check — see
+   *  computeContentHash. */
   id: string;
   pkgversion: string;
   gitsha: string;
@@ -86,11 +91,39 @@ export interface ReleaseManifest {
   createdAt: string;
   /** `process.version` of the machine that ran materialization. */
   nodeVersion: string;
+  /** sha256 over dist/ + migrations/ + package.json + the lockfile (see
+   *  computeContentHash). This — not `id` — is what materializeRelease's
+   *  reuse-vs-rebuild decision below trusts: two materializations can share
+   *  an `id` (same pkgversion+gitsha) while genuinely differing in content
+   *  whenever the checkout was dirty at build time (the 2026-07-13
+   *  stale-release-dir incident: an uncommitted migration + SCHEMA_VERSION
+   *  bump kept shipping the old build because the id never moved). Optional
+   *  on read because release.json files materialized before this field
+   *  existed won't have it — see the reuse check, which treats a missing
+   *  hash as "cannot prove this is safe to reuse" rather than trusting it. */
+  contentHash?: string;
 }
 
 export interface MaterializeReleaseResult {
   releaseDir: string;
   manifest: ReleaseManifest;
+  /** How `releaseDir` was produced:
+   *  - 'fresh'   — no release with this id existed yet.
+   *  - 'reused'  — a release with this id already existed, its entry
+   *                boot-verified correctly, AND its contentHash matched the
+   *                just-built tmp dir's — genuinely the same build, safe to
+   *                reuse without rewriting anything.
+   *  - 'rebuilt' — a release with this id already existed but was rejected
+   *                (failed boot-verify, i.e. corruption; OR its contentHash
+   *                didn't match — same id, different content, e.g. an
+   *                uncommitted change). The fresh, already boot-verified tmp
+   *                build was promoted in its place. See `rebuiltReason`. */
+  outcome: 'fresh' | 'reused' | 'rebuilt';
+  /** Populated only when outcome === 'rebuilt' — the evidence that made the
+   *  existing dir untrustworthy. Callers (reinstall.ts) MUST surface this to
+   *  the operator: a same-id rebuild is exactly the kind of event that used
+   *  to be invisible (FEAT-486). */
+  rebuiltReason?: string;
 }
 
 interface CapturedRun {
@@ -151,6 +184,52 @@ function resolveGitSha(checkoutDir: string): string {
     if (sha) return sha;
   }
   return 'nogit';
+}
+
+/**
+ * Deterministic sha256 over the files that actually determine a release's
+ * behavior: `dist/` + `migrations/` (recursively) + `package.json` + the
+ * lockfile, all relative to `dir`. Deliberately excludes `node_modules/` —
+ * it's derived from package.json + the lockfile via
+ * `bun install --frozen-lockfile`, so hashing it too would be redundant and
+ * far slower for no extra signal.
+ *
+ * This is the actual identity check materializeRelease's reuse decision
+ * relies on. `id` (`${pkgversion}+${gitsha}`) is a human-readable label, not
+ * a content identity: `pkgversion` only moves at release commits and
+ * `gitsha` only moves at commits, so a checkout with uncommitted changes
+ * (source edits, a new migration file, a SCHEMA_VERSION bump) computes the
+ * exact same `id` as it did before those changes — the 2026-07-13 incident.
+ * Hashing the files that ship is what tells the two builds apart even when
+ * their id collides.
+ */
+function computeContentHash(dir: string, lockfileName: string): string {
+  const hash = createHash('sha256');
+  const files: string[] = [];
+
+  function walk(relDir: string): void {
+    const abs = join(dir, relDir);
+    for (const entry of readdirSync(abs, { withFileTypes: true })) {
+      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) walk(rel);
+      else if (entry.isFile()) files.push(rel);
+    }
+  }
+
+  for (const top of ['dist', 'migrations']) {
+    if (existsSync(join(dir, top))) walk(top);
+  }
+  files.push('package.json');
+  if (existsSync(join(dir, lockfileName))) files.push(lockfileName);
+
+  files.sort();
+  for (const rel of files) {
+    hash.update(rel);
+    hash.update('\0');
+    hash.update(readFileSync(join(dir, rel)));
+    hash.update('\0');
+  }
+  return hash.digest('hex');
 }
 
 /** Any step failure lands here: the partial dir must never be left looking
@@ -235,12 +314,17 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
     }
 
     const gitsha = resolveGitSha(checkoutDir);
+    // Computed from the files already copied into tmpDir (dist/migrations/
+    // package.json/lockfile) — independent of id, and the actual signal the
+    // reuse-vs-rebuild decision below trusts. See computeContentHash header.
+    const contentHash = computeContentHash(tmpDir, lockfileName);
     const manifest: ReleaseManifest = {
       id: `${pkgversion}+${gitsha}`,
       pkgversion,
       gitsha,
       createdAt: new Date().toISOString(),
       nodeVersion: process.version,
+      contentHash,
     };
     writeFileSync(join(tmpDir, 'release.json'), JSON.stringify(manifest, null, 2) + '\n', 'utf8');
 
@@ -262,36 +346,61 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
 
     const finalDir = join(releasesRoot, manifest.id);
     if (existsSync(finalDir)) {
-      // Idempotent-reuse path (SLICE-417 AC-3 / SLICE-416 review MEDIUM):
-      // this exact version+sha was already materialized by a prior run. Do
-      // NOT trust that on-disk dir blindly — re-run the same boot-verify
-      // probe against IT (not the fresh tmp build we just made) before
-      // reusing it. A same-id dir that has since gone stale (partial
-      // deletion, corrupted node_modules, manual tampering) must not be
-      // silently repointed to.
+      // Idempotent-reuse path (SLICE-417 AC-3 / SLICE-416 review MEDIUM,
+      // hardened FEAT-486 after the 2026-07-13 incident). A dir already
+      // exists at this id — but id (`${pkgversion}+${gitsha}`) is NOT proof
+      // the two builds are the same: an uncommitted change (source edit, a
+      // new migration file, a SCHEMA_VERSION bump) moves neither pkgversion
+      // nor gitsha, so `reinstall` after such a change used to silently
+      // discard the fresh, correct tmp build we just made and re-serve the
+      // stale existing dir instead — while reporting success. Two
+      // independent gates must both pass before we trust the existing dir:
+      //   1. boot-verify (as before) — catches corruption/partial deletion.
+      //   2. contentHash match — catches "id collided but content didn't",
+      //      the actual shape of the incident. A missing contentHash (a
+      //      release materialized before this field existed) counts as a
+      //      gate failure, not a pass: we cannot prove it's safe, so we
+      //      rebuild rather than assume.
       const existingEntryJs = join(finalDir, 'dist', 'cli', 'index.js');
       const reverify = existsSync(existingEntryJs)
         ? runCaptured(nodeBin, [existingEntryJs, '--version'], releasesRoot)
         : { status: 1, stdout: '', stderr: `entry missing: ${existingEntryJs}` };
       const reverifyReported = reverify.stdout.trim();
-      if (reverify.status === 0 && reverifyReported === pkgversion) {
-        // Existing dir re-verified healthy — discard the redundant
-        // (but already boot-verified) tmp build and hand back the existing
-        // manifest rather than double-writing.
-        rmSync(tmpDir, { recursive: true, force: true });
-        const existing = JSON.parse(readFileSync(join(finalDir, 'release.json'), 'utf8')) as ReleaseManifest;
-        return { releaseDir: finalDir, manifest: existing };
+      const bootOk = reverify.status === 0 && reverifyReported === pkgversion;
+
+      let existing: ReleaseManifest | null = null;
+      try {
+        existing = JSON.parse(readFileSync(join(finalDir, 'release.json'), 'utf8')) as ReleaseManifest;
+      } catch {
+        existing = null;
       }
-      // Existing dir failed re-verify — self-heal by promoting the fresh,
-      // already-verified tmp build in its place rather than either trusting
-      // a broken dir or erroring out on what should be a routine re-run.
+      const contentMatches = bootOk && existing != null && existing.contentHash === contentHash;
+
+      if (contentMatches) {
+        // Existing dir re-verified healthy AND genuinely identical content —
+        // discard the redundant (but already boot-verified) tmp build and
+        // hand back the existing manifest rather than double-writing.
+        rmSync(tmpDir, { recursive: true, force: true });
+        return { releaseDir: finalDir, manifest: existing!, outcome: 'reused' };
+      }
+
+      // Existing dir is untrustworthy — either boot-verify failed
+      // (corruption) or its content doesn't match what we'd build right now
+      // despite the unchanged id (stale reuse — the incident class this
+      // exists to close). Self-heal by promoting the fresh, already-verified
+      // tmp build in its place. LOUD by construction: the caller gets
+      // outcome:'rebuilt' + rebuiltReason and MUST surface it (reinstall.ts
+      // logs it in the materialize-release step detail).
+      const rebuiltReason = !bootOk
+        ? `existing release dir failed boot-verify (exit ${reverify.status}, reported "${reverifyReported}", expected "${pkgversion}") — likely corrupted or partially deleted`
+        : `existing release dir's contentHash (${existing?.contentHash ?? '<none recorded>'}) does not match the freshly built contentHash (${contentHash}) despite sharing id ${manifest.id} — the checkout had uncommitted changes when this id was last materialized (2026-07-13 stale-release-dir incident class)`;
       rmSync(finalDir, { recursive: true, force: true });
       renameSync(tmpDir, finalDir);
-      return { releaseDir: finalDir, manifest };
+      return { releaseDir: finalDir, manifest, outcome: 'rebuilt', rebuiltReason };
     }
 
     renameSync(tmpDir, finalDir);
-    return { releaseDir: finalDir, manifest };
+    return { releaseDir: finalDir, manifest, outcome: 'fresh' };
   } catch (err) {
     quarantine(tmpDir);
     throw err;

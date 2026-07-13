@@ -157,8 +157,25 @@ export async function reinstallCommand(args: string[]): Promise<void> {
     const release = materializeRelease();
     releaseDir = release.releaseDir;
     releaseManifest = release.manifest;
-    steps.push({ step: 'materialize-release', ok: true, detail: `${releaseManifest.id} → ${releaseDir}` });
-    log(`  · release materialized: ${releaseManifest.id}`);
+    // FEAT-486: outcome === 'rebuilt' means a dir already existed at this id
+    // but was rejected as untrustworthy (stale content or corruption) and
+    // replaced — this MUST be visible to the operator, not folded silently
+    // into the same "materialized" line a plain fresh/reused build gets.
+    const outcomeDetail =
+      release.outcome === 'rebuilt'
+        ? ` [REBUILT — existing dir at this id was stale: ${release.rebuiltReason}]`
+        : release.outcome === 'reused'
+          ? ' [reused existing, content-verified]'
+          : '';
+    steps.push({
+      step: 'materialize-release',
+      ok: true,
+      detail: `${releaseManifest.id} → ${releaseDir}${outcomeDetail}`,
+    });
+    log(`  · release materialized: ${releaseManifest.id}${outcomeDetail}`);
+    if (release.outcome === 'rebuilt') {
+      log(`  ⚠ stale release dir detected and rebuilt — ${release.rebuiltReason}`);
+    }
   } catch (err) {
     steps.push({ step: 'materialize-release', ok: false, detail: (err as Error).message });
     log(`  ✗ materialize-release failed: ${(err as Error).message}`);
