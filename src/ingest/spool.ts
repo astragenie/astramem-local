@@ -477,6 +477,25 @@ export interface QuarantineRedactionSweepResult {
  * exists to avoid redacting the JSON delimiters/keys themselves, but there
  * are no such delimiters to protect once parsing has already failed.
  *
+ * Parseable-but-schema-invalid files get BOTH passes, not just the
+ * structural one (2026-07-13 review fix — the first cut of this function
+ * routed every parseable file through `redactSpoolEnvelope` alone, which is
+ * a four-field ALLOWLIST — `turns[].text`, `events[].text/evidence`,
+ * `content` — that spreads every other field through untouched via
+ * `{...rec}`). That inverted the coverage: the DOMINANT quarantine
+ * population (`spool-drain.ts`) is valid JSON that fails
+ * `CanonicalIngestSchema` — a reshaped, legacy-drifted, or debug-augmented
+ * envelope — which is exactly the population most likely to carry a field
+ * the allowlist doesn't recognize, and it was getting the WEAK pass while
+ * genuinely-unparseable JSON (the minority) got the thorough one. Fixed by
+ * running `redactIfEnabled` — shape-agnostic, no allowlist, the same
+ * regex/entropy scan the unparseable branch already uses — over the fully
+ * serialized text AFTER the structural pass. Safe to layer: `redactText`
+ * treats an already-inserted `[REDACTED:...]` placeholder as a protected
+ * span (src/redact/index.ts `protectedRanges`), so the second pass cannot
+ * double-redact anything the first pass already caught; it only catches
+ * what the first pass's allowlist missed.
+ *
  * Never loses a file on a write failure: writes via the same tmp-file +
  * atomic rename pattern `writeToSpool` uses, so a crash or an I/O error
  * mid-write leaves the ORIGINAL file in place (the tmp file is discarded,
@@ -511,12 +530,20 @@ export function sweepQuarantineRedaction(dataDir: string, config: Config = defau
     let wasUnparseable = false;
     try {
       const envelope: unknown = JSON.parse(raw);
-      rewritten = JSON.stringify(redactSpoolEnvelope(envelope, config), null, 2);
+      const structurallyRedacted = JSON.stringify(redactSpoolEnvelope(envelope, config), null, 2);
+      // Second pass (see doc comment above): the structural walk only
+      // knows about a four-field allowlist. Run the shape-agnostic
+      // redactor over the whole serialized text too, so a secret in a
+      // field the allowlist doesn't recognize still gets caught.
+      rewritten = redactIfEnabled(structurallyRedacted, config).text;
     } catch {
       wasUnparseable = true;
       rewritten = redactIfEnabled(raw, config).text;
     }
 
+    // Counts as redacted if EITHER pass changed anything relative to the
+    // original bytes — a file the sweep examined but couldn't improve must
+    // not be indistinguishable from a file it never looked at.
     if (rewritten === raw) continue; // already redacted (or genuinely nothing to redact) — no write needed
 
     const tmpPath = join(qDir, `.${name}.${process.pid}.${Date.now()}.tmp`);

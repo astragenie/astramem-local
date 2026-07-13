@@ -289,6 +289,40 @@ describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine
     expect(rewritten).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
   });
 
+  it('review fix (coverage inversion): a well-formed but schema-invalid envelope with a secret in an UNRECOGNIZED field is still redacted', () => {
+    // The dominant quarantine population (spool-drain.ts) is valid JSON
+    // that fails CanonicalIngestSchema — a reshaped, legacy-drifted, or
+    // debug-augmented envelope. redactSpoolEnvelope only walks a four-field
+    // allowlist (turns[].text, events[].text/evidence, content); a stray
+    // field like `debug_headers` or `raw` spreads through untouched via
+    // `{...rec}`. This is the case the first cut of sweepQuarantineRedaction
+    // missed — it routed every PARSEABLE file through redactSpoolEnvelope
+    // alone, so a secret sitting in a field the allowlist doesn't recognize
+    // survived, and because the bytes didn't change, the `redacted` counter
+    // never incremented either (a silent miss, not just a missed redaction).
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = {
+      // Not a shape CanonicalIngestSchema accepts — no turns/events/content,
+      // just an unrecognized debug field a broken/reshaping client tacked
+      // on. redactSpoolEnvelope's allowlist has nothing to walk here.
+      debug_headers: { authorization: `Bearer ${SECRET}` },
+      raw: `upstream response included key=${SECRET}`,
+    };
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(envelope, null, 2));
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.scanned).toBe(1);
+    expect(result.unparseable).toBe(0); // it DID parse — this is the parseable-but-invalid case
+    expect(result.redacted).toBe(1); // must be counted, not silently skipped
+    expect(existsSync(join(qDir, `${K_A}.json`))).toBe(true);
+    const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(rewritten).not.toContain(SECRET);
+    expect(rewritten).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+  });
+
   it('is idempotent — a second sweep over already-redacted content is a no-op write', () => {
     const dataDir = tempDataDir();
     const qDir = spoolQuarantineDir(dataDir);
