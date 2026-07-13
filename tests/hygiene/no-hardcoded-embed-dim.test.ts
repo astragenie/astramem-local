@@ -53,13 +53,22 @@ describe('FEAT-409 AC-5 — no hardcoded embed-dim literal remains', () => {
     expect(src).toContain('provider.dim');
   });
 
-  it('src/doctor/checks.ts: embed probe name/comment no longer hardcode 1024-dim (ONE_GB byte constant is untouched, unrelated)', () => {
-    const src = read('src/doctor/checks.ts');
-    expect(src).not.toContain("name: 'Embed probe (1024-dim)'");
-    expect(src).not.toContain('1024-dim assertion');
-    expect(src).toContain('${provider.dim}-dim');
+  it('src/doctor/checks/embed.ts + shared.ts: embed probe name/comment no longer hardcode 1024-dim (ONE_GB byte constant is untouched, unrelated)', () => {
+    // 2026-07-13 split: checks.ts is now a thin re-export shim (see its own
+    // doc comment) — the embed-probe check lives in checks/embed.ts and the
+    // unrelated ONE_GB byte-math constant lives in checks/shared.ts.
+    const shim = read('src/doctor/checks.ts');
+    expect(shim).not.toContain("name: 'Embed probe (1024-dim)'");
+    expect(shim).not.toContain('1024-dim assertion');
+
+    const embedCheck = read('src/doctor/checks/embed.ts');
+    expect(embedCheck).not.toContain("name: 'Embed probe (1024-dim)'");
+    expect(embedCheck).not.toContain('1024-dim assertion');
+    expect(embedCheck).toContain('${provider.dim}-dim');
+
     // Sanity: the unrelated byte-math constant is still there, untouched.
-    expect(src).toContain('const ONE_GB = 1024 * 1024 * 1024;');
+    const shared = read('src/doctor/checks/shared.ts');
+    expect(shared).toContain('const ONE_GB = 1024 * 1024 * 1024;');
   });
 
   it('src/server/app.ts: noop embed provider dim is config-derived, not `1024 as const`', () => {
