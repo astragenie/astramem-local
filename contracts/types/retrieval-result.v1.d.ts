@@ -86,11 +86,12 @@ export interface RetrievalResultV1 {
       [k: string]: unknown;
     };
     /**
-     * OPTIONAL (added 2026-07-13). Cloud's `content_preview_highlights` — character ranges into `text`. Local has no FTS snippet extraction yet, omits the key rather than fake it.
+     * OPTIONAL (added 2026-07-13). Cloud's `content_preview_highlights` — character ranges into `text`, plus the matched term. Shape mirrors cloud's long-standing HighlightRangeDto {start, end, term} — the freeze doc originally said {start, length}, which was invented rather than checked against the real DTO. Local has no FTS snippet extraction yet and omits the key rather than fake it.
      */
     highlights?: {
       start: number;
-      length: number;
+      end: number;
+      term?: string;
     }[];
   }[];
   total?: number;
