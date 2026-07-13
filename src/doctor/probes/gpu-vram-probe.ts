@@ -170,7 +170,35 @@ export async function readPersistedEnvVars(
     );
     const trimmed = out.trim();
     if (!trimmed) return null;
-    const parsed = JSON.parse(trimmed) as { User?: Record<string, unknown>; Machine?: Record<string, unknown> };
+    const parsed: unknown = JSON.parse(trimmed);
+
+    // VALIDATE the shape — do not cast and hope.
+    //
+    // This check exists because its absence was a milder recurrence of the exact
+    // bug this whole function was written to fix. `doctor` used to read the wrong
+    // process's environment and print "(unset)" for settings that were demonstrably
+    // ON — a confident false claim. The fix reads the persisted registry env instead.
+    //
+    // But a bare `as { User?: ...; Machine?: ... }` cast asserts a shape the compiler
+    // cannot check. A payload that is syntactically valid JSON yet has NEITHER key —
+    // an array, a scalar, a PowerShell error object, a shape change in a future
+    // Windows/PS version — would make every lookup return undefined and hand back an
+    // EMPTY (non-null) Map. The caller then renders that as a confident
+    // "(not set at User/Machine scope)": the same confident false claim, through a
+    // narrower door.
+    //
+    // An empty Map means "I looked and they are genuinely absent."
+    // `null` means "I could not look." Those must never be confused. If the payload
+    // carries neither scope object, we could not look — return null and let the
+    // caller say "cannot determine" honestly.
+    const asObj = (v: unknown): Record<string, unknown> | undefined =>
+      v !== null && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : undefined;
+
+    const root = asObj(parsed);
+    if (!root) return null;
+    const userScope = asObj(root.User);
+    const machineScope = asObj(root.Machine);
+    if (!userScope && !machineScope) return null;
 
     const findCaseInsensitive = (obj: Record<string, unknown> | undefined, name: string): string | undefined => {
       if (!obj) return undefined;
@@ -180,12 +208,12 @@ export async function readPersistedEnvVars(
 
     const map = new Map<string, PersistedEnvValue>();
     for (const name of names) {
-      const userVal = findCaseInsensitive(parsed.User, name);
+      const userVal = findCaseInsensitive(userScope, name);
       if (userVal !== undefined) {
         map.set(name, { value: userVal, scope: 'user' });
         continue;
       }
-      const machineVal = findCaseInsensitive(parsed.Machine, name);
+      const machineVal = findCaseInsensitive(machineScope, name);
       if (machineVal !== undefined) {
         map.set(name, { value: machineVal, scope: 'machine' });
       }
