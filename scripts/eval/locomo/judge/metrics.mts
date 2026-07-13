@@ -47,7 +47,12 @@ export function normalizeAnswer(raw: string): string {
   return noArticles.split(/\s+/).filter(Boolean).join(' ');
 }
 
-function stemmedTokens(s: string): string[] {
+/** Exported (was module-private) for scripts/eval/locomo/diagnose-retrieval.mts
+ *  (WS2, FEAT-457 follow-on): the retrieval diagnostic needs the EXACT same
+ *  normalize+stem pipeline the real scorer uses to compute answer/hit token
+ *  overlap, not a re-derived approximation that could quietly drift from
+ *  what actually gets scored. */
+export function stemmedTokens(s: string): string[] {
   return normalizeAnswer(s).split(' ').filter(Boolean).map(porterStem);
 }
 
