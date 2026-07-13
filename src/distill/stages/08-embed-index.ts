@@ -23,6 +23,7 @@ import { redactIfEnabled } from '../../redact/index.js';
 import { childLogger } from '../../log/logger.js';
 import { gateDurability, type DurabilityGateMode, type GatedReason } from '../durability-gate.js';
 import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
+import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 
 export interface IndexResult {
   memoryId: string;
@@ -117,6 +118,10 @@ export async function embedAndIndex(
   // distinguishable from a stage-5 drop if it ever actually fires. Recorded
   // once after the loop, not per relation, to keep this a single cheap write.
   let unresolvableRelationDrops = 0;
+  const validityDrops: Record<ValidityDropReason, number> = {
+    invalid_at_implausible: 0,
+    invalid_at_before_valid_at: 0,
+  };
 
   for (let i = 0; i < memories.length; i++) {
     const mem = memories[i];
@@ -178,6 +183,25 @@ export async function embedAndIndex(
       continue;
     }
 
+    // Validity bounds (issue #205): parse, then GUARD. An implausible
+    // `invalid_at` is refused and the atom kept unbounded rather than being
+    // persisted with a `valid_to` that would make it permanently unretrievable.
+    // See guardValidTo — the asymmetry (imprecise atom vs. vanished atom) is
+    // what makes "keep the atom, drop the bound" the only safe default.
+    const validFromMs = parseIsoToMs(mem.valid_at) ?? ctx.capturedAtMs ?? null;
+    const { validTo, dropped: validityDropped } = guardValidTo(
+      parseIsoToMs(mem.invalid_at),
+      validFromMs,
+      ctx.capturedAtMs ?? Date.now(),
+    );
+    if (validityDropped !== null) {
+      validityDrops[validityDropped] += 1;
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { reason: validityDropped, invalid_at: mem.invalid_at, valid_at: mem.valid_at },
+        'validity guard refused an implausible invalid_at — atom kept, bound dropped',
+      );
+    }
+
     // Insert + append a 'create' memory_event (ADR-002) in one transaction.
     // Dedup-aware: `created` is false when this hash already existed.
     const { id: memoryId, created } = memRepo.insertWithCreateEvent({
@@ -210,7 +234,11 @@ export async function embedAndIndex(
       // an end bound (see the prompt's "omit by default" rule) — `null` here
       // means "unbounded," never "expire it," matching parseIsoToMs's
       // contract and InsertInput.valid_to's doc comment.
-      valid_to: parseIsoToMs(mem.invalid_at),
+      //
+      // GUARDED: an implausible bound is refused and the atom kept unbounded,
+      // because a bad `valid_to` makes the memory permanently unretrievable
+      // (see guardValidTo's doc comment). Refusals are counted, not swallowed.
+      valid_to: validTo,
       // Every atom reaching this stage passed through AtomSchema, which now
       // carries valid_at/invalid_at for every extraction profile (issue
       // #205 AC-3) — so this write path always "looked," regardless of
@@ -322,6 +350,22 @@ export async function embedAndIndex(
     }
   }
 
+  // Same isolation, same reasoning as the relation counter above: every real
+  // write already succeeded, so a diagnostic-counter failure must never look
+  // like a stage-8 failure and discard persisted memories on retry.
+  const validityDropRows = (Object.entries(validityDrops) as Array<[ValidityDropReason, number]>)
+    .map(([reason, count]) => ({ reason, count }));
+  if (validityDropRows.some(r => r.count > 0)) {
+    try {
+      recordValidityGuardDrops(ctx.db, validityDropRows, ctx.sessionId);
+    } catch (err) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err) },
+        'validity guard-drop counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
+      );
+    }
+  }
+
   return results;
 }
 
@@ -336,4 +380,61 @@ function parseIsoToMs(value: string | undefined): number | null {
   if (!value) return null;
   const ms = Date.parse(value);
   return Number.isNaN(ms) ? null : ms;
+}
+
+/**
+ * How far from the atom's own capture time an extracted validity bound may sit
+ * before the guard refuses it. Generous on purpose — the job is to catch
+ * year-9999 and year-0002, not to second-guess a plausible business date.
+ * A 25-year contract, a decade-old employment history, a birth year: all fine.
+ */
+const VALIDITY_BOUND_MAX_SKEW_MS = 50 * 365.25 * 24 * 60 * 60 * 1000; // ~50 years
+
+export type ValidityDropReason =
+  | 'invalid_at_implausible'
+  | 'invalid_at_before_valid_at';
+
+/**
+ * Decide whether an extracted `invalid_at` may be persisted as `valid_to`.
+ *
+ * Why this guard exists — the stakes are asymmetric and that asymmetry decides
+ * every judgment call here:
+ *
+ *   * accepting a slightly-wrong bound leaves one atom with a slightly wrong
+ *     validity window. Recoverable, low blast radius.
+ *   * accepting a GARBAGE bound (a past date, or year 9999 wrapping to a past
+ *     epoch, or an interval that ends before it starts) sets `valid_to` to a
+ *     value that makes the atom fail `validityFilterClause`'s default
+ *     `(valid_to IS NULL OR valid_to > now)` predicate — i.e. the memory is
+ *     PERMANENTLY INVISIBLE to every normal recall. The row is on disk, the
+ *     write returned success, nothing errored, no canary went red. It is
+ *     silent, irreversible data loss caused by one bad token from a 7B model.
+ *
+ * So: when a bound is implausible, we KEEP THE ATOM and DROP THE BOUND. Never
+ * the atom. An unbounded atom is merely imprecise; a wrongly-bounded atom is
+ * gone.
+ *
+ * Returns the ms value to persist (or `null` for "unbounded"), plus the reason
+ * it was refused, so the caller can COUNT the refusal. A guard that discards
+ * silently is just a quieter version of the bug it is fixing (ADR-015: measure
+ * the RATE of the failure, not the existence of a success).
+ */
+export function guardValidTo(
+  invalidAtMs: number | null,
+  validFromMs: number | null,
+  anchorMs: number,
+): { validTo: number | null; dropped: ValidityDropReason | null } {
+  if (invalidAtMs === null) return { validTo: null, dropped: null };
+
+  // An interval that ends before it starts is empty — the atom would be
+  // invisible even to an `as_of` query. Always garbage, never intentional.
+  if (validFromMs !== null && invalidAtMs <= validFromMs) {
+    return { validTo: null, dropped: 'invalid_at_before_valid_at' };
+  }
+
+  if (Math.abs(invalidAtMs - anchorMs) > VALIDITY_BOUND_MAX_SKEW_MS) {
+    return { validTo: null, dropped: 'invalid_at_implausible' };
+  }
+
+  return { validTo: invalidAtMs, dropped: null };
 }

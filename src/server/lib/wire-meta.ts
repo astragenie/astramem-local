@@ -210,4 +210,14 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       migration-bearing PRs conflict by construction no matter what they
 //       change. Derive it from the migrations directory instead -- tracked
 //       as the follow-up to this queue.
-export const SCHEMA_VERSION = 37 as const;
+// 038 = validity_guard_drops counter table (issue #205 follow-up) -- counts
+//       extracted valid_at/invalid_at bounds the write-path guard REFUSED.
+//       #216 wired the model's `invalid_at` straight into memories.valid_to
+//       with no validation at all; a single hallucinated date silently and
+//       permanently removed a real memory from every default recall. The guard
+//       now keeps the atom and drops the BOUND -- and counts the refusal here,
+//       so "the model states no end dates" (real zero) stays distinguishable
+//       from "the model states end dates and every one is garbage" (broken
+//       zero). Same shape as relation_guard_drops (029) / entity_name_drops
+//       (034), deliberately -- one readable family of guard canaries.
+export const SCHEMA_VERSION = 38 as const;

@@ -283,9 +283,25 @@ function escapeFtsQuery(q: string): string {
  *    at the exact instant a supersede/invalidate event lands, the new
  *    generation is already the one considered valid (AC-5).
  */
-export function validityFilterClause(asOf?: number): { clause: string; params: number[] } {
+export function validityFilterClause(asOf?: number, now: number = Date.now()): { clause: string; params: number[] } {
   if (asOf === undefined) {
-    return { clause: 'valid_to IS NULL', params: [] };
+    // `valid_to IS NULL` means UNBOUNDED. It does not mean CURRENTLY VALID.
+    //
+    // Those were indistinguishable until issue #205 (PR #216) landed, because
+    // nothing populated `valid_to` — every row was NULL, so the old clause was
+    // a no-op. The moment 08-embed-index.ts started writing
+    // `valid_to: parseIsoToMs(mem.invalid_at)`, the two diverged and the old
+    // clause began excluding facts that are still true:
+    //
+    //   "the support contract runs through March 2027"
+    //     -> model correctly extracts invalid_at: 2027-03-01
+    //     -> valid_to = 2027-03-01, which is NOT NULL
+    //     -> invisible to every default recall, TODAY, silently, forever.
+    //
+    // That inverts the feature: the better extraction gets at finding real end
+    // dates, the more live facts disappear from search. A future `valid_to` is
+    // a fact that has not expired YET — it must still be returned now.
+    return { clause: '(valid_to IS NULL OR valid_to > ?)', params: [now] };
   }
   return { clause: 'valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)', params: [asOf, asOf] };
 }
