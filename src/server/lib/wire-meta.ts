@@ -83,9 +83,14 @@ export const WIRE_VERSIONS_SUPPORTED = Array.from(
 export const CONTRACT_SCHEMA_VERSION = '1' as const;
 
 // ---------------------------------------------------------------------------
-// Schema version — single authoritative literal
-// migrate() asserts that MAX(version) FROM schema_version equals this constant
-// at startup. Bump this whenever a new migration file is added.
+// Schema version — DERIVED, not declared (B4, docs/specs/20260713-stability-
+// wave-plan.md). Re-exported from src/storage/schema-version.ts, which reads
+// the highest `NNN-` prefix among migrations/*.sql off disk. migrate() still
+// asserts that MAX(version) FROM schema_version equals this value at startup
+// — that guard now catches "the migrations/ directory on disk doesn't match
+// what schema_version records as applied" rather than "someone forgot to
+// bump a hardcoded literal," which is no longer possible: adding a migration
+// file is the only thing that changes this constant.
 // ---------------------------------------------------------------------------
 
 // Migrations 001-018 (009 = tag hygiene FEAT-403; 010 = sync-pull event_id FEAT-407;
@@ -204,12 +209,11 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       NULL was a trap (collapses to either a no-op or a corpus-nuke).
 //       Authored as 033, renumbered to 034, 035, 036 and finally 037 as each
 //       number in turn was taken by a PR that landed while this branch was
-//       open (#208, #218, #212, #210). FOUR renumbers for one migration is
-//       not diligence, it is a design defect: the expected version is a
-//       hardcoded literal here AND in eight test files, so any two
-//       migration-bearing PRs conflict by construction no matter what they
-//       change. Derive it from the migrations directory instead -- tracked
-//       as the follow-up to this queue.
+//       open (#208, #218, #212, #210). FOUR renumbers for one migration was
+//       the last straw that produced B4 (below): the expected version had
+//       been a hardcoded literal here AND in eight test files, so any two
+//       migration-bearing PRs conflicted by construction no matter what they
+//       changed.
 // 038 = validity_guard_drops counter table (issue #205 follow-up) -- counts
 //       extracted valid_at/invalid_at bounds the write-path guard REFUSED.
 //       #216 wired the model's `invalid_at` straight into memories.valid_to
@@ -219,21 +223,33 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       so "the model states no end dates" (real zero) stays distinguishable
 //       from "the model states end dates and every one is garbage" (broken
 //       zero). Same shape as relation_guard_drops (029) / entity_name_drops
-//       (034), deliberately -- one readable family of guard canaries.
-export const SCHEMA_VERSION = 39 as const;
+//       (034), deliberately -- one readable family of guard canaries. This
+//       migration landed in PR #228 WHILE B4 (below) was in flight, bumping
+//       the hardcoded SCHEMA_VERSION literal 37 -> 38 on main one more time
+//       before the derivation could even merge.
 // 039 = entity_link_drops table (issue #200 AC-3) -- same reason/count/
 //       session_id/created_at shape as relation_guard_drops (029),
 //       entity_name_drops (034) and validity_guard_drops (038). Lets the
 //       doctor "Entity link rate" canary distinguish "the model emitted no
 //       entities[] for this atom" (a REAL zero) from "the model emitted
 //       entities but the write failed" (a BROKEN zero) -- see
-//       src/storage/entity-link-log.ts.
+//       src/storage/entity-link-log.ts. This migration ALSO landed while B4
+//       was in flight (PR #215, hardcoded 38 -> 39) -- two live collisions
+//       against this exact literal during the one PR meant to remove it.
 //
-// Numbering note (2026-07-13): NINE collisions on this range in ONE DAY, one
-// of which bricked production. Take the number from
-// `git ls-tree origin/main -- migrations/` immediately before pushing -- never
-// from a teammate's message, never from your branch's history, and never from
-// a green CI check (a green check on a stale base is what caused the outage).
-// tests/storage/migration-renumber.test.ts is the only authority that cannot
-// go stale. The real fix is to stop minting these by coordination at all --
-// see the timestamp-id proposal in the architecture review.
+// Numbering note (2026-07-13, from #215): NINE collisions on this range in
+// ONE DAY, one of which bricked production. Before this constant was
+// derived, the rule was: take the number from
+// `git ls-tree origin/main -- migrations/` immediately before pushing --
+// never from a teammate's message, never from your branch's history, and
+// never from a green CI check (a green check on a stale base is what caused
+// the outage). tests/storage/migration-renumber.test.ts was the only
+// authority that couldn't go stale. See the timestamp-id proposal in B4's
+// PR description for the durable fix this comment used to point at.
+//
+// B4 (this constant is now DERIVED, not a literal -- see above and
+// src/storage/schema-version.ts): a future migration file no longer needs an
+// entry in this comment to be "safe" -- it exists purely as historical
+// design-rationale context for migrations 001-039. New entries are optional;
+// put real rationale in the migration file's own header instead.
+export { SCHEMA_VERSION } from '../../storage/schema-version.js';

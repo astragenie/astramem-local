@@ -1,13 +1,10 @@
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import type { DB } from './db.js';
 import { SCHEMA_VERSION } from '../server/lib/wire-meta.js';
+import { MIGRATIONS_DIR } from './schema-version.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { contentHash } from './content-hash.js';
-
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const MIGRATIONS_DIR = join(__dirname, '..', '..', 'migrations');
 
 /** Placeholder substituted into migration SQL for the vec schema dim
  * (FEAT-409). Only migrations/001-init.sql uses it today; substitution is
