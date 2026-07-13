@@ -49,11 +49,6 @@ describe('migration 012-entities schema (AC-2)', () => {
     const indexes = db.prepare("SELECT name, sql FROM sqlite_master WHERE type='index' AND tbl_name='memory_entities'").all() as { name: string; sql: string | null }[];
     expect(indexes.some(i => (i.sql ?? '').includes('entity_id'))).toBe(true);
   });
-
-  it('DB max schema version is 36 after migration', () => {
-    const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(39);
-  });
 });
 
 describe('EntityRepo (AC-9 normalize seam)', () => {

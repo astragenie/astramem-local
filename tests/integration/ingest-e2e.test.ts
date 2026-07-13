@@ -27,6 +27,7 @@ import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import type { ChildProcess } from 'node:child_process';
 import { waitForBoundPort } from '../smoke/helpers/daemon.js';
+import { SCHEMA_VERSION } from '../../src/server/lib/wire-meta.js';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -214,7 +215,7 @@ describe('GET /health over real HTTP', () => {
       new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
-    expect(body.schema_version).toBe(39);
+    expect(body.schema_version).toBe(SCHEMA_VERSION);
   }, 20_000);
 });
 
@@ -240,7 +241,7 @@ describe('GET /version over real HTTP', () => {
       new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
-    expect(body.schema_version).toBe(39);
+    expect(body.schema_version).toBe(SCHEMA_VERSION);
     expect(typeof body.ts).toBe('number');
   }, 20_000);
 

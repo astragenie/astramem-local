@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { buildApp } from '../../src/server/app.js';
+import { SCHEMA_VERSION } from '../../src/server/lib/wire-meta.js';
 import type { DB } from '../../src/storage/db.js';
 
 describe('GET /version', () => {
@@ -50,9 +51,9 @@ describe('GET /version', () => {
     expect(res.json().contract_schema_version).toBe('1');
   });
 
-  it('schema_version is 36', async () => {
+  it('schema_version matches SCHEMA_VERSION', async () => {
     const res = await app.inject({ method: 'GET', url: '/version' });
-    expect(res.json().schema_version).toBe(39);
+    expect(res.json().schema_version).toBe(SCHEMA_VERSION);
   });
 
   it('ts is a number', async () => {
@@ -90,7 +91,7 @@ describe('GET /health (wire metadata)', () => {
       new Set(['atom@1', 'atom@2', 'retrieval@1', 'sync@1', 'capture@1']),
     );
     expect(body.contract_schema_version).toBe('1');
-    expect(body.schema_version).toBe(39);
+    expect(body.schema_version).toBe(SCHEMA_VERSION);
   });
 
   it('includes security.redaction — true by default', async () => {
