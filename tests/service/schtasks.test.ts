@@ -346,4 +346,89 @@ describe('SchtasksAdapter', () => {
       expect(s.running).toBe(false);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // installWatchdogTimer() / uninstallWatchdogTimer() — issue #206
+  // ---------------------------------------------------------------------------
+
+  describe('installWatchdogTimer', () => {
+    const WATCHDOG_TASK_NAME = 'AstraMemoryDWatchdog';
+
+    it('registers a second scheduled task via /xml, separate from the daemon task', async () => {
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      const createCall = cmds.find(
+        c => c.toLowerCase().includes('schtasks') && c.toLowerCase().includes('/create'),
+      );
+      expect(createCall).toBeTruthy();
+      expect(createCall).toMatch(/\/xml/i);
+      expect(createCall).toContain(WATCHDOG_TASK_NAME);
+      expect(createCall).not.toContain(TASK_NAME + '"'); // not the daemon task name
+      expect(createCall).toMatch(/\/f/i);
+    });
+
+    it('writes XML with a repetition interval derived from intervalSec and the watchdog-probe command', async () => {
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      const xmlWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/AstraMemoryDWatchdog\.xml$/i),
+      );
+      expect(xmlWrite).toBeTruthy();
+      const buf = xmlWrite![1] as Buffer;
+      const xml = buf.subarray(2).toString('utf16le');
+      expect(xml).toContain('<Interval>PT180S</Interval>');
+      expect(xml).toContain('service watchdog-probe');
+      expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
+    });
+
+    it('falls back to schtasks /sc MINUTE /mo N when the XML tier fails', async () => {
+      execMock.mockImplementation((cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+        if (/\/xml/i.test(cmd)) cb(new Error('Access denied'), '', 'ERROR: Access is denied.');
+        else cb(null, '', '');
+      });
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      const fallbackCall = cmds.find(
+        c => c.toLowerCase().includes('/create') && !c.toLowerCase().includes('/xml'),
+      );
+      expect(fallbackCall).toBeTruthy();
+      expect(fallbackCall).toMatch(/\/sc\s+MINUTE/i);
+      expect(fallbackCall).toMatch(/\/mo\s+3/i); // 180s -> 3 minutes
+      expect(fallbackCall).toContain(WATCHDOG_TASK_NAME);
+    });
+
+    it('rounds sub-minute intervals up to at least 1 minute in the CLI fallback', async () => {
+      execMock.mockImplementation((cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+        if (/\/xml/i.test(cmd)) cb(new Error('Access denied'), '', 'ERROR: Access is denied.');
+        else cb(null, '', '');
+      });
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 30);
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      const fallbackCall = cmds.find(
+        c => c.toLowerCase().includes('/create') && !c.toLowerCase().includes('/xml'),
+      );
+      expect(fallbackCall).toMatch(/\/mo\s+1/i);
+    });
+  });
+
+  describe('uninstallWatchdogTimer', () => {
+    const WATCHDOG_TASK_NAME = 'AstraMemoryDWatchdog';
+
+    it('calls schtasks /delete /f for the watchdog task name', async () => {
+      await adapter.uninstallWatchdogTimer();
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      const deleteCall = cmds.find(
+        c => c.toLowerCase().includes('schtasks') && c.toLowerCase().includes('/delete'),
+      );
+      expect(deleteCall).toBeTruthy();
+      expect(deleteCall).toContain(WATCHDOG_TASK_NAME);
+      expect(deleteCall).toMatch(/\/f/i);
+    });
+
+    it('does not throw when the watchdog task is absent (idempotent)', async () => {
+      execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+        cb(new Error('task not found'), '', 'The system cannot find the file specified');
+      });
+      await expect(adapter.uninstallWatchdogTimer()).resolves.toBeUndefined();
+    });
+  });
 });
