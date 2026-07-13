@@ -1,0 +1,1473 @@
+[
+  {
+    "letter": "A",
+    "combined": {
+      "model": "A",
+      "daemonBootMs": null,
+      "fixtures": [
+        {
+          "fixtureId": "fx01-clean-decision",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 16832,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "decision",
+              "text": "Use SQLite for the astramemory-local database due to its local-first nature and ease of use."
+            },
+            {
+              "type": "decision",
+              "text": "Use sqlite-vec for vector search, as it integrates seamlessly with SQLite and doesn't require a separate vector DB."
+            },
+            {
+              "type": "decision",
+              "text": "Set the default embedding model to mxbai-embed-large via Ollama, given its 1024-dim capability and local execution."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx01-clean-decision",
+            "goldCount": 4,
+            "extractedCount": 3,
+            "recall": 0.75,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 1,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "Captures the decision to use SQLite for astramemory-local as a local-first choice."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": true,
+                  "reason": "States the decision to use sqlite-vec for vector search instead of a separate DB."
+                },
+                {
+                  "index": 2,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 2,
+                  "type_correct": true,
+                  "reason": "Specifies the default embedding model is mxbai-embed-large via Ollama and notes its 1024-dim/local execution."
+                }
+              ],
+              "unmatched_gold_indices": [
+                3
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "difficulty": "nothing",
+          "status": "ready",
+          "wallMs": 24659,
+          "poisonJobs": 0,
+          "atoms": [],
+          "score": {
+            "fixtureId": "fx09-nothing-worth-remembering",
+            "goldCount": 0,
+            "extractedCount": 0,
+            "recall": null,
+            "precision": null,
+            "junkRate": 0,
+            "typeAccuracy": null,
+            "overExtractionCount": 0,
+            "judge": {
+              "extracted_verdicts": [],
+              "unmatched_gold_indices": []
+            }
+          }
+        },
+        {
+          "fixtureId": "fx13-entity-rich",
+          "difficulty": "entity-rich",
+          "status": "ready",
+          "wallMs": 19378,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "fact",
+              "text": "The integration connects astramemory-local to the astramem-plugin (maintained by the same team)."
+            },
+            {
+              "type": "fact",
+              "text": "For cloud sync, the integration connects to the memory SaaS backend built on ASP.NET Core and PostgreSQL, hosted on Azure."
+            },
+            {
+              "type": "fact",
+              "text": "The wire format is versioned and mirrors what Sergey specified in the FEAT-4a design doc."
+            },
+            {
+              "type": "note",
+              "text": "claude-code is treated as one of several supported agent clients, alongside cursor and GitHub GitHub-copilot, each identified via the agent field on ingest."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx13-entity-rich",
+            "goldCount": 4,
+            "extractedCount": 4,
+            "recall": 0.5,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 0.5,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Mentions connection to astramem-plugin and maintained-by-same-team detail not present in gold atoms."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "States the cloud sync uses a memory SaaS backend on ASP.NET Core and PostgreSQL hosted on Azure, matching gold atom 0."
+                },
+                {
+                  "index": 2,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Notes a versioned wire format referencing a FEAT-4a design doc, which is useful durable info not in the gold list."
+                },
+                {
+                  "index": 3,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 3,
+                  "type_correct": false,
+                  "reason": "Identifies claude-code, cursor, and GitHub Copilot as supported agent clients matching gold atom 3, but labels it as a note rather than a fact."
+                }
+              ],
+              "unmatched_gold_indices": [
+                1,
+                2
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 31363,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "decision",
+              "text": "Add a 10-second timeout on the lock wait."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+            "goldCount": 2,
+            "extractedCount": 1,
+            "recall": 0.5,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 1,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": true,
+                  "reason": "The extracted decision (10-second timeout on the lock wait) is part of the gold decision about single-flight locking and timeout."
+                }
+              ],
+              "unmatched_gold_indices": [
+                0
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+          "difficulty": "conversational",
+          "status": "ready",
+          "wallMs": 40884,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "event",
+              "text": "Marcus is moving out next week."
+            },
+            {
+              "type": "event",
+              "text": "Priya is starting at a new school this fall."
+            },
+            {
+              "type": "note",
+              "text": "Both Marcus and Priya are looking forward to their changes."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+            "goldCount": 0,
+            "extractedCount": 3,
+            "recall": null,
+            "precision": 0,
+            "junkRate": 1,
+            "typeAccuracy": null,
+            "overExtractionCount": 3,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "junk",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "No gold atoms exist; any durable facts extracted are over-extraction and thus not supported as necessary memory."
+                },
+                {
+                  "index": 1,
+                  "verdict": "junk",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "No gold atoms exist; this event is an unnecessary memory extraction."
+                },
+                {
+                  "index": 2,
+                  "verdict": "junk",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "No gold atoms exist; this note is an over-extraction not warranted by the transcript."
+                }
+              ],
+              "unmatched_gold_indices": []
+            }
+          }
+        }
+      ],
+      "aggregate": {
+        "avgRecall": 0.5833333333333334,
+        "avgPrecision": 0.75,
+        "f1": 0.6562499999999999,
+        "avgJunkRate": 0.2,
+        "avgTypeAccuracy": 0.8333333333333334,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 28289.9,
+        "totalWallMs": 282899,
+        "azureUsd": 0
+      },
+      "runs": [
+        {
+          "avgRecall": 0.5833333333333334,
+          "avgPrecision": 0.75,
+          "f1": 0.6562499999999999,
+          "avgJunkRate": 0.2,
+          "avgTypeAccuracy": 0.8333333333333334,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 29956.6,
+          "totalWallMs": 149783,
+          "azureUsd": 0
+        },
+        {
+          "avgRecall": 0.5833333333333334,
+          "avgPrecision": 0.75,
+          "f1": 0.6562499999999999,
+          "avgJunkRate": 0.2,
+          "avgTypeAccuracy": 0.8333333333333334,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 26623.2,
+          "totalWallMs": 133116,
+          "azureUsd": 0
+        }
+      ],
+      "stats": {
+        "recall": {
+          "mean": 0.5833333333333334,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            0.5833333333333334,
+            0.5833333333333334
+          ]
+        },
+        "precision": {
+          "mean": 0.75,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            0.75,
+            0.75
+          ]
+        },
+        "f1": {
+          "mean": 0.6562499999999999,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            0.6562499999999999,
+            0.6562499999999999
+          ]
+        },
+        "typeAccuracy": {
+          "mean": 0.8333333333333334,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            0.8333333333333334,
+            0.8333333333333334
+          ]
+        }
+      }
+    },
+    "runs": [
+      {
+        "avgRecall": 0.5833333333333334,
+        "avgPrecision": 0.75,
+        "f1": 0.6562499999999999,
+        "avgJunkRate": 0.2,
+        "avgTypeAccuracy": 0.8333333333333334,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 29956.6,
+        "totalWallMs": 149783,
+        "azureUsd": 0
+      },
+      {
+        "avgRecall": 0.5833333333333334,
+        "avgPrecision": 0.75,
+        "f1": 0.6562499999999999,
+        "avgJunkRate": 0.2,
+        "avgTypeAccuracy": 0.8333333333333334,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 26623.2,
+        "totalWallMs": 133116,
+        "azureUsd": 0
+      }
+    ],
+    "extrasPerRun": [
+      {
+        "atomCount": 11,
+        "relationCount": 0,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 37491,
+          "fx09-nothing-worth-remembering": 10447,
+          "fx13-entity-rich": 28107,
+          "fx43-rich-lesson-embed-cache-stampede": 35890,
+          "fx44-conversational-marcus-priya-life-updates": 37848
+        }
+      },
+      {
+        "atomCount": 11,
+        "relationCount": 0,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 16832,
+          "fx09-nothing-worth-remembering": 24659,
+          "fx13-entity-rich": 19378,
+          "fx43-rich-lesson-embed-cache-stampede": 31363,
+          "fx44-conversational-marcus-priya-life-updates": 40884
+        }
+      }
+    ]
+  },
+  {
+    "letter": "B",
+    "combined": {
+      "model": "B",
+      "daemonBootMs": null,
+      "fixtures": [
+        {
+          "fixtureId": "fx01-clean-decision",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 40006,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "decision",
+              "text": "Use SQLite rather than PostgreSQL for astramemory-local's database, because the project must run fully offline on a laptop with no server process and SQLite fits the local-first, easy-to-use deployment model. The tradeoff is giving up PostgreSQL's server-backed features, but that cost is acceptable for a single-machine local app. This decision is about astramemory-local's storage layer."
+            },
+            {
+              "type": "decision",
+              "text": "Use sqlite-vec for vector search in astramemory-local, instead of introducing a separate vector database, because it integrates directly with SQLite and preserves the offline, single-process laptop deployment model. The tradeoff is less flexibility than a dedicated vector store, but it avoids another service to install, run, and maintain. This choice is specifically about astramemory-local's vector retrieval layer."
+            },
+            {
+              "type": "decision",
+              "text": "Set astramemory-local's default embedding model to mxbai-embed-large via Ollama, because it provides 1024-dimensional embeddings while still running locally. That makes it a better fit for an offline laptop-first setup than a hosted embedding service, though it ties the default to Ollama's local model availability. This decision is about the embedding-model default."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx01-clean-decision",
+            "goldCount": 4,
+            "extractedCount": 3,
+            "recall": 0.75,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 1,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "Captures the decision to use SQLite (better-sqlite3) for astramemory-local's storage and the offline local-first rationale, matching gold atom 0."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": true,
+                  "reason": "States the decision to use sqlite-vec for vector search to avoid a separate vector DB and preserve offline single-process deployment, matching gold atom 1."
+                },
+                {
+                  "index": 2,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 2,
+                  "type_correct": true,
+                  "reason": "Specifies the default embedding model is mxbai-embed-large via Ollama for local 1024-dim embeddings, matching gold atom 2."
+                }
+              ],
+              "unmatched_gold_indices": [
+                3
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "difficulty": "nothing",
+          "status": "ready",
+          "wallMs": 8645,
+          "poisonJobs": 0,
+          "atoms": [],
+          "score": {
+            "fixtureId": "fx09-nothing-worth-remembering",
+            "goldCount": 0,
+            "extractedCount": 0,
+            "recall": null,
+            "precision": null,
+            "junkRate": 0,
+            "typeAccuracy": null,
+            "overExtractionCount": 0,
+            "judge": {
+              "extracted_verdicts": [],
+              "unmatched_gold_indices": []
+            }
+          }
+        },
+        {
+          "fixtureId": "fx13-entity-rich",
+          "difficulty": "entity-rich",
+          "status": "ready",
+          "wallMs": 14889,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "fact",
+              "text": "astramemory-local integrates with the astramem-plugin, which is maintained by the same team."
+            },
+            {
+              "type": "fact",
+              "text": "For cloud sync, astramemory-local talks to a memory SaaS backend built on ASP.NET Core and PostgreSQL and hosted on Azure."
+            },
+            {
+              "type": "fact",
+              "text": "The wire format is versioned and matches the FEAT-4a design doc specified by Sergey."
+            },
+            {
+              "type": "fact",
+              "text": "Ollama and Azure OpenAI (gpt-5-mini) are external dependencies that should be flagged to the security team."
+            },
+            {
+              "type": "fact",
+              "text": "Ollama is used for local inference, and no data leaves the machine."
+            },
+            {
+              "type": "fact",
+              "text": "claude-code, cursor, and GitHub Copilot are supported agent clients, and the ingest path identifies them via the agent field."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx13-entity-rich",
+            "goldCount": 4,
+            "extractedCount": 6,
+            "recall": 0.75,
+            "precision": 0.8333333333333334,
+            "junkRate": 0.16666666666666666,
+            "typeAccuracy": 1,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Notes integration with astramem-plugin maintenance (same team), a useful detail not present in the gold atoms."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "Describes the cloud-sync memory SaaS backend on ASP.NET Core/PostgreSQL hosted on Azure, matching gold atom 0."
+                },
+                {
+                  "index": 2,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Mentions the wire format versioning and FEAT-4a design doc by Sergey, which is useful durable info not in the gold atoms."
+                },
+                {
+                  "index": 3,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": true,
+                  "reason": "Flags Ollama and Azure OpenAI (gpt-5-mini) as external dependencies for security, matching gold atom 1."
+                },
+                {
+                  "index": 4,
+                  "verdict": "junk",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Redundant detail (Ollama local inference, no data leaves) already covered by the matched gold atom; considered redundant."
+                },
+                {
+                  "index": 5,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 3,
+                  "type_correct": true,
+                  "reason": "States that Claude Code, Cursor, and GitHub Copilot are supported agent clients identified via the agent field, matching gold atom 3."
+                }
+              ],
+              "unmatched_gold_indices": [
+                2
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 2972,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "todo",
+              "text": "Add a 10-second timeout on the lock wait."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+            "goldCount": 2,
+            "extractedCount": 1,
+            "recall": 0.5,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 0,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": false,
+                  "reason": "Captures the 10-second timeout part of the decision to use a single-flight lock, but labels it as a todo instead of a decision."
+                }
+              ],
+              "unmatched_gold_indices": [
+                0
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+          "difficulty": "conversational",
+          "status": "ready",
+          "wallMs": 2787,
+          "poisonJobs": 0,
+          "atoms": [],
+          "score": {
+            "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+            "goldCount": 0,
+            "extractedCount": 0,
+            "recall": null,
+            "precision": null,
+            "junkRate": 0,
+            "typeAccuracy": null,
+            "overExtractionCount": 0,
+            "judge": {
+              "extracted_verdicts": [],
+              "unmatched_gold_indices": []
+            }
+          }
+        }
+      ],
+      "aggregate": {
+        "avgRecall": 0.6666666666666666,
+        "avgPrecision": 0.9722222222222223,
+        "f1": 0.7908045977011495,
+        "avgJunkRate": 0.016666666666666666,
+        "avgTypeAccuracy": 0.6666666666666666,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 18335.199999999997,
+        "totalWallMs": 183352,
+        "azureUsd": 0
+      },
+      "runs": [
+        {
+          "avgRecall": 0.6666666666666666,
+          "avgPrecision": 1,
+          "f1": 0.8,
+          "avgJunkRate": 0,
+          "avgTypeAccuracy": 0.6666666666666666,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 22810.6,
+          "totalWallMs": 114053,
+          "azureUsd": 0
+        },
+        {
+          "avgRecall": 0.6666666666666666,
+          "avgPrecision": 0.9444444444444445,
+          "f1": 0.7816091954022989,
+          "avgJunkRate": 0.03333333333333333,
+          "avgTypeAccuracy": 0.6666666666666666,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 13859.8,
+          "totalWallMs": 69299,
+          "azureUsd": 0
+        }
+      ],
+      "stats": {
+        "recall": {
+          "mean": 0.6666666666666666,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            0.6666666666666666,
+            0.6666666666666666
+          ]
+        },
+        "precision": {
+          "mean": 0.9722222222222223,
+          "stdev": 0.03928371006591924,
+          "n": 2,
+          "raw": [
+            1,
+            0.9444444444444445
+          ]
+        },
+        "f1": {
+          "mean": 0.7908045977011495,
+          "stdev": 0.013004262642511219,
+          "n": 2,
+          "raw": [
+            0.8,
+            0.7816091954022989
+          ]
+        },
+        "typeAccuracy": {
+          "mean": 0.6666666666666666,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            0.6666666666666666,
+            0.6666666666666666
+          ]
+        }
+      }
+    },
+    "runs": [
+      {
+        "avgRecall": 0.6666666666666666,
+        "avgPrecision": 1,
+        "f1": 0.8,
+        "avgJunkRate": 0,
+        "avgTypeAccuracy": 0.6666666666666666,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 22810.6,
+        "totalWallMs": 114053,
+        "azureUsd": 0
+      },
+      {
+        "avgRecall": 0.6666666666666666,
+        "avgPrecision": 0.9444444444444445,
+        "f1": 0.7816091954022989,
+        "avgJunkRate": 0.03333333333333333,
+        "avgTypeAccuracy": 0.6666666666666666,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 13859.8,
+        "totalWallMs": 69299,
+        "azureUsd": 0
+      }
+    ],
+    "extrasPerRun": [
+      {
+        "atomCount": 8,
+        "relationCount": 18,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 15544,
+          "fx09-nothing-worth-remembering": 20513,
+          "fx13-entity-rich": 28399,
+          "fx43-rich-lesson-embed-cache-stampede": 31296,
+          "fx44-conversational-marcus-priya-life-updates": 18301
+        }
+      },
+      {
+        "atomCount": 10,
+        "relationCount": 16,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 40006,
+          "fx09-nothing-worth-remembering": 8645,
+          "fx13-entity-rich": 14889,
+          "fx43-rich-lesson-embed-cache-stampede": 2972,
+          "fx44-conversational-marcus-priya-life-updates": 2787
+        }
+      }
+    ]
+  },
+  {
+    "letter": "C",
+    "combined": {
+      "model": "C",
+      "daemonBootMs": null,
+      "fixtures": [
+        {
+          "fixtureId": "fx01-clean-decision",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 13062,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "decision",
+              "text": "Use SQLite instead of PostgreSQL as the database for astramemory-local, and use sqlite-vec for vector search rather than a separate vector database. The project must run fully offline on a laptop with no server process, so SQLite matches the local-first deployment model and keeps storage simple, while sqlite-vec embeds vector search into the same database file as the rest of the data. Tradeoff: this favors single-process local simplicity over PostgreSQL-style server features and external vector-DB scalability."
+            },
+            {
+              "type": "decision",
+              "text": "Use mxbai-embed-large via Ollama as the default embedding model for astramemory-local. The model is 1024-dimensional and runs locally, which fits the same offline laptop constraint that drives the SQLite/sqlite-vec storage choice. The consequence is that embeddings can be generated without a hosted API dependency, preserving local-first operation; the tradeoff is that model availability and performance depend on the user's local Ollama setup rather than a managed embedding service."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx01-clean-decision",
+            "goldCount": 4,
+            "extractedCount": 2,
+            "recall": 0.5,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 1,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "Captures the decision to use SQLite (local-first, no server) as the database for astramemory-local."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 2,
+                  "type_correct": true,
+                  "reason": "States the decision to use mxbai-embed-large via Ollama as the default embedding model and notes it runs locally (1024-dim)."
+                }
+              ],
+              "unmatched_gold_indices": [
+                1,
+                3
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "difficulty": "nothing",
+          "status": "ready",
+          "wallMs": 23636,
+          "poisonJobs": 0,
+          "atoms": [],
+          "score": {
+            "fixtureId": "fx09-nothing-worth-remembering",
+            "goldCount": 0,
+            "extractedCount": 0,
+            "recall": null,
+            "precision": null,
+            "junkRate": 0,
+            "typeAccuracy": null,
+            "overExtractionCount": 0,
+            "judge": {
+              "extracted_verdicts": [],
+              "unmatched_gold_indices": []
+            }
+          }
+        },
+        {
+          "fixtureId": "fx13-entity-rich",
+          "difficulty": "entity-rich",
+          "status": "ready",
+          "wallMs": 37460,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "fact",
+              "text": "The astramemory-local integration connects to astramem-plugin, maintained by the same team."
+            },
+            {
+              "type": "fact",
+              "text": "Cloud sync uses the memory SaaS backend built on ASP.NET Core and PostgreSQL, hosted on Azure."
+            },
+            {
+              "type": "fact",
+              "text": "The astramemory-local wire format is versioned and mirrors Sergey's FEAT-4a design doc."
+            },
+            {
+              "type": "todo",
+              "text": "Flag Ollama and Azure OpenAI (gpt-5-mini) as external dependencies to the security team."
+            },
+            {
+              "type": "fact",
+              "text": "Ollama is used for local inference, and no data leaves the machine."
+            },
+            {
+              "type": "fact",
+              "text": "Supported agent clients include claude-code, cursor, and GitHub GitHub-copilot; ingest identifies each via the agent field."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx13-entity-rich",
+            "goldCount": 4,
+            "extractedCount": 6,
+            "recall": 0.75,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 0.6666666666666666,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Notes that astramem-plugin is maintained by the same team is extra contextual fact not present in the gold atoms."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "States cloud sync uses the ASP.NET Core + PostgreSQL Azure-hosted memory SaaS backend, matching gold atom 0."
+                },
+                {
+                  "index": 2,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Versioned wire format mirroring Sergey's FEAT-4a is additional design detail not in the gold atoms."
+                },
+                {
+                  "index": 3,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": false,
+                  "reason": "Flags Ollama and Azure OpenAI (gpt-5-mini) as external dependencies, matching the gold fact but labeled as a todo rather than a fact."
+                },
+                {
+                  "index": 4,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Reiterates that Ollama does local inference with no data leaving the machine, which is a useful detail already covered but not separately listed in gold."
+                },
+                {
+                  "index": 5,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 3,
+                  "type_correct": true,
+                  "reason": "Identifies Claude Code, Cursor, and GitHub Copilot as supported agent clients identified via the agent field, matching gold atom 3."
+                }
+              ],
+              "unmatched_gold_indices": [
+                2
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 12015,
+          "poisonJobs": 0,
+          "atoms": [],
+          "score": {
+            "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+            "goldCount": 2,
+            "extractedCount": 0,
+            "recall": 0,
+            "precision": null,
+            "junkRate": 0,
+            "typeAccuracy": null,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [],
+              "unmatched_gold_indices": [
+                0,
+                1
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+          "difficulty": "conversational",
+          "status": "ready",
+          "wallMs": 16743,
+          "poisonJobs": 0,
+          "atoms": [],
+          "score": {
+            "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+            "goldCount": 0,
+            "extractedCount": 0,
+            "recall": null,
+            "precision": null,
+            "junkRate": 0,
+            "typeAccuracy": null,
+            "overExtractionCount": 0,
+            "judge": {
+              "extracted_verdicts": [],
+              "unmatched_gold_indices": []
+            }
+          }
+        }
+      ],
+      "aggregate": {
+        "avgRecall": 0.45833333333333337,
+        "avgPrecision": 1,
+        "f1": 0.6274509803921569,
+        "avgJunkRate": 0,
+        "avgTypeAccuracy": 0.8333333333333333,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 19311.300000000003,
+        "totalWallMs": 193113,
+        "azureUsd": 0
+      },
+      "runs": [
+        {
+          "avgRecall": 0.5,
+          "avgPrecision": 1,
+          "f1": 0.6666666666666666,
+          "avgJunkRate": 0,
+          "avgTypeAccuracy": 0.8333333333333333,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 18039.4,
+          "totalWallMs": 90197,
+          "azureUsd": 0
+        },
+        {
+          "avgRecall": 0.4166666666666667,
+          "avgPrecision": 1,
+          "f1": 0.5882352941176471,
+          "avgJunkRate": 0,
+          "avgTypeAccuracy": 0.8333333333333333,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 20583.2,
+          "totalWallMs": 102916,
+          "azureUsd": 0
+        }
+      ],
+      "stats": {
+        "recall": {
+          "mean": 0.45833333333333337,
+          "stdev": 0.058925565098878946,
+          "n": 2,
+          "raw": [
+            0.5,
+            0.4166666666666667
+          ]
+        },
+        "precision": {
+          "mean": 1,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            1,
+            1
+          ]
+        },
+        "f1": {
+          "mean": 0.6274509803921569,
+          "stdev": 0.05545935538718016,
+          "n": 2,
+          "raw": [
+            0.6666666666666666,
+            0.5882352941176471
+          ]
+        },
+        "typeAccuracy": {
+          "mean": 0.8333333333333333,
+          "stdev": 0,
+          "n": 2,
+          "raw": [
+            0.8333333333333333,
+            0.8333333333333333
+          ]
+        }
+      }
+    },
+    "runs": [
+      {
+        "avgRecall": 0.5,
+        "avgPrecision": 1,
+        "f1": 0.6666666666666666,
+        "avgJunkRate": 0,
+        "avgTypeAccuracy": 0.8333333333333333,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 18039.4,
+        "totalWallMs": 90197,
+        "azureUsd": 0
+      },
+      {
+        "avgRecall": 0.4166666666666667,
+        "avgPrecision": 1,
+        "f1": 0.5882352941176471,
+        "avgJunkRate": 0,
+        "avgTypeAccuracy": 0.8333333333333333,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 20583.2,
+        "totalWallMs": 102916,
+        "azureUsd": 0
+      }
+    ],
+    "extrasPerRun": [
+      {
+        "atomCount": 11,
+        "relationCount": 17,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 16640,
+          "fx09-nothing-worth-remembering": 9359,
+          "fx13-entity-rich": 43417,
+          "fx43-rich-lesson-embed-cache-stampede": 9622,
+          "fx44-conversational-marcus-priya-life-updates": 11159
+        }
+      },
+      {
+        "atomCount": 8,
+        "relationCount": 12,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 13062,
+          "fx09-nothing-worth-remembering": 23636,
+          "fx13-entity-rich": 37460,
+          "fx43-rich-lesson-embed-cache-stampede": 12015,
+          "fx44-conversational-marcus-priya-life-updates": 16743
+        }
+      }
+    ]
+  },
+  {
+    "letter": "D",
+    "combined": {
+      "model": "D",
+      "daemonBootMs": null,
+      "fixtures": [
+        {
+          "fixtureId": "fx01-clean-decision",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 47559,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "decision",
+              "text": "Use SQLite with sqlite-vec for astramemory-local's storage and vector search, running fully offline on a laptop without any server process — SQLite is recommended over PostgreSQL due to its local-first nature and synchronous fast access. For vector search, sqlite-vec embeds into the same file as everything else and doesn't require a separate vector DB."
+            },
+            {
+              "type": "decision",
+              "text": "Set the default embedding model to mxbai-embed-large via Ollama, a 1024-dim model that runs locally."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx01-clean-decision",
+            "goldCount": 4,
+            "extractedCount": 2,
+            "recall": 0.5,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 1,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "Captures the decision to use SQLite (local-first, no separate server) for storage."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 2,
+                  "type_correct": true,
+                  "reason": "States the decision to use mxbai-embed-large via Ollama as the default embedding model (runs locally, 1024-dim)."
+                }
+              ],
+              "unmatched_gold_indices": [
+                1,
+                3
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "difficulty": "nothing",
+          "status": "ready",
+          "wallMs": 12263,
+          "poisonJobs": 0,
+          "atoms": [],
+          "score": {
+            "fixtureId": "fx09-nothing-worth-remembering",
+            "goldCount": 0,
+            "extractedCount": 0,
+            "recall": null,
+            "precision": null,
+            "junkRate": 0,
+            "typeAccuracy": null,
+            "overExtractionCount": 0,
+            "judge": {
+              "extracted_verdicts": [],
+              "unmatched_gold_indices": []
+            }
+          }
+        },
+        {
+          "fixtureId": "fx13-entity-rich",
+          "difficulty": "entity-rich",
+          "status": "ready",
+          "wallMs": 21343,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "fact",
+              "text": "astramemory-local connects to astramem-plugin (maintained by the same team)."
+            },
+            {
+              "type": "fact",
+              "text": "astramemory-local connects to memory SaaS backend built on ASP.NET Core and PostgreSQL, hosted on Azure for cloud sync."
+            },
+            {
+              "type": "fact",
+              "text": "The wire format is versioned and mirrors Sergey's specification in the FEAT-4a design doc."
+            },
+            {
+              "type": "decision",
+              "text": "Flag Ollama (local inference, no data leaves the machine) and Azure OpenAI (gpt-5-mini) for cloud sync as external dependencies to the security team."
+            },
+            {
+              "type": "fact",
+              "text": "claude-code is treated as one of several supported agent clients, alongside cursor and GitHub GitHub-copilot, each identified via the agent field on ingest."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx13-entity-rich",
+            "goldCount": 4,
+            "extractedCount": 5,
+            "recall": 0.75,
+            "precision": 0.8,
+            "junkRate": 0.2,
+            "typeAccuracy": 0.6666666666666666,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "junk",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Duplicates gold fact about the plugin integration already covered by another extracted atom and adds no new durable info."
+                },
+                {
+                  "index": 1,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 0,
+                  "type_correct": true,
+                  "reason": "States the memory SaaS backend tech stack and Azure hosting, matching gold atom 0's cloud-sync backend fact."
+                },
+                {
+                  "index": 2,
+                  "verdict": "reasonable_extra",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "Provides additional durable info about a versioned wire format and FEAT-4a spec that isn't present in the gold list."
+                },
+                {
+                  "index": 3,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": false,
+                  "reason": "Flags Ollama and Azure OpenAI (gpt-5-mini) as external dependencies to notify security, matching gold atom 1 though the extracted type is 'decision' not 'fact'."
+                },
+                {
+                  "index": 4,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 3,
+                  "type_correct": true,
+                  "reason": "States that Claude Code, Cursor, and GitHub Copilot are supported agent clients identified via the agent field, matching gold atom 3."
+                }
+              ],
+              "unmatched_gold_indices": [
+                2
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+          "difficulty": "clean",
+          "status": "ready",
+          "wallMs": 26637,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "command",
+              "text": "Add a 10-second timeout on the lock wait."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+            "goldCount": 2,
+            "extractedCount": 1,
+            "recall": 0.5,
+            "precision": 1,
+            "junkRate": 0,
+            "typeAccuracy": 0,
+            "overExtractionCount": null,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "matches_gold",
+                  "matched_gold_index": 1,
+                  "type_correct": false,
+                  "reason": "The 10-second timeout on the lock wait is part of the decision to add a single-flight lock with that timeout."
+                }
+              ],
+              "unmatched_gold_indices": [
+                0
+              ]
+            }
+          }
+        },
+        {
+          "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+          "difficulty": "conversational",
+          "status": "ready",
+          "wallMs": 46516,
+          "poisonJobs": 0,
+          "atoms": [
+            {
+              "type": "event",
+              "text": "Marcus is moving out next week."
+            },
+            {
+              "type": "event",
+              "text": "Priya is starting at a new school this fall."
+            }
+          ],
+          "score": {
+            "fixtureId": "fx44-conversational-marcus-priya-life-updates",
+            "goldCount": 0,
+            "extractedCount": 2,
+            "recall": null,
+            "precision": 0,
+            "junkRate": 1,
+            "typeAccuracy": null,
+            "overExtractionCount": 2,
+            "judge": {
+              "extracted_verdicts": [
+                {
+                  "index": 0,
+                  "verdict": "junk",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "No gold facts exist; this is an unnecessary personal event extraction not supported by a gold atom."
+                },
+                {
+                  "index": 1,
+                  "verdict": "junk",
+                  "matched_gold_index": null,
+                  "type_correct": null,
+                  "reason": "No gold facts exist; this is an unnecessary personal event extraction not supported by a gold atom."
+                }
+              ],
+              "unmatched_gold_indices": []
+            }
+          }
+        }
+      ],
+      "aggregate": {
+        "avgRecall": 0.625,
+        "avgPrecision": 0.725,
+        "f1": 0.6711229946524064,
+        "avgJunkRate": 0.22,
+        "avgTypeAccuracy": 0.5277777777777777,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 28529.5,
+        "totalWallMs": 285295,
+        "azureUsd": 0
+      },
+      "runs": [
+        {
+          "avgRecall": 0.6666666666666666,
+          "avgPrecision": 0.75,
+          "f1": 0.7058823529411765,
+          "avgJunkRate": 0.2,
+          "avgTypeAccuracy": 0.5,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 26195.4,
+          "totalWallMs": 130977,
+          "azureUsd": 0
+        },
+        {
+          "avgRecall": 0.5833333333333334,
+          "avgPrecision": 0.7,
+          "f1": 0.6363636363636365,
+          "avgJunkRate": 0.24,
+          "avgTypeAccuracy": 0.5555555555555555,
+          "overExtractionOnNothingFixture": 0,
+          "failedFixtures": 0,
+          "avgWallMsPerSession": 30863.6,
+          "totalWallMs": 154318,
+          "azureUsd": 0
+        }
+      ],
+      "stats": {
+        "recall": {
+          "mean": 0.625,
+          "stdev": 0.058925565098878904,
+          "n": 2,
+          "raw": [
+            0.6666666666666666,
+            0.5833333333333334
+          ]
+        },
+        "precision": {
+          "mean": 0.725,
+          "stdev": 0.03535533905932741,
+          "n": 2,
+          "raw": [
+            0.75,
+            0.7
+          ]
+        },
+        "f1": {
+          "mean": 0.6711229946524064,
+          "stdev": 0.04915715591136423,
+          "n": 2,
+          "raw": [
+            0.7058823529411765,
+            0.6363636363636365
+          ]
+        },
+        "typeAccuracy": {
+          "mean": 0.5277777777777777,
+          "stdev": 0.03928371006591924,
+          "n": 2,
+          "raw": [
+            0.5,
+            0.5555555555555555
+          ]
+        }
+      }
+    },
+    "runs": [
+      {
+        "avgRecall": 0.6666666666666666,
+        "avgPrecision": 0.75,
+        "f1": 0.7058823529411765,
+        "avgJunkRate": 0.2,
+        "avgTypeAccuracy": 0.5,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 26195.4,
+        "totalWallMs": 130977,
+        "azureUsd": 0
+      },
+      {
+        "avgRecall": 0.5833333333333334,
+        "avgPrecision": 0.7,
+        "f1": 0.6363636363636365,
+        "avgJunkRate": 0.24,
+        "avgTypeAccuracy": 0.5555555555555555,
+        "overExtractionOnNothingFixture": 0,
+        "failedFixtures": 0,
+        "avgWallMsPerSession": 30863.6,
+        "totalWallMs": 154318,
+        "azureUsd": 0
+      }
+    ],
+    "extrasPerRun": [
+      {
+        "atomCount": 10,
+        "relationCount": 2,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 15368,
+          "fx09-nothing-worth-remembering": 11076,
+          "fx13-entity-rich": 22621,
+          "fx43-rich-lesson-embed-cache-stampede": 38794,
+          "fx44-conversational-marcus-priya-life-updates": 43118
+        }
+      },
+      {
+        "atomCount": 10,
+        "relationCount": 3,
+        "retriedFixtures": [],
+        "fixtureWallMs": {
+          "fx01-clean-decision": 47559,
+          "fx09-nothing-worth-remembering": 12263,
+          "fx13-entity-rich": 21343,
+          "fx43-rich-lesson-embed-cache-stampede": 26637,
+          "fx44-conversational-marcus-priya-life-updates": 46516
+        }
+      }
+    ]
+  }
+]

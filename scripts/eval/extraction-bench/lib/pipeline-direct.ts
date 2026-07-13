@@ -53,7 +53,19 @@ function makeBudgetDb(): DB {
 }
 
 export interface DirectRunResult {
-  atoms: Array<{ type: string; text: string; importance: number; confidence: number }>;
+  atoms: Array<{
+    type: string;
+    text: string;
+    importance: number;
+    confidence: number;
+    /** FEAT-479 AC-481: pass-through of the atom's own entity-relation
+     * triples (subject/predicate/object/confidence), when the extractor
+     * emitted any — `ReducedAtom`/`NormalizedMemory` both extend `Atom`, so
+     * this survives reduce()/memoryNormalize() unchanged; only this
+     * function's own output map used to drop it. Optional and additive —
+     * existing callers reading only `.type`/`.text` are unaffected. */
+    relations?: Array<{ subject: string; predicate: string; object: string; confidence?: number }>;
+  }>;
   chunksProcessed: number;
   wallMs: number;
   usageUsd: number;
@@ -101,7 +113,13 @@ export async function runDirectPipeline(
     const normalizedMemories: NormalizedMemory[] = memoryNormalize(reduced);
 
     return {
-      atoms: normalizedMemories.map(m => ({ type: m.type, text: m.normalizedText, importance: m.importance, confidence: m.confidence })),
+      atoms: normalizedMemories.map(m => ({
+        type: m.type,
+        text: m.normalizedText,
+        importance: m.importance,
+        confidence: m.confidence,
+        relations: m.relations,
+      })),
       chunksProcessed: chunks.length,
       wallMs: Date.now() - t0,
       usageUsd,
