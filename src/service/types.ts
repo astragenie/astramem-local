@@ -3,6 +3,18 @@ export interface ServiceStatus {
   running: boolean;
   pid?: number;
   detail?: string;
+  /**
+   * True when the underlying OS query itself failed (our own timeout, the
+   * scheduler binary missing, DBus/launchd unavailable) rather than
+   * genuinely answering "not running" / "not installed". `installed` and
+   * `running` are NOT authoritative when this is true — best-effort
+   * defaults, never a manufactured "not installed". Callers MUST check
+   * this before printing a confident state (ADR-015 rule 4: an
+   * infrastructure failure must never collapse into a domain claim — a
+   * timed-out query and a genuinely uninstalled service used to be the
+   * same observable state here).
+   */
+  inconclusive?: boolean;
 }
 
 /**

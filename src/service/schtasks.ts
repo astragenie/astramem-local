@@ -23,13 +23,47 @@ function backupStartupScriptPath(): string {
   return join(startupDir(), 'AstraMemoryDBackup.cmd');
 }
 
+/** Rejection shape from runCmd() — carries the ORIGINAL exec() error's
+ *  `.code`/`.signal` alongside whatever the command printed before it
+ *  failed, so callers can tell "the command ran and reported a real
+ *  negative state" apart from "we could not run/finish the query at all". */
+export interface RunCmdError extends Error {
+  code?: string | number | null;
+  signal?: NodeJS.Signals | null;
+  stdout?: string;
+}
+
 export function runCmd(cmd: string): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(cmd, { timeout: 15_000 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`Command failed: ${cmd}\n${stderr || err.message}`));
-      else resolve(stdout.trim());
+      if (err) {
+        const wrapped: RunCmdError = new Error(`Command failed: ${cmd}\n${stderr || err.message}`);
+        wrapped.code = err.code;
+        wrapped.signal = err.signal;
+        wrapped.stdout = stdout;
+        reject(wrapped);
+      } else {
+        resolve(stdout.trim());
+      }
     });
   });
+}
+
+/**
+ * True when a runCmd() rejection means "we could not determine the
+ * answer" (our own timeout killed it, or `schtasks.exe` itself is
+ * missing) rather than "the command ran to completion and reported a
+ * real negative state" (`schtasks /query` for a task that genuinely
+ * doesn't exist exits non-zero promptly with "ERROR: The system cannot
+ * find the file specified" — a real answer, not a query failure). This
+ * is the exact distinction status() below used to collapse: a query that
+ * timed out used to report `installed: false` for a task we already knew
+ * existed, telling the user to reinstall a service that was already
+ * there and simply slow to answer (ADR-015 rule 4).
+ */
+function isInconclusiveFailure(err: unknown): boolean {
+  const e = err as RunCmdError;
+  return e?.signal != null || e?.code === 'ENOENT';
 }
 
 /**
@@ -222,31 +256,61 @@ export class SchtasksAdapter implements ServiceAdapter {
   }
 
   async status(): Promise<ServiceStatus> {
-    const taskFound = await taskExists(TASK_NAME);
+    // Deliberately does NOT go through taskExists() — that helper collapses
+    // ANY query failure (including our own timeout) into `false`, which
+    // would make this method fall straight to "no task found" on a
+    // transient failure before ever getting a chance to distinguish it.
+    // Query directly instead so the three real outcomes (found, genuinely
+    // absent, could-not-determine) stay distinguishable end to end.
     const startupPath = startupScriptPath();
     const startupFound = existsSync(startupPath);
 
-    if (taskFound) {
-      try {
-        const out = await runCmd(`schtasks /query /tn "${TASK_NAME}" /fo LIST`);
-        const running = /Status:\s*Running/i.test(out);
-        return { installed: true, running, detail: out };
-      } catch (err) {
-        return { installed: false, running: false, detail: String(err) };
+    try {
+      const out = await runCmd(`schtasks /query /tn "${TASK_NAME}" /fo LIST`);
+      const running = /Status:\s*Running/i.test(out);
+      return { installed: true, running, detail: out };
+    } catch (err) {
+      if (isInconclusiveFailure(err)) {
+        // We already know NOTHING about whether the task exists — the
+        // query itself didn't complete. Reporting `installed: false` here
+        // (the pre-fix behavior) told a user whose task was genuinely
+        // installed and simply slow to answer to run 'service install'
+        // again — a confident, wrong, actionable instruction produced by
+        // a timeout (ADR-015 rule 4). Unlike systemd/launchd, there is no
+        // cheap independent on-disk check for "does the scheduled task
+        // exist" (no local unit-file/plist equivalent — schtasks IS the
+        // only source of truth) short of `startupFound`, which is a
+        // DIFFERENT install method and routinely false even when the real
+        // task is installed and fine. So `installed` defaults to `true`
+        // here — erring toward "don't tell them to reinstall" rather than
+        // guessing `false` from unrelated evidence. `inconclusive: true`
+        // is the actual signal; callers must not trust `installed` alone.
+        return {
+          installed: true,
+          running: false,
+          inconclusive: true,
+          detail: `could not determine task state (schtasks query failed): ${(err as RunCmdError).message}`,
+        };
       }
-    }
 
-    if (startupFound) {
-      // Startup-shortcut fallback — no task, but logon autostart is present.
-      return {
-        installed: true,
-        running: false,
-        detail: `Installed via Startup shortcut (no scheduled task): ${startupPath}\n` +
-          `'service start/stop' will NOT work. To start: astramem-local serve --port <port>`,
-      };
-    }
+      // schtasks ran to completion and reported a real failure — on this
+      // box, a genuinely-missing task exits 1 promptly with "ERROR: The
+      // system cannot find the file specified" (English locale; the exact
+      // text may differ elsewhere, but isInconclusiveFailure() keys on the
+      // exec-level shape — signal/ENOENT — not this locale-dependent text,
+      // so that distinction still holds regardless of locale).
+      if (startupFound) {
+        // Startup-shortcut fallback — no task, but logon autostart is present.
+        return {
+          installed: true,
+          running: false,
+          detail: `Installed via Startup shortcut (no scheduled task): ${startupPath}\n` +
+            `'service start/stop' will NOT work. To start: astramem-local serve --port <port>`,
+        };
+      }
 
-    return { installed: false, running: false, detail: 'Neither scheduled task nor Startup shortcut found.' };
+      return { installed: false, running: false, detail: 'Neither scheduled task nor Startup shortcut found.' };
+    }
   }
 
   async installBackupTimer(execPath: string, keep: number): Promise<void> {

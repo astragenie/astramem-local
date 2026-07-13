@@ -164,10 +164,34 @@ export function releaseIdFromEntryJs(entryJs: string, releasesRoot: string = def
   return id || null;
 }
 
-function runCaptured(cmd: string, args: string[], cwd: string): CapturedRun {
-  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+/** `git rev-parse`/`git config` are near-instant; a generous bound that
+ *  still fails observably rather than hanging `reinstall` forever. */
+const GIT_TIMEOUT_MS = 15_000;
+/** `bun install --frozen-lockfile` legitimately runs for a while on a cold
+ *  cache/network — this is I/O-bound, not the PowerShell cold-start class,
+ *  so it gets minutes, not seconds. Still bounded: an unbounded spawnSync
+ *  would hang `reinstall` forever with zero signal on a wedged registry. */
+const BUN_INSTALL_TIMEOUT_MS = 5 * 60_000;
+/** Boot-verify (`node dist/cli/index.js --version`) exits before migrate()
+ *  — should be near-instant; matches the repo's other cold-start bound. */
+const BOOT_VERIFY_TIMEOUT_MS = 15_000;
+
+function runCaptured(cmd: string, args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): CapturedRun {
+  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutMs });
   const stderrParts = [res.stderr ?? ''];
   if (res.error) stderrParts.push(res.error.message);
+  // Empirically verified on this runtime (Node on this box): spawnSync's
+  // own timeout kill sets BOTH `res.error` (message contains 'ETIMEDOUT')
+  // AND `res.signal` ('SIGTERM') together — never signal alone. An earlier
+  // version of this branch checked `res.signal && !res.error`, which can
+  // never fire on this runtime and was dead code (caught in review). The
+  // raw `res.error.message` already says "...ETIMEDOUT", but it doesn't
+  // name which of this file's several timeoutMs values was in effect —
+  // this note adds that, matching git-hooks-activate.ts's `error && signal`
+  // condition for the same shape.
+  if (res.error && res.signal) {
+    stderrParts.push(`[runCaptured] process received signal ${res.signal} (likely killed by the ${timeoutMs}ms timeout)`);
+  }
   return {
     status: res.status ?? 1,
     stdout: res.stdout ?? '',
@@ -176,12 +200,21 @@ function runCaptured(cmd: string, args: string[], cwd: string): CapturedRun {
 }
 
 /** Best-effort; tolerates a missing/non-git checkout so materialization
- *  still works (labeled 'nogit') rather than hard-failing. */
+ *  still works (labeled 'nogit') rather than hard-failing. `res.error`
+ *  (spawn failure, including a timeout) is logged distinctly from a clean
+ *  non-git directory (non-zero exit, no res.error) — both currently fall
+ *  back to 'nogit' for the release id (the content hash, not the sha, is
+ *  materializeRelease's actual reuse-safety gate — see its own comment),
+ *  but a timeout/missing-git-binary should not be silently indistinguishable
+ *  from "this just isn't a git checkout" to anyone reading logs. */
 function resolveGitSha(checkoutDir: string): string {
-  const res = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: checkoutDir, encoding: 'utf8' });
+  const res = spawnSync('git', ['rev-parse', '--short', 'HEAD'], { cwd: checkoutDir, encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
   if (res.status === 0) {
     const sha = (res.stdout ?? '').trim();
     if (sha) return sha;
+  }
+  if (res.error) {
+    console.warn(`[astramem-local] resolveGitSha: 'git rev-parse' did not complete cleanly (${res.error.message}) — labeling release 'nogit'`);
   }
   return 'nogit';
 }
@@ -294,7 +327,7 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
     copyFileSync(pkgSrc, join(tmpDir, 'package.json'));
     copyFileSync(lockSrc, join(tmpDir, lockfileName));
 
-    const install = runCaptured('bun', ['install', '--production', '--frozen-lockfile'], tmpDir);
+    const install = runCaptured('bun', ['install', '--production', '--frozen-lockfile'], tmpDir, BUN_INSTALL_TIMEOUT_MS);
     if (install.status !== 0) {
       throw new Error(
         `materializeRelease: 'bun install --production --frozen-lockfile' failed (exit ${install.status}) in ${tmpDir}\n` +
@@ -335,7 +368,7 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
     // see module header — so a schema-ahead live DB can't produce a false
     // failure here.
     const entryJs = join(tmpDir, 'dist', 'cli', 'index.js');
-    const verify = runCaptured(nodeBin, [entryJs, '--version'], releasesRoot);
+    const verify = runCaptured(nodeBin, [entryJs, '--version'], releasesRoot, BOOT_VERIFY_TIMEOUT_MS);
     const reported = verify.stdout.trim();
     if (verify.status !== 0 || reported !== pkgversion) {
       throw new Error(
@@ -363,7 +396,7 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
       //      rebuild rather than assume.
       const existingEntryJs = join(finalDir, 'dist', 'cli', 'index.js');
       const reverify = existsSync(existingEntryJs)
-        ? runCaptured(nodeBin, [existingEntryJs, '--version'], releasesRoot)
+        ? runCaptured(nodeBin, [existingEntryJs, '--version'], releasesRoot, BOOT_VERIFY_TIMEOUT_MS)
         : { status: 1, stdout: '', stderr: `entry missing: ${existingEntryJs}` };
       const reverifyReported = reverify.stdout.trim();
       const bootOk = reverify.status === 0 && reverifyReported === pkgversion;

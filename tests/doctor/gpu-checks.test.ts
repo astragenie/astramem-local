@@ -128,6 +128,29 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
       expect(result.inconclusive).toBe(true);
       expect(result.message.toLowerCase()).toContain('unavailable');
     });
+
+    // B3 (2026-07-13): the real listProcesses() never throws — it swallows
+    // failure (including a PowerShell cold-start timeout) into a return
+    // value. The prior return value was `[]`, which this check's own filter
+    // then reduces to "0 llama-server processes" -> a GREEN "no llama-server
+    // processes running" — a broken check and a clean box were the SAME
+    // observable state (ADR-015's dominant failure pattern, verbatim). The
+    // fix makes the real implementation return `null` on failure instead of
+    // `[]`; this test pins the caller's half of that contract — a null
+    // enumeration must stay inconclusive, never silently become "clean".
+    it('treats a null process list (the real timeout/failure signal) as inconclusive, NOT as a clean "no orphans" result', async () => {
+      const checks = getGpuChecks({
+        listProcesses: async () => null,
+        queryGpuMemory: async () => null,
+        fetchOllamaPs: async () => null,
+      });
+      const result = await findCheck(checks, 'Orphaned llama-server processes').run();
+      expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
+      expect(result.message.toLowerCase()).toContain('unavailable');
+      // The pre-fix bug's exact symptom — must never appear for a null result.
+      expect(result.message).not.toContain('no llama-server processes running');
+    });
   });
 
   describe('Silent CPU offload', () => {

@@ -103,6 +103,55 @@ describe('LaunchdAdapter', () => {
     expect(s.running).toBe(false);
   });
 
+  // B3 review (2026-07-13): status() used to collapse EVERY `launchctl
+  // list` failure (timeout, missing binary, or a genuine "not loaded")
+  // into a hardcoded `running: false, detail: 'not loaded'` — a query
+  // failure and a confirmed-not-loaded agent were the same observable
+  // state. These pin the fix.
+  it('a timeout on the launchctl list query reports inconclusive, NOT a confident "not loaded"', async () => {
+    fsMock.existsSync.mockReturnValue(true);
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      const err = Object.assign(new Error('Command failed: launchctl list com.astragenie.astra-memoryd\nETIMEDOUT'), {
+        signal: 'SIGTERM',
+        code: null,
+      });
+      cb(err, '', '');
+    });
+
+    const s = await adapter.status();
+    expect(s.installed).toBe(true);
+    expect(s.inconclusive).toBe(true);
+    expect(s.running).toBe(false);
+    expect(s.detail).not.toBe('not loaded');
+  });
+
+  it('launchctl binary missing (ENOENT) also reports inconclusive', async () => {
+    fsMock.existsSync.mockReturnValue(true);
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      const err = Object.assign(new Error('spawn launchctl ENOENT'), { code: 'ENOENT', signal: null });
+      cb(err, '', '');
+    });
+
+    const s = await adapter.status();
+    expect(s.inconclusive).toBe(true);
+  });
+
+  it('a genuine "not loaded" (launchctl completed, exited non-zero, no signal) is reported as a real answer, not inconclusive', async () => {
+    fsMock.existsSync.mockReturnValue(true);
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      const err = Object.assign(new Error('Could not find service "com.astragenie.astra-memoryd" in domain for port'), {
+        code: 113,
+        signal: null,
+      });
+      cb(err, '', 'Could not find service "com.astragenie.astra-memoryd" in domain for port');
+    });
+
+    const s = await adapter.status();
+    expect(s.inconclusive).toBeFalsy();
+    expect(s.running).toBe(false);
+    expect(s.detail).toBe('not loaded');
+  });
+
   // FEAT-443 SLICE-2 — hang-watchdog probe agent
   describe('watchdog timer', () => {
     it('installWatchdogTimer writes a StartInterval agent plist', async () => {

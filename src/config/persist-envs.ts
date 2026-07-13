@@ -20,6 +20,13 @@ import { homedir, platform } from 'node:os';
 import { execSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 
+/** Cold `powershell.exe` startup (CLR + assembly resolution) was measured at
+ *  ~5.8-6.1s on a loaded dev box — see instance-lock.ts's
+ *  `getProcessStartTime` (PR #224), the reference implementation for this
+ *  timeout class. A shorter bound doesn't make this faster, it makes it
+ *  fail closed on every real invocation. */
+const POWERSHELL_TIMEOUT_MS = 15_000;
+
 const MARKER_BEGIN = '# >>> astra-memory env >>>';
 const MARKER_END = '# <<< astra-memory env <<<';
 
@@ -55,7 +62,7 @@ function persistWindows(vars: Record<string, string>): PersistResult {
     .join('; ');
 
   try {
-    execSync(`powershell -NoProfile -Command "${ps}"`, { stdio: 'pipe', timeout: 10_000 });
+    execSync(`powershell -NoProfile -Command "${ps}"`, { stdio: 'pipe', timeout: POWERSHELL_TIMEOUT_MS });
     return {
       ok: true,
       target: 'Windows User environment',

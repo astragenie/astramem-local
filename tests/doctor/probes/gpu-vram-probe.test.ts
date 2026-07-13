@@ -29,7 +29,7 @@ const platformMock = vi.fn(() => 'win32');
 vi.mock('node:child_process', () => ({ exec: execMock }));
 vi.mock('node:os', () => ({ platform: platformMock }));
 
-const { readPersistedEnvVars } = await import('../../../src/doctor/probes/gpu-vram-probe.js');
+const { readPersistedEnvVars, listProcesses } = await import('../../../src/doctor/probes/gpu-vram-probe.js');
 
 /** Make the mocked `exec` succeed with the given stdout JSON string. */
 function succeedWith(stdout: string) {
@@ -186,6 +186,95 @@ describe('readPersistedEnvVars', () => {
     failWith('powershell: command not found');
 
     const result = await readPersistedEnvVars(['OLLAMA_FLASH_ATTENTION']);
+
+    expect(result).toBeNull();
+  });
+});
+
+/**
+ * listProcesses — B3 (2026-07-13): a PowerShell timeout used to be swallowed
+ * into `[]`, which the caller (checkOrphanedLlamaServer in gpu-checks.ts)
+ * then reported as a confident "no llama-server processes running" — an
+ * enumeration FAILURE and a genuinely CLEAN box were the same observable
+ * state (ADR-015). These tests pin the fix: failure must return `null`,
+ * never `[]`. `[]` is reserved for "the command ran and there were zero
+ * rows" (never confused with "the command didn't run").
+ */
+describe('listProcesses', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    platformMock.mockReturnValue('win32');
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => cb(null, '', ''));
+  });
+
+  it('returns null — NOT [] — when the underlying exec call fails (simulates a PowerShell timeout)', async () => {
+    // This is exactly what a real timeout looks like from execSync's
+    // perspective: exec's own `{ timeout }` option kills the child and
+    // invokes the callback with an error, empty stdout, empty stderr.
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      cb(new Error('Command failed: killed by timeout'), '', '');
+    });
+
+    const result = await listProcesses();
+
+    expect(result).toBeNull();
+  });
+
+  it('never resolves an empty array on failure — a broken enumeration must not look like a clean box', async () => {
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      cb(new Error('powershell: command not found'), '', 'not found');
+    });
+
+    const result = await listProcesses();
+
+    // The old bug: this used to be `[]`, which is indistinguishable from
+    // "enumerated fine, zero processes exist" (impossible on a real box,
+    // but the point is the SHAPE of the failure, not plausibility).
+    expect(result).not.toEqual([]);
+    expect(result).toBeNull();
+  });
+
+  it('shells out to powershell with a cold-start-cleared timeout (>= 15000ms, matching instance-lock.ts)', async () => {
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => cb(null, '[]', ''));
+
+    await listProcesses();
+
+    expect(execMock).toHaveBeenCalledTimes(1);
+    const [cmd, opts] = execMock.mock.calls[0]! as [string, ExecOptions, ExecCallback];
+    expect(cmd).toContain('Get-CimInstance');
+    expect(opts.timeout).toBeGreaterThanOrEqual(15_000);
+  });
+
+  it('still returns [] (not null) when the command genuinely succeeds with zero processes', async () => {
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => cb(null, '   ', ''));
+
+    const result = await listProcesses();
+
+    expect(result).toEqual([]);
+  });
+
+  it('parses a realistic Get-CimInstance JSON payload into pid/ppid/name', async () => {
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) =>
+      cb(null, JSON.stringify([
+        { ProcessId: 100, ParentProcessId: 1, Name: 'ollama.exe' },
+        { ProcessId: 200, ParentProcessId: 100, Name: 'llama-server.exe' },
+      ]), ''));
+
+    const result = await listProcesses();
+
+    expect(result).toEqual([
+      { pid: 100, ppid: 1, name: 'ollama.exe' },
+      { pid: 200, ppid: 100, name: 'llama-server.exe' },
+    ]);
+  });
+
+  it('returns null on non-Windows platforms when the ps command fails, never []', async () => {
+    platformMock.mockReturnValue('linux');
+    execMock.mockImplementation((_cmd: string, _opts: ExecOptions, cb: ExecCallback) => {
+      cb(new Error('ps: command not found'), '', '');
+    });
+
+    const result = await listProcesses();
 
     expect(result).toBeNull();
   });

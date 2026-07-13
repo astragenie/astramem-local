@@ -142,13 +142,42 @@ ${argItems}
 `;
 }
 
+/** Rejection shape from runCmd() — carries the ORIGINAL exec() error's
+ *  `.code`/`.signal` alongside whatever the command printed before it
+ *  failed, so callers can tell "the command ran and reported a real
+ *  negative state" apart from "we could not run/finish the query at all". */
+export interface RunCmdError extends Error {
+  code?: string | number | null;
+  signal?: NodeJS.Signals | null;
+  stdout?: string;
+}
+
 function runCmd(cmd: string): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(cmd, { timeout: 10_000 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(`Command failed: ${cmd}\n${stderr || err.message}`));
-      else resolve(stdout.trim());
+      if (err) {
+        const wrapped: RunCmdError = new Error(`Command failed: ${cmd}\n${stderr || err.message}`);
+        wrapped.code = err.code;
+        wrapped.signal = err.signal;
+        wrapped.stdout = stdout;
+        reject(wrapped);
+      } else {
+        resolve(stdout.trim());
+      }
     });
   });
+}
+
+/**
+ * True when a runCmd() rejection means "we could not determine the
+ * answer" (our own timeout killed it, or `launchctl` itself is missing)
+ * rather than "the command ran to completion and reported a real
+ * negative state" (`launchctl list <label>` exits non-zero when the
+ * label simply isn't loaded — a genuine answer, not a query failure).
+ */
+function isInconclusiveFailure(err: unknown): boolean {
+  const e = err as RunCmdError;
+  return e?.signal != null || e?.code === 'ENOENT';
 }
 
 /** Best-effort launchctl load/bootstrap for current macOS version. */
@@ -220,7 +249,18 @@ export class LaunchdAdapter implements ServiceAdapter {
       const out = await runCmd(`launchctl list ${LABEL}`);
       const running = out.includes('"PID"') || /\bPID\b.*=\s*[0-9]+/.test(out) || out.includes('running = 1');
       return { installed, running, detail: out };
-    } catch {
+    } catch (err) {
+      if (isInconclusiveFailure(err)) {
+        return {
+          installed,
+          running: false,
+          inconclusive: true,
+          detail: `could not determine running state (launchctl query failed): ${(err as RunCmdError).message}`,
+        };
+      }
+      // `launchctl list <label>` exits non-zero when the label isn't
+      // loaded ("Could not find service ... in domain ...") — a genuine
+      // "not loaded" answer, not a query failure.
       return { installed, running: false, detail: 'not loaded' };
     }
   }

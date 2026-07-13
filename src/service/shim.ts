@@ -280,6 +280,11 @@ try {
 }
 const stderrStdio = stderrFd === null ? 'inherit' : stderrFd;
 
+// Deliberately no timeout option: this spawnSync call IS the daemon's
+// lifetime (the shim blocks here for as long as the daemon runs, which is
+// meant to be days/weeks under the keepalive architecture — see this
+// file's header). Reviewed as part of the B3 shell-out timeout sweep: not
+// a missed cold-start bug, the intended shape of this specific call.
 const startedAt = Date.now();
 const res = spawnSync(ptr.nodeBin, args, { stdio: ['inherit', 'inherit', stderrStdio], env });
 const durationMs = Date.now() - startedAt;
