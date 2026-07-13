@@ -115,6 +115,15 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/Ground relative dates/);
   });
 
+  // Temporal-grounding fix (2026-07-13): the injected "Observation date"
+  // line (05-extract.ts's callExtract) is now the authoritative anchor the
+  // date-grounding rule points at first, falling back to an in-transcript
+  // anchor, falling back to keeping the original relative phrasing.
+  it('states date grounding against the injected "Observation date" line first', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/Observation date/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/keep the original relative phrasing/);
+  });
+
   it('carries over the 7-type taxonomy and priority order unchanged from v1/v2', () => {
     for (const marker of [
       '1. command:', '2. todo:', '3. event:', '4. decision:', '5. lesson:', '6. fact:', '7. note:',
@@ -216,8 +225,15 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Graphiti pattern/);
   });
 
-  it('states date grounding CONDITIONALLY — no captured_at is threaded into this call, so grounding only fires when the transcript itself carries an anchor', () => {
+  // UPDATE (temporal-grounding fix, 2026-07-13): captured_at IS now threaded
+  // into the extraction call (05-extract.ts's extractChunk `sessionDateIso`
+  // param, injected as an "Observation date: ..." line by callExtract — see
+  // extract.ts's doc comment above EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).
+  // The prompt now points at that injected line FIRST, falling back to the
+  // old conditional wording only when no sessionDateIso was available.
+  it('states date grounding against the injected "Observation date" line first, falling back to the old conditional wording when no anchor was threaded', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Date grounding/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Observation date/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/if the transcript states or implies/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/keep the original relative phrasing/);
   });

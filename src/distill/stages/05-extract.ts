@@ -98,18 +98,30 @@ export async function extractChunk(
    * for callers that don't pass one. `ASTRA_EXTRACT_PROMPT` is applied on
    * top of this, per call, inside resolveExtractionPrompt. */
   extractProfile: ExtractProfile = 'engineering',
+  /** Temporal-grounding fix (2026-07-13): the session's observation date as
+   * an ISO calendar date (`YYYY-MM-DD`), threaded from the already-computed
+   * `PipelineContext.capturedAtMs` (see pipeline.ts's stage-5 call site).
+   * When present, `callExtract` prepends an "Observation date: ..." line to
+   * the user message so the model can resolve relative time expressions
+   * ("yesterday", "last year") to absolute dates directly in atom text —
+   * `valid_from` alone earns nothing here, since the LoCoMo/real answerer
+   * only ever sees `text` (see prompts/extract.ts's date-grounding rule).
+   * `undefined` (the default) is byte-identical to pre-fix behavior — every
+   * caller that has no real anchor (legacy v0.0 envelopes, direct
+   * `/remember` calls) sees no change. */
+  sessionDateIso?: string,
 ): Promise<ExtractResult> {
   if (!text.trim()) {
     return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {} };
   }
 
   const activePrompt = resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
-  const promptChars = activePrompt.length + text.length;
+  const promptChars = activePrompt.length + text.length + (sessionDateIso ? sessionDateIso.length + 20 : 0);
   const estimateUsd = BudgetTracker.estimateUsd(promptChars, 0.000002, 0.000002);
 
   budget.assertCanSpend(estimateUsd, capUsd);
 
-  const result = await callExtract(text, activePrompt, provider);
+  const result = await callExtract(text, activePrompt, provider, sessionDateIso);
   budget.record(result.usageUsd);
 
   const parsed = tryParseAtoms(result.text);
@@ -135,10 +147,19 @@ async function callExtract(
   text: string,
   systemPrompt: string,
   provider: LLMProvider,
+  /** See extractChunk's doc comment — prepended as a literal
+   * "Observation date: <date>" line so the model has a concrete anchor for
+   * the date-grounding rule in the system prompt. Omitted entirely (not an
+   * empty line) when there is no real anchor value, so the user message is
+   * byte-identical to pre-fix behavior for every caller without one. */
+  sessionDateIso?: string,
 ): Promise<{ text: string; usageUsd: number }> {
+  const userContent = sessionDateIso
+    ? `Observation date: ${sessionDateIso}\n\nExtract knowledge atoms from this transcript chunk:\n\n${text}`
+    : `Extract knowledge atoms from this transcript chunk:\n\n${text}`;
   const messages: ChatMsg[] = [
     { role: 'system', content: systemPrompt },
-    { role: 'user', content: `Extract knowledge atoms from this transcript chunk:\n\n${text}` },
+    { role: 'user', content: userContent },
   ];
 
   const result = await provider.chat(messages, {
@@ -344,6 +365,9 @@ function tryParseAtoms(raw: string): { atoms: Atom[]; relationDropCounts: Record
  * every fresh success is cached before extract() returns. Omitted (the
  * default), behavior is byte-identical to pre-fix — no cache lookup, no
  * cache write, every call re-dispatches every chunk.
+ *
+ * `sessionDateIso` (temporal-grounding fix) — see extractChunk's doc
+ * comment — is threaded unchanged to every chunk's extractChunk call.
  */
 export async function extract(
   chunks: Array<{ index: number; text: string }>,
@@ -353,10 +377,11 @@ export async function extract(
   extractProfile: ExtractProfile = 'engineering',
   concurrency = 1,
   jobKey?: string,
+  sessionDateIso?: string,
 ): Promise<ExtractResult[]> {
   if (!jobKey) {
     return mapWithConcurrency(chunks, concurrency, (chk) =>
-      extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile),
+      extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso),
     );
   }
 
@@ -374,7 +399,7 @@ export async function extract(
   }
 
   const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
-    const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile);
+    const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso);
     chunkCheckpoints.set(jobKey, 'extract', chk.index, result, extractProfile);
     return result;
   });

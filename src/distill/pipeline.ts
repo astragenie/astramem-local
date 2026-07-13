@@ -45,7 +45,10 @@ export interface PipelineContext {
   branch: string | null;
   agent: string | null;
   sourceHash: string | null;
-  /** See EmbedIndexContext.capturedAtMs — plumbed from the canonical envelope via distillHandler. */
+  /** See EmbedIndexContext.capturedAtMs — plumbed from the canonical envelope
+   * via distillHandler. Also formatted to an ISO calendar date and threaded
+   * one call deeper into extraction (stage 5) as of the 2026-07-13 temporal-
+   * grounding fix — see runPipeline's `sessionDateIso` local. */
   capturedAtMs?: number | null;
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12, widened again
    *  FEAT-458 S3 (ADR-013): provenance tag plumbed from the transcripts row
@@ -152,10 +155,18 @@ export async function runPipeline(
   // 'engineering' default. With neither set anywhere, this resolves to
   // 'engineering' — the byte-identical pre-FEAT-479 default (AC-2).
   const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
+  // Temporal-grounding fix (2026-07-13): format the already-computed
+  // capturedAtMs (see PipelineContext.capturedAtMs's doc comment) as an ISO
+  // calendar date and thread it one call deeper, into extraction, so the
+  // model can resolve relative time expressions ("yesterday") to absolute
+  // dates in atom text (05-extract.ts / prompts/extract.ts). `undefined`
+  // when capturedAtMs is null (legacy v0.0 envelopes, direct /remember
+  // calls) — byte-identical to pre-fix behavior for every such caller.
+  const sessionDateIso = ctx.capturedAtMs != null ? new Date(ctx.capturedAtMs).toISOString().slice(0, 10) : undefined;
   pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile, chunk_concurrency: chunkConcurrency }, 'stage start');
   let extractResults;
   try {
-    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey);
+    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso);
     const atomsExtracted = extractResults.reduce((sum, r) => sum + r.atoms.length, 0);
     pipeLog.info({ stage: 'extract', atoms_extracted: atomsExtracted }, 'stage complete');
   } catch (err) {

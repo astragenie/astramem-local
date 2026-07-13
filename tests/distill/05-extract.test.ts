@@ -939,3 +939,185 @@ describe('extract() retry checkpointing (chunk-retry-amplification fix)', () => 
     expect(chatSpy).toHaveBeenCalledTimes(4);
   });
 });
+
+// Temporal-grounding fix (2026-07-13, WS1 of the LoCoMo score-improvement
+// plan — see docs/specs/20260713-locomo-architect-design.md Workstream 1).
+// 0/191 memories in the first scored LoCoMo run contained an absolute date;
+// every date-bearing memory was an unresolved relative expression
+// ("yesterday", "last year") with nothing anchoring it. Root cause:
+// PipelineContext.capturedAtMs reached stage 8 (embed-index) but was never
+// threaded one call deeper into stage 5 (extract) — the LLM writing atom
+// text had no anchor to resolve relative dates against. This suite proves
+// the plumbing: (a) the anchor actually reaches the LLM call as an
+// "Observation date: <date>" line, (b) when a (simulated) compliant model
+// resolves a relative expression against that anchor, the resolved absolute
+// date survives unmangled through parsing/validation into the final atom
+// text — the actual date arithmetic is the model's job (prompt-level
+// resolution, per the architect design's rejection of a deterministic
+// post-pass), not something a unit test with a mock LLM can validate in
+// isolation — and (c) the negative case: with no anchor available, the user
+// message is byte-identical to pre-fix (no injected line, relative phrasing
+// left untouched) — no hallucinated date.
+describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
+  /**
+   * A mock LLM that plays the role of a model correctly following the
+   * date-grounding rule: it reads the "Observation date: <date>" line (if
+   * present) out of the user message, and if the chunk text contains one of
+   * a few known relative-date phrases, emits an atom whose text has that
+   * phrase replaced by the resolved absolute ISO date. This is deliberately
+   * NOT testing the real LLM's ability to do the date arithmetic (that's
+   * prompt-engineering territory, validated by the full-sample LoCoMo
+   * rerun) — it's testing that our plumbing (a) actually delivers the
+   * anchor to the call and (b) does not corrupt/drop a correctly-resolved
+   * atom on the way back out.
+   */
+  function makeDateGroundingLLM(): { llm: LLMProvider; userMessages: string[] } {
+    const userMessages: string[] = [];
+    const RELATIVE_PHRASES: Record<string, (anchor: Date) => string> = {
+      yesterday: (anchor) => isoDate(new Date(anchor.getTime() - 24 * 60 * 60 * 1000)),
+      'last week': (anchor) => isoDate(new Date(anchor.getTime() - 7 * 24 * 60 * 60 * 1000)),
+      'last year': (anchor) => `${anchor.getUTCFullYear() - 1}`,
+      'three years ago': (anchor) => `${anchor.getUTCFullYear() - 3}`,
+    };
+    function isoDate(d: Date): string {
+      return d.toISOString().slice(0, 10);
+    }
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[]): Promise<ChatResult> {
+        const userMsg = msgs.find((m) => m.role === 'user')?.content ?? '';
+        userMessages.push(userMsg);
+
+        const anchorMatch = userMsg.match(/^Observation date: (\d{4}-\d{2}-\d{2})/);
+        const anchor = anchorMatch ? new Date(`${anchorMatch[1]}T00:00:00.000Z`) : null;
+
+        let text = 'Caroline attended an LGBTQ support group yesterday, which she found meaningful.';
+        for (const [phrase, resolve] of Object.entries(RELATIVE_PHRASES)) {
+          if (userMsg.includes(phrase)) {
+            text = anchor
+              ? `Caroline attended an LGBTQ support group on ${resolve(anchor)}, which she found meaningful.`
+              : `Caroline attended an LGBTQ support group ${phrase}, which she found meaningful.`;
+            break;
+          }
+        }
+
+        return {
+          text: JSON.stringify({ atoms: [{ type: 'fact', text, importance: 0.5, confidence: 0.8 }] }),
+          usage: { in: 100, out: 50, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    return { llm, userMessages };
+  }
+
+  it('threads sessionDateIso into the user message as an "Observation date: <date>" line', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, userMessages } = makeDateGroundingLLM();
+
+    await extractChunk(0, 'Caroline went to a support group yesterday.', llm, budget, 10.0, 'conversational', '2023-05-15');
+
+    expect(userMessages[0]).toMatch(/^Observation date: 2023-05-15\n\n/);
+  });
+
+  it('anchor 2023-05-15 + "yesterday" → resolved atom text contains 2023-05-14', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm } = makeDateGroundingLLM();
+
+    const result = await extractChunk(
+      0, 'Caroline went to a support group yesterday.', llm, budget, 10.0, 'conversational', '2023-05-15',
+    );
+
+    expect(result.atoms[0].text).toContain('2023-05-14');
+  });
+
+  it('anchor 2023-05-15 + "last week" → resolved atom text contains 2023-05-08', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm } = makeDateGroundingLLM();
+
+    const result = await extractChunk(
+      0, 'Caroline went last week.', llm, budget, 10.0, 'conversational', '2023-05-15',
+    );
+
+    expect(result.atoms[0].text).toContain('2023-05-08');
+  });
+
+  it('anchor 2023-05-15 + "last year" → resolved atom text contains 2022', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm } = makeDateGroundingLLM();
+
+    const result = await extractChunk(
+      0, 'Melanie painted it last year.', llm, budget, 10.0, 'conversational', '2023-05-15',
+    );
+
+    expect(result.atoms[0].text).toContain('2022');
+  });
+
+  it('anchor 2023-05-15 + "three years ago" → resolved atom text contains 2020', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm } = makeDateGroundingLLM();
+
+    const result = await extractChunk(
+      0, 'It happened three years ago.', llm, budget, 10.0, 'conversational', '2023-05-15',
+    );
+
+    expect(result.atoms[0].text).toContain('2020');
+  });
+
+  // Negative case (AC-6): with no anchor available, behavior is unchanged —
+  // no injected line, no hallucinated date, original relative phrasing kept.
+  it('with no sessionDateIso, the user message has no "Observation date" line and relative phrasing is left untouched', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, userMessages } = makeDateGroundingLLM();
+
+    const result = await extractChunk(
+      0, 'Caroline went to a support group yesterday.', llm, budget, 10.0, 'conversational',
+      // sessionDateIso omitted
+    );
+
+    expect(userMessages[0]).not.toMatch(/Observation date/);
+    expect(userMessages[0]).toBe(
+      'Extract knowledge atoms from this transcript chunk:\n\nCaroline went to a support group yesterday.',
+    );
+    expect(result.atoms[0].text).toContain('yesterday');
+    expect(result.atoms[0].text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+  });
+
+  it('extract() threads sessionDateIso through to every chunk, same as extractProfile', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, userMessages } = makeDateGroundingLLM();
+
+    await extract(
+      [{ index: 0, text: 'chunk one yesterday' }, { index: 1, text: 'chunk two last week' }],
+      llm,
+      budget,
+      10.0,
+      'conversational',
+      1,
+      undefined,
+      '2023-05-15',
+    );
+
+    expect(userMessages).toHaveLength(2);
+    for (const msg of userMessages) {
+      expect(msg).toMatch(/^Observation date: 2023-05-15\n\n/);
+    }
+  });
+});

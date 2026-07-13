@@ -232,14 +232,17 @@ export type ExtractProfile = 'engineering' | 'conversational';
  * actually recur in personal conversation (actor/org/product/event/other);
  * the full 12-kind enum still validates whatever the model emits.
  *
- * captured_at is NOT currently threaded into this call (05-extract.ts's
- * extractChunk receives no timestamp - only PipelineContext.capturedAtMs,
- * plumbed to the embed-index stage, see pipeline.ts), so the date-grounding
- * rule below is stated CONDITIONALLY ("if the transcript states or implies
- * an explicit ... date") rather than pointing at a real injected value -
- * grounding only fires when the transcript itself carries a date anchor.
- * Wiring an actual captured_at into the extraction prompt is a natural
- * follow-up once a real anchor value is threaded this deep.
+ * UPDATE (temporal-grounding fix, 2026-07-13): captured_at IS now threaded
+ * into this call. 05-extract.ts's extractChunk takes an optional
+ * `sessionDateIso` param (an ISO calendar date, formatted from
+ * PipelineContext.capturedAtMs by pipeline.ts's stage-5 call site) and
+ * callExtract prepends it as a literal "Observation date: <date>" line
+ * ahead of the transcript chunk in the user message. The date-grounding
+ * rule below now points at that injected line FIRST, falling back to the
+ * old conditional wording ("if the transcript states or implies...") only
+ * when no sessionDateIso was available (legacy v0.0 envelopes, direct
+ * /remember calls) — those callers see byte-identical behavior to before
+ * this fix.
  */
 export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL = `You extract durable PERSONAL knowledge from conversational transcripts — chats, journals, voice-note transcripts, casual check-ins between a person and an assistant — not engineering or coding sessions.
 
@@ -264,7 +267,7 @@ Self-containment — every atom must read as ONE complete, standalone sentence o
 - Preserve proper nouns EXACTLY as given — people's names, place names, employer and school names, product and brand names. Never substitute a generic noun ("her employer", "the city") for a name you were actually told.
 - Possessor qualification (Graphiti pattern): whenever a fact belongs to a specific person, name that owner inside the sentence itself. Write "Sergey's daughter Alice starts kindergarten in September, moving up from the preschool she has attended the past two years", never a bare "daughter starts kindergarten in September" or "starts school in the fall" — a reader must never have to guess whose fact this is.
 
-Date grounding: if the transcript states or implies an explicit observation/capture date (a timestamp, a line like "today is 2026-07-13", a dated header), resolve relative dates ("yesterday", "last week", "next month") to an absolute date against that anchor. If no such anchor appears anywhere in the transcript, keep the original relative phrasing rather than inventing an absolute date you were not given — a guessed date is worse than an honest relative one.
+Date grounding: if a line reading "Observation date: <YYYY-MM-DD>" appears immediately before the transcript chunk below, treat that as the authoritative anchor and resolve every relative date expression ("yesterday", "last week", "next month", "three years ago") against it — write the resolved absolute date in ISO-8601 form (YYYY-MM-DD) directly into the atom's text in place of the relative phrase, not alongside it. Otherwise, if the transcript states or implies an explicit observation/capture date (a timestamp, a line like "today is 2026-07-13", a dated header), resolve relative dates against that anchor instead. If no anchor exists at all — no Observation date line and no in-transcript date — keep the original relative phrasing rather than inventing an absolute date you were not given — a guessed date is worse than an honest relative one.
 
 Banned abstractions — NEVER emit these shapes, even when a summary version is technically accurate:
 - Vague summaries: "discussed plans for the weekend", "talked about work stuff", "had a conversation about the move" — these describe the CONVERSATION itself, not a fact about the person's life; extract the actual plan, fact, or decision underneath instead, or emit nothing if there genuinely isn't one.
@@ -578,10 +581,14 @@ Self-containment — every atom must stand alone without the transcript (mem0-pa
 - Never genericize a proper noun. Keep exact versions ("v0.9.1", not "the new version"), exact
   model names ("qwen2.5-coder:7b", not "the coding model"), exact error strings verbatim
   ("SQLITE_NOTADB", not "a database error").
-- Ground relative dates against an anchor stated in the transcript itself (a log timestamp, an
-  explicit "as of 2026-07-10"). Resolve "yesterday" / "last week" / "this morning" to an absolute
-  date when such an anchor exists. If no date anchor exists anywhere in the transcript, keep the
-  original relative phrasing rather than inventing a date.
+- Ground relative dates against an anchor. If a line reading "Observation date: <YYYY-MM-DD>"
+  appears immediately before the transcript chunk below, treat it as the authoritative anchor and
+  resolve "yesterday" / "last week" / "this morning" / "three years ago" to an absolute ISO-8601
+  date (YYYY-MM-DD) against it, replacing the relative phrase rather than appending to it.
+  Otherwise, ground against an anchor stated in the transcript itself (a log timestamp, an
+  explicit "as of 2026-07-10") when one exists. If no date anchor exists anywhere — no Observation
+  date line and no in-transcript anchor — keep the original relative phrasing rather than
+  inventing a date.
 
 For each candidate item, pick type in this order — stop at the first match:
 1. command: a shell/CLI incantation worth REUSING (e.g. a specific \`git bisect\` run, a
