@@ -46,10 +46,25 @@ export interface PipelineContext {
   agent: string | null;
   sourceHash: string | null;
   /** See EmbedIndexContext.capturedAtMs — plumbed from the canonical envelope
-   * via distillHandler. Also formatted to an ISO calendar date and threaded
-   * one call deeper into extraction (stage 5) as of the 2026-07-13 temporal-
-   * grounding fix — see runPipeline's `sessionDateIso` local. */
+   * via distillHandler. Also threaded one call deeper into extraction
+   * (stage 5) as of the 2026-07-13 temporal-grounding fix — see
+   * runPipeline's `sessionDateIso` local. A bare epoch has no timezone
+   * information, so `sessionDateIso` prefers `capturedAtLocalDate` below
+   * when present and only falls back to formatting THIS field (as a UTC
+   * calendar date) for rows from before the 2026-07-13 timezone-offset fix
+   * — see that field's own doc for why. */
   capturedAtMs?: number | null;
+  /** 2026-07-13 timezone-offset bugfix: the user's LOCAL calendar date at
+   * capture (`YYYY-MM-DD`), plumbed from `transcripts.captured_at_local_date`
+   * via distillHandler the same way capturedAtMs is above. Unlike
+   * capturedAtMs (a bare epoch, timezone-agnostic by construction), this is
+   * derived from the offset-bearing `captured_at` wire string's own
+   * YYYY-MM-DD prefix at ingest time (src/server/routes/ingest.ts) — that
+   * prefix IS the local wall-clock date the user actually captured at.
+   * NULL for every row from before this fix and for legacy v0.0 ingests,
+   * in which case `sessionDateIso` falls back to the old (UTC-derived-from-
+   * epoch) behavior — see runPipeline's `sessionDateIso` local. */
+  capturedAtLocalDate?: string | null;
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12, widened again
    *  FEAT-458 S3 (ADR-013): provenance tag plumbed from the transcripts row
    *  via distillHandler — see EmbedIndexContext.captureSource. */
@@ -155,14 +170,25 @@ export async function runPipeline(
   // 'engineering' default. With neither set anywhere, this resolves to
   // 'engineering' — the byte-identical pre-FEAT-479 default (AC-2).
   const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
-  // Temporal-grounding fix (2026-07-13): format the already-computed
-  // capturedAtMs (see PipelineContext.capturedAtMs's doc comment) as an ISO
-  // calendar date and thread it one call deeper, into extraction, so the
-  // model can resolve relative time expressions ("yesterday") to absolute
-  // dates in atom text (05-extract.ts / prompts/extract.ts). `undefined`
-  // when capturedAtMs is null (legacy v0.0 envelopes, direct /remember
-  // calls) — byte-identical to pre-fix behavior for every such caller.
-  const sessionDateIso = ctx.capturedAtMs != null ? new Date(ctx.capturedAtMs).toISOString().slice(0, 10) : undefined;
+  // Temporal-grounding fix (2026-07-13), timezone-offset fix (2026-07-13,
+  // same day): thread an ISO calendar date one call deeper, into extraction,
+  // so the model can resolve relative time expressions ("yesterday") to
+  // absolute dates in atom text (05-extract.ts / prompts/extract.ts).
+  //
+  // capturedAtLocalDate (see its own PipelineContext doc) is the user's
+  // TRUE local calendar date at capture and is always preferred when
+  // present. capturedAtMs is a bare epoch with no timezone information — the
+  // original temporal-grounding fix formatted it via `.toISOString()`,
+  // which always yields the UTC calendar date; a user in UTC-8 capturing at
+  // 21:00 local is at 05:00 UTC the NEXT day, so "yesterday" in that session
+  // resolved one day off. That UTC-derived computation is now ONLY a
+  // fallback, for rows from before the timezone-offset fix (capturedAtMs
+  // set, capturedAtLocalDate NULL) — byte-identical to the original fix's
+  // behavior for those. `undefined` when capturedAtMs is also null (legacy
+  // v0.0 envelopes, direct /remember calls) — byte-identical to pre-fix
+  // behavior for every such caller.
+  const sessionDateIso = ctx.capturedAtLocalDate
+    ?? (ctx.capturedAtMs != null ? new Date(ctx.capturedAtMs).toISOString().slice(0, 10) : undefined);
   pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile, chunk_concurrency: chunkConcurrency }, 'stage start');
   let extractResults;
   try {

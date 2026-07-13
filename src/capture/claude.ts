@@ -30,6 +30,7 @@ import { basename } from 'node:path';
 import { createHash } from 'node:crypto';
 import { deriveWorktreeSafeBasename } from '../pipeline/cwd-basename.js';
 import { stableStringify } from '../server/lib/stable-stringify.js';
+import { localIsoString } from './local-time.js';
 
 export interface ClaudeTurn {
   role: 'user' | 'assistant';
@@ -137,7 +138,11 @@ export function buildClaudeEnvelope(
   parsed: ParsedClaudeTranscript,
   event: ClaudeCaptureEvent,
   clientVersion: string,
-  capturedAt = new Date().toISOString(),
+  /** 2026-07-13 timezone-offset bugfix: offset-bearing (local-time.ts's
+   *  `localIsoString`) rather than `new Date().toISOString()` — see that
+   *  module's doc for why. Callers that pass their own string explicitly
+   *  (tests, replay tooling) are unaffected. */
+  capturedAt = localIsoString(),
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12: `'auto_capture'`
    *  from the hook-tap auto-capture trigger, `'hook_close'` from the
    *  ordinary close-capture hook path — see
