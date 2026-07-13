@@ -117,12 +117,39 @@ reproducible benchmarks (23.6 F1 today vs original-paper F1 column; target
 >41.4 post-fix; never compare to vendor LLM-judge numbers), and with FEAT-481
 an honest "knowledge graph" claim at Graphiti's structural starting point.
 
-## 7. Open questions for review
+## 7. Review outcomes (architect-review 2026-07-13, approve-with-changes)
 
-1. Should the wizard RECOMMEND BYO-cloud when a key/login is detected, or stay
-   Ollama-first? (Quality vs local-first brand tension.)
-2. Fallback provider chain: worth a v1 slice, or hardening-later?
-3. FEAT-481 confidence field: float 0-1 from the model, or drop it (models
-   are poorly calibrated; Graphiti doesn't persist one)?
-4. Does the conversational profile change redaction posture? (Personal content
-   → stricter scrub defaults?)
+Review artifact: `.claude/artifacts/crew/reviews/20260713T100000Z-architect-review-memory-quality-design.md`
+
+1. **Ownership (HIGH, resolved by DEC-015):** FEAT-479 is the CANONICAL ticket
+   for all extract.ts prompt work. The conversational-profile plan's S2 and
+   this design's §3.2 fold INTO FEAT-479; FEAT-481's triples slice is a
+   DEPENDENT of it, not a co-owner. No other ticket may be opened on this
+   surface; triage must not create a duplicate.
+2. **codex-subscription empty-SSE gate (HIGH):** `parseSseResponse` returning
+   `text: ''` as success is the qwen3:8b poison class. Pre-req slice before
+   D2 becomes the operator default: empty text under `opts.json === true`
+   throws `TransientError`. Small, independently shippable, needs its own
+   test.
+3. **Type-conditioned richness (MED):** the prompt must STATE the rule
+   explicitly (rich shape for `lesson`/`decision`, atomic for
+   `fact`/`command`), not imply it via examples. AtomSchema `text.max(500)`
+   conflicts with the 300–800ch target → bump cap to 1000 in the same FEAT
+   (contract check: DB column is TEXT, no migration).
+4. **Budget-cap blindness (MED):** codex-subscription reports `usd: 0`, so
+   cost ceilings silently no-op → doctor WARN row when extraction provider
+   reports zero-cost usage while a budget cap is configured.
+5. **Conversational redaction (MED, operator decision pending):** current
+   redaction detects secrets only; the conversational profile deliberately
+   extracts personal content (health, relationships, named third parties).
+   Recommendation: v1 ships secret-only redaction + explicit wizard/docs
+   disclosure for the conversational profile, and a follow-up FEAT for a
+   personal-content scrub tier. OPERATOR MUST CONFIRM this posture.
+6. **Proof-phase rigor (LOW, adopted):** ≥2 runs per config, blinded
+   eyeball pass (configs anonymized), report ranges not points, add
+   cost + latency columns per config (that's the actual gpt-5.5 / mini /
+   qwen tradeoff being decided).
+7. Wizard: nudge/label BYO-cloud when a login is detected; default stays
+   Ollama. Fallback chain deferred (retry-then-poison already degrades
+   safely). Confidence field: keep in schema, must not drive filtering or
+   supersession in v1.
