@@ -81,13 +81,21 @@ export const CanonicalIngestSchema = z.object({
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12 (doctor canary
    *  provenance fix): `'auto_capture'` from the hook-tap auto-capture
    *  trigger, `'hook_close'` from the ordinary astramem-plugin close-capture
-   *  hook (`buildClaudeEnvelope`'s optional `captureSource` param) — every
-   *  other client omits this field and the transcripts/memories rows it
-   *  flows into stay NULL (byte-identical). Kept a closed enum rather than
-   *  an open string deliberately — an unrecognized value is a real client
-   *  bug worth surfacing as 400 on the direct `/ingest/transcript` path, not
-   *  something to silently coerce to null. */
-  capture_source: z.enum(['auto_capture', 'hook_close']).optional(),
+   *  hook (`buildClaudeEnvelope`'s optional `captureSource` param). Widened
+   *  again FEAT-458 S3 (ADR-013 Decision 1, Repudiation row): `'proxy'` from
+   *  the LLM proxy's capture fork (`src/capture/proxy.ts`,
+   *  `ProxyCaptureEnvelope.capture_source`) — this is the SAME schema
+   *  instance `src/ingest/spool-drain.ts`'s `drainIngestSpool` validates
+   *  spooled envelopes against before calling `ingestCanonicalTranscript`,
+   *  so a spooled `capture_source: 'proxy'` envelope that didn't widen this
+   *  enum would fail `safeParse` and quarantine as poison after
+   *  `MAX_DRAIN_ATTEMPTS` — a silent proxy-capture data loss this widening
+   *  closes. Every other client omits this field and the transcripts/
+   *  memories rows it flows into stay NULL (byte-identical). Kept a closed
+   *  enum rather than an open string deliberately — an unrecognized value is
+   *  a real client bug worth surfacing as 400 on the direct
+   *  `/ingest/transcript` path, not something to silently coerce to null. */
+  capture_source: z.enum(['auto_capture', 'hook_close', 'proxy']).optional(),
   /** Aggregate scrub flag — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label for per-label breakdown but not deprecated. */
   client_scrub_applied: z.boolean(),
   /** Aggregate scrub hit count — required; still consumed for telemetry. Superseded by client_scrub_hits_by_label sum for per-label breakdown but not deprecated. */

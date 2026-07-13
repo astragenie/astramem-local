@@ -14,21 +14,48 @@
  * body and an SSE stream alike, since `.pipe()` forwards each chunk as soon
  * as it arrives rather than waiting for the stream to end.
  *
- * ZERO capture code lives in this module or anything it imports. S2 is the
- * capture-free proxy slice (FEAT-458 S2-AC-5) — no import from src/capture,
- * src/ingest, or src/distill anywhere in this file's import graph. The
- * capture fork is FEAT-458 S3's own module, added alongside this one, never
- * inside it.
+ * ZERO capture code lives in this module or anything it imports — no import
+ * from src/capture, src/ingest, or src/distill anywhere in this file's
+ * import graph (tests/proxy/zero-capture-imports.test.ts). FEAT-458 S3 adds
+ * exactly one thing to this file: an optional `createTee` hook (see
+ * `ProxyTeeSink` below) that hands the capture-fork module (src/capture/
+ * proxy.ts, added alongside this file, never merged into it) a copy of body
+ * chunks as they pass — the dependency arrow points from the capture module
+ * to this file (it imports `ProxyTeeSink`'s type), never the reverse. This
+ * file still never references anything under src/capture/src/ingest/
+ * src/distill at runtime.
  */
 import { createServer as createHttpServer, request as httpRequestFn } from 'node:http';
 import type { IncomingHttpHeaders, IncomingMessage, Server, ServerResponse } from 'node:http';
 import { request as httpsRequestFn } from 'node:https';
-import { isLoopbackHost } from '../server/lib/network.js';
+
+/**
+ * FEAT-458 S3 (ADR-013 Decision 4): the tee sink's only inputs are BODY
+ * events — a raw `Buffer` chunk, or an end-of-stream marker for one
+ * direction. There is no field here a future edit could widen to carry
+ * headers without changing this type's shape at the call site below; the
+ * exclusion is structural, not a filtered allow-list. `dir` says which leg
+ * of the exchange the bytes belong to, nothing about the request/response
+ * objects themselves is ever exposed.
+ */
+export type ProxyTeeEvent = { chunk: Buffer } | { end: true };
+export type ProxyTeeSink = (dir: 'req' | 'res', event: ProxyTeeEvent) => void;
 
 export interface ProxyServeOpts {
   port: number;
   host: string;
   upstream: string;
+  /**
+   * Optional factory, called once per incoming request (never per server
+   * start) so each exchange's tee state (buffered chunks, end-of-stream
+   * flags) is isolated from every other concurrent request — a single
+   * shared sink would corrupt interleaved captures under concurrent load.
+   * Any cross-request state (e.g. a relevance-gate dedup window) belongs in
+   * the closure that produces this factory, one level up, in the capture
+   * module itself. Undefined (the default) means capture is off: zero
+   * listeners are attached and the forward path is identical to S2.
+   */
+  createTee?: () => ProxyTeeSink;
 }
 
 export interface ProxyHandle {
@@ -61,14 +88,17 @@ function filterHopByHop(headers: IncomingHttpHeaders): IncomingHttpHeaders {
   return out;
 }
 
-/** ADR-013 review decision 2: loopback-only bind in v1, no shared-secret
- *  escape hatch. Shared with the CLI layer (src/cli/proxy.ts) so both the
- *  library entry point and the CLI enforce the identical predicate — the
- *  same `isLoopbackHost` the main daemon's own bind/auth boundary uses
- *  (src/server/lib/network.ts), not a second, possibly-drifting copy. */
-export function assertLoopbackBind(host: string): void {
-  if (!isLoopbackHost(host)) {
-    throw new Error(`proxy: refusing non-loopback bind (${host}) — v1 is loopback-only per ADR-013`);
+/** Every tee invocation is wrapped here so a bug in the (separately owned)
+ *  capture module can never propagate into the forward path (ADR-013
+ *  Decision 2 / FEAT-458 S3 requirement 7: fail-silent capture, fail-open
+ *  forwarding). A thrown tee call is swallowed — not logged by this file,
+ *  capture-side error visibility is the capture module's own concern — the
+ *  forwarded request/response is completely unaffected either way. */
+function safeTee(tee: ProxyTeeSink, dir: 'req' | 'res', event: ProxyTeeEvent): void {
+  try {
+    tee(dir, event);
+  } catch {
+    /* fail-silent capture — never break forwarding */
   }
 }
 
@@ -76,10 +106,25 @@ function forwardOneRequest(
   clientReq: IncomingMessage,
   clientRes: ServerResponse,
   upstreamUrl: URL,
+  createTee?: () => ProxyTeeSink,
 ): void {
   const isHttps = upstreamUrl.protocol === 'https:';
   const requestFn = isHttps ? httpsRequestFn : httpRequestFn;
   const forwardHeaders = filterHopByHop(clientReq.headers);
+
+  // FEAT-458 S3: exactly one tee instance per request/response exchange —
+  // never shared across concurrent requests (ProxyServeOpts.createTee doc).
+  // A second 'data'/'end' listener alongside an active .pipe() does not
+  // change what the piped side receives — Node delivers the same chunks to
+  // every flowing-mode listener — so this is a read-only observer, never a
+  // second consumer competing with the forward path for bytes. Guarded so
+  // even a throwing factory can't affect forwarding.
+  let tee: ProxyTeeSink | undefined;
+  try {
+    tee = createTee?.();
+  } catch {
+    tee = undefined;
+  }
 
   const upstreamReq = requestFn({
     protocol: upstreamUrl.protocol,
@@ -96,6 +141,15 @@ function forwardOneRequest(
     // headers, and body exactly as received — no proxy-side rewriting of an
     // upstream error response, same code path as a 2xx.
     clientRes.writeHead(upstreamRes.statusCode ?? 502, filterHopByHop(upstreamRes.headers));
+    // Tee the response body — chunks only, never headers (already written
+    // above from upstreamRes.headers, a value this callback never hands to
+    // tee). Attached before the pipe below so both start observing the
+    // stream in the same synchronous tick.
+    if (tee) {
+      const t = tee;
+      upstreamRes.on('data', (chunk: Buffer) => safeTee(t, 'res', { chunk }));
+      upstreamRes.on('end', () => safeTee(t, 'res', { end: true }));
+    }
     // Single chunk-pipe, never buffered whole (ADR-013 Decision 3): identical
     // code path for a normal JSON body and an SSE stream — pipe() relays
     // each 'data' chunk to the client as soon as it arrives upstream.
@@ -127,6 +181,12 @@ function forwardOneRequest(
     if (!upstreamReq.destroyed) upstreamReq.destroy();
   });
 
+  // Tee the request body the same way, before the pipe below.
+  if (tee) {
+    const t = tee;
+    clientReq.on('data', (chunk: Buffer) => safeTee(t, 'req', { chunk }));
+    clientReq.on('end', () => safeTee(t, 'req', { end: true }));
+  }
   // Single chunk-pipe from client to upstream — a request body forwards
   // byte-for-byte with no intermediate buffering, symmetric with the
   // response-side pipe above.
@@ -136,15 +196,17 @@ function forwardOneRequest(
 /**
  * Start the core proxy: bind `host:port`, forward every request to
  * `upstream` byte-transparently. Callers (the CLI layer) are responsible for
- * calling `assertLoopbackBind` first — this function does not itself
- * validate the host, so it stays usable in tests that intentionally probe
- * non-default bind targets without going through process.exit semantics.
+ * refusing a non-loopback `host` before calling this — this function does
+ * not itself validate the host, so it stays usable in tests that
+ * intentionally probe non-default bind targets without going through
+ * process.exit semantics. `opts.createTee` (FEAT-458 S3) is fully optional
+ * and additive: omitting it reproduces S2's exact capture-free behavior.
  */
 export async function startProxyServer(opts: ProxyServeOpts): Promise<ProxyHandle> {
   const upstreamUrl = new URL(opts.upstream);
 
   const server: Server = createHttpServer((clientReq, clientRes) => {
-    forwardOneRequest(clientReq, clientRes, upstreamUrl);
+    forwardOneRequest(clientReq, clientRes, upstreamUrl, opts.createTee);
   });
 
   await new Promise<void>((resolve, reject) => {

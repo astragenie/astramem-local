@@ -3,10 +3,16 @@
  * bytes identical through the proxy (including SSE chunk boundaries
  * preserved as received, i.e. never buffered whole), headers forwarded
  * minus hop-by-hop, and upstream error responses relayed unchanged.
+ *
+ * FEAT-458 S3 additions at the bottom of this file: the same byte-identity
+ * property must hold when a capture `createTee` IS attached (ADR-013
+ * Decision 1, Tampering row — capture is a read-only tee, never a
+ * parse-mutate-reserialize step), and forwarding must stay fail-open even
+ * when the attached tee throws on every call (ADR-013 Decision 2).
  */
 import { describe, it, expect, afterEach } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { startProxyServer, type ProxyHandle } from '../../src/proxy/server.js';
+import { startProxyServer, type ProxyHandle, type ProxyTeeSink } from '../../src/proxy/server.js';
 
 async function listenEphemeral(server: Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -151,5 +157,89 @@ describe('proxy byte-transparency', () => {
     const res2 = await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, { method: 'POST', body: '{}' });
     expect(res2.status).toBe(502);
     await res2.text();
+  });
+
+  // FEAT-458 S3 — capture ON must not change the forward path's byte
+  // identity. A trivial tee that just counts calls is enough here: the
+  // capture-fork module's OWN parsing correctness is covered exhaustively
+  // in tests/capture/proxy.test.ts — this test's only job is proving
+  // ATTACHING a tee at all never perturbs what the client receives.
+  it('byte-transparency holds unchanged with a capture tee attached (capture ON)', async () => {
+    const requestBody = JSON.stringify({ model: 'gpt-4', messages: [{ role: 'user', content: 'hi ☃ — unicode + "quotes"' }] });
+    const responseBody = JSON.stringify({ id: 'chatcmpl-1', choices: [{ message: { role: 'assistant', content: 'hello' } }] });
+    let receivedByUpstream = '';
+
+    fakeUpstream = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (c: Buffer) => chunks.push(c));
+      req.on('end', () => {
+        receivedByUpstream = Buffer.concat(chunks).toString('utf8');
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(responseBody);
+      });
+    });
+    const upstreamPort = await listenEphemeral(fakeUpstream);
+
+    let teeCalls = 0;
+    const createTee = (): ProxyTeeSink => (_dir, _event) => { teeCalls++; };
+    proxy = await startProxyServer({ port: 0, host: '127.0.0.1', upstream: `http://127.0.0.1:${upstreamPort}`, createTee });
+
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: requestBody,
+    });
+    const bodyText = await res.text();
+
+    expect(receivedByUpstream).toBe(requestBody);
+    expect(bodyText).toBe(responseBody);
+    // Sanity: the tee actually observed the exchange (at least one chunk +
+    // one end event per direction) — proves this isn't trivially passing
+    // because capture silently never fired.
+    expect(teeCalls).toBeGreaterThan(0);
+  });
+
+  // FEAT-458 S3 / ADR-013 Decision 2: fail-open forwarding, fail-silent
+  // capture — a capture-path bug must NEVER break, delay, or fail the
+  // forwarded request. Proven here with a tee that throws synchronously on
+  // every single call.
+  it('a tee that throws on every call never breaks, delays, or fails the forwarded request', async () => {
+    const responseBody = JSON.stringify({ ok: true });
+    fakeUpstream = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(responseBody);
+    });
+    const upstreamPort = await listenEphemeral(fakeUpstream);
+
+    const createTee = (): ProxyTeeSink => () => {
+      throw new Error('capture-fork bug: this must never reach the client');
+    };
+    proxy = await startProxyServer({ port: 0, host: '127.0.0.1', upstream: `http://127.0.0.1:${upstreamPort}`, createTee });
+
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, { method: 'POST', body: '{}' });
+    const bodyText = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(bodyText).toBe(responseBody);
+  });
+
+  it('a createTee factory that itself throws never breaks the forwarded request', async () => {
+    const responseBody = JSON.stringify({ ok: true });
+    fakeUpstream = createServer((_req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(responseBody);
+    });
+    const upstreamPort = await listenEphemeral(fakeUpstream);
+
+    const createTee = (): ProxyTeeSink => {
+      throw new Error('capture-fork bug: factory itself throws');
+    };
+    proxy = await startProxyServer({ port: 0, host: '127.0.0.1', upstream: `http://127.0.0.1:${upstreamPort}`, createTee });
+
+    const res = await fetch(`http://127.0.0.1:${proxy.port}/v1/chat/completions`, { method: 'POST', body: '{}' });
+    const bodyText = await res.text();
+
+    expect(res.status).toBe(200);
+    expect(bodyText).toBe(responseBody);
   });
 });
