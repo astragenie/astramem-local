@@ -133,4 +133,12 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       §3.2 AC-3) -- per-ingest override of distill.extractProfile, flows
 //       transcripts row -> distillHandler -> PipelineContext.extractProfile
 //       the same way capture_source (024) already does.
-export const SCHEMA_VERSION = 28 as const;
+// 029 = relation_guard_drops table (FEAT-481 SLICE-430) -- append-only
+//       drop-reason counters for the entity-relation extraction guard
+//       (filterAtomRelations in src/distill/stages/05-extract.ts + the
+//       unresolvable-at-write defensive skip in 08-embed-index.ts), same
+//       shape/precedent as redaction_log (005). Lets the doctor "Entity
+//       relations extraction" canary distinguish "model never emits a
+//       relation" from "model emits relations but the guard drops every one"
+//       -- see src/storage/relation-guard-log.ts.
+export const SCHEMA_VERSION = 29 as const;

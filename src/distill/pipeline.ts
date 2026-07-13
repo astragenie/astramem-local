@@ -27,6 +27,7 @@ import type { DB } from '../storage/db.js';
 import type { Config } from '../config/config.js';
 import type { DurabilityGateMode } from './durability-gate.js';
 import { childLogger } from '../log/logger.js';
+import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
 
@@ -146,6 +147,36 @@ export async function runPipeline(
     }
     pipeLog.warn({ stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200), error_kind: err instanceof Error ? err.name : 'Unknown' }, 'stage failed');
     throw err;
+  }
+
+  // FEAT-481 SLICE-430: persist filterAtomRelations' per-reason drop counts
+  // (aggregated across every chunk this run) so the doctor "Entity
+  // relations extraction" canary can tell "model never emitted a relation"
+  // apart from "model emitted relations but the guard dropped every one" —
+  // both look identical as a zero entity_relations row count otherwise.
+  // Deliberately its OWN try/catch, outside the extract-stage try above and
+  // never re-thrown: this is a diagnostic counter write, not part of
+  // extraction's own success/failure contract. A write failure here
+  // (SQLITE_BUSY under contention, disk full) must never be reinterpreted
+  // as "the extract stage failed" and trigger a job retry that throws away
+  // an already-successful extraction (review finding, this slice).
+  try {
+    const relationDropTotals: Record<string, number> = {};
+    for (const r of extractResults) {
+      for (const [reason, count] of Object.entries(r.relationDropCounts)) {
+        relationDropTotals[reason] = (relationDropTotals[reason] ?? 0) + count;
+      }
+    }
+    recordRelationGuardDrops(
+      ctx.db,
+      Object.entries(relationDropTotals).map(([reason, count]) => ({ reason, count })),
+      ctx.sessionId,
+    );
+  } catch (err) {
+    pipeLog.warn(
+      { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'relation guard-drop counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
+    );
   }
 
   // Flatten all atoms

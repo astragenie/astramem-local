@@ -101,9 +101,9 @@ describe('migration 027-entity-relations (AC-1)', () => {
     expect(db.prepare('SELECT 1 FROM entity_relations WHERE id = ?').get('r-cascade')).toBeUndefined();
   });
 
-  it('DB max schema version is 28 after migration', () => {
+  it('DB max schema version is 29 after migration', () => {
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(28);
+    expect(row.v).toBe(29);
   });
 });
 

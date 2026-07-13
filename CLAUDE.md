@@ -113,6 +113,16 @@ Daemon speaks BOTH envelopes on `POST /ingest/transcript`:
 
 Idempotency via `Idempotency-Key` header: SHA-256 (stable-stringify) body hash. Same key + same body → 200 replay with `idempotent: true`. Same key + different body → 409.
 
+## Entity relations (FEAT-481)
+
+`entity_relations` table (migration 027) holds entity-to-entity relation triples, extracted
+alongside each atom's `entities[]` list (engineering extraction profile only — see
+src/distill/prompts/extract.ts). Two MCP tools read it: `get_entity_related` (bitemporal
+`as_of` aware) and `get_entity_timeline`. `doctor`'s "Entity relations extraction" row is the
+built-wired-never-invoked canary for this pipeline — WARN means real distill activity produced
+zero rows; `relation_guard_drops` (migration 029) tells apart "model never emits a relation"
+from "model emits relations but the guard drops every one."
+
 ## Bump discipline
 
 `package.json.version` MUST match the git tag. `.github/workflows/version-tag-parity.yml` gates this on tag pushes. Bump package.json + tag same PR when cutting a release.
