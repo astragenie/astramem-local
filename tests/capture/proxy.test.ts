@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import {
   extractRequestTurns,
   extractResponseTurn,
+  extractUsageMetadata,
   proxyIdempotencyKey,
   createProxyCaptureTee,
   type ProxyCaptureEnvelope,
@@ -44,6 +45,264 @@ function chatResponseBodyNonStreaming(assistantText: string): string {
 function chatResponseBodySSE(parts: string[]): string {
   const lines = parts.map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
   lines.push('data: [DONE]\n\n');
+  return lines.join('');
+}
+
+function chatResponseBodyNonStreamingWithUsage(
+  assistantText: string,
+  opts: { finishReason?: string; promptTokens?: number; completionTokens?: number; totalTokens?: number } = {},
+): string {
+  return JSON.stringify({
+    id: 'chatcmpl-1',
+    model: 'gpt-4',
+    choices: [{ message: { role: 'assistant', content: assistantText }, finish_reason: opts.finishReason ?? 'stop' }],
+    usage: {
+      prompt_tokens: opts.promptTokens ?? 12,
+      completion_tokens: opts.completionTokens ?? 8,
+      total_tokens: opts.totalTokens ?? 20,
+    },
+  });
+}
+
+/** A real OpenAI streaming sequence with `stream_options.include_usage`
+ *  set — the trailing chunk carries an empty `choices: []` alongside the
+ *  cumulative `usage` object, matching the actual wire shape (not folded
+ *  into the last content chunk). */
+function chatResponseBodySSEWithUsage(parts: string[], opts: { finishReason?: string; promptTokens?: number; completionTokens?: number; totalTokens?: number } = {}): string {
+  const lines = parts.map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+  lines.push(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: opts.finishReason ?? 'stop' }] })}\n\n`);
+  lines.push(
+    `data: ${JSON.stringify({ choices: [], usage: { prompt_tokens: opts.promptTokens ?? 12, completion_tokens: opts.completionTokens ?? 8, total_tokens: opts.totalTokens ?? 20 } })}\n\n`,
+  );
+  lines.push('data: [DONE]\n\n');
+  return lines.join('');
+}
+
+/** A real OpenAI streaming sequence WITHOUT `stream_options.include_usage`
+ *  — the far more common case in practice. `finish_reason` still arrives
+ *  on the terminal chunk (unrelated to that flag); no chunk ever carries a
+ *  `usage` field at all. */
+function chatResponseBodySSENoUsage(parts: string[], finishReason = 'stop'): string {
+  const lines = parts.map((p) => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`);
+  lines.push(`data: ${JSON.stringify({ choices: [{ delta: {}, finish_reason: finishReason }] })}\n\n`);
+  lines.push('data: [DONE]\n\n');
+  return lines.join('');
+}
+
+// --- Anthropic Messages API fixtures (FEAT-458 S5) --------------------
+// Real event framing / field shapes, not simplified stand-ins — this is
+// deliberately the weakness the OpenAI-only suite above had.
+
+function anthropicRequestBody(userText: string, opts: { system?: string } = {}): string {
+  return JSON.stringify({
+    model: 'claude-3-5-sonnet-20241022',
+    max_tokens: 1024,
+    ...(opts.system ? { system: opts.system } : {}),
+    messages: [{ role: 'user', content: userText }],
+  });
+}
+
+function anthropicRequestBodyBlocks(): string {
+  return JSON.stringify({
+    model: 'claude-3-5-sonnet-20241022',
+    max_tokens: 1024,
+    system: 'You are a helpful assistant. Follow these 400 words of boilerplate instructions...',
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'part one' },
+          { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } },
+          { type: 'text', text: 'part two' },
+        ],
+      },
+    ],
+  });
+}
+
+function anthropicRequestBodyWithToolResult(): string {
+  return JSON.stringify({
+    model: 'claude-3-5-sonnet-20241022',
+    max_tokens: 1024,
+    messages: [
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_01', content: [{ type: 'text', text: 'tool output, not human input' }] },
+          { type: 'text', text: 'the actual follow-up question' },
+        ],
+      },
+    ],
+  });
+}
+
+function anthropicResponseBodyNonStreaming(assistantText: string): string {
+  return JSON.stringify({
+    id: 'msg_01',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-3-5-sonnet-20241022',
+    content: [{ type: 'text', text: assistantText }],
+    stop_reason: 'end_turn',
+    stop_sequence: null,
+    usage: { input_tokens: 10, output_tokens: 5 },
+  });
+}
+
+function anthropicResponseBodyToolOnly(): string {
+  return JSON.stringify({
+    id: 'msg_01',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-3-5-sonnet-20241022',
+    content: [{ type: 'tool_use', id: 'toolu_01', name: 'get_weather', input: { location: 'SF' } }],
+    stop_reason: 'tool_use',
+    stop_sequence: null,
+    usage: { input_tokens: 10, output_tokens: 5 },
+  });
+}
+
+function anthropicResponseBodyNonStreamingWithUsage(
+  assistantText: string,
+  opts: { stopReason?: string; inputTokens?: number; outputTokens?: number; cacheCreation?: number; cacheRead?: number } = {},
+): string {
+  return JSON.stringify({
+    id: 'msg_01',
+    type: 'message',
+    role: 'assistant',
+    model: 'claude-3-5-sonnet-20241022',
+    content: [{ type: 'text', text: assistantText }],
+    stop_reason: opts.stopReason ?? 'end_turn',
+    stop_sequence: null,
+    usage: {
+      input_tokens: opts.inputTokens ?? 500,
+      output_tokens: opts.outputTokens ?? 150,
+      cache_creation_input_tokens: opts.cacheCreation ?? 200,
+      cache_read_input_tokens: opts.cacheRead ?? 1800,
+    },
+  });
+}
+
+/** An Anthropic streaming sequence with real usage/cache fields on
+ *  message_start and the final stop_reason + cumulative output_tokens on
+ *  message_delta — the actual two-event split real traffic uses (usage
+ *  isn't all on one event). */
+function anthropicResponseBodySSEWithUsage(
+  parts: string[],
+  opts: { stopReason?: string; inputTokens?: number; cacheCreation?: number; cacheRead?: number; outputTokens?: number } = {},
+): string {
+  const lines: string[] = [];
+  lines.push('event: message_start\n');
+  lines.push(
+    `data: ${JSON.stringify({
+      type: 'message_start',
+      message: {
+        id: 'msg_01', type: 'message', role: 'assistant', content: [], model: 'claude-3-5-sonnet-20241022',
+        stop_reason: null, stop_sequence: null,
+        usage: {
+          input_tokens: opts.inputTokens ?? 500,
+          cache_creation_input_tokens: opts.cacheCreation ?? 200,
+          cache_read_input_tokens: opts.cacheRead ?? 1800,
+          output_tokens: 1,
+        },
+      },
+    })}\n\n`,
+  );
+  lines.push('event: content_block_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+  for (const p of parts) {
+    lines.push('event: content_block_delta\n');
+    lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: p } })}\n\n`);
+  }
+  lines.push('event: content_block_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+  lines.push('event: message_delta\n');
+  lines.push(
+    `data: ${JSON.stringify({
+      type: 'message_delta',
+      delta: { stop_reason: opts.stopReason ?? 'end_turn', stop_sequence: null },
+      usage: { output_tokens: opts.outputTokens ?? parts.join('').length },
+    })}\n\n`,
+  );
+  lines.push('event: message_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+  return lines.join('');
+}
+
+/** A minimal, real Anthropic streaming event sequence: message_start ->
+ *  content_block_start(text) -> N x content_block_delta(text_delta) ->
+ *  content_block_stop -> message_delta -> message_stop. Matches the actual
+ *  `event: <type>\ndata: {...}\n\n` framing, not a simplified stand-in. */
+function anthropicResponseBodySSE(parts: string[]): string {
+  const lines: string[] = [];
+  lines.push('event: message_start\n');
+  lines.push(
+    `data: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_01', type: 'message', role: 'assistant', content: [], model: 'claude-3-5-sonnet-20241022', stop_reason: null, stop_sequence: null, usage: { input_tokens: 25, output_tokens: 1 } } })}\n\n`,
+  );
+  lines.push('event: content_block_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+  lines.push('event: ping\n');
+  lines.push(`data: ${JSON.stringify({ type: 'ping' })}\n\n`);
+  for (const p of parts) {
+    lines.push('event: content_block_delta\n');
+    lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: p } })}\n\n`);
+  }
+  lines.push('event: content_block_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+  lines.push('event: message_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'end_turn', stop_sequence: null }, usage: { output_tokens: parts.join('').length } })}\n\n`);
+  lines.push('event: message_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+  return lines.join('');
+}
+
+/** A streaming response with a text block AND a tool_use block, whose
+ *  deltas are interleaved out of index order on the wire (block 1's
+ *  input_json_delta arrives between block 0's text_delta chunks) — proves
+ *  per-index accumulation, not a single running accumulator. */
+function anthropicResponseBodySSEInterleavedToolUse(): string {
+  const lines: string[] = [];
+  lines.push('event: message_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_01', role: 'assistant', content: [], model: 'claude-3-5-sonnet-20241022' } })}\n\n`);
+  lines.push('event: content_block_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })}\n\n`);
+  lines.push('event: content_block_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_start', index: 1, content_block: { type: 'tool_use', id: 'toolu_01', name: 'get_weather', input: {} } })}\n\n`);
+  lines.push('event: content_block_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Let me check ' } })}\n\n`);
+  lines.push('event: content_block_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: '{"locat' } })}\n\n`);
+  lines.push('event: content_block_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'the weather.' } })}\n\n`);
+  lines.push('event: content_block_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 1, delta: { type: 'input_json_delta', partial_json: 'ion": "SF"}' } })}\n\n`);
+  lines.push('event: content_block_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+  lines.push('event: content_block_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_stop', index: 1 })}\n\n`);
+  lines.push('event: message_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 45 } })}\n\n`);
+  lines.push('event: message_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
+  return lines.join('');
+}
+
+/** A streaming response that never emits a single text_delta — a pure
+ *  tool_use turn (no visible reply text) or an aborted/empty stream. */
+function anthropicResponseBodySSEToolOnly(): string {
+  const lines: string[] = [];
+  lines.push('event: message_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_01', role: 'assistant', content: [], model: 'claude-3-5-sonnet-20241022' } })}\n\n`);
+  lines.push('event: content_block_start\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'toolu_01', name: 'get_weather', input: {} } })}\n\n`);
+  lines.push('event: content_block_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'input_json_delta', partial_json: '{"location": "SF"}' } })}\n\n`);
+  lines.push('event: content_block_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'content_block_stop', index: 0 })}\n\n`);
+  lines.push('event: message_delta\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_delta', delta: { stop_reason: 'tool_use', stop_sequence: null }, usage: { output_tokens: 12 } })}\n\n`);
+  lines.push('event: message_stop\n');
+  lines.push(`data: ${JSON.stringify({ type: 'message_stop' })}\n\n`);
   return lines.join('');
 }
 
@@ -104,6 +363,200 @@ describe('extractResponseTurn', () => {
 
   it('never throws on malformed input', () => {
     expect(() => extractResponseTurn('data: {not json\n\n')).not.toThrow();
+  });
+});
+
+describe('extractRequestTurns — Anthropic Messages API', () => {
+  it('extracts the user turn from a plain-string content field, ignores the top-level system field', () => {
+    const body = anthropicRequestBody('what port does the daemon use', { system: 'You are Claude Code, an agentic CLI...' });
+    expect(extractRequestTurns(body)).toEqual([{ role: 'user', text: 'what port does the daemon use' }]);
+  });
+
+  it('handles content as an array of typed blocks, skips non-text blocks (image), never touches system', () => {
+    expect(extractRequestTurns(anthropicRequestBodyBlocks())).toEqual([{ role: 'user', text: 'part one\npart two' }]);
+  });
+
+  it('skips tool_result blocks — only the NEW human-authored text block becomes a turn', () => {
+    expect(extractRequestTurns(anthropicRequestBodyWithToolResult())).toEqual([
+      { role: 'user', text: 'the actual follow-up question' },
+    ]);
+  });
+});
+
+describe('extractResponseTurn — Anthropic Messages API', () => {
+  it('parses a non-streaming JSON response (top-level content[] array, no choices field)', () => {
+    const body = anthropicResponseBodyNonStreaming('hello there');
+    expect(extractResponseTurn(body)).toEqual({ role: 'assistant', text: 'hello there' });
+  });
+
+  it('reconstructs an SSE-streamed response from content_block_delta text_delta events', () => {
+    const body = anthropicResponseBodySSE(['Hel', 'lo, ', 'world!']);
+    expect(extractResponseTurn(body)).toEqual({ role: 'assistant', text: 'Hello, world!' });
+  });
+
+  it('returns null for a tool-only non-streaming response (no text block at all)', () => {
+    expect(extractResponseTurn(anthropicResponseBodyToolOnly())).toBeNull();
+  });
+
+  it('returns null for a tool-only streaming response (no text_delta ever emitted — aborted/empty case)', () => {
+    expect(extractResponseTurn(anthropicResponseBodySSEToolOnly())).toBeNull();
+  });
+
+  it('accumulates text per content-block index, ignoring interleaved tool_use input_json_delta chunks under a different index', () => {
+    const result = extractResponseTurn(anthropicResponseBodySSEInterleavedToolUse());
+    expect(result).toEqual({ role: 'assistant', text: 'Let me check the weather.' });
+  });
+
+  it('tolerates a malformed data line without losing the rest of the stream', () => {
+    const body =
+      'event: content_block_delta\n' +
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"good "}}\n\n' +
+      'event: content_block_delta\n' +
+      'data: not-json-at-all\n\n' +
+      'event: content_block_delta\n' +
+      'data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"chunk"}}\n\n' +
+      'event: message_stop\n' +
+      'data: {"type":"message_stop"}\n\n';
+    expect(extractResponseTurn(body)).toEqual({ role: 'assistant', text: 'good chunk' });
+  });
+
+  it('never throws on malformed input', () => {
+    expect(() => extractResponseTurn('event: content_block_delta\ndata: {not json\n\n')).not.toThrow();
+  });
+});
+
+describe('extractUsageMetadata (FEAT-458 S5 scope add — usage/cost telemetry)', () => {
+  it('extracts model, cache fields (kept SEPARATE from input_tokens), and stop_reason from an Anthropic non-streaming response', () => {
+    const req = anthropicRequestBody('a question');
+    const res = anthropicResponseBodyNonStreamingWithUsage('an answer', {
+      inputTokens: 500, outputTokens: 150, cacheCreation: 200, cacheRead: 1800, stopReason: 'end_turn',
+    });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-20241022',
+      input_tokens: 500,
+      output_tokens: 150,
+      total_tokens: null,
+      cache_creation_input_tokens: 200,
+      cache_read_input_tokens: 1800,
+      stop_reason: 'end_turn',
+      truncated: false,
+    });
+  });
+
+  it('extracts usage from an Anthropic SSE stream (input/cache from message_start, output/stop_reason from message_delta)', () => {
+    const req = anthropicRequestBody('a question');
+    const res = anthropicResponseBodySSEWithUsage(['par', 't of ', 'the reply'], {
+      inputTokens: 500, cacheCreation: 200, cacheRead: 1800, outputTokens: 42, stopReason: 'end_turn',
+    });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'anthropic',
+      model: 'claude-3-5-sonnet-20241022',
+      input_tokens: 500,
+      output_tokens: 42,
+      total_tokens: null,
+      cache_creation_input_tokens: 200,
+      cache_read_input_tokens: 1800,
+      stop_reason: 'end_turn',
+      truncated: false,
+    });
+  });
+
+  it('flags a TRUNCATED reply (Anthropic stop_reason: "max_tokens") — non-streaming', () => {
+    const res = anthropicResponseBodyNonStreamingWithUsage('cut off mid-', { stopReason: 'max_tokens' });
+    const meta = extractUsageMetadata(anthropicRequestBody('a question'), res);
+    expect(meta?.stop_reason).toBe('max_tokens');
+    expect(meta?.truncated).toBe(true);
+  });
+
+  it('flags a TRUNCATED reply (Anthropic stop_reason: "max_tokens") — SSE streaming', () => {
+    const res = anthropicResponseBodySSEWithUsage(['cut off mid-'], { stopReason: 'max_tokens' });
+    const meta = extractUsageMetadata(anthropicRequestBody('a question'), res);
+    expect(meta?.stop_reason).toBe('max_tokens');
+    expect(meta?.truncated).toBe(true);
+  });
+
+  it('does NOT flag a normal end_turn/stop completion as truncated', () => {
+    const res = anthropicResponseBodyNonStreamingWithUsage('a complete answer', { stopReason: 'end_turn' });
+    expect(extractUsageMetadata(anthropicRequestBody('a question'), res)?.truncated).toBe(false);
+  });
+
+  it('extracts OpenAI usage parity fields (prompt/completion/total_tokens, finish_reason) — non-streaming', () => {
+    const req = chatRequestBody('a question');
+    const res = chatResponseBodyNonStreamingWithUsage('an answer', { promptTokens: 30, completionTokens: 10, totalTokens: 40, finishReason: 'stop' });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'openai',
+      model: 'gpt-4',
+      input_tokens: 30,
+      output_tokens: 10,
+      total_tokens: 40,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      stop_reason: 'stop',
+      truncated: false,
+    });
+  });
+
+  it('flags a TRUNCATED OpenAI reply (finish_reason: "length")', () => {
+    const res = chatResponseBodyNonStreamingWithUsage('cut off', { finishReason: 'length' });
+    expect(extractUsageMetadata(chatRequestBody('a question'), res)?.truncated).toBe(true);
+  });
+
+  it('extracts OpenAI usage from an SSE stream WHEN stream_options.include_usage was set', () => {
+    const req = chatRequestBody('a question');
+    const res = chatResponseBodySSEWithUsage(['par', 't of ', 'the reply'], { promptTokens: 30, completionTokens: 10, totalTokens: 40, finishReason: 'stop' });
+    expect(extractUsageMetadata(req, res)).toEqual({
+      provider: 'openai',
+      model: 'gpt-4',
+      input_tokens: 30,
+      output_tokens: 10,
+      total_tokens: 40,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      stop_reason: 'stop',
+      truncated: false,
+    });
+  });
+
+  it('MISSING usage (OpenAI streaming WITHOUT include_usage) yields null token counts, never fabricated zeros — the test that protects downstream cost math', () => {
+    const req = chatRequestBody('a question');
+    const res = chatResponseBodySSENoUsage(['par', 't of ', 'the reply'], 'stop');
+    const meta = extractUsageMetadata(req, res);
+    // model and stop_reason ARE available independent of include_usage —
+    // only the token counts are genuinely absent from the wire.
+    expect(meta).toEqual({
+      provider: 'openai',
+      model: 'gpt-4',
+      input_tokens: null,
+      output_tokens: null,
+      total_tokens: null,
+      cache_creation_input_tokens: null,
+      cache_read_input_tokens: null,
+      stop_reason: 'stop',
+      truncated: false,
+    });
+    // Belt-and-suspenders: explicitly not zero anywhere a real count is absent.
+    expect(meta?.input_tokens).not.toBe(0);
+    expect(meta?.output_tokens).not.toBe(0);
+    expect(meta?.total_tokens).not.toBe(0);
+  });
+
+  it('reads model from the REQUEST body only — never the response — for both formats', () => {
+    // The response body's own `model` field (if any) is deliberately never
+    // consulted; requestModel is the sole source (module doc rationale).
+    const req = anthropicRequestBody('a question');
+    const res = anthropicResponseBodyNonStreamingWithUsage('an answer');
+    expect(extractUsageMetadata(req, res)?.model).toBe('claude-3-5-sonnet-20241022');
+  });
+
+  it('returns null when the response body has no recognizable provider shape at all', () => {
+    expect(extractUsageMetadata(chatRequestBody('x'), '')).toBeNull();
+    expect(extractUsageMetadata(chatRequestBody('x'), 'not json and not sse {')).toBeNull();
+    expect(extractUsageMetadata(chatRequestBody('x'), JSON.stringify({ ok: true }))).toBeNull();
+  });
+
+  it('never throws on malformed input', () => {
+    expect(() => extractUsageMetadata('not json {', 'also not json {')).not.toThrow();
   });
 });
 
@@ -292,6 +745,69 @@ describe('createProxyCaptureTee', () => {
 
     await new Promise((r) => setImmediate(r));
     expect(listSpoolFiles(dir)).toHaveLength(0);
+  });
+
+  it('round-trips a full user+assistant exchange for the Anthropic Messages API (non-streaming) — the bug this slice fixes', async () => {
+    const dir = freshDataDir();
+    const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
+    const sink = createTee();
+
+    sink('req', { chunk: Buffer.from(anthropicRequestBody('what is the daemon default port', { system: 'boilerplate instructions' })) });
+    sink('req', { end: true });
+    sink('res', { chunk: Buffer.from(anthropicResponseBodyNonStreaming('7777 by default.')) });
+    sink('res', { end: true });
+    await new Promise((r) => setImmediate(r));
+
+    const files = listSpoolFiles(dir);
+    expect(files).toHaveLength(1);
+    const envelope = JSON.parse(readFileSync(files[0]!.path, 'utf8')) as ProxyCaptureEnvelope;
+    expect(envelope.capture_source).toBe('proxy');
+    // BOTH turns present — this is exactly the "assistant reply dropped"
+    // regression the bug report described: turns=1 [user] only.
+    expect(envelope.turns).toEqual([
+      { role: 'user', text: 'what is the daemon default port' },
+      { role: 'assistant', text: '7777 by default.' },
+    ]);
+  });
+
+  it('round-trips a full user+assistant exchange for the Anthropic Messages API (SSE streaming)', async () => {
+    const dir = freshDataDir();
+    const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
+    const sink = createTee();
+
+    sink('req', { chunk: Buffer.from(anthropicRequestBody('what is the daemon default port')) });
+    sink('req', { end: true });
+    sink('res', { chunk: Buffer.from(anthropicResponseBodySSE(['7777 ', 'by ', 'default.'])) });
+    sink('res', { end: true });
+    await new Promise((r) => setImmediate(r));
+
+    const files = listSpoolFiles(dir);
+    expect(files).toHaveLength(1);
+    const envelope = JSON.parse(readFileSync(files[0]!.path, 'utf8')) as ProxyCaptureEnvelope;
+    expect(envelope.turns).toEqual([
+      { role: 'user', text: 'what is the daemon default port' },
+      { role: 'assistant', text: '7777 by default.' },
+    ]);
+  });
+
+  it('still round-trips a full user+assistant exchange for OpenAI chat-completions — dual-format support did not regress the original format', async () => {
+    const dir = freshDataDir();
+    const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
+    const sink = createTee();
+
+    sink('req', { chunk: Buffer.from(chatRequestBody('what is the daemon default port')) });
+    sink('req', { end: true });
+    sink('res', { chunk: Buffer.from(chatResponseBodySSE(['7777 ', 'by ', 'default.'])) });
+    sink('res', { end: true });
+    await new Promise((r) => setImmediate(r));
+
+    const files = listSpoolFiles(dir);
+    expect(files).toHaveLength(1);
+    const envelope = JSON.parse(readFileSync(files[0]!.path, 'utf8')) as ProxyCaptureEnvelope;
+    expect(envelope.turns).toEqual([
+      { role: 'user', text: 'what is the daemon default port' },
+      { role: 'assistant', text: '7777 by default.' },
+    ]);
   });
 
   it('an incomplete exchange (request never ends) never spools', async () => {
