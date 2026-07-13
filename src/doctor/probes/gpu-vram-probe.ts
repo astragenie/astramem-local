@@ -33,7 +33,21 @@ export interface OllamaPsModel {
   size_vram: number;
 }
 
-function runCmd(cmd: string, timeoutMs = 5_000): Promise<string> {
+/**
+ * Cold `powershell.exe` process startup (CLR + assembly resolution, not the
+ * cmdlet itself) was measured at ~5.8-6.1s on a loaded dev box (see
+ * instance-lock.ts's `getProcessStartTime`, the reference implementation for
+ * this exact bug class — PR #224). ANY invocation of `powershell.exe`, CIM
+ * or not, pays this cost. A timeout below this doesn't make the check
+ * faster, it makes it fail closed on every real invocation while every
+ * mocked test stays green (ADR-015). Match instance-lock.ts's bound.
+ */
+const POWERSHELL_TIMEOUT_MS = 15_000;
+/** Native, fast binaries (`ps`, `nvidia-smi`) — no CLR/profile cold-start
+ *  cost, so the default stays tight. */
+const NATIVE_CMD_TIMEOUT_MS = 5_000;
+
+function runCmd(cmd: string, timeoutMs = NATIVE_CMD_TIMEOUT_MS): Promise<string> {
   return new Promise((resolve, reject) => {
     exec(cmd, { timeout: timeoutMs, windowsHide: true }, (err, stdout, stderr) => {
       if (err) reject(new Error(stderr || err.message));
@@ -49,19 +63,26 @@ function runCmd(cmd: string, timeoutMs = 5_000): Promise<string> {
  *    needs to tell an orphan from a legitimate child).
  *  - POSIX (Linux/macOS): `ps -eo pid,ppid,comm`.
  *
- * Returns `[]` on any failure (command missing, non-zero exit, unparsable
- * output) rather than throwing — process enumeration is a best-effort
- * diagnostic, never a doctor-run blocker.
+ * Returns `null` on any failure (command missing, non-zero exit, unparsable
+ * output, timeout) — NEVER `[]` for a failure. `[]` is reserved for a
+ * genuine "the command ran and there are zero rows" result. Conflating the
+ * two is the exact ADR-015 bug this function used to have: the caller
+ * (`checkOrphanedLlamaServer` in doctor/gpu-checks.ts) filters an empty
+ * process list down to zero "llama-server" matches and reports a green "no
+ * llama-server processes running" — a broken enumeration and a clean box
+ * were the same observable state. Mirrors `readPersistedEnvVars` below,
+ * which already got this distinction right.
  */
-export async function listProcesses(): Promise<ProcessInfo[]> {
+export async function listProcesses(): Promise<ProcessInfo[] | null> {
   try {
     if (platform() === 'win32') {
       const out = await runCmd(
         'powershell -NoProfile -NonInteractive -Command ' +
         '"Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name | ConvertTo-Json -Compress"',
+        POWERSHELL_TIMEOUT_MS,
       );
       const trimmed = out.trim();
-      if (!trimmed) return [];
+      if (!trimmed) return []; // command ran, genuinely zero rows (impossible in practice, but a real success).
       const parsed = JSON.parse(trimmed) as unknown;
       const rows = Array.isArray(parsed) ? parsed : [parsed];
       return rows
@@ -93,7 +114,7 @@ export async function listProcesses(): Promise<ProcessInfo[]> {
     }
     return procs;
   } catch {
-    return [];
+    return null; // could not enumerate — the caller must not treat this as "zero processes".
   }
 }
 
@@ -167,6 +188,7 @@ export async function readPersistedEnvVars(
       '"$u = [Environment]::GetEnvironmentVariables(\'User\'); ' +
       '$m = [Environment]::GetEnvironmentVariables(\'Machine\'); ' +
       '[PSCustomObject]@{User=$u; Machine=$m} | ConvertTo-Json -Compress -Depth 4"',
+      POWERSHELL_TIMEOUT_MS,
     );
     const trimmed = out.trim();
     if (!trimmed) return null;

@@ -471,16 +471,37 @@ export async function checkOllama(
   // continue — same /health degraded behavior as any other missing provider.
   let ollamaFound = false;
   try {
-    execSync('ollama --version', { stdio: 'ignore' });
+    // `ollama --version` is a lightweight CLI query, not the PowerShell
+    // cold-start class — 10s is generous. The timeout exists so a hung
+    // binary can't block init forever with zero signal (previously
+    // unbounded). stdio 'ignore' means a timeout and a genuine
+    // "not installed" both throw with no captured output, so the two are
+    // distinguished below via err.signal, not by message content.
+    execSync('ollama --version', { stdio: 'ignore', timeout: 10_000 });
     ollamaFound = true;
-  } catch {
-    console.log(`\n  Ollama is not installed, but is required for the selected provider.\n${ollamaInstallGuidance()}\n`);
+  } catch (err) {
+    // execSync sets `.signal` (e.g. 'SIGTERM') when its own timeout kills
+    // the child — that is an infrastructure failure (Ollama is installed
+    // but wedged), not the domain fact "not installed" (ENOENT / non-zero
+    // exit, no signal). Collapsing the two into one message would be
+    // exactly the ADR-015 failure this init flow exists to avoid.
+    const timedOut = (err as { signal?: string | null }).signal != null;
+    if (timedOut) {
+      console.log(
+        `\n  'ollama --version' did not respond within 10s — Ollama may be installed but hung/unresponsive, ` +
+        `not necessarily missing.\n${ollamaInstallGuidance()}\n`,
+      );
+    } else {
+      console.log(`\n  Ollama is not installed, but is required for the selected provider.\n${ollamaInstallGuidance()}\n`);
+    }
     const proceed = await confirmMissingBinary(
       'Continue without it? (the daemon will start degraded until Ollama is installed and reachable)'
     );
     if (!proceed) {
       throw new Error(
-        'Ollama is not installed.\n' +
+        (timedOut
+          ? "Could not verify Ollama is installed — 'ollama --version' timed out.\n"
+          : 'Ollama is not installed.\n') +
           `${ollamaInstallGuidance()}\n` +
           '  Install it and re-run `astramem-local init`, or choose a different provider.'
       );
@@ -513,6 +534,11 @@ export async function checkOllama(
     console.log(`\n  Model '${model}' not found locally.`);
     console.log(`  Pulling ${model} (required)...`);
     try {
+      // Deliberately unbounded: this is a multi-GB network download, not the
+      // cold-shell-startup class this file's other timeouts guard against —
+      // a fixed timeout here would abort legitimate slow pulls, not catch a
+      // hang. stdio 'inherit' streams ollama's own progress straight to the
+      // terminal, so a stalled pull is visible to the user, not silent.
       execFileSync('ollama', ['pull', model], { stdio: 'inherit' });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);

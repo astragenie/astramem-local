@@ -39,8 +39,10 @@ export interface GpuCheckOpts {
   /** Base URL of the Ollama API. Default http://127.0.0.1:11434. */
   ollamaBaseUrl?: string;
   /** Injectable process lister — tests substitute a stub instead of a real
-   *  OS enumeration. Defaults to the real cross-platform implementation. */
-  listProcesses?: () => Promise<ProcessInfo[]>;
+   *  OS enumeration. Defaults to the real cross-platform implementation.
+   *  `null` means enumeration failed (timeout, missing binary, unparsable
+   *  output) — MUST be treated as inconclusive, never as "zero processes". */
+  listProcesses?: () => Promise<ProcessInfo[] | null>;
   /** Injectable nvidia-smi VRAM-by-PID lookup — tests substitute a stub;
    *  `null` means "unavailable" (no NVIDIA GPU / nvidia-smi not on PATH). */
   queryGpuMemory?: (pids: number[]) => Promise<Map<number, number> | null>;
@@ -128,14 +130,14 @@ async function reportOrphans(
 
 function checkOrphanedLlamaServer(opts: {
   ollamaBaseUrl: string;
-  listProcesses: () => Promise<ProcessInfo[]>;
+  listProcesses: () => Promise<ProcessInfo[] | null>;
   queryGpuMemory: (pids: number[]) => Promise<Map<number, number> | null>;
   fetchOllamaPs: (baseUrl: string) => Promise<OllamaPsModel[] | null>;
 }): Check {
   return {
     name: 'Orphaned llama-server processes',
     async run(): Promise<CheckResult> {
-      let procs: ProcessInfo[];
+      let procs: ProcessInfo[] | null;
       try {
         procs = await opts.listProcesses();
       } catch (err) {
@@ -143,6 +145,18 @@ function checkOrphanedLlamaServer(opts: {
         // orphaned llama-server processes, so it must not render/count as
         // if it had confirmed a clean state.
         return { ok: true, inconclusive: true, message: `process enumeration unavailable (non-fatal): ${errMsg(err)}` };
+      }
+
+      // `null` (as opposed to a thrown error) is the REAL implementation's
+      // failure signal (see gpu-vram-probe.ts's listProcesses) — a
+      // PowerShell timeout, missing binary, or unparsable CIM output.
+      // Treating it as an empty array here was the actual bug: an empty
+      // llamaServers filter and a genuinely clean box produced the
+      // identical "no llama-server processes running" green result
+      // (ADR-015 — success and silent failure were the same observable
+      // state). This must stay inconclusive, not green.
+      if (procs === null) {
+        return { ok: true, inconclusive: true, message: 'process enumeration unavailable (non-fatal): listProcesses returned null (timeout, missing binary, or unparsable output)' };
       }
 
       const llamaServers = procs.filter((p) => LLAMA_SERVER_RE.test(p.name));

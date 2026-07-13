@@ -32,6 +32,10 @@ export type HooksActivationResult =
   | { status: 'error'; message: string };
 
 const HOOKS_PATH = 'scripts/git-hooks';
+/** `git config` is near-instant; bounded so a wedged git process (lock
+ *  contention, a stuck credential helper) can't hang `init`/`reinstall`
+ *  forever with zero signal. */
+const GIT_TIMEOUT_MS = 15_000;
 
 /** Repo root inferred from this file's own location: src/service/
  *  git-hooks-activate.ts (or dist/service/git-hooks-activate.js post-build)
@@ -69,15 +73,19 @@ export function activateGitHooks(repoRoot: string = defaultRepoRootForThisBuild(
   }
 
   try {
-    const current = spawnSync('git', ['config', '--get', 'core.hooksPath'], { cwd: repoRoot, encoding: 'utf8' });
+    const current = spawnSync('git', ['config', '--get', 'core.hooksPath'], { cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
+    if (current.error && current.signal) {
+      return { status: 'error', message: `git config --get timed out after ${GIT_TIMEOUT_MS}ms (signal ${current.signal})` };
+    }
     const previousValue = current.status === 0 ? current.stdout.trim() : null;
     if (previousValue === HOOKS_PATH) {
       return { status: 'already-set', repoRoot };
     }
 
-    const set = spawnSync('git', ['config', 'core.hooksPath', HOOKS_PATH], { cwd: repoRoot, encoding: 'utf8' });
+    const set = spawnSync('git', ['config', 'core.hooksPath', HOOKS_PATH], { cwd: repoRoot, encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
     if (set.error) {
-      return { status: 'error', message: set.error.message };
+      const timeoutNote = set.signal ? ` (signal ${set.signal} — likely the ${GIT_TIMEOUT_MS}ms timeout)` : '';
+      return { status: 'error', message: set.error.message + timeoutNote };
     }
     if (set.status !== 0) {
       return { status: 'error', message: (set.stderr || '').trim() || `git config exited with status ${set.status}` };
