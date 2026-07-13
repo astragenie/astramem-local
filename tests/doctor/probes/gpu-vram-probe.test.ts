@@ -127,28 +127,50 @@ describe('readPersistedEnvVars', () => {
     expect(result).toBeNull();
   });
 
-  it('does not throw and never fabricates a value when the top-level JSON shape has no User/Machine keys at all', async () => {
-    // Documents actual behavior for a case the PowerShell script in this file
-    // should never itself produce (GetEnvironmentVariables always returns a
-    // hashtable, even when empty, so `User`/`Machine` are always present on
-    // a real successful run) but a defensive test must still cover it: the
-    // parser must degrade honestly, never throw, and never assert a false
-    // "is set" value for any requested name.
+  /**
+   * `null` and an EMPTY MAP mean different things, and conflating them
+   * reintroduces the very bug this function exists to fix.
+   *
+   *   empty Map  = "I looked, and they are genuinely not set."   -> caller prints "(not set)"
+   *   null       = "I could not look."                            -> caller prints "cannot determine"
+   *
+   * An earlier version cast the parsed JSON to `{User?, Machine?}` and returned an
+   * empty Map for ANY shape lacking those keys. The caller then rendered that as a
+   * confident "(not set at User/Machine scope)" — a confident FALSE CLAIM, which is
+   * precisely the failure the persisted-env read was written to eliminate (doctor
+   * used to print "(unset)" for OLLAMA_* vars that were demonstrably active).
+   * Same bug, narrower door. These two tests pin the honest contract.
+   */
+  it('returns null — NOT an empty map — when the JSON has no User/Machine keys at all', async () => {
+    // The real PowerShell script always emits both keys on success
+    // (GetEnvironmentVariables returns a hashtable even when empty), so this is a
+    // shape we should never see. That is exactly why it must fail LOUDLY-honest
+    // rather than quietly-wrong: if it ever happens (a PS error object, a future
+    // Windows shape change), we could not look, and must say so.
     succeedWith(JSON.stringify({ notUserOrMachine: true }));
 
     const result = await readPersistedEnvVars(['OLLAMA_FLASH_ATTENTION']);
 
-    expect(result).not.toBeNull();
-    expect(result!.has('OLLAMA_FLASH_ATTENTION')).toBe(false);
+    expect(result).toBeNull();
   });
 
-  it('does not throw on a totally unexpected top-level shape (JSON array instead of an object)', async () => {
+  it('returns null on a totally unexpected top-level shape (JSON array instead of an object)', async () => {
     succeedWith(JSON.stringify(['unexpected', 'array', 'shape']));
 
     const result = await readPersistedEnvVars(['OLLAMA_FLASH_ATTENTION']);
 
+    expect(result).toBeNull();
+  });
+
+  it('still returns an EMPTY MAP (not null) when the scopes are present but genuinely empty', async () => {
+    // The distinction that matters: here we DID look, and the vars really are unset.
+    // The caller is entitled to say "(not set)" — that claim is true.
+    succeedWith(JSON.stringify({ User: {}, Machine: {} }));
+
+    const result = await readPersistedEnvVars(['OLLAMA_FLASH_ATTENTION']);
+
     expect(result).not.toBeNull();
-    expect(result!.has('OLLAMA_FLASH_ATTENTION')).toBe(false);
+    expect(result!.size).toBe(0);
   });
 
   it('returns null on non-Windows platforms and never shells out at all', async () => {

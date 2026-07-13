@@ -1,14 +1,14 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-13T13:00:44.412Z",
+  "updatedAt": "2026-07-13T14:39:39.536Z",
   "currentRun": {
     "title": "FEAT479 SLICE435: Relations[] additive output field (FEAT-481 SLICE-428 rides this)",
     "goal": "**Memories should be self-contained explanations, not trivia.**",
     "mode": "autonomous",
     "status": "active",
     "startedAt": "2026-07-13T13:00:44.412Z",
-    "updatedAt": "2026-07-13T13:00:44.412Z",
-    "next": "Begin implementation",
+    "updatedAt": "2026-07-13T14:39:39.535Z",
+    "next": "Product/dispatcher decision on the readPersistedEnvVars shape-validation gap above (optional hardening, not blocking). No other follow-up.",
     "gates": {
       "review": null,
       "validation": null,
@@ -23,7 +23,9 @@
     },
     "artifacts": {
       "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T130044Z-run-brief-feat479-slice435-relations-additive-output-field-feat-481-sl.md",
-      "handoffs": [],
+      "handoffs": [
+        "C:\\work\\mega\\astramemory-local-worktrees\\integrate\\.claude\\artifacts\\crew\\handoffs\\20260713T143939Z-handoff-close-2-test-coverage-gaps-gpu-vram-probe-readpersistedenvva.md"
+      ],
       "reviewResult": null,
       "validationPlan": null,
       "validationResult": null,
