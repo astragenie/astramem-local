@@ -44,7 +44,49 @@ prefixed query  MRR 0.642      +17.5 points
 Two of three total misses became hits (`test-runner` MISS→#3, `prod-deploy` MISS→#4).
 **Semantic search has been running at roughly half strength since it shipped.**
 
-### SECONDARY — junk atoms (real, but NOT the cause of the above)
+### MEASURED: the two fixes are ADDITIVE and together reach the keyword ceiling
+
+```
+baseline (today)            MRR 0.467    7/10
+B: exclude command+todo     MRR 0.617    8/10
+A: query prefix             MRR 0.642    9/10
+A+B: prefix + exclude       MRR 0.733    9/10     <- +26.7 points
+literal-keyword CEILING     MRR 0.750    8/10
+```
+
+Plain-English recall lands **within 1.7pts of the keyword ceiling**, and finds MORE
+cases (9/10) than hand-crafted keywords do (8/10). The objective — *asking a normal
+question works as well as knowing exactly what to grep for* — is achievable with both
+fixes, and only with both.
+
+### CORRECTION TO AN EARLIER CLAIM IN THIS DOC'S OWN HISTORY
+
+An earlier revision of this plan asserted "junk is NOT the cause — removing it gains
++0.5pts." **That was wrong, and the way it was wrong matters.**
+
+That experiment removed junk using the **shipped gate's classifier**, which catches
+only ~6% of hits — its regex misses `configure`, `approve`, `set`, and anything over
+8 words. So it measured *"the existing filter is useless"* and reported it as
+*"junk is harmless."* Two very different claims.
+
+Removing junk **by type** (`command` + `todo`) instead gains **+15pts**. Junk matters
+enormously; the filter is simply broken. Both fixes are required.
+
+### THIRD FIX, FREE: the live config points at the WORSE extraction model
+
+`%APPDATA%\Astramem\config.yaml` overrides `llm.extraction.model` to
+**`qwen2.5-coder:7b`**. The repo's own A/B benchmark (`src/cli/init.ts:68-94`) scores:
+
+| model | F1 | precision |
+|---|---|---|
+| `qwen2.5:7b` (code default, recommended) | **67%** | 99% |
+| `qwen2.5-coder:7b` (what the live daemon actually uses) | **59%** | — |
+
+The daemon has been extracting with the model its own benchmark rejected. **One line in
+config.yaml.** (Affects future extractions only; existing atoms would need a re-distill
+to benefit.)
+
+### SECONDARY — junk atoms (real, and it DOES hurt recall — see correction above)
 
 38% of returned hits carry no reusable knowledge — shell fragments (`"$ bun run test"`)
 and **task echoes** (`"deploy the changes to production"`, `"Run full repo test suite"`)
