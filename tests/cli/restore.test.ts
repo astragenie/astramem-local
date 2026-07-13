@@ -113,3 +113,148 @@ describe('restoreCommand stop-daemon path (A1 fifth-caller fix)', () => {
     expect(existsSync(join(dir, 'memory.sqlite'))).toBe(true);
   });
 });
+
+describe('restoreCommand --force / --force-unsafe (SLICE E8 escape hatch, regrouped by live-writer risk)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-restore-force-'));
+    vi.mocked(resolveRuntimeConfig).mockReturnValue({
+      cfg: { security: { encryption: { enabled: false } }, embedding: { dim: 1024 } } as never,
+      port: 7777,
+      dataDir: dir,
+      configDir: dir,
+      sources: { port: 'default', dataDir: 'default' } as never,
+      isolated: true,
+    });
+    vi.mocked(stopLockHolder).mockReset();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  async function seedSnapshot(): Promise<string> {
+    const db = openDb(join(dir, 'seed.sqlite'));
+    migrate(db);
+    const snapPath = join(dir, 'snap.sqlite');
+    await createSnapshot(db, snapPath);
+    db.close();
+    return snapPath;
+  }
+
+  async function expectAborted(args: string[]) {
+    const exitSpy = vi.spyOn(process, 'exit').mockImplementation(() => { throw new Error('exit'); }) as never;
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    await expect(restoreCommand(args)).rejects.toThrow('exit');
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(existsSync(join(dir, 'memory.sqlite.pre-restore.bak'))).toBe(false);
+    expect(existsSync(join(dir, 'memory.sqlite'))).toBe(false);
+    return { errSpy };
+  }
+
+  async function expectProceeded(args: string[]) {
+    vi.spyOn(console, 'log').mockImplementation(() => {});
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    await restoreCommand(args);
+    expect(existsSync(join(dir, 'memory.sqlite'))).toBe(true);
+    return { errSpy };
+  }
+
+  // --- weak gate: identity-unverifiable — genuinely unknown risk ---
+
+  it('--force alone bypasses identity-unverifiable (could-not-check) and lets restore proceed', async () => {
+    const snapPath = await seedSnapshot();
+    const detail =
+      'refusing to signal pid 4242: could not verify process identity (unable to determine OS process start time)';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'identity-unverifiable' });
+
+    const { errSpy } = await expectProceeded([snapPath, '--no-restart', '--force']);
+
+    expect(stopLockHolder).toHaveBeenCalledTimes(1);
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force') && String(c[0]).includes('bypassing') && !String(c[0]).includes('--force-unsafe'))).toBe(true);
+    expect(errSpy.mock.calls.some(c => String(c.join(' ')).includes('genuinely unknown'))).toBe(true);
+  });
+
+  it('without --force, identity-unverifiable still aborts', async () => {
+    const snapPath = await seedSnapshot();
+    vi.mocked(stopLockHolder).mockResolvedValue({
+      ok: false,
+      detail: 'refusing to signal pid 4242: lock has no valid startedAt to verify identity against',
+      reason: 'identity-unverifiable',
+    });
+    await expectAborted([snapPath, '--no-restart']);
+  });
+
+  // --- strong gate: confirmed-wrong-process (low actual live-writer risk, but a positive mismatch finding) ---
+
+  it('--force alone does NOT bypass identity-mismatch — still aborts, names --force-unsafe as the required second flag', async () => {
+    const snapPath = await seedSnapshot();
+    const detail =
+      'refusing to signal pid 4242: process start time mismatch (lock says 2020-01-01T00:00:00.000Z, ' +
+      'OS says 2026-07-13T12:00:00.000Z, drift 999999999ms > 60000ms) — likely a recycled PID, not our daemon';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'identity-mismatch' });
+
+    const { errSpy } = await expectAborted([snapPath, '--no-restart', '--force']);
+
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force-unsafe'))).toBe(true);
+    // Warning text must reflect the ACTUAL risk for this reason: low, not
+    // "an unidentified process may still be writing" — PID reuse implies
+    // the original holder is already dead.
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('LOW'))).toBe(true);
+  });
+
+  it('--force --force-unsafe together bypass identity-mismatch and let restore proceed', async () => {
+    const snapPath = await seedSnapshot();
+    const detail =
+      'refusing to signal pid 4242: process start time mismatch (lock says 2020-01-01T00:00:00.000Z, ' +
+      'OS says 2026-07-13T12:00:00.000Z, drift 999999999ms > 60000ms) — likely a recycled PID, not our daemon';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'identity-mismatch' });
+
+    const { errSpy } = await expectProceeded([snapPath, '--no-restart', '--force', '--force-unsafe']);
+
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force --force-unsafe') && String(c[0]).includes('bypassing'))).toBe(true);
+  });
+
+  // --- strong gate: confirmed-ours-and-still-alive (the two HIGHEST live-writer-risk cases) ---
+
+  it('--force alone does NOT bypass stop-timeout (confirmed ours, alive, did not die in time) — still aborts', async () => {
+    const snapPath = await seedSnapshot();
+    const detail = 'pid 4242 still serving after 5000ms';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'stop-timeout' });
+
+    const { errSpy } = await expectAborted([snapPath, '--no-restart', '--force']);
+
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force-unsafe'))).toBe(true);
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('highest-risk'))).toBe(true);
+  });
+
+  it('--force --force-unsafe together bypass stop-timeout and let restore proceed', async () => {
+    const snapPath = await seedSnapshot();
+    const detail = 'pid 4242 still serving after 5000ms';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'stop-timeout' });
+
+    await expectProceeded([snapPath, '--no-restart', '--force', '--force-unsafe']);
+  });
+
+  it('--force alone does NOT bypass signal-failed (confirmed ours, alive, never even signaled) — still aborts', async () => {
+    const snapPath = await seedSnapshot();
+    const detail = 'kill pid 4242 failed: operation not permitted';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'signal-failed' });
+
+    const { errSpy } = await expectAborted([snapPath, '--no-restart', '--force']);
+
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('--force-unsafe'))).toBe(true);
+    expect(errSpy.mock.calls.some(c => String(c[0]).includes('highest-risk'))).toBe(true);
+  });
+
+  it('--force --force-unsafe together bypass signal-failed and let restore proceed', async () => {
+    const snapPath = await seedSnapshot();
+    const detail = 'kill pid 4242 failed: operation not permitted';
+    vi.mocked(stopLockHolder).mockResolvedValue({ ok: false, detail, reason: 'signal-failed' });
+
+    await expectProceeded([snapPath, '--no-restart', '--force', '--force-unsafe']);
+  });
+});
