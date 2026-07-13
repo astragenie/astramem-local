@@ -369,6 +369,55 @@ describe('codex-subscription-llm', () => {
       const p = new CodexSubscriptionLLMProvider({ authPath });
       await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(/HTTP 500/);
     });
+
+    // Empty-SSE poison gate (architect-review finding, 20260713T100000Z):
+    // an empty `text` with a 200/res.ok response is the same failure shape
+    // as the qwen3:8b empty-extract bug that previously poisoned distill —
+    // a "successful" ChatResult with vacuous content stored as if it were
+    // real. These prove that shape now throws instead of returning silently.
+    it('throws TransientError on empty SSE text for a json-mode request', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath);
+      globalThis.fetch = vi.fn(async () => codexSseResponse('')) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      await expect(p.chat([{ role: 'user', content: 'x' }], { json: true })).rejects.toThrow(
+        /codex-subscription returned empty text for a json-mode request/,
+      );
+    });
+
+    it('throws TransientError on whitespace-only SSE text', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath);
+      globalThis.fetch = vi.fn(async () => codexSseResponse('   \n\t  ')) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      await expect(p.chat([{ role: 'user', content: 'x' }], { json: true })).rejects.toThrow(
+        /codex-subscription returned empty text/,
+      );
+    });
+
+    it('throws TransientError on empty text for a plain-chat (non-json) request', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath);
+      globalThis.fetch = vi.fn(async () => codexSseResponse('')) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(
+        /codex-subscription returned empty text for a plain-chat request/,
+      );
+    });
+
+    it('passes valid non-empty text through unchanged', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath);
+      globalThis.fetch = vi.fn(async () => codexSseResponse('{"result":"ok"}', 12, 3)) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      const res = await p.chat([{ role: 'user', content: 'x' }], { json: true });
+      expect(res.text).toBe('{"result":"ok"}');
+      expect(res.usage).toEqual({ in: 12, out: 3, usd: 0 });
+    });
   });
 
   // ---------------------------------------------------------------------------
