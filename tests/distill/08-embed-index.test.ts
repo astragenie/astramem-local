@@ -575,5 +575,38 @@ describe('embedAndIndex stage', () => {
       const count = (db.prepare('SELECT COUNT(*) AS n FROM entity_relations').get() as { n: number }).n;
       expect(count).toBe(0);
     });
+
+    // FEAT-481 SLICE-430 (review fix, MEDIUM): recordRelationGuardDrops is a
+    // DIAGNOSTIC write, invoked here after every real stage-8 write (memory
+    // insert, entity link, vec upsert) has already succeeded. Dropping
+    // relation_guard_drops out from under it forces a real SqliteError
+    // ("no such table") on that call — proves stage 8's own try/catch
+    // swallows it (logged, not thrown) rather than letting a diagnostic
+    // failure invalidate an already-successful embed-index call.
+    it('a relation_guard_drops write failure does not fail embedAndIndex — the memory still persists', async () => {
+      db.exec('DROP TABLE relation_guard_drops');
+      warnCalls.length = 0;
+      const embed = makeMockEmbed();
+      const mems = [
+        normalizedMem(
+          'a fact naming only one entity',
+          'z3'.repeat(32),
+          0.7,
+          [{ name: 'Alice', kind: 'actor' }],
+          [{ subject: 'Alice', predicate: 'relates_to', object: 'Bob' }], // "Bob" never in entities[] -> unresolvable_at_write drop
+        ),
+      ];
+
+      const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
+
+      expect(results).toHaveLength(1);
+      expect(results[0]!.created).toBe(true);
+      const mem = db.prepare('SELECT id FROM memories WHERE id = ?').get(results[0]!.memoryId);
+      expect(mem).toBeDefined();
+
+      // The mocked childLogger (module-level vi.mock above) captured the
+      // swallowed failure instead of it propagating.
+      expect(warnCalls.some(c => c.msg.includes('relation guard-drop counter write failed'))).toBe(true);
+    });
   });
 });

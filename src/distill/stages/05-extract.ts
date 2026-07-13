@@ -59,6 +59,15 @@ export interface ExtractResult {
   atoms: Atom[];
   usageUsd: number;
   retried: boolean;
+  /**
+   * FEAT-481 SLICE-430: per-reason drop counts from this chunk's
+   * filterAtomRelations pass (design doc §2.2/§2.3) -- 'predicate_invalid',
+   * 'missing_fields', 'subject_equals_object', 'no_hallucination_guard'.
+   * Empty object when the chunk's atoms had no relations[] to filter, or
+   * every triple survived. Never includes reasons with a zero count. See
+   * src/storage/relation-guard-log.ts for why this is persisted.
+   */
+  relationDropCounts: Record<string, number>;
 }
 
 /**
@@ -89,7 +98,7 @@ export async function extractChunk(
   extractProfile: ExtractProfile = 'engineering',
 ): Promise<ExtractResult> {
   if (!text.trim()) {
-    return { chunkIndex, atoms: [], usageUsd: 0, retried: false };
+    return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {} };
   }
 
   const activePrompt = resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
@@ -103,7 +112,13 @@ export async function extractChunk(
 
   const parsed = tryParseAtoms(result.text);
   if (parsed !== null) {
-    return { chunkIndex, atoms: parsed, usageUsd: result.usageUsd, retried: false };
+    return {
+      chunkIndex,
+      atoms: parsed.atoms,
+      usageUsd: result.usageUsd,
+      retried: false,
+      relationDropCounts: parsed.relationDropCounts,
+    };
   }
 
   // Parse / schema failure — LLM JSON output is stochastic, so treat it as
@@ -187,8 +202,18 @@ const VALID_RELATION_PREDICATES = new Set<string>([...RELATION_PREDICATES, 'othe
  *    via the shared `normalizeEntityName` seam) must each match a name in
  *    this SAME atom's own `entities[]` list — scoped to this atom only, per
  *    the named v1 limitation in the design doc.
+ *
+ * `dropCounts` (FEAT-481 SLICE-430) is mutated in place — one increment per
+ * dropped triple, keyed by reason — so the caller can persist a per-run
+ * total via relation-guard-log.ts. This is the ONLY signal that
+ * distinguishes "the model never emitted a relation" from "the model
+ * emitted relations but every one was dropped here" once persisted:
+ * `entity_relations` itself is a zero row count either way. Debug logging
+ * stays alongside the counter (not replaced by it) — the log line still
+ * carries the subject/object/predicate detail a live debugging session
+ * needs; the counter carries only what's cheap and safe to keep long-term.
  */
-function filterAtomRelations(raw: unknown): unknown {
+function filterAtomRelations(raw: unknown, dropCounts: Record<string, number>): unknown {
   if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
   const atom = raw as Record<string, unknown>;
   if (!Array.isArray(atom.relations)) return raw;
@@ -202,9 +227,11 @@ function filterAtomRelations(raw: unknown): unknown {
   );
 
   const log = childLogger({ stage: 'extract' });
+  const bump = (reason: string) => { dropCounts[reason] = (dropCounts[reason] ?? 0) + 1; };
   const relations = atom.relations.filter((relation) => {
     if (relation === null || typeof relation !== 'object' || Array.isArray(relation)) {
       log.debug({ relation }, 'relations[]: dropped non-object entry');
+      bump('not_an_object');
       return false;
     }
     const r = relation as Record<string, unknown>;
@@ -214,14 +241,17 @@ function filterAtomRelations(raw: unknown): unknown {
 
     if (!subject || !object || !predicate) {
       log.debug({ relation: r }, 'relations[]: dropped — missing subject/object/predicate');
+      bump('missing_fields');
       return false;
     }
     if (!VALID_RELATION_PREDICATES.has(predicate)) {
       log.debug({ predicate }, 'relations[]: dropped — predicate not in closed enum');
+      bump('predicate_invalid');
       return false;
     }
     if (subject === object) {
       log.debug({ subject }, 'relations[]: dropped — subject === object');
+      bump('subject_equals_object');
       return false;
     }
     if (!entityNames.has(normalizeEntityName(subject)) || !entityNames.has(normalizeEntityName(object))) {
@@ -229,6 +259,7 @@ function filterAtomRelations(raw: unknown): unknown {
         { subject, object },
         'relations[]: dropped — no-hallucination guard, subject/object not in this atom\'s own entities[]',
       );
+      bump('no_hallucination_guard');
       return false;
     }
     return true;
@@ -250,8 +281,13 @@ function filterAtomRelations(raw: unknown): unknown {
  * Returns null only when the raw text is not parseable JSON or is missing the
  * top-level `atoms` key — this is the signal for a TransientError (see
  * extractChunk above).
+ *
+ * `relationDropCounts` (FEAT-481 SLICE-430) accumulates filterAtomRelations'
+ * per-reason drop counts across every atom in this chunk's response — always
+ * present (possibly `{}`) on a non-null return, absent (never populated) on
+ * a null return since nothing was parsed to drop anything from.
  */
-function tryParseAtoms(raw: string): Atom[] | null {
+function tryParseAtoms(raw: string): { atoms: Atom[]; relationDropCounts: Record<string, number> } | null {
   try {
     let text = raw.trim();
 
@@ -274,10 +310,12 @@ function tryParseAtoms(raw: string): Atom[] | null {
     // (short text, unknown type, out-of-range numbers, etc.) — but first
     // repair a recoverable per-entity issue (unknown kind) so it doesn't
     // take the whole atom down with it.
-    return wrapper.data.atoms
+    const relationDropCounts: Record<string, number> = {};
+    const atoms = wrapper.data.atoms
       .map(coerceEntityKinds)
-      .map(filterAtomRelations)
+      .map((atom) => filterAtomRelations(atom, relationDropCounts))
       .filter((a) => AtomSchema.safeParse(a).success) as Atom[];
+    return { atoms, relationDropCounts };
   } catch {
     return null;
   }

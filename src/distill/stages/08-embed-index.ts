@@ -22,6 +22,7 @@ import { defaultConfig } from '../../config/config.js';
 import { redactIfEnabled } from '../../redact/index.js';
 import { childLogger } from '../../log/logger.js';
 import { gateDurability, type DurabilityGateMode, type GatedReason } from '../durability-gate.js';
+import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 
 export interface IndexResult {
   memoryId: string;
@@ -110,6 +111,12 @@ export async function embedAndIndex(
   const vectors = await ctx.embed.embed(texts);
 
   const results: IndexResult[] = [];
+  // FEAT-481 SLICE-430: counts the defensive "unresolvable at write" skip
+  // below (should not happen post-stage-5 filterAtomRelations — see that
+  // function's doc comment) under its own guard-drop reason, so it's
+  // distinguishable from a stage-5 drop if it ever actually fires. Recorded
+  // once after the loop, not per relation, to keep this a single cheap write.
+  let unresolvableRelationDrops = 0;
 
   for (let i = 0; i < memories.length; i++) {
     const mem = memories[i];
@@ -240,7 +247,7 @@ export async function embedAndIndex(
     for (const relation of mem.relations ?? []) {
       const subjectId = entityIdByName.get(normalizeEntityName(relation.subject));
       const objectId = entityIdByName.get(normalizeEntityName(relation.object));
-      if (!subjectId || !objectId) continue;
+      if (!subjectId || !objectId) { unresolvableRelationDrops++; continue; }
 
       relationRepo.insert({
         subjectEntityId: subjectId,
@@ -270,6 +277,28 @@ export async function embedAndIndex(
       .run(ctx.embed.name, ctx.embed.model, ctx.embed.dim, Date.now(), memoryId);
 
     results.push({ memoryId, created });
+  }
+
+  // Diagnostic counter write, deliberately isolated in its own try/catch: it
+  // runs after every real stage-8 write for this call has already succeeded
+  // (results is fully populated above), so a failure here (SQLITE_BUSY under
+  // contention, disk full) must never surface as if stage 8 itself failed —
+  // that would discard already-persisted memories/relations on retry purely
+  // because a diagnostic counter couldn't be written (review finding, this
+  // slice).
+  if (unresolvableRelationDrops > 0) {
+    try {
+      recordRelationGuardDrops(
+        ctx.db,
+        [{ reason: 'unresolvable_at_write', count: unresolvableRelationDrops }],
+        ctx.sessionId,
+      );
+    } catch (err) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err) },
+        'relation guard-drop counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
+      );
+    }
   }
 
   return results;

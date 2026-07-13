@@ -3,6 +3,9 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { runPipeline, BudgetExceeded } from '../../src/distill/pipeline.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
+import { MemoryEventRepo } from '../../src/storage/memory-events.js';
+import { EntityRepo } from '../../src/storage/entities.js';
+import { EntityRelationRepo } from '../../src/storage/entity-relations.js';
 import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth, EmbedHealth } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
 
@@ -182,5 +185,151 @@ describe('runPipeline', () => {
       expect(m.embedding_model).toBe('test-embed');
       expect(m.embedding_dim).toBe(1024);
     }
+  });
+
+  // FEAT-481 SLICE-430 AC-12/AC-13: end-to-end through the real pipeline —
+  // a valid relation lands in entity_relations, and a same-run dropped
+  // triple (hallucinated endpoint) is tallied into relation_guard_drops so
+  // the doctor canary can see it. Exercises the aggregation path in
+  // pipeline.ts (per-chunk relationDropCounts -> one recordRelationGuardDrops
+  // call per run), not just the stage-5 unit-level filter.
+  it('persists a valid relation to entity_relations and tallies a dropped triple into relation_guard_drops', async () => {
+    const relationExtraction = JSON.stringify({
+      atoms: [
+        {
+          type: 'decision',
+          text: 'astramemory-local uses SQLite for storage',
+          importance: 0.9,
+          confidence: 0.9,
+          entities: [
+            { name: 'astramemory-local', kind: 'project' },
+            { name: 'SQLite', kind: 'tech' },
+          ],
+          relations: [
+            { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite' },
+            // hallucinated endpoint — never listed in this atom's entities[]
+            { subject: 'astramemory-local', predicate: 'uses', object: 'MongoDB' },
+          ],
+        },
+      ],
+    });
+    const llm = makeMockLLM('compressed', relationExtraction);
+    const embed = makeMockEmbed();
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    const relations = db.prepare('SELECT * FROM entity_relations').all() as any[];
+    expect(relations.length).toBeGreaterThanOrEqual(1);
+    expect(relations.some(r => r.predicate === 'uses')).toBe(true);
+
+    const drops = db.prepare('SELECT reason, count FROM relation_guard_drops').all() as any[];
+    expect(drops.some(d => d.reason === 'no_hallucination_guard' && d.count >= 1)).toBe(true);
+  });
+
+  // FEAT-481 SLICE-430 (review fix, MEDIUM): the guard-drop counter write
+  // (recordRelationGuardDrops, called from pipeline.ts after stage 5) is a
+  // DIAGNOSTIC write, not part of extraction's success/failure contract.
+  // Dropping relation_guard_drops out from under it forces the write to
+  // throw (real "table not found" SqliteError, not a mock) — proves the
+  // pipeline's own try/catch around that call swallows it and the run still
+  // completes with the real relation persisted, instead of the failure
+  // being reinterpreted as an extract-stage failure that discards an
+  // already-successful extraction and forces a job retry.
+  it('a relation_guard_drops write failure does not fail the pipeline — atoms and relations still persist', async () => {
+    db.exec('DROP TABLE relation_guard_drops');
+
+    const relationExtraction = JSON.stringify({
+      atoms: [
+        {
+          type: 'decision',
+          text: 'astramemory-local uses SQLite for storage',
+          importance: 0.9,
+          confidence: 0.9,
+          entities: [
+            { name: 'astramemory-local', kind: 'project' },
+            { name: 'SQLite', kind: 'tech' },
+          ],
+          relations: [
+            { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite' },
+            // hallucinated endpoint — drives a non-empty relationDropCounts,
+            // so recordRelationGuardDrops is actually called (and throws,
+            // since the table is gone) rather than short-circuiting on {}.
+            { subject: 'astramemory-local', predicate: 'uses', object: 'MongoDB' },
+          ],
+        },
+      ],
+    });
+    const llm = makeMockLLM('compressed', relationExtraction);
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    expect(result.memoriesCreated).toBeGreaterThanOrEqual(1);
+
+    const relations = db.prepare('SELECT * FROM entity_relations').all() as any[];
+    expect(relations.length).toBeGreaterThanOrEqual(1);
+    expect(relations.some(r => r.predicate === 'uses' && r.object_entity_id)).toBe(true);
+  });
+
+  // FEAT-481 SLICE-430 AC-13 fixture (2): as_of-excluded relation, at the
+  // fixture level — a real memory produced by the real distillation pipeline
+  // (not hand-inserted via the repo, unlike the SLICE-1/SLICE-3-era unit and
+  // MCP conformance tests), then invalidated via the real event-sourced
+  // lifecycle op. Mirrors tests/mcp/entity-relations-conformance.test.ts's
+  // "asOf excludes..." case one layer down the stack.
+  it('a relation produced by the pipeline stops reading as valid once its evidence memory is invalidated (as_of-excluded, AC-13 fixture 2)', async () => {
+    const relationExtraction = JSON.stringify({
+      atoms: [
+        {
+          type: 'fact',
+          text: 'astramemory-local uses SQLite for storage',
+          importance: 0.9,
+          confidence: 0.9,
+          entities: [
+            { name: 'astramemory-local', kind: 'project' },
+            { name: 'SQLite', kind: 'tech' },
+          ],
+          relations: [{ subject: 'astramemory-local', predicate: 'uses', object: 'SQLite' }],
+        },
+      ],
+    });
+    const llm = makeMockLLM('compressed', relationExtraction);
+    const embed = makeMockEmbed();
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    const relationRepo = new EntityRelationRepo(db);
+    const entityRepo = new EntityRepo(db);
+    // upsert() is idempotent (FEAT-402) — resolves the same id the pipeline
+    // already created for this name via the shared normalizeEntityName seam,
+    // rather than inserting a duplicate.
+    const subjId = entityRepo.upsert('astramemory-local', 'project');
+    const memoryRow = db.prepare(
+      "SELECT id FROM memories WHERE text = 'astramemory-local uses SQLite for storage'",
+    ).get() as { id: string };
+
+    // Sanity: currently valid before invalidation.
+    expect(relationRepo.getForSubject(subjId, { asOf: Date.now() + 10_000 })).toHaveLength(1);
+
+    const events = new MemoryEventRepo(db);
+    events.invalidate(memoryRow.id);
+    const invalidated = db.prepare('SELECT valid_to FROM memories WHERE id = ?').get(memoryRow.id) as { valid_to: number };
+    expect(invalidated.valid_to).not.toBeNull();
+
+    // entity_relations.valid_to itself is untouched — exclusion comes from the JOIN (design doc §4.1).
+    const relRow = db.prepare('SELECT valid_to FROM entity_relations WHERE evidence_memory_id = ?').get(memoryRow.id) as { valid_to: number | null };
+    expect(relRow.valid_to).toBeNull();
+
+    const afterInvalidate = relationRepo.getForSubject(subjId, { asOf: invalidated.valid_to + 10_000 });
+    expect(afterInvalidate).toHaveLength(0);
   });
 });

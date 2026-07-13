@@ -139,6 +139,9 @@ astramem-local demo
                           | memories          |
                           | memories_fts (FTS5)|
                           | memories_vec (vec0)|
+                          | entities          |
+                          | memory_entities   |
+                          | entity_relations  |
                           | budget_spend      |
                           +-------------------+
                                    |
@@ -169,6 +172,14 @@ astramem-local demo
 
 Single Node process. Workers run in-process on a polling loop. SQLite is the source of truth.
 Everything derived (vectors, FTS rows, compactions) can be rebuilt by replaying the jobs table.
+
+`entities` + `memory_entities` (FEAT-402/FEAT-453) tag named things (people, projects, tools,
+decisions, ...) mentioned in a memory, with optional fact-level bitemporal validity hints.
+`entity_relations` (FEAT-481) is one join further: entity-to-entity relation triples
+(`subject_entity_id`, `predicate`, `object_entity_id`) extracted alongside the same atom's
+`entities[]` list, retrievable via the `get_entity_related` / `get_entity_timeline` MCP tools
+(bitemporal `as_of` aware — a relation sourced from an invalidated/superseded memory stops
+reading as valid once `as_of` passes that memory's own `valid_to`).
 
 ---
 
@@ -254,6 +265,8 @@ Claude Code discovers and calls the tools below automatically when configured in
 | `session_digest` | Session summary digest | `GET /sessions/:id/digest` |
 | `agent_profile` | Read-time per-agent "what has this agent learned" profile — top lessons, recent decisions, prior corrections | `GET /agents/:agent/profile` |
 | `user_profile` | Read-time daemon-wide profile (no agent filter) — standing facts, preferences, recurring lessons, recent decisions, known entities. Optional `?scope=team\|org\|all` (defaults to `private`) | `GET /profile` |
+| `get_entity_related` | Entity-to-entity relation triples (`entity_relations` table, FEAT-481) for one entity — bitemporal `as_of` aware, optional `direction` (`subject`\|`object`\|`both`) | (MCP-only, no REST route) |
+| `get_entity_timeline` | Memories mentioning an entity over time, newest-first, optional `since` lower bound | `GET /entities/:id/memories` |
 | `invalidate_memory` | Soft-delete a memory (lifecycle op) | `POST /memory/:id/invalidate` |
 | `supersede_memory` | Replace an old memory with a new one, linked via `memory_events` | `POST /memory/:id/supersede` |
 | `promote_memory` | Promote a memory's scope: personal → team → org | `POST /memory/:id/promote` |
@@ -581,7 +594,7 @@ publishing flow.
 
 ## Status
 
-**v0.15.0** — local-first memory daemon with 25 migrations, an 18-tool MCP surface, hybrid
+**v0.15.0** — local-first memory daemon with 29 migrations, a 20-tool MCP surface, hybrid
 BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
 promote) with full provenance (`why_memory`), consolidation proposals, entity-tagged memory
 with point-in-time (`as_of`) filtering, usefulness-ranked user/agent profiles (live-computed,

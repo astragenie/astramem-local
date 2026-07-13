@@ -587,6 +587,66 @@ describe('extract stage', () => {
       ]);
     });
 
+    // FEAT-481 SLICE-430 AC-12: relationDropCounts is the persisted signal
+    // the doctor "Entity relations extraction" canary uses to distinguish
+    // "the model never emits a relation" from "the model emits relations but
+    // the guard drops every one" — both look identical from entity_relations
+    // alone. Verifies the two dropped triples above (a hallucinated endpoint
+    // and an unknown predicate) each land under their own reason key.
+    it('relationDropCounts tallies one entry per drop reason (no_hallucination_guard, predicate_invalid)', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const mixed = JSON.stringify({
+        atoms: [
+          {
+            type: 'decision',
+            text: 'astramemory-local uses SQLite instead of Postgres',
+            importance: 0.8,
+            confidence: 0.9,
+            entities: [
+              { name: 'astramemory-local', kind: 'project' },
+              { name: 'SQLite', kind: 'tech' },
+              { name: 'Postgres', kind: 'tech' },
+            ],
+            relations: [
+              { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
+              // hallucinated endpoint — not in entities[]
+              { subject: 'astramemory-local', predicate: 'uses', object: 'MongoDB' },
+              // unknown predicate
+              { subject: 'SQLite', predicate: 'beats', object: 'Postgres' },
+            ],
+          },
+        ],
+      });
+      const llm = makeMockLLM([mixed]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.relationDropCounts).toEqual({
+        no_hallucination_guard: 1,
+        predicate_invalid: 1,
+      });
+    });
+
+    it('relationDropCounts is {} when every relation in the chunk survives filtering', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const clean = JSON.stringify({
+        atoms: [
+          {
+            type: 'decision', text: 'astramemory-local uses SQLite', importance: 0.8, confidence: 0.9,
+            entities: [{ name: 'astramemory-local', kind: 'project' }, { name: 'SQLite', kind: 'tech' }],
+            relations: [{ subject: 'astramemory-local', predicate: 'uses', object: 'SQLite' }],
+          },
+        ],
+      });
+      const llm = makeMockLLM([clean]);
+
+      const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+      expect(result.relationDropCounts).toEqual({});
+    });
+
     it('accepts the local-only "other" predicate', async () => {
       const db = openDb(':memory:');
       migrate(db);
