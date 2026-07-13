@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-07-13
+
+### Fixed
+
+- **The v0.17.0 CRLF fix was a one-way door — it broke `reinstall --rollback`**
+  (#244). v0.17.0's migration hash guard *rewrote* stored hashes to normalized
+  (LF) form. Once it opened a database, **every older release refused to boot on
+  it** — they still hash raw bytes and saw a mismatch they could not explain.
+
+  Hit live: a v0.17.0 upgrade rolled back on a health-check timeout (a zombie
+  `daemon.lock`, unrelated to the release), and the restored v0.16.0 then could
+  not start on its own database — **down on both versions, with perfectly good
+  data.** Rolling back is the one thing that must never be able to fail.
+
+  Now: **verify, don't migrate.** A stored hash matching *either* the raw bytes
+  *or* the normalized content proves the file is identical modulo line endings —
+  which SQLite does not care about — so accept it and **leave the row alone**.
+  Old and new releases boot on the same database in either direction. Real
+  tampering still throws (it matches neither hash).
+
+  **If you are on 0.17.0, upgrade.** Your rollback path is currently broken.
+
 ## [0.17.0] - 2026-07-13
 
 A stability release. Almost everything here is the same bug wearing different
