@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OllamaLLMProvider } from '../../src/providers/llm/ollama.js';
+import { TransientError } from '../../src/pipeline/errors.js';
 import { runLLMContractSuite } from './_contract-suite.js';
 
 // ---------------------------------------------------------------------------

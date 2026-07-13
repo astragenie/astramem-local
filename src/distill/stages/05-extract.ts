@@ -247,17 +247,22 @@ export async function extract(
     );
   }
 
+  // `extractProfile` MUST be part of the checkpoint key. jobKey is a hash of
+  // transcript CONTENT ONLY, and the same content can legitimately be extracted
+  // under a different profile (a different prompt → different atoms). Keying on
+  // content alone lets a paused job's chunks be reused by a same-content job on
+  // the OTHER profile — silently wrong atoms, no error. See chunk-checkpoint.ts.
   const pending: Array<{ index: number; text: string }> = [];
   const cached: ExtractResult[] = [];
   for (const chk of chunks) {
-    const hit = chunkCheckpoints.get<ExtractResult>(jobKey, 'extract', chk.index);
+    const hit = chunkCheckpoints.get<ExtractResult>(jobKey, 'extract', chk.index, extractProfile);
     if (hit !== undefined) cached.push(hit);
     else pending.push(chk);
   }
 
   const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
     const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile);
-    chunkCheckpoints.set(jobKey, 'extract', chk.index, result);
+    chunkCheckpoints.set(jobKey, 'extract', chk.index, result, extractProfile);
     return result;
   });
 
