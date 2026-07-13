@@ -21,14 +21,23 @@ import { platform } from 'node:os';
 // ─── child_process mock (must be declared before other imports so vitest
 // can hoist vi.mock above the module graph — mirrors tests/service/launchd.test.ts) ───
 
-const { execSyncMock, execFileSyncMock } = vi.hoisted(() => ({
+const { execSyncMock, execFileSyncMock, execFileMock } = vi.hoisted(() => ({
   execSyncMock: vi.fn(() => Buffer.from('')),
   execFileSyncMock: vi.fn(() => Buffer.from('')),
+  // src/service/instance-lock.ts does `promisify(execFile)` at module load
+  // time (A1 identity check, PR #224) — any test that fully replaces
+  // node:child_process must still provide an execFile export or the whole
+  // suite fails to collect the moment instance-lock.ts is pulled into the
+  // import graph. init.test.ts's tested paths never call it (no
+  // stopLockHolder/getProcessStartTime invocation here), so a bare stub is
+  // enough to satisfy promisify without needing real callback behavior.
+  execFileMock: vi.fn(),
 }));
 
 vi.mock('node:child_process', () => ({
   execSync: execSyncMock,
   execFileSync: execFileSyncMock,
+  execFile: execFileMock,
 }));
 
 // ─── Utility ─────────────────────────────────────────────────────────────────

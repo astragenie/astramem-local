@@ -200,9 +200,12 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
     const stopResult = await stopLockHolderFn(opts.dataDir, opts.port);
     if (!stopResult.ok) {
       // stopLockHolder never throws on failure (see instance-lock.ts) — it
-      // reports ok:false when the SIGTERM'd PID is still serving after its
-      // wait budget, exactly the "event loop too wedged to process the
-      // signal" case this probe exists to catch. Do NOT call adapter.start()
+      // reports ok:false either when the SIGTERM'd PID is still serving after
+      // its wait budget (the "event loop too wedged to process the signal"
+      // case this probe exists to catch), OR when it refused to signal at
+      // all because it could not verify the lock holder's identity (recycled
+      // PID, unreadable OS process info). Either way nothing was killed and
+      // no restart happened. Do NOT call adapter.start()
       // here: on systemd that's a no-op against an already-"active" unit,
       // and on launchd there's no guarantee kickstart -k reaches an orphaned
       // spawnSync grandchild either — either way, claiming 'restarted' would
