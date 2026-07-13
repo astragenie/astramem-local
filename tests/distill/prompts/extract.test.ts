@@ -127,12 +127,40 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
     for (const kind of ['actor:', 'team:', 'org:', 'project:', 'product:', 'workitem:', 'decision:', 'tech:', 'tool:', 'concept:', 'event:', 'other:']) {
       expect(EXTRACTION_SYSTEM_PROMPT_V3).toContain(kind);
     }
-    // FEAT-481's relation triples are explicitly out of scope for this
-    // slice (SLICE-435 owns adding a `relations[]` field) — check for that
-    // specific addition, not the substring "relations" in general (the
-    // unchanged entity contract already legitimately says "relationship").
-    expect(EXTRACTION_SYSTEM_PROMPT_V3).not.toMatch(/relations\[\]/);
-    expect(EXTRACTION_SYSTEM_PROMPT_V3).not.toMatch(/"relations"/);
+  });
+
+  // FEAT-481 (SLICE-435): entity-to-entity `relations[]` field, engineering
+  // profile only (design doc §2.5). States the closed predicate enum
+  // verbatim, the same-atom no-hallucination rule, and possessor
+  // qualification — the actual filtering/dropping enforcement lives in
+  // src/distill/stages/05-extract.ts, not in this prompt text.
+  it('states the relations[] field and the closed 11-value predicate enum verbatim', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/"relations"/);
+    for (const predicate of [
+      'uses', 'depends_on', 'replaces', 'supersedes', 'mentions',
+      'relates_to', 'part_of', 'owned_by', 'assigned_to', 'created_by', 'other',
+    ]) {
+      expect(EXTRACTION_SYSTEM_PROMPT_V3).toContain(predicate);
+    }
+  });
+
+  it('states the same-atom no-hallucination guard and possessor qualification', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/MUST each be a name that ALSO appears in this/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/Possessor qualification/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/Prefer omission over guessing/);
+  });
+
+  it('includes at least one few-shot example pairing entities[] with relations[]', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/"relations":\[\{"subject"/);
+  });
+
+  // FEAT-479's conversational profile (SLICE-434) is NOT extended with
+  // relations[] — design doc §2.5 scopes the prompt addition to the shared
+  // engineering skeleton only; no direction to also add it to the
+  // conversational profile.
+  it('does NOT add relations[] to the conversational profile', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/"relations"/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/relations\[\]/);
   });
 
   it('includes a negative (WRONG vs RIGHT) example demonstrating the contextless-trivia failure mode', () => {
@@ -143,6 +171,25 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
 
   it('the JSON schema hint reflects the new 1000-char cap, not the old 500-char one', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/5-1000 chars/);
+  });
+
+  // FEAT-481 (SLICE-435) context-budget check — same standing rule the
+  // conversational profile's own describe block below applies (SLICE-433's
+  // truncation bug): the real prompt + an 800-token chunk + the 2500
+  // maxTokens output budget must fit within Ollama's 16384 num_ctx cap, with
+  // room left for NUM_CTX_SLACK_TOKENS (512). Added relations[] guidance
+  // grows this prompt further on top of SLICE-433's already-large v3 body —
+  // this test is the tripwire if a future addition pushes it over budget.
+  it('fits the Ollama NUM_CTX_CAP (16384) alongside an 800-token chunk and maxTokens 2500, even with relations[] guidance added (SLICE-435 context-budget rule)', () => {
+    const NUM_CTX_CAP = 16384;
+    const MAX_TOKENS = 2500;
+    const SLACK_TOKENS = 512;
+    const CHUNK_TOKENS = 800;
+
+    const promptTokens = EXTRACTION_SYSTEM_PROMPT_V3.length / CHARS_PER_TOKEN;
+    const estimatedTotal = promptTokens + CHUNK_TOKENS + MAX_TOKENS + SLACK_TOKENS;
+
+    expect(estimatedTotal).toBeLessThanOrEqual(NUM_CTX_CAP);
   });
 });
 

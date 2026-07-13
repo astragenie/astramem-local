@@ -34,6 +34,42 @@ export const AtomEntitySchema = z.object({
 });
 export type AtomEntity = z.infer<typeof AtomEntitySchema>;
 
+// FEAT-481 SLICE-2/SLICE-435 — entity-to-entity relation triples, nested
+// inside the atom that names both endpoints (design doc §2.1: a memory row
+// doesn't exist until stage 8, so nesting inside the atom gives every triple
+// exactly one future evidence_memory_id, for free). Closed lowercase
+// snake_case predicate enum matching cloud's (`memory` repo)
+// security-gated, case-sensitive allow-list exactly
+// (`EntityPersister.cs`/`IExtractionPipeline.cs`, verified
+// docs/specs/FEAT-481-design.md §0.1/§2.4), plus a local-only `'other'`
+// bucket excluded from any future sync payload. A predicate string that
+// doesn't match one of these 11 exact values is DROPPED at parse time
+// (src/distill/stages/05-extract.ts's filterAtomRelations), never coerced to
+// `'other'` — unlike entity `kind`, this is a closed vocabulary the model is
+// asked to hit exactly, not a safe-narrow for stale/unknown values.
+export const RELATION_PREDICATES = [
+  'uses', 'depends_on', 'replaces', 'supersedes', 'mentions',
+  'relates_to', 'part_of', 'owned_by', 'assigned_to', 'created_by',
+] as const;
+export type RelationPredicate = (typeof RELATION_PREDICATES)[number] | 'other';
+
+export const AtomRelationSchema = z.object({
+  subject: z.string().min(1).max(100),
+  predicate: z.enum([...RELATION_PREDICATES, 'other']),
+  object: z.string().min(1).max(100),
+  /** Per-triple excerpt; falls back to the atom's own `evidence`/`text` at
+   * stage 8 write time when omitted, so `entity_relations.source_excerpt`
+   * (NOT NULL) is always satisfiable — design doc §2.1/§1. */
+  evidence: z.string().optional(),
+  /** Model-reported per-triple confidence (design doc §6) — kept as a real
+   * signal, not the hardcoded constant cloud's own server-side path writes.
+   * Falls back to the atom's own `confidence` at stage 8 when omitted. */
+  confidence: z.number().min(0).max(1).optional(),
+  valid_at: z.string().optional(),
+  invalid_at: z.string().optional(),
+});
+export type AtomRelation = z.infer<typeof AtomRelationSchema>;
+
 export const AtomSchema = z.object({
   type: z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']),
   /** FEAT-479 (SLICE-433 AC-7): cap bumped 500 -> 1000 so the v3 engineering
@@ -49,6 +85,14 @@ export const AtomSchema = z.object({
   /** Named things mentioned in this atom (FEAT-402 AC-1). Optional — atoms
    * with no clearly-named entity omit it entirely rather than guessing. */
   entities: z.array(AtomEntitySchema).optional(),
+  /** FEAT-481 (SLICE-2/SLICE-435): entity-to-entity relation triples this
+   * atom asserts. Optional and additive — absent on every atom from an old
+   * envelope/prompt, byte-identical to pre-FEAT-481 behavior. No-hallucination
+   * guard (design doc §2.2/AC-7): subject/object must each match a name in
+   * this SAME atom's own `entities[]` list, enforced post-parse (not by a
+   * zod `.refine()`, so a bad triple drops without failing the whole atom —
+   * see filterAtomRelations in 05-extract.ts). */
+  relations: z.array(AtomRelationSchema).optional(),
 });
 
 export const ExtractionSchema = z.object({
@@ -451,20 +495,37 @@ Examples (illustrative only, not exhaustive):
 // proper noun, ground relative dates against an in-transcript anchor when
 // one exists). The 7-type taxonomy, priority order, and entity-extraction
 // contract are carried over UNCHANGED from v1/v2 — this slice does not touch
-// entity kinds, precedence, or valid_at/invalid_at semantics; relation
-// triples (FEAT-481) are explicitly out of scope here (SLICE-435).
+// entity kinds, precedence, or valid_at/invalid_at semantics.
+// UPDATE (FEAT-481 SLICE-435, 2026-07-13): entity-to-entity `relations[]`
+// added, engineering profile only (design doc §2.5 scopes the prompt
+// addition to this shared skeleton; the conversational profile, SLICE-434,
+// is not extended here — no design-doc direction to add it there, and
+// personal-conversation transcripts have materially weaker signal for
+// closed-vocabulary triples than engineering ones). See the "Relations"
+// section below the Entities section for the closed predicate list,
+// possessor-qualification, and same-atom no-hallucination guidance; the
+// filtering/dropping enforcement itself lives in
+// src/distill/stages/05-extract.ts (filterAtomRelations) and stage 8
+// (resolveAtomRelations), not in this prompt text.
 // Every few-shot example below was rewritten or added for this version — the
 // examples ARE the spec, so a lesson/decision example that stayed at v1's
 // ~90-char shape would directly contradict the richness rule stated above
 // it. Example 7 is a negative example (WRONG vs RIGHT) demonstrating the
 // exact contextless-trivia failure mode this prompt exists to fix.
-// Size note (review fix, 2026-07-13): this prompt is ~15.3k chars / ~3.8k
-// tokens (chars/4) on its own — before the transcript chunk or the model's
-// own output are counted. Local providers with a small default context
-// window (Ollama's per-model default, observed 4096 for qwen2.5:7b) need
-// num_ctx >= ~8k to fit prompt + chunk + output without silent truncation;
-// src/providers/llm/ollama.ts now sizes num_ctx dynamically per call rather
-// than requiring every caller to know this prompt's size up front.
+// Size note (review fix, 2026-07-13; updated FEAT-481 SLICE-435, same date):
+// this prompt is ~18.4k chars / ~4.6k tokens (chars/4) on its own after the
+// relations[] guidance addition (was ~15.3k/~3.8k before) — before the
+// transcript chunk or the model's own output are counted. Total estimated
+// context (prompt + an 800-token chunk + maxTokens 2500 + the 512-token
+// NUM_CTX_SLACK_TOKENS margin) is ~8.4k tokens, still well inside Ollama's
+// 16384 NUM_CTX_CAP — see the context-budget test in
+// tests/distill/prompts/extract.test.ts, which is the tripwire if a future
+// addition pushes this over budget. Local providers with a small default
+// context window (Ollama's per-model default, observed 4096 for
+// qwen2.5:7b) need num_ctx >= ~8k to fit prompt + chunk + output without
+// silent truncation; src/providers/llm/ollama.ts now sizes num_ctx
+// dynamically per call rather than requiring every caller to know this
+// prompt's size up front.
 // ---------------------------------------------------------------------------
 export const EXTRACTION_SYSTEM_PROMPT_V3 = `You extract durable knowledge from AI coding agent transcripts.
 
@@ -481,7 +542,8 @@ Output STRICT JSON matching:
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
       "evidence": "<optional: an EXACT verbatim quote from the source — copy, never paraphrase>",
-      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }]
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }],
+      "relations": [{ "subject": "<entity name, must appear in this atom's own entities[]>", "predicate": "uses" | "depends_on" | "replaces" | "supersedes" | "mentions" | "relates_to" | "part_of" | "owned_by" | "assigned_to" | "created_by" | "other", "object": "<entity name, must appear in this atom's own entities[]>", "confidence": 0.0-1.0 }]
     }
   ]
 }
@@ -561,6 +623,31 @@ valid_at/invalid_at: omit both for a given entity unless the source text explici
 a start and/or end date for THAT entity's specific relationship to the atom (e.g. "Alice was
 the approver from January to March") — never infer or default one from context.
 
+Relations (FEAT-481): for each atom, optionally list entity-to-entity relation triples this
+atom's own text asserts. subject and object MUST each be a name that ALSO appears in this
+SAME atom's own "entities" list above — never name an entity here that isn't also listed
+there, and never invent a new entity just to complete a triple. predicate MUST be exactly one
+of these 11 lowercase values — do not invent synonyms, do not use any other casing:
+- uses: the subject employs/depends on the object as a tool or input (e.g. "the daemon" uses "sqlite-vec")
+- depends_on: the subject requires the object to function (e.g. "the extraction stage" depends_on "Ollama")
+- replaces: the subject was swapped in to replace the object (e.g. "mxbai-embed-large" replaces "nomic-embed-text-v2-moe")
+- supersedes: the subject is a newer version/decision that supersedes the object (e.g. "v3 prompt" supersedes "v1 prompt")
+- mentions: the subject references the object without a stronger relationship applying
+- relates_to: a general association that doesn't fit a more specific predicate below
+- part_of: the subject is a component/member of the object (e.g. "the extract stage" part_of "the distill pipeline")
+- owned_by: the subject is owned/maintained by the object (e.g. "the deploy script" owned_by "Alice")
+- assigned_to: a task/workitem subject is assigned to the object (e.g. "FEAT-402" assigned_to "the reviewer bot")
+- created_by: the subject was authored/created by the object (e.g. "the migration" created_by "Bob")
+- other: a real, meaningful relation that genuinely doesn't fit any predicate above
+Possessor qualification (Graphiti pattern): resolve pronouns and possessives to the actual
+named entity before writing subject/object — write "Alice" and "the deploy script", never
+"her" and "it" or "her deploy script" as a single unresolved phrase.
+Prefer omission over guessing: emit a relation ONLY when the source text states it directly.
+When in doubt whether a relation genuinely holds, or whether it fits one of the 11 predicates,
+leave "relations" empty (or omit it) for that atom rather than emitting a low-confidence guess.
+Omit "relations" entirely (or leave it empty) when the atom asserts no clear relation between
+two of its own named entities.
+
 Skip noise: greetings, repeated thinking, false starts, generic AI fluff.
 Skip secrets: tokens, API keys, passwords.
 Confidence reflects evidence strength: clear conclusion = 0.9; speculation = 0.3.
@@ -587,13 +674,13 @@ length and richness for lesson/decision, and their brevity for fact/command/todo
 
 1. Input: "We need to pick a database for astramemory-local. It has to run fully offline on a laptop, no server process. What do you recommend?" / "For a local-first, single-process daemon, SQLite is the right choice over Postgres — no server to manage, ships as a single file. Postgres would force a separate server, breaking the local-first goal. sqlite-vec handles vector search in the same file, no separate vector DB needed." / "Good, also fyi we're already on Node 20." ->
 {"atoms":[
-  {"type":"decision","text":"Use SQLite via better-sqlite3, not Postgres, for astramemory-local's storage, and sqlite-vec (not a separate vector database) for similarity search — the daemon must run fully offline as a single local process with nothing to install or manage. Postgres would force a separate server, breaking the local-first promise; a standalone vector DB would add a second thing to keep running. Tradeoff: SQLite gives up Postgres's concurrent-writer scaling, which a single-node local daemon never needed anyway.","importance":0.8,"confidence":0.9},
+  {"type":"decision","text":"Use SQLite via better-sqlite3, not Postgres, for astramemory-local's storage, and sqlite-vec (not a separate vector database) for similarity search — the daemon must run fully offline as a single local process with nothing to install or manage. Postgres would force a separate server, breaking the local-first promise; a standalone vector DB would add a second thing to keep running. Tradeoff: SQLite gives up Postgres's concurrent-writer scaling, which a single-node local daemon never needed anyway.","importance":0.8,"confidence":0.9,"entities":[{"name":"astramemory-local","kind":"project"},{"name":"SQLite","kind":"tech"},{"name":"Postgres","kind":"tech"},{"name":"sqlite-vec","kind":"tech"}],"relations":[{"subject":"astramemory-local","predicate":"uses","object":"SQLite","confidence":0.9},{"subject":"astramemory-local","predicate":"uses","object":"sqlite-vec","confidence":0.9},{"subject":"astramemory-local","predicate":"replaces","object":"Postgres","confidence":0.7}]},
   {"type":"fact","text":"The project runs on Node 20.","importance":0.4,"confidence":0.9}
 ]}
 
 2. Input: "The reinstall step threw Access is denied when repointing current.json. Dug in — schtasks hadn't fully released its lock on the shim (launch.cjs) before we tried to overwrite it, since the old daemon process was still mid-restart. Added a poll-until-unlocked retry with a 2s timeout in materialize-release.ts before the overwrite." ->
 {"atoms":[
-  {"type":"lesson","text":"reinstall's materialize-release step threw 'Access is denied' when repointing current.json to the newly built release, because the previous daemon process hadn't fully released its file lock on the shim (launch.cjs) before the overwrite — schtasks' PT5M keepalive can still be mid-restart at that moment. Fixed in materialize-release.ts by adding a poll-until-unlocked retry (2s timeout) before overwriting the shim. Lesson: never overwrite a file a running service may still hold open without confirming the lock is released first.","importance":0.7,"confidence":0.9,"evidence":"threw Access is denied when repointing current.json"}
+  {"type":"lesson","text":"reinstall's materialize-release step threw 'Access is denied' when repointing current.json to the newly built release, because the previous daemon process hadn't fully released its file lock on the shim (launch.cjs) before the overwrite — schtasks' PT5M keepalive can still be mid-restart at that moment. Fixed in materialize-release.ts by adding a poll-until-unlocked retry (2s timeout) before overwriting the shim. Lesson: never overwrite a file a running service may still hold open without confirming the lock is released first.","importance":0.7,"confidence":0.9,"evidence":"threw Access is denied when repointing current.json","entities":[{"name":"materialize-release.ts","kind":"tech"},{"name":"launch.cjs","kind":"tech"}],"relations":[{"subject":"materialize-release.ts","predicate":"depends_on","object":"launch.cjs","confidence":0.6}]}
 ]}
 
 3. Input: "Run \`git bisect start HEAD v1.2.0 -- src/\` to find which commit introduced the regression." / "Also TODO: add a rate limiter to the /ingest endpoint before we open registration." / "Also fyi we shipped the v0.9.2 patch release Tuesday." ->
