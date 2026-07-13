@@ -97,12 +97,12 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
   }
 
   // --- issue #188: schema_version content-hash verification + backfill -----
-  // Migration 033 adds `filename`/`content_hash` columns to schema_version
+  // Migration 035 adds `filename`/`content_hash` columns to schema_version
   // (applied above, through the normal loop, like any other migration — by
   // this point dbMax is guaranteed to equal SCHEMA_VERSION, so the columns
   // are guaranteed to exist). The INSERT in the loop above never populates
-  // them (it can't — on a genuinely fresh DB, migrations 001..032 apply
-  // *before* 033 adds the columns at all), so every row reaching this point
+  // them (it can't — on a genuinely fresh DB, every earlier migration applies
+  // *before* 035 adds the columns at all), so every row reaching this point
   // needs exactly one of two things done to it:
   //
   //   - content_hash IS NULL (a pre-#188 row, e.g. the operator's production

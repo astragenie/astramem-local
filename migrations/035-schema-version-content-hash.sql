@@ -1,4 +1,4 @@
--- 033: content-hash tracking for schema_version itself (issue #188).
+-- 035: content-hash tracking for schema_version itself (issue #188).
 --
 -- Root cause of BOTH halves of the 2026-07-13 outage (#185 + #186's
 -- re-collision): schema_version recorded only a migration NUMBER
