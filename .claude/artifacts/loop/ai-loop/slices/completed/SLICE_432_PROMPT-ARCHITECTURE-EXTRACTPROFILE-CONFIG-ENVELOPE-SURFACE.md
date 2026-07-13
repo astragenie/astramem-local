@@ -1,7 +1,7 @@
 ---
 id: SLICE-432
 title: Prompt architecture + extractProfile config/envelope surface
-status: pending
+status: completed
 feature: FEAT-479
 phase: null
 priority: P1
@@ -12,6 +12,7 @@ created: 2026-07-13
 updated: 2026-07-13
 effort_points: 2
 estimated_tokens: 100000
+completed_at: 2026-07-13
 ---
 # SLICE-432: Prompt architecture + extractProfile config/envelope surface
 

@@ -46,7 +46,7 @@ proposed_slices:
     points: 2
     estimated_tokens: 100000
 started_at: 2026-07-13
-slices_complete: [SLICE-431]
+slices_complete: [SLICE-431, SLICE-432]
 force_closed: true
 slices_remaining_at_close: [SLICE-432, SLICE-433, SLICE-434, SLICE-435, SLICE-436]
 ---
