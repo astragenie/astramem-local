@@ -89,12 +89,20 @@ export function checkAutoCapture(dataDir: string, autoCaptureEnabled: boolean, e
         const totalRecent = totalRow?.count ?? 0;
 
         // REAL-zero vs BROKEN-zero (ADR-015): a quiet 7 days with little or
-        // no activity is not a failure and must not warn — only report a
+        // no activity is not a failure and must not WARN — only report a
         // rate once there is enough recent volume for "zero of them" to
-        // actually mean something.
+        // actually mean something. But below-floor is not a clean bill of
+        // health either: `ok: true` is reserved for "verified healthy"
+        // (types.ts) and a light/moderate user with a genuinely broken
+        // capture hook can easily sit under this floor for a full week —
+        // that state must render as unverified, not confirmed fine (this
+        // is the same floor-trap #254 was blocked on: its founding
+        // incident, 13 orphans, sat below ITS floor and would have
+        // rendered as healthy).
         if (totalRecent < MEANINGFUL_USAGE_THRESHOLD) {
           return {
             ok: true,
+            inconclusive: true,
             message:
               `auto-capture is ON — not enough recent activity to judge (${totalRecent} active memories in the ` +
               `last 7d, below the ${MEANINGFUL_USAGE_THRESHOLD} floor)`,

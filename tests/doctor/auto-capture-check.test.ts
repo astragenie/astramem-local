@@ -110,6 +110,7 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
     expect(result.message).toContain('not enough recent activity');
   });
 
@@ -192,7 +193,7 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
     expect(result.fix).toBeDefined();
   });
 
-  it('enabled, just below the threshold (19 recent memories), 0 recent capture — stays ok:true (no false alarm)', async () => {
+  it('enabled, just below the threshold (19 recent memories), 0 recent capture — stays ok:true but inconclusive (no false alarm, not a confirmed pass either)', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -208,6 +209,7 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
   });
 
   it('enabled — an invalidated (valid_to set) auto-captured atom is excluded from the recent count', async () => {
@@ -226,6 +228,7 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
     // Invalidated -> valid_to set -> excluded from totalRecent too -> falls
     // through to the "not enough recent activity" real-zero branch, not a
     // reported rate.
@@ -282,6 +285,7 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
 
       const result = await checkFor(true).run();
       expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
       expect(result.message).toContain('not enough recent activity');
     });
   });
