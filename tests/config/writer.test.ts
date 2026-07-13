@@ -60,7 +60,7 @@ function buildFullyPopulatedConfig(): Config {
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: true } },
     ingest: { spoolMaxBytes: 1_048_576 },
-    distill: { durabilityGate: 'strict' },
+    distill: { durabilityGate: 'strict', extractProfile: 'conversational' },
     capture: {
       autoCapture: {
         enabled: true,

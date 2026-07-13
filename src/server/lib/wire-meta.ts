@@ -129,4 +129,8 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       docs/specs/FEAT-481-design.md §1); ON DELETE CASCADE on all three
 //       FKs is a deliberate divergence from cloud's RESTRICT (ADR-006
 //       erase_memory).
-export const SCHEMA_VERSION = 27 as const;
+// 028 = transcripts.extract_profile, additive nullable column (FEAT-479 D3
+//       §3.2 AC-3) -- per-ingest override of distill.extractProfile, flows
+//       transcripts row -> distillHandler -> PipelineContext.extractProfile
+//       the same way capture_source (024) already does.
+export const SCHEMA_VERSION = 28 as const;

@@ -284,6 +284,24 @@ export interface Config {
    * section) — no hot reload. */
   distill: {
     durabilityGate: 'strict' | 'lenient' | 'off';
+    /** FEAT-479 (D3 §3.2): which extraction prompt profile stage 5 (`05-
+     *  extract.ts`) resolves per-run. `'engineering'` (default) is the
+     *  existing shipped prompt (EXTRACTION_SYSTEM_PROMPT/_V2) — BYTE-
+     *  IDENTICAL to pre-FEAT-479 behavior when no override is configured
+     *  anywhere. `'conversational'` selects the mem0/Graphiti-pattern
+     *  liberal-extraction profile (AC-9/AC-10) — SLICE-434 supplies its
+     *  prompt text; until then `resolveExtractionPrompt`
+     *  (src/distill/prompts/extract.ts) falls back to the engineering
+     *  prompt behind a TODO marker, so this config surface is fully wired
+     *  and testable before that content exists.
+     *
+     *  Precedence at resolution time (`runPipeline`, src/distill/
+     *  pipeline.ts): `ASTRA_EXTRACT_PROMPT` env var (highest — existing
+     *  a/b-lever semantics, selects v2 of whichever profile resolves)
+     *  > per-transcript `extract_profile` envelope field (PipelineContext.
+     *  extractProfile, plumbed from the transcripts row via distillHandler
+     *  the same way captureSource is) > this config default > 'engineering'. */
+    extractProfile: 'engineering' | 'conversational';
   };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
@@ -455,7 +473,7 @@ export function defaultConfig(): Config {
     // gates 4 of the 5 reasons and holds back only `git_derivable`, which carries
     // the highest false-positive risk (a terse commit reference can still be
     // meaningful in a way a bare imperative cannot).
-    distill: { durabilityGate: 'lenient' },
+    distill: { durabilityGate: 'lenient', extractProfile: 'engineering' },
     capture: {
       autoCapture: {
         enabled: false,
@@ -615,13 +633,45 @@ export function applyContradictionDetectionGovernance(
   return consolidation;
 }
 
+/**
+ * FEAT-479 (D3 §3.2): `distill.extractProfile` is a closed 2-value enum,
+ * same governance concern `applyDurabilityGateGovernance` already documents
+ * for `distill.durabilityGate` — config.yaml is hand-parsed scalars with no
+ * schema, so a typo'd profile value would otherwise pass straight through
+ * `deepMerge` unchecked and silently reach `runPipeline`'s precedence
+ * resolution as an unrecognized string. Validated here, never fatal; an
+ * invalid value falls back to `'engineering'` (the documented default,
+ * BYTE-IDENTICAL to pre-FEAT-479 behavior) and is logged. Applied AFTER
+ * `applyDurabilityGateGovernance` at every call site below — both functions
+ * take and return the whole `distill` object, and each only touches its own
+ * field, so composing them in either order is safe.
+ */
+const VALID_EXTRACT_PROFILES: ReadonlySet<Config['distill']['extractProfile']> =
+  new Set(['engineering', 'conversational']);
+
+export function applyExtractProfileGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  if (!VALID_EXTRACT_PROFILES.has(distill.extractProfile)) {
+    log(
+      `[extract-profile-governance] distill.extractProfile=${JSON.stringify(distill.extractProfile)} is not one ` +
+      "of 'engineering'|'conversational' — falling back to 'engineering' (the documented default). " +
+      'See FEAT-479 / src/distill/prompts/extract.ts.',
+    );
+    return { ...distill, extractProfile: 'engineering' };
+  }
+  return distill;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
   return {
     ...merged,
     search: applyFusionGovernance(merged.search),
-    distill: applyDurabilityGateGovernance(merged.distill),
+    distill: applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)),
     consolidation: applyContradictionDetectionGovernance(merged.consolidation),
   };
 }

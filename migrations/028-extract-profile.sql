@@ -1,0 +1,23 @@
+-- 028: per-transcript extraction-profile override (FEAT-479, D3 §3.2, AC-3).
+--
+-- One additive nullable column, same ALTER TABLE ADD COLUMN pattern
+-- migrations 022/024/025/026 used -- NULL on every existing row and on
+-- every future row from a write path that doesn't set the canonical
+-- envelope's optional `extract_profile` field (checked: migration 001-init's
+-- original CREATE TABLE, plus every ALTER TABLE ADD COLUMN since -- same "no
+-- generic json/metadata column" finding migration 026 documents). Byte-
+-- identical to today for all of those.
+--
+-- Carries the per-ingest override of `distill.extractProfile`
+-- (src/config/config.ts) from ingest time (CanonicalIngestSchema.
+-- extract_profile, src/server/routes/ingest.ts) through to the distill job
+-- (mirrors how `capture_source` already flows transcripts row ->
+-- distillHandler -> PipelineContext.extractProfile, see
+-- src/pipeline/handlers/distill.ts) so `runPipeline` can resolve the
+-- precedence chain (env override > this column > config default >
+-- 'engineering') without a second lookup.
+--
+-- No CHECK constraint -- the enum is validated at the zod boundary
+-- (CanonicalIngestSchema), same rationale migration 026 gives for
+-- proxy_usage_json.
+ALTER TABLE transcripts ADD COLUMN extract_profile TEXT;

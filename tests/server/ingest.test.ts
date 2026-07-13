@@ -347,6 +347,68 @@ describe('ingest endpoint — dual-envelope schema (FEAT-4a)', () => {
     expect(res.statusCode).toBe(400);
   });
 
+  // FEAT-479 (D3 §3.2) AC-3: extract_profile is an optional per-ingest
+  // override of distill.extractProfile — every client that omits it leaves
+  // transcripts.extract_profile NULL (byte-identical default).
+  it('extract_profile: "engineering" round-trips onto the transcripts row', async () => {
+    const { db, app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-extract-profile-eng', extract_profile: 'engineering' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const transcripts = db.prepare('SELECT extract_profile FROM transcripts WHERE session_id = ?').all('sess-extract-profile-eng') as
+      { extract_profile: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.extract_profile).toBe('engineering');
+  });
+
+  it('extract_profile: "conversational" round-trips onto the transcripts row', async () => {
+    const { db, app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-extract-profile-conv', extract_profile: 'conversational' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const transcripts = db.prepare('SELECT extract_profile FROM transcripts WHERE session_id = ?').all('sess-extract-profile-conv') as
+      { extract_profile: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.extract_profile).toBe('conversational');
+  });
+
+  it('extract_profile omitted (every client that doesn\'t set it): transcripts.extract_profile stays NULL', async () => {
+    const { db, app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-no-extract-profile' },
+    });
+    expect(res.statusCode).toBe(200);
+
+    const transcripts = db.prepare('SELECT extract_profile FROM transcripts WHERE session_id = ?').all('sess-no-extract-profile') as
+      { extract_profile: string | null }[];
+    expect(transcripts).toHaveLength(1);
+    expect(transcripts[0]!.extract_profile).toBeNull();
+  });
+
+  it('extract_profile: an invalid value (not "engineering"/"conversational") returns 400', async () => {
+    const { app } = makeApp();
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload: { ...CANONICAL_PAYLOAD, session_id: 'sess-bad-extract-profile', extract_profile: 'something_else' },
+    });
+    expect(res.statusCode).toBe(400);
+  });
+
   it('client_scrub_hits_by_label round-trips through client_scrub_hits_by_label_json column', async () => {
     const { db, app } = makeApp();
     const res = await (await app).inject({

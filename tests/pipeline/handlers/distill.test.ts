@@ -10,6 +10,10 @@ import { search } from '../../../src/search/search.js';
 import type { ExtendedHandlerCtx } from '../../../src/pipeline/handler-ctx-ext.js';
 import type { DB } from '../../../src/storage/db.js';
 import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth, EmbedHealth } from '../../../src/contracts/index.js';
+import {
+  EXTRACTION_SYSTEM_PROMPT,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+} from '../../../src/distill/prompts/extract.js';
 
 // ---------------------------------------------------------------------------
 // Mock providers — extraction triggers only when the (flattened) transcript
@@ -38,6 +42,39 @@ function makeMockLLM(): LLMProvider {
       return { ok: true, model: 'test-model', latency_ms: 0 };
     },
   };
+}
+
+/**
+ * Same extraction-trigger behavior as makeMockLLM (only "sqlite-vec" mentions
+ * yield an atom), but also records the system prompt of every extraction
+ * call — so a test can assert on the ACTUAL prompt text the (mock) provider
+ * received, not on intermediate PipelineContext/config state.
+ */
+function makeCapturingMockLLM(): { llm: LLMProvider; extractionSystemPrompts: string[] } {
+  const extractionSystemPrompts: string[] = [];
+  const llm: LLMProvider = {
+    name: 'ollama' as const,
+    model: 'test-model',
+    async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+      const userContent = messages.find(m => m.role === 'user')?.content ?? '';
+      const systemContent = messages.find(m => m.role === 'system')?.content ?? '';
+      const isExtraction = opts?.json === true || systemContent.includes('atoms');
+
+      if (isExtraction) {
+        extractionSystemPrompts.push(systemContent);
+        const mentions = userContent.toLowerCase().includes('sqlite-vec');
+        const atoms = mentions
+          ? [{ type: 'decision', text: 'use sqlite-vec for v1 vector storage', importance: 0.9, confidence: 0.9, evidence: 'sqlite-vec is the call' }]
+          : [];
+        return { text: JSON.stringify({ atoms }), usage: { in: 10, out: 10, usd: 0 } };
+      }
+      return { text: userContent, usage: { in: 10, out: 10, usd: 0 } };
+    },
+    async health(): Promise<LLMHealth> {
+      return { ok: true, model: 'test-model', latency_ms: 0 };
+    },
+  };
+  return { llm, extractionSystemPrompts };
 }
 
 function makeMockEmbed(): EmbedProvider {
@@ -86,11 +123,12 @@ function insertCanonicalTranscript(
   turns: Array<{ role: string; text: string }>,
   capturedAtMs: number | null = null,
   captureSource: 'auto_capture' | null = null,
+  extractProfile: 'engineering' | 'conversational' | null = null,
 ): void {
   db.prepare(`
-    INSERT INTO transcripts (id, session_id, source, content, ingested_at, captured_at, capture_source)
-    VALUES (?, ?, 'claude-code-pre_compact', ?, ?, ?, ?)
-  `).run(id, sessionId, JSON.stringify(turns), Date.now(), capturedAtMs, captureSource);
+    INSERT INTO transcripts (id, session_id, source, content, ingested_at, captured_at, capture_source, extract_profile)
+    VALUES (?, ?, 'claude-code-pre_compact', ?, ?, ?, ?, ?)
+  `).run(id, sessionId, JSON.stringify(turns), Date.now(), capturedAtMs, captureSource, extractProfile);
 }
 
 /** Inserts an ingest_idempotency row exactly as POST /ingest/transcript does at insert time: summary_memory_id === transcript id. */
@@ -316,6 +354,61 @@ describe('distillHandler', () => {
     expect(memories.length).toBeGreaterThanOrEqual(1);
     for (const m of memories) {
       expect(m.capture_source).toBeNull();
+    }
+  });
+
+  // FEAT-479 (D3 §3.2) AC-2/AC-3: proves the full plumb end to end — DB
+  // column transcripts.extract_profile -> distillHandler ->
+  // PipelineContext.extractProfile -> runPipeline's precedence resolution ->
+  // 05-extract.ts's resolveExtractionPrompt -> the ACTUAL system prompt
+  // handed to the (mock) extraction LLM. Mirrors the FEAT-455 capture_source
+  // plumbing test above, but asserts on what the provider actually received
+  // rather than on any intermediate state.
+  it("FEAT-479: transcripts.extract_profile='conversational' threads through to the system prompt the extraction LLM receives", async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    const { llm: capturingExtractionLLM, extractionSystemPrompts } = makeCapturingMockLLM();
+    const conversationalCtx: ExtendedHandlerCtx = {
+      ...ctx,
+      providers: { ...ctx.providers, llm: { ...ctx.providers.llm, extraction: capturingExtractionLLM } },
+    };
+
+    insertSession(db, sessionId);
+    insertCanonicalTranscript(db, transcriptId, sessionId, [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ], null, null, 'conversational');
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, conversationalCtx);
+
+    expect(extractionSystemPrompts.length).toBeGreaterThanOrEqual(1);
+    for (const sentPrompt of extractionSystemPrompts) {
+      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING);
+    }
+  });
+
+  it('FEAT-479 AC-2 byte-identical default: transcripts.extract_profile NULL sends the engineering v1 prompt to the extraction LLM', async () => {
+    const sessionId = randomUUID();
+    const transcriptId = randomUUID();
+    const { llm: capturingExtractionLLM, extractionSystemPrompts } = makeCapturingMockLLM();
+    const engineeringCtx: ExtendedHandlerCtx = {
+      ...ctx,
+      providers: { ...ctx.providers, llm: { ...ctx.providers.llm, extraction: capturingExtractionLLM } },
+    };
+
+    insertSession(db, sessionId);
+    // extractProfile omitted -> NULL on the transcripts row, and ctx.config
+    // is the untouched defaultConfig() (distill.extractProfile: 'engineering').
+    insertCanonicalTranscript(db, transcriptId, sessionId, [
+      { role: 'user', text: 'what vector store should we use for v1?' },
+      { role: 'assistant', text: 'sqlite-vec — no network dependency, single-process.' },
+    ]);
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, engineeringCtx);
+
+    expect(extractionSystemPrompts.length).toBeGreaterThanOrEqual(1);
+    for (const sentPrompt of extractionSystemPrompts) {
+      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT);
     }
   });
 });

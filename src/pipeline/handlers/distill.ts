@@ -40,6 +40,11 @@ interface TranscriptRow {
    *  for every other producer. Widened again FEAT-458 S3 (ADR-013): 'proxy'
    *  when it came from the LLM proxy relay's capture fork. */
   capture_source: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  /** FEAT-479 (D3 §3.2) AC-3: the optional per-ingest `extract_profile`
+   *  envelope field, carried on the transcripts row at ingest time (see
+   *  ingestCanonicalTranscript, src/server/routes/ingest.ts) — NULL for
+   *  every envelope that omits it. */
+  extract_profile: 'engineering' | 'conversational' | null;
 }
 
 interface SessionRow {
@@ -64,7 +69,7 @@ export const distillHandler: JobHandler = {
 
     // Fetch transcript content
     const transcript = ctx.db
-      .prepare('SELECT id, session_id, content, source, captured_at, capture_source FROM transcripts WHERE id = ?')
+      .prepare('SELECT id, session_id, content, source, captured_at, capture_source, extract_profile FROM transcripts WHERE id = ?')
       .get(transcript_id) as TranscriptRow | undefined;
 
     if (!transcript) {
@@ -122,6 +127,11 @@ export const distillHandler: JobHandler = {
       // ingest.ts) — NULL for every producer except the hook-tap
       // auto-capture trigger.
       captureSource: transcript.capture_source ?? null,
+      // FEAT-479 (D3 §3.2) AC-3: carried on the transcripts row at ingest
+      // time (see ingestCanonicalTranscript, src/server/routes/ingest.ts) —
+      // NULL for every envelope that omits `extract_profile`. runPipeline
+      // falls back to config.distill.extractProfile, then 'engineering'.
+      extractProfile: transcript.extract_profile ?? null,
       // FEAT-441: durability gate mode + config threaded straight from the
       // running config — undefined durabilityGateMode falls back to 'off'
       // deep in embedAndIndex (AC-2 byte-identical default).

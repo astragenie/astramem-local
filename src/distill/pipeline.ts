@@ -48,6 +48,13 @@ export interface PipelineContext {
    *  FEAT-458 S3 (ADR-013): provenance tag plumbed from the transcripts row
    *  via distillHandler — see EmbedIndexContext.captureSource. */
   captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  /** FEAT-479 (D3 §3.2) AC-3: per-transcript extraction profile override,
+   *  plumbed from the transcripts row via distillHandler the same way
+   *  captureSource is above — NULL for every envelope that omits the
+   *  optional `extract_profile` field. `runPipeline` resolves the final
+   *  per-run profile as `extractProfile ?? config.distill.extractProfile ??
+   *  'engineering'` (AC-2/AC-3 precedence) before calling stage 5. */
+  extractProfile?: 'engineering' | 'conversational' | null;
   /** FEAT-441 durability gate mode — undefined behaves as 'off' (AC-2). */
   durabilityGateMode?: DurabilityGateMode;
   /** Full runtime config, threaded through to EmbedIndexContext.redactConfig
@@ -119,10 +126,17 @@ export async function runPipeline(
   // Stage 5: Extract (LLM JSON-mode, budget-gated; parse failures throw
   // TransientError, so a job-level retry re-runs this stage rather than
   // poisoning on one bad sample — see 05-extract.ts)
-  pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length }, 'stage start');
+  // FEAT-479 AC-2/AC-3 precedence (ASTRA_EXTRACT_PROMPT env var override is
+  // applied one level down, inside resolveExtractionPrompt via 05-extract.ts
+  // — it always wins regardless of what's resolved here): per-transcript
+  // extract_profile envelope field > config distill.extractProfile > the
+  // 'engineering' default. With neither set anywhere, this resolves to
+  // 'engineering' — the byte-identical pre-FEAT-479 default (AC-2).
+  const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
+  pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile }, 'stage start');
   let extractResults;
   try {
-    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd);
+    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile);
     const atomsExtracted = extractResults.reduce((sum, r) => sum + r.atoms.length, 0);
     pipeLog.info({ stage: 'extract', atoms_extracted: atomsExtracted }, 'stage complete');
   } catch (err) {

@@ -303,6 +303,9 @@ export function configToYaml(cfg: Config): string {
     // to pre-FEAT-441 behavior.
     line(0, 'distill'),
     line(1, 'durabilityGate', (cfg.distill ?? EMIT_DEFAULTS.distill).durabilityGate),
+    // FEAT-479 (D3 §3.2) — extraction prompt profile. 'engineering' (default)
+    // is byte-identical to pre-FEAT-479 behavior.
+    line(1, 'extractProfile', (cfg.distill ?? EMIT_DEFAULTS.distill).extractProfile),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes

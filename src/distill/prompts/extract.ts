@@ -154,6 +154,56 @@ export const EXTRACTION_STRICT_PROMPT = `${EXTRACTION_SYSTEM_PROMPT}
 CRITICAL: Output ONLY valid JSON. No markdown, no prose, no code fences. The response must start with { and end with }.`;
 
 // ---------------------------------------------------------------------------
+// FEAT-479 (D3 §3.2) — extraction profile registry.
+// ---------------------------------------------------------------------------
+
+/** Which prompt family stage 5 (05-extract.ts) resolves per-run. See
+ * `Config['distill']['extractProfile']` (src/config/config.ts) for the
+ * config surface and `PipelineContext.extractProfile` (src/distill/
+ * pipeline.ts) for the per-transcript envelope override. */
+export type ExtractProfile = 'engineering' | 'conversational';
+
+/**
+ * TODO SLICE-434: replace with the real conversational-profile prompt text
+ * (mem0-pattern liberal extraction — 15-80 word self-contained sentences,
+ * pronouns resolved, proper nouns preserved, relative dates grounded to an
+ * explicit observation date — plus Graphiti-pattern possessor qualification
+ * and a banned-abstractions negative list; design doc §3.2, AC-9/AC-10).
+ * Falls back to the engineering v1 prompt verbatim until that content lands,
+ * so `resolveExtractionPrompt` below is fully wired and testable before
+ * SLICE-434 ships — never used to silently pass off engineering-profile
+ * output as conversational; callers that need to detect "still pending" can
+ * compare this constant's identity to EXTRACTION_SYSTEM_PROMPT.
+ */
+export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING = EXTRACTION_SYSTEM_PROMPT;
+
+/**
+ * Resolve the extraction system prompt for one pipeline run. Precedence
+ * (highest first):
+ *
+ * 1. `envOverride === 'v2'` — the pre-existing `ASTRA_EXTRACT_PROMPT=v2` a/b
+ *    lever. Selects the v2 candidate prompt REGARDLESS of `profile` —
+ *    preserves the exact override semantics 05-extract.ts always had, now
+ *    just evaluated per-call instead of once at module load (FEAT-479 AC-2).
+ * 2. `profile === 'conversational'` — the mem0/Graphiti-pattern profile.
+ *    Currently returns the pending-marker constant above (SLICE-434 not yet
+ *    landed) — NOT a silent inheritance of the engineering prompt's design,
+ *    just today's placeholder value for it.
+ * 3. Otherwise (`'engineering'`, `null`, or `undefined`) — today's shipped
+ *    v1 prompt. This is the byte-identical default path: with no env var
+ *    and no profile configured anywhere, this returns the exact same
+ *    `EXTRACTION_SYSTEM_PROMPT` object pre-FEAT-479 code always used.
+ */
+export function resolveExtractionPrompt(
+  profile: ExtractProfile | null | undefined,
+  envOverride: string | undefined,
+): string {
+  if (envOverride === 'v2') return EXTRACTION_SYSTEM_PROMPT_V2;
+  if (profile === 'conversational') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING;
+  return EXTRACTION_SYSTEM_PROMPT;
+}
+
+// ---------------------------------------------------------------------------
 // v2 (2026-07-09) — a/b candidate against EXTRACTION_SYSTEM_PROMPT. Adds the
 // high-signal, low-cost refinements from the 2026-07-09 prompt review that are
 // NOT already owned by the pipeline (dedup=consolidation, canonicalization=

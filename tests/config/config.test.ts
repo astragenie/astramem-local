@@ -1,5 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
-import { loadConfig, defaultConfig, applyFusionGovernance, applyDurabilityGateGovernance } from '../../src/config/config.js';
+import {
+  loadConfig,
+  defaultConfig,
+  applyFusionGovernance,
+  applyDurabilityGateGovernance,
+  applyExtractProfileGovernance,
+} from '../../src/config/config.js';
 
 describe('loadConfig', () => {
   it('returns defaults when no file present', () => {
@@ -170,5 +176,52 @@ describe('applyDurabilityGateGovernance', () => {
   it('loadConfig leaves a valid distill.durabilityGate untouched', () => {
     const cfg = loadConfig({ distill: { durabilityGate: 'strict' } } as any);
     expect(cfg.distill.durabilityGate).toBe('strict');
+  });
+});
+
+// FEAT-479 (D3 §3.2) AC-2: distill.extractProfile is a closed 2-value enum,
+// same config.yaml-has-no-schema governance concern applyDurabilityGateGovernance
+// already covers for durabilityGate — a typo'd value must fall back to the
+// documented 'engineering' default with a WARN, not reach runPipeline's
+// precedence resolution as an unrecognized string.
+describe('applyExtractProfileGovernance', () => {
+  it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
+    for (const profile of ['engineering', 'conversational'] as const) {
+      const distill = { durabilityGate: 'off' as const, extractProfile: profile };
+      expect(applyExtractProfileGovernance(distill)).toEqual(distill);
+    }
+  });
+
+  it('falls back to engineering and logs why on an invalid/typo value', () => {
+    const distill = { durabilityGate: 'off' as const, extractProfile: 'enginering' as any };
+    const logs: string[] = [];
+    const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
+
+    expect(governed.extractProfile).toBe('engineering');
+    expect(logs.some(m => m.includes('extractProfile') && m.includes('enginering'))).toBe(true);
+  });
+
+  it('loadConfig wires applyExtractProfileGovernance in: an invalid override comes back "engineering"', () => {
+    const cfg = loadConfig({ distill: { extractProfile: 'bogus' as any } } as any);
+    expect(cfg.distill.extractProfile).toBe('engineering');
+  });
+
+  it('loadConfig leaves a valid distill.extractProfile untouched', () => {
+    const cfg = loadConfig({ distill: { extractProfile: 'conversational' } } as any);
+    expect(cfg.distill.extractProfile).toBe('conversational');
+  });
+
+  it('loadConfig composes both distill governance functions: an invalid durabilityGate does not clobber a valid extractProfile, and vice versa', () => {
+    const cfg1 = loadConfig({ distill: { durabilityGate: 'bogus' as any, extractProfile: 'conversational' } } as any);
+    expect(cfg1.distill.durabilityGate).toBe('off');
+    expect(cfg1.distill.extractProfile).toBe('conversational');
+
+    const cfg2 = loadConfig({ distill: { durabilityGate: 'strict', extractProfile: 'bogus' as any } } as any);
+    expect(cfg2.distill.durabilityGate).toBe('strict');
+    expect(cfg2.distill.extractProfile).toBe('engineering');
+  });
+
+  it('defaultConfig ships extractProfile: "engineering" (byte-identical pre-FEAT-479 default)', () => {
+    expect(defaultConfig().distill.extractProfile).toBe('engineering');
   });
 });

@@ -37,7 +37,13 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { type Config, defaultConfig, applyFusionGovernance, applyDurabilityGateGovernance } from './config.js';
+import {
+  type Config,
+  defaultConfig,
+  applyFusionGovernance,
+  applyDurabilityGateGovernance,
+  applyExtractProfileGovernance,
+} from './config.js';
 
 type PlainObject = Record<string, unknown>;
 
@@ -310,7 +316,7 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
   return {
     ...cfg,
     search: applyFusionGovernance(cfg.search),
-    distill: applyDurabilityGateGovernance(cfg.distill),
+    distill: applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill)),
   };
 }
 

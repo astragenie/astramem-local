@@ -2,6 +2,11 @@ import { describe, it, expect } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { extractChunk, extract, BudgetExceeded } from '../../src/distill/stages/05-extract.js';
+import {
+  EXTRACTION_SYSTEM_PROMPT,
+  EXTRACTION_SYSTEM_PROMPT_V2,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+} from '../../src/distill/prompts/extract.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
 import { TransientError } from '../../src/pipeline/errors.js';
 import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../../src/contracts/index.js';
@@ -361,5 +366,91 @@ describe('extract stage', () => {
     expect(result.atoms.length).toBe(1);
     expect(result.atoms[0].entities?.[0].valid_at).toBeUndefined();
     expect(result.atoms[0].entities?.[0].invalid_at).toBeUndefined();
+  });
+});
+
+// FEAT-479 (D3 §3.2) AC-2/AC-3/AC-4: per-run prompt resolution. The old
+// module-load-time ACTIVE_EXTRACTION_PROMPT constant is gone — extractChunk/
+// extract now resolve the system prompt on every call via
+// resolveExtractionPrompt (src/distill/prompts/extract.ts), threading the
+// `extractProfile` param through. These tests capture the actual system
+// message sent to the provider to prove the resolved prompt (not just a
+// default) really reaches the LLM call.
+describe('extract stage — FEAT-479 profile threading', () => {
+  function makeCapturingLLM(response: string): { llm: LLMProvider; systemPrompts: string[] } {
+    const systemPrompts: string[] = [];
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[], _opts?: ChatOpts): Promise<ChatResult> {
+        systemPrompts.push(msgs.find(m => m.role === 'system')?.content ?? '');
+        return { text: response, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    return { llm, systemPrompts };
+  }
+
+  it('AC-2 byte-identical default: extractChunk called with no profile arg sends the v1 engineering prompt', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, systemPrompts } = makeCapturingLLM(VALID_EXTRACTION_JSON);
+
+    await extractChunk(0, 'chunk text', llm, budget, 10.0);
+
+    expect(systemPrompts).toHaveLength(1);
+    expect(systemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT);
+  });
+
+  it("extractChunk threads an explicit 'conversational' profile through to the sent system prompt", async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, systemPrompts } = makeCapturingLLM(VALID_EXTRACTION_JSON);
+
+    await extractChunk(0, 'chunk text', llm, budget, 10.0, 'conversational');
+
+    expect(systemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING);
+  });
+
+  it('AC-4: ASTRA_EXTRACT_PROMPT=v2 env override wins over an explicit profile, per call (not cached at module load)', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, systemPrompts } = makeCapturingLLM(VALID_EXTRACTION_JSON);
+
+    const prev = process.env.ASTRA_EXTRACT_PROMPT;
+    process.env.ASTRA_EXTRACT_PROMPT = 'v2';
+    try {
+      await extractChunk(0, 'chunk text', llm, budget, 10.0, 'conversational');
+    } finally {
+      if (prev === undefined) delete process.env.ASTRA_EXTRACT_PROMPT;
+      else process.env.ASTRA_EXTRACT_PROMPT = prev;
+    }
+
+    expect(systemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT_V2);
+  });
+
+  it("extract() threads the profile through to every chunk's extractChunk call", async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, systemPrompts } = makeCapturingLLM(VALID_EXTRACTION_JSON);
+
+    await extract(
+      [{ index: 0, text: 'chunk one' }, { index: 1, text: 'chunk two' }],
+      llm,
+      budget,
+      10.0,
+      'conversational',
+    );
+
+    expect(systemPrompts).toEqual([
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
+    ]);
   });
 });

@@ -93,6 +93,16 @@ export const CanonicalIngestSchema = z.object({
    *  a real client bug worth surfacing as 400 on the direct
    *  `/ingest/transcript` path, not something to silently coerce to null. */
   capture_source: z.enum(['auto_capture', 'hook_close', 'proxy']).optional(),
+  /** FEAT-479 (D3 §3.2) AC-3: optional per-ingest override of
+   *  `distill.extractProfile` (src/config/config.ts) for this transcript
+   *  only. Additive zod field, no wire break — every client that omits it
+   *  leaves `transcripts.extract_profile` NULL and `runPipeline` falls back
+   *  to the config default, then 'engineering' (see PipelineContext.
+   *  extractProfile, src/distill/pipeline.ts). Kept a closed enum rather
+   *  than an open string, same rationale as `capture_source` above — an
+   *  unrecognized value is a real client bug worth a 400, not a silent
+   *  coercion to null. */
+  extract_profile: z.enum(['engineering', 'conversational']).optional(),
   /** FEAT-458 S6 — token/cost telemetry from the LLM proxy capture fork
    *  (`extractUsageMetadata`, src/capture/proxy.ts). Optional: every
    *  non-proxy client omits it and `transcripts.proxy_usage_json` stays
@@ -234,14 +244,15 @@ export function ingestCanonicalTranscript(
     string, number, number, number,
     string | null, string | null,
     string | null, string, string | null,
-    string | null,
+    string | null, string | null,
   ]>(`
     INSERT INTO transcripts (
       id, session_id, source, content, ingested_at,
       event, captured_at, client_scrub_applied, client_scrub_hits,
       client_scrub_version, client_scrub_hits_by_label_json,
-      client_version, wire_version, capture_source, proxy_usage_json
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      client_version, wire_version, capture_source, proxy_usage_json,
+      extract_profile
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const stmtInsertJob = db.prepare<[string, string, number, number]>(`
     INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
@@ -328,6 +339,9 @@ export function ingestCanonicalTranscript(
       // boundary above, so JSON.stringify preserves `null` as JSON null,
       // never coerces it to 0). Absent on every non-proxy envelope -> NULL.
       data.proxy_usage != null ? JSON.stringify(data.proxy_usage) : null,
+      // FEAT-479 (D3 §3.2) AC-3: same "schema instance covers both the HTTP
+      // route and spool-drain" note as capture_source above applies here too.
+      data.extract_profile ?? null,
     );
 
     recordRedactionEvents(db, redactionEvents, data.session_id);

@@ -14,19 +14,23 @@ import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import {
   AtomSchema,
   EntityKindSchema,
-  EXTRACTION_SYSTEM_PROMPT,
-  EXTRACTION_SYSTEM_PROMPT_V2,
+  resolveExtractionPrompt,
   type Atom,
+  type ExtractProfile,
 } from '../prompts/extract.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { TransientError } from '../../pipeline/errors.js';
 
-// a/b-selectable extraction prompt: `ASTRA_EXTRACT_PROMPT=v2` swaps in the v2
-// candidate; anything else (incl. unset) keeps v1 (EXTRACTION_SYSTEM_PROMPT) —
-// the shipped default. Resolved once at module load; the bench sets the env
-// per variant to a/b the two prompts on a fixed model.
-const ACTIVE_EXTRACTION_PROMPT =
-  process.env.ASTRA_EXTRACT_PROMPT === 'v2' ? EXTRACTION_SYSTEM_PROMPT_V2 : EXTRACTION_SYSTEM_PROMPT;
+export type { ExtractProfile };
+
+// FEAT-479 (D3 §3.2): the extraction prompt used to be pinned once at module
+// load (`ASTRA_EXTRACT_PROMPT=v2` swaps in the v2 a/b candidate; anything
+// else, incl. unset, kept v1). Resolution now happens per pipeline run via
+// `resolveExtractionPrompt` (src/distill/prompts/extract.ts) — same env-var
+// override semantics, plus the `extractProfile` param threaded below —
+// so a caller in one process can run 'engineering' and 'conversational'
+// extractions back to back rather than being stuck with whatever the env
+// var said at process start.
 
 // Extraction sampling temperature. Default 0.1; `ASTRA_EXTRACT_TEMP=0` makes
 // JSON output fully deterministic (a/b lever — may reduce stochastic parse
@@ -74,17 +78,24 @@ export async function extractChunk(
   provider: LLMProvider,
   budget: BudgetTracker,
   capUsd: number,
+  /** FEAT-479 AC-2: already-precedence-resolved (envelope > config default)
+   * by the caller (see PipelineContext.extractProfile / runPipeline) —
+   * defaults to 'engineering', the byte-identical pre-FEAT-479 behavior,
+   * for callers that don't pass one. `ASTRA_EXTRACT_PROMPT` is applied on
+   * top of this, per call, inside resolveExtractionPrompt. */
+  extractProfile: ExtractProfile = 'engineering',
 ): Promise<ExtractResult> {
   if (!text.trim()) {
     return { chunkIndex, atoms: [], usageUsd: 0, retried: false };
   }
 
-  const promptChars = ACTIVE_EXTRACTION_PROMPT.length + text.length;
+  const activePrompt = resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
+  const promptChars = activePrompt.length + text.length;
   const estimateUsd = BudgetTracker.estimateUsd(promptChars, 0.000002, 0.000002);
 
   budget.assertCanSpend(estimateUsd, capUsd);
 
-  const result = await callExtract(text, ACTIVE_EXTRACTION_PROMPT, provider);
+  const result = await callExtract(text, activePrompt, provider);
   budget.record(result.usageUsd);
 
   const parsed = tryParseAtoms(result.text);
@@ -197,10 +208,11 @@ export async function extract(
   provider: LLMProvider,
   budget: BudgetTracker,
   capUsd: number,
+  extractProfile: ExtractProfile = 'engineering',
 ): Promise<ExtractResult[]> {
   const results: ExtractResult[] = [];
   for (const chk of chunks) {
-    results.push(await extractChunk(chk.index, chk.text, provider, budget, capUsd));
+    results.push(await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile));
   }
   return results;
 }
