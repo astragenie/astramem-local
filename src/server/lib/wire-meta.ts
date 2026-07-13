@@ -172,4 +172,17 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       "Entity name quality" canary distinguish "the guard has stopped
 //       seeing new junk names" from "the guard is actively catching junk on
 //       an ongoing basis" -- see src/storage/entity-guard-log.ts.
-export const SCHEMA_VERSION = 34 as const;
+// 035 = schema_version.filename + schema_version.content_hash, additive
+//       nullable columns (issue #188, root-caused by the 2026-07-13 #185/#186
+//       migration-030 collision + re-collision outage). Lets migrate()
+//       verify on every boot that the file occupying a version number today
+//       still hashes to what was actually applied when that version was
+//       recorded, instead of keying a migration's identity on the number
+//       alone. See migrations/035-schema-version-content-hash.sql and
+//       migrate.ts's post-apply-loop verify/backfill pass. Numbered 035, not
+//       033/034, after TWO separate concurrent-migration collisions during
+//       coordination for this very fix (#208 took 033, #218 took 034 despite
+//       an earlier team-lead assignment of 036 to #218) -- ground-truthed
+//       against `git ls-tree origin/main -- migrations/` immediately before
+//       each renumber, not against other agents' claims.
+export const SCHEMA_VERSION = 35 as const;

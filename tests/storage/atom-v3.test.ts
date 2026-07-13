@@ -59,7 +59,7 @@ describe('Atom v3 migration (006-atom-v3, ADR-001)', () => {
     expect(colNames).toContain('scope');
   });
 
-  it('DB max schema version is 32 after migration', () => {
+  it('DB max schema version is 33 after migration', () => {
     migrate(db);
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
     expect(row.v).toBe(34);

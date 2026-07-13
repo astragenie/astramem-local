@@ -16,6 +16,13 @@ const MIGRATIONS_DIR = join(__dirname, '..', '..', 'migrations');
  * casing 001) keeps future dim-sensitive migrations trivial to add. */
 const EMBED_DIM_PLACEHOLDER = '__EMBED_DIM__';
 
+/** Strip the leading `NNN-` and trailing `.sql` off a migration filename,
+ * e.g. `030-evidence-guard-drops.sql` -> `evidence-guard-drops` -- used only
+ * to keep the schema-drift diagnostic (issue #188) readable. */
+function migrationSlug(filename: string): string {
+  return filename.replace(/^\d+-/, '').replace(/\.sql$/, '');
+}
+
 /**
  * Run pending migrations. `dim` (default DEFAULT_EMBED_DIM = 1024) is
  * baked into any NOT-yet-applied migration file containing the
@@ -88,6 +95,75 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
       );
     }
   }
+
+  // --- issue #188: schema_version content-hash verification + backfill -----
+  // Migration 033 adds `filename`/`content_hash` columns to schema_version
+  // (applied above, through the normal loop, like any other migration — by
+  // this point dbMax is guaranteed to equal SCHEMA_VERSION, so the columns
+  // are guaranteed to exist). The INSERT in the loop above never populates
+  // them (it can't — on a genuinely fresh DB, migrations 001..032 apply
+  // *before* 033 adds the columns at all), so every row reaching this point
+  // needs exactly one of two things done to it:
+  //
+  //   - content_hash IS NULL (a pre-#188 row, e.g. the operator's production
+  //     DB, OR a row this very call just inserted through the loop above) ->
+  //     BACKFILL a baseline hash from whatever file occupies that version
+  //     number on disk TODAY. This is NOT a reconstruction of history — the
+  //     file may have changed since it was actually applied — it's a
+  //     "starting now" baseline (issue #188 AC-3). A version whose file no
+  //     longer exists on disk at all is left NULL forever: there is nothing
+  //     to hash, and guessing would be worse than not checking.
+  //   - content_hash already recorded (backfilled or verified on a PRIOR
+  //     boot) -> VERIFY it against today's disk content. A mismatch means
+  //     the file occupying this version number today is NOT the file that
+  //     was actually applied when this version was recorded — the exact
+  //     renumber-collision shape behind #185/#186 — and gets a precise,
+  //     actionable diagnosis instead of a raw `CREATE TABLE ... already
+  //     exists` wearing a misleading "restore from a backup" costume.
+  //
+  // Net effect: the FIRST boot after this fix ships only ever backfills (every
+  // row is NULL going in) — the operator's existing 15k+-memory production DB
+  // boots clean with zero risk of a false mismatch. Verification only starts
+  // protecting from the SECOND boot onward, once a real baseline exists.
+  const fileByVersion = new Map<number, string>();
+  for (const f of files) {
+    const version = parseInt(f.split('-')[0] ?? '', 10);
+    if (!Number.isNaN(version)) fileByVersion.set(version, f);
+  }
+
+  const versionRows = db
+    .prepare('SELECT version, filename, content_hash FROM schema_version ORDER BY version')
+    .all() as { version: number; filename: string | null; content_hash: string | null }[];
+
+  const backfillStmt = db.prepare(
+    'UPDATE schema_version SET filename = ?, content_hash = ? WHERE version = ?',
+  );
+
+  const verifyAndBackfill = db.transaction(() => {
+    for (const row of versionRows) {
+      const diskFile = fileByVersion.get(row.version);
+      if (!diskFile) continue; // no file on disk for this version anymore — nothing to check against
+
+      const diskHash = contentHash(readFileSync(join(MIGRATIONS_DIR, diskFile), 'utf8'));
+
+      if (row.content_hash == null) {
+        backfillStmt.run(diskFile, diskHash, row.version);
+        continue;
+      }
+
+      if (row.content_hash !== diskHash) {
+        throw new Error(
+          `Migration ${row.version} was applied as '${migrationSlug(row.filename ?? '(unknown)')}' ` +
+          `(hash ${row.content_hash.slice(0, 12)}), but ${row.version} on disk is now ` +
+          `'${migrationSlug(diskFile)}' (hash ${diskHash.slice(0, 12)}). A migration was renumbered ` +
+          `or replaced after being applied. Restore the original file at this version number, or if ` +
+          `this is deliberate, reconcile schema_version by hand — astramemory-local will not guess ` +
+          `(issue #188).`,
+        );
+      }
+    }
+  });
+  verifyAndBackfill();
 
   // Boot-time schema-version drift guard: the SCHEMA_VERSION constant in
   // wire-meta.ts MUST match the highest migration applied to the DB.

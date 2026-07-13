@@ -1,0 +1,29 @@
+-- 033: content-hash tracking for schema_version itself (issue #188).
+--
+-- Root cause of BOTH halves of the 2026-07-13 outage (#185 + #186's
+-- re-collision): schema_version recorded only a migration NUMBER
+-- (version, applied_at) -- nothing that identifies WHICH file was actually
+-- applied for that number. Two migrations were briefly both numbered 030;
+-- whichever applied first won and the other was silently skipped (#185).
+-- The fix renumbered one of them 030 -> 031, which is unsafe by construction
+-- for any DB that had already recorded 30 against the OTHER migration's
+-- content: the daemon would not boot (#186).
+--
+-- These two columns let migrate() (src/storage/migrate.ts) verify, on every
+-- boot, that the file occupying a given version number today still hashes to
+-- what was actually applied when that version was recorded -- and fail with
+-- a precise "migration N was applied as X, but N on disk is now Y" diagnosis
+-- instead of a raw `CREATE TABLE ... already exists` wearing a misleading
+-- "restore from a backup" costume.
+--
+-- Both columns are nullable and additive -- existing rows (versions 1-32 on
+-- any already-migrated DB, including the operator's 15k+-memory production
+-- database) get NULL here. migrate() backfills them from whatever is on disk
+-- TODAY on its first post-upgrade run (a "starting now" baseline, not a
+-- reconstruction of history -- the file may have changed since it was
+-- actually applied, and guessing would be worse than not checking) and only
+-- begins verifying from the following boot onward. This migration itself
+-- performs no data changes -- see migrate.ts's post-apply-loop pass for the
+-- backfill/verify logic.
+ALTER TABLE schema_version ADD COLUMN filename TEXT;
+ALTER TABLE schema_version ADD COLUMN content_hash TEXT;
