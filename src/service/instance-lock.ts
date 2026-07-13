@@ -19,6 +19,10 @@
  */
 import { openSync, closeSync, writeSync, readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+
+const execFileAsync = promisify(execFile);
 
 export interface LockInfo {
   pid: number;
@@ -53,6 +57,67 @@ function pidAlive(pid: number): boolean {
     // would let `service stop` / reinstall rollback silently leave a live
     // daemon running while reporting success — the exact failure this helper exists to prevent.
     return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/**
+ * Maximum allowed drift between the lock's recorded `startedAt` (our own
+ * wall-clock read at acquire time) and the OS-reported process creation
+ * time for that PID. Generous enough to absorb normal process-boot latency
+ * (require chain, config load) before `acquireInstanceLock` stamps the
+ * lock, but far tighter than "PID recycled minutes or hours after a crash"
+ * — the exact gap this check exists to close.
+ */
+const IDENTITY_TOLERANCE_MS = 60_000;
+
+/**
+ * Resolve the OS-reported creation time of `pid`, or null when it cannot be
+ * determined (process gone, permission denied, unparseable output, or an
+ * unsupported platform). Callers MUST treat null as "cannot prove identity"
+ * — never as a pass.
+ */
+export async function getProcessStartTime(pid: number): Promise<Date | null> {
+  try {
+    if (process.platform === 'win32') {
+      // wmic is deprecated/removed on current Windows builds — Get-CimInstance
+      // is the supported replacement. Cold PowerShell + CIM/WMI startup was
+      // measured well over 5s on a loaded box (~5.8s) — a tight timeout here
+      // doesn't make the check faster, it makes it fail closed *every time*,
+      // silently neutering the watchdog this check exists to keep working.
+      const { stdout } = await execFileAsync('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') }`,
+      ], { timeout: 15_000, windowsHide: true });
+      const trimmed = stdout.trim();
+      if (!trimmed) return null;
+      const d = new Date(trimmed);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    if (process.platform === 'darwin') {
+      const { stdout } = await execFileAsync('ps', ['-o', 'lstart=', '-p', String(pid)], { timeout: 15_000 });
+      const trimmed = stdout.trim();
+      if (!trimmed) return null;
+      const d = new Date(trimmed);
+      return Number.isNaN(d.getTime()) ? null : d;
+    }
+    // Linux (and other /proc-bearing POSIX): /proc/<pid>/stat field 22
+    // (starttime, in clock ticks since boot). comm (field 2) is
+    // parenthesized and may itself contain spaces, so split after the
+    // LAST ')' rather than by fixed field index.
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const afterComm = stat.slice(stat.lastIndexOf(')') + 2).trim();
+    const fields = afterComm.split(/\s+/);
+    // fields[0] is field-3 overall (state); starttime is field-22 overall
+    // => fields[22 - 3] = fields[19].
+    const starttimeTicks = Number(fields[19]);
+    if (!Number.isFinite(starttimeTicks)) return null;
+    const uptimeSeconds = Number(readFileSync('/proc/uptime', 'utf8').split(' ')[0]);
+    if (!Number.isFinite(uptimeSeconds)) return null;
+    const CLK_TCK = 100; // USER_HZ — standard across Linux distros
+    const bootTimeMs = Date.now() - uptimeSeconds * 1000;
+    return new Date(bootTimeMs + (starttimeTicks / CLK_TCK) * 1000);
+  } catch {
+    return null;
   }
 }
 
@@ -101,6 +166,8 @@ export interface StopLockHolderOptions {
   healthProbe?: (port: number) => Promise<boolean>;
   /** Total time to wait for /health to stop answering after signaling. Default 5000ms. */
   waitMs?: number;
+  /** Injectable process-start-time resolver — tests substitute a stub instead of shelling out to the OS. */
+  processStartTime?: (pid: number) => Promise<Date | null>;
 }
 
 /**
@@ -131,9 +198,39 @@ export async function stopLockHolder(
 
   const sendSignal = opts.signal ?? ((pid, sig) => process.kill(pid, sig));
   const probe = opts.healthProbe ?? healthOk;
+  const resolveStartTime = opts.processStartTime ?? getProcessStartTime;
 
   if (!pidAlive(holder.pid)) {
     return { ok: true, detail: `stale lock (pid ${holder.pid} already dead)` };
+  }
+
+  // PID-alive is not identity. A crash can leave a stale lock behind; the OS
+  // then recycles the PID for an unrelated process, and "alive" alone would
+  // make us signal it. Confirm the live process at holder.pid actually
+  // started when the lock says it did, BEFORE ever sending a signal. Any
+  // failure to determine this — unreadable /proc entry, a failed OS query,
+  // a missing/corrupt startedAt — fails CLOSED: we have not proven this is
+  // our daemon, so we do not touch it.
+  const recordedStart = holder.startedAt ? new Date(holder.startedAt) : null;
+  if (!recordedStart || Number.isNaN(recordedStart.getTime())) {
+    return {
+      ok: false,
+      detail: `refusing to signal pid ${holder.pid}: lock has no valid startedAt to verify identity against`,
+    };
+  }
+  const actualStart = await resolveStartTime(holder.pid);
+  if (!actualStart) {
+    return {
+      ok: false,
+      detail: `refusing to signal pid ${holder.pid}: could not verify process identity (unable to determine OS process start time)`,
+    };
+  }
+  const driftMs = Math.abs(actualStart.getTime() - recordedStart.getTime());
+  if (driftMs > IDENTITY_TOLERANCE_MS) {
+    return {
+      ok: false,
+      detail: `refusing to signal pid ${holder.pid}: process start time mismatch (lock says ${holder.startedAt}, OS says ${actualStart.toISOString()}, drift ${driftMs}ms > ${IDENTITY_TOLERANCE_MS}ms) — likely a recycled PID, not our daemon`,
+    };
   }
 
   try {
