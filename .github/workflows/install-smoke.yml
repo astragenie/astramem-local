@@ -53,3 +53,12 @@ jobs:
 
       - name: install-smoke (npm-global, clean container)
         run: bash scripts/testbed/remote/install-smoke.sh "${{ github.event.inputs.version || 'latest' }}" npm
+
+      # The container runs as root, so every file checkout wrote lands root-owned in
+      # the runner's PERSISTENT _work tree. The next (non-container) job on that runner
+      # runs as the runner user, cannot unlink them, and dies in actions/checkout's
+      # pre-clean with EACCES — reddening under its own name, in any repo. See devops#87.
+      # /__w is the workspace mount, owned by the runner user, so --reference needs no uid.
+      - name: Hand the workspace back to the runner user
+        if: always()
+        run: chown -R --reference=/__w "$GITHUB_WORKSPACE"
