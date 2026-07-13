@@ -312,6 +312,9 @@ export function configToYaml(cfg: Config): string {
     // FEAT-479 (D3 §3.2) — extraction prompt profile. 'engineering' (default)
     // is byte-identical to pre-FEAT-479 behavior.
     line(1, 'extractProfile', (cfg.distill ?? EMIT_DEFAULTS.distill).extractProfile),
+    // FEAT-482 — chunk-level compact()/extract() fan-out width. Default 2 is
+    // NOT byte-identical to pre-FEAT-482 (sequential); set to 1 for that.
+    line(1, 'chunkConcurrency', (cfg.distill ?? EMIT_DEFAULTS.distill).chunkConcurrency),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes

@@ -11,6 +11,7 @@
 import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import type { Chunk } from './03-chunk.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
+import { mapWithConcurrency } from '../concurrency.js';
 
 export { BudgetExceeded };
 
@@ -90,18 +91,24 @@ export async function compactChunk(
 }
 
 /**
- * Compact all chunks in sequence.
- * Stops at first BudgetExceeded — caller catches and pauses job.
+ * Compact all chunks, up to `concurrency` at a time (FEAT-482).
+ *
+ * Stops dispatching further chunks at the first BudgetExceeded (or any other
+ * error) — caller catches and pauses job. Results stay in chunk-index order
+ * regardless of completion order. See src/distill/concurrency.ts for the
+ * full invariant contract `mapWithConcurrency` provides.
+ *
+ * `concurrency` defaults to 1 — BYTE-IDENTICAL to the pre-FEAT-482
+ * sequential `for…of await` loop this replaces. Production callers resolve
+ * the real value from config via `resolveChunkConcurrency`
+ * (src/distill/pipeline.ts).
  */
 export async function compact(
   chunks: Chunk[],
   provider: LLMProvider,
   budget: BudgetTracker,
   capUsd: number,
+  concurrency = 1,
 ): Promise<CompactResult[]> {
-  const results: CompactResult[] = [];
-  for (const chk of chunks) {
-    results.push(await compactChunk(chk, provider, budget, capUsd));
-  }
-  return results;
+  return mapWithConcurrency(chunks, concurrency, (chk) => compactChunk(chk, provider, budget, capUsd));
 }
