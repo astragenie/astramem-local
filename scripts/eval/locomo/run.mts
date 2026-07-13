@@ -12,6 +12,9 @@
  *   [--qa-per-sample <cap>] [--seed 42] [--k 10] [--concurrency 4]
  *   [--distill-timeout-ms 900000] [--shards 1]
  *   [--extraction-model <model>] [--compaction-model <model>]
+ *   [--extraction-provider <provider>] [--compaction-provider <provider>]
+ *   [--extract-profile engineering|conversational]
+ *   [--cross-encoder] [--diagnose]
  *   [--run-dir .eval-data/locomo/runs/<timestamp>] [--ollama-url <url>]
  *
  * --extraction-model/--compaction-model (additive, FEAT-457 postmortem):
@@ -19,6 +22,37 @@
  * as before these flags existed. Passing one pins the isolated eval
  * daemon's model AND records the resolved value in run-manifest.json's
  * config.models — see ../shared/spawn-daemon.ts's resolveEvalModels header.
+ *
+ * --extraction-provider/--compaction-provider (additive, LoCoMo 10%
+ * two-config eval, 2026-07-13): same override-or-default rule, e.g.
+ * --extraction-provider codex-subscription --extraction-model gpt-5.4-mini
+ * points extraction at a BYO-ChatGPT-quota provider while compaction stays
+ * on whatever --compaction-model/--compaction-provider (or the default,
+ * ollama/qwen2.5:7b) resolve to.
+ *
+ * --extract-profile (additive, FEAT-479 D3 §3.2): pins
+ * distill.extractProfile for the isolated eval daemon. Omit to inherit the
+ * shipped default ('engineering') exactly as before this flag existed —
+ * pass 'conversational' for personal-conversation datasets like LoCoMo (the
+ * 'engineering' profile starved LoCoMo extraction to ~0.5 atoms/session in
+ * the first scored run).
+ *
+ * --cross-encoder (WS2 rerank-flip experiment,
+ * docs/specs/20260713-locomo-architect-design.md workstream 2, additive):
+ * flips crossEncoder.enabled (provider: mock) on every shard's isolated
+ * daemon via config only — src/search/rerank.ts's own logic is never
+ * touched. Run the same sample twice (once without this flag, once with
+ * it) and compare judge.mts scores between the two run dirs. Omitted:
+ * byte-identical to before this flag existed.
+ *
+ * --diagnose (WS2 diagnostic, same doc, additive): runs the not-in-db/
+ * rank-miss/rank-ok retrieval diagnosis (see diagnose-retrieval.mts) against
+ * each shard's daemon right after the answer step, before it's torn down,
+ * and writes <run-dir>/diagnosis.json. Omitted: no extra recall() calls,
+ * no diagnosis.json, byte-identical to before this flag existed. Combine
+ * with --cross-encoder to see whether the rerank flip shrinks the
+ * rank-miss bucket specifically (the diagnosis's own opposite-remedy
+ * question) rather than only looking at the aggregate judge score.
  *
  * Resume a killed run (FEAT-462): re-attach to an existing --run-dir,
  * respawn shard daemons on their existing datadirs, and skip re-ingesting
@@ -42,11 +76,12 @@ import { loadDataset, sampleLocomo, ensureDatasetDownloaded } from './lib/datase
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, sessionNumbers, type LoCoMoSample } from './lib/types.js';
 import {
   spawnEvalDaemon, waitForHealthStatus, killDaemon, makeIsolatedEvalEnv, cleanupIsolatedEvalEnv,
-  resolveEvalModels, type DaemonHandle, type EvalModelOverrides,
+  resolveEvalModels, type DaemonHandle, type EvalModelOverrides, type EvalCrossEncoderOverride,
 } from '../shared/spawn-daemon.js';
 import { ingestConversations, type IngestManifest } from './ingest.mts';
 import { waitForSamplesDistilled, type DistillWaitResult } from './distill-wait.mts';
 import { answerConversations, writeHypothesesJsonl, type AnswerOutcome } from './answer.mts';
+import { diagnoseRetrieval, computeBreakdown, printBreakdown, writeDiagnosisReport, type DiagnosisReport, type DiagnosisRecord } from './diagnose-retrieval.mts';
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance } from '../shared/ollama-tuning.js';
@@ -77,10 +112,35 @@ const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
 // the operator believed, discoverable only in postmortem.
 const extractionModelFlag = get('--extraction-model');
 const compactionModelFlag = get('--compaction-model');
+const extractionProviderFlag = get('--extraction-provider') as EvalModelOverrides['extractionProvider'] | undefined;
+const compactionProviderFlag = get('--compaction-provider') as EvalModelOverrides['compactionProvider'] | undefined;
 const modelOverrides: EvalModelOverrides | undefined =
-  (extractionModelFlag !== undefined || compactionModelFlag !== undefined)
-    ? { extraction: extractionModelFlag, compaction: compactionModelFlag }
+  (extractionModelFlag !== undefined || compactionModelFlag !== undefined
+    || extractionProviderFlag !== undefined || compactionProviderFlag !== undefined)
+    ? {
+        extraction: extractionModelFlag, compaction: compactionModelFlag,
+        extractionProvider: extractionProviderFlag, compactionProvider: compactionProviderFlag,
+      }
     : undefined;
+// FEAT-479 D3 §3.2: additive — omit to inherit the shipped 'engineering'
+// default exactly as before this flag existed.
+const extractProfileFlag = get('--extract-profile') as 'engineering' | 'conversational' | undefined;
+// WS2 rerank-flip experiment (docs/specs/20260713-locomo-architect-design.md
+// workstream 2): `--cross-encoder` flips the isolated eval daemon's
+// crossEncoder.enabled via config only (src/search/rerank.ts's own logic is
+// never touched) -- run the same sample twice, once without the flag (the
+// existing off-by-default baseline) and once with it, then compare
+// judge.mts scores between the two run dirs. Omitted: byte-identical to
+// before this flag existed.
+const crossEncoderOverride: EvalCrossEncoderOverride | undefined =
+  has('--cross-encoder') ? { enabled: true, provider: 'mock' } : undefined;
+// WS2 diagnostic (same doc, workstream 2): run the not-in-db/rank-miss/
+// rank-ok retrieval diagnosis against each shard's daemon right after the
+// answer step, before it's torn down -- reuses the daemon that's about to
+// die anyway rather than requiring a caller to keep one alive separately.
+// Omitted: no diagnosis.json is written, no extra recall() calls happen,
+// byte-identical to before this flag existed.
+const diagnoseRequested = has('--diagnose');
 const dryRunThroughput = has('--dry-run-throughput');
 // FEAT-462 AC-1/AC-6: see ../longmemeval/run-smoke.mts's identical comment.
 const resumeDir = get('--resume');
@@ -105,7 +165,14 @@ interface ShardResult {
   ingestManifest: IngestManifest;
   distillResult: DistillWaitResult;
   outcomes: AnswerOutcome[] | null;
-  resolvedModels: { extraction: string; compaction: string };
+  resolvedModels: {
+    extraction: string; compaction: string;
+    extractionProvider: string; compactionProvider: string;
+  };
+  /** WS2: null unless `diagnose: true` was passed AND the answer step ran
+   *  (azureCfg !== null) — the diagnosis needs the same ready-sample gating
+   *  the answer step uses. */
+  diagnosisRecords: DiagnosisRecord[] | null;
 }
 
 async function runShard(opts: {
@@ -120,6 +187,16 @@ async function runShard(opts: {
   /** Additive (see the flag-parsing comment near the top of this file) —
    *  undefined reproduces pre-existing behavior exactly. */
   modelOverrides?: EvalModelOverrides;
+  /** Additive (FEAT-479 D3 §3.2) — undefined reproduces the shipped
+   *  'engineering' default exactly. */
+  extractProfile?: 'engineering' | 'conversational';
+  /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
+   *  this file) — undefined reproduces pre-existing behavior exactly. */
+  crossEncoderOverride?: EvalCrossEncoderOverride;
+  /** Additive (WS2 diagnostic, same comment) — false/omitted runs no extra
+   *  recall() calls and writes no diagnosis.json, byte-identical to before
+   *  this option existed. */
+  diagnose?: boolean;
   /** FEAT-462 AC-1: see ../longmemeval/run-smoke.mts's identical option —
    *  defaults to false so every existing call site is unaffected (AC-7). */
   resume?: boolean;
@@ -130,6 +207,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
+    extractProfile, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -140,7 +218,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -210,9 +288,30 @@ async function runShard(opts: {
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);
     }
 
+    // WS2 diagnostic (docs/specs/20260713-locomo-architect-design.md
+    // workstream 2): runs against THIS shard's daemon before it's torn down
+    // in the `finally` below -- reuses the daemon that's about to die anyway.
+    // Gated on `azureCfg` too (mirrors the answer step) so --dry-run-throughput
+    // never triggers it even if --diagnose was also passed.
+    let diagnosisRecords: DiagnosisRecord[] | null = null;
+    if (diagnose && azureCfg) {
+      t = Date.now();
+      const report = await diagnoseRetrieval(
+        { baseUrl: daemon.baseUrl, token },
+        samples,
+        // productionK: the SAME k the answer step above just used -- the
+        // whole point of the pool-matching fix (see diagnose-retrieval.mts's
+        // header) is comparing against exactly what the real answerer saw.
+        { productionK: k, readySampleIds: new Set(distillResult.ready_sample_ids) },
+      );
+      diagnosisRecords = report.records;
+      timings.diagnose_ms = Date.now() - t;
+      console.log(`${tag}diagnosed ${report.records.length} QA pairs in ${timings.diagnose_ms}ms`);
+    }
+
     return {
       shard: shardIndex, sample_ids: samples.map(s => s.sample_id), timings, ingestManifest, distillResult, outcomes,
-      resolvedModels: isolated.resolvedModels,
+      resolvedModels: isolated.resolvedModels, diagnosisRecords,
     };
   } catch (err) {
     checkDaemonAlive();
@@ -381,7 +480,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides,
+      modelOverrides, extractProfile: extractProfileFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -393,6 +492,12 @@ async function runFull(): Promise<void> {
   const ingestManifests: IngestManifest[] = [];
   const distillResults: DistillWaitResult[] = [];
   let allOutcomes: AnswerOutcome[] = [];
+  // WS2: a failed shard contributes no diagnosis records for its questions
+  // (unlike allOutcomes, which gets synthetic "(skipped: shard failed)"
+  // placeholders) -- diagnosis has nothing meaningful to say about a
+  // question whose conversation never got ingested, so it's simply absent
+  // from the report rather than padded with a placeholder classification.
+  let allDiagnosisRecords: DiagnosisRecord[] = [];
   const failedShards: number[] = [];
 
   settled.forEach((r, i) => {
@@ -401,6 +506,7 @@ async function runFull(): Promise<void> {
       ingestManifests.push(r.value.ingestManifest);
       distillResults.push(r.value.distillResult);
       if (r.value.outcomes) allOutcomes.push(...r.value.outcomes);
+      if (r.value.diagnosisRecords) allDiagnosisRecords.push(...r.value.diagnosisRecords);
     } else {
       failedShards.push(i);
       const reason = r.reason instanceof Error ? r.reason.message : String(r.reason);
@@ -432,6 +538,16 @@ async function runFull(): Promise<void> {
   writeHypothesesJsonl(allOutcomes, hypPath);
   console.log(`Wrote ${allOutcomes.length} hypotheses -> ${hypPath}`);
 
+  let diagnosisPath: string | null = null;
+  if (diagnoseRequested) {
+    const breakdown = computeBreakdown(allDiagnosisRecords);
+    const diagnosisReport: DiagnosisReport = { records: allDiagnosisRecords, ...breakdown };
+    diagnosisPath = join(runDir, 'diagnosis.json');
+    writeDiagnosisReport(diagnosisReport, diagnosisPath);
+    printBreakdown(diagnosisReport);
+    console.log(`Diagnosis -> ${diagnosisPath}`);
+  }
+
   timings.total_ms = Date.now() - overallStart;
   // Prefer an actually-observed shard's resolvedModels (what really booted);
   // fall back to the pure resolution (what WOULD have booted) only if every
@@ -449,6 +565,16 @@ async function runFull(): Promise<void> {
       // not just what defaultConfig() happens to hardcode today — a
       // published number must be checkable against this field, not memory.
       models: observedModels,
+      // FEAT-479 D3 §3.2: same rationale — a published number must be
+      // checkable against which extraction prompt profile actually ran.
+      extractProfile: extractProfileFlag ?? 'engineering',
+      // WS2 (docs/specs/20260713-locomo-architect-design.md workstream 2):
+      // whether this run's daemon(s) had the cross-encoder rerank stage
+      // flipped on, and whether the retrieval diagnosis ran — a published
+      // comparison between a baseline and a rerank-flip run must be
+      // checkable against this field, not memory.
+      crossEncoder: crossEncoderOverride ?? { enabled: false },
+      diagnosed: diagnoseRequested,
     },
     counts: {
       sampled_conversations: sample.length,
@@ -508,7 +634,7 @@ async function runDryRunThroughput(): Promise<void> {
     buckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: effectiveShards, samples, runDir: join(runDir, `shards-${effectiveShards}`), concurrency, distillTimeoutMs, k,
       azureCfg: null, // ingest+distill only
-      modelOverrides,
+      modelOverrides, extractProfile: extractProfileFlag,
     })),
   );
   const ms = Date.now() - t0;
@@ -538,7 +664,10 @@ async function runDryRunThroughput(): Promise<void> {
     : resolveEvalModels(modelOverrides);
   const out = {
     run_dir: runDir,
-    config: { datasetPath, seed, dryRunConversations, effectiveShards, distillTimeoutMs, models: observedModels },
+    config: {
+      datasetPath, seed, dryRunConversations, effectiveShards, distillTimeoutMs, models: observedModels,
+      extractProfile: extractProfileFlag ?? 'engineering',
+    },
     sample_ids: sample.map(c => c.sample_id),
     total_sessions_sampled: totalSessions,
     ollama_status_before: statusBefore,

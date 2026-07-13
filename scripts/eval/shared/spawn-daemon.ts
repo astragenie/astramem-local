@@ -53,18 +53,46 @@ export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..
 export interface EvalModelOverrides {
   extraction?: string;
   compaction?: string;
+  /** Provider override for the extraction stage (default: whatever
+   *  `defaultConfig()` hardcodes, currently 'ollama'). Additive: set this
+   *  alongside `extraction` to point extraction at a non-Ollama provider
+   *  (e.g. 'codex-subscription' for a BYO-ChatGPT-quota extraction config —
+   *  LoCoMo 10% two-config eval, 2026-07-13). Omitting it leaves the
+   *  provider at its default. */
+  extractionProvider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+  /** Same as `extractionProvider`, for the compaction stage. */
+  compactionProvider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
 }
 
 export interface IsolatedEvalEnv {
   root: string;
   configDir: string;
   env: Record<string, string>;
-  /** The extraction/compaction models this sandbox's daemon will actually
-   *  boot with — the override passed in, or `defaultConfig()`'s built-in
-   *  default otherwise. Callers should write this into their own run
-   *  manifest rather than assuming a model string, so a published number is
-   *  never silently wrong about what it measured. */
-  resolvedModels: { extraction: string; compaction: string };
+  /** The extraction/compaction models+providers this sandbox's daemon will
+   *  actually boot with — the override passed in, or `defaultConfig()`'s
+   *  built-in default otherwise. Callers should write this into their own
+   *  run manifest rather than assuming a model string, so a published number
+   *  is never silently wrong about what it measured. */
+  resolvedModels: {
+    extraction: string; compaction: string;
+    extractionProvider: string; compactionProvider: string;
+  };
+}
+
+/** Cross-encoder rerank override for one isolated eval daemon (LoCoMo WS2,
+ *  `docs/specs/20260713-locomo-architect-design.md` workstream 2's "rerank
+ *  flip experiment"). `src/search/rerank.ts` already ships a complete,
+ *  tested, OFF-by-default cross-encoder stage (`defaultConfig().crossEncoder
+ *  = { enabled: false, provider: 'mock', ... }`) — this lets an eval harness
+ *  flip it on for one isolated daemon via config only, with zero src/ edits
+ *  and zero changes to rerank.ts's own logic. Omitting this option (or the
+ *  whole `crossEncoder` field) writes byte-identical config.yaml to before
+ *  this option existed — every existing call site is unaffected. */
+export interface EvalCrossEncoderOverride {
+  enabled: boolean;
+  /** Default 'mock' (the deterministic Jaccard stand-in, no network/model —
+   *  see rerank.ts's header) if omitted. */
+  provider?: 'mock' | 'http';
 }
 
 /** Same override-or-default resolution `makeIsolatedEvalEnv` applies,
@@ -72,11 +100,16 @@ export interface IsolatedEvalEnv {
  *  run manifest even when no shard's `makeIsolatedEvalEnv` call ended up
  *  succeeding (e.g. every shard failed before boot) — the manifest should
  *  still be able to say what the run WOULD have used. */
-export function resolveEvalModels(models?: EvalModelOverrides): { extraction: string; compaction: string } {
+export function resolveEvalModels(models?: EvalModelOverrides): {
+  extraction: string; compaction: string;
+  extractionProvider: string; compactionProvider: string;
+} {
   const base = defaultConfig();
   return {
     extraction: models?.extraction ?? base.llm.extraction.model,
     compaction: models?.compaction ?? base.llm.compaction.model,
+    extractionProvider: models?.extractionProvider ?? base.llm.extraction.provider,
+    compactionProvider: models?.compactionProvider ?? base.llm.compaction.provider,
   };
 }
 
@@ -100,12 +133,27 @@ function withEnvOverrides<T>(overrides: Record<string, string>, fn: () => T): T 
  *  the real %APPDATA%\Astramem (sync pairing) or the real OS credential
  *  store. Caller merges the returned `env` into SpawnDaemonOpts.env.
  *
- *  `opts.models` is additive: omit it (or either field) and this writes the
+ *  `opts.models` is additive: omit it (or any field) and this writes the
  *  exact same config.yaml as before — every existing call site (LongMemEval
  *  included) is byte-for-byte unaffected. Pass it to pin the isolated
- *  daemon's extraction/compaction model instead of silently inheriting
- *  whatever `defaultConfig()` currently hardcodes. */
-export function makeIsolatedEvalEnv(prefix: string, opts?: { models?: EvalModelOverrides }): IsolatedEvalEnv {
+ *  daemon's extraction/compaction model/provider instead of silently
+ *  inheriting whatever `defaultConfig()` currently hardcodes.
+ *
+ *  `opts.crossEncoder` is the same kind of additive override — see
+ *  `EvalCrossEncoderOverride`'s doc comment above.
+ *
+ *  `opts.extractProfile` (FEAT-479, additive): pins `distill.extractProfile`
+ *  ('engineering' default | 'conversational') for this sandbox's daemon.
+ *  Omitting it leaves the shipped default ('engineering') untouched — a
+ *  LoCoMo/conversational-data eval run should pass 'conversational'
+ *  explicitly rather than relying on any inherited default (2026-07-13 10%
+ *  two-config rerun: the first LoCoMo run silently used the engineering
+ *  profile against conversational data and starved extraction to ~0.5
+ *  atoms/session). */
+export function makeIsolatedEvalEnv(
+  prefix: string,
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational' },
+): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
   const localAppDataRoot = join(root, 'localappdata');
@@ -123,17 +171,32 @@ export function makeIsolatedEvalEnv(prefix: string, opts?: { models?: EvalModelO
   const configDir = withEnvOverrides(dirEnvOverrides, defaultConfigDir);
   mkdirSync(configDir, { recursive: true });
 
-  const { extraction, compaction } = resolveEvalModels(opts?.models);
+  const resolved = resolveEvalModels(opts?.models);
 
   const configLines = ['security:', '  encryption:', '    enabled: false'];
-  if (opts?.models?.extraction !== undefined || opts?.models?.compaction !== undefined) {
+  const m = opts?.models;
+  if (m?.extraction !== undefined || m?.compaction !== undefined || m?.extractionProvider !== undefined || m?.compactionProvider !== undefined) {
     configLines.push('llm:');
-    if (opts.models!.compaction !== undefined) configLines.push('  compaction:', `    model: ${opts.models!.compaction}`);
-    if (opts.models!.extraction !== undefined) configLines.push('  extraction:', `    model: ${opts.models!.extraction}`);
+    if (m.compaction !== undefined || m.compactionProvider !== undefined) {
+      configLines.push('  compaction:');
+      if (m.compactionProvider !== undefined) configLines.push(`    provider: ${m.compactionProvider}`);
+      if (m.compaction !== undefined) configLines.push(`    model: ${m.compaction}`);
+    }
+    if (m.extraction !== undefined || m.extractionProvider !== undefined) {
+      configLines.push('  extraction:');
+      if (m.extractionProvider !== undefined) configLines.push(`    provider: ${m.extractionProvider}`);
+      if (m.extraction !== undefined) configLines.push(`    model: ${m.extraction}`);
+    }
+  }
+  if (opts?.crossEncoder !== undefined) {
+    configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
+  }
+  if (opts?.extractProfile !== undefined) {
+    configLines.push('distill:', `  extractProfile: ${opts.extractProfile}`);
   }
   writeFileSync(join(configDir, 'config.yaml'), configLines.join('\n') + '\n', 'utf8');
 
-  return { root, configDir, env: dirEnvOverrides, resolvedModels: { extraction, compaction } };
+  return { root, configDir, env: dirEnvOverrides, resolvedModels: resolved };
 }
 
 export function cleanupIsolatedEvalEnv(isolated: IsolatedEvalEnv): void {
