@@ -1236,6 +1236,46 @@ function checkProxyCapture(
   };
 }
 
+// ─── Check: Proxy capture reminder (FEAT-458 S4, ADR-013) ────────────────────
+
+/**
+ * Genuine, every-run WARN while proxy capture is actively ON — deliberately
+ * a SEPARATE check from `checkProxyCapture` above (S1's "LLM proxy" row),
+ * not an extension of it. `checkProxyCapture` stays `ok: true` in every
+ * state by design: being ON is a disclosed, opt-in choice (ADR-013 §5), so
+ * merely being ON is never itself a misconfiguration — that posture is
+ * correct and this check doesn't change it (config.ts:344's comment: "so
+ * `doctor` has something to read (FEAT-458 S4)" describes THIS row, not a
+ * retrofit of that one).
+ *
+ * The reason a distinct row is warranted: unlike `checkAutoCapture`'s
+ * "wired, never fired" canary (a one-shot misconfiguration to detect and
+ * clear), proxy capture recording upstream LLM PROMPTS while active is an
+ * ongoing fact the operator should be reminded of on every single `doctor`
+ * run for as long as it stays on — not just disclosed once at opt-in time.
+ * So `ok: false` here is unconditional on "capture is enabled" (no DB
+ * content check, no count, no threshold) — it fires immediately and clears
+ * immediately the moment `astramem-local capture proxy disable` flips
+ * `proxy.capture.enabled` back to false (S3, src/cli/capture.ts).
+ */
+function checkProxyCaptureReminder(proxyEnabled: boolean, captureEnabled: boolean): Check {
+  return {
+    name: 'Proxy capture reminder',
+    async run(): Promise<CheckResult> {
+      if (!proxyEnabled || !captureEnabled) {
+        return { ok: true, message: 'proxy capture: off' };
+      }
+      return {
+        ok: false,
+        message:
+          'proxy capture is ON — every upstream LLM prompt routed through this proxy is being recorded ' +
+          'until you turn it off.',
+        fix: 'astramem-local capture proxy disable [--purge|--keep]',
+      };
+    },
+  };
+}
+
 // ─── Check: Schema drift (FEAT-439 AC-2/AC-5) ────────────────────────────────
 
 interface ServedSchemaVersion {
@@ -1379,6 +1419,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),
+    checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
