@@ -92,8 +92,43 @@ Proxy transcripts spool to disk **plaintext**; parse failures quarantine **befor
 |---|---|
 | **B1** — drop `messages`, `artifacts`, `provider_state` | **Collides with A2 on `migrations/`.** And it is an **irreversible DROP** — `reinstall --rollback` repoints *code*, not schema. |
 | **B2** — `service stop` regression test | Depends on A1's identity check existing. |
+| **B3** — PowerShell tight-timeout sweep | Depends on A1 landing; found *by* A1. |
+| **B4** — kill the migration-number conflict engine | **Touches the same nine files every migration PR touches.** Landing it mid-queue just makes it collision #5. Must go LAST. |
 
 **B1 safety gate — non-negotiable.** Before the DROP: run `SELECT COUNT(*)` on all three tables **against the real production DB** (read-only; do **not** run `migrate()`). Git history proves *this repo* never wrote them — it does **not** prove a prior version, a hand-run script, the SaaS sync client, or the plugin never did. **A non-zero count halts the drop.** Also remove the dashboard's dead read of `provider_state` (`queryProviders`) in the same PR, or you ship a query against a table that no longer exists.
+
+### B3 — PowerShell tight-timeout sweep *(found by A1; this is the ADR-015 class, not a perf nit)*
+
+Building A1, the author benchmarked **cold PowerShell + CIM/WMI startup on this box at ~5.8 seconds.** The first draft of the identity check used a **5000ms** exec timeout.
+
+That is not a slow-path bug. **It would have made the identity check fail closed on every real invocation** — the watchdog would have silently stopped killing anything, in production, while every mocked test stayed green. "The check errored so I did nothing" and "nothing needed killing" would have been the same observable state. Verbatim ADR-015.
+
+A1 raised its own timeout to 15s. **The sweep is the actual deliverable here:** every other place in the repo that shells out to PowerShell (`Get-CimInstance`, `icacls`, `schtasks`, anything in `src/service/**`) with a timeout tuned against a *warm* shell has the identical bug and the identical green-test camouflage.
+
+- Enumerate every PowerShell/CIM/`icacls`/`schtasks` shell-out and its timeout.
+- Any timeout under ~15s on a cold-start path is a finding.
+- **Every timeout expiry must be observable.** A timeout that returns a fail-closed default with no log line is the bug, not the mitigation.
+- Add a test that a timeout produces a *distinguishable* result, not a silently-degraded success.
+
+### B4 — kill the migration-number conflict engine *(the root cause of a full day of merge churn)*
+
+The expected schema version is a **hardcoded literal in nine files**: `SCHEMA_VERSION` in `src/server/lib/wire-meta.ts`, plus `toBe(N)` / `toHaveLength(N)` assertions across eight test files (`migrate`, `upgrade-path`, `atom-v3`, `entities`, `entity-relations`, `entity-validity`, `version`, `ingest-e2e`).
+
+**Consequence: any two migration-bearing PRs conflict by construction, no matter what they change.** Measured on 2026-07-13:
+
+- **#212** — the fix for #188 (*migration numbering has no content hash*) — was renumbered **twice** while merging. The bug was eating its own fix.
+- **#216** was renumbered **four times** (033 → 034 → 035 → 036 → 037), once per PR that landed ahead of it (#208, #218, #212, #210).
+
+This was latent for the project's whole life. It only became a disaster when the loop started merging ~10 PRs/hour across a dozen worktrees — **our own throughput is what converted a rare annoyance into a permanent tax.**
+
+The fix:
+- **Derive `SCHEMA_VERSION` from the migrations directory** rather than declaring it. Keep migrate()'s drift assertion — assert against the derived value.
+- **Delete the hardcoded count from all eight test files.** `tests/storage/upgrade-path.test.ts` already imports `SCHEMA_VERSION` instead of hardcoding it (PR #216 changed it) — that is the pattern; propagate it.
+- Consider **timestamp-based migration IDs** (`20260713194500-add-x.sql`). Rails and Django both abandoned sequential integers for exactly this reason: two authors cannot collide on a timestamp. This is the durable fix; deriving the constant is the cheap one. Decide deliberately — the migration-039+ numbering is easy to change now and painful later.
+
+After B4, a migration PR touches **only its own new file** and conflicts with nobody.
+
+Cross-repo: filed as **runner-plugin#508** — the loop has no allocation protocol for globally-scarce values (migration numbers, ports, any monotonic counter), so N parallel agents will always race for the same integer. The repo-side fix (B4) and the runner-side fix are independent; do both.
 
 ---
 
@@ -127,7 +162,7 @@ Merge A1–A4 + B to `main` in dependency order. Full `bun run build` + `vitest 
 ```
 Wave A:  A1 ∥ A2 ∥ A3 ∥ A4        (4 worktrees, mock providers, no GPU)
               ↓ merge
-Wave B:  B1 → B2                   (serialized; B1 needs the prod row-count gate)
+Wave B:  B1 → B2 → B3 → B4          (serialized; B1 needs the prod row-count gate, B4 goes LAST)
               ↓ merge
 Wave C:  build + full suite, mocked, no model
               ↓ green
