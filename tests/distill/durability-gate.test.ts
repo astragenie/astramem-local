@@ -155,20 +155,131 @@ describe('gateDurability — mode semantics', () => {
     }
   });
 
-  it('lenient: gates ephemeral_state, vacuous_negative, path_fragment', () => {
+  it('lenient: gates ephemeral_state, vacuous_negative, path_fragment, bare_todo', () => {
     expect(gateDurability('Trunk status is green.', 'lenient')).toBe('ephemeral_state');
     expect(gateDurability('No token handling identified in the auth module.', 'lenient')).toBe('vacuous_negative');
     expect(gateDurability('src/distill/stages/08-embed-index.ts:84', 'lenient')).toBe('path_fragment');
+    // RECALL-S2: bare_todo moved OUT of the lenient holdback — see module
+    // doc comment for the recorded type-carve-out-vs-content-guard decision.
+    expect(gateDurability('Run memory test', 'lenient')).toBe('bare_todo');
   });
 
-  it('lenient: does NOT gate git_derivable or bare_todo (held back per PM pre-mortem)', () => {
+  it('lenient: does NOT gate git_derivable (held back per PM pre-mortem, unchanged by RECALL-S2)', () => {
     expect(gateDurability('Commit a589551 fixed the prod tag deploy blocker.', 'lenient')).toBeNull();
-    expect(gateDurability('Run memory test', 'lenient')).toBeNull();
   });
 
   it('durable atom is never gated under any mode', () => {
     expect(gateDurability(DURABLE_ATOM, 'off')).toBeNull();
     expect(gateDurability(DURABLE_ATOM, 'lenient')).toBeNull();
     expect(gateDurability(DURABLE_ATOM, 'strict')).toBeNull();
+  });
+});
+
+// RECALL-S2 (2026-07-13): widened IMPERATIVE_VERB_RE with 10 new task
+// verbs found in a live-store audit of task-echo junk that slipped past
+// the original 17-verb list, plus a shell-prompt-prefixed command shape
+// with no leading English verb at all.
+describe('classifyDurability — RECALL-S2 widened imperative verbs (Job 1)', () => {
+  const NEW_VERB_JUNK: Array<{ text: string; verb: string }> = [
+    { text: "Configure 'capture_source' to 'proxy'.", verb: 'configure' },
+    { text: 'Approve production deployment.', verb: 'approve' },
+    { text: 'Orchestrate the migration rollout.', verb: 'orchestrate' },
+    { text: 'Ensure the pipeline is configured.', verb: 'ensure' },
+    { text: 'Address the review comments.', verb: 'address' },
+    { text: 'Raise the PR for review.', verb: 'raise' },
+    { text: 'Set up the local dev environment.', verb: 'set up' },
+    { text: 'Finalize the release notes.', verb: 'finalize' },
+    { text: 'Search for secret redaction logic in codebase', verb: 'search' },
+    { text: 'Rebuild', verb: 'rebuild' },
+  ];
+
+  for (const { text, verb } of NEW_VERB_JUNK) {
+    it(`bare_todo: "${verb}" verb classifies "${text}" as bare_todo`, () => {
+      expect(classifyDurability(text)).toBe('bare_todo');
+    });
+  }
+
+  it('bare_todo: shell-prompt-prefixed command echo with no English verb', () => {
+    expect(classifyDurability('$ bun run test')).toBe('bare_todo');
+  });
+
+  it('bare_todo: "Run full repo test suite (bun run test)." classifies as bare_todo', () => {
+    expect(classifyDurability('Run full repo test suite (bun run test).')).toBe('bare_todo');
+  });
+
+  it('a new verb wrapped in a genuine rationale is NOT gated (false-positive check)', () => {
+    expect(
+      classifyDurability(
+        "Configure 'capture_source' to 'proxy' because the daemon must distinguish agent-relayed writes from direct API calls — see ADR-012.",
+      ),
+    ).toBeNull();
+    expect(
+      classifyDurability(
+        'Approve production deployment only after the migration dry-run passes, in order to avoid the FEAT-322 cursor regression.',
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('classifyDurability — RECALL-S2 widened git_derivable and ephemeral_state (Job 1)', () => {
+  it('git_derivable: "N commits ahead of <branch>" phrasing', () => {
+    expect(classifyDurability('There are 2 commits ahead of origin/main.')).toBe('git_derivable');
+  });
+
+  it('ephemeral_state: "ready for review" status phrase', () => {
+    expect(classifyDurability('PR #485 is now ready for review.')).toBe('ephemeral_state');
+  });
+
+  it('ephemeral_state: bracket checkpoint marker', () => {
+    expect(classifyDurability('[CHECKPOINT] Self-verify gates pass.')).toBe('ephemeral_state');
+  });
+
+  it('ephemeral_state: "gates failed" checkpoint phrasing', () => {
+    expect(classifyDurability('Gates failed.')).toBe('ephemeral_state');
+  });
+
+  it('a rationale-bearing checkpoint/status atom is NOT gated (false-positive check)', () => {
+    expect(
+      classifyDurability(
+        'Self-verify gates pass because the flaky retry-suite fix landed — this confirms REC-118 is closed, no further action needed.',
+      ),
+    ).toBeNull();
+    expect(
+      classifyDurability(
+        'There are 2 commits ahead of origin/main because the release branch was cut early to unblock the hotfix, reason: prod incident REC-120.',
+      ),
+    ).toBeNull();
+  });
+});
+
+// RECALL-S2 Job 2: the type-aware carve-out for `command`-typed atoms was
+// deliberately REJECTED (see module doc comment) — gating stays type-blind
+// and relies on content guards (word count, rationale marker) instead.
+// These are the exact survive/die pairs from the RECALL-S2 evidence set,
+// proving the content-based guard alone gets both right without consulting
+// `mem.type`.
+describe('classifyDurability — RECALL-S2 Job 2 evidence: command-type survivors vs junk', () => {
+  it('SURVIVES: a genuinely reusable command clears the word-count cap', () => {
+    expect(
+      classifyDurability(
+        'Run tests with `bunx tsc --noEmit` for both tsconfig.json and tsconfig.test.json',
+      ),
+    ).toBeNull();
+  });
+
+  it('SURVIVES: a short fact with no imperative-verb prefix', () => {
+    expect(classifyDurability('Port 7777 is the default for this project.')).toBeNull();
+  });
+
+  it('DIES: a bare content-free command echo ("Rebuild")', () => {
+    expect(classifyDurability('Rebuild')).toBe('bare_todo');
+  });
+
+  it('DIES: a bare content-free command echo ("$ bun run test")', () => {
+    expect(classifyDurability('$ bun run test')).toBe('bare_todo');
+  });
+
+  it('DIES: a content-free search-task echo', () => {
+    expect(classifyDurability('Search for secret redaction logic in codebase')).toBe('bare_todo');
   });
 });
