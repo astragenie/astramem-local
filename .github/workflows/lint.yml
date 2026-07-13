@@ -34,6 +34,15 @@ jobs:
       - name: Type-check (tsc --noEmit)
         run: bunx tsc --noEmit
 
+      # tsconfig.json's rootDir/include is src/** only, so the step above never
+      # sees scripts/eval/** — the harness that produces every published eval
+      # number (LoCoMo, LongMemEval, extraction-bench, recall-quality,
+      # proxy-bench). tsconfig.eval.json extends the same strict settings and
+      # scopes to that tree; wire it in separately so a scripts/eval-only
+      # regression fails loudly here instead of silently on `bun run build`.
+      - name: Type-check eval harness (tsc --noEmit)
+        run: bun run typecheck:eval
+
       # contracts/ is the cross-repo technical constitution (ADR-001/003/005)
       # — cheap, fast, no build step. Cloud repo CI runs the same
       # `node contracts/validate.mjs` invocation against these same files.
