@@ -10,6 +10,11 @@ import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { toAtomWireV1 } from '../../src/contracts/atom-wire.js';
 import { buildApp } from '../../src/server/app.js';
+import { search, makeFakeVec, type SearchHit } from '../../src/search/search.js';
+import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
+import { MockCrossEncoderProvider, type RerankOpts } from '../../src/search/rerank.js';
+import { defaultConfig } from '../../src/config/config.js';
+import type { EmbedProvider } from '../../src/contracts/index.js';
 
 // ---------------------------------------------------------------------------
 // This is the CI gate for contracts/. It runs in the normal vitest suite so
@@ -309,5 +314,158 @@ describe('contracts/ — LIVE conformance (real pipeline paths, not fixtures)', 
     const validateFn = compiled.get('capture-envelope.v1.schema.json')!;
     const ok = validateFn(payload);
     expect(ok, ajv.errorsText(validateFn.errors)).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------
+  // retrieval-result.v1 (CONTRACT-FREEZE, astragenie/memory#759, 2026-07-13)
+  //
+  // search() (src/search/search.ts) now populates scope/importance/
+  // confidence/created_at/capture_source and a full ScoreExplanation on
+  // every hit — this is a REAL local search() call (real FTS5 + real
+  // sqlite-vec), not a fixture. Only wire-mapping is applied inline below:
+  // dropping the internal fusion-leg `source` (fts/vec/both — not part of
+  // the canonical contract, predates it, still consumed by the CLI/
+  // dashboard) and renaming `capture_source` -> the canonical `source`
+  // (CONTRACT-FREEZE §1: "source maps to local's provenance"). That rename
+  // is the one piece of wire-adapter logic the route layer will eventually
+  // own (out of this change's contracts/ + src/search/ scope) — done here
+  // only so this test proves something real, per the "a schema you cannot
+  // validate against a real response is worthless" mandate.
+  // ---------------------------------------------------------------------
+  function toWireHit(hit: SearchHit): unknown {
+    // Drop fields with no place in the canonical (additionalProperties:
+    // false) hit shape: the internal fusion-leg `source`, and `reranked`/
+    // `rerank_score` — both fully recoverable from
+    // `explanation.signals.cross_encoder` presence/`.final` once merged, so
+    // nothing is lost by omitting them from the wire.
+    const { source: _fusionLeg, capture_source, reranked: _reranked, rerank_score: _rerankScore, ...rest } = hit;
+    return { ...rest, ...(capture_source !== undefined ? { source: capture_source } : {}) };
+  }
+
+  const conformanceEmbed: EmbedProvider = {
+    name: 'ollama' as const,
+    model: 'conformance-fake',
+    dim: 1024 as const,
+    embed: async (texts: string[]) => texts.map(t => makeFakeVec(t)),
+    health: async () => ({ ok: true, model: 'conformance-fake', dim: 1024 as const }),
+  };
+
+  it('a real search() response (FTS + vector hit, no rerank) validates against retrieval-result.v1', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const memories = new MemoryRepo(db);
+    const id = memories.insert({
+      type: 'decision',
+      text: 'live-conformance: retrieval-result@1 must validate a real search() hit',
+      normalized_text: 'live-conformance: retrieval-result@1 must validate a real search() hit',
+      repo: 'astramem-local',
+      project: 'astramem',
+      branch: null,
+      agent: 'claude-code',
+      session_id: null,
+      hash: 'd'.repeat(64),
+      source_hash: null,
+      importance: 0.7,
+      confidence: 0.6,
+      capture_source: 'hook_close',
+    });
+    const vecStore = new SqliteVecStore(db, conformanceEmbed.dim);
+    const [vec] = await conformanceEmbed.embed([
+      'live-conformance: retrieval-result@1 must validate a real search() hit',
+    ]);
+    await vecStore.upsert(id, vec as Float32Array);
+
+    const hits = await search(
+      'retrieval-result validate search hit',
+      {},
+      10,
+      { db, embed: conformanceEmbed, weights: defaultConfig().search }
+    );
+    expect(hits.length).toBeGreaterThan(0);
+
+    const envelope = {
+      schema: 'astramem-retrieval-result@1',
+      query: { text: 'retrieval-result validate search hit', mode: 'hybrid' },
+      hits: hits.map(toWireHit),
+      total: hits.length,
+    };
+
+    const validateFn = compiled.get('retrieval-result.v1.schema.json')!;
+    const ok = validateFn(envelope);
+    expect(ok, ajv.errorsText(validateFn.errors)).toBe(true);
+
+    // Sanity: the fields this slice added are actually populated, not just
+    // schema-shaped coincidentally.
+    const hit = hits[0]!;
+    expect(hit.scope).toBe('private');
+    expect(hit.importance).toBeCloseTo(0.7, 5);
+    expect(hit.confidence).toBeCloseTo(0.6, 5);
+    expect(hit.capture_source).toBe('hook_close');
+    expect(() => new Date(hit.created_at).toISOString()).not.toThrow();
+    expect(hit.explanation.final).toBe(hit.score);
+    expect(hit.explanation.signals.importance).toBeDefined();
+  });
+
+  it('a real search() response WITH the cross-encoder rerank stage validates against retrieval-result.v1 (cross_encoder merged into the base signals, not replacing them)', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const memories = new MemoryRepo(db);
+    const idA = memories.insert({
+      type: 'fact',
+      text: 'live-conformance rerank: sqlite-vec hybrid bm25 fusion search',
+      normalized_text: 'live-conformance rerank: sqlite-vec hybrid bm25 fusion search',
+      repo: 'astramem-local',
+      project: null,
+      branch: null,
+      agent: null,
+      session_id: null,
+      hash: 'e'.repeat(64),
+      source_hash: null,
+    });
+    const idB = memories.insert({
+      type: 'fact',
+      text: 'live-conformance rerank: completely unrelated banana bread recipe',
+      normalized_text: 'live-conformance rerank: completely unrelated banana bread recipe',
+      repo: 'astramem-local',
+      project: null,
+      branch: null,
+      agent: null,
+      session_id: null,
+      hash: 'f'.repeat(64),
+      source_hash: null,
+    });
+    const vecStore = new SqliteVecStore(db, conformanceEmbed.dim);
+    for (const [id, text] of [
+      [idA, 'live-conformance rerank: sqlite-vec hybrid bm25 fusion search'],
+      [idB, 'live-conformance rerank: completely unrelated banana bread recipe'],
+    ] as const) {
+      const [vec] = await conformanceEmbed.embed([text]);
+      await vecStore.upsert(id, vec as Float32Array);
+    }
+
+    const rerank: RerankOpts = { topK: 50, timeoutMs: 300, provider: new MockCrossEncoderProvider() };
+    const hits = await search(
+      'live-conformance rerank sqlite-vec hybrid search',
+      {},
+      10,
+      { db, embed: conformanceEmbed, weights: defaultConfig().search, rerank }
+    );
+    expect(hits.some(h => h.reranked)).toBe(true);
+
+    const envelope = {
+      schema: 'astramem-retrieval-result@1',
+      query: { text: 'live-conformance rerank sqlite-vec hybrid search', mode: 'hybrid' },
+      hits: hits.map(toWireHit),
+      total: hits.length,
+    };
+
+    const validateFn = compiled.get('retrieval-result.v1.schema.json')!;
+    const ok = validateFn(envelope);
+    expect(ok, ajv.errorsText(validateFn.errors)).toBe(true);
+
+    const rerankedHit = hits.find(h => h.reranked)!;
+    expect(rerankedHit.explanation.signals.cross_encoder).toBeDefined();
+    expect(rerankedHit.explanation.signals.importance).toBeDefined(); // base signals survived the merge
+    expect(rerankedHit.explanation.final).toBe(rerankedHit.score);
   });
 });

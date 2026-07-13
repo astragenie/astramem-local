@@ -1,0 +1,35 @@
+{
+  "schema": "astramem-retrieval-result@1",
+  "query": { "text": "why did we adopt PostgreSQL", "mode": "hybrid" },
+  "hits": [
+    {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "type": "decision",
+      "text": "Adopt PostgreSQL as the canonical cloud store, pluggable graph/vector layers behind an interface.",
+      "score": 0.54,
+      "scope": "team",
+      "explanation": {
+        "final": 0.54,
+        "signals": {
+          "vector": { "raw": 0.0, "weight": 0.5, "final": 0.0 },
+          "keyword": { "raw": 0.06, "weight": 0.15, "final": 0.009 },
+          "importance": { "raw": 0.63, "weight": 0.3, "final": 0.189 },
+          "recency": { "raw": 0.93, "weight": 0.1, "final": 0.093 },
+          "usage": { "raw": 0.01, "weight": 0.05, "final": 0.001 }
+        },
+        "reason": "keyword+recency dominated; vector signal degraded (embedding_error)"
+      },
+      "importance": 0.63,
+      "confidence": 0.8,
+      "created_at": "2026-07-02T10:00:00.000Z",
+      "source": "hook_close",
+      "tags": ["postgres", "architecture"],
+      "usage_count": 12,
+      "metadata": { "session_id": "sess-abc123" },
+      "highlights": [{ "start": 7, "end": 17, "term": "pgvector" }]
+    }
+  ],
+  "total": 1,
+  "embedding_error": "provider timeout after 3000ms",
+  "search_log_id": "00000000-0000-4000-8000-000000000099"
+}
