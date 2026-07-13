@@ -619,6 +619,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         'the subject), object (entity is the object), both (default).',
       inputSchema: z.object({
         entityId: z.string().min(1).describe('Entity id to get relationships for'),
+        // Param name is `asOf` (camelCase) for cloud parity (EntityTools.cs
+        // uses `asOf`), not `as_of` like this repo's own search_memory/
+        // recall_memory filter — an accepted naming divergence for this
+        // cloud-mirrored tool; a follow-up may align the two conventions.
         asOf: z
           .string()
           .optional()
@@ -658,6 +662,11 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         };
       }
 
+      // Intentional divergence from cloud (EntityTools.cs:108-140): direction
+      // 'both' here is ONE combined, globally valid_from-sorted query capped
+      // at a single `limit` (EntityRelationRepo.getForEntity), not cloud's two
+      // independent per-direction queries concatenated (which can return up
+      // to 2x limit rows). SLICE-1's repo was already built this way.
       const relationRepo = new EntityRelationRepo(db);
       const rows = relationRepo.getForEntity(args.entityId, { asOf, limit: args.limit, direction: args.direction });
 
