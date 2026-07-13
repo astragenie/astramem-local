@@ -37,9 +37,47 @@ Every number below is measured against the live store (13,350 memories) using
 | **C3** | **Live config uses the WORSE extraction model.** `%APPDATA%\Astramem\config.yaml` overrides `llm.extraction.model` to `qwen2.5-coder:7b`. The repo's own A/B (`src/cli/init.ts:68-94`): coder = **F1 59%**, `qwen2.5:7b` = **F1 67%, precision 99%**. Code default is already correct — only the live config is wrong. | benchmark in-repo | unmeasured, free |
 | **C4** | **Memories are trivia by design.** `extract.ts:127`'s few-shot example teaches the one-line shape (`"Use SQLite instead of Postgres — simpler for a single-node deployment."`); v2 lists "explicit atomicity" as a goal. An agent recalling a *conclusion* with no *rationale* cannot judge whether it applies. | prompt read | product-level |
 
-**C1 + C2 are additive:** `0.467 → 0.733`, against a literal-keyword ceiling of `0.750`.
-Plain-English recall reaches parity with hand-crafted keywords, and finds MORE cases
-(9/10 vs 8/10).
+### CORRECTION (2026-07-13T09:15Z) — C1 and C2 are NOT additive. They OVERLAP.
+
+An earlier version of this section claimed C1 + C2 sum to `0.733`. **That was my third
+wrong measurement of this investigation.** Measured properly against the live store:
+
+```
+today (neither fix)                 MRR 0.487    8/10
+S1 only (prefix, merged)            MRR 0.637    9/10     <- +15.0
+S1 + junk archived (W6)             MRR 0.658    9/10     <- +2.1 more
+literal-keyword ceiling             MRR 0.750
+```
+
+**The prefix does nearly all the work. The junk gate adds only +2 on top of it.**
+
+Why, in hindsight: junk was devastating *because* semantic ranking was broken. Once the
+embedder ranks the right answer properly, the real memory outranks junk on its own. Fix
+the ranking and the junk mostly sinks by itself.
+
+The earlier `0.733` figure came from **type-exclusion** (dropping `command` + `todo`
+wholesale — 17% of the store by category), which is blunter than the content gate. It
+got a bigger number by being cruder, and I presented it as if it were the gate's value.
+
+**Consequences for this plan:**
+- **W6 (archive existing junk) drops sharply in priority.** It buys +2, not +13. Do not
+  clear 24% of the store for that.
+- **W2's value is HYGIENE, not recall** — it stops *future* accumulation. Still worth
+  enabling; not worth rushing.
+- **A residual gap remains: 0.658 vs a 0.750 ceiling.** Plain-English still trails
+  hand-crafted keywords by ~9pts and **I do not know why.** The untuned fusion weights
+  (`alpha 0.4 / beta 0.4`, a guess) are the obvious next suspect. **This is now the most
+  interesting open question in the plan.**
+
+### The pattern in my own errors (three, all the same shape)
+
+1. *"Junk is the root cause"* — it wasn't; the prefix was.
+2. *"Junk is harmless (+0.5)"* — it wasn't; I had measured a **broken filter**.
+3. *"The fixes are additive to 0.733"* — they aren't; they **overlap** at 0.658.
+
+Every error was in **what I measured**, never in the reasoning built on top of it. The
+reasoning was consistently sound and consistently applied to a bad number. **Reviewers:
+assume a fourth exists.**
 
 ## §2 — The CLAUDE.md rule is wrong, and it is causing C4
 

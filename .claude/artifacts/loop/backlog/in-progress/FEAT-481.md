@@ -37,7 +37,7 @@ proposed_slices:
     points: 2
     estimated_tokens: 100000
 started_at: 2026-07-13
-slices_complete: [SLICE-427]
+slices_complete: [SLICE-427, SLICE-429]
 ---
 ## Description
 

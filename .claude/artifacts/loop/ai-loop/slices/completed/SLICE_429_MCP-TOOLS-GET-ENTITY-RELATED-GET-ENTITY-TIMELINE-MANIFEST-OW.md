@@ -1,7 +1,7 @@
 ---
 id: SLICE-429
 title: "MCP tools: get_entity_related + get_entity_timeline, manifest owner flip"
-status: pending
+status: completed
 feature: FEAT-481
 phase: null
 priority: P2
@@ -12,6 +12,7 @@ created: 2026-07-13
 updated: 2026-07-13
 effort_points: 2
 estimated_tokens: 100000
+completed_at: 2026-07-13
 ---
 # SLICE-429: MCP tools: get_entity_related + get_entity_timeline, manifest owner flip
 
@@ -32,9 +33,9 @@ Entity-to-entity relations table — close the 'one join short of a knowledge gr
 
 ## Acceptance criteria
 
-- [ ] AC-9: Given an entity has related triples in the store, When `get_entity_related` is called with `entityId`, optional `asOf`, `direction` (`subject`\|`object`\|`both`, default `both`), and `limit` (default 50, max 500), Then it returns `{ entity_id, relationships: [{ id, subject_entity_id, predicate, object_entity_id, evidence_memory_id, source_excerpt, confidence, valid_from, valid_to }] }` — field names byte-identical to cloud's shipped `get_entity_related` output, requiring zero client-side mapping.
-- [ ] AC-10: Given an entity has linked memories, When `get_entity_timeline` is called with `entityId` and an optional `since` bound, Then memories mentioning that entity are returned newest-first, reusing `EntityRepo.memoryIdsForEntities`/`memoryIdsForEntitiesAsOf` — no new table, no new time-tracking machinery.
-- [ ] AC-11: Given `get_entity_related` and `get_entity_timeline` are registered in `src/mcp/server.ts`, When the same commit also flips both entries in `contracts/manifests/mcp-tools.v1.json` from `"owner": "cloud"` to `"owner": "both"`, Then `tests/contracts/mcp-tool-manifest-parity.test.ts` passes with no drift between the manifest and the actually-registered tools.
+- [x] AC-9: Given an entity has related triples in the store, When `get_entity_related` is called with `entityId`, optional `asOf`, `direction` (`subject`\|`object`\|`both`, default `both`), and `limit` (default 50, max 500), Then it returns `{ entity_id, relationships: [{ id, subject_entity_id, predicate, object_entity_id, evidence_memory_id, source_excerpt, confidence, valid_from, valid_to }] }` — field names byte-identical to cloud's shipped `get_entity_related` output, requiring zero client-side mapping.
+- [x] AC-10: Given an entity has linked memories, When `get_entity_timeline` is called with `entityId` and an optional `since` bound, Then memories mentioning that entity are returned newest-first, reusing `EntityRepo.memoryIdsForEntities`/`memoryIdsForEntitiesAsOf` — no new table, no new time-tracking machinery.
+- [x] AC-11: Given `get_entity_related` and `get_entity_timeline` are registered in `src/mcp/server.ts`, When the same commit also flips both entries in `contracts/manifests/mcp-tools.v1.json` from `"owner": "cloud"` to `"owner": "both"`, Then `tests/contracts/mcp-tool-manifest-parity.test.ts` passes with no drift between the manifest and the actually-registered tools.
 
 ## Done When
 
