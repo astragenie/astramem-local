@@ -99,10 +99,10 @@ describe('GET /dashboard', () => {
     expect(res.body.toLowerCase()).toContain(section);
   });
 
-  it('HTML includes meta refresh tag with content="5"', async () => {
+  it('HTML includes meta refresh tag with content="30" (was 5 — see dashboard-html.ts)', async () => {
     const res = await app.inject({ method: 'GET', url: '/dashboard', headers: AUTH });
     expect(res.body).toContain('<meta http-equiv="refresh"');
-    expect(res.body).toContain('content="5"');
+    expect(res.body).toContain('content="30"');
   });
 
   it('HTML contains a <title> tag', async () => {
