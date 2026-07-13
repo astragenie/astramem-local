@@ -82,7 +82,7 @@ describe.each(['search_memory', 'recall_memory'] as const)('%s as_of + entity pa
   let app: FastifyInstance;
   let baseUrl: string;
   let repo: MemoryRepo;
-  const t0 = 1_800_000_000_000;
+  const t0 = 1_600_000_000_000; // 2020-09-13 — MUST be in the past: supersede/invalidate stamp valid_to = Date.now(), so a superseded row is always already expired by query time. A future base instant made superseded rows look "not expired yet" once the default filter learned to tell unbounded from currently-valid.
   const t1 = t0 + 1000;
   const t2 = t0 + 2000;
 

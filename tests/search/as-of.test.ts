@@ -34,8 +34,24 @@ function setValidity(db: DB, id: string, validFrom: number, validTo: number | nu
 }
 
 describe('validityFilterClause (shared SQL filter, FEAT-401)', () => {
-  it('with no as_of, returns the pre-FEAT-401 snapshot clause unchanged', () => {
-    expect(validityFilterClause(undefined)).toEqual({ clause: 'valid_to IS NULL', params: [] });
+  // `valid_to IS NULL` means UNBOUNDED. It does NOT mean CURRENTLY VALID.
+  //
+  // Those were indistinguishable until issue #205 (PR #216) started populating
+  // `valid_to` — before that, every row was NULL and the old clause was a no-op.
+  // The moment real end-dates landed in the column, the old clause began hiding
+  // facts that are still true:
+  //
+  //   "the support contract runs through March 2027"
+  //     -> model correctly extracts invalid_at: 2027-03-01
+  //     -> valid_to is NOT NULL -> excluded from every default recall, TODAY.
+  //
+  // The feature inverted: the better extraction got at finding real end dates,
+  // the more live facts vanished from search.
+  it('with no as_of, keeps a fact whose end date has NOT arrived yet', () => {
+    const now = 1_000_000;
+    const { clause, params } = validityFilterClause(undefined, now);
+    expect(clause).toBe('(valid_to IS NULL OR valid_to > ?)');
+    expect(params).toEqual([now]);
   });
 
   it('with as_of, returns the half-open bitemporal window clause', () => {
@@ -43,6 +59,32 @@ describe('validityFilterClause (shared SQL filter, FEAT-401)', () => {
       clause: 'valid_from <= ? AND (valid_to IS NULL OR valid_to > ?)',
       params: [1000, 1000],
     });
+  });
+});
+
+describe('default recall and a bounded-but-still-true fact (issue #205 follow-up)', () => {
+  // The behavioural version of the clause test above — this is the acceptance
+  // criterion for the whole fix, expressed as data rather than SQL text.
+  function rowsVisibleNow(rows: Array<{ id: string; valid_to: number | null }>, now: number) {
+    const { clause } = validityFilterClause(undefined, now);
+    expect(clause).toContain('valid_to >');
+    return rows.filter(r => r.valid_to === null || r.valid_to > now);
+  }
+
+  const NOW = Date.parse('2026-07-13T00:00:00Z');
+
+  it('a fact valid until 2027 is still returned today; an expired one is not', () => {
+    const rows = [
+      { id: 'unbounded', valid_to: null },
+      { id: 'contract-through-2027', valid_to: Date.parse('2027-03-01T00:00:00Z') },
+      { id: 'expired-last-year', valid_to: Date.parse('2025-01-01T00:00:00Z') },
+    ];
+
+    const visible = rowsVisibleNow(rows, NOW).map(r => r.id);
+
+    expect(visible).toContain('unbounded');
+    expect(visible).toContain('contract-through-2027'); // the bug: this used to vanish
+    expect(visible).not.toContain('expired-last-year'); // correctly excluded
   });
 });
 
@@ -64,7 +106,22 @@ describe('parseAsOf', () => {
 describe('FEAT-401: as_of temporal search', () => {
   let db: DB;
   let repo: MemoryRepo;
-  const t0 = 1_800_000_000_000; // fixed base instant — deterministic, no Date.now() races
+  // Fixed base instant — deterministic, no Date.now() races.
+  //
+  // MUST be in the PAST. It used to be 1_800_000_000_000 (Jan 2027, i.e. in the
+  // future), which made every superseded row in this fixture carry a FUTURE
+  // `valid_to`. That is not a state production can ever reach: supersede,
+  // invalidate, archive and purge all stamp `valid_to = Date.now()`
+  // (src/storage/memory-events.ts), so a superseded row's `valid_to` is always
+  // already past by the time anything queries it.
+  //
+  // The old future instant was invisible while the default filter was
+  // `valid_to IS NULL` — that clause hid ANY non-null `valid_to`, past or
+  // future alike, so a future-dated fixture behaved identically to a past one.
+  // Once the filter learned the difference (`valid_to > now` — a fact whose end
+  // date has not arrived yet is still true), the fixture's future timestamps
+  // started meaning what they actually say: "not expired yet."
+  const t0 = 1_600_000_000_000; // 2020-09-13 — safely in the past
   const t1 = t0 + 1000;
   const t2 = t0 + 2000;
   const t3 = t0 + 3000;

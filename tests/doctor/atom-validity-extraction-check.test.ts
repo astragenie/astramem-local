@@ -83,7 +83,7 @@ describe('doctor "Atom validity extraction" check (issue #205 AC-5)', () => {
     seedMemories(join(dir, 'memory.sqlite'), 25, false);
     const result = await check().run();
     expect(result.ok).toBe(false);
-    expect(result.message).toContain('0 of 25 recent memories');
+    expect(result.message).toContain('0/25 recent memories');
     expect(result.message.toLowerCase()).toContain('built, wired, never invoked');
     expect(result.fix).toBeDefined();
   });
@@ -104,5 +104,29 @@ describe('doctor "Atom validity extraction" check (issue #205 AC-5)', () => {
     expect(result.ok).toBe(true);
     expect(result.message).toContain('25/25');
     expect(result.message).toContain('100.0%');
+  });
+
+  // THE TEST WHOSE ABSENCE LET THE BUG SHIP.
+  //
+  // The original gate was `extracted === 0` — it only went red when NOTHING
+  // worked. A pipeline regression that collapsed coverage from 100% to 2% would
+  // have reported ok:true forever, because 2% is not 0%.
+  //
+  // That is the identical shape of issue #200, the bug this very check was
+  // written to prevent: a canary that was green for weeks while ~87% of
+  // memories got zero entities, because it only asked "does ANY success exist?"
+  // The fix for #205 rebuilt it.
+  //
+  // ADR-015, strengthened: a canary MUST measure the RATE of the failure, not
+  // the EXISTENCE of a success. The old suite could not tell 66.7% from 100%
+  // and had no case at all for a collapse — so the defect was invisible to it.
+  it('coverage COLLAPSES to 2% — WARN, not a green "well, it is not zero"', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    seedMemories(dbPath, 2, true);   // a couple still work...
+    seedMemories(dbPath, 98, false); // ...while the pipeline is 98% broken
+    const result = await check().run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('2/100');
+    expect(result.message).toContain('2.0%');
   });
 });
