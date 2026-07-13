@@ -53,6 +53,38 @@ someone thinks to run a command is not a signal for the purposes of this invaria
 manual procedure with a green paint job. See §2's third instance below for the case that proves
 the distinction matters.
 
+### 1b. The dominant variant — a green canary measuring the wrong quantity
+
+*(Added 2026-07-13, post-merge, on field evidence. This is the sharpest form of the invariant and the original draft under-weighted it.)*
+
+The five instances in §2 are mostly **missing** signals. But **three independent failures landed in a single day**, and none of them were missing telemetry. Each had a canary. Each canary was **green**. Each measured the **existence of a success** instead of the **rate of the failure**:
+
+| Failure | What the canary said | What was actually true |
+|---|---|---|
+| Entity extraction (#200) | `✓ Entity relations: rows exist, fresh` | **~87% of memories received ZERO entities — for weeks** |
+| Feedback loop (#190) | `✓ Usefulness feedback loop: active (0 used, 854 corrected)` | The positive signal has **never fired**; the 854 "corrections" were consolidation's own auto-merges |
+| Migration 030 (#185) | Green boot | One of two same-numbered migrations **silently skipped** |
+
+The entity case is measured, not inferred:
+
+```
+hour(UTC)      total  unlinked   rate
+2026-07-13 11    306       268   87.6%   <- broken, canary GREEN
+2026-07-13 13    360        14    3.9%   <- fix lands
+2026-07-13 18    206         0    0.0%
+```
+
+The canary asked *"do relation rows exist?"* — and they did, for the ~13% that worked. It never asked *"what fraction of memories got any entity at all?"*
+
+> **A green light that lies is strictly worse than no light. With no light you keep looking; with a false green you stop.**
+
+**Binding rule (rule 6 below):**
+
+> **A canary MUST measure the RATE OF THE FAILURE, not the EXISTENCE OF A SUCCESS.**
+> "Some rows exist" is not evidence the pipeline works. It is evidence the pipeline works *sometimes* — which is indistinguishable from **87% broken**.
+
+Three instances in one day is not a coincidence; it is the shape of the defect. Treat this as **the** variant to check first, not one of five.
+
 ### 2. The evidence — the same missing signal, five times
 
 **The headline instance.** A distill job whose extraction model returns a well-formed
@@ -98,6 +130,13 @@ caught-exception branch (lines 92-95, 97-103). A network hiccup, a timeout, and 
 semantic judgment that two atoms are unrelated all produce the identical verdict object. The
 caller (`consolidate.ts:551`) then silently skips the pair — costing a legitimate merge with no
 counter distinguishing "the judge looked and said no" from "the judge never got to look."
+
+**Instance #6 — the purest example in the repo: a broken run wearing the costume of a result.** *(Added 2026-07-13.)*
+**A LoCoMo eval against an EMPTY database scores ~22 token-F1 — and ~22 is not a low score. It is the ABSTAIN FLOOR.** Category 5 (adversarial) is ~22.5% of questions, and its *correct* answer is "no information available." So **a system with no memory whatsoever scores ~22.5 by abstaining on everything.**
+
+That happened. The daemon failed its embed preflight, never left `degraded`, **nothing was ingested at all** — and the harness cheerfully emitted 199 hypotheses against an empty store and produced a number. **A catastrophic total failure and a mediocre-but-real result are indistinguishable by score alone.** This is also, retroactively, what the original "23.62 F1" was: not a weak retrieval result, but the floor a system hits by knowing nothing.
+
+This is the invariant in its purest form — **a BROKEN zero that renders as a plausible REAL number.** Guarded in #198: `answerConversations()` now refuses to return a result when every answered question retrieved zero memories.
 
 **The generalized form: telemetry tables nobody reads.** Four tables ship with zero writers in
 this repo's history: `messages`, `artifacts`, `provider_state` (all day-one, `001-init.sql`, never
@@ -146,6 +185,18 @@ must exercise the production shape, not a shape that merely compiles.
    rule not yet fully closed — it is a legitimate build-in-progress, not a violation, but it is
    the bar every future instance of this pattern must clear before merge.
 
+6. **A canary measures the RATE OF THE FAILURE, not the EXISTENCE OF A SUCCESS.** *(Added
+   2026-07-13 — see §1b. This is the dominant variant; check it first.)* "Some rows exist" is not
+   evidence a pipeline works — it is evidence it works *sometimes*, which is indistinguishable from
+   87% broken. A canary that can only go green is not a canary; it is decoration. **Concretely: if
+   you can't state the denominator, you haven't written a canary.** ("658 relation rows" has no
+   denominator. "268 of 306 memories got zero entities" does.)
+
+7. **A run that produced no input must refuse to produce a number.** *(Added 2026-07-13 — see
+   instance #6.)* An eval, report, or metric computed over an empty or unpopulated store must
+   **fail**, not emit a plausible-looking value. A benchmark's floor is not zero — LoCoMo's is ~22
+   — so "a number came out" is not evidence the run happened.
+
 ### 4. Consequences — named honestly
 
 - **More counters, more tables, more doctor rows — and alarm fatigue is a real risk.**
@@ -190,6 +241,24 @@ must exercise the production shape, not a shape that merely compiles.
    second or third replication of the pattern exists to generalize *from* would be solving an
    integration problem that doesn't exist yet at the cost of delaying the visibility fixes that do
    matter now (see Track 1, referenced below).
+
+### 5. Enforcement — process-level, and a correction to the handoff
+
+*(Added 2026-07-13. The stability handoff — `.claude/artifacts/crew/handoffs/20260713T1830Z-handoff-stability-and-loud-failure.md` — proposes a global exception handler on the CLI as this ADR's enforcement arm. The direction is right; one claim in it is overstated and is corrected here, because a stability session acting on it would go hunting a bug that does not exist.)*
+
+**The handoff's claim:** `src/cli/index.ts` has no global exception handler, so `doctor`, `reinstall`, `queue`, `init`, and `backup` "have no safety net — an unhandled rejection there can die quietly or exit 0."
+
+**What the code actually shows (verified):**
+- **TRUE:** only `src/cli/serve.ts` registers `process.on('uncaughtException')` / `('unhandledRejection')` → `crashExit`. `src/cli/index.ts` registers neither.
+- **OVERSTATED:** the CLI entrypoint ends with `main().catch(e => { console.error(e); process.exit(1); })`. **There IS a safety net.** Anything thrown or rejected inside the `main()` chain is logged and exits **1**. It does **not** "die quietly," and it does **not** exit 0.
+
+**The real gap, stated precisely:** errors that escape the `main()` promise chain — a floating (un-awaited) promise, a throw inside a timer or stream callback, an event-emitter handler. Those bypass `.catch()` entirely. Node's defaults still terminate non-zero and print a stack, so they are **not silent** — but they get no `crashExit` path: no structured log line, no cleanup, no lock release. **Real gap. Narrower blast radius than claimed.**
+
+**Why this correction belongs in this ADR rather than a comment thread:** the handoff's own closing lesson is *"if a measurement is available, take it."* The exit-code behavior was one `grep` away. This is the same second-order failure this document keeps documenting — **a confident claim, honestly made, that nobody checked** — and it is worth a rule of its own:
+
+> **A claim about how the system fails is a claim about the system. Verify it the same way you'd verify a claim about how it succeeds.**
+
+**The audit that IS the right enforcement arm** (in flight, per the handoff): 39 empty catch blocks, 42 comment-only catches, 182 fail-open sites. **Its stated constraint is correct and must be preserved: do NOT mass-rewrite all 182.** Many are deliberate and right — `try { lock?.release(); } catch {}` in a crash path is *correct*. Fix only the class where **a real failure is swallowed and the caller proceeds as if it succeeded**, producing wrong data, a wrong metric, or a green status. That class — and only that class — is what this ADR outlaws. An indiscriminate diff would bury the real findings, which is itself a way of making a failure silent.
 
 ## Consequences & migration
 

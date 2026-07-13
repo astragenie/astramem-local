@@ -4,6 +4,16 @@
 
 ---
 
+> **UPDATE 2026-07-13 (same day, post-merge): the temporal gap this report identified is now CLOSED — and its closure is the verdict's strongest confirmation.**
+>
+> Gate 4 turned on one question: *is Graphiti's temporal advantage ontological, or is it an extraction-stage LLM call?* This report concluded the latter, and therefore refused to clear the gate.
+>
+> **That conclusion has now been tested by shipping the fix.** v0.16.0 (#189, + timezone correction #191) threads `captured_at` into the extraction call so relative dates ("yesterday", "last year") resolve to absolute ISO dates **in the atom's text** — the exact mechanism `_extract_edge_timestamps` performs in Graphiti. **It was a one-file change.**
+>
+> The single capability this investigation singled out as the real gap — the one that, had it been ontological, would have cleared Gate 4 and flipped the verdict to H1 — **turned out to be a parameter that wasn't threaded through.** That is about as strong a confirmation of H2 as a prediction can get: the report said "this is wiring, not ontology," and then the wiring was done in a day.
+>
+> **Still open (do not let the closed benchmark hide it):** atom-level `valid_at`/`invalid_at` on `AtomSchema` and `valid_to` on `InsertInput`. A genuine "true Jan–Mar, false now" fact **still returns as eternally true**. The text-surface fix earns the LoCoMo points; it does **not** close the product gap.
+
 ## 1. VERDICT
 
 **H2 wins — decisively. astramem's core architecture is sound; what it has is accumulated integration debt and a missing observability invariant.** The atom primitive is not the problem, the bitemporal schema is correct, and the temporal failure that motivated this entire investigation is a **missing field on one Zod schema plus an unthreaded parameter** — a few hours of work, not an ontology change.
