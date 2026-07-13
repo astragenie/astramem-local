@@ -7,12 +7,13 @@
  * stay in lockstep with its generator.
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, copyFileSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { openDb, CorruptDatadirError, EncryptionKeyError } from '../../src/storage/db.js';
 import { migrate, getVecSchemaDim } from '../../src/storage/migrate.js';
+import { SCHEMA_VERSION } from '../../src/server/lib/wire-meta.js';
 import { search, makeFakeVec } from '../../src/search/search.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import { generateFixture, type FixtureManifest } from '../../scripts/gen-upgrade-fixture.mts';
@@ -48,7 +49,7 @@ describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
     migrate(db);
 
     const versionRow = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versionRow.v).toBe(30);
+    expect(versionRow.v).toBe(31);
 
     const countOf = (table: string): number =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;
@@ -169,5 +170,55 @@ describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
     const dir = mkdtempSync(join(tmpdir(), 'astra-regen-'));
     const regenManifest = generateFixture(join(dir, 'memory.sqlite'), FIXTURE_MANIFEST.schemaVersionAtGeneration);
     expect(regenManifest).toEqual(FIXTURE_MANIFEST);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// REGRESSION — the migration-030 collision (issue #185, 2026-07-13).
+//
+// Two different `030` migrations existed at once:
+//   - 030-evidence-guard-drops.sql   (FEAT-485, applied to the LIVE prod DB
+//                                     from a worktree before it was committed)
+//   - 030-consolidation-judge-runs.sql (merged in #184)
+//
+// The prod DB was already at user_version=30 from the FIRST one. `migrate()`
+// starts at (user_version + 1), so the SECOND 030 would have been SKIPPED
+// ENTIRELY: `consolidation_judge_runs` never created, while the merged
+// telemetry code queried it. Silent runtime breakage on a green boot.
+//
+// Fix: evidence-guard keeps 030 (it is what is actually IN the DB); the judge
+// telemetry table moved to 031. This test pins the property that matters — a DB
+// sitting at 30 must still receive 031.
+// ---------------------------------------------------------------------------
+describe('migration 030 collision (issue #185)', () => {
+  it('the full ladder creates BOTH 030 and 031 tables — neither is skipped', () => {
+    const dbPath = copyFixtureToTemp();
+    const db = openDb(dbPath);
+    migrate(db);
+
+    const version = (db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number }).v;
+    expect(version).toBe(SCHEMA_VERSION);
+
+    const tables = db
+      .prepare(
+        `SELECT name FROM sqlite_master WHERE type='table'
+           AND name IN ('evidence_guard_drops','consolidation_judge_runs')`,
+      )
+      .all()
+      .map((r) => (r as { name: string }).name)
+      .sort();
+
+    // BOTH must exist. Under the collision only ONE did — and which one you got
+    // depended on the order the two competing `030`s happened to be applied in.
+    // A DB already at 30 would never receive the second one at all.
+    expect(tables).toEqual(['consolidation_judge_runs', 'evidence_guard_drops']);
+  });
+
+  it('no two migration files share a number', () => {
+    const files = readdirSync('migrations').filter((f) => f.endsWith('.sql'));
+    const numbers = files.map((f) => f.slice(0, 3));
+    const dupes = numbers.filter((n, i) => numbers.indexOf(n) !== i);
+    // THE ACTUAL GUARD. A duplicate number means one migration silently never runs.
+    expect(dupes).toEqual([]);
   });
 });
