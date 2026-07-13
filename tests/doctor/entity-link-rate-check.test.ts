@@ -89,6 +89,22 @@ describe('doctor "Entity link rate" check (issue #200)', () => {
     expect(result.message).toContain('no DB yet');
   });
 
+  // Architect review (2026-07-13, post-rebase onto #208): this check's own
+  // catch block originally returned bare `ok: true` on a query failure —
+  // indistinguishable from "verified healthy", the exact bug #200 exists to
+  // fix, one layer deeper (the exception path the rate-vs-existence logic
+  // fix didn't touch). Mirrors tests/doctor/entity-relations-check.test.ts's
+  // equivalent case — a valid-but-unmigrated DB triggers the same "the query
+  // itself failed" catch without a Windows file-handle quirk on opening a
+  // non-SQLite file.
+  it('DB file exists but has not been migrated (query hits a missing table) — inconclusive, not a clean bill of health', async () => {
+    openDb(join(dir, 'memory.sqlite')).close();
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('check error (non-fatal)');
+  });
+
   it('DB exists but below MEANINGFUL_USAGE_THRESHOLD — ok:true, not enough activity to judge', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
