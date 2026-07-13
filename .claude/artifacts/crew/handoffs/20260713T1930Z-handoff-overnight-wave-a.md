@@ -109,6 +109,49 @@ The "it costs proxy latency" objection is **false** — capture already runs in 
 
 ---
 
+---
+
+## S1 — FORMAT ABLATION. Add this to Wave A. It needs no GPU, and it may be the most important half-day on either track.
+
+**Why it's here:** it rescores an **existing** `hypotheses.jsonl` offline. No daemon, no model, no GPU, zero contention with anything. It runs overnight alongside the stability work for free.
+
+**Why it matters more than it looks.** `docs/eval/locomo-methodology.md` admits our scoring is **harsher than upstream** — our answerer emits full sentences, gold answers are terse spans, and token-F1 punishes that **independent of retrieval correctness**. Price it:
+
+> Gold: `"May 14, 2023"` (4 tokens). Ours: `"Caroline attended the LGBTQ support group on May 14, 2023"` (11 tokens).
+> **P = 4/11 = 0.36 · R = 1.00 · token-F1 = 0.53.**
+> **A perfectly correct answer scores 0.53.**
+
+Single-hop's answered-F1 of **0.57** may already be sitting **at the verbosity ceiling** — retrieval working fine, the metric eating the result. If that's true, **every retrieval feature we ship is taxed ~40%** on the way to the scoreboard, and the score roadmap is mis-prioritized.
+
+### ⚠️ THE INTEGRITY LINE — do not cross it
+
+`scripts/eval/locomo/answer.mts` is **FROZEN.** Changing the answerer to raise the number is **gaming, and it is forbidden.** S1 does **not** do that.
+
+- **Gaming** = tune the answerer until the score goes up. ❌
+- **Measurement validity** = our answerer and upstream's emit *different shapes*, so `45.4` and their `41.4` **are not the same measurement.** ✅ That is a fact worth establishing.
+
+**The procedure — a measurement, not a change:**
+1. Take the **existing** Config-B hypotheses: `.claude/worktrees/agent-a0112287d8dd8d401/.eval-data/locomo/runs/2026-07-13T14-59-21-798Z/hypotheses.jsonl`
+2. Post-process to terse spans **offline**.
+3. **Rescore.** Report both numbers side by side.
+4. **DO NOT modify `answer.mts`. DO NOT re-run the daemon. DO NOT load a model.**
+
+**Deliverable:** how many points are **format** vs **retrieval** — then go check what format the LoCoMo paper's own baselines emitted. If they scored terse spans and we score sentences, **our 45.4 understates us**, and the roadmap changes from "grind out four retrieval features" to "one measurement, then two."
+
+**Estimated: format alone ≈ 0.58, with retrieval held completely constant.**
+
+### Context for whoever picks up the score track later
+
+**Retrieval is NOT the constraint.** Perfect recall — zero abstention on every answerable question — caps at **0.545**. `answered-F1` is the constraint, and **temporal (0.18) is an outlier by 2.5×**: we answer 70% of temporal questions and get them *wrong*.
+
+Stacking every lever (temporal → 0.55, single-hop, graph expansion, open-domain, minus the adversarial bleed) lands at **≈0.598** — no slack. **Which is why S1 goes first.** If the verbosity tax is real, 0.60 stops being a stretch target and becomes the floor.
+
+**Cat-5 trap, do not forget it:** adversarial is **23.6% of questions and scores 0.83 BY ABSTAINING.** Any global "abstain less" knob trades those points straight back and may be net-negative.
+
+**Do NOT fund open-domain yet** — its 0.73 answered-F1 rests on **six answered questions** (n=13). Confirm on a full sample first.
+
+---
+
 ## Wave B (serial, after A merges)
 
 **B1 — drop `messages`, `artifacts`, `provider_state`.** Collides with A2 on `migrations/`, and is **irreversible** (`reinstall --rollback` repoints code, not schema).
