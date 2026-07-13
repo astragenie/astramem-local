@@ -88,10 +88,7 @@ describe('ollama-llm', () => {
   describe('chat()', () => {
     it('round-trip returns {text, usage: {in, out, usd:0}}', async () => {
       globalThis.fetch = mockFetch([chatResponse('hello', 20, 8)]) as unknown as typeof fetch;
-      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
-      // means this lane exercises a model no user runs while real drift in the
-      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
-      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
+      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
       const res = await p.chat([{ role: 'user', content: 'hi' }]);
       expect(res.text).toBe('hello');
       expect(res.usage.in).toBe(20);
@@ -283,10 +280,7 @@ describe('ollama-llm', () => {
   describe('health()', () => {
     it('returns ok:true when model present in tags', async () => {
       globalThis.fetch = mockFetch([tagsResponse(['qwen2.5-coder:7b', 'llama3'])]) as unknown as typeof fetch;
-      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
-      // means this lane exercises a model no user runs while real drift in the
-      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
-      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
+      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
       const h = await p.health();
       expect(h.ok).toBe(true);
       expect(h.model).toBe('qwen2.5-coder:7b');
@@ -296,10 +290,7 @@ describe('ollama-llm', () => {
 
     it('returns ok:false when model not in tags', async () => {
       globalThis.fetch = mockFetch([tagsResponse(['llama3'])]) as unknown as typeof fetch;
-      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
-      // means this lane exercises a model no user runs while real drift in the
-      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
-      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
+      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
       const h = await p.health();
       expect(h.ok).toBe(false);
       expect(h.error).toMatch(/not found/);
@@ -307,10 +298,7 @@ describe('ollama-llm', () => {
 
     it('returns ok:false on connection error', async () => {
       globalThis.fetch = vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
-      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
-      // means this lane exercises a model no user runs while real drift in the
-      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
-      const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
+      const p = new OllamaLLMProvider({ model: 'qwen2.5-coder:7b' });
       const h = await p.health();
       expect(h.ok).toBe(false);
       expect(h.error).toMatch(/ECONNREFUSED/);
@@ -321,10 +309,14 @@ describe('ollama-llm', () => {
   // Live integration (opt-in: INTEGRATION_LIVE=1)
   // ---------------------------------------------------------------------------
   describe.skipIf(!process.env.INTEGRATION_LIVE)('live integration', () => {
+    // The PRODUCTION default (config.ts) — not a pinned legacy tag. This is the
+    // only block in this file that pulls a real model, so nightly-live.yml's
+    // OLLAMA_MODELS must list exactly what it names. A stale pin here means the
+    // lane exercises a model no user runs while real drift in the actual default
+    // goes unnoticed — the failure this lane exists to catch. (Every other
+    // occurrence in this file is a mocked fixture whose tag is arbitrary and
+    // pulls nothing.)
     it('actually calls ollama serve', async () => {
-      // Production LLM default (config.ts), not a pinned legacy tag — a stale pin
-      // means this lane exercises a model no user runs while real drift in the
-      // actual default goes unnoticed. nightly-live.yml pulls exactly this set.
       const p = new OllamaLLMProvider({ model: 'qwen3:8b' });
       const h = await p.health();
       expect(h.ok).toBe(true);
