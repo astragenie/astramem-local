@@ -13,14 +13,23 @@ import {
   listSpoolFiles,
   quarantineSpoolFile,
   deleteSpoolFile,
-  redactSpoolEnvelope,
   readSpoolStats,
   pruneExpiredQuarantine,
   sweepQuarantineRedaction,
   DEFAULT_QUARANTINE_TTL_MS,
   MAX_WALK_DEPTH,
 } from '../../src/ingest/spool.js';
+import { redactSpooledEnvelope } from '../../src/ingest/spool-schema-guard.js';
+import { drainIngestSpool } from '../../src/ingest/spool-drain.js';
+import { openDb, type DB } from '../../src/storage/db.js';
+import { migrate } from '../../src/storage/migrate.js';
 import { defaultConfig } from '../../src/config/config.js';
+
+function makeDb(): DB {
+  const db = openDb(':memory:');
+  migrate(db);
+  return db;
+}
 
 // writeToSpool guards the key to a 64-char lowercase hex digest (defense in
 // depth — the key becomes a filename segment). Real callers pass a SHA-256
@@ -146,13 +155,13 @@ describe('deleteSpoolFile', () => {
 // Wave A slice A3 — redact at spool-write
 // ---------------------------------------------------------------------------
 
-describe('redactSpoolEnvelope', () => {
+describe('redactSpooledEnvelope (schema-aware — third design, see src/ingest/spool-schema-guard.ts)', () => {
   const SECRET = 'AKIAIOSFODNN7EXAMPLE'; // aws_access_key shape
 
-  it('redacts turns[].text', () => {
+  it('redacts turns[].text (still covers the shapes the old four-field allowlist covered)', () => {
     const config = defaultConfig();
     const body = { turns: [{ role: 'user', text: `key is ${SECRET}` }, { role: 'assistant', text: 'ok' }] };
-    const out = redactSpoolEnvelope(body, config) as { turns: { role: string; text: string }[] };
+    const out = redactSpooledEnvelope(body, config) as { turns: { role: string; text: string }[] };
     expect(out.turns[0]!.text).not.toContain(SECRET);
     expect(out.turns[0]!.text).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
     expect(out.turns[1]!.text).toBe('ok'); // untouched — no secret present
@@ -161,30 +170,75 @@ describe('redactSpoolEnvelope', () => {
   it('redacts events[].text and events[].evidence (ADR-008 events kind)', () => {
     const config = defaultConfig();
     const body = { events: [{ type: 'fact', text: `saw ${SECRET}`, evidence: `log line: ${SECRET}` }] };
-    const out = redactSpoolEnvelope(body, config) as { events: { text: string; evidence: string }[] };
+    const out = redactSpooledEnvelope(body, config) as { events: { text: string; evidence: string }[] };
     expect(out.events[0]!.text).not.toContain(SECRET);
     expect(out.events[0]!.evidence).not.toContain(SECRET);
   });
 
-  it('redacts a legacy envelope\'s content field', () => {
+  it('redacts a legacy-shaped content field via the unknown-key fallback (LegacyIngestSchema is out of scope, but its content still isn\'t in CanonicalIngestSchema, so it falls to "unknown -> redact")', () => {
     const config = defaultConfig();
     const body = { session_id: 'x', source: 'y', content: `token=${SECRET}` };
-    const out = redactSpoolEnvelope(body, config) as { content: string };
+    const out = redactSpooledEnvelope(body, config) as { content: string; session_id: string };
     expect(out.content).not.toContain(SECRET);
+    expect(out.session_id).toBe('x'); // still protected — session_id IS in CanonicalIngestSchema's shape
   });
 
-  it('leaves non-text / unrecognized-shape fields and non-object bodies untouched', () => {
+  it('review fix (coverage inversion, write-path counterpart of #230): redacts a secret in a field the schema never defines, at arbitrary depth', () => {
+    // CanonicalIngestSchema validation happens at DRAIN time, not write
+    // time, so writeToSpool never knows the envelope's shape is "valid" in
+    // the first place. A key not in the schema's shape at all is treated
+    // as unknown and redacted regardless of depth.
     const config = defaultConfig();
-    expect(redactSpoolEnvelope({ a: 1, nested: { b: 2 } }, config)).toEqual({ a: 1, nested: { b: 2 } });
-    expect(redactSpoolEnvelope('a string body', config)).toBe('a string body');
-    expect(redactSpoolEnvelope(null, config)).toBe(null);
-    expect(redactSpoolEnvelope([1, 2, 3], config)).toEqual([1, 2, 3]);
+    const body = { debug: { upstream: { raw_headers: { authorization: `Bearer ${SECRET}` } } } };
+    const out = redactSpooledEnvelope(body, config) as { debug: { upstream: { raw_headers: { authorization: string } } } };
+    expect(out.debug.upstream.raw_headers.authorization).not.toContain(SECRET);
+    expect(out.debug.upstream.raw_headers.authorization).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+  });
+
+  it('THE bug this design exists to fix: session_id (and other schema-known structural fields) survive untouched, even though session_id is exactly the shape the entropy detector flags', () => {
+    // proxy-${randomUUID()} is the real shape (src/capture/proxy.ts
+    // buildProxyEnvelope) — high-entropy, no internal whitespace, and
+    // (confirmed by direct repro during review) reliably flagged by
+    // findEntropySecrets when handed to redactIfEnabled directly. A bare
+    // recursive redact-every-string walk destroys it; this one must not.
+    const config = defaultConfig();
+    const sessionId = `proxy-${randomUUID()}`;
+    const body = {
+      session_id: sessionId,
+      project_id: 'llm-proxy',
+      cwd: '/home/user/my-real-repo',
+      agent_type: 'claude-code',
+      event: 'session_end',
+    };
+    const out = redactSpooledEnvelope(body, config) as Record<string, string>;
+    expect(out.session_id).toBe(sessionId);
+    expect(out.project_id).toBe('llm-proxy');
+    expect(out.cwd).toBe('/home/user/my-real-repo');
+    expect(out.agent_type).toBe('claude-code');
+    expect(out.event).toBe('session_end');
+  });
+
+  it('leaves object KEYS untouched — only values are ever redacted', () => {
+    const config = defaultConfig();
+    // A pathological key that itself looks secret-shaped — must never be
+    // touched. Keys are structure, not content.
+    const body = { [`AKIA${'X'.repeat(16)}`]: 'ordinary value' };
+    const out = redactSpooledEnvelope(body, config) as Record<string, string>;
+    expect(Object.keys(out)).toEqual([`AKIA${'X'.repeat(16)}`]);
+  });
+
+  it('leaves non-string primitives and non-object bodies untouched', () => {
+    const config = defaultConfig();
+    expect(redactSpooledEnvelope({ a: 1, b: true, c: null }, config)).toEqual({ a: 1, b: true, c: null });
+    expect(redactSpooledEnvelope(42, config)).toBe(42);
+    expect(redactSpooledEnvelope(null, config)).toBe(null);
+    expect(redactSpooledEnvelope([1, 2, 3], config)).toEqual([1, 2, 3]);
   });
 
   it('is a no-op passthrough when security.redaction.enabled is false (SEC-9 parity with redactIfEnabled)', () => {
     const config = { ...defaultConfig(), security: { ...defaultConfig().security, redaction: { ...defaultConfig().security.redaction, enabled: false } } };
     const body = { turns: [{ role: 'user', text: `key is ${SECRET}` }] };
-    const out = redactSpoolEnvelope(body, config) as { turns: { text: string }[] };
+    const out = redactSpooledEnvelope(body, config) as { turns: { text: string }[] };
     expect(out.turns[0]!.text).toContain(SECRET); // unchanged — redaction explicitly off
   });
 
@@ -192,7 +246,7 @@ describe('redactSpoolEnvelope', () => {
     const config = defaultConfig();
     const body = { turns: [{ role: 'user', text: `key is ${SECRET}` }] };
     const before = JSON.stringify(body);
-    redactSpoolEnvelope(body, config);
+    redactSpooledEnvelope(body, config);
     expect(JSON.stringify(body)).toBe(before);
   });
 });
@@ -208,13 +262,16 @@ describe('writeToSpool — A3 redacts before the bytes hit disk', () => {
     const raw = readFileSync(path, 'utf8');
     expect(raw).not.toContain(SECRET);
     expect(raw).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(() => JSON.parse(raw)).not.toThrow();
   });
 
   it('defaults to defaultConfig() (redaction ON) when no config is passed — fail-safe, not fail-open', () => {
     const dataDir = tempDataDir();
     const body = { turns: [{ role: 'user', text: `export AWS_ACCESS_KEY_ID=${SECRET}` }] };
     const path = writeToSpool(dataDir, K_B, body); // no 4th arg
-    expect(readFileSync(path, 'utf8')).not.toContain(SECRET);
+    const raw = readFileSync(path, 'utf8');
+    expect(raw).not.toContain(SECRET);
+    expect(() => JSON.parse(raw)).not.toThrow();
   });
 
   it('bumps SpoolStats.totalSpooled on every write — the doctor canary\'s denominator', () => {
@@ -223,6 +280,68 @@ describe('writeToSpool — A3 redacts before the bytes hit disk', () => {
     writeToSpool(dataDir, K_A, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
     writeToSpool(dataDir, K_B, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
     expect(readSpoolStats(dataDir).totalSpooled).toBe(2);
+  });
+
+  it('coverage-inversion fix: a secret in a field OUTSIDE the old four-field allowlist never reaches disk', () => {
+    const dataDir = tempDataDir();
+    // No turns/events/content — a shape CanonicalIngestSchema would reject
+    // at drain time, but writeToSpool never validates the shape; it
+    // redacts and writes unconditionally. The old redactSpoolEnvelope
+    // allowlist had nothing to walk here; redactValuesDeep does.
+    const body = {
+      debug_headers: { authorization: `Bearer ${SECRET}` },
+      raw: `upstream response included key=${SECRET}`,
+    };
+    const path = writeToSpool(dataDir, K_A, body, defaultConfig());
+    const raw = readFileSync(path, 'utf8');
+    expect(raw).not.toContain(SECRET);
+    expect(raw).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(() => JSON.parse(raw)).not.toThrow();
+  });
+
+  it('JSON-corruption fix AND session_id-survives fix: a realistic proxy-shaped envelope (real session_id, nested unrecognized fields, a real secret) writes safely to disk without corrupting the JSON or destroying the session identifier', () => {
+    // Mirrors #230's round-2 fixture, plus the session_id assertion round
+    // 2 of THIS design was missing. session_id: proxy-${randomUUID()} is
+    // the exact shape every real proxy envelope has (src/capture/proxy.ts
+    // buildProxyEnvelope) — a JSON value with no internal whitespace,
+    // which is what made a naive "scan the serialized text" second pass
+    // corrupt the JSON (swept the surrounding quotes and comma into the
+    // entropy-matched span), AND independently high-entropy enough on its
+    // own that a bare "redact every string" walk (this design's own first
+    // attempt) destroyed it even once the JSON-corruption bug was fixed.
+    const dataDir = tempDataDir();
+    const sessionId = `proxy-${randomUUID()}`;
+    const body = {
+      event: 'session_end',
+      session_id: sessionId,
+      project_id: 'llm-proxy',
+      captured_at: new Date().toISOString(),
+      turns: [{ role: 'user', text: 'hello there' }],
+      debug: { upstream: { raw_headers: { authorization: `Bearer ${SECRET}` } } },
+    };
+    const path = writeToSpool(dataDir, K_A, body, defaultConfig());
+    const raw = readFileSync(path, 'utf8');
+
+    expect(() => JSON.parse(raw)).not.toThrow(); // load-bearing: still valid JSON
+    const parsed = JSON.parse(raw) as { session_id: string; debug: { upstream: { raw_headers: { authorization: string } } }; turns: Array<{ text: string }> };
+    expect(raw).not.toContain(SECRET);
+    expect(parsed.session_id).toBe(sessionId); // load-bearing: identity survived, not a [REDACTED:...] placeholder
+    expect(parsed.debug.upstream.raw_headers.authorization).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(parsed.turns[0]!.text).toBe('hello there'); // untouched — no secret, no entropy false-positive
+  });
+
+  it('idempotent: re-spooling already-redacted content does not double-redact or corrupt the placeholder', () => {
+    const dataDir = tempDataDir();
+    const body = { debug_headers: { authorization: `Bearer ${SECRET}` } };
+    const firstPath = writeToSpool(dataDir, K_A, body, defaultConfig());
+    const onceRedacted: unknown = JSON.parse(readFileSync(firstPath, 'utf8'));
+
+    const secondPath = writeToSpool(dataDir, K_B, onceRedacted, defaultConfig());
+    const twiceRedacted = readFileSync(secondPath, 'utf8');
+
+    expect(twiceRedacted).not.toContain(SECRET);
+    expect(() => JSON.parse(twiceRedacted)).not.toThrow();
+    expect(twiceRedacted).toBe(readFileSync(firstPath, 'utf8')); // byte-identical — no double-redaction drift
   });
 });
 
@@ -532,6 +651,70 @@ describe('Finding 3 — SpoolStats.statsHealthy distinguishes a real zero from a
     writeFileSync(join(spoolDir(dataDir), '.stats.json'), '{not json');
 
     expect(readSpoolStats(dataDir).statsHealthy).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// THE test that actually proves this fix (team-lead requirement) — a
+// redaction-only unit test structurally cannot: it never crosses the
+// schema-validation/session-upsert boundary where the bare-walk regression
+// actually did its damage. This one does: real spool file -> real
+// drainIngestSpool -> real CanonicalIngestSchema.safeParse -> real
+// ingestCanonicalTranscript -> real DB rows.
+// ---------------------------------------------------------------------------
+
+describe('round-trip: spool -> drain -> DB', () => {
+  const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+
+  it('a secret in an unknown field is gone from the drained transcript, and session_id survives intact through the schema boundary and the session upsert', () => {
+    const dataDir = tempDataDir();
+    const db = makeDb();
+    const config = defaultConfig();
+    const sessionId = `proxy-${randomUUID()}`;
+    const body = {
+      event: 'session_end',
+      session_id: sessionId,
+      project_id: 'llm-proxy',
+      captured_at: new Date().toISOString(),
+      client_scrub_applied: false,
+      client_scrub_hits: 0,
+      client_version: '9.9.9',
+      client_scrub_version: 'none',
+      wire_version: 'v1.0',
+      turns: [{ role: 'user', text: 'hello there' }],
+      // The unrecognized field — CanonicalIngestSchema has never heard of
+      // `debug`, so it strips silently at drain-time parse (zod's default
+      // STRIP mode) — but that happens AFTER this write, and the whole
+      // point of this fix is that the secret must never reach disk in the
+      // window before that strip happens, whether or not drain later
+      // discards the field entirely.
+      debug: { upstream: { raw_headers: { authorization: `Bearer ${SECRET}` } } },
+    };
+
+    try {
+      writeToSpool(dataDir, K_A, body, config);
+
+      // Prove the secret never reached disk in the first place — the
+      // strongest form of this assertion, independent of what drain does
+      // with the (redacted) unknown field afterward.
+      const spooled = listSpoolFiles(dataDir);
+      expect(spooled).toHaveLength(1);
+      expect(readFileSync(spooled[0]!.path, 'utf8')).not.toContain(SECRET);
+
+      const result = drainIngestSpool(db, config, dataDir);
+      expect(result).toEqual({ drained: 1, quarantined: 0, pending: 0 });
+
+      const sessionRow = db.prepare('SELECT id FROM sessions WHERE id = ?').get(sessionId) as { id: string } | undefined;
+      expect(sessionRow?.id).toBe(sessionId); // THE assertion: session identity, not a redaction placeholder
+
+      const transcriptRow = db.prepare('SELECT session_id, content FROM transcripts WHERE session_id = ?').get(sessionId) as
+        | { session_id: string; content: string }
+        | undefined;
+      expect(transcriptRow?.session_id).toBe(sessionId);
+      expect(transcriptRow?.content).not.toContain(SECRET);
+    } finally {
+      db.close();
+    }
   });
 });
 

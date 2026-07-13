@@ -20,14 +20,18 @@
  * content that breaks a parser disproportionately correlates with secrets
  * and control characters, making quarantine the single most likely place on
  * disk for a live credential to sit indefinitely. `writeToSpool` now redacts
- * (`redactSpoolEnvelope`, reusing the exact `redactIfEnabled` choke point)
- * BEFORE the bytes ever hit disk — every spooled envelope is redacted
- * up front, whether it later drains cleanly or gets quarantined. The spool
- * and quarantine directories also get keystore-grade permissions
- * (`restrictSpoolDirPermissions`, mirroring `src/storage/keystore.ts`'s
- * `restrictKeyFileAcl`), and quarantined files now expire
- * (`pruneExpiredQuarantine`, called once per drain tick from
- * spool-drain.ts) rather than accumulating forever with no TTL.
+ * (`redactSpooledEnvelope`, src/ingest/spool-schema-guard.ts — reuses the
+ * exact `redactIfEnabled` choke point, applied to every CONTENT string value
+ * while protecting every field `CanonicalIngestSchema` defines as
+ * structural, e.g. `session_id` — see that module's doc for the two prior
+ * designs that were tried and rejected, and why) BEFORE the bytes ever hit
+ * disk — every spooled envelope is redacted up front, whether it later
+ * drains cleanly or gets quarantined. The spool and quarantine directories
+ * also get keystore-grade permissions (`restrictSpoolDirPermissions`,
+ * mirroring `src/storage/keystore.ts`'s `restrictKeyFileAcl`), and
+ * quarantined files now expire (`pruneExpiredQuarantine`, called once per
+ * drain tick from spool-drain.ts) rather than accumulating forever with no
+ * TTL.
  *
  * Fast-follow (2026-07-13): the above only protects NEW state. Three gaps in
  * what was already on disk before it shipped:
@@ -45,6 +49,20 @@
  *  (3) `SpoolStats` (below) gained `statsHealthy` — a missing/corrupt
  *      `.stats.json` with real spool activity on disk must not read back
  *      as a fabricated "0 of 0" (ADR-015 rule 6).
+ *
+ * Second fast-follow (2026-07-13): `writeToSpool`'s redaction above was
+ * itself incomplete. This module used to define `redactSpoolEnvelope` (now
+ * deleted) — a hand-maintained four-field ALLOWLIST (`turns[].text`,
+ * `events[].text`/`evidence`, legacy `content`) that let every OTHER field
+ * (an unrecognised or reshaped field — a debug blob, a raw header dump,
+ * anything a broken or newer client tacks on) reach disk in plaintext, since
+ * `CanonicalIngestSchema` validation doesn't happen until DRAIN time
+ * (spool-drain.ts), not here. `writeToSpool` now calls the schema-aware
+ * `redactSpooledEnvelope` (src/ingest/spool-schema-guard.ts) instead — see
+ * that module's doc for why a bare "redact every string" walk was tried
+ * next and also rejected (it destroys `session_id`, a required identifier
+ * that happens to be exactly as high-entropy as the secrets this exists to
+ * catch).
  */
 import {
   chmodSync, existsSync, mkdirSync, readdirSync, readFileSync,
@@ -55,6 +73,7 @@ import { join } from 'node:path';
 import { platform } from 'node:os';
 import { defaultConfig, type Config } from '../config/config.js';
 import { redactIfEnabled } from '../redact/index.js';
+import { redactSpooledEnvelope } from './spool-schema-guard.js';
 
 export function spoolDir(dataDir: string): string {
   return join(dataDir, 'ingest-spool');
@@ -207,54 +226,15 @@ function restrictSpoolDirPermissionsUnmemoized(dir: string): void {
 }
 
 /**
- * Redact every known free-text field of a spool envelope, reusing the exact
- * `redactIfEnabled` choke point the daemon's own stage-0 ingest uses
- * (src/server/routes/ingest.ts) — same config, same detectors, same
- * placeholder format, so a value redacted here and a value redacted at
- * ingest are indistinguishable. Structural, not content-aware: walks the
- * three free-text shapes `CanonicalIngestSchema` (and the legacy envelope)
- * define — `turns[].text`, `events[].text` / `events[].evidence`, and
- * `content` — and leaves every other field (including a shape this function
- * doesn't recognize) untouched. Pure; never mutates `body`. A non-object
- * `body` (or one with none of these fields) round-trips unchanged.
- */
-export function redactSpoolEnvelope(body: unknown, config: Config): unknown {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) return body;
-  const rec = body as Record<string, unknown>;
-  const out: Record<string, unknown> = { ...rec };
-
-  if (Array.isArray(rec['turns'])) {
-    out['turns'] = (rec['turns'] as unknown[]).map(t => {
-      if (!t || typeof t !== 'object') return t;
-      const turn = t as Record<string, unknown>;
-      if (typeof turn['text'] !== 'string') return turn;
-      return { ...turn, text: redactIfEnabled(turn['text'], config).text };
-    });
-  }
-
-  if (Array.isArray(rec['events'])) {
-    out['events'] = (rec['events'] as unknown[]).map(e => {
-      if (!e || typeof e !== 'object') return e;
-      const ev = e as Record<string, unknown>;
-      const next: Record<string, unknown> = { ...ev };
-      if (typeof ev['text'] === 'string') next['text'] = redactIfEnabled(ev['text'], config).text;
-      if (typeof ev['evidence'] === 'string') next['evidence'] = redactIfEnabled(ev['evidence'], config).text;
-      return next;
-    });
-  }
-
-  if (typeof rec['content'] === 'string') {
-    out['content'] = redactIfEnabled(rec['content'], config).text;
-  }
-
-  return out;
-}
-
-/**
  * Recursively redact every STRING VALUE in `value` — any field, any depth,
  * through arrays and plain objects — leaving object KEYS and non-string
  * primitives (numbers, booleans, null) untouched. Pure; never mutates
- * `value`.
+ * `value`. Used ONLY by `sweepQuarantineRedaction` below — quarantined files
+ * are dead (nothing reads them but this sweep), so redacting every string
+ * indiscriminately, including a high-entropy `session_id`, is safe there.
+ * The live write path (`writeToSpool`) uses the schema-aware
+ * `redactSpooledEnvelope` (src/ingest/spool-schema-guard.ts) instead — see
+ * that module's doc for why a bare walk like this one is NOT safe there.
  *
  * Review fix (2026-07-13): the first cut of `sweepQuarantineRedaction`
  * tried to be shape-agnostic by running `redactIfEnabled` over the fully
@@ -275,23 +255,19 @@ export function redactSpoolEnvelope(body: unknown, config: Config): unknown {
  * serialized text, so it structurally CANNOT touch a JSON delimiter —
  * `redactIfEnabled` only ever receives one already-isolated string at a
  * time, with no surrounding quote/comma/brace characters attached, and
- * `JSON.stringify` re-quotes/re-escapes the result correctly afterward. It
- * fully supersedes `redactSpoolEnvelope`'s four-field allowlist (it walks
- * every field, not just `turns[].text` / `events[].text`/`evidence` /
- * `content`) using the exact same `redactIfEnabled` primitive underneath —
- * not a second redaction implementation, the same one applied at the
- * correct granularity (values, not serialized bytes).
+ * `JSON.stringify` re-quotes/re-escapes the result correctly afterward.
  *
- * Over-redaction note (quarantine only): the entropy detector has pre-existing
- * false positives on legitimate high-entropy identifiers — a bare
- * `proxy-<uuid>` session_id, scanned in isolation, often scores above the
- * threshold and becomes a placeholder. That is tolerable HERE and only here,
- * because quarantined files are dead: nothing reads them but this sweep. It
- * would NOT be tolerable on the live write path, where `session_id` is a
- * required identifier the drain uses for the session upsert — a placeholder
- * still satisfies `z.string().min(1)`, so the schema would pass and session
- * identity would be destroyed silently. `writeToSpool` therefore does NOT
- * call this function.
+ * Over-redaction note (quarantine only): the entropy detector has
+ * pre-existing false positives on legitimate high-entropy identifiers — a
+ * bare `proxy-<uuid>` session_id, scanned in isolation, often scores above
+ * the threshold and becomes a placeholder. That is tolerable HERE and only
+ * here, because quarantined files are dead. It would NOT be tolerable on the
+ * live write path, where `session_id` is a required identifier the drain
+ * uses for the session upsert — a placeholder still satisfies
+ * `z.string().min(1)`, so the schema would pass and session identity would
+ * be destroyed silently with no error anywhere. `writeToSpool` therefore
+ * does NOT call this function — it calls `redactSpooledEnvelope` instead
+ * (see above).
  *
  * Depth: capped at MAX_WALK_DEPTH. Recursion is bounded by a number we chose,
  * not by whatever the stack happens to allow — a RangeError's threshold varies
@@ -333,14 +309,24 @@ export function redactValuesDeep(value: unknown, config: Config, depth = 0): unk
  * overwrite, not a duplicate (AC-2). Returns the final spool file path.
  *
  * `config` (default `defaultConfig()`, which ships `security.redaction.
- * enabled: true`) drives `redactSpoolEnvelope` — applied BEFORE the bytes
- * are serialized, so redaction covers every path out of this function,
+ * enabled: true`) drives `redactSpooledEnvelope`
+ * (src/ingest/spool-schema-guard.ts) — applied BEFORE the bytes are
+ * serialized, so redaction covers every path out of this function,
  * including one that later fails schema validation and gets quarantined
  * (see module doc). Real callers (src/cli/capture.ts, src/capture/proxy.ts)
  * pass the operator's actual resolved config so a custom entropy threshold,
  * custom patterns, or an explicit opt-out are honored identically to the
  * daemon's own ingest-time redaction; the default exists so a caller that
  * forgets to pass one fails safe (redaction ON) rather than silently open.
+ *
+ * `redactSpooledEnvelope` is schema-aware — it protects `session_id` and
+ * every other field `CanonicalIngestSchema` defines as structural, while
+ * still redacting free-text content and anything the schema doesn't
+ * recognize at all. This was NOT always true here: two earlier designs of
+ * this write path's redaction (a bare "redact every string" walk, and
+ * before that a four-field allowlist) each got one half of the problem
+ * right and the other half wrong — see spool-schema-guard.ts's module doc
+ * for the full history before touching this again.
  */
 export function writeToSpool(dataDir: string, idempotencyKey: string, body: unknown, config: Config = defaultConfig()): string {
   // Defense-in-depth: the key becomes a filename segment. Every caller passes
@@ -358,7 +344,7 @@ export function writeToSpool(dataDir: string, idempotencyKey: string, body: unkn
   ensureSpoolDirPermissions(dir);
   const finalPath = join(dir, `${idempotencyKey}.json`);
   const tmpPath = join(dir, `.${idempotencyKey}.${process.pid}.${Date.now()}.tmp`);
-  const redacted = redactSpoolEnvelope(body, config);
+  const redacted = redactSpooledEnvelope(body, config);
   writeFileSync(tmpPath, JSON.stringify(redacted, null, 2), { mode: 0o600 });
   renameSync(tmpPath, finalPath);
   bumpSpoolStat(dataDir, 'totalSpooled');
