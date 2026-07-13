@@ -42,25 +42,71 @@
  *      -- a re-declaration of the constant itself, anywhere outside its one
  *      legitimate home (src/storage/schema-version.ts's own derivation).
  *      This is the wire-meta.ts shape the original bug had.
- *   2. `.toBe(<today's value>)` / `.toHaveLength(<today's value>)` on a line
- *      whose nearby context (same line or the 3 lines above it) mentions
- *      SCHEMA_VERSION / schema_version / schemaVersion / migration -- this
- *      is the eight-test-file shape the original bug had. Requiring BOTH
- *      the exact forbidden number AND a schema/migration-flavored neighbor
- *      is what keeps this from firing on every unrelated toBe(40) sitting
- *      somewhere else in a large suite.
- *   3. A schema/migration-flavored string or regex passed to `toThrow(...)`
- *      that embeds today's value as a bare number instead of interpolating
- *      the constant -- this is the tenth literal's shape exactly
- *      (tests/storage/migrate.test.ts's `/... DB says 39/` regex, since
- *      fixed to interpolate `${SCHEMA_VERSION}`). Scoping this to toThrow()
- *      specifically -- rather than "any string that mentions schema and a
- *      number" -- is what excludes the legitimate raw-SQL WHERE-clause
- *      literals above: none of them sit inside a toThrow() assertion.
+ *   2. `.toBe(<today's value>)` / `.toHaveLength(<today's value>)` /
+ *      `.toEqual(<today's value>)` / `.toStrictEqual(<today's value>)` on a
+ *      line whose nearby context (same line or the 3 lines above it)
+ *      mentions SCHEMA_VERSION / schema_version / schemaVersion / migration
+ *      -- this is the eight-test-file shape the original bug had. Requiring
+ *      BOTH the exact forbidden number AND a schema/migration-flavored
+ *      neighbor is what keeps this from firing on every unrelated
+ *      toBe(40)/toEqual(40) sitting somewhere else in a large suite.
+ *      (toEqual/toStrictEqual added after review found `.toBe`-only missed
+ *      them -- toEqual is the more idiomatic matcher in this repo, 739
+ *      call sites vs toBe's 3,590, so it needed covering, not just toBe.)
+ *   3. A schema/migration-flavored string or template literal that embeds
+ *      today's value as a bare number instead of interpolating the
+ *      constant, in either of the two places that shape actually bit this
+ *      repo:
+ *        - a test's `toThrow(...)` assertion -- the tenth literal's exact
+ *          shape (tests/storage/migrate.test.ts's `/... DB says 39/`
+ *          regex, since fixed to interpolate `${SCHEMA_VERSION}`);
+ *        - a **production** `throw new Error(...)` / `new Error(...)` --
+ *          src/storage/migrate.ts's own boot-time drift guard ("Schema-
+ *          version constant drift: wire-meta says ${SCHEMA_VERSION}, DB
+ *          says ${dbMax}") is the literal historical home of this bug
+ *          class and would NOT have been caught by a toThrow()-only check,
+ *          since a boot-time guard's own error message is never wrapped in
+ *          a test's toThrow() at its point of definition. Review caught
+ *          this gap directly: reverting migrate.ts's `${SCHEMA_VERSION}`
+ *          interpolation back to a hardcoded `40` stayed green until this
+ *          signature was widened.
+ *      Scoping this to `toThrow(`/`new Error(` proximity specifically --
+ *      rather than "any string that mentions schema and a number" -- is
+ *      what excludes the legitimate raw-SQL WHERE-clause literals above:
+ *      none of them sit near a throw/assertion opener.
  *
  * The forbidden value itself is derived, not typed in by hand -- the same
  * deriveSchemaVersion() this file is protecting, imported directly, so this
  * test's own "what number is bad" answer can never itself go stale.
+ *
+ * Known limitations (deliberately not closed -- see rationale):
+ *   - A `SCHEMA_VERSION` declaration split across a line break before the
+ *     `=`/`:` evades signature 1 (line-by-line scan). Not closed: no code
+ *     in this repo is formatted that way (prettier/eslint would never
+ *     produce it), and multi-line-aware matching would meaningfully
+ *     complicate the scanner for a shape nobody writes by hand.
+ *   - A non-decimal literal (e.g. `0x28` for 40) evades every signature
+ *     (the number regexes only match `\d+`). Not closed for the same
+ *     reason -- nobody hand-writes a schema version in hex.
+ *   - `node:assert.strictEqual` isn't covered by signature 2's matcher
+ *     list. Not closed: this repo has zero `node:assert` usage as of this
+ *     writing (it's a vitest-only test suite) -- adding a matcher this
+ *     codebase doesn't use would be speculative coverage, not a closed gap.
+ *   - FORBIDDEN (below) is `deriveSchemaVersion()`'s LIVE output, which is
+ *     correct (see above) but also means the false-positive profile of
+ *     signatures 2 and 3's "nearby keyword" heuristic is NOT fixed over
+ *     time: it moves every time a migration lands. A concrete near-miss
+ *     already exists in this repo today -- src/storage/migrate.ts's own
+ *     drift-guard catch block does `row.content_hash.slice(0, 12)` a few
+ *     lines below a "Migration ... failed to apply" throw; `12` isn't
+ *     today's FORBIDDEN value, but some FUTURE migration count could
+ *     coincidentally match an unrelated small integer (a retry count, a
+ *     slice length, a batch size) sitting near a line that mentions
+ *     "migration" for an unrelated reason. If this test ever starts
+ *     firing on an unfamiliar file with no real SCHEMA_VERSION connection,
+ *     check for exactly this before assuming the scanner regressed --
+ *     it may just be today's derived number colliding with someone else's
+ *     coincidental constant.
  */
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync } from 'node:fs';
@@ -126,9 +172,11 @@ function scanFile(absPath: string): Offense[] {
   const declEqRe = /\bSCHEMA_VERSION\b\s*(?::\s*number\s*)?=\s*(\d+)\b/;
   const declColonRe = /\bSCHEMA_VERSION\s*:\s*(\d+)\s*[,}]/;
 
-  // Signature 2: toBe(<n>) / toHaveLength(<n>) -- schema/migration context
-  // required nearby (checked separately, see below).
-  const toBeRe = /\.(?:toBe|toHaveLength)\(\s*(\d+)\s*\)/;
+  // Signature 2: toBe(<n>) / toHaveLength(<n>) / toEqual(<n>) /
+  // toStrictEqual(<n>) -- schema/migration context required nearby (checked
+  // separately, see below). toEqual/toStrictEqual added after review found
+  // toBe-only missed them (toEqual is the more idiomatic matcher here).
+  const toBeRe = /\.(?:toBe|toHaveLength|toEqual|toStrictEqual)\(\s*(\d+)\s*\)/;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -156,26 +204,29 @@ function scanFile(absPath: string): Offense[] {
           line: i + 1,
           snippet: line.trim(),
           reason:
-            `toBe/toHaveLength(${FORBIDDEN}) hardcodes today's SCHEMA_VERSION next to a ` +
-            `schema/migration-flavored assertion instead of comparing against the imported constant`,
+            `toBe/toHaveLength/toEqual/toStrictEqual(${FORBIDDEN}) hardcodes today's SCHEMA_VERSION ` +
+            `next to a schema/migration-flavored assertion instead of comparing against the imported constant`,
         });
         continue;
       }
     }
 
-    // Signature 3: scoped to toThrow(...) specifically -- the exact shape
-    // of the tenth (previously invisible) literal. Deliberately NOT "any
-    // string that mentions schema and a number" -- see file header for why
-    // that broader form false-positives against this repo's legitimate
-    // raw-SQL `WHERE version = <migration's own number>` literals.
+    // Signature 3: scoped to a throw/assertion OPENER nearby -- either
+    // `toThrow(` (a test asserting on a thrown message) or `new Error(`
+    // (production code constructing one, e.g. migrate.ts's own boot-time
+    // drift guard). Deliberately NOT "any string that mentions schema and
+    // a number" -- see file header for why that broader form false-
+    // positives against this repo's legitimate raw-SQL
+    // `WHERE version = <migration's own number>` literals.
     //
-    // The keyword+number pair does not have to sit on the SAME line as
-    // `toThrow(` -- the real historical instance of this bug
+    // The keyword+number pair does not have to sit on the SAME line as the
+    // opener -- the real historical instance of this bug
     // (tests/storage/migrate.test.ts, since fixed) called
     // `.toThrow(new RegExp(...))` with the regex's template string on the
-    // NEXT line. A same-line-only check would have missed the exact bug
-    // this signature exists to catch, so this looks a few lines back from
-    // any keyword+number line for a `toThrow(` opener.
+    // NEXT line, and migrate.ts's own `throw new Error(` similarly opens
+    // on one line with the message template one or two lines below. A
+    // same-line-only check would have missed both. So this looks a few
+    // lines back from any keyword+number line for either opener.
     if (SCHEMA_KEYWORD_RE.test(line) && numRe.test(line)) {
       const windowStart = Math.max(0, i - 3);
       const window = lines.slice(windowStart, i + 1).join('\n');
@@ -185,14 +236,17 @@ function scanFile(absPath: string): Offense[] {
       // `toThrow\(` substring match picks up the former too, which false-
       // positived against a legitimate nearby SQL literal (schema_version
       // WHERE clause) during this signature's reintroduce-and-verify pass.
-      if (/toThrow\(\s*[^\s)]/.test(window)) {
+      // `new Error(` needs no such guard -- Error() is never called with a
+      // matcher-style zero-arg negation the way `.not.toThrow()` is.
+      if (/toThrow\(\s*[^\s)]|\bnew\s+Error\(/.test(window)) {
         offenses.push({
           file: rel,
           line: i + 1,
           snippet: line.trim(),
           reason:
-            `toThrow(...) assertion embeds today's SCHEMA_VERSION (${FORBIDDEN}) as a bare number ` +
-            `instead of interpolating the constant (the tenth-literal shape from the original incident)`,
+            `throw/toThrow site embeds today's SCHEMA_VERSION (${FORBIDDEN}) as a bare number instead ` +
+            `of interpolating the constant (the tenth-literal shape from the original incident, and the ` +
+            `exact shape of migrate.ts's own boot-time drift guard)`,
         });
       }
     }
