@@ -281,8 +281,58 @@ warning (indistinguishable from an intentionally minimal config). Stop the
 service before hand-editing config.yaml to avoid that narrow window; don't
 rely on the loader alone to catch it.
 
+## LLM sampling: `num_ctx` and `temperature` (v0.16.0 — both were silently broken for months)
+
+Two provider-level bugs made extraction quietly worse for months. Neither ever
+errored; both just produced thinner, lower-quality output — the exact
+success-and-silent-failure-look-identical class ADR-015 exists to kill.
+
+### `num_ctx` — sized dynamically, never hardcode it
+
+`src/providers/llm/ollama.ts` sizes the context window **per call**:
+
+```
+num_ctx = clamp(inputChars/4 + maxTokens + 512, 4096, 16384)
+```
+
+- **floor 4096** — Ollama's observed per-model default; never shrink below it.
+- **cap 16384** (`NUM_CTX_CAP`) — VRAM guard. Native context on these models goes
+  to 32K, but an unbounded `num_ctx` lets a *background daemon* claim more memory
+  than it should. Raise this only with a VRAM measurement, not a hunch.
+- `inputChars/4` = `CHARS_PER_TOKEN` heuristic; `+512` slack for chat-template overhead.
+
+**The bug (fixed):** `num_ctx` was never set *anywhere*, so every call ran at
+Ollama's default **4096**. The v3 engineering extraction prompt alone is
+**~3.8k tokens** — add a transcript chunk and an output budget and it overflowed.
+**Ollama silently truncates on overflow rather than erroring**, so the only
+observable was "the model returned less" (3 atoms collapsed to 1). This is what
+kept entity extraction ~87% broken for weeks with a green doctor canary (#200).
+
+### `temperature` — set per stage, never globally
+
+| Stage | temp | where |
+|---|---|---|
+| 04-compact | `0.1` | `src/distill/stages/04-compact.ts:80` |
+| 05-extract | `0.1` | `EXTRACT_TEMPERATURE`, override with `ASTRA_EXTRACT_TEMP` (`0` = fully deterministic JSON; an a/b lever for stochastic parse failures) |
+| entity extraction | `0.1` | `src/entity/extract-entities.ts:76` |
+| contradiction judge | `0` | `src/consolidate/contradiction-judge.ts:89` |
+
+**The bug (fixed):** the provider spread `{ options: {...} }` **twice** — once for
+`temperature`, once for `num_predict`. **A second top-level spread of the same key
+REPLACES the first rather than merging**, so `temperature` was silently dropped on
+every call that also passed `maxTokens` — i.e. **every real extraction, compaction,
+and entity call in production**, since all three always pass both.
+
+**Rule: build ONE `options` object.** Never spread `options` more than once into an
+Ollama request body. Any quality baseline measured before v0.16.0 ran with no
+temperature control and a truncated context — treat those numbers as invalid.
+
 ## Do NOT
 - Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
+- Do NOT spread `options` twice into an Ollama request body (see above) — the
+  second spread silently replaces the first, dropping `temperature`/`num_predict`.
+- Do NOT hardcode `num_ctx`. It is sized per call; a fixed value that happens to fit
+  today's prompt silently truncates tomorrow's.
 - Do NOT kill processes machine-wide by image name (`taskkill /F /IM node.exe`, `/IM bun.exe`, `Stop-Process -Name node`). This box runs the production daemon, eval shard daemons, Ollama, and sibling agents' processes — an image-name kill murders all of them (2026-07-10: killed a 40-min LongMemEval run + prod daemon). Kill only PIDs you spawned (track them; use process-tree kill on your own root PID). If stray vitest daemons pile up, find YOUR strays via their listen ports / datadir paths and kill those PIDs.
 - Do NOT `git stash` in worktrees — the stash stack is repo-global across all worktrees; a `stash pop` in one worktree can eat a sibling agent's stash (caused a 2026-07-09 work-loss race). Use `git diff > x.patch` + `git checkout` + `git apply` instead.
 - Do NOT hand-edit `memories_vec FLOAT[N]` in a migration file directly. Since FEAT-409 (merged) the dim is single-sourced from `DEFAULT_EMBED_DIM` (`src/contracts/embed.ts`) — config default, embed providers, `SqliteVecStore`, mock providers, the `__EMBED_DIM__` migration placeholder, and the boot-time preflight (`src/doctor/probes/embed-probe.ts`) all derive from it or from `getVecSchemaDim()`. Changing the *default* is a one-constant edit for fresh DBs; migrating an *existing* DB's live vectors to a new dim requires `astramem-local reembed-dim` (migration 011, `docs/embed-dim-migration.md`) — there is no ALTER for a sqlite-vec vec0 table. FEAT-436 (2026-07-05) re-audited this and confirmed it is resolved, not an open coordinated-change hazard.
