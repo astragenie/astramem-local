@@ -19,7 +19,7 @@ import Database from 'better-sqlite3-multiple-ciphers';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { defaultConfigDir } from '../config/datadir.js';
 import { getOrCreateKey } from '../storage/keystore.js';
-import { readLockInfo } from '../service/instance-lock.js';
+import { stopLockHolder } from '../service/instance-lock.js';
 import { getServiceAdapter } from '../service/index.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
@@ -28,25 +28,6 @@ import type { DB } from '../storage/db.js';
 
 function hasFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
-}
-
-async function stopDaemon(dataDir: string, port: number): Promise<string> {
-  const holder = readLockInfo(dataDir);
-  if (!holder) return 'no daemon running';
-  let alive = true;
-  try { process.kill(holder.pid, 0); } catch { alive = false; }
-  if (!alive) return `stale lock (pid ${holder.pid} dead)`;
-  process.kill(holder.pid, 'SIGTERM');
-  const deadline = Date.now() + 5000;
-  while (Date.now() < deadline) {
-    try {
-      await fetch(`http://127.0.0.1:${holder.port ?? port}/health`, { signal: AbortSignal.timeout(500) });
-      await new Promise(r => setTimeout(r, 250));
-    } catch {
-      return `stopped pid ${holder.pid}`;
-    }
-  }
-  throw new Error(`daemon pid ${holder.pid} still serving after 5s — stop it manually and retry`);
 }
 
 /** Standalone integrity probe of a snapshot file (key-aware). */
@@ -96,11 +77,18 @@ export async function restoreCommand(args: string[]): Promise<void> {
   }
   console.log('  · snapshot integrity: ok');
 
-  // 2. Stop the daemon.
-  try {
-    console.log(`  · stop daemon: ${await stopDaemon(dataDir, port)}`);
-  } catch (err) {
-    console.error(`✗ ${(err as Error).message}`);
+  // 2. Stop the daemon. stopLockHolder verifies the lock holder's PID +
+  // OS-reported start time before ever signaling it — a recycled PID is left
+  // untouched. Restore is about to rename the live DB file out from under
+  // whoever holds it, so an unverified stop is treated as fatal (not a
+  // best-effort warning): proceeding while an unconfirmed process may still
+  // be writing risks silently corrupting the swapped-in snapshot, a strictly
+  // worse outcome than aborting and asking the operator to check by hand.
+  const stopResult = await stopLockHolder(dataDir, port);
+  console.log(`  · stop daemon: ${stopResult.detail}`);
+  if (!stopResult.ok) {
+    console.error(`✗ ${stopResult.detail}`);
+    console.error('  Nothing was changed. Confirm the daemon is stopped and retry.');
     process.exit(1);
   }
 
