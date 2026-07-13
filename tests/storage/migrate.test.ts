@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { openDb } from '../../src/storage/db.js';
 import { migrate, getVecSchemaDim } from '../../src/storage/migrate.js';
 import { embedProbe } from '../../src/doctor/probes/embed-probe.js';
+import { SCHEMA_VERSION } from '../../src/server/lib/wire-meta.js';
 import type { EmbedProvider, EmbedHealth } from '../../src/contracts/embed.js';
 
 describe('migrate', () => {
@@ -28,30 +29,11 @@ describe('migrate', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as {n: number};
-    // 23 migration files (001-017: 009 = FEAT-403 tag-hygiene, 010 = FEAT-407 sync-pull,
-    // 011 = FEAT-409 embed-dim, 012 = FEAT-402 entities, 013 = FEAT-404 archival,
-    // 014 = FEAT-434 sync_ship_state, 015 = astramem-local#84 canonical content_hash,
-    // 016 = astramem-local#110 scope personal->private rename, 017 = U4-local #111/#112
-    // widen memories.type CHECK 7->10, 018 = jobs distill-session expression index,
-    // 019 = memory_events usefulness + memories.agent perf indexes, 020 = follow-up
-    // memory_events corrections-join index fixing a regression 019 introduced,
-    // 021 = FEAT-442 widen memory_events.event_type CHECK to add 'unsupersede',
-    // 022 = FEAT-456 consolidation_proposals.metadata_json, 023 = FEAT-453
-    // memory_entities surrogate-PK rebuild + valid_at/invalid_at, 024 =
-    // FEAT-455 transcripts/memories.capture_source, 025 = FEAT-467 widen
-    // memory_events.event_type CHECK to add 'purge'/'unpurge' + purge_batches,
-    // 026 = FEAT-458 S6 transcripts.proxy_usage_json, 027 = FEAT-481 SLICE-1
-    // entity_relations table, 028 = FEAT-479 D3 §3.2 transcripts.extract_profile,
-    // 029 = FEAT-481 SLICE-430 relation_guard_drops counter table, 030 =
-    // FEAT-485 evidence_guard_drops counter table, 031 = FEAT-482
-    // consolidation_judge_runs telemetry table, 032 = 2026-07-13 timezone-
-    // offset bugfix (transcripts.captured_at_local_date), 033 = silent-error
-    // audit's consolidation_judge_runs.judge_errors counter column, 034 =
-    // issue #207 entity_name_drops counter table, 035 = issue #188
-    // schema_version.filename + schema_version.content_hash, 036 =
-    // memory_events.rejected_at sync-promote-wedge fix, 037 = issue #205
-    // memories.validity_extracted provenance column).
-    expect(versions.n).toBe(39);
+    // One row per migration file — SCHEMA_VERSION is derived from the same
+    // migrations/ directory (src/storage/schema-version.ts), so this count
+    // and SCHEMA_VERSION always move together. Per-migration rationale
+    // lives in each migration file's own header, not here.
+    expect(versions.n).toBe(SCHEMA_VERSION);
   });
 
   it('enables WAL mode', () => {
@@ -106,15 +88,7 @@ describe('migration 002-wire-v1', () => {
     migrate(db);
     migrate(db);
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version').get() as { n: number };
-    // See the "is idempotent — second run does nothing" test above: 36
-    // migration files (001-022 + 023 FEAT-453 + 024 FEAT-455 + 025 FEAT-467 +
-    // 026 FEAT-458 S6 + 027 FEAT-481 SLICE-1 + 028 FEAT-479 D3 §3.2 +
-    // 029 FEAT-481 SLICE-430 + 030 FEAT-485 + 031 FEAT-482 + 032 timezone-
-    // offset bugfix + 033 silent-error audit's judge_errors column + 034
-    // issue #207 entity_name_drops + 035 issue #188 schema_version
-    // content-hash + 036 sync rejected_at + 037 issue #205
-    // validity_extracted).
-    expect(versions.n).toBe(39);
+    expect(versions.n).toBe(SCHEMA_VERSION);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -190,7 +164,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(39);
+    expect(versions.v).toBe(SCHEMA_VERSION);
   });
 
   it('allows inserting type note after migration', () => {
@@ -548,7 +522,7 @@ describe('migration 017-widen-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(39);
+    expect(versions.v).toBe(SCHEMA_VERSION);
   });
 
   it('accepts all 3 new canonical types (preference, task_result, summary)', () => {
@@ -687,7 +661,7 @@ describe('migration 018-jobs-distill-session-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(39);
+    expect(versions.v).toBe(SCHEMA_VERSION);
   });
 
   it('creates the partial expression index on jobs', () => {
@@ -755,7 +729,7 @@ describe('migration 019-health-agent-profile-indexes', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(39);
+    expect(versions.v).toBe(SCHEMA_VERSION);
   });
 
   it('creates both partial expression indexes on memory_events', () => {
@@ -856,7 +830,7 @@ describe('migration 020-agent-profile-corrections-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(39);
+    expect(versions.v).toBe(SCHEMA_VERSION);
   });
 
   it('creates the partial expression index on memory_events for invalidate/supersede', () => {
@@ -951,8 +925,14 @@ describe('migrate — schema-version drift guard', () => {
     const { migrate: migrateMocked } = await import('../../src/storage/migrate.js');
     const db = openDb(':memory:');
 
+    // dbMax is the count of REAL migrations applied (only wire-meta's
+    // SCHEMA_VERSION export is mocked, MIGRATIONS_DIR is not) -- it equals
+    // today's real SCHEMA_VERSION (imported, unmocked, at the top of this
+    // file), whatever that is. PR #228 bumped this 37 -> 38 by adding
+    // migration 038 WHILE this exact literal sat hardcoded here -- building
+    // the regex dynamically is the fix, not a future manual re-bump.
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 39/,
+      new RegExp(`Schema-version constant drift: wire-meta says 999, DB says ${SCHEMA_VERSION}`),
     );
   });
 });
@@ -1043,7 +1023,7 @@ describe('migrate — schema_version content-hash tracking (issue #188)', () => 
     const rows = db
       .prepare('SELECT version, filename, content_hash FROM schema_version ORDER BY version')
       .all() as { version: number; filename: string | null; content_hash: string | null }[];
-    expect(rows).toHaveLength(39);
+    expect(rows).toHaveLength(SCHEMA_VERSION);
     for (const row of rows) {
       expect(row.filename, `version ${row.version} missing filename`).toMatch(/^\d+-.+\.sql$/);
       expect(row.content_hash, `version ${row.version} missing content_hash`).toMatch(/^[a-f0-9]{64}$/);
