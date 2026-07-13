@@ -219,24 +219,33 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
       }
 
       if (row.content_hash !== diskHash) {
-        // SELF-HEAL a legacy RAW-byte hash before deciding this is tampering.
+        // ACCEPT a legacy RAW-byte hash. Do NOT rewrite it.
         //
-        // Rows written by the original #212 guard hashed raw bytes. On a CRLF
-        // checkout that recorded a CRLF hash; normalizing (above) would now
-        // reject those DBs at boot — flipping the bug onto the other half of
-        // users instead of fixing it. So: if the stored hash matches this
-        // file's RAW bytes, the only difference is line endings, the schema is
-        // provably identical, and there is nothing to warn about. Rewrite the
-        // row to the normalized hash and move on.
+        // Rows written by the original #212 guard hashed raw bytes; on a CRLF
+        // checkout that recorded a CRLF hash. #242 started hashing normalized
+        // content, so those rows no longer match — and an earlier version of
+        // this block "self-healed" them by REWRITING the stored hash to the
+        // normalized form.
         //
-        // This narrows over time (every boot upgrades one row) and cannot mask
-        // real tampering: a renumbered or edited migration matches NEITHER the
-        // raw nor the normalized hash, and still throws below.
+        // That rewrite was a ONE-WAY DOOR, and it broke `reinstall --rollback`.
+        // Once a v0.17.0 daemon touched a database, every OLDER release — which
+        // still hashes raw bytes — saw a mismatch it could not explain and
+        // REFUSED TO BOOT. Hit live on 2026-07-13: the 0.17.0 upgrade rolled
+        // back on a health-check timeout, and the restored 0.16.0 then could not
+        // start on its own database ("Migration 1 was applied as 'init' ...").
+        // Rolling back is the one thing that must never be able to fail; a fix
+        // that quietly disables it is worse than the bug it fixes.
+        //
+        // So: verify, don't migrate. A stored hash matching EITHER the raw bytes
+        // or the normalized content proves the file is byte-identical modulo
+        // line endings — which SQLite does not care about, so the applied schema
+        // is provably the same. Accept it, leave the row alone, and both old and
+        // new releases keep booting on the same database, forever.
+        //
+        // Cannot mask real tampering: a renumbered or edited migration matches
+        // NEITHER hash and still throws below.
         const rawHash = contentHash(readFileSync(join(MIGRATIONS_DIR, diskFile), 'utf8'));
-        if (row.content_hash === rawHash) {
-          backfillStmt.run(diskFile, diskHash, row.version);
-          continue;
-        }
+        if (row.content_hash === rawHash) continue;
 
         throw new Error(
           `Migration ${row.version} was applied as '${migrationSlug(row.filename ?? '(unknown)')}' ` +
