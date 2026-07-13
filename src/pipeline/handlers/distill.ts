@@ -15,14 +15,6 @@ import { flattenTranscriptContent } from '../../distill/flatten-turns.js';
 import { backfillSummaryMemoryId } from '../../storage/ingest-idempotency.js';
 import { deriveProject } from '../derive-project.js';
 import { JobRepo } from '../job-repo.js';
-import { BudgetPausedError } from '../errors.js';
-
-// Re-exported for backward compatibility — this class used to live here
-// under a distill-specific name before FEAT-482 generalized it to
-// `BudgetPausedError` (src/pipeline/errors.ts) so the consolidate handler
-// could reuse the same job-pause path. Import from errors.js directly in
-// new code.
-export { BudgetPausedError as DistillBudgetPausedError };
 
 /**
  * Flexible payload schema — ingest route writes {transcript_id, session_id}
@@ -167,9 +159,24 @@ export const distillHandler: JobHandler = {
         // Since JobHandler.handle does not receive the job id directly,
         // we throw a special marker error that the worker catches.
         // Alternative: use a sentinel to signal paused state.
-        throw new BudgetPausedError(err.message);
+        throw new DistillBudgetPausedError(err.message);
       }
       throw err;
     }
   },
 };
+
+/**
+ * Sentinel error thrown by the distill handler when the budget cap is hit.
+ * The worker loop must catch this and call JobRepo.pause() instead of fail().
+ */
+export class DistillBudgetPausedError extends Error {
+  constructor(budgetMessage: string) {
+    super(`BUDGET_PAUSED:${budgetMessage}`);
+    this.name = 'DistillBudgetPausedError';
+  }
+
+  static is(err: unknown): err is DistillBudgetPausedError {
+    return err instanceof DistillBudgetPausedError;
+  }
+}

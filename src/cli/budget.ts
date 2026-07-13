@@ -4,9 +4,9 @@
  * Shows today's LLM spend and month total versus the configured cap.
  * --reset clears today's row (override, logged) AND requeues any job the
  * worker paused on the cap that was just cleared (FEAT-482) — without this,
- * `--reset` only zeroed the spend counter and a paused job (distill OR
- * consolidate; see JobRepo.requeuePaused's doc comment) had no way back to
- * 'pending' at all.
+ * `--reset` only zeroed the spend counter and a paused (distill) job had no
+ * way back to 'pending' at all. See JobRepo.requeuePaused's doc comment for
+ * why this is job-kind-agnostic even though only distill uses it today.
  */
 
 import { BudgetTracker } from '../budget/tracker.js';

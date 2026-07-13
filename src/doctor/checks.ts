@@ -38,6 +38,7 @@ import { readBearerFromSecretsFile } from '../storage/bearer-keystore.js';
 import { readSyncSettings } from '../config/sync-settings.js';
 import { usefulnessRate, usefulnessByType, feedbackLoopSummary } from '../storage/usefulness.js';
 import { totalRelationGuardDrops } from '../storage/relation-guard-log.js';
+import { latestConsolidationJudgeRun } from '../storage/consolidation-judge-log.js';
 import { buildMemoryHealthFull, buildMemoryHealthCheap } from '../server/queries/memory-health.js';
 import type { DB } from '../storage/db.js';
 import type { DurabilityGateMode } from '../distill/durability-gate.js';
@@ -1317,6 +1318,67 @@ function checkEntityRelations(
   };
 }
 
+// ─── Check: Consolidation judge telemetry (FEAT-482) ─────────────────────────
+
+/**
+ * Informational-only row (`ok: true` always — same "deliberate config choice,
+ * never itself a WARN" precedent as `checkDurabilityGateMode`/
+ * `checkExtractProfile`). Its whole job is making the contradiction judge's
+ * real cost VISIBLE, because it cannot be CAPPED in dollars: both shipped LLM
+ * providers (Ollama, codex-subscription) hardcode `usage.usd: 0` (see
+ * "Budget cap vs codex-subscription" above for the same blind spot on
+ * distill/extraction), so `runConsolidation` bounds the judge sweep by call
+ * count (`maxPerRun`) and wall-clock time (`maxWallClockMs`) instead
+ * (src/consolidate/consolidate.ts, FEAT-482). This row surfaces what the most
+ * recent run actually cost in those terms — call count and elapsed time —
+ * reading `consolidation_judge_runs` (migration 030,
+ * src/storage/consolidation-judge-log.ts), so an operator who later points
+ * extraction at a genuinely metered provider has a real number to look at,
+ * not a silent gate that can't see it.
+ */
+function checkConsolidationJudgeTelemetry(dataDir: string, encryptionEnabled: boolean): Check {
+  return {
+    name: 'Consolidation judge',
+    async run(): Promise<CheckResult> {
+      const dbPath = join(dataDir, 'memory.sqlite');
+      if (!existsSync(dbPath)) {
+        return { ok: true, message: 'consolidation judge: no DB yet' };
+      }
+
+      try {
+        const db = await openProductionDbReadonly(dbPath, encryptionEnabled);
+        const latest = latestConsolidationJudgeRun(db);
+        db.close();
+
+        if (!latest) {
+          return {
+            ok: true,
+            message: 'consolidation judge: never run (contradictionDetection.mode has been off every run so far)',
+          };
+        }
+
+        const elapsedS = (latest.elapsedMs / 1000).toFixed(1);
+        const ageH = ((Date.now() - latest.createdAt) / 3_600_000).toFixed(1);
+        const caps = latest.capReached
+          ? ' — call-count cap (maxPerRun) reached'
+          : latest.wallClockCapReached
+            ? ' — wall-clock cap (maxWallClockMs) reached'
+            : '';
+        return {
+          ok: true,
+          message:
+            `consolidation judge: last run ${ageH}h ago (mode: ${latest.mode}) — ` +
+            `${latest.judgeCalls} judge call(s), ${elapsedS}s elapsed${caps}`,
+        };
+      } catch (err) {
+        // Informational failure mode — never fail doctor over a metric query
+        // error, consistent with the other read-only DB checks above.
+        return { ok: true, message: `consolidation judge check error (non-fatal): ${err}` };
+      }
+    },
+  };
+}
+
 // ─── Check: Auto-capture (FEAT-455 / ADR-012 decision 4) ─────────────────────
 
 /**
@@ -1674,6 +1736,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkExtractProfile(opts.extractProfile ?? 'engineering'),
     checkEntityRelations(dataDir, opts.extractProfile ?? 'engineering', encryptionEnabled),
+    checkConsolidationJudgeTelemetry(dataDir, encryptionEnabled),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),

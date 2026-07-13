@@ -11,7 +11,7 @@ import { runConsolidation, mergeAsSupersede } from '../../src/consolidate/consol
 import { ProposalRepo, parseContradictionMetadata } from '../../src/consolidate/proposals.js';
 import { buildApp } from '../../src/server/app.js';
 import { makeMockProviders } from '../../src/pipeline/mock-providers.js';
-import { BudgetTracker, BudgetExceeded } from '../../src/budget/tracker.js';
+import { latestConsolidationJudgeRun } from '../../src/storage/consolidation-judge-log.js';
 import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../../src/contracts/index.js';
 
 /** Unit vector with all mass on one axis, tilted toward a second axis by `tilt`. */
@@ -494,15 +494,10 @@ describe('stale-proposal sweep (FEAT-410 follow-up)', () => {
 
 describe('contradiction detection (FEAT-456 SLICE-1)', () => {
   let db: DB;
-  let budget: BudgetTracker;
   // The mock judge's deterministic vocabulary (src/consolidate/mock-judge-pairs.ts)
   // is exact-text keyed — the texts seeded below are taken verbatim from that
   // table so the judge branch never falls back to the {unrelated, 0.5} default.
   const judgeProvider = makeMockProviders().llm.extraction;
-  /** Generous cap — these tests are about detection LOGIC, not budget
-   *  enforcement (see the dedicated "FEAT-482 budget wiring" describe block
-   *  below for that). */
-  const CAP_USD = 10;
   /** Default maxWallClockMs for tests that don't care about the wall-clock
    *  cap itself — long enough that no test here could plausibly hit it. */
   const MAX_WALL_CLOCK_MS = 60_000;
@@ -510,7 +505,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
   beforeEach(() => {
     db = openDb(':memory:');
     migrate(db);
-    budget = new BudgetTracker(db);
   });
 
   /**
@@ -550,8 +544,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'dry-run', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(summary.contradictionsPreviewed).toHaveLength(1);
     expect(summary.contradictionsPreviewed[0]).toMatchObject({ winner: newer, loser: older });
@@ -565,8 +557,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(summary.contradictionsProposed).toHaveLength(1);
     expect(summary.contradictionsProposed[0]).toMatchObject({ winner: newer, loser: older });
@@ -601,8 +591,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const second = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(second.contradictionsProposed).toHaveLength(0);
     const pending = new ProposalRepo(db).list('pending');
@@ -618,8 +606,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.95, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(summary.contradictionsProposed).toHaveLength(0);
     expect(summary.contradictionsPreviewed).toHaveLength(0);
@@ -634,8 +620,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const agrees = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(agrees.contradictionsProposed).toHaveLength(0);
     expect(agrees.proposed).toHaveLength(1);
@@ -649,8 +633,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(summary.contradictionsProposed).toHaveLength(0);
     expect(summary.proposed).toHaveLength(0);
@@ -665,8 +647,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'dry-run', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 1, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(summary.contradictionsPreviewed).toHaveLength(1); // only the first pair got judged
     expect(summary.contradictionCapReached).toBe(true);
@@ -701,8 +681,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'dry-run', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 25 },
       judgeProvider: slowJudgeProvider,
-      budget,
-      capUsd: CAP_USD,
     });
     expect(summary.contradictionsPreviewed).toHaveLength(1); // only the first pair got judged
     expect(summary.contradictionCapReached).toBe(false);
@@ -715,8 +693,6 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.95, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      budget,
-      capUsd: CAP_USD,
       log: (m) => logs.push(m),
     });
     expect(summary.contradictionsProposed).toHaveLength(0);
@@ -729,124 +705,35 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       // no judgeProvider
-      budget,
-      capUsd: CAP_USD,
       log: (m) => logs.push(m),
     });
     expect(summary.contradictionsProposed).toHaveLength(0);
     expect(logs.some(m => m.includes('judgeProvider'))).toBe(true);
   });
 
-  it('FEAT-482: a missing budget tracker with mode on disables contradiction detection for the run, logged non-fatal', async () => {
-    await seedPair('Default port is 7777.', 'Default port is now 8888.', 'h-ac-inv3');
-    const logs: string[] = [];
+  it('FEAT-482: judge sweep telemetry (call count + wall-clock elapsed) is recorded and readable back', async () => {
+    // Since dollars can't bound this judge (both shipped providers report
+    // usage.usd: 0 — see contradiction-judge.ts's doc comment), the run
+    // records call count + elapsed time instead, for doctor to surface.
+    await seedPair('Default port is 7777.', 'Default port is now 8888.', 'h-telemetry');
     const summary = await runConsolidation(db, {
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
       judgeProvider,
-      // no budget/capUsd — the judge must never fire uncapped LLM calls
-      log: (m) => logs.push(m),
     });
-    expect(summary.contradictionsProposed).toHaveLength(0);
-    expect(logs.some(m => m.includes('budget tracker/capUsd'))).toBe(true);
-  });
-});
+    expect(summary.judgeCallsExecuted).toBe(1);
+    expect(summary.judgeSweepElapsedMs).toBeGreaterThanOrEqual(0);
 
-describe('contradiction detection budget wiring (FEAT-482)', () => {
-  let db: DB;
-  let budget: BudgetTracker;
-  const judgeProvider = makeMockProviders().llm.extraction;
-
-  beforeEach(() => {
-    db = openDb(':memory:');
-    migrate(db);
-    budget = new BudgetTracker(db);
+    const latest = latestConsolidationJudgeRun(db);
+    expect(latest).not.toBeNull();
+    expect(latest!.mode).toBe('enabled');
+    expect(latest!.judgeCalls).toBe(1);
+    expect(latest!.capReached).toBe(false);
+    expect(latest!.wallClockCapReached).toBe(false);
   });
 
-  async function seedPair(
-    textA: string, textB: string, hashPrefix: string, tilt = 1.02, repo = 'r1',
-  ): Promise<void> {
-    const older = await seedEmbedded(db, textA, `${hashPrefix}-a`, vecAt(0), { repo });
-    const newer = await seedEmbedded(db, textB, `${hashPrefix}-b`, vecAt(0, tilt), { repo });
-    db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(1_000, older);
-    db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(2_000, newer);
-  }
-
-  // REGRESSION GUARD for the actual FEAT-482 incident: an unbounded judge
-  // fired ~245 sequential LLM calls against a metered endpoint. This proves
-  // the fix — once the daily cap is already exhausted, the judge must
-  // refuse to place even ONE more LLM call, not just eventually stop.
-  it('refuses to call the LLM once the daily budget cap is already exhausted (BudgetExceeded propagates, mock call count stays 0)', async () => {
-    await seedPair('Default port is 7777.', 'Default port is now 8888.', 'h-budget-1');
-
-    let callCount = 0;
-    const countingProvider: LLMProvider = {
-      name: 'ollama' as const,
-      model: 'test-model',
-      async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
-        callCount++;
-        return judgeProvider.chat(messages, opts);
-      },
-      async health(): Promise<LLMHealth> {
-        return judgeProvider.health();
-      },
-    };
-
-    const capUsd = 1;
-    budget.record(capUsd); // cap already fully spent before the run starts
-
-    await expect(runConsolidation(db, {
-      contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 60_000 },
-      judgeProvider: countingProvider,
-      budget,
-      capUsd,
-    })).rejects.toThrow(BudgetExceeded);
-
-    // The whole point: the mock LLM provider's call count STOPS at 0 — the
-    // budget check ran and threw BEFORE any chat() call was dispatched, not
-    // after burning through the pair (which is what "unrelated" fallback
-    // masking would look like).
-    expect(callCount).toBe(0);
-  });
-
-  it('a BudgetExceeded thrown mid-sweep (cap hit on pair 2, not pair 1) also propagates uncaught out of runConsolidation', async () => {
-    // Two independent groups so there are two judge-eligible pairs — r1
-    // sorts before r2, so the pair-scan visits r1's pair first.
-    await seedPair('Default port is 7777.', 'Default port is now 8888.', 'h-budget-2-r1', 1.02, 'r1');
-    await seedPair('The daemon binds to port 7777.', 'The daemon now binds to port 9999.', 'h-budget-2-r2', 1.02, 'r2');
-
-    // capUsd == the FIRST call's own recorded cost: after that call records,
-    // usd_total already equals capUsd, so the SECOND call's assertCanSpend
-    // (usd_total + any positive estimate > capUsd) is guaranteed to fail
-    // regardless of the judge's actual per-call estimateUsd value — no need
-    // to reverse-engineer that estimate here. The first call's own
-    // assertCanSpend passes because it runs while usd_total is still 0.
-    const capUsd = 1;
-    let callCount = 0;
-    const expensiveProvider: LLMProvider = {
-      name: 'ollama' as const,
-      model: 'test-model',
-      async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
-        callCount++;
-        const result = await judgeProvider.chat(messages, opts);
-        return { ...result, usage: { ...result.usage, usd: capUsd } };
-      },
-      async health(): Promise<LLMHealth> {
-        return judgeProvider.health();
-      },
-    };
-
-    await expect(runConsolidation(db, {
-      contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 60_000 },
-      judgeProvider: expensiveProvider,
-      budget,
-      capUsd,
-    })).rejects.toThrow(BudgetExceeded);
-
-    // Exactly one judge call went out — the first pair's judge call
-    // succeeded and got recorded; the second pair's pre-call budget check
-    // is what threw, proving the throw happens mid-sweep (not on pair 1,
-    // and not silently swallowed as "unrelated" for the rest of the scan).
-    expect(callCount).toBe(1);
-    expect(budget.today().usd_total).toBe(capUsd);
+  it('FEAT-482: no telemetry row is written when contradiction detection is off', async () => {
+    await seedPair('Default port is 7777.', 'Default port is now 8888.', 'h-telemetry-off');
+    await runConsolidation(db); // no contradictionDetection opt at all
+    expect(latestConsolidationJudgeRun(db)).toBeNull();
   });
 });

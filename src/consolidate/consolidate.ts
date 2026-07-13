@@ -42,7 +42,7 @@ import { MemoryEventRepo, type SupersedeProvenance } from '../storage/memory-eve
 import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
 import { judgeContradiction, type JudgeVerdict } from './contradiction-judge.js';
-import { BudgetTracker } from '../budget/tracker.js';
+import { recordConsolidationJudgeRun } from '../storage/consolidation-judge-log.js';
 
 export interface ConsolidateOpts {
   /** Cosine similarity at/above which a pair auto-merges. */
@@ -98,18 +98,6 @@ export interface ConsolidateOpts {
    * capability" governance pattern, see `resolveAutoAcceptThreshold`).
    */
   judgeProvider?: LLMProvider;
-  /**
-   * FEAT-482: BudgetTracker the contradiction judge must check before every
-   * LLM call and record actual spend against after — same tracker distill
-   * uses (one `budget_spend` table, one daily cap, shared across job kinds).
-   * Required only when `contradictionDetection.mode !== 'off'`; a missing
-   * tracker with mode on disables judging for THIS run only (logged,
-   * non-fatal — same governance shape as a missing `judgeProvider`).
-   */
-  budget?: BudgetTracker;
-  /** Daily USD cap to check `budget` against — mirrors `pipelineCtx.capUsd`
-   * (distill handler) exactly; both read `config.budget.daily_usd`. */
-  capUsd?: number;
   /** Injectable logger seam for tests; defaults to `console.warn`. */
   log?: (message: string) => void;
 }
@@ -164,6 +152,24 @@ export interface ConsolidateSummary {
    * classification unchanged.
    */
   contradictionWallClockCapReached: boolean;
+  /**
+   * FEAT-482: total judge calls actually dispatched this run — 0 whenever
+   * contradiction detection was off/disabled for the run. Since dollars
+   * cannot bound this judge (see contradiction-judge.ts's doc comment —
+   * every shipped provider reports `usage.usd: 0`), call count and wall-
+   * clock time are the only real cost signals; this field plus
+   * `judgeSweepElapsedMs` are what `recordConsolidationJudgeRun`
+   * (src/storage/consolidation-judge-log.ts) persists for `doctor` to
+   * surface, and what tells an operator who later points extraction at a
+   * genuinely metered provider what actually happened.
+   */
+  judgeCallsExecuted: number;
+  /**
+   * FEAT-482: wall-clock milliseconds spent in the judge sweep this run
+   * (0 when contradiction detection was off/disabled). Measured from the
+   * same `judgeSweepStartedAt` the `maxWallClockMs` cap checks against.
+   */
+  judgeSweepElapsedMs: number;
 }
 
 interface AtomRow {
@@ -333,8 +339,6 @@ interface ResolvedContradictionDetection {
   maxPerRun: number;
   maxWallClockMs: number;
   judgeProvider: LLMProvider;
-  budget: BudgetTracker;
-  capUsd: number;
 }
 
 /**
@@ -346,15 +350,15 @@ interface ResolvedContradictionDetection {
  * `[0, mergeThreshold)`, `minConfidence` is out of `[0, 1]`, or no
  * `judgeProvider` was supplied despite mode being on.
  *
- * FEAT-482: also disables (same non-fatal shape) when no `budget` tracker or
- * `capUsd` was supplied — the judge must never fire uncapped LLM calls, so a
- * missing budget wiring is treated exactly like a missing judgeProvider.
+ * FEAT-482: deliberately does NOT gate on a dollar budget — see
+ * contradiction-judge.ts's doc comment for why a BudgetTracker dependency
+ * was tried and reverted here (both shipped providers report `usd: 0`, so a
+ * dollar cap can never trip). `maxPerRun`/`maxWallClockMs` below are the
+ * real caps.
  */
 function resolveContradictionDetection(
   raw: ConsolidateOpts['contradictionDetection'],
   judgeProvider: LLMProvider | undefined,
-  budget: BudgetTracker | undefined,
-  capUsd: number | undefined,
   mergeThreshold: number,
   log: (message: string) => void,
 ): ResolvedContradictionDetection | null {
@@ -380,16 +384,9 @@ function resolveContradictionDetection(
     );
     return null;
   }
-  if (!budget || capUsd === undefined) {
-    log(
-      `[consolidate] contradictionDetection.mode=${JSON.stringify(raw.mode)} but no budget tracker/capUsd was ` +
-      'supplied — contradiction detection disabled for this run (the judge must never fire uncapped LLM calls).',
-    );
-    return null;
-  }
   return {
     mode: raw.mode, minSimilarity: raw.minSimilarity, minConfidence: raw.minConfidence,
-    maxPerRun: raw.maxPerRun, maxWallClockMs: raw.maxWallClockMs, judgeProvider, budget, capUsd,
+    maxPerRun: raw.maxPerRun, maxWallClockMs: raw.maxWallClockMs, judgeProvider,
   };
 }
 
@@ -446,7 +443,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   const log = opts.log ?? ((message: string) => console.warn(message));
   const autoAcceptThreshold = resolveAutoAcceptThreshold(opts.autoAcceptThreshold, proposeThreshold, log);
   const contradictionDetection = resolveContradictionDetection(
-    opts.contradictionDetection, opts.judgeProvider, opts.budget, opts.capUsd, mergeThreshold, log,
+    opts.contradictionDetection, opts.judgeProvider, mergeThreshold, log,
   );
   let judgeCallsThisRun = 0;
   const judgeSweepStartedAt = Date.now();
@@ -455,7 +452,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     groupsScanned: 0, groupsSkipped: [], merged: [], proposed: [],
     autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
     contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
-    contradictionWallClockCapReached: false,
+    contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
   };
 
   if (autoMergeContained) {
@@ -534,10 +531,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
             summary.contradictionWallClockCapReached = true;
           } else {
             judgeCallsThisRun++;
-            const verdict = await judgeContradiction(
-              contradictionDetection.judgeProvider, contradictionDetection.budget, contradictionDetection.capUsd,
-              a, b, { log },
-            );
+            const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, { log });
             if (verdict.verdict === 'contradicts' && verdict.confidence >= contradictionDetection.minConfidence) {
               // Directional: newer atom is the presumptive correction (§2.2)
               // — opposite of the merge tier's usefulness-based pick.
@@ -622,6 +616,28 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
         }
       }
     }
+  }
+
+  // FEAT-482: judge cost is invisible to a dollar cap (see
+  // contradiction-judge.ts's doc comment) — record what actually happened
+  // instead, so `doctor` (checkConsolidationJudgeTelemetry) can surface it.
+  // Only when contradiction detection was actually active this run; an
+  // 'off'/disabled run has nothing to report and would just be zero-noise.
+  if (contradictionDetection) {
+    summary.judgeCallsExecuted = judgeCallsThisRun;
+    summary.judgeSweepElapsedMs = Date.now() - judgeSweepStartedAt;
+    log(
+      `[consolidate] judge sweep: mode=${contradictionDetection.mode} calls=${summary.judgeCallsExecuted} ` +
+      `elapsedMs=${summary.judgeSweepElapsedMs} capReached=${summary.contradictionCapReached} ` +
+      `wallClockCapReached=${summary.contradictionWallClockCapReached}`,
+    );
+    recordConsolidationJudgeRun(db, {
+      mode: contradictionDetection.mode,
+      judgeCalls: summary.judgeCallsExecuted,
+      elapsedMs: summary.judgeSweepElapsedMs,
+      capReached: summary.contradictionCapReached,
+      wallClockCapReached: summary.contradictionWallClockCapReached,
+    });
   }
 
   return summary;
