@@ -61,7 +61,15 @@ The extraction prompt itself *instructs* `atoms: []` for a genuinely empty chunk
 
 ### 1.2 — PID-identity check in `daemon.lock` *(highest-severity bug)*
 
-**Problem (finding #1, CONFIRMED, HIGH).** `stopLockHolder` (`src/service/instance-lock.ts:124-154`) verifies a `daemon.lock` PID is **alive**, never that it is **the daemon**, then signals it — on Windows, an unconditional force-kill. Called from the Unix hang-watchdog (`watchdog-probe.ts:117-118`) and **every `reinstall` / `--rollback` / `--dev`** (`reinstall.ts:116-118,217,462`).
+**Problem (finding #1, CONFIRMED, HIGH).** `stopLockHolder` (`src/service/instance-lock.ts:124-154`) verifies a `daemon.lock` PID is **alive**, never that it is **the daemon**, then signals it — on Windows, an unconditional force-kill.
+
+**FOUR call sites — all must be covered by the fix** *(the fourth was missed by the original investigation and found by the consistency sweep; verified 2026-07-13)*:
+1. `src/service/watchdog-probe.ts:118` — the Unix hang-watchdog, on a **≤3-minute timer**.
+2. `src/cli/reinstall.ts:116` — plain `reinstall`.
+3. `src/cli/reinstall.ts:217` / `:462` — `--rollback` / `--dev`.
+4. **`src/cli/service.ts:99` — the `service stop` CLI command.** ⚠️ **Missed by the teardown report.** Its own comment states the hazard as intent: *"Terminate whatever is actually holding daemon.lock, directly."* **If the fix only patches the first three, `astramem-local service stop` retains the PID-reuse kill hazard** — and that is the command a user is most likely to run by hand.
+
+**Fixing this at the `stopLockHolder` implementation (not at each call site) covers all four by construction.** That is the correct seam — do not patch callers.
 
 If the daemon dies hard (SIGKILL / OOM / power loss — anything skipping the graceful handler that unlinks the lock) and the OS recycles that PID before the next watchdog tick (**≤3 min on Unix**), the watchdog kills **whatever unrelated process now holds it.** This box runs the prod daemon, eval-shard daemons, Ollama, and sibling agents' processes — and `CLAUDE.md` already records an image-name kill that destroyed a 40-minute LongMemEval run.
 
@@ -224,9 +232,9 @@ The lesson is sharper than "verify your citations," which I already believed and
 
 > **This item was based on a false finding and is withdrawn in full. A builder executing the original text would have re-triggered a production incident from earlier the same day.** Caught by `crew:architect-reviewer` pre-build; verified directly against `config.ts` before retraction.
 
-**What I got wrong.** The plan (and research finding #9) claimed contradiction detection ships `off`, citing `config.ts:715-716`. That is `DEFAULT_CONTRADICTION_DETECTION` — a **governance-fallback constant**, applied only when a config override fails validation. **The shipped default is `defaultConfig()` at `config.ts:555`: `mode: 'enabled'`.** It is already on.
+**What I got wrong.** The plan (and research finding #9) claimed contradiction detection ships `off`, citing `config.ts` `DEFAULT_CONTRADICTION_DETECTION` (fallback const). That is `DEFAULT_CONTRADICTION_DETECTION` — a **governance-fallback constant**, applied only when a config override fails validation. **The shipped default is `defaultConfig()` at `config.ts` `defaultConfig()` → `contradictionDetection.mode`: `mode: 'enabled'`.** It is already on.
 
-**What actually happened, hours before this plan was drafted (FEAT-482).** The flip to `enabled` shipped **without a call-count or wall-clock guard on the judge**. It fired **~245 sequential LLM calls against a metered endpoint** (codex-subscription — billed to the operator's personal ChatGPT quota) and **wedged the daemon's sole worker lane for 10+ minutes.** A **dollar-cap** guard was tried and **reverted** (`0b6b3f8`, the second-most-recent commit on main) because **every shipped provider hardcodes `usage.usd: 0`** — a budget check can never trip. The real guards, `maxPerRun: 200` + `maxWallClockMs: 300_000`, are now live (`config.ts:555-569`). The operator has separately set `mode: 'off'` in their own `config.yaml` as a stopgap; that override wins for their instance regardless of the shipped default.
+**What actually happened, hours before this plan was drafted (FEAT-482).** The flip to `enabled` shipped **without a call-count or wall-clock guard on the judge**. It fired **~245 sequential LLM calls against a metered endpoint** (codex-subscription — billed to the operator's personal ChatGPT quota) and **wedged the daemon's sole worker lane for 10+ minutes.** A **dollar-cap** guard was tried and **reverted** (`0b6b3f8`, the second-most-recent commit on main) because **every shipped provider hardcodes `usage.usd: 0`** — a budget check can never trip. The real guards, `maxPerRun: 200` + `maxWallClockMs: 300_000`, are now live (`config.ts defaultConfig()-569`). The operator has separately set `mode: 'off'` in their own `config.yaml` as a stopgap; that override wins for their instance regardless of the shipped default.
 
 **Also wrong: the risk axis.** The plan worried about *embedding-geometry / auto-merge truth-correctness*. The actual incident was **unbounded cost and duration** — a different failure class entirely. The plan was preparing to defend the wrong flank.
 
@@ -312,7 +320,7 @@ The original plan bundled Track 1 into a single slice. **Split, by blast radius:
 
 - **`crew:architect-reviewer`: NEEDS_FIX → all six defects fixed in this revision.**
   Artifact: `.claude/artifacts/crew/reviews/20260713T173000Z-review-teardown-remediation-plan.md`
-  The false 2.5 finding **retracted** (verified against `config.ts:555` directly — it ships `enabled`, not `off`, and my recommendation would have re-triggered the FEAT-482 incident); severity inversion corrected (**1.2 ships first**); Track 2's dependency narrowed; dropped findings **#8/#11/#12/`materializeRelease`** restored as **2.6/2.7**; **below-41.4 branch table** added to 2.2; acceptance gaps closed in 1.2 (positive test), 1.5 (live row-count before DROP), 2.3 (mixed-validity semantics).
+  The false 2.5 finding **retracted** (verified against `config.ts` `defaultConfig()` → `contradictionDetection.mode` directly — it ships `enabled`, not `off`, and my recommendation would have re-triggered the FEAT-482 incident); severity inversion corrected (**1.2 ships first**); Track 2's dependency narrowed; dropped findings **#8/#11/#12/`materializeRelease`** restored as **2.6/2.7**; **below-41.4 branch table** added to 2.2; acceptance gaps closed in 1.2 (positive test), 1.5 (live row-count before DROP), 2.3 (mixed-validity semantics).
 
 - **`crew:architect`: six decisions delivered, all folded in.**
   Artifact: `.claude/artifacts/crew/reviews/20260713T000000Z-architect-review-teardown-remediation-plan.md`

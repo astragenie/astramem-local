@@ -3,6 +3,16 @@
 Local-first memory daemon. TypeScript + Node 20 + Fastify + better-sqlite3 + sqlite-vec.
 Wire-compatible with astramem-plugin (v0.5.2+) and memory SaaS backend (FEAT-4a Phase 1).
 
+## Architecture verdict (2026-07-13) — do not re-litigate this per session
+
+A 6-agent adversarial teardown investigation concluded **H2 — sound core, accumulated
+debt; zero of five redesign gates cleared. Default to salvage, not rewrite.** Full
+findings: `docs/research/20260713-teardown-and-reinvent.md`. The remediation plan
+derived from it (tracks, slices, acceptance criteria): `docs/specs/20260713-teardown-remediation-plan.md`.
+This is the answer to "should we redesign X" — read those two docs before proposing a
+rewrite of the daemon, the storage layer, or the MCP transport; don't re-derive the
+question from scratch.
+
 ## Install / onboarding
 
 The wizard IS the installer. Do NOT hand-craft config.
@@ -101,6 +111,30 @@ Diagnose: `node dist/cli/index.js doctor` (now reads config.yaml same as serve)
 
 Non-Windows: `~/.config/astramem/` and `~/.local/share/astra-memory/`.
 
+## MCP transport: two modes, not one
+
+The daemon isn't the only way to run MCP. `node dist/cli/index.js mcp-stdio` (`src/cli/mcp-stdio.ts`)
+is a **spawn-per-session MCP server over stdio** — same tool set, same db/embed wiring as
+the HTTP daemon (`buildMcpServer()`, `src/mcp/server.ts`), just connected to a
+`StdioServerTransport` instead of a Fastify route. Its own doc comment states the design
+intent verbatim: *"No daemon lifecycle (no instance lock, no worker, no shipper, no
+timers): this process is meant to be spawned per-client-session by an MCP host and to
+exit when that host closes stdin."* Meant to be launched directly by an MCP host (Claude
+Desktop, etc.), one process per session.
+
+Consequence worth knowing: in `mcp-stdio` mode the PID-reuse kill hazard around
+`daemon.lock` (see the instance-lock footgun, if documented elsewhere) **cannot fire** —
+there's no lock file and no watchdog to mis-signal. But this mode is **not a daemon
+replacement**. The long-lived HTTP daemon remains **mandatory** for: the LLM-proxy/capture
+path (`src/proxy/server.ts:349` binds a real HTTP listener — a MITM proxy structurally
+cannot be spawn-per-session, something must already be listening when the client
+connects), background jobs (consolidate/cleanup/spool-drain), and sync. Pure MCP
+consumers with no need for capture/proxy/sync can use `mcp-stdio` and skip the install
+layer (service registration, shim, watchdog) entirely.
+
+MCP tool surface: **20 tools** (verified: 20 `registerTool` calls in `src/mcp/server.ts`).
+Both transports expose the same 20.
+
 ## Wire contract (FEAT-4a Phase 2)
 
 Daemon speaks BOTH envelopes on `POST /ingest/transcript`:
@@ -122,6 +156,92 @@ src/distill/prompts/extract.ts). Two MCP tools read it: `get_entity_related` (bi
 built-wired-never-invoked canary for this pipeline — WARN means real distill activity produced
 zero rows; `relation_guard_drops` (migration 029) tells apart "model never emits a relation"
 from "model emits relations but the guard drops every one."
+
+## Contradiction detection ships `enabled` — Do NOT re-fix this as "off by default"
+
+`defaultConfig()` sets `contradictionDetection: { mode: 'enabled', ... }` (`src/config/config.ts:623`).
+It is **on**. The `DEFAULT_CONTRADICTION_DETECTION` constant (`config.ts:782-783`, `mode: 'off'`)
+is a **governance-fallback** used only by `applyContradictionDetectionGovernance` when a
+config override is missing or has an invalid `mode` — it is not the shipped default and
+was never meant to describe the default. A prior session read that constant, concluded
+contradiction detection ships off, and nearly re-shipped the fix that had already caused
+an incident hours earlier.
+
+**FEAT-482 incident (2026-07-13):** the flip from `off` to `enabled` shipped without a
+call-count or wall-clock cap on the judge. It fired ~245 sequential LLM calls against a
+metered endpoint (codex-subscription, billed to the operator's personal quota) and wedged
+the daemon's sole worker lane for 10+ minutes. A **dollar-cap guard was tried and reverted**
+(commit `0b6b3f8`) because every shipped LLM provider hardcodes `usage.usd: 0` — a budget
+check can never trip. The live guards are `maxPerRun: 200` + `maxWallClockMs: 300_000`
+(`config.ts:623-635`), both now in place. Full incident + retraction record:
+`docs/specs/20260713-teardown-remediation-plan.md` §2.5.
+
+If you're touching this again: don't flip the default, don't re-add a dollar cap. If
+`maxPerRun`/`maxWallClockMs` ever need tightening, that's the lever — not `mode`.
+
+## Citation drift caution
+
+`src/distill/**` and `src/search/**` are under active edit as of 2026-07-13 — several
+`file:line` citations across the docs written this session have already drifted (e.g.
+`validityFilterClause` moved from `search.ts:264-278` to `search.ts:272-291` mid-session).
+**Anchor on the symbol name, not the line number** — the line is a hint, the symbol is the
+claim. See `docs/adr/ADR-015-loud-failure-invariant.md`'s citation policy for the same rule
+stated in full. Every `config.ts`/`checks.ts`/etc. line cited below was re-verified against
+this worktree's live source at write time, but re-verify before trusting a line number that's
+more than a session old.
+
+## Temporal reasoning — the schema is NOT at fault
+
+Bitemporal storage (`migrations/006-atom-v3.sql`) and `as_of`-aware retrieval
+(`validityFilterClause`, `src/search/search.ts:272-291`) are **both correct**. The LoCoMo temporal category score
+(12.4) was an **extraction** gap, not a data-model gap — a full architecture investigation
+concluded this; do not let any doc imply the schema needs replacing.
+
+**Shipped 2026-07-13:** text-surface date grounding (PR #189 + timezone fix #191). Threads
+`capturedAtMs` into the extraction prompt so relative expressions ("yesterday", "last
+year") resolve to absolute dates inside the atom's own text — the part the retrieval
+harness actually reads. This also helps live production ingest, not just the benchmark:
+both `buildClaudeEnvelope` and `buildProxyEnvelope` already carry a per-session
+`captured_at` anchor. Only legacy v0.0 envelopes and direct `/remember` calls lack one.
+
+**Still open:** `AtomSchema` (`src/distill/prompts/extract.ts`) has no atom-level
+`valid_at`/`invalid_at` field — only entities and relations get one. `InsertInput`
+(`src/storage/memories.ts`) has no `valid_to` param at all, so nothing populates the
+correct bitemporal columns for atoms. A fact that was "true Jan–Mar, false now" still
+returns as eternally true. This earns zero LoCoMo points (the harness never sets `as_of`)
+but is a real product gap. See `docs/specs/20260713-teardown-remediation-plan.md` §2.3
+before building it — there's a migration hazard (legacy rows have `valid_to = NULL`,
+which `as_of` filtering treats as "valid forever"; mixing in atoms with a real `valid_to`
+makes that mixed state permanent unless the semantics are decided deliberately first).
+
+## Known open gaps (2026-07-13) — this is a working doc, not a clean bill of health
+
+- **Doctor never runs unattended.** `serve.ts` never calls `runChecks` — all three callers
+  (`cli/doctor.ts`, `cli/init.ts`, `cli/providers.ts`) are manual. (`serve.ts` DOES import
+  `doctor/probes/embed-probe.js` directly for the boot-time dim preflight — that's a
+  different, narrower check than the full doctor suite.)
+- **`checkMemoryHealth` (`src/doctor/checks.ts:680-694`) has exactly one return path:
+  `{ok: true}`.** A 100% distill-poison rate still reports "memory health: OK."
+- **`llmChatProbe` (`src/doctor/probes/llm-chat-probe.ts:19-22`) never passes `json:true`**,
+  so it never exercises `format:json` — the exact request shape that broke qwen3 (empty
+  response under thinking mode). A green probe is not evidence extraction works.
+- **A well-formed `{"atoms":[]}` extraction completes successfully.** A broken model and a
+  genuinely empty transcript are indistinguishable at every layer — not the Zod gate, not
+  the job queue, not the poison counter (which only increments on failure, and a zero-atom
+  success never fails). This is the headline finding of the teardown; see ADR-015.
+- **Four tables have zero writers:** day-one `messages`, `artifacts`, `provider_state`
+  (never written in this repo's history), plus in-flight `evidence_guard_drops`.
+  `provider_state` is the worst — nothing writes it, but `src/server/queries/dashboard.ts:245`
+  reads it, so it's an always-empty dashboard widget shipping to users, not just dead code.
+- **LLM-proxy transcripts spool to disk plaintext, unredacted** (redaction happens at the
+  daemon's stage-0 ingest, not at proxy capture). Files that fail JSON-parse or
+  schema-validate quarantine to `.quarantine/` **before** ever reaching redaction — no TTL,
+  no doctor canary. Malformed content disproportionately correlates with secrets/control
+  characters, so the quarantine is a plausible place for a credential to sit indefinitely.
+- **The qwen3 `think:false` guard is a name regex** (`/^qwen3/i`, `src/providers/llm/ollama.ts:95`),
+  not capability detection. The config field's own doc comment (`ollama.ts:31`) names
+  `deepseek-r1` as equally affected by the same thinking-mode/`format:json` conflict — it
+  is not handled. A user picking `deepseek-r1` reproduces the "fixed" incident exactly.
 
 ## Bump discipline
 

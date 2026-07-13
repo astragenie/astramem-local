@@ -1,5 +1,29 @@
 # ADR-015: The Loud Failure Invariant
 
+> **Citation policy — read this before chasing any line number in this document.**
+>
+> Every `file:line` here was resolved against the investigation baseline **`d645e80`**. `main` has
+> moved since, and parts of the tree are under active edit. **Anchor on the SYMBOL NAME, not the
+> line number.** The line is a hint; the symbol is the claim.
+>
+> This is not a hypothetical. **During the writing of this ADR, `src/config/config.ts` grew from
+> 785 to 896 lines.** Three independent agents — each verifying honestly against source — reported
+> the contradiction-detection default at line **555**, then **715**, then **623**. Each was correct
+> at the moment they looked. The file moved underneath all of them.
+>
+> It went one step further, and this is the part worth keeping: **the lead agent then "corrected" a
+> writer's accurate `623` back to a stale `555`** — citing a snapshot of a file that no longer
+> existed. The writer **refused the instruction, re-read the source, and pushed back.** It was
+> right. A stale correction is indistinguishable from a live one to everyone downstream, and it
+> arrives with *more* authority than the thing it overrides.
+>
+> That is the same lesson as this ADR, applied to prose: **a citation that silently rots is
+> indistinguishable from a citation that was always wrong.** The reader cannot tell, and will trust
+> it either way — precisely the class of failure this document exists to outlaw. The document
+> caught its own author violating its own thesis in its own footnotes.
+>
+> **Cite the symbol. Line numbers are a convenience, not evidence.**
+
 **Status:** Accepted
 **Date:** 2026-07-13 · **Confidence:** High (grounded in code-verified findings from a 6-agent
 adversarial teardown, cross-checked against source directly, not trusted from citation alone)
@@ -88,8 +112,10 @@ telemetry table with no reader is silent-by-omission.** Both violate this invari
 row above is real, but a related early finding — "contradiction detection ships off by default"
 — was independently promoted to CONFIRMED, written into a remediation plan, and then caught and
 retracted before a build started (`docs/specs/20260713-teardown-remediation-plan.md` §2.5). The
-citation (`config.ts:715`, `DEFAULT_CONTRADICTION_DETECTION`) was a real symbol; it just wasn't
-the code that runs (`defaultConfig()` at `config.ts:555` ships `mode: 'enabled'`). That failure —
+citation — `DEFAULT_CONTRADICTION_DETECTION` in `config.ts` — was a real symbol; it just wasn't
+the code that runs. That constant is a **governance fallback**, applied only when an override
+fails validation. The shipped default is `defaultConfig()`, which sets
+`contradictionDetection.mode: 'enabled'`. That failure —
 `file:line` proving code *exists* without proving it's on the *live* path — is exactly the
 discipline gap this ADR's rule 3 (below) exists to close in the other direction: a probe or check
 must exercise the production shape, not a shape that merely compiles.
