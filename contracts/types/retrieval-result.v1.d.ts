@@ -80,11 +80,11 @@ export interface RetrievalResultV1 {
      */
     usage_count?: number;
     /**
-     * OPTIONAL (added 2026-07-13). Free-form; the one place an open map is intentional.
+     * OPTIONAL (added 2026-07-13). Free-form; the one place an open map is intentional. Nullable: cloud emits `"metadata": null` for a memory with none, rather than omitting the key — caught by validating a LIVE cloud response against this schema, not a fixture. Same nullable treatment as `embedding_error`.
      */
     metadata?: {
       [k: string]: unknown;
-    };
+    } | null;
     /**
      * OPTIONAL (added 2026-07-13). Cloud's `content_preview_highlights` — character ranges into `text`, plus the matched term. Shape mirrors cloud's long-standing HighlightRangeDto {start, end, term} — the freeze doc originally said {start, length}, which was invented rather than checked against the real DTO. Local has no FTS snippet extraction yet and omits the key rather than fake it.
      */
