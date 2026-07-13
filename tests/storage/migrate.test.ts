@@ -49,7 +49,7 @@ describe('migrate', () => {
     // audit's consolidation_judge_runs.judge_errors counter column, 034 =
     // issue #207 entity_name_drops counter table, 035 = issue #188
     // schema_version.filename + schema_version.content_hash).
-    expect(versions.n).toBe(35);
+    expect(versions.n).toBe(36);
   });
 
   it('enables WAL mode', () => {
@@ -111,7 +111,7 @@ describe('migration 002-wire-v1', () => {
     // offset bugfix + 033 silent-error audit's judge_errors column + 034
     // issue #207 entity_name_drops + 035 issue #188 schema_version
     // content-hash).
-    expect(versions.n).toBe(35);
+    expect(versions.n).toBe(36);
   });
 
   it('new rows get wire_version DEFAULT v0.0 when inserted without wire_version', () => {
@@ -187,7 +187,7 @@ describe('migration 003-expand-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(35);
+    expect(versions.v).toBe(36);
   });
 
   it('allows inserting type note after migration', () => {
@@ -545,7 +545,7 @@ describe('migration 017-widen-memory-types', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(35);
+    expect(versions.v).toBe(36);
   });
 
   it('accepts all 3 new canonical types (preference, task_result, summary)', () => {
@@ -684,7 +684,7 @@ describe('migration 018-jobs-distill-session-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(35);
+    expect(versions.v).toBe(36);
   });
 
   it('creates the partial expression index on jobs', () => {
@@ -752,7 +752,7 @@ describe('migration 019-health-agent-profile-indexes', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(35);
+    expect(versions.v).toBe(36);
   });
 
   it('creates both partial expression indexes on memory_events', () => {
@@ -853,7 +853,7 @@ describe('migration 020-agent-profile-corrections-index', () => {
     const db = openDb(':memory:');
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versions.v).toBe(35);
+    expect(versions.v).toBe(36);
   });
 
   it('creates the partial expression index on memory_events for invalidate/supersede', () => {
@@ -949,7 +949,7 @@ describe('migrate — schema-version drift guard', () => {
     const db = openDb(':memory:');
 
     expect(() => migrateMocked(db)).toThrow(
-      /Schema-version constant drift: wire-meta says 999, DB says 35/,
+      /Schema-version constant drift: wire-meta says 999, DB says 36/,
     );
   });
 });
@@ -975,7 +975,7 @@ describe('migrate — schema_version content-hash tracking (issue #188)', () => 
     const rows = db
       .prepare('SELECT version, filename, content_hash FROM schema_version ORDER BY version')
       .all() as { version: number; filename: string | null; content_hash: string | null }[];
-    expect(rows).toHaveLength(35);
+    expect(rows).toHaveLength(36);
     for (const row of rows) {
       expect(row.filename, `version ${row.version} missing filename`).toMatch(/^\d+-.+\.sql$/);
       expect(row.content_hash, `version ${row.version} missing content_hash`).toMatch(/^[a-f0-9]{64}$/);
@@ -984,7 +984,7 @@ describe('migrate — schema_version content-hash tracking (issue #188)', () => 
 
   it('AC-3: backfills content_hash for a legacy row that predates the column — the operator\'s existing production-shaped DB keeps booting clean', () => {
     const db = openDb(':memory:');
-    migrate(db); // establishes real baseline hashes for all 35 versions
+    migrate(db); // establishes real baseline hashes for all 36 versions
 
     // Simulate exactly what an existing production DB's schema_version looks
     // like the moment migration 035 lands: the columns exist (just added),
@@ -1020,7 +1020,7 @@ describe('migrate — schema_version content-hash tracking (issue #188)', () => 
 
   it('AC-4: a version renumbered/replaced after being applied produces the precise diagnosis — NOT a raw CREATE TABLE crash or "restore from a backup"', () => {
     const db = openDb(':memory:');
-    migrate(db); // establishes real baseline hashes for all 35 versions, including 30
+    migrate(db); // establishes real baseline hashes for all 36 versions, including 30
 
     // Simulate the #185/#186 shape directly at the DB level: version 30 was
     // actually recorded against a DIFFERENT migration's content than the file

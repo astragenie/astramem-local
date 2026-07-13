@@ -18,6 +18,7 @@ import { defaultConfigDir } from '../config/datadir.js';
 import { readSyncToken } from '../storage/keystore.js';
 import { drainPull, httpPullFetcher, getPullWatermark } from '../sync/puller.js';
 import { planBackfill, applyBackfill, planReship, applyReship } from '../sync/backfill.js';
+import { countRejected, countRejectedIn, clearRejected } from '../sync/shipper.js';
 
 function flagValue(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -136,6 +137,50 @@ export async function syncCommand(args: string[]): Promise<void> {
       }
     }
 
+    // Escape hatch for the one-way door `rejected_at` creates. The cloud's reject
+    // verdict is authoritative but not infallible — if a cloud bug rejected events
+    // it should have accepted, they are stranded on this device with no other code
+    // path able to reach them. Clearing the marker re-enqueues them for shipping.
+    // Manual by design: automatic retry would recreate the wedge rejected_at exists
+    // to kill.
+    case 'unreject': {
+      const { db } = openRuntimeDb();
+      try {
+        const seqArg = flagValue(rest, '--seq');
+        const seqs = seqArg
+          ? seqArg.split(',').map((s) => Number(s.trim())).filter((n) => Number.isInteger(n) && n > 0)
+          : undefined;
+
+        if (seqArg && (seqs === undefined || seqs.length === 0)) {
+          console.error(`--seq expects one or more positive integers (e.g. --seq 41 or --seq 41,42), got: ${seqArg}`);
+          process.exitCode = 1;
+          break;
+        }
+
+        const pending = countRejected(db);
+        if (!rest.includes('--yes')) {
+          // Report what WOULD actually be cleared, not the total — an operator running
+          // `unreject --seq 41` under incident conditions must not be shown the whole
+          // rejected count as if it were the blast radius of their command.
+          const wouldClear = seqs ? countRejectedIn(db, seqs) : pending;
+          console.log(jsonMode
+            ? JSON.stringify({ dryRun: true, rejectedTotal: pending, wouldClear, seqs: seqs ?? 'all' })
+            : `${pending} event(s) currently marked terminally rejected.\n` +
+              `Would clear ${wouldClear}: ${seqs ? seqs.join(', ') : 'ALL of them'}\n` +
+              `Re-run with --yes to apply. They will be re-shipped on the next sync round.`);
+          break;
+        }
+
+        const cleared = clearRejected(db, seqs);
+        console.log(jsonMode
+          ? JSON.stringify({ cleared })
+          : `Cleared ${cleared} reject marker(s) — these events will be re-shipped on the next sync round.`);
+        break;
+      } finally {
+        try { db.close(); } catch { /* already closed or closing — safe to ignore */ }
+      }
+    }
+
     default:
       console.log(`astramem-local sync <subcommand>
 
@@ -144,6 +189,12 @@ Subcommands:
                         merge (dedup by event_id, ADR-011 conflict resolve),
                         advance + persist the watermark.
   watermark [--json]   Show the current persisted pull watermark.
+  unreject [--seq N[,N]] [--yes] [--json]
+                        Clear the terminal-reject marker on events the cloud
+                        rejected, so they ship again. Use this if the cloud
+                        rejected events it SHOULD have accepted (a cloud bug) —
+                        without it those events are stranded on this device
+                        forever. Dry-run unless --yes.
   backfill [--scope team|org] [--project X] [--yes]
                         Bulk-promote private memories + backfill create-event
                         content so existing memories sync to the cloud. Dry-run

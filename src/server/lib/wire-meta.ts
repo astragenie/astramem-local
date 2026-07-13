@@ -185,4 +185,13 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       an earlier team-lead assignment of 036 to #218) -- ground-truthed
 //       against `git ls-tree origin/main -- migrations/` immediately before
 //       each renumber, not against other agents' claims.
-export const SCHEMA_VERSION = 35 as const;
+// 036 = memory_events.rejected_at, additive nullable column (sync-promote-
+//       wedge fix): a cloud-rejected create/promote_scope event is now
+//       marked TERMINAL client-side (never resent) instead of being
+//       re-selected by listUnsynced on every round forever. See migration
+//       036 file header and src/sync/shipper.ts shipOnce's rejected_seqs
+//       handling. Authored as 033; renumbered to 036 at merge time -- 033,
+//       034 and 035 were all taken by PRs (#208, #218, #212) that landed
+//       while this branch was open. Ground-truthed against
+//       `git ls-tree origin/main -- migrations/`, not against the branch.
+export const SCHEMA_VERSION = 36 as const;

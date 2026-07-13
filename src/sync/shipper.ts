@@ -22,6 +22,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DB } from '../storage/db.js';
+import type { MemoryScope } from '../contracts/index.js';
 import { logger } from '../log/logger.js';
 
 export const SYNC_PROTOCOL = 'astramem-sync@1' as const;
@@ -119,6 +120,16 @@ interface UnsyncedRow {
   payload_json: string | null;
   content_hash: string | null;
   created_at: number;
+  /**
+   * The atom's CURRENT scope (memories.scope), not the scope frozen into
+   * this row's payload_json at write time. null only when the LEFT JOIN
+   * found no memories row (the erase_request-for-a-ghost-atom case) — never
+   * null for a `create`/`promote_scope` row, since those always require a
+   * live memories row to satisfy this query's own WHERE clause below.
+   * {@link buildEnvelope} uses this to correct a stale `create` payload
+   * scope on the wire — see that function's doc comment for why.
+   */
+  current_scope: MemoryScope | null;
 }
 
 /**
@@ -149,14 +160,22 @@ interface UnsyncedRow {
  * same scope-decision reason as `unsupersede`: cross-device propagation of a
  * disable-flow purge/restore is a real follow-up, not solved by this
  * primitive, and the wire schema doesn't list either type yet.
+ *
+ * `e.rejected_at IS NULL` (sync-promote-wedge fix, migration 036): a row the
+ * cloud has permanently rejected (DEC-048 invariant 1 — see
+ * SyncIngestService.IsPrivateScopedViolation) must never be reselected. Only
+ * `shipOnce` ever sets `rejected_at`, from the cloud's `rejected_seqs`
+ * response field — see that function's doc comment.
  */
 export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
   return db
     .prepare(`
-      SELECT e.seq, e.event_id, e.event_type, e.atom_id, e.payload_json, e.content_hash, e.created_at
+      SELECT e.seq, e.event_id, e.event_type, e.atom_id, e.payload_json, e.content_hash, e.created_at,
+        m.scope AS current_scope
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
+        AND e.rejected_at IS NULL
         AND e.event_type NOT IN ('archive', 'restore', 'unsupersede', 'purge', 'unpurge')
         AND (
           m.scope IN ('team', 'org')
@@ -204,6 +223,7 @@ export function countUnsynced(db: DB): number {
       FROM memory_events e
       LEFT JOIN memories m ON m.id = e.atom_id
       WHERE e.synced_at IS NULL
+        AND e.rejected_at IS NULL
         AND e.event_type NOT IN ('archive', 'restore', 'unsupersede', 'purge', 'unpurge')
         AND (
           m.scope IN ('team', 'org')
@@ -215,6 +235,87 @@ export function countUnsynced(db: DB): number {
     `)
     .get() as { n: number };
   return row.n;
+}
+
+/** Count of events currently marked terminally rejected by the cloud. */
+export function countRejected(db: DB): number {
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM memory_events WHERE rejected_at IS NOT NULL`)
+    .get() as { n: number };
+  return row.n;
+}
+
+/**
+ * How many of THESE seqs are actually marked rejected — i.e. what a targeted
+ * `sync unreject --seq N` would really clear. Distinct from {@link countRejected}
+ * so the dry-run preview reports the blast radius of the command the operator
+ * typed, not the total across the whole log.
+ */
+export function countRejectedIn(db: DB, seqs: number[]): number {
+  if (seqs.length === 0) return 0;
+  const placeholders = seqs.map(() => '?').join(',');
+  const row = db
+    .prepare(`SELECT COUNT(*) AS n FROM memory_events WHERE rejected_at IS NOT NULL AND seq IN (${placeholders})`)
+    .get(...seqs) as { n: number };
+  return row.n;
+}
+
+/**
+ * Clear the terminal-reject marker so these events are shipped again — the
+ * escape hatch for the one-way door `rejected_at` otherwise creates.
+ *
+ * WHY THIS MUST EXIST: `rejected_at` is set from the cloud's verdict, and the
+ * cloud can be WRONG. If a cloud bug (or a bad deploy, or a guard regression)
+ * rejects events it should have accepted, the shipper marks them terminal and
+ * `listUnsynced` excludes them forever — the memories are then stranded on the
+ * device with no code path that can ever reach them again. Retrying a *correct*
+ * reject is merely wasteful; being unable to retry an *incorrect* one is
+ * permanent data loss. So the door opens both ways, by hand, on purpose.
+ *
+ * Deliberately manual (an operator runs `astramem-local sync unreject`): an
+ * automatic retry would recreate the very wedge this migration was written to
+ * kill. Returns the number of rows cleared.
+ */
+export function clearRejected(db: DB, seqs?: number[]): number {
+  if (seqs !== undefined) {
+    if (seqs.length === 0) return 0;
+    const placeholders = seqs.map(() => '?').join(',');
+    return db
+      .prepare(`UPDATE memory_events SET rejected_at = NULL WHERE seq IN (${placeholders}) AND rejected_at IS NOT NULL`)
+      .run(...seqs).changes;
+  }
+  return db
+    .prepare(`UPDATE memory_events SET rejected_at = NULL WHERE rejected_at IS NOT NULL`)
+    .run().changes;
+}
+
+/**
+ * A `create` event's payload_json is frozen at write time (append-only log —
+ * MemoryEventRepo never rewrites a past event). `promoteScope` (memory-
+ * events.ts) promotes `memories.scope` and appends a NEW `promote_scope`
+ * event, but by design never rewrites the original `create` event's stale
+ * scope field. If that original `create` event hasn't shipped yet (e.g. the
+ * atom was private for a while before being promoted), `listUnsynced` still
+ * selects it — the row is now team/org — but its payload still says
+ * whatever scope it had at creation. The cloud's DEC-048 invariant 1 guard
+ * (SyncIngestService.IsPrivateScopedViolation) reads exactly that frozen
+ * field and rejects the event forever, wedging the device's sync cursor
+ * (sync-promote-wedge fix).
+ *
+ * The fix is applied HERE, at ship time, rather than by rewriting the
+ * stored event row: the device is the only side that knows the atom's
+ * live scope (the cloud never received the private `create` in the first
+ * place, so it has no history to replay), and layering the correction into
+ * the outgoing envelope means every already-queued, already-wedged event
+ * self-heals the next time this device ships — no separate backfill step
+ * needed for a device that upgrades and restarts its shipper. Only ever
+ * narrows/corrects `create` payloads for rows `listUnsynced` already
+ * scoped to team/org, so this can never cause a private payload to ship —
+ * it only ever replaces one non-private scope string with another.
+ */
+function withCurrentScope(r: UnsyncedRow, payload: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (r.event_type !== 'create' || payload === null || r.current_scope === null) return payload;
+  return { ...payload, scope: r.current_scope };
 }
 
 export function buildEnvelope(
@@ -233,7 +334,7 @@ export function buildEnvelope(
       event_id: r.event_id,
       event_type: r.event_type,
       atom_id: r.atom_id,
-      payload_json: r.payload_json !== null ? (JSON.parse(r.payload_json) as Record<string, unknown>) : null,
+      payload_json: withCurrentScope(r, r.payload_json !== null ? (JSON.parse(r.payload_json) as Record<string, unknown>) : null),
       content_hash: r.content_hash,
       created_at: r.created_at,
     })),
@@ -243,6 +344,13 @@ export function buildEnvelope(
 export interface ShipOnceResult {
   shipped: number;
   acked: number;
+  /**
+   * Count of events this round the cloud named in `rejected_seqs` — marked
+   * `rejected_at` (terminal, never resent) rather than `synced_at`
+   * (sync-promote-wedge fix). 0 on a cloud that doesn't send the field yet
+   * (additive, astramem-sync@1 is not version-bumped for it).
+   */
+  rejected: number;
   /** true when there was nothing eligible to ship. */
   idle: boolean;
 }
@@ -254,7 +362,7 @@ export interface ShipOnceResult {
 export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
   const batchSize = opts.batchSize ?? DEFAULT_BATCH;
   const rows = listUnsynced(opts.db, batchSize);
-  if (rows.length === 0) return { shipped: 0, acked: 0, idle: true };
+  if (rows.length === 0) return { shipped: 0, acked: 0, rejected: 0, idle: true };
 
   const envelope = buildEnvelope(opts.deviceId, opts.workspaceId, lastAckedSeq(opts.db), rows);
   const doFetch = opts.fetchImpl ?? fetch;
@@ -277,15 +385,32 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
     const bodyText = await readErrorBody(res);
     throw new Error(`sync ship failed: HTTP ${res.status}${bodyText ? ` ${bodyText}` : ''}`);
   }
-  const body = (await res.json()) as { acked_seq?: number };
+  const body = (await res.json()) as { acked_seq?: number; rejected_seqs?: unknown };
   const ackedSeq = typeof body.acked_seq === 'number' ? body.acked_seq : -1;
   if (ackedSeq < 0) {
     throw new Error('sync ship failed: response missing acked_seq');
   }
 
-  // Mark ONLY the rows we actually shipped and the server acked. A partial
-  // ack (acked_seq mid-batch) leaves the tail unsynced for the next round.
-  const shippedAcked = rows.filter(r => r.seq <= ackedSeq).map(r => r.seq);
+  // sync-promote-wedge fix: `rejected_seqs` (additive response field) names
+  // events the cloud PERMANENTLY rejected (DEC-048 invariant 1) this round.
+  // These must never be retried — restrict to seqs actually in this batch
+  // (defense against a malformed/foreign value) and mark them `rejected_at`,
+  // not `synced_at`: they were never durably persisted on the cloud side, so
+  // claiming them synced would be a lie, but resending them is pointless —
+  // the same reject fires every time on the same frozen payload.
+  const rowSeqs = new Set(rows.map(r => r.seq));
+  const rejectedSeqs = Array.isArray(body.rejected_seqs)
+    ? body.rejected_seqs.filter((s): s is number => typeof s === 'number' && rowSeqs.has(s))
+    : [];
+  const rejectedSet = new Set(rejectedSeqs);
+
+  // Mark ONLY the rows we actually shipped and the server acked — excluding
+  // anything it separately named as rejected. Without this exclusion, a
+  // rejected row whose seq happens to fall at or below `acked_seq` (because
+  // a LATER seq in the same batch succeeded) would get falsely marked
+  // synced_at, masking the reject instead of recording it. A partial ack
+  // (acked_seq mid-batch) leaves the tail unsynced for the next round.
+  const shippedAcked = rows.filter(r => r.seq <= ackedSeq && !rejectedSet.has(r.seq)).map(r => r.seq);
   if (shippedAcked.length > 0) {
     const now = Date.now();
     const placeholders = shippedAcked.map(() => '?').join(', ');
@@ -293,7 +418,14 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
       .prepare(`UPDATE memory_events SET synced_at = ? WHERE seq IN (${placeholders}) AND synced_at IS NULL`)
       .run(now, ...shippedAcked);
   }
-  return { shipped: rows.length, acked: shippedAcked.length, idle: false };
+  if (rejectedSeqs.length > 0) {
+    const now = Date.now();
+    const placeholders = rejectedSeqs.map(() => '?').join(', ');
+    opts.db
+      .prepare(`UPDATE memory_events SET rejected_at = ? WHERE seq IN (${placeholders}) AND rejected_at IS NULL`)
+      .run(now, ...rejectedSeqs);
+  }
+  return { shipped: rows.length, acked: shippedAcked.length, rejected: rejectedSeqs.length, idle: false };
 }
 
 /** Pure backoff schedule: base * 2^failures, capped. Exported for tests. */
@@ -475,7 +607,7 @@ export function startShipper(opts: ShipperOpts): ShipperHandle {
       failures = 0;
       recordShipSuccess(opts.db, attemptAt);
       if (!result.idle) {
-        logger.info({ shipped: result.shipped, acked: result.acked }, 'sync: batch shipped');
+        logger.info({ shipped: result.shipped, acked: result.acked, rejected: result.rejected }, 'sync: batch shipped');
       }
     } catch (err) {
       failures++;
