@@ -416,8 +416,31 @@ export function defaultConfig(): Config {
     ingestIdempotency: { retentionDays: 7 },
     pipeline: { concurrency: 1 },
     consolidation: {
+      // autoAcceptThreshold stays NULL — deliberately, and against the obvious
+      // instinct to just pick 0.92. Measured against the live store 2026-07-13:
+      // cosine similarity on short atomic memories measures sentence SHAPE, not
+      // meaning, so there is no safe numeric threshold. Real proposals found:
+      //
+      //   sim 0.920  "bun test .../grade-writer-telemetry.test.mts"
+      //          vs  "bun test .../grade-writer-learnings.test.mts"   <- DIFFERENT FILES
+      //   sim 0.872  "Compliance with COLORADO AI regulations is expensive"
+      //          vs  "Compliance with EU AI regulations is expensive"  <- DIFFERENT LAWS
+      //
+      // Those differ by ONE WORD, and that word is the entire fact. No threshold
+      // separates them from a true paraphrase, because the embedding cannot see
+      // the difference. Raising the bar to 0.95 merges nothing (0 proposals
+      // qualify); lowering it to 0.92 already merges two different test files.
+      // The knob is the wrong instrument.
       autoAcceptThreshold: null,
-      contradictionDetection: { mode: 'off', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 },
+
+      // 'enabled', not 'off' (2026-07-13). THIS is the right instrument: an LLM
+      // judge that reads the pair and asks whether they actually say the same
+      // thing. It catches Colorado-vs-EU in one cheap local call, which cosine
+      // never will at any threshold. Shipped 'off' pending eval (FEAT-456
+      // SLICE-1); the eval has now happened — see tests/consolidate/
+      // contradiction-e2e.test.ts, which pins the exact false-merge pairs found
+      // in the live store.
+      contradictionDetection: { mode: 'enabled', minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200 },
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
