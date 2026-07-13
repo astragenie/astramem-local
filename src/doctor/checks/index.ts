@@ -105,6 +105,7 @@ import { checkEntityRelations } from './entity-relations.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
 import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
 import { checkEntityLinkRate } from './entity-link-rate.js';
+import { checkVecIndex } from './vec-index.js';
 import { checkConsolidationJudgeTelemetry } from './consolidation-judge.js';
 import { checkAutoCapture } from './auto-capture.js';
 import { checkProxyCapture } from './proxy-capture.js';
@@ -180,6 +181,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkEntityNameQuality(dataDir, encryptionEnabled),
     checkAtomValidityExtraction(dataDir, encryptionEnabled),
     checkEntityLinkRate(dataDir, encryptionEnabled),
+    checkVecIndex(dataDir, encryptionEnabled),
     checkConsolidationJudgeTelemetry(dataDir, encryptionEnabled),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),
