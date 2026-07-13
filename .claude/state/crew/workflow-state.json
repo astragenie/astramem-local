@@ -1,13 +1,13 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-13T11:20:24.259Z",
+  "updatedAt": "2026-07-13T12:58:56.347Z",
   "currentRun": {
-    "title": "FEAT479 SLICE433: Engineering-rich prompt + type-conditioned richness + AtomSchema cap bump",
+    "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
     "goal": "**Memories should be self-contained explanations, not trivia.**",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-13T11:20:24.258Z",
-    "updatedAt": "2026-07-13T11:20:24.258Z",
+    "startedAt": "2026-07-13T12:58:56.347Z",
+    "updatedAt": "2026-07-13T12:58:56.347Z",
     "next": "Begin implementation",
     "gates": {
       "review": null,
@@ -22,7 +22,7 @@
       "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T112024Z-run-brief-feat479-slice433-engineering-rich-prompt-type-conditioned-ri.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T125856Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
       "handoffs": [],
       "reviewResult": null,
       "validationPlan": null,
@@ -35,6 +35,74 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
+      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-13T12:17:57.475Z",
+      "updatedAt": "2026-07-13T12:17:57.475Z",
+      "completedAt": "2026-07-13T12:17:57.475Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T121757Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
+    {
+      "title": "FEAT479 SLICE433: Engineering-rich prompt + type-conditioned richness + AtomSchema cap bump",
+      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-13T11:20:24.258Z",
+      "updatedAt": "2026-07-13T11:20:24.258Z",
+      "completedAt": "2026-07-13T11:20:24.258Z",
+      "next": "Begin implementation",
+      "gates": {
+        "review": null,
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T112024Z-run-brief-feat479-slice433-engineering-rich-prompt-type-conditioned-ri.md",
+        "handoffs": [],
+        "reviewResult": null,
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT479 SLICE432: Prompt architecture + extractProfile config/envelope surface",
       "goal": "**Memories should be self-contained explanations, not trivia.**",
@@ -130,74 +198,6 @@
       },
       "artifacts": {
         "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T095744Z-run-brief-feat481-slice427-migration-027-entityrelationrepo-storage-pr.md",
-        "handoffs": [],
-        "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
-      "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-12T20:54:42.198Z",
-      "updatedAt": "2026-07-12T20:54:42.198Z",
-      "completedAt": "2026-07-12T20:54:42.198Z",
-      "next": "Begin implementation",
-      "gates": {
-        "review": null,
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null,
-        "help": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205442Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
-        "handoffs": [],
-        "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT474 SLICE425: install.sh: idempotent skip-if-current-version (FORCE override) + /dev/tty interactive reattach",
-      "goal": "**Port Supermemory's `install.sh` UX patterns onto our own installer** —",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-12T20:54:37.963Z",
-      "updatedAt": "2026-07-12T20:54:37.963Z",
-      "completedAt": "2026-07-12T20:54:37.963Z",
-      "next": "Begin implementation",
-      "gates": {
-        "review": null,
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null,
-        "help": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260712T205437Z-run-brief-feat474-slice425-install-sh-idempotent-skip-if-current-versi.md",
         "handoffs": [],
         "reviewResult": null,
         "validationPlan": null,
