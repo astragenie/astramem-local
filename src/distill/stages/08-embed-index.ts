@@ -13,6 +13,8 @@ import type { NormalizedMemory } from './07-memory-normalize.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { EntityRepo } from '../../storage/entities.js';
+import { EntityRelationRepo } from '../../storage/entity-relations.js';
+import { normalizeEntityName } from '../../entity/normalize.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import type { DB } from '../../storage/db.js';
 import type { Config } from '../../config/config.js';
@@ -100,6 +102,7 @@ export async function embedAndIndex(
   const memRepo = new MemoryRepo(ctx.db);
   const eventsRepo = new MemoryEventRepo(ctx.db);
   const entityRepo = new EntityRepo(ctx.db);
+  const relationRepo = new EntityRelationRepo(ctx.db);
   const vecStore = new SqliteVecStore(ctx.db, ctx.embed.dim);
 
   // Batch embed all texts at once for efficiency
@@ -209,11 +212,48 @@ export async function embedAndIndex(
     // fact-level start/end," never "now" — so it falls back to the parent
     // memory's own valid_from at query time (design doc §3.1), not baked in
     // here.
+    // Name -> entities.id map for THIS atom, built alongside the upsert loop
+    // above — reused immediately below to resolve FEAT-481 relation triples.
+    // Keyed by normalizeEntityName so a relation's subject/object (validated
+    // against the same atom's entities[] names at stage 5, see
+    // filterAtomRelations in 05-extract.ts) always resolves here without a
+    // second DB round trip per name.
+    const entityIdByName = new Map<string, string>();
     for (const entity of mem.entities ?? []) {
       const entityId = entityRepo.upsert(entity.name, entity.kind);
+      entityIdByName.set(normalizeEntityName(entity.name), entityId);
       entityRepo.linkWithValidity(memoryId, entityId, {
         validAt: parseIsoToMs(entity.valid_at),
         invalidAt: parseIsoToMs(entity.invalid_at),
+      });
+    }
+
+    // FEAT-481 (SLICE-2/SLICE-435): persist entity-to-entity relation triples
+    // this atom asserted. Stage 5's filterAtomRelations already dropped any
+    // triple whose predicate wasn't in the closed enum or whose subject/
+    // object wasn't in this atom's own entities[] (no-hallucination guard),
+    // so this is name->id resolution + write only — a triple somehow still
+    // unresolvable here (defensive; should not happen post-stage-5) is
+    // skipped rather than thrown, same "never let one relation sink the
+    // whole memory insert" posture as the rest of this loop.
+    const relationValidFrom = ctx.capturedAtMs ?? Date.now();
+    for (const relation of mem.relations ?? []) {
+      const subjectId = entityIdByName.get(normalizeEntityName(relation.subject));
+      const objectId = entityIdByName.get(normalizeEntityName(relation.object));
+      if (!subjectId || !objectId) continue;
+
+      relationRepo.insert({
+        subjectEntityId: subjectId,
+        predicate: relation.predicate,
+        objectEntityId: objectId,
+        evidenceMemoryId: memoryId,
+        // design doc §2.1/§1: falls back to the atom's own evidence, then a
+        // truncated text, so entity_relations.source_excerpt (NOT NULL) is
+        // always satisfiable without a nullable escape hatch.
+        sourceExcerpt: relation.evidence ?? mem.evidence ?? mem.text.slice(0, 500),
+        confidence: relation.confidence ?? mem.confidence,
+        validFrom: parseIsoToMs(relation.valid_at) ?? relationValidFrom,
+        validTo: parseIsoToMs(relation.invalid_at),
       });
     }
 

@@ -14,12 +14,15 @@ import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import {
   AtomSchema,
   EntityKindSchema,
+  RELATION_PREDICATES,
   resolveExtractionPrompt,
   type Atom,
   type ExtractProfile,
 } from '../prompts/extract.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { TransientError } from '../../pipeline/errors.js';
+import { normalizeEntityName } from '../../entity/normalize.js';
+import { childLogger } from '../../log/logger.js';
 
 export type { ExtractProfile };
 
@@ -163,6 +166,77 @@ function coerceEntityKinds(raw: unknown): unknown {
   return { ...atom, entities };
 }
 
+/** Closed predicate vocabulary (design doc §2.4/AC-6): the 10 cloud-parity
+ * values plus the local-only 'other' bucket — exact, case-sensitive match. */
+const VALID_RELATION_PREDICATES = new Set<string>([...RELATION_PREDICATES, 'other']);
+
+/**
+ * Filter an atom's raw `relations[]` BEFORE `AtomSchema.safeParse` runs, so a
+ * malformed or hallucinated triple is dropped silently rather than sinking
+ * the whole atom (AC-6/AC-7 — "log at debug, don't fail the atom"). Mirrors
+ * `coerceEntityKinds` above, but DROPS instead of coercing: an out-of-enum
+ * predicate has no safe-narrow fallback here (unlike entity `kind` -> 'other'
+ * — 'other' is already a real value in the predicate enum, so silently
+ * remapping an invalid string to it would misrepresent the model's actual,
+ * unusable output as a deliberate 'other' choice).
+ *
+ * Guards enforced (design doc §2.2/§2.3):
+ * 1. `predicate` must be one of the 11 exact lowercase values.
+ * 2. `subject`/`object` must be non-empty strings and `subject !== object`.
+ * 3. No-hallucination (AC-7): `subject`/`object` (name/whitespace-normalized
+ *    via the shared `normalizeEntityName` seam) must each match a name in
+ *    this SAME atom's own `entities[]` list — scoped to this atom only, per
+ *    the named v1 limitation in the design doc.
+ */
+function filterAtomRelations(raw: unknown): unknown {
+  if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+  const atom = raw as Record<string, unknown>;
+  if (!Array.isArray(atom.relations)) return raw;
+
+  const entityNames = new Set(
+    (Array.isArray(atom.entities) ? atom.entities : [])
+      .map((e) => (e && typeof e === 'object' && typeof (e as Record<string, unknown>).name === 'string'
+        ? normalizeEntityName((e as Record<string, unknown>).name as string)
+        : null))
+      .filter((n): n is string => n !== null),
+  );
+
+  const log = childLogger({ stage: 'extract' });
+  const relations = atom.relations.filter((relation) => {
+    if (relation === null || typeof relation !== 'object' || Array.isArray(relation)) {
+      log.debug({ relation }, 'relations[]: dropped non-object entry');
+      return false;
+    }
+    const r = relation as Record<string, unknown>;
+    const subject = typeof r.subject === 'string' ? r.subject : null;
+    const object = typeof r.object === 'string' ? r.object : null;
+    const predicate = typeof r.predicate === 'string' ? r.predicate : null;
+
+    if (!subject || !object || !predicate) {
+      log.debug({ relation: r }, 'relations[]: dropped — missing subject/object/predicate');
+      return false;
+    }
+    if (!VALID_RELATION_PREDICATES.has(predicate)) {
+      log.debug({ predicate }, 'relations[]: dropped — predicate not in closed enum');
+      return false;
+    }
+    if (subject === object) {
+      log.debug({ subject }, 'relations[]: dropped — subject === object');
+      return false;
+    }
+    if (!entityNames.has(normalizeEntityName(subject)) || !entityNames.has(normalizeEntityName(object))) {
+      log.debug(
+        { subject, object },
+        'relations[]: dropped — no-hallucination guard, subject/object not in this atom\'s own entities[]',
+      );
+      return false;
+    }
+    return true;
+  });
+
+  return { ...atom, relations };
+}
+
 /**
  * Try to parse the LLM response into an Atom[].
  * Strips markdown fences if present.
@@ -202,6 +276,7 @@ function tryParseAtoms(raw: string): Atom[] | null {
     // take the whole atom down with it.
     return wrapper.data.atoms
       .map(coerceEntityKinds)
+      .map(filterAtomRelations)
       .filter((a) => AtomSchema.safeParse(a).success) as Atom[];
   } catch {
     return null;
