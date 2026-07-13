@@ -96,13 +96,46 @@ export interface OverheadDelta {
   mean: number;
 }
 
-/** proxied - direct, per percentile — the number S2-AC-4 asserts p50 is
- *  under 10ms for. */
+/**
+ * proxied - direct overhead, computed **per-request-pair** — the number
+ * S2-AC-4 / S4-AC-2 assert p50 is under 10ms for.
+ *
+ * FEAT-458-S1-design.md §3.2 pins this explicitly and warns against the
+ * mistake this function previously made: subtracting `proxied.p50 -
+ * direct.p50` (two INDEPENDENTLY-computed aggregate percentiles) is not the
+ * same statistic as the p50 of the per-request deltas whenever the two
+ * distributions aren't perfectly rank-correlated — e.g. direct=[1,2,3,4,5],
+ * proxied=[100,2,3,4,5] (only request 0 sees a 99ms outlier): the aggregate
+ * method reports a 1ms p50 "systemic" overhead (direct's p50=3,
+ * proxied's p50=4) that no single request actually experienced, while the
+ * per-pair delta [99,0,0,0,0] correctly reports a 0ms p50 overhead with one
+ * outlier visible only at p95/p99 (see the regression test in
+ * latency.test.ts using exactly this series). The S2 review that first
+ * flagged this bug found it didn't change that slice's PASS verdict (margin
+ * was ~29x — 0.34ms vs. a 10ms threshold) but S4b's capture-live margin is
+ * expected to be tighter, so the aggregate/per-pair distinction now matters
+ * for the number itself, not just its correctness in principle.
+ *
+ * Requires `direct` and `proxied` to carry the same number of samples,
+ * index-aligned — true for every caller in this harness because both legs
+ * always run with the same `iterations`/`warmup` config (bench.mts), so
+ * request i of one leg and request i of the other are the "pair" the design
+ * doc means (not concurrency-paired, index-paired).
+ */
 export function computeOverhead(direct: ExtendedLatencyStats, proxied: ExtendedLatencyStats): OverheadDelta {
+  if (direct.raw.length !== proxied.raw.length) {
+    throw new Error(
+      `computeOverhead requires index-aligned equal-length samples (direct n=${direct.raw.length}, proxied n=${proxied.raw.length}) ` +
+      '— per-request-pair delta is undefined otherwise (FEAT-458-S1-design.md §3.2)',
+    );
+  }
+  const deltas = direct.raw.map((d, i) => (proxied.raw[i] as number) - d);
+  const sorted = [...deltas].sort((a, b) => a - b);
+  const mean = deltas.length > 0 ? deltas.reduce((a, b) => a + b, 0) / deltas.length : 0;
   return {
-    p50: proxied.p50 - direct.p50,
-    p95: proxied.p95 - direct.p95,
-    p99: proxied.p99 - direct.p99,
-    mean: proxied.mean - direct.mean,
+    p50: nearestRank(sorted, 50),
+    p95: nearestRank(sorted, 95),
+    p99: nearestRank(sorted, 99),
+    mean,
   };
 }
