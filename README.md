@@ -680,7 +680,8 @@ publishing flow.
 
 ## Status
 
-**v0.15.1** — local-first memory daemon with 32 migrations, a 20-tool MCP surface, hybrid
+**v0.15.1** — local-first memory daemon with 32 migrations, an [MCP surface](#mcp-tools-claude-code-auto-discovery)
+whose tool count is CI-enforced against `contracts/manifests/mcp-tools.v1.json`, hybrid
 BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
 promote) with full provenance (`why_memory`), consolidation proposals, entity-tagged memory
 with point-in-time (`as_of`) filtering, usefulness-ranked user/agent profiles (live-computed,
