@@ -198,7 +198,28 @@ export async function embedAndIndex(
       embedding_dim: ctx.embed.dim,
       evidence: mem.evidence ?? null,
       scope: 'private',
-      valid_from: ctx.capturedAtMs ?? undefined,
+      // Issue #205 (AC-1/AC-2): the atom's own valid_at, when the source text
+      // bounded this atom's START, refines the fallback capture-time anchor —
+      // parseIsoToMs returns `null` (not undefined) for an absent/unparseable
+      // hint, so `?? ctx.capturedAtMs ?? undefined` preserves the exact
+      // pre-fix default (capture time, then insert-time wall-clock) whenever
+      // the model didn't (or couldn't) state a start bound — the overwhelming
+      // majority of atoms today, since this is a new optional field.
+      valid_from: parseIsoToMs(mem.valid_at) ?? ctx.capturedAtMs ?? undefined,
+      // invalid_at is ONLY ever set by the model when the source text stated
+      // an end bound (see the prompt's "omit by default" rule) — `null` here
+      // means "unbounded," never "expire it," matching parseIsoToMs's
+      // contract and InsertInput.valid_to's doc comment.
+      valid_to: parseIsoToMs(mem.invalid_at),
+      // Every atom reaching this stage passed through AtomSchema, which now
+      // carries valid_at/invalid_at for every extraction profile (issue
+      // #205 AC-3) — so this write path always "looked," regardless of
+      // whether the model found an actual bound. `true` here is what lets
+      // the doctor "Atom validity extraction" canary distinguish this
+      // pipeline's atoms from legacy rows and non-extraction write paths
+      // (/remember, MCP remember, the eval harness), which never pass this
+      // field and correctly default to `false`.
+      validity_extracted: true,
       capture_source: ctx.captureSource ?? null,
       // atom@2: stage 5 always runs entity extraction as part of this same
       // atom's LLM call, so every atom from this pipeline has "declared"

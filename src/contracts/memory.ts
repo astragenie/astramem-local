@@ -110,4 +110,14 @@ export interface Memory {
    *  `'proxy'` from the LLM proxy relay's capture fork (ADR-013). See
    *  InsertInput.capture_source. */
   capture_source: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  /** Issue #205 provenance flag — `false` (default, every pre-fix row) means
+   *  "extraction never considered this atom's validity"; `true` means
+   *  extraction looked (`valid_to` is `null` because the source text left
+   *  the fact genuinely unbounded, or populated because the source text
+   *  stated an end). Distinguishes REAL-zero ("this fact is unbounded, we
+   *  checked") from BROKEN-zero ("nobody ever looked") per ADR-015 — see
+   *  migrations/033-atom-validity-extracted.sql. Deliberately NOT a
+   *  query-path input: `valid_to`/`validityFilterClause()` semantics are
+   *  unchanged by this field. */
+  validity_extracted: boolean;
 }

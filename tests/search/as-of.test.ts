@@ -321,3 +321,91 @@ describe('FEAT-401 (real path): as_of through actual MemoryEventRepo.supersede()
     }
   });
 });
+
+// Issue #205 (AC-6): the exact motivating scenario from the issue — a fact
+// that was true for a real period and then genuinely stopped being true.
+// Unlike the FEAT-401 tests above (which seed validity via a manual
+// setValidity() UPDATE, simulating supersede()), these seed valid_to
+// directly through InsertInput — the write capability issue #205 adds
+// (previously insertRow's SQL never included valid_to at all, so this
+// exact scenario was impossible to represent without a raw UPDATE).
+describe('issue #205: atom-level valid_to via InsertInput (Postgres -> Kafka scenario)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+  });
+
+  const jan = Date.parse('2026-01-15T00:00:00.000Z');
+  const feb = Date.parse('2026-02-15T00:00:00.000Z');
+  const apr = Date.parse('2026-04-01T00:00:00.000Z');
+  const today = Date.parse('2026-07-13T00:00:00.000Z');
+
+  it('as_of February returns the Postgres fact; as_of today returns only Kafka', async () => {
+    // The January atom: valid_from=Jan (captured then), valid_to=April (the
+    // source text stated the migration date) — this is the write path fix
+    // (AC-2): before this fix, valid_to could never be set at insert time.
+    const postgresId = repo.insert({
+      type: 'fact', text: 'The event store uses Postgres.', normalized_text: 'the event store uses postgres.',
+      repo: null, project: null, branch: null, agent: null, session_id: null,
+      hash: 'ac6-postgres', source_hash: null, importance: 0.5,
+      valid_from: jan, valid_to: apr, validity_extracted: true,
+    });
+    // The April atom: valid_from=April (captured then, and also the stated
+    // start of this fact), still unbounded (valid_to omitted — currently true).
+    const kafkaId = repo.insert({
+      type: 'fact', text: 'The event store uses Kafka.', normalized_text: 'the event store uses kafka.',
+      repo: null, project: null, branch: null, agent: null, session_id: null,
+      hash: 'ac6-kafka', source_hash: null, importance: 0.5,
+      valid_from: apr, validity_extracted: true,
+    });
+
+    const opts = { db, embed: buildMockEmbed(), weights: SEARCH_WEIGHTS };
+
+    const atFeb = await search('event store', { as_of: feb }, 10, opts);
+    const febIds = atFeb.map(h => h.id);
+    expect(febIds).toContain(postgresId);
+    expect(febIds).not.toContain(kafkaId);
+
+    const atToday = await search('event store', { as_of: today }, 10, opts);
+    const todayIds = atToday.map(h => h.id);
+    expect(todayIds).toContain(kafkaId);
+    expect(todayIds).not.toContain(postgresId);
+
+    // AC-6: an unbounded fact lands with valid_to = NULL and
+    // validity_extracted = 1 ("extraction looked, found no bound").
+    const kafkaMem = repo.get(kafkaId);
+    expect(kafkaMem?.valid_to).toBeNull();
+    expect(kafkaMem?.validity_extracted).toBe(true);
+  });
+
+  it('AC-6: a legacy row (validity_extracted = 0, valid_to = NULL) is still returned by a current-snapshot query — no regression', async () => {
+    // No valid_to, no validity_extracted — every pre-fix caller's exact shape.
+    const legacyId = repo.insert({
+      type: 'fact', text: 'a legacy fact from before issue #205 shipped', normalized_text: 'a legacy fact',
+      repo: null, project: null, branch: null, agent: null, session_id: null,
+      hash: 'ac6-legacy', source_hash: null, importance: 0.5,
+    });
+    const legacyMem = repo.get(legacyId);
+    expect(legacyMem?.validity_extracted).toBe(false);
+    expect(legacyMem?.valid_to).toBeNull();
+
+    const opts = { db, embed: buildMockEmbed(), weights: SEARCH_WEIGHTS };
+    const hits = await search('legacy fact before issue', {}, 10, opts);
+    expect(hits.map(h => h.id)).toContain(legacyId);
+
+    // And it resolves correctly under as_of too — validityFilterClause()
+    // treats a NULL valid_to identically regardless of validity_extracted,
+    // exactly as designed (the flag is provenance-only, never a query input).
+    // Use a real future instant (not the fixed `today` constant, which can
+    // be earlier than the actual insert-time wall-clock `valid_from` this
+    // repo.insert() call stamps) so the as_of filter's `valid_from <= T`
+    // half is guaranteed to pass regardless of when the test suite runs.
+    const asOfFuture = Date.now() + 60_000;
+    const hitsAsOf = await search('legacy fact before issue', { as_of: asOfFuture }, 10, opts);
+    expect(hitsAsOf.map(h => h.id)).toContain(legacyId);
+  });
+});
