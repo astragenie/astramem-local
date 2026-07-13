@@ -94,4 +94,39 @@ describe('MemoryRepo', () => {
     const types = hits.map(h => h.type).sort();
     expect(types).toEqual(['event', 'note']);
   });
+
+  // FEAT-458 S3 (ADR-013): InsertInput.capture_source widened to admit
+  // 'proxy' alongside the FEAT-455 'auto_capture' | 'hook_close' | null
+  // values — this is the typed insert boundary the LLM proxy relay's
+  // capture fork writes through.
+  it('accepts capture_source "proxy" and round-trips it onto the memories row', () => {
+    const id = repo.insert({
+      type: 'fact', text: 'proxy-captured fact', normalized_text: 'proxy-captured fact',
+      hash: 'cs-proxy-1', repo: null, project: null, branch: null, agent: null, session_id: null,
+      source_hash: null, capture_source: 'proxy',
+    });
+    const m = repo.get(id);
+    expect(m?.capture_source).toBe('proxy');
+  });
+
+  it('still accepts the pre-existing "auto_capture" / "hook_close" / omitted values unchanged', () => {
+    const auto = repo.insert({
+      type: 'fact', text: 'auto-captured fact', normalized_text: 'auto-captured fact',
+      hash: 'cs-auto-1', repo: null, project: null, branch: null, agent: null, session_id: null,
+      source_hash: null, capture_source: 'auto_capture',
+    });
+    const hookClose = repo.insert({
+      type: 'fact', text: 'hook-close fact', normalized_text: 'hook-close fact',
+      hash: 'cs-hookclose-1', repo: null, project: null, branch: null, agent: null, session_id: null,
+      source_hash: null, capture_source: 'hook_close',
+    });
+    const omitted = repo.insert({
+      type: 'fact', text: 'manual fact', normalized_text: 'manual fact',
+      hash: 'cs-omitted-1', repo: null, project: null, branch: null, agent: null, session_id: null,
+      source_hash: null,
+    });
+    expect(repo.get(auto)?.capture_source).toBe('auto_capture');
+    expect(repo.get(hookClose)?.capture_source).toBe('hook_close');
+    expect(repo.get(omitted)?.capture_source).toBeNull();
+  });
 });
