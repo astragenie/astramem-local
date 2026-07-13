@@ -54,6 +54,75 @@ const CODEX_OAUTH_CLIENT_ID = 'app_EMoamEEZ73f0CkXaXp7hrann';
  */
 const DEFAULT_MODEL = 'gpt-5.4-mini';
 
+/**
+ * MODEL-DRIFT HARDENING (2026-07-13).
+ *
+ * The constant above is a snapshot of a catalog OpenAI changes without notice. When it
+ * drifts, the failure is an opaque `HTTP 400 — "The 'X' model is not supported when
+ * using Codex with a ChatGPT account"` from deep inside a chat call, with no hint of
+ * what IS supported. That message cost real debugging time on 2026-07-13, and the
+ * answer was sitting in a file on disk the whole time.
+ *
+ * The Codex CLI maintains `~/.codex/models_cache.json` — the account's actual catalog.
+ * Read it, and turn an unusable 400 into an actionable error that names the models the
+ * account can really use.
+ *
+ * Deliberately NON-FATAL if the cache is missing or unparseable: a stale/absent cache
+ * must not break a provider that would otherwise work. We only *validate against* the
+ * catalog when we can actually read one — never gate on its presence.
+ */
+export interface CodexCatalogEntry {
+  id: string;
+  displayName?: string;
+}
+
+export function readCodexModelCatalog(authPath?: string): CodexCatalogEntry[] | null {
+  try {
+    // The catalog sits beside auth.json in the same ~/.codex dir.
+    const dir = authPath ? dirname(authPath) : join(homedir(), '.codex');
+    const raw = readFileSync(join(dir, 'models_cache.json'), 'utf8');
+    const parsed = JSON.parse(raw) as unknown;
+    const list = Array.isArray(parsed)
+      ? parsed
+      : ((parsed as { models?: unknown[] } | null)?.models ?? null);
+    if (!Array.isArray(list)) return null;
+    const entries = list
+      .map((m): CodexCatalogEntry | null => {
+        const o = m as { id?: string; slug?: string; model?: string; display_name?: string };
+        const id = o.id ?? o.slug ?? o.model;
+        return id ? { id, displayName: o.display_name } : null;
+      })
+      .filter((e): e is CodexCatalogEntry => e !== null);
+    return entries.length > 0 ? entries : null;
+  } catch {
+    return null; // absent / unreadable / malformed — not fatal, see doc above.
+  }
+}
+
+/** Prefer a `-mini` (cheap tier) model from the catalog; else the first entry. */
+export function pickCheapestCodexModel(catalog: CodexCatalogEntry[]): string {
+  return (catalog.find((m) => m.id.includes('-mini')) ?? catalog[0]!).id;
+}
+
+/**
+ * Validate the configured model against the account's real catalog, BEFORE any chat
+ * call. Returns a human-actionable message, or null if the model is fine (or if we have
+ * no catalog to check against, in which case we do not block).
+ */
+export function validateCodexModel(model: string, catalog: CodexCatalogEntry[] | null): string | null {
+  if (!catalog) return null; // no catalog -> cannot validate -> do not block
+  if (catalog.some((m) => m.id === model)) return null;
+  const ids = catalog.map((m) => m.id).join(', ');
+  const suggestion = pickCheapestCodexModel(catalog);
+  return (
+    `codex-subscription: model '${model}' is NOT in this account's Codex catalog.\n` +
+    `  available: ${ids}\n` +
+    `  suggested (cheap tier): ${suggestion}\n` +
+    `  Set config.llm.{extraction,compaction}.model, or delete it to use the default.\n` +
+    `  (Catalog read from ~/.codex/models_cache.json — OpenAI changes this without notice.)`
+  );
+}
+
 const CHAT_TIMEOUT_MS = 60_000;
 const REFRESH_TIMEOUT_MS = 15_000;
 
@@ -273,6 +342,17 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
     this.model = config.model ?? DEFAULT_MODEL;
     this.authPath = config.authPath ?? defaultAuthPath();
 
+    // Fail LOUDLY and USEFULLY at construction, not with an opaque HTTP 400 on the
+    // first chat call. `gpt-5-mini` (a plausible-looking name that is NOT in the Codex
+    // catalog) produced exactly that on 2026-07-13: a bare 400 with no hint of what the
+    // account can actually use — while the real catalog sat in ~/.codex/models_cache.json
+    // the whole time. This is a WARNING, not a throw: the catalog may be stale or absent,
+    // and a stale cache must never break a provider that would otherwise work.
+    const catalogWarning = validateCodexModel(this.model, readCodexModelCatalog(this.authPath));
+    if (catalogWarning) {
+      childLogger({ provider: this.name, model: this.model }).warn({ authPath: this.authPath }, catalogWarning);
+    }
+
     childLogger({ provider: this.name, model: this.model }).warn(
       { authPath: this.authPath },
       'codex-subscription is EXPERIMENTAL: extraction/compaction traffic will transit your ChatGPT ' +
@@ -473,6 +553,25 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
     const raw = await res.text();
     const { text, inputTokens: inTokens, outputTokens: outTokens } = parseSseResponse(raw);
     const latency_ms = Date.now() - t0;
+
+    // Poison gate: an empty (or whitespace-only) text is never a legitimate
+    // success for any call site of this provider. This is the same failure
+    // shape as the qwen3:8b empty-extract bug that previously poisoned
+    // distill — a 200 with vacuous content stored as if it were a real
+    // extraction. Here it would happen if OpenAI changes the SSE event
+    // shape (renames/drops the `message` output_item parseSseResponse looks
+    // for above) — `res.ok` stays true and `text` silently comes back ''
+    // with no error thrown. TransientError (not Deterministic) because this
+    // may be upstream flakiness rather than permanent drift, so the normal
+    // retry-then-poison job machinery gets a chance to recover first rather
+    // than a malformed/garbage result being stored outright.
+    if (text.trim().length === 0) {
+      const reqKind = opts?.json === true ? 'a json-mode' : 'a plain-chat';
+      log.warn({ latency_ms }, 'codex-subscription returned empty text');
+      throw new TransientError(
+        `codex-subscription returned empty text for ${reqKind} request — SSE shape drift or upstream failure`,
+      );
+    }
 
     // Subscription-quota usage has no per-token USD price — always 0 (see
     // pricing.ts's "unknown model" convention, which this deliberately
