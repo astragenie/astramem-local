@@ -1,0 +1,17 @@
+{
+  "id": "fx43-rich-lesson-embed-cache-stampede",
+  "title": "Embed cache stampede lesson + fix decision (SLICE-433 richness regression guard)",
+  "difficulty": "clean",
+  "notes": "SLICE-433 (FEAT-479 AC-5/AC-6/AC-8): added specifically to make prompt richness regressions measurable. gold_atoms for the lesson and decision are written in the 300-800 char rich shape (claim + rationale + consequence/tradeoff + provenance anchor) the v3 prompt targets, so a future prompt change that reverts to bare/contextless output ('the fix was applied' with no referent) should show up as a weaker semantic match under the judge, not just a schema pass. Caveat: lib/judge.ts scores semantic recall/precision/type-accuracy only — it does not score length or richness directly, so this fixture measures 'was the durable content captured' rather than 'was it captured in the rich shape.' Verifying the rich SHAPE itself is judged manually / by the SLICE-436 proof-phase harness, not this bench, until the judge is extended (out of scope here per the SLICE-433 dispatch instructions).",
+  "turns": [
+    { "role": "user", "text": "Every time we redeployed with a fresh cache directory, the first 50 or so embed requests all hit Ollama in parallel instead of hitting the on-disk embed cache, because the cache-warm check only looked at whether the directory existed, not whether the specific model's shard file inside it existed yet." },
+    { "role": "assistant", "text": "So a fresh cache dir left over from a different model version looks 'warm' to that check even though it has nothing useful cached for the current model, and every concurrent embed call independently reruns the same cold miss instead of one of them populating it first?" },
+    { "role": "user", "text": "Exactly, and it took down the daemon's embed queue for about 40 seconds after every redeploy, because Ollama can't serve that many concurrent embed calls at once. We fixed it by checking for the specific model's shard file instead of just the directory, and adding a single-flight lock so only one request populates the cache while the rest wait on it." },
+    { "role": "assistant", "text": "Got it — I'll make sure the single-flight lock also has a timeout so a crashed populator doesn't wedge every waiter forever." },
+    { "role": "user", "text": "Good call, add a 10-second timeout on the lock wait." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "The embed cache's warm-check only verified that the cache directory existed, not that the specific model's shard file inside it existed — so a fresh cache dir left over from a redeploy with a different model version still read as 'warm', and every one of the roughly 50 concurrent embed requests independently missed the cache and hit Ollama at once. Because Ollama can't serve that many concurrent embed calls at once, the daemon's embed queue stalled for about 40 seconds after every redeploy." },
+    { "type": "decision", "text": "Fix the embed-cache stampede by checking for the specific model's shard file, not just directory existence, in the cache-warm check, and by adding a single-flight lock so only one request populates a cold model's cache while the rest wait on it instead of each re-fetching independently — with a 10-second timeout on the lock wait so a crashed populator can never wedge every waiter forever." }
+  ]
+}

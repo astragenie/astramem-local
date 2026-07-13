@@ -5,6 +5,25 @@ import { childLogger } from '../../log/logger.js';
 const CHAT_TIMEOUT_MS = 60_000;
 const HEALTH_TIMEOUT_MS = 10_000;
 
+// FEAT-479 (SLICE-433 review fix, HIGH): mirrors src/distill/stages/03-chunk.ts:12's
+// CHARS_PER_TOKEN heuristic (not imported — that module belongs to the distill layer,
+// this one is a generic provider, and the constant is a one-line rough estimate, not a
+// shared contract). Used only to size num_ctx below.
+const CHARS_PER_TOKEN = 4;
+/** Ollama's own observed per-model default on this box; never shrink num_ctx below it. */
+const NUM_CTX_FLOOR = 4096;
+/** VRAM guard for a background local daemon — native context on these models goes up to
+ * 32K, but an unbounded num_ctx risks claiming more memory than a background process
+ * should. 16384 covers the v3 engineering prompt (~3.8k tokens) plus a large chunk plus a
+ * generous output budget with room to spare. */
+const NUM_CTX_CAP = 16384;
+/** Assumed output budget when the caller passes no `maxTokens` (e.g. health-style tiny
+ * calls) — not a real limit, just an estimate input for the num_ctx sizing formula. */
+const DEFAULT_OUTPUT_BUDGET_TOKENS = 512;
+/** Slack so num_ctx isn't sized to the exact byte, given the char/4 estimate is rough
+ * and Ollama's own chat-template wrapping adds a little overhead per message. */
+const NUM_CTX_SLACK_TOKENS = 512;
+
 export interface OllamaLLMConfig {
   baseUrl?: string;
   model?: string;
@@ -104,14 +123,41 @@ export class OllamaLLMProvider implements LLMProvider {
     // Every genuine JSON caller passes `json: true` explicitly (05-extract,
     // contradiction-judge, extract-entities, tier2-infer), so opt-in is safe.
     const useJson = opts?.json === true;
+
+    // FEAT-479 (SLICE-433 review fix, HIGH): num_ctx was never set anywhere in this
+    // provider, so every call ran at Ollama's per-model default (observed 4096 for
+    // qwen2.5:7b on this box). The v3 engineering extraction prompt alone is ~3.8k
+    // tokens — with a chunk and maxTokens on top, that overflowed the default window,
+    // and Ollama's overflow behavior is to silently truncate/shift context rather than
+    // error, which is indistinguishable from the model just producing a thinner result
+    // (this is what the builder's own v1-vs-v3 smoke test actually hit: 3 atoms
+    // collapsed to 1). Size num_ctx dynamically per call — estimated input tokens
+    // (chars/4, see CHARS_PER_TOKEN above) + the requested output budget + slack —
+    // rather than hardcoding a number that only happens to cover today's prompt.
+    const estimatedInputTokens = messages.reduce((sum, m) => sum + m.content.length, 0) / CHARS_PER_TOKEN;
+    const outputBudgetTokens = opts?.maxTokens ?? DEFAULT_OUTPUT_BUDGET_TOKENS;
+    const numCtx = Math.min(
+      NUM_CTX_CAP,
+      Math.max(NUM_CTX_FLOOR, Math.ceil(estimatedInputTokens + outputBudgetTokens + NUM_CTX_SLACK_TOKENS)),
+    );
+
+    // Single options object, built once — a prior version of this code spread
+    // `{ options: {...} }` twice (once for temperature, once for num_predict), and a
+    // second top-level spread of the SAME key fully replaces the first rather than
+    // merging, so `temperature` was silently dropped on every call that also passed
+    // `maxTokens` (i.e. every real extraction/compaction/entity call in production —
+    // all three always pass both). Fixed by merging into one object.
+    const options: Record<string, number> = { num_ctx: numCtx };
+    if (opts?.temperature !== undefined) options.temperature = opts.temperature;
+    if (opts?.maxTokens !== undefined) options.num_predict = opts.maxTokens;
+
     const body = {
       model: this.model,
       messages,
       stream: false,
       ...(useJson ? { format: 'json' } : {}),
       ...(this.think !== undefined ? { think: this.think } : {}),
-      ...(opts?.temperature !== undefined ? { options: { temperature: opts.temperature } } : {}),
-      ...(opts?.maxTokens !== undefined ? { options: { num_predict: opts.maxTokens } } : {}),
+      options,
     };
 
     const res = await fetchWithRetry(

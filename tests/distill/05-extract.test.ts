@@ -5,6 +5,7 @@ import { extractChunk, extract, BudgetExceeded } from '../../src/distill/stages/
 import {
   EXTRACTION_SYSTEM_PROMPT,
   EXTRACTION_SYSTEM_PROMPT_V2,
+  EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_PENDING,
 } from '../../src/distill/prompts/extract.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
@@ -393,7 +394,7 @@ describe('extract stage — FEAT-479 profile threading', () => {
     return { llm, systemPrompts };
   }
 
-  it('AC-2 byte-identical default: extractChunk called with no profile arg sends the v1 engineering prompt', async () => {
+  it('SLICE-433 default: extractChunk called with no profile arg sends the v3 engineering-rich prompt (v1 no longer the default)', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
@@ -402,6 +403,25 @@ describe('extract stage — FEAT-479 profile threading', () => {
     await extractChunk(0, 'chunk text', llm, budget, 10.0);
 
     expect(systemPrompts).toHaveLength(1);
+    expect(systemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT_V3);
+    expect(systemPrompts[0]).not.toBe(EXTRACTION_SYSTEM_PROMPT);
+  });
+
+  it("SLICE-433 rollback lever: ASTRA_EXTRACT_PROMPT=v1 sends the original engineering prompt verbatim", async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, systemPrompts } = makeCapturingLLM(VALID_EXTRACTION_JSON);
+
+    const prev = process.env.ASTRA_EXTRACT_PROMPT;
+    process.env.ASTRA_EXTRACT_PROMPT = 'v1';
+    try {
+      await extractChunk(0, 'chunk text', llm, budget, 10.0);
+    } finally {
+      if (prev === undefined) delete process.env.ASTRA_EXTRACT_PROMPT;
+      else process.env.ASTRA_EXTRACT_PROMPT = prev;
+    }
+
     expect(systemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT);
   });
 

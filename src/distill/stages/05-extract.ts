@@ -124,7 +124,16 @@ async function callExtract(
   const result = await provider.chat(messages, {
     temperature: EXTRACT_TEMPERATURE,
     json: true,
-    maxTokens: 1500,
+    // FEAT-479 (SLICE-433): bumped 1500 -> 2500. The v3 engineering prompt's
+    // 300-800 char rich shape for lesson/decision atoms (vs v1/v2's ~500
+    // char cap applied uniformly) makes a full 2-6 atom chunk with a couple
+    // of rich atoms noticeably larger JSON than before; 1500 tokens left
+    // little headroom before truncating mid-atom into an unparseable
+    // response (which the caller can only see as a TransientError retry,
+    // not a clear cause). Cost is driven by the provider's actual usage.usd,
+    // not this ceiling, so raising it does not change the per-call budget
+    // estimate above.
+    maxTokens: 2500,
   });
 
   return { text: result.text, usageUsd: result.usage.usd };

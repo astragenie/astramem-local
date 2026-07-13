@@ -156,6 +156,71 @@ describe('ollama-llm', () => {
     });
   });
 
+  // ---------------------------------------------------------------------------
+  // FEAT-479 (SLICE-433 review fix, HIGH): num_ctx was never sent, so every
+  // call ran at Ollama's per-model default (observed 4096) — the v3
+  // extraction prompt alone (~3.8k tokens) could overflow that with no error
+  // surfaced (Ollama silently truncates/shifts context on overflow). These
+  // tests pin the dynamic sizing formula: floor at 4096, cap at 16384,
+  // scaled to estimated input + requested output + slack in between. Also
+  // covers the options-object merge fix (temperature was previously
+  // silently dropped whenever maxTokens was also set — see ollama.ts).
+  describe('num_ctx sizing', () => {
+    async function captureOptions(messages: { role: 'system' | 'user' | 'assistant'; content: string }[], opts?: { temperature?: number; json?: boolean; maxTokens?: number }) {
+      let captured: Record<string, unknown> | undefined;
+      globalThis.fetch = vi.fn(async (_url: unknown, init?: unknown) => {
+        captured = JSON.parse((init as RequestInit).body as string);
+        return new Response(JSON.stringify(chatResponse('{}').body), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      await p.chat(messages, opts);
+      return captured!.options as Record<string, number>;
+    }
+
+    it('floors num_ctx at 4096 for a tiny prompt with no maxTokens', async () => {
+      const options = await captureOptions([{ role: 'user', content: 'hi' }]);
+      expect(options.num_ctx).toBe(4096);
+    });
+
+    it('sizes num_ctx to cover estimated input + maxTokens + slack for a real extraction-shaped call', async () => {
+      // ~15,300 chars (roughly the real v3 system prompt's size) + an 800-token chunk's
+      // worth of chars, with maxTokens: 2500 — mirrors the real 05-extract.ts call shape.
+      const systemContent = 'x'.repeat(15_300);
+      const userContent = 'y'.repeat(800 * 4);
+      const options = await captureOptions(
+        [
+          { role: 'system', content: systemContent },
+          { role: 'user', content: userContent },
+        ],
+        { temperature: 0.1, json: true, maxTokens: 2500 },
+      );
+      const estimatedInputTokens = (systemContent.length + userContent.length) / 4;
+      expect(options.num_ctx).toBeGreaterThanOrEqual(estimatedInputTokens + 2500);
+      expect(options.num_ctx).toBeLessThanOrEqual(16384);
+    });
+
+    it('caps num_ctx at 16384 for a huge synthetic input', async () => {
+      const hugeContent = 'z'.repeat(200_000); // ~50k tokens estimated
+      const options = await captureOptions([{ role: 'user', content: hugeContent }], { maxTokens: 4000 });
+      expect(options.num_ctx).toBe(16384);
+    });
+
+    it('always sends num_ctx even when neither temperature nor maxTokens is set', async () => {
+      const options = await captureOptions([{ role: 'user', content: 'hi' }]);
+      expect(options.num_ctx).toBeDefined();
+    });
+
+    it('merge fix: sends BOTH temperature and num_predict together (previously num_predict silently clobbered temperature)', async () => {
+      const options = await captureOptions([{ role: 'user', content: 'hi' }], { temperature: 0.1, maxTokens: 2500 });
+      expect(options.temperature).toBe(0.1);
+      expect(options.num_predict).toBe(2500);
+      expect(options.num_ctx).toBeDefined();
+    });
+  });
+
   describe('health()', () => {
     it('returns ok:true when model present in tags', async () => {
       globalThis.fetch = mockFetch([tagsResponse(['qwen2.5-coder:7b', 'llama3'])]) as unknown as typeof fetch;
