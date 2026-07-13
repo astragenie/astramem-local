@@ -252,6 +252,18 @@ export function configToYaml(cfg: Config): string {
     ...(cfg.crossEncoder.sidecarUrl ? [line(1, 'sidecarUrl', cfg.crossEncoder.sidecarUrl)] : []),
     ...(cfg.crossEncoder.model ? [line(1, 'model', cfg.crossEncoder.model)] : []),
     '',
+    // Multi-hop query decomposition (WS6) — OFF by default. See
+    // src/search/decompose.ts before flipping `enabled: true`.
+    line(0, 'multiHop'),
+    line(1, 'enabled', cfg.multiHop.enabled),
+    line(1, 'provider', cfg.multiHop.provider),
+    line(1, 'minQueryWords', cfg.multiHop.minQueryWords),
+    line(1, 'maxSubQueries', cfg.multiHop.maxSubQueries),
+    line(1, 'maxSupplemental', cfg.multiHop.maxSupplemental),
+    line(1, 'supplementalWeight', cfg.multiHop.supplementalWeight),
+    line(1, 'timeoutMs', cfg.multiHop.timeoutMs),
+    ...(cfg.multiHop.model ? [line(1, 'model', cfg.multiHop.model)] : []),
+    '',
     line(0, 'recallPack'),
     line(1, 'enabled', cfg.recallPack.enabled),
     line(1, 'budgetTokens', cfg.recallPack.budgetTokens),

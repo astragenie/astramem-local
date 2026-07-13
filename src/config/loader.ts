@@ -43,6 +43,7 @@ import {
   applyFusionGovernance,
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
+  applyMultiHopGovernance,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -317,6 +318,7 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     ...cfg,
     search: applyFusionGovernance(cfg.search),
     distill: applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill)),
+    multiHop: applyMultiHopGovernance(cfg.multiHop),
   };
 }
 

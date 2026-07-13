@@ -32,7 +32,11 @@ function resolveAzureApiKey(): string {
   return key;
 }
 
-function buildLLMProvider(
+// Exported (not just module-local) so WS6's query decomposer
+// (src/search/decompose.ts) can build a one-off LLMProvider from
+// config.llm.extraction without a second provider-selection surface —
+// see resolveDecomposeOpts's doc comment.
+export function buildLLMProvider(
   providerName: Config['llm']['compaction']['provider'],
   model: string,
   config: Config,
