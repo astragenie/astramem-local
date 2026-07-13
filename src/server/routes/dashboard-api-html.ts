@@ -8,24 +8,14 @@
  * placeholder. No OpenAPI spec, no JS, no external assets — a full
  * Swagger UI would be overengineering for a single-operator local daemon.
  *
- * Auth + esc() duplicated locally by design (see
- * dashboard-consolidation-html.ts for the rationale).
+ * Auth is the shared `checkDashboardAuth` helper (dashboard-auth.ts) — Bearer
+ * header, the HttpOnly `astramem_dash` cookie bootstrapped by
+ * src/server/routes/dashboard.ts, or (when active) devNoAuth's loopback-only
+ * bypass. esc() remains duplicated locally by design.
  */
 
-import type { FastifyInstance, FastifyRequest } from 'fastify';
-
-const COOKIE_NAME = 'astramem_dash';
-
-function readCookie(req: FastifyRequest, name: string): string | undefined {
-  const header = req.headers.cookie;
-  if (!header) return undefined;
-  for (const part of header.split(';')) {
-    const eq = part.indexOf('=');
-    if (eq === -1) continue;
-    if (part.slice(0, eq).trim() === name) return part.slice(eq + 1).trim();
-  }
-  return undefined;
-}
+import type { FastifyInstance } from 'fastify';
+import { checkDashboardAuth } from './dashboard-auth.js';
 
 function esc(s: string): string {
   return s
@@ -139,18 +129,15 @@ function renderPage(): string {
 </html>`;
 }
 
-export function dashboardApiRoute(token: string) {
+export function dashboardApiRoute(token: string, devNoAuthActive = false) {
   return async (app: FastifyInstance) => {
     app.get('/dashboard/api', async (req, reply) => {
-      const authHeader = req.headers.authorization;
-      const bearerOk = authHeader === `Bearer ${token}`;
-      const cookieOk = readCookie(req, COOKIE_NAME) === token;
-
-      if (!bearerOk && !cookieOk) {
+      const authResult = checkDashboardAuth(req, token, devNoAuthActive);
+      if (!authResult.allowed) {
         return reply
-          .code(401)
+          .code(authResult.status)
           .header('content-type', 'text/plain; charset=utf-8')
-          .send('401 Unauthorized');
+          .send(authResult.body);
       }
 
       return reply

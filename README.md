@@ -366,12 +366,13 @@ promotion.
 
 ### Dev no-auth mode
 
-Set `auth.devNoAuth: true` in `config.yaml` to hit the API from local tools
-(curl, a browser, a script) without supplying `Authorization: Bearer <token>` at all. `/dashboard`
-is NOT affected — it keeps its own independent Bearer/cookie/`?token=` auth (see
-[Dashboard](#dashboard)) regardless of this flag. Config-file
-only — there is no env var for this, so it's always an explicit, visible line in config.yaml, never
-a stray shell variable someone forgot was set.
+Set `auth.devNoAuth: true` in `config.yaml` to hit the API — and `/dashboard` (see
+[Dashboard](#dashboard)) — from local tools (curl, a browser, a script) without supplying
+`Authorization: Bearer <token>` at all. Dashboard keeps its own independent Bearer/cookie/`?token=`
+auth only while this flag is off; with it on, the dashboard is token-free too, subject to the same
+loopback Host-header guard as everything else. Config-file only — there is no env var for this, so
+it's always an explicit, visible line in config.yaml, never a stray shell variable someone forgot
+was set.
 
 What it protects against: the Bearer token doubles as a DNS-rebinding defense — without it, a
 malicious web page the operator's browser visits could `fetch('http://127.0.0.1:7777/...')` and
@@ -483,7 +484,9 @@ visit it once with `?token=<bearer>` — the daemon exchanges that for the cooki
 to the clean URL, so the bearer never persists in browser history or gets re-sent by the
 `<meta refresh>` poll. A missing or wrong credential returns a plain-text 401, never HTML, and the
 query string is stripped from the log line so a wrong `?token=` guess doesn't persist a candidate
-secret.
+secret. With [Dev no-auth mode](#dev-no-auth-mode) active, none of the above is required at
+all — the dashboard opens with no token or cookie, gated only by the same loopback Host-header
+check every other route gets under that mode.
 
 ---
 
