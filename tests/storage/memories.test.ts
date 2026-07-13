@@ -129,4 +129,44 @@ describe('MemoryRepo', () => {
     expect(repo.get(hookClose)?.capture_source).toBe('hook_close');
     expect(repo.get(omitted)?.capture_source).toBeNull();
   });
+
+  // Issue #205 (AC-2/AC-3): valid_to/validity_extracted round-trip through
+  // InsertInput -> insertRow -> hydrate(). Prior to this fix, insertRow's
+  // SQL never included valid_to at all — the column existed (migration 006)
+  // but nothing could ever write to it through the repo.
+  describe('issue #205: valid_to / validity_extracted', () => {
+    it('omitted valid_to/validity_extracted — defaults to NULL/false, byte-identical to pre-fix behavior', () => {
+      const id = repo.insert({
+        type: 'fact', text: 'unbounded fact, no validity fields passed', normalized_text: 'unbounded fact',
+        hash: 'valext-omitted-1', repo: null, project: null, branch: null, agent: null, session_id: null,
+        source_hash: null,
+      });
+      const m = repo.get(id);
+      expect(m?.valid_to).toBeNull();
+      expect(m?.validity_extracted).toBe(false);
+    });
+
+    it('explicit valid_to (epoch ms) round-trips — the write path issue #205 adds', () => {
+      const boundedAt = 1_700_000_000_000;
+      const id = repo.insert({
+        type: 'fact', text: 'a fact bounded by a stated end date', normalized_text: 'a fact bounded',
+        hash: 'valext-bounded-1', repo: null, project: null, branch: null, agent: null, session_id: null,
+        source_hash: null, valid_to: boundedAt, validity_extracted: true,
+      });
+      const m = repo.get(id);
+      expect(m?.valid_to).toBe(boundedAt);
+      expect(m?.validity_extracted).toBe(true);
+    });
+
+    it('validity_extracted: true with valid_to omitted — "extraction looked, found no bound" (unbounded, but examined)', () => {
+      const id = repo.insert({
+        type: 'fact', text: 'a fact extraction examined and found genuinely unbounded', normalized_text: 'unbounded examined',
+        hash: 'valext-examined-unbounded-1', repo: null, project: null, branch: null, agent: null, session_id: null,
+        source_hash: null, validity_extracted: true,
+      });
+      const m = repo.get(id);
+      expect(m?.valid_to).toBeNull();
+      expect(m?.validity_extracted).toBe(true);
+    });
+  });
 });

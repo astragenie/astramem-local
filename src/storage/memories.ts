@@ -33,6 +33,28 @@ export interface InsertInput {
    */
   valid_from?: number;
   /**
+   * Issue #205 (AC-2): bitemporal validity end (epoch ms), populated ONLY
+   * when the extraction stage's own atom-level `invalid_at` hint (AtomSchema,
+   * src/distill/prompts/extract.ts) states the source text bounds this
+   * atom's claim. `undefined`/`null` (every pre-fix caller, and any atom
+   * whose fact is genuinely unbounded) inserts `NULL` — byte-identical to
+   * pre-fix behavior; `validityFilterClause()` is untouched by this field.
+   * A hallucinated end date is worse than none, so callers must only pass
+   * this when the source text actually stated a bound — never a guess.
+   */
+  valid_to?: number | null;
+  /**
+   * Issue #205 (AC-2/AC-3) provenance flag — see Memory.validity_extracted's
+   * doc comment for the full REAL-zero/BROKEN-zero rationale. `undefined`
+   * (every pre-fix caller: `/remember`, MCP `remember`, the eval harness)
+   * stores `0` — "extraction never considered this atom's validity," the
+   * correct default for a write path that never ran the extractor. Only the
+   * distill pipeline's stage-8 write (src/distill/stages/08-embed-index.ts)
+   * passes `true`, since that is the one path where AtomSchema's
+   * `valid_at`/`invalid_at` fields were actually available to the model.
+   */
+  validity_extracted?: boolean;
+  /**
    * atom@2 typed entities (contracts/schemas/atom.v2.schema.json
    * `entities[]`) declared by the caller for THIS atom, embedded verbatim in
    * the create-event sync payload (see insertWithCreateEvent below) — never
@@ -74,9 +96,13 @@ export interface InsertInput {
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
- *  string[] | null in get()); archived is stored as SQLite INTEGER 0/1
- *  (hydrated to boolean). */
-type MemoryRow = Omit<Memory, 'derived_from' | 'archived'> & { derived_from: string | null; archived: number };
+ *  string[] | null in get()); archived/validity_extracted are stored as
+ *  SQLite INTEGER 0/1 (hydrated to boolean). */
+type MemoryRow = Omit<Memory, 'derived_from' | 'archived' | 'validity_extracted'> & {
+  derived_from: string | null;
+  archived: number;
+  validity_extracted: number;
+};
 
 export interface FtsHit {
   id: string;
@@ -148,15 +174,16 @@ export class MemoryRepo {
       INSERT INTO memories
         (id, type, text, normalized_text, repo, project, branch, agent, session_id,
          importance, confidence, hash, embedding_provider, embedding_model, embedding_dim,
-         created_at, updated_at, source_hash, evidence, valid_from, scope, capture_source)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         created_at, updated_at, source_hash, evidence, valid_from, valid_to, scope, capture_source,
+         validity_extracted)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.type, input.text, input.normalized_text,
       input.repo, input.project, input.branch, input.agent, input.session_id,
       input.importance ?? 0.5, input.confidence ?? 0.5, input.hash,
       input.embedding_provider ?? null, input.embedding_model ?? null, input.embedding_dim ?? null,
-      now, now, input.source_hash, input.evidence ?? null, input.valid_from ?? now, input.scope ?? 'private',
-      input.capture_source ?? null
+      now, now, input.source_hash, input.evidence ?? null, input.valid_from ?? now, input.valid_to ?? null,
+      input.scope ?? 'private', input.capture_source ?? null, input.validity_extracted ? 1 : 0
     );
     return id;
   }
@@ -172,6 +199,7 @@ export class MemoryRepo {
       ...row,
       derived_from: row.derived_from ? (JSON.parse(row.derived_from) as string[]) : null,
       archived: row.archived === 1,
+      validity_extracted: row.validity_extracted === 1,
     };
   }
 

@@ -93,6 +93,24 @@ export const AtomSchema = z.object({
    * zod `.refine()`, so a bad triple drops without failing the whole atom —
    * see filterAtomRelations in 05-extract.ts). */
   relations: z.array(AtomRelationSchema).optional(),
+  /**
+   * Issue #205 (AC-1): atom-level bitemporal validity hints, mirroring the
+   * pattern AtomEntitySchema/AtomRelationSchema already have — generalized
+   * here to the atom's OWN claim, not just an entity's or relation's stated
+   * window. ISO-8601 date-time strings, extracted ONLY when the source text
+   * explicitly bounds THIS ATOM's fact with a start and/or end ("we used
+   * Postgres until March", "we migrated off Kafka last week", "as of
+   * yesterday we no longer..."). Omitted (not "now") when the source states
+   * no bound — an absent hint means "no stated validity window," which
+   * resolves at query time via the atom's own `valid_from` (set at insert
+   * time, unaffected by this field being absent) and `valid_to` staying
+   * `NULL` (currently valid) — never inferred or defaulted from silence. A
+   * hallucinated `invalid_at` is worse than none: it would silently expire a
+   * still-true fact. See src/distill/stages/08-embed-index.ts for how these
+   * flow into `InsertInput.valid_from`/`valid_to` at write time.
+   */
+  valid_at: z.string().optional(),
+  invalid_at: z.string().optional(),
 });
 
 export const ExtractionSchema = z.object({
@@ -261,7 +279,9 @@ Output STRICT JSON matching:
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
       "evidence": "<optional, short excerpt from source>",
-      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }]
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }],
+      "valid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact started being true>",
+      "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact stopped being true>"
     }
   ]
 }
@@ -300,6 +320,16 @@ Entities: list every specific named person, place, organization, or thing the at
 Omit "entities" entirely when the atom names nothing specific.
 valid_at/invalid_at: omit both unless the source explicitly states a start and/or end date for that entity's relationship to the atom.
 
+Atom-level validity (issue #205): the top-level valid_at/invalid_at fields bound THIS ATOM'S
+OWN fact in time — set either ONLY when the source explicitly states when the fact itself
+started and/or stopped being true (e.g. "I lived in Denver until last year, then moved to
+Austin", "we broke up back in March"). Omit both by default — a still-true fact (a current job,
+an ongoing relationship) MUST leave invalid_at unset. Never guess a bound from silence: a
+hallucinated invalid_at is worse than none, since it would silently mark a still-true personal
+fact as no longer valid. When a person's life genuinely changed (moved, changed jobs, a
+relationship ended), prefer emitting the OLD fact with invalid_at set to when it changed, plus a
+separate NEW fact for the current state, rather than only keeping the new one.
+
 Skip noise: greetings, small talk with no durable content, filler acknowledgments ("cool", "got it", "haha", "yeah totally").
 Skip secrets: passwords, tokens, financial account numbers, government ID numbers.
 Confidence reflects how clearly and directly the fact was stated: an explicit, unambiguous statement = 0.9; a hedge or maybe = 0.4.
@@ -333,7 +363,16 @@ Examples (illustrative only, not exhaustive — the shape of these IS the spec: 
 WRONG (vague summary + unresolved possessor + meta-commentary about the conversation itself — this is exactly the failure mode the banned-abstractions and possessor-qualification rules above exist to prevent):
 {"type":"note","text":"Discussed work stuff and some family things, sister going through something hard.","importance":0.5,"confidence":0.5}
 RIGHT (self-contained, possessor-qualified, states the actual fact instead of describing the conversation):
-{"type":"fact","text":"Sergey's sister Priya is currently going through a divorce, and has been having a difficult time with it lately.","importance":0.7,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}`;
+{"type":"fact","text":"Sergey's sister Priya is currently going through a divorce, and has been having a difficult time with it lately.","importance":0.7,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}
+
+6. Input (issue #205 — atom-level validity, a genuine life-timeline, not a same-conversation correction): "I lived in Denver for about three years, then moved to Austin last year for a new job. Loving it here so far." ->
+{"atoms":[
+  {"type":"fact","text":"Sergey lived in Denver for about three years before moving away last year.","importance":0.6,"confidence":0.8,"invalid_at":"2025-07-13","entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Denver","kind":"other"}]},
+  {"type":"fact","text":"Sergey moved to Austin last year for a new job, and has been enjoying it there so far.","importance":0.7,"confidence":0.85,"valid_at":"2025-07-13","entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]}
+]}
+NEGATIVE COUNTER-EXAMPLE — do NOT invent a bound the text never stated. Input: "I live in Austin and love it here." (no prior residence, no timeline mentioned) ->
+WRONG: {"type":"fact","text":"Sergey lives in Austin.","invalid_at":"2026-07-13", ...} — nothing in the source bounds this fact; a guessed invalid_at would silently mark a still-true fact as expired.
+RIGHT: {"type":"fact","text":"Sergey currently lives in Austin and enjoys living there.","importance":0.5,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]} — valid_at/invalid_at both omitted, per the "omit by default" rule above.`;
 
 /**
  * Resolve the extraction system prompt for one pipeline run. Precedence
@@ -558,7 +597,9 @@ Output STRICT JSON matching:
       "confidence": 0.0-1.0,
       "evidence": "<optional: an EXACT verbatim quote from the source — copy, never paraphrase>",
       "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }],
-      "relations": [{ "subject": "<entity name, must appear in this atom's own entities[]>", "predicate": "uses" | "depends_on" | "replaces" | "supersedes" | "mentions" | "relates_to" | "part_of" | "owned_by" | "assigned_to" | "created_by" | "other", "object": "<entity name, must appear in this atom's own entities[]>", "confidence": 0.0-1.0 }]
+      "relations": [{ "subject": "<entity name, must appear in this atom's own entities[]>", "predicate": "uses" | "depends_on" | "replaces" | "supersedes" | "mentions" | "relates_to" | "part_of" | "owned_by" | "assigned_to" | "created_by" | "other", "object": "<entity name, must appear in this atom's own entities[]>", "confidence": 0.0-1.0 }],
+      "valid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact started being true>",
+      "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact stopped being true>"
     }
   ]
 }
@@ -673,6 +714,21 @@ leave "relations" empty (or omit it) for that atom rather than emitting a low-co
 Omit "relations" entirely (or leave it empty) when the atom asserts no clear relation between
 two of its own named entities.
 
+Atom-level validity (issue #205): valid_at/invalid_at bound THIS ATOM'S OWN claim in time — set
+either ONLY when the source text explicitly states a start and/or end for the fact itself (e.g.
+"we used Postgres for the event store until March, then migrated to Kafka", "as of last week the
+API is no longer public", "we've used qwen2.5-coder since April"). Omit BOTH by default — an
+unbounded, still-true fact MUST leave invalid_at unset. Never infer, guess, or default a bound from
+silence or from general passage of time: a hallucinated invalid_at is WORSE than none, because it
+silently expires a fact that is actually still true. This is NOT the same situation as the "Final
+state only" rule below: that rule is for a value CORRECTED or reversed within the same discussion
+(a mistake caught before it ever shipped, e.g. epsilon 0.3 -> 0.1) — there, emit only the corrected
+atom, no invalid_at. Use valid_at/invalid_at instead when the transcript narrates a genuine
+TIMELINE where a fact was really true for a real period and then, at a later actual point in time,
+stopped being true (both states were real, not one a mistake) — in that case emit the OLD fact
+atom WITH invalid_at set to when it stopped, and a separate NEW fact atom for the current state
+(optionally with valid_at set to when it started, if the text states that too).
+
 Skip noise: greetings, repeated thinking, false starts, generic AI fluff.
 Skip secrets: tokens, API keys, passwords.
 Confidence reflects evidence strength: clear conclusion = 0.9; speculation = 0.3.
@@ -687,9 +743,12 @@ decision AND an event.
 Type discipline: assign exactly ONE type per the priority order above. Only reclassify a
 current property as a "lesson" when it's genuinely a failure/surprise — otherwise a stable
 property stays a "fact".
-Final state only: if a decision, fact, or config VALUE changes within the chunk, emit
-only the FINAL value (optionally add a lesson for why the earlier one was wrong) — never
-the stale, reverted value.
+Final state only: if a decision, fact, or config VALUE changes within the chunk because an
+earlier choice was a MISTAKE that got corrected before it ever took effect, emit only the FINAL
+value (optionally add a lesson for why the earlier one was wrong) — never the stale, reverted
+value. This differs from the atom-level validity case above: a reverted-before-shipping value
+was never really true, while a genuinely superseded fact (Postgres, then later Kafka) WAS true for
+its real period — bound it with invalid_at instead of dropping it.
 Empty is valid: if the chunk truly contains nothing durable (small talk, a plain
 acknowledgment, no claims/choices/errors/commands), output "atoms": [] — do not invent
 an atom just to have output.
@@ -735,4 +794,13 @@ length and richness for lesson/decision, and their brevity for fact/command/todo
 WRONG (contextless trivia — "the fix" names nothing, no rationale, meaningless to a future reader; this is the failure mode the richness and self-containment rules above exist to prevent):
 {"type":"todo","text":"Re-verify the fix before committing and pushing.","importance":0.5,"confidence":0.6}
 RIGHT (self-contained — names the exact fix and states why the check matters; still short/atomic, per the richness rule, because todo is not a lesson/decision):
-{"type":"todo","text":"Re-run the auth session-length test manually before committing the refresh-token maxAge fix (FIFTEEN_MINUTES_MS constant) — unit tests don't cover the 15-min boundary.","importance":0.6,"confidence":0.8}`;
+{"type":"todo","text":"Re-run the auth session-length test manually before committing the refresh-token maxAge fix (FIFTEEN_MINUTES_MS constant) — unit tests don't cover the 15-min boundary.","importance":0.6,"confidence":0.8}
+
+8. Input (issue #205 — atom-level validity, a genuine timeline, not a same-session correction): "We used Postgres for the event store for about six months. We migrated off Postgres to Kafka in April because we needed durable replay for downstream consumers." ->
+{"atoms":[
+  {"type":"fact","text":"The event store used Postgres until the April migration to Kafka.","importance":0.5,"confidence":0.85,"invalid_at":"2026-04-01","entities":[{"name":"Postgres","kind":"tech"},{"name":"Kafka","kind":"tech"}],"relations":[{"subject":"Kafka","predicate":"replaces","object":"Postgres","confidence":0.8}]},
+  {"type":"decision","text":"Migrate the event store off Postgres to Kafka in April, to get durable replay for downstream consumers — Postgres had served as the event store for about six months prior. Tradeoff: takes on Kafka's own operational surface (brokers, retention config) in exchange for replay guarantees Postgres's table-based store didn't provide.","importance":0.7,"confidence":0.85,"valid_at":"2026-04-01","entities":[{"name":"Postgres","kind":"tech"},{"name":"Kafka","kind":"tech"}]}
+]}
+NEGATIVE COUNTER-EXAMPLE — do NOT invent a bound the text never stated. Input: "We use Postgres for the event store." (no migration, no end mentioned) ->
+WRONG: {"type":"fact","text":"The event store uses Postgres.","invalid_at":"2026-07-13", ...} — there is nothing in the source bounding this fact; a guessed invalid_at would silently expire a still-true fact.
+RIGHT: {"type":"fact","text":"The event store uses Postgres.","importance":0.5,"confidence":0.85,"entities":[{"name":"Postgres","kind":"tech"}]} — valid_at/invalid_at both omitted, exactly as the "omit by default" rule above requires.`;

@@ -1,0 +1,42 @@
+-- 037: validity_extracted provenance flag (issue #205).
+--
+-- THE GAP: `valid_from`/`valid_to` (migration 006) are correct bitemporal
+-- storage, and `validityFilterClause()` (src/search/search.ts) is a correct
+-- reader. But nothing on the WRITE side ever populated `valid_to` from
+-- extraction — every atom landed `valid_to = NULL` ("currently valid")
+-- forever, whether that was genuinely true or simply because nobody looked.
+--
+-- THE TRAP (recorded here so the reasoning isn't lost): the obvious fix is
+-- to redefine `NULL` as "unknown" instead of "valid forever," then exclude
+-- unknowns at query time. That destroys the store — all 15,492 existing
+-- memories would vanish from every `as_of` query, and backfilling their
+-- validity is impossible (nothing can reconstruct intervals for text already
+-- extracted). The alternative, INCLUDING unknowns, is byte-identical to
+-- today's behavior. Either answer collapses to a no-op or a corpus-nuke, so
+-- this is not actually a query-semantics decision.
+--
+-- THE FIX: `valid_to` semantics are UNCHANGED — NULL still means "valid
+-- now," and `validityFilterClause()` is NOT touched by this migration or the
+-- code alongside it. Instead, this column separates REAL-zero from
+-- BROKEN-zero (ADR-015) as its own dimension:
+--   - validity_extracted = 0 (default): nobody looked. Every existing row
+--     backfills to this via the column default — legacy behavior at the
+--     query layer is byte-identical, zero risk to the existing corpus.
+--   - validity_extracted = 1: extraction actually considered this atom's
+--     validity. valid_to is NULL because the source text left the fact
+--     genuinely unbounded, or populated because the source text stated an
+--     end ("we migrated off Postgres in April").
+--
+-- This makes the REAL-zero/BROKEN-zero distinction recoverable (was it
+-- never examined, or examined and found unbounded?) and MEASURABLE — see
+-- src/doctor/checks.ts's "Atom validity extraction" canary, a rate check
+-- (ADR-015-compliant: % of recent atoms with validity_extracted = 1) rather
+-- than an existence check that would report green while the pipeline is
+-- silently producing zero real coverage.
+--
+-- One additive nullable-free column, same ALTER TABLE ADD COLUMN pattern as
+-- migrations 017/022/024/025/026/028 — `0` is a constant SQLite accepts
+-- directly in a NOT NULL ADD COLUMN (unlike migration 006's valid_from,
+-- which had no literal default available and needed a two-step
+-- add-then-backfill).
+ALTER TABLE memories ADD COLUMN validity_extracted INTEGER NOT NULL DEFAULT 0;

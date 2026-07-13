@@ -39,6 +39,43 @@ describe('AtomSchema.text cap (SLICE-433 AC-7)', () => {
   });
 });
 
+// Issue #205 (AC-1): atom-level valid_at/invalid_at, mirroring the pattern
+// AtomEntitySchema/AtomRelationSchema already had — generalized to the
+// atom's own claim. Both fields are optional strings (no ISO-8601 format
+// validation at the schema layer, same posture as the entity-level fields —
+// malformed values are handled defensively downstream by parseIsoToMs in
+// src/distill/stages/08-embed-index.ts, resolving to `null`/unbounded).
+describe('AtomSchema.valid_at / invalid_at (issue #205 AC-1)', () => {
+  it('accepts an atom with both valid_at and invalid_at set', () => {
+    const atom = { ...makeAtom('a bounded fact with a stated start and end'), valid_at: '2026-01-01T00:00:00.000Z', invalid_at: '2026-04-01T00:00:00.000Z' };
+    const result = AtomSchema.safeParse(atom);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.valid_at).toBe('2026-01-01T00:00:00.000Z');
+      expect(result.data.invalid_at).toBe('2026-04-01T00:00:00.000Z');
+    }
+  });
+
+  it('accepts an atom with only invalid_at (a fact bounded on its end only)', () => {
+    const atom = { ...makeAtom('a fact bounded only by a stated end'), invalid_at: '2026-04-01T00:00:00.000Z' };
+    const result = AtomSchema.safeParse(atom);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.valid_at).toBeUndefined();
+      expect(result.data.invalid_at).toBe('2026-04-01T00:00:00.000Z');
+    }
+  });
+
+  it('accepts an atom with neither field — the conservative default for an unbounded fact', () => {
+    const result = AtomSchema.safeParse(makeAtom('an unbounded fact, still true'));
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.valid_at).toBeUndefined();
+      expect(result.data.invalid_at).toBeUndefined();
+    }
+  });
+});
+
 // FEAT-479 (D3 §3.2) AC-2/AC-3/AC-4, updated by SLICE-433 AC-5/AC-6/AC-8:
 // resolveExtractionPrompt is the single choke point for the extraction-
 // prompt precedence chain. Precedence (highest first): ASTRA_EXTRACT_PROMPT
@@ -163,6 +200,31 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/"relations":\[\{"subject"/);
   });
 
+  // Issue #205 (AC-4): atom-level valid_at/invalid_at guidance — conservative
+  // by construction, omit-by-default, distinguished from the pre-existing
+  // "Final state only" same-session-correction rule.
+  it('states the atom-level validity JSON fields in the output shape', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/"valid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact started/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/"invalid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact stopped/);
+  });
+
+  it('states the conservative omit-by-default rule and the hallucination-is-worse-than-omission warning', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/Atom-level validity \(issue #205\)/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/Omit BOTH by default/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/a hallucinated invalid_at is WORSE than none/);
+  });
+
+  it('distinguishes atom-level validity from the "Final state only" same-session-correction rule', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/This is NOT the same situation as the "Final\nstate only" rule below/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/bound it with invalid_at instead of dropping it/);
+  });
+
+  it('includes the Postgres -> Kafka few-shot example and its omit-by-default negative counter-example', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/"invalid_at":"2026-04-01"/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/"valid_at":"2026-04-01"/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/NEGATIVE COUNTER-EXAMPLE/);
+  });
+
   // FEAT-479's conversational profile (SLICE-434) is NOT extended with
   // relations[] — design doc §2.5 scopes the prompt addition to the shared
   // engineering skeleton only; no direction to also add it to the
@@ -223,6 +285,26 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
   it('states Graphiti-pattern possessor qualification explicitly', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Possessor qualification/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Graphiti pattern/);
+  });
+
+  // Issue #205 (AC-4): atom-level valid_at/invalid_at guidance, conversational
+  // profile — same conservative omit-by-default posture as the engineering
+  // (V3) prompt, phrased for personal-life timelines rather than technical ones.
+  it('states the atom-level validity JSON fields in the output shape', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/"valid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact started/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/"invalid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact stopped/);
+  });
+
+  it('states the conservative omit-by-default rule and the hallucination-is-worse-than-omission warning', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Atom-level validity \(issue #205\)/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Omit both by default/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/hallucinated invalid_at is worse than none/);
+  });
+
+  it('includes the life-timeline few-shot example and its omit-by-default negative counter-example', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/"invalid_at":"2025-07-13"/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/"valid_at":"2025-07-13"/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/NEGATIVE COUNTER-EXAMPLE/);
   });
 
   // UPDATE (temporal-grounding fix, 2026-07-13): captured_at IS now threaded

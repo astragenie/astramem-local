@@ -194,4 +194,20 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       034 and 035 were all taken by PRs (#208, #218, #212) that landed
 //       while this branch was open. Ground-truthed against
 //       `git ls-tree origin/main -- migrations/`, not against the branch.
-export const SCHEMA_VERSION = 36 as const;
+// 037 = memories.validity_extracted, additive NOT NULL DEFAULT 0 column
+//       (issue #205): provenance flag distinguishing "extraction never
+//       considered this atom's validity" (0, every existing row) from
+//       "extraction considered it — valid_to is NULL because genuinely
+//       unbounded, or populated because the source text stated an end" (1).
+//       valid_to semantics and validityFilterClause() are UNCHANGED by this
+//       migration — see the migration file's own header for why redefining
+//       NULL was a trap (collapses to either a no-op or a corpus-nuke).
+//       Authored as 033, renumbered to 034, 035, 036 and finally 037 as each
+//       number in turn was taken by a PR that landed while this branch was
+//       open (#208, #218, #212, #210). FOUR renumbers for one migration is
+//       not diligence, it is a design defect: the expected version is a
+//       hardcoded literal here AND in eight test files, so any two
+//       migration-bearing PRs conflict by construction no matter what they
+//       change. Derive it from the migrations directory instead -- tracked
+//       as the follow-up to this queue.
+export const SCHEMA_VERSION = 37 as const;
