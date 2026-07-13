@@ -32,11 +32,24 @@
  * means broken.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
-const CHECKS_PATH = join(dirname(fileURLToPath(import.meta.url)), '../../src/doctor/checks.ts');
+// 2026-07-13 split: `src/doctor/checks.ts` (2,167 lines, every core check in
+// one file) became a thin re-export shim over `src/doctor/checks/*.ts` (one
+// file per check) — see that directory's `index.ts` doc comment for why. The
+// catch blocks this scanner exists to police moved with the checks; scanning
+// only the shim would silently stop finding any of them (exactly the
+// "scanner silently matching nothing" failure the first test below guards
+// against), so this scans every source file in the split directory instead.
+const CHECKS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../src/doctor/checks');
+
+function checkFiles(): string[] {
+  return readdirSync(CHECKS_DIR)
+    .filter(f => f.endsWith('.ts'))
+    .map(f => join(CHECKS_DIR, f));
+}
 
 /** Extract the body of every `catch (...) { ... }` block, brace-matched. */
 function catchBlocks(src: string): Array<{ line: number; body: string }> {
@@ -68,18 +81,22 @@ function catchBlocks(src: string): Array<{ line: number; body: string }> {
 }
 
 describe('doctor checks: a catch block must never report a clean bill of health (ADR-015)', () => {
-  const src = readFileSync(CHECKS_PATH, 'utf8');
+  const files = checkFiles();
+  const perFile = files.map(path => ({ path, src: readFileSync(path, 'utf8') }));
 
   it('finds catch blocks to inspect (guards against the scanner silently matching nothing)', () => {
     // A scanner that matches zero blocks would vacuously "pass" forever — the
     // very failure mode this file is about. Assert it actually has teeth.
-    expect(catchBlocks(src).length).toBeGreaterThan(20);
+    const total = perFile.reduce((sum, f) => sum + catchBlocks(f.src).length, 0);
+    expect(total).toBeGreaterThan(20);
   });
 
   it('no catch block returns ok: true without marking the result inconclusive', () => {
-    const offenders = catchBlocks(src)
-      .filter(b => /\bok\s*:\s*true\b/.test(b.body) && !/\binconclusive\s*:\s*true\b/.test(b.body))
-      .map(b => `  src/doctor/checks.ts:${b.line}`);
+    const offenders = perFile.flatMap(f =>
+      catchBlocks(f.src)
+        .filter(b => /\bok\s*:\s*true\b/.test(b.body) && !/\binconclusive\s*:\s*true\b/.test(b.body))
+        .map(b => `  ${f.path.split(/[\\/]/).slice(-3).join('/')}:${b.line}`),
+    );
 
     expect(
       offenders,
