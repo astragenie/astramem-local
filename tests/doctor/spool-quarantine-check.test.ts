@@ -12,11 +12,11 @@
  * below is what proves this one isn't.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, utimesSync } from 'node:fs';
+import { mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getChecks } from '../../src/doctor/checks.js';
-import { writeToSpool, listSpoolFiles, quarantineSpoolFile, spoolQuarantineDir } from '../../src/ingest/spool.js';
+import { writeToSpool, listSpoolFiles, quarantineSpoolFile, spoolDir, spoolQuarantineDir } from '../../src/ingest/spool.js';
 import { defaultConfig } from '../../src/config/config.js';
 
 function findCheck(checks: ReturnType<typeof getChecks>, name: string) {
@@ -75,6 +75,39 @@ describe('doctor "Ingest spool quarantine" check (Wave A slice A3)', () => {
     const result = await check().run();
     expect(result.ok).toBe(false);
     expect(result.message).toContain('1 of 1 spooled envelopes quarantined');
+    expect(result.message).toContain('exceeds the 7d TTL');
+    expect(result.fix).toBeTruthy();
+  });
+
+  // Fast-follow to #225 (2026-07-13) — Finding 3: a lost/corrupt
+  // .stats.json fabricated a green "0 of 0" instead of admitting the
+  // denominator was unknown (ADR-015 rule 6).
+  it('reports inconclusive (not a green "0 of N") when .stats.json is corrupt but spool activity exists on disk', async () => {
+    writeToSpool(dir, 'a'.repeat(64), { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
+    // Corrupt the counter in place — simulates a torn/lost stats file after
+    // real traffic already happened.
+    writeFileSync(join(spoolDir(dir), '.stats.json'), '{not json');
+
+    const result = await check().run();
+    expect(result.ok).toBe(true); // a lost counter is not itself a quarantine problem
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).not.toMatch(/0 of 0/); // must not fabricate a green "0 of 0"
+    expect(result.message).toContain('denominator unavailable');
+  });
+
+  it('the TTL RED path still fires when .stats.json is corrupt — the RED signal does not depend on the stats file', async () => {
+    writeToSpool(dir, 'a'.repeat(64), { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
+    const [file] = listSpoolFiles(dir);
+    quarantineSpoolFile(dir, file!, 'schema validation failed');
+    writeFileSync(join(spoolDir(dir), '.stats.json'), '{not json'); // corrupt AFTER quarantining
+
+    const qPath = join(spoolQuarantineDir(dir), `${'a'.repeat(64)}.json`);
+    const eightDaysAgo = (Date.now() - 8 * 24 * 60 * 60 * 1000) / 1000;
+    utimesSync(qPath, eightDaysAgo, eightDaysAgo);
+
+    const result = await check().run();
+    expect(result.ok).toBe(false); // still genuinely RED, unaffected by the corrupt counter
+    expect(result.inconclusive).toBeFalsy();
     expect(result.message).toContain('exceeds the 7d TTL');
     expect(result.fix).toBeTruthy();
   });

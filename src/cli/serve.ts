@@ -28,6 +28,7 @@ import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
 import { MemoryRepo } from '../storage/memories.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { drainIngestSpool } from '../ingest/spool-drain.js';
+import { sweepQuarantineRedaction } from '../ingest/spool.js';
 import type { DoctorCheckOpts } from '../doctor/checks.js';
 import { startFrequentDoctorSchedule, runFullDoctorChecks, type DoctorScheduleResult } from '../doctor/schedule.js';
 import { isLoopbackHost } from '../server/lib/network.js';
@@ -389,6 +390,28 @@ export async function serve(opts: ServeOpts): Promise<void> {
     enqueueCleanup(); // boot pass — catches anything a downtime window skipped
     cleanupTimer = setInterval(enqueueCleanup, CLEANUP_INTERVAL_MS);
     cleanupTimer.unref();
+  }
+
+  // Quarantine redaction sweep (Finding 2, 2026-07-13 fast-follow to #225):
+  // one-time-per-boot pass that rewrites any EXISTING `.quarantine/` content
+  // through the same redactor new writes already get — content quarantined
+  // BEFORE #225 shipped never got redacted, and only ages out via the 7-day
+  // TTL, which itself only fires if a drain tick runs. Deliberately NOT on
+  // the 30s drain-tick cadence below (see sweepQuarantineRedaction doc for
+  // why once per boot is sufficient — it's idempotent and a no-op once
+  // everything in the directory has already been rewritten once).
+  if (dataDir !== ':memory:') {
+    try {
+      const sweep = sweepQuarantineRedaction(dataDir, cfg);
+      if (sweep.redacted > 0) {
+        console.warn(
+          `${ts()} [astramem-local] quarantine redaction sweep: redacted ${sweep.redacted} of ${sweep.scanned} ` +
+          `pre-existing quarantine file(s) (${sweep.unparseable} via raw-text fallback, ${sweep.failed} failed and left untouched)`,
+        );
+      }
+    } catch (err) {
+      console.warn(`${ts()} [astramem-local] quarantine redaction sweep failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   // Ingest-spool drain cadence (FEAT-449): called directly on a timer (not

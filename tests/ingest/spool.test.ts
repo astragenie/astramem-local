@@ -2,9 +2,10 @@
 // `capture claude` CLI (writer) and the daemon's spool-drain worker (reader).
 
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, existsSync, statSync, utimesSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, chmodSync, writeFileSync, readdirSync, readFileSync, rmSync, existsSync, statSync, utimesSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir, platform } from 'node:os';
+import { randomUUID } from 'node:crypto';
 import {
   spoolDir,
   spoolQuarantineDir,
@@ -15,7 +16,9 @@ import {
   redactSpoolEnvelope,
   readSpoolStats,
   pruneExpiredQuarantine,
+  sweepQuarantineRedaction,
   DEFAULT_QUARANTINE_TTL_MS,
+  MAX_WALK_DEPTH,
 } from '../../src/ingest/spool.js';
 import { defaultConfig } from '../../src/config/config.js';
 
@@ -216,10 +219,319 @@ describe('writeToSpool — A3 redacts before the bytes hit disk', () => {
 
   it('bumps SpoolStats.totalSpooled on every write — the doctor canary\'s denominator', () => {
     const dataDir = tempDataDir();
-    expect(readSpoolStats(dataDir)).toEqual({ totalSpooled: 0, totalQuarantined: 0 });
+    expect(readSpoolStats(dataDir)).toEqual({ totalSpooled: 0, totalQuarantined: 0, statsHealthy: true });
     writeToSpool(dataDir, K_A, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
     writeToSpool(dataDir, K_B, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
     expect(readSpoolStats(dataDir).totalSpooled).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fast-follow to #225 (2026-07-13) — Finding 1: existing dirs kept loose
+// perms, Finding 2: existing quarantine content kept plaintext, Finding 3:
+// a lost .stats.json fabricated a green "0 of 0".
+// ---------------------------------------------------------------------------
+
+describe('Finding 1 — existing spool/quarantine dirs get hardened, not just newly-created ones', () => {
+  it('a spool dir that predates the hardening (created with loose perms by hand) is hardened on the next write', () => {
+    if (platform() === 'win32') return; // POSIX-only assertion — see existing "keystore-grade" describe block above
+    const dataDir = tempDataDir();
+    const dir = spoolDir(dataDir);
+    // Simulate a pre-existing install: the directory already exists, with
+    // permissive mode, from BEFORE restrictSpoolDirPermissions ever ran on
+    // it — this is exactly the upgrade scenario Finding 1 is about.
+    mkdirSync(dir, { recursive: true, mode: 0o755 });
+    chmodSync(dir, 0o755);
+    expect(statSync(dir).mode & 0o777).toBe(0o755);
+
+    writeToSpool(dataDir, K_A, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
+
+    expect(statSync(dir).mode & 0o777).toBe(0o700);
+  });
+
+  it('a quarantine dir that predates the hardening is hardened on the next quarantine call', () => {
+    if (platform() === 'win32') return;
+    const dataDir = tempDataDir();
+    writeToSpool(dataDir, K_A, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
+    const [file] = listSpoolFiles(dataDir);
+
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true, mode: 0o755 });
+    chmodSync(qDir, 0o755);
+    expect(statSync(qDir).mode & 0o777).toBe(0o755);
+
+    quarantineSpoolFile(dataDir, file!, 'test');
+
+    expect(statSync(qDir).mode & 0o777).toBe(0o700);
+  });
+});
+
+describe('review round 3 — a walk failure is NOT a parse failure', () => {
+  const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+
+  // Regression guard for the bug that let rounds 1 and 2 both slip through:
+  // `JSON.parse` and the value-walk used to share one try/catch, so a walk
+  // that blew the stack on VALID JSON was silently reclassified as "this file
+  // isn't JSON" and handed to the raw-text path — the exact corruption
+  // mechanism round 2 fixed. Two different failures; one of them has a
+  // recovery that is destructive to the other.
+  //
+  // NOTE ON WHY THIS ASSERTS AGAINST MAX_WALK_DEPTH AND NOT THE REAL STACK:
+  // vitest's worker pool has a DEEPER stack than the daemon (`node
+  // dist/cli/index.js serve`), so a test that waits for a genuine RangeError
+  // would pass here and still overflow in production. The cap must be a number
+  // we chose, and the test must assert against that number.
+  const deeplyNested = (depth: number): unknown => {
+    let node: unknown = { text: `export AWS_ACCESS_KEY_ID=${SECRET}` };
+    for (let i = 0; i < depth; i++) node = { nested: node };
+    return node;
+  };
+
+  it('valid JSON past MAX_WALK_DEPTH is left EXACTLY as-is — not raw-text-mangled, not counted as redacted', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const original = JSON.stringify(deeplyNested(MAX_WALK_DEPTH + 50), null, 2);
+    writeFileSync(join(qDir, `${K_A}.json`), original);
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.scanned).toBe(1);
+    expect(result.unwalkable).toBe(1);
+    // Not silently claimed as a success...
+    expect(result.redacted).toBe(0);
+    // ...and NOT misfiled as "wasn't JSON" — it was perfectly valid JSON.
+    expect(result.unparseable).toBe(0);
+
+    // The file is byte-identical. Pre-fix, it went down the raw-text path and
+    // came back mangled (or silently under-redacted) while reporting success.
+    const after = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(after).toBe(original);
+    expect(() => JSON.parse(after)).not.toThrow();
+  });
+
+  it('a file just UNDER the cap is still walked and redacted normally', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(deeplyNested(MAX_WALK_DEPTH - 5), null, 2));
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.unwalkable).toBe(0);
+    expect(result.redacted).toBe(1);
+    const after = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(after).not.toContain(SECRET);
+    expect(() => JSON.parse(after)).not.toThrow(); // still valid JSON
+  });
+});
+
+describe('Finding 2 — sweepQuarantineRedaction redacts pre-existing quarantine content in place', () => {
+  const SECRET = 'AKIAIOSFODNN7EXAMPLE';
+
+  it('redacts a secret in a well-formed pre-existing quarantine file, and does not lose the file', () => {
+    const dataDir = tempDataDir();
+    // Bypass writeToSpool's own redaction to simulate content that was
+    // quarantined BEFORE #225 shipped redact-at-spool-write — i.e. genuinely
+    // unredacted plaintext already sitting in .quarantine/.
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = { turns: [{ role: 'user', text: `export AWS_ACCESS_KEY_ID=${SECRET}` }] };
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(envelope, null, 2));
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.scanned).toBe(1);
+    expect(result.redacted).toBe(1);
+    expect(result.unparseable).toBe(0);
+    expect(result.failed).toBe(0);
+    expect(existsSync(join(qDir, `${K_A}.json`))).toBe(true); // file preserved
+    const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(rewritten).not.toContain(SECRET);
+    expect(rewritten).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(() => JSON.parse(rewritten)).not.toThrow(); // "did the secret go" is not enough — "is it still a file"
+  });
+
+  it('review fix round 2 (JSON corruption): a realistic proxy-shaped envelope (session_id, nested unrecognized fields, a real secret) redacts safely without corrupting the JSON', () => {
+    // Round 1 fixed the coverage inversion by adding a second pass that ran
+    // redactIfEnabled over the fully SERIALIZED envelope text. That broke on
+    // exactly this shape: every real proxy envelope has a `session_id:
+    // proxy-${randomUUID()}` field (src/capture/proxy.ts buildProxyEnvelope).
+    // In pretty-printed JSON that value has no internal whitespace, so the
+    // entropy detector's whitespace tokenizer swept the surrounding quotes
+    // AND trailing comma into the "secret" span and replaced the whole thing
+    // with a bare, unquoted placeholder — corrupting the JSON while the
+    // sweep still reported `redacted: 1` (success). This is the fixture that
+    // proves round 2 (redactValuesDeep, walking the decoded value tree
+    // instead of scanning serialized text) actually closes that.
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = {
+      event: 'session_end',
+      session_id: `proxy-${randomUUID()}`, // the exact FP-prone shape that corrupted round 1
+      project_id: 'llm-proxy',
+      captured_at: new Date().toISOString(),
+      turns: [{ role: 'user', text: 'hello there' }],
+      // A real secret in a field CanonicalIngestSchema/redactSpoolEnvelope's
+      // allowlist has never heard of — the coverage-inversion case, nested
+      // two levels deep to also prove recursion.
+      debug: { upstream: { raw_headers: { authorization: `Bearer ${SECRET}` } } },
+    };
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(envelope, null, 2));
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+    expect(result.scanned).toBe(1);
+    expect(result.unparseable).toBe(0);
+    expect(result.failed).toBe(0);
+
+    const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    // The load-bearing assertion: still valid, parseable JSON. This is the
+    // one that would have caught round 1's bug — "did the secret go" was
+    // never sufficient on its own.
+    expect(() => JSON.parse(rewritten)).not.toThrow();
+    const parsedEnvelope = JSON.parse(rewritten) as { debug: { upstream: { raw_headers: { authorization: string } } }; turns: Array<{ text: string }> };
+    expect(rewritten).not.toContain(SECRET);
+    expect(parsedEnvelope.debug.upstream.raw_headers.authorization).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(parsedEnvelope.turns[0]!.text).toBe('hello there'); // untouched — no secret, no entropy false-positive here
+  });
+
+  it('review fix (coverage inversion): a well-formed but schema-invalid envelope with a secret in an UNRECOGNIZED field is still redacted', () => {
+    // The dominant quarantine population (spool-drain.ts) is valid JSON
+    // that fails CanonicalIngestSchema — a reshaped, legacy-drifted, or
+    // debug-augmented envelope. redactSpoolEnvelope only walks a four-field
+    // allowlist (turns[].text, events[].text/evidence, content); a stray
+    // field like `debug_headers` or `raw` spreads through untouched via
+    // `{...rec}`. This is the case the first cut of sweepQuarantineRedaction
+    // missed — it routed every PARSEABLE file through redactSpoolEnvelope
+    // alone, so a secret sitting in a field the allowlist doesn't recognize
+    // survived, and because the bytes didn't change, the `redacted` counter
+    // never incremented either (a silent miss, not just a missed redaction).
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = {
+      // Not a shape CanonicalIngestSchema accepts — no turns/events/content,
+      // just an unrecognized debug field a broken/reshaping client tacked
+      // on. redactSpoolEnvelope's allowlist has nothing to walk here.
+      debug_headers: { authorization: `Bearer ${SECRET}` },
+      raw: `upstream response included key=${SECRET}`,
+    };
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(envelope, null, 2));
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.scanned).toBe(1);
+    expect(result.unparseable).toBe(0); // it DID parse — this is the parseable-but-invalid case
+    expect(result.redacted).toBe(1); // must be counted, not silently skipped
+    expect(existsSync(join(qDir, `${K_A}.json`))).toBe(true);
+    const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(rewritten).not.toContain(SECRET);
+    expect(rewritten).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+    expect(() => JSON.parse(rewritten)).not.toThrow();
+  });
+
+  it('is idempotent — a second sweep over already-redacted content is a no-op write', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = { turns: [{ role: 'user', text: `export AWS_ACCESS_KEY_ID=${SECRET}` }] };
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(envelope, null, 2));
+
+    sweepQuarantineRedaction(dataDir, defaultConfig());
+    const afterFirst = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(() => JSON.parse(afterFirst)).not.toThrow();
+
+    const second = sweepQuarantineRedaction(dataDir, defaultConfig());
+    expect(second.scanned).toBe(1);
+    expect(second.redacted).toBe(0); // nothing changed — already redacted
+    expect(readFileSync(join(qDir, `${K_A}.json`), 'utf8')).toBe(afterFirst);
+  });
+
+  it('leaves files with no secret content untouched (no unnecessary write)', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = { turns: [{ role: 'user', text: 'nothing sensitive here' }] };
+    const raw = JSON.stringify(envelope, null, 2);
+    writeFileSync(join(qDir, `${K_A}.json`), raw);
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+    expect(result.redacted).toBe(0);
+    expect(readFileSync(join(qDir, `${K_A}.json`), 'utf8')).toBe(raw);
+    expect(() => JSON.parse(raw)).not.toThrow();
+  });
+
+  it('an unparseable quarantine file is redacted via the raw-text fallback — the secret does not survive, and the file is not deleted', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    // Deliberately broken JSON (truncated) — this is what a schema-validation
+    // or JSON.parse failure actually looks like on disk, per spool-drain.ts.
+    const brokenRaw = `{"turns": [{"role": "user", "text": "export AWS_ACCESS_KEY_ID=${SECRET}"` /* truncated, no closing */;
+    writeFileSync(join(qDir, `${K_A}.json`), brokenRaw);
+
+    const result = sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(result.scanned).toBe(1);
+    expect(result.redacted).toBe(1);
+    expect(result.unparseable).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(existsSync(join(qDir, `${K_A}.json`))).toBe(true); // not deleted
+    const rewritten = readFileSync(join(qDir, `${K_A}.json`), 'utf8');
+    expect(rewritten).not.toContain(SECRET);
+    expect(rewritten).toMatch(/\[REDACTED:aws_access_key:[0-9a-f]{8}\]/);
+  });
+
+  it('returns all-zero on a missing quarantine dir — not an error', () => {
+    const dataDir = tempDataDir();
+    expect(sweepQuarantineRedaction(dataDir, defaultConfig())).toEqual({ scanned: 0, redacted: 0, unparseable: 0, failed: 0, unwalkable: 0 });
+  });
+
+  it('leaves the .reason.txt sidecar alone (out of scope for this sweep) while redacting the envelope', () => {
+    const dataDir = tempDataDir();
+    const qDir = spoolQuarantineDir(dataDir);
+    mkdirSync(qDir, { recursive: true });
+    const envelope = { turns: [{ role: 'user', text: `key ${SECRET}` }] };
+    writeFileSync(join(qDir, `${K_A}.json`), JSON.stringify(envelope, null, 2));
+    writeFileSync(join(qDir, `${K_A}.reason.txt`), 'schema validation failed\n');
+
+    sweepQuarantineRedaction(dataDir, defaultConfig());
+
+    expect(readFileSync(join(qDir, `${K_A}.reason.txt`), 'utf8')).toBe('schema validation failed\n');
+    expect(() => JSON.parse(readFileSync(join(qDir, `${K_A}.json`), 'utf8'))).not.toThrow();
+  });
+});
+
+describe('Finding 3 — SpoolStats.statsHealthy distinguishes a real zero from an unreadable counter', () => {
+  it('statsHealthy is true on a genuinely fresh (no spool dir) install', () => {
+    const dataDir = tempDataDir();
+    expect(readSpoolStats(dataDir)).toEqual({ totalSpooled: 0, totalQuarantined: 0, statsHealthy: true });
+  });
+
+  it('statsHealthy is true once .stats.json parses successfully', () => {
+    const dataDir = tempDataDir();
+    writeToSpool(dataDir, K_A, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
+    expect(readSpoolStats(dataDir).statsHealthy).toBe(true);
+  });
+
+  it('statsHealthy is false when .stats.json is corrupt but the spool dir has other content', () => {
+    const dataDir = tempDataDir();
+    writeToSpool(dataDir, K_A, { turns: [{ role: 'user', text: 'hi' }] }, defaultConfig());
+    // Corrupt the stats file in place, as a torn write would leave it.
+    writeFileSync(join(spoolDir(dataDir), '.stats.json'), '{not json');
+
+    const stats = readSpoolStats(dataDir);
+    expect(stats.statsHealthy).toBe(false);
+    expect(stats.totalSpooled).toBe(0); // still reads back as 0 — statsHealthy is what makes 0 distinguishable from unknown
+  });
+
+  it('statsHealthy is true when .stats.json is corrupt but the spool dir is otherwise empty (nothing to lose track of)', () => {
+    const dataDir = tempDataDir();
+    mkdirSync(spoolDir(dataDir), { recursive: true });
+    writeFileSync(join(spoolDir(dataDir), '.stats.json'), '{not json');
+
+    expect(readSpoolStats(dataDir).statsHealthy).toBe(true);
   });
 });
 
