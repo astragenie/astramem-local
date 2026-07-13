@@ -36,13 +36,46 @@ import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultConfigDir } from '../../../src/config/datadir.js';
+import { defaultConfig } from '../../../src/config/config.js';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
+
+/** Extraction/compaction model override for one isolated eval daemon.
+ *  Omitting a field (or the whole `models` option) means "inherit
+ *  `defaultConfig()`'s built-in model for that stage" — the FEAT-457
+ *  postmortem finding this closes is that the eval harness previously had
+ *  no way to pin OR RECORD which model it actually ran with, so a drift
+ *  between the operator's real config.yaml (which the isolated sandbox
+ *  deliberately never reads) and the code's hardcoded default was only
+ *  discoverable after the fact. See `IsolatedEvalEnv.resolvedModels`. */
+export interface EvalModelOverrides {
+  extraction?: string;
+  compaction?: string;
+}
 
 export interface IsolatedEvalEnv {
   root: string;
   configDir: string;
   env: Record<string, string>;
+  /** The extraction/compaction models this sandbox's daemon will actually
+   *  boot with — the override passed in, or `defaultConfig()`'s built-in
+   *  default otherwise. Callers should write this into their own run
+   *  manifest rather than assuming a model string, so a published number is
+   *  never silently wrong about what it measured. */
+  resolvedModels: { extraction: string; compaction: string };
+}
+
+/** Same override-or-default resolution `makeIsolatedEvalEnv` applies,
+ *  exposed standalone so a caller can record the resolved model names in a
+ *  run manifest even when no shard's `makeIsolatedEvalEnv` call ended up
+ *  succeeding (e.g. every shard failed before boot) — the manifest should
+ *  still be able to say what the run WOULD have used. */
+export function resolveEvalModels(models?: EvalModelOverrides): { extraction: string; compaction: string } {
+  const base = defaultConfig();
+  return {
+    extraction: models?.extraction ?? base.llm.extraction.model,
+    compaction: models?.compaction ?? base.llm.compaction.model,
+  };
 }
 
 function withEnvOverrides<T>(overrides: Record<string, string>, fn: () => T): T {
@@ -63,8 +96,14 @@ function withEnvOverrides<T>(overrides: Record<string, string>, fn: () => T): T 
 
 /** Build a throwaway config/home sandbox for one eval run — never touches
  *  the real %APPDATA%\Astramem (sync pairing) or the real OS credential
- *  store. Caller merges the returned `env` into SpawnDaemonOpts.env. */
-export function makeIsolatedEvalEnv(prefix: string): IsolatedEvalEnv {
+ *  store. Caller merges the returned `env` into SpawnDaemonOpts.env.
+ *
+ *  `opts.models` is additive: omit it (or either field) and this writes the
+ *  exact same config.yaml as before — every existing call site (LongMemEval
+ *  included) is byte-for-byte unaffected. Pass it to pin the isolated
+ *  daemon's extraction/compaction model instead of silently inheriting
+ *  whatever `defaultConfig()` currently hardcodes. */
+export function makeIsolatedEvalEnv(prefix: string, opts?: { models?: EvalModelOverrides }): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
   const localAppDataRoot = join(root, 'localappdata');
@@ -81,9 +120,18 @@ export function makeIsolatedEvalEnv(prefix: string): IsolatedEvalEnv {
 
   const configDir = withEnvOverrides(dirEnvOverrides, defaultConfigDir);
   mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, 'config.yaml'), 'security:\n  encryption:\n    enabled: false\n', 'utf8');
 
-  return { root, configDir, env: dirEnvOverrides };
+  const { extraction, compaction } = resolveEvalModels(opts?.models);
+
+  const configLines = ['security:', '  encryption:', '    enabled: false'];
+  if (opts?.models?.extraction !== undefined || opts?.models?.compaction !== undefined) {
+    configLines.push('llm:');
+    if (opts.models!.compaction !== undefined) configLines.push('  compaction:', `    model: ${opts.models!.compaction}`);
+    if (opts.models!.extraction !== undefined) configLines.push('  extraction:', `    model: ${opts.models!.extraction}`);
+  }
+  writeFileSync(join(configDir, 'config.yaml'), configLines.join('\n') + '\n', 'utf8');
+
+  return { root, configDir, env: dirEnvOverrides, resolvedModels: { extraction, compaction } };
 }
 
 export function cleanupIsolatedEvalEnv(isolated: IsolatedEvalEnv): void {
