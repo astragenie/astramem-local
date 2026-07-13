@@ -18,16 +18,23 @@
 > "Corrections to the record" below.
 
 **Status:** Proposed
-**Date:** 2026-07-13 · **Confidence:** High for both instances. Getting here took two
-rounds of correction on Instance 2's near-miss anecdote — first an overstated claim
-("nothing would have caught it"), then an under-verified rebuttal of it (a commit
-timestamp mistaken for a merge-base) — both documented in §4, both directly reproducible
-against `git log` and `git merge-base`.
-**Context:** Two failures landed in this repo on 2026-07-13, in different subsystems,
-authored by different agents, discovered independently — and turned out to be the same
-defect wearing two disguises. An architecture review recommended naming the pattern once,
-rather than continuing to fix each instance as a one-off, because the underlying shape
-recurs anywhere a shared aggregate sits downstream of parallel authors.
+**Date:** 2026-07-13 · **Confidence:** High for all three instances, including Instance 3
+(`src/mcp/server.ts`), which architecture review found by applying this document's own
+checklist to code neither prior draft had examined — the strongest evidence available that
+the pattern generalizes rather than describing two coincidences. Getting to a stable
+account of Instance 2's near-miss took three rounds of correction, all kept in §4 rather
+than collapsed into one: an overstated claim ("nothing would have caught it"), an
+under-verified rebuttal of it (a commit timestamp mistaken for a merge-base), and a
+partially-correct correction of *that* (a merge-base reading that was true when taken and
+stale by the time it was cited, plus a file-exists check mistaken for a coverage check).
+Every step is directly reproducible against `git log`, `git merge-base`, and `git show
+<sha>:path | grep`.
+**Context:** Three failures across two subsystems on 2026-07-13, authored by different
+agents, discovered independently across multiple review passes — turning out to be the
+same defect wearing three disguises. An architecture review recommended naming the pattern
+once, rather than continuing to fix each instance as a one-off, because the underlying
+shape recurs anywhere a shared aggregate sits downstream of parallel authors — and, per
+Instance 3, in places nobody had gone looking yet.
 
 ## Decision
 
@@ -75,7 +82,13 @@ without the first: no aggregate was wrong, but the container was a single file e
   the cheap-fix case (Instance 1): if `migrations/033-foo.sql` through `039-bar.sql`
   already exist as files, nothing should ever need to also be told "the count is 39."
 
-### 3. The evidence — two instances, one day
+### 3. The evidence — three instances: two same-day incidents, and one the checklist found unprompted
+
+Instances 1 and 2 are same-day incidents from 2026-07-13. Instance 3 is different in kind:
+it was not an incident anyone hit — it is a pre-existing, still-live violation that §2's
+checklist surfaced when applied cold to a file this ADR had no other reason to cite. Kept
+separate below for exactly that reason; it is the evidence that the pattern generalizes,
+not a third retelling of the same afternoon.
 
 #### Instance 1 — migration numbers (the pure form, both shapes fixed)
 
@@ -151,7 +164,28 @@ The fix — PR #231, `refactor/doctor-checks-registry`, currently **open, draft*
 site keeps working. Adding a canary now costs one new file plus a two-line touch to
 `index.ts`, not an edit inside a shared function body. Not yet merged as of this ADR.
 
-### 4. Corrections to the record — two unverified claims, from two different people, while writing the section about verification
+#### Instance 3 — `src/mcp/server.ts` (found by applying §2's checklist to code neither author of this ADR had looked at)
+
+This instance was not narrated from an incident. It was found by running §2's recognition
+checklist ("is an aggregate hand-maintained when it could be derived?") against a file
+this ADR never otherwise discusses, during architecture review of this document. That
+makes it the strongest evidence in this ADR: the checklist has predictive power on unseen
+code, not just retrospective fit on bugs already fixed.
+
+`src/mcp/server.ts`'s own doc comment opens: *"Exposes 20 tools over the Streamable HTTP
+transport"* — a hardcoded count, verified sitting directly above **20 `registerTool()`
+calls** that could trivially be counted instead of declared. `tests/mcp/server.test.ts`
+has a case named `'initialize + tools/list returns 20 tools'` — the same literal, a second
+place. And this repo's own `CLAUDE.md` states: *"MCP tool surface: 20 tools (verified: 20
+`registerTool` calls in `src/mcp/server.ts`)"* — **a manual count, written down as
+verification, which is exactly what rule 1 (below) forbids.** The project's own guidance
+document, read by every session that starts on this repo, commits the violation this ADR
+exists to prevent. That is not a reason to distrust the rule — a rule its own repo
+violates in a low-stakes spot (a doc comment and a test name, not a boot-time constant) is
+evidence the rule is under-enforced, not that it is wrong. See §6 for what enforcing it
+here would look like.
+
+### 4. Corrections to the record — three unverified claims, from three different people, while writing the section about verification
 
 This ADR was commissioned with a specific "near-miss" scenario: that PR #231's
 modify/delete conflict, resolved with "keep my version, the split is the whole point,"
@@ -190,34 +224,76 @@ $ git show 24f1762:src/doctor/checks.ts | grep -c "checkEntityLinkRate\|VALIDITY
 
 `24f1762` is PR #227 ("add B3 + B4 to the wave plan"), merged **15:18:43** — before PR
 #215 (15:42) and PR #228 (15:33). At that point in the repo's history, `checks.ts`
-genuinely contained neither canary. `24f1762` is an ancestor of PR #231's current branch
-tip (`git merge-base --is-ancestor` confirms it), which is consistent with the branch
-having been built from a point in history that predated both fixes — **the modify/delete
-conflict was real**, not a hypothetical. The branch has since been rebased: its *current*
-merge-base against `origin/main` is `7f70ba1` (PR #224, 15:53:26), which already contains
-both canaries (5 matches for the same grep), and the branch's own split tree now correctly
-contains `src/doctor/checks/entity-link-rate.ts` with the rate-based `ZERO linked
-entities` / `MEANINGFUL_USAGE_THRESHOLD` logic intact — restored, not left reverted.
+genuinely contained neither canary, and `tests/doctor/entity-link-rate-check.test.ts` did
+not exist on disk at all (`git cat-file -e 24f1762:tests/doctor/entity-link-rate-check.test.ts`
+fails — "exists on disk, but not in `24f1762`"). `24f1762` is an ancestor of PR #231's
+branch (`git merge-base --is-ancestor` confirms it) — **the modify/delete conflict was
+real**, not a hypothetical.
 
-**So the accurate account, verified in both directions, is narrower than either version
-that came before it:**
+**A third round of correction landed on this exact claim, and it was itself half right.**
+Architecture review called the `24f1762` merge-base claim "fabricated-by-assertion." It
+isn't fabricated — it was **true when checked, and it went stale**: `git merge-base` is
+not a fixed fact about a branch, it moves every time the branch is rebased, and PR #231
+*was* rebased in the interval between when this ADR's second draft checked it and when
+architecture review re-checked it. Verified: the branch's merge-base against `origin/main`
+today is `7f70ba1` (PR #224, 15:53:26), not `24f1762` — both readings were correct at
+their respective moments. **"Stale" and "fabricated" are different failure modes and this
+ADR should not conflate them**: fabrication means the check was never run; staleness means
+it was run correctly and the target moved after. In a repo merging roughly ten PRs an hour,
+staleness is the more common failure and arguably the more dangerous one, because the
+person who did the work has no local signal that it expired.
 
-- **The collision: REAL.** At the point the split was built from, `checks.ts` on the
-  branch genuinely lacked both canaries that had landed on `main` in the meantime. The
+The review's second sub-claim needs its own correction: that `24f1762` "already contains
+`atom-validity-extraction-check.test.ts`." **True as a file-existence claim, false as a
+coverage claim** — verified directly:
+
+```
+$ git cat-file -e 24f1762:tests/doctor/atom-validity-extraction-check.test.ts   # file exists
+$ git show 24f1762:tests/doctor/atom-validity-extraction-check.test.ts \
+    | grep -c "COLLAPSES to 2%"
+0
+```
+
+The file existed at `24f1762`; the one case in it that would actually catch a revert to
+the `extracted === 0` gate did not. **This is the same category error rule 4 names for
+"41/41 checks, identical order": file-exists (or name-exists) is not coverage-exists, and
+a check that only confirms existence will report success on a version that has silently
+lost the one case that mattered.** The `entity-link-rate-check.test.ts` non-existence
+above is the sharper version of the same point — there wasn't even a file to point to.
+
+Current state, verified against today's actual merge-base `7f70ba1`: it contains both
+canaries (5 matches for the earlier grep), **and** the atom-validity test's 2% case (1
+match), **and** `entity-link-rate-check.test.ts` exists there too. The branch's own split
+tree now correctly contains `src/doctor/checks/entity-link-rate.ts` with the rate-based
+`ZERO linked entities` / `MEANINGFUL_USAGE_THRESHOLD` logic intact — restored, not left
+reverted, consistent with the branch author's own report of having ported the check back
+in after discovering it missing.
+
+**So the accurate account, verified in three directions, is narrower than any single
+version that came before it:**
+
+- **The collision: REAL, at the branch's actual fork point (`24f1762`).** `checks.ts` on
+  the branch genuinely lacked both canaries that had landed on `main` in the meantime, and
+  one of them (`entity-link-rate-check.test.ts`) had no test file present at all yet. The
   natural resolution of that modify/delete conflict — take the branch's version, since the
   split *is* the branch's entire point — would have shipped without them.
-- **"Silent / nothing would catch it": FALSE, still.** The dedicated boundary-band tests
-  for both canaries exist and would fail loudly against a version missing the rate logic.
-  Consistent with that: the branch's current state has both correctly restored, not
-  dropped.
+- **"Silent / nothing would catch it": FALSE, against the branch as it stands today.**
+  The branch was rebased onto `7f70ba1`, which carries both canaries' full boundary-band
+  coverage, and the branch's own split tree now restores both checks correctly. A bad
+  conflict resolution taken **today** would fail loudly. A bad conflict resolution taken
+  **at the original fork point** would have shipped quietly, with one canary's test file
+  simply absent to notice its own absence.
 
-**This double correction is itself the strongest illustration of rule 5, better than
-either single version of events would have been.** Two different people, in the same
-session, each asserted a confident negative from a plausible-looking signal — a
-reviewer's summarized report, and a commit timestamp — and neither ran the one command
-that actually settles it (`git merge-base`, or the grep against the cited SHA) before
-writing the claim down. **That is the rule this ADR states, demonstrated twice, inside the
-document that states it.** Use this, not a hypothetical, when rule 5 needs a citation.
+**This triple correction is itself the strongest illustration of rule 5, better than any
+single version of events would have been.** Three different people, in the same document,
+each asserted a confident claim from a plausible-looking signal — a reviewer's summarized
+report, a commit timestamp mistaken for a fork point, and a merge-base reading that was
+correct when taken and stale by the time it was cited — and none of the three ran the
+command that would have caught their own error before writing it down (`git merge-base`,
+re-run against the current branch state, paired with a content grep rather than a
+file-existence check). **That is the rule this ADR states, demonstrated three times,
+inside the document that states it.** Use this, not a hypothetical, when rule 5 needs a
+citation.
 
 ### 5. The binding rules
 
@@ -235,25 +311,41 @@ document that states it.** Use this, not a hypothetical, when rule 5 needs a cit
    order.** Not every aggregate can be made file-per-unit cheaply. Where it can't, name
    who resolves conflicts in it, or fix the order slices land in — silence is what let
    three slices discover the collision by hitting it, not by reading a plan.
-4. **A names-and-order diff is not a proof of behavior preservation.** PR #231's own
-   "41/41 checks, identical names, identical order" verification is a real and correct
-   thing to check — and it is also, by construction, blind to a changed threshold, an
-   inverted condition, or a dropped branch inside a function body that kept its name and
-   position. For a refactor that claims zero behavior change, pair the names-and-order
-   diff with either a byte-range function-body diff against `origin/main`, or — the
+4. **A names-and-order diff is not a proof of behavior preservation — and neither is a
+   file-existence check.** PR #231's own "41/41 checks, identical names, identical order"
+   verification is a real and correct thing to check — and it is also, by construction,
+   blind to a changed threshold, an inverted condition, or a dropped branch inside a
+   function body that kept its name and position. §4 produced the same error one level
+   down: confirming `atom-validity-extraction-check.test.ts` *existed* at a given commit
+   said nothing about whether the one case in it that mattered (the 2% band) existed
+   there too — it didn't. **File-exists, name-exists, and order-matches are all the same
+   category of non-proof: each confirms a label survived, none confirms the behavior
+   behind the label did.** For a refactor that claims zero behavior change, pair any of
+   these with either a byte-range function-body diff against `origin/main`, or — the
    stronger, already-available option in this repo — confirm the existing behavioral test
    suite for the moved code (not just "does it still import") ran and passed both before
-   and after. §4 above shows this second check is what actually protects `checks.ts`
-   today; rely on it explicitly, not on the order diff alone.
+   and after, and confirm the *specific cases that would catch a regression* are present,
+   not just the file.
 5. **A claim about how the system would fail is a claim about the system, and must be
    verified the same way a claim about success is verified — restated from ADR-015 §5,
-   because writing THIS ADR needed the rule twice, from two different authors, in the same
-   session (§4 above).** A confident, well-written failure scenario is not evidence until
-   it is checked against the actual state of the repo — and neither is a confident,
-   well-written *correction* of one. Specifically: a commit's author-date is not its
-   branch's fork point; only `git merge-base` (or an ancestry check against the cited SHA)
-   establishes what a branch did or didn't contain when it diverged. Run that command
-   before asserting either "this would have collided" or "this couldn't have collided."
+   because writing THIS ADR needed the rule three times, from three different authors, in
+   the same session (§4 above).** A confident, well-written failure scenario is not
+   evidence until it is checked against the actual state of the repo — and neither is a
+   confident, well-written *correction* of one. Two clauses, not one:
+   - *Verify a failure claim the same way you'd verify a success claim.* A commit's
+     author-date is not its branch's fork point; only `git merge-base` (or an ancestry
+     check against the cited SHA) establishes what a branch did or didn't contain when it
+     diverged.
+   - **Re-verify it against the state at the time of the claim, not just the state now.**
+     `git merge-base` is not a fixed fact about a branch — it changes on every rebase.
+     A check that was correctly run and correctly reported can still be **stale** by the
+     time someone reads it, which is a different failure from **fabricated** (never run at
+     all) and needs a different fix: not "run the check," but "note when it was run, and
+     re-run it before citing it in a review that may land later." In a repo merging
+     roughly ten PRs an hour across a dozen worktrees, this is not a rare edge case — high
+     parallel throughput doesn't just create merge conflicts (§7), **it shortens the shelf
+     life of every verified claim about the repo's state.** A citation timestamp is not
+     decoration; it is the expiration date.
 6. **During a `git rebase`, `--ours` means the upstream/base side, not the commits being
    replayed — the inverse of a normal merge.** This is a rule of its own because it is not
    intuitive, it silently discards the replayed side's real work, and it already produced
@@ -263,6 +355,17 @@ document that states it.** Use this, not a hypothetical, when rule 5 needs a cit
    not rely on merge-flow muscle memory.
 
 ### 6. Enforcement
+
+**Stated plainly, not softened: of the six binding rules in §5, exactly one — rule 1, in
+the migrations case specifically — has live, automatic enforcement today.** The rest are
+documented bars, manual verification performed once for this ADR, or a cross-repo ask, not
+a CI gate. Instance 3 is the standing, unenforced counterexample: `src/mcp/server.ts`'s
+"Exposes 20 tools" doc comment, `tests/mcp/server.test.ts`'s `'returns 20 tools'` case, and
+`CLAUDE.md`'s own "verified: 20 `registerTool` calls" line are three hand-maintained
+copies of a count that `registerTool()` call sites already make derivable, sitting in the
+same repo that just finished fixing the identical shape in `SCHEMA_VERSION` — and nothing
+stops a 21st tool from being added without updating all three. Rule 1's enforcement did not
+generalize past the one place it was built for.
 
 - **Zero-literal grep for schema version.** Verified manually for this ADR
   (`toBe(3[0-9])`, `toHaveLength(3[0-9])`, `/DB says 3[0-9]/` — zero matches in `tests/` as
@@ -328,9 +431,9 @@ exactly the failure mode `runner-plugin#508` is tracking at the dispatcher level
 
 1. **Write this ADR now, generalize both failure shapes, require file-per-unit or an
    explicit owner for any shared registry going forward (chosen).** Turns two same-day
-   incidents into a rule a reviewer can cite by name, instead of re-deriving "this is the
-   same bug as the migration thing" from memory on every future PR that touches a
-   registry file.
+   incidents — plus a third, latent one the checklist found on its own — into a rule a
+   reviewer can cite by name, instead of re-deriving "this is the same bug as the
+   migration thing" from memory on every future PR that touches a registry file.
 2. **Leave it as tribal knowledge and keep fixing instances ad hoc.** Rejected — this is
    what already happened between Instance 1 landing and Instance 2 being noticed: the
    same day, the same root cause, and nobody generalized it until an architecture review
@@ -352,7 +455,9 @@ exactly the failure mode `runner-plugin#508` is tracking at the dispatcher level
 - **No code changes from this ADR itself.** Instance 1's fix (PRs #229, #233) and
   Instance 2's fix (PR #231) are both independently in flight or landed; this document
   names the pattern they are both instances of and states the binding rules for the next
-  one, per rules 1–3 above.
+  one, per rules 1–3 above. **Instance 3 has no fix yet** — `src/mcp/server.ts`'s hardcoded
+  tool count is left as an explicit, named follow-up (a one-file, low-risk derivation, the
+  same shape as `schema-version.ts`), not something this ADR resolves by naming it.
 - **Any future PR that adds a shared, parallel-authored aggregate must state, in the PR
   description, whether the aggregate is derived or declared** — a reviewer citing this
   ADR is sufficient grounds to block a PR that declares a literal where derivation was
@@ -384,14 +489,19 @@ exactly the failure mode `runner-plugin#508` is tracking at the dispatcher level
 - PR #231 (`refactor/doctor-checks-registry`, open/draft as of this ADR) — Instance 2's
   fix; its own description independently names the "junction, not a subsystem"
   diagnostic this ADR generalizes.
-- Commits `24f1762` (PR #227, an ancestor of PR #231's branch, predates the two canary
-  fixes) and `7f70ba1` (PR #224, PR #231's current merge-base against `origin/main`,
-  postdates them) — the `git merge-base` evidence behind §4's second-round correction.
+- Commits `24f1762` (PR #227, the branch's fork point at the time §4's second draft
+  checked it; predates both canary fixes) and `7f70ba1` (PR #224, the branch's merge-base
+  after its subsequent rebase; postdates them) — the `git merge-base` evidence behind §4's
+  second- and third-round corrections, and the concrete illustration of "stale, not
+  fabricated."
 - `tests/doctor/entity-link-rate-check.test.ts`,
   `tests/doctor/atom-validity-extraction-check.test.ts` — the existing boundary-band
-  regression coverage that would have caught a silent revert; corrects the "nothing would
-  have caught it" half of §4's initiating near-miss claim, not the "there was no real
-  collision" half, which independent verification confirmed was real.
+  regression coverage that would catch a silent revert *today*; at `24f1762`, the former
+  did not exist on disk at all and the latter existed without its 2%-band case — both
+  verified directly, both corrections folded into §4.
+- `src/mcp/server.ts`, `tests/mcp/server.test.ts`, `CLAUDE.md` (the "MCP tool surface: 20
+  tools" line) — Instance 3: a live, currently-unenforced hand-maintained count, found by
+  applying §2's checklist cold.
 - `runner-plugin#508` (`astragenie/runner-plugin`, open) — the dispatcher-level half of
   Instance 1: no allocation protocol for globally-scarce values across parallel
   worktrees. Independent of this ADR's repo-side fixes; both are needed.
