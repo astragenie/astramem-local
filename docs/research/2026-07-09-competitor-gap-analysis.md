@@ -115,6 +115,14 @@ These are factual flips, not new opinions — cite them when reusing the 2026-07
 
 ## Corrections to prior research (2026-07-13 update — code-verified)
 
+> **Citation policy for this section.** These competitor-repo citations were resolved against a
+> shallow clone taken during the 2026-07-13 investigation. Competitor repos move independently of
+> this one and were not re-cloned for this edit — **anchor on the function/module name, not the
+> line number**, the same discipline `docs/adr/ADR-015-loud-failure-invariant.md` documents for
+> this repo's own citations (that ADR caught a stale line-number "correction" overriding an
+> accurate one, mid-session, in this same investigation). Line numbers below are a convenience for
+> the state of the clone at investigation time, not a live guarantee.
+
 A second code-verification pass (2026-07-13, part of the same investigation documented in
 `docs/research/20260713-teardown-and-reinvent.md` §6, plus a formal LoCoMo comparability
 review in `docs/research/20260713-locomo-cohort-scoreboard.md` — see that doc for the sample-size
@@ -122,44 +130,48 @@ methodology, not duplicated here) overturns several premises this report's earli
 at face value. These are factual flips, same standard as the 2026-07-08 corrections above.
 
 - **mem0's write-time intelligence (the ADD/UPDATE/DELETE memory-manager LLM decision) is DEAD
-  CODE — the biggest flip in this update.** The memory-manager prompt (`mem0/configs/prompts.py:176`)
-  and `get_update_memory_messages()` (`mem0/configs/prompts.py:406`) have **zero callers anywhere
-  in the repo except their own unit test** — confirmed independently in the TS SDK too
-  (`mem0-ts/.../memory/index.ts:21` imports the equivalent logic but never calls it). The real
-  ingest path's system prompt states **"Your sole operation is ADD."** Dedup is **MD5 equality on
-  exact text**, not semantic merge. This is deliberate, not an oversight: mem0's own README claims
-  **+21 LoCoMo points** for abandoning the write-time-intelligence design. **Strategic
-  consequence: the market leader tried pay-at-write memory management, walked away from it, and
-  converged on append-and-rank-at-read — the same shape astramem-local already ships.** This is
-  validation of our architecture, not a gap to close. (Also worth recording: their dead code has a
-  *passing* unit test — "built, wired, never invoked" is not an astramem-specific failure mode,
-  theirs is just better camouflaged than ours usually is.)
-- **mem0 PAYWALLS temporal reasoning in its own OSS package.** `add(timestamp=…)` **raises
-  `ValueError`** in the open-source path (`mem0/memory/main.py:769-770`); `search(reference_date=…)`
-  is blocked the same way. A 1,582-line `notices.py` module exists specifically to detect
-  free-tier temporal usage attempts and fire upsell nudges. **The one capability that would most
-  directly explain mem0's LoCoMo temporal-question lead is the one capability OSS users are
-  structurally prevented from testing.**
-- **Supermemory's "embedded graph engine" is a canvas renderer, not a graph database.**
-  `packages/memory-graph/` is d3-force physics, viewport handling, and input handling —
-  presentation code. The real backend that would do graph reasoning is closed-source and was
-  already flagged as such in the 2026-07-09 pass above; this update narrows *what* "graph engine"
-  referred to. Separately, a real and cheap-to-copy DX lesson from the same codebase: their MCP
-  `memorize` tool schema is deliberately tiny (`{content, action}` plus one optional tag; scoping
-  is pushed to OAuth context rather than tool parameters) — worth weighing against
-  astramem-local's comparatively many-parameter tools.
+  CODE — the biggest flip in this update.** The memory-manager prompt and
+  `get_update_memory_messages()`, both in `mem0/configs/prompts.py` (prompt text around line 176,
+  function around line 406 at investigation time), have **zero callers anywhere in the repo
+  except their own unit test** — confirmed independently in the TS SDK too: `mem0-ts`'s memory
+  module (`.../memory/index.ts`, near the top of the file at investigation time) imports the
+  equivalent logic but never calls it. The real ingest path's system prompt states **"Your sole
+  operation is ADD."** Dedup is **MD5 equality on exact text**, not semantic merge. This is
+  deliberate, not an oversight: mem0's own README claims **+21 LoCoMo points** for abandoning the
+  write-time-intelligence design. **Strategic consequence: the market leader tried pay-at-write
+  memory management, walked away from it, and converged on append-and-rank-at-read — the same
+  shape astramem-local already ships.** This is validation of our architecture, not a gap to
+  close. (Also worth recording: their dead code has a *passing* unit test — "built, wired, never
+  invoked" is not an astramem-specific failure mode, theirs is just better camouflaged than ours
+  usually is.)
+- **mem0 PAYWALLS temporal reasoning in its own OSS package.** `Memory.add(timestamp=…)`
+  **raises `ValueError`** in the open-source path (`mem0/memory/main.py`, around line 769 at
+  investigation time); `search(reference_date=…)` is blocked the same way. A `notices.py` module
+  (~1,582 lines) exists specifically to detect free-tier temporal usage attempts and fire upsell
+  nudges. **The one capability that would most directly explain mem0's LoCoMo temporal-question
+  lead is the one capability OSS users are structurally prevented from testing.**
+- **Supermemory's "embedded graph engine" is a canvas renderer, not a graph database.** The
+  `memory-graph` package (`packages/memory-graph/`) is d3-force physics, viewport handling, and
+  input handling — presentation code. The real backend that would do graph reasoning is
+  closed-source and was already flagged as such in the 2026-07-09 pass above; this update narrows
+  *what* "graph engine" referred to. Separately, a real and cheap-to-copy DX lesson from the same
+  codebase: their MCP `memorize` tool schema is deliberately tiny (`{content, action}` plus one
+  optional tag; scoping is pushed to OAuth context rather than tool parameters) — worth weighing
+  against astramem-local's comparatively many-parameter tools.
 - **Graphiti's temporal win is an extraction-stage implementation detail, not an ontology
-  advantage.** `_extract_edge_timestamps` (`edge_operations.py:576-620`) threads the session date
-  into the extraction LLM call — the identical mechanism astramem-local's own architect
-  independently proposed the same day as a one-day additive fix (see
+  advantage.** The `_extract_edge_timestamps` function (`edge_operations.py`, roughly lines
+  576-620 at investigation time) threads the session date into the extraction LLM call — the
+  identical mechanism astramem-local's own architect independently proposed the same day as a
+  one-day additive fix (see
   `docs/research/20260713-teardown-and-reinvent.md` §6 for the full argument; a formal
   six-investigator review tested "does Graphiti's ontology beat astramem-local's" and the
   answer was **no**). Its honest costs, not previously itemized here: **Neo4j and OpenAI are both
-  non-optional base dependencies** (`pyproject.toml:15-16`), there is **no offline mode**, a
-  single episode costs **4-6+ LLM calls**, contradiction detection is a non-deterministic LLM
-  judgment call with no deterministic fallback, and its temporal query filter is **opt-in, not a
-  safe default** (`SearchFilters()` defaults `valid_at=None`, so a naive caller silently retrieves
-  facts that have since been contradicted).
+  non-optional base dependencies** (declared directly in `pyproject.toml`'s core dependency list,
+  not an optional extra), there is **no offline mode**, a single episode costs **4-6+ LLM calls**,
+  contradiction detection is a non-deterministic LLM judgment call with no deterministic
+  fallback, and its temporal query filter is **opt-in, not a safe default** (the `SearchFilters`
+  class defaults `valid_at=None`, so a naive caller silently retrieves facts that have since been
+  contradicted).
 - **Retract reliance on Zep's LoCoMo numbers.** They appear **nowhere in Zep's own arXiv paper**
   (2501.13956) — every public figure traces back to a blog post that was later edited, published
   amid an active public dispute with mem0 over the correct number (Zep's original 84% claim, mem0's

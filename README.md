@@ -633,8 +633,8 @@ adapter's current status) and how to reproduce them.
 Documenting these here so they're a five-minute read instead of a surprise:
 
 - **Temporal queries are weak.** Bitemporal storage and `as_of` point-in-time filtering are
-  correct end-to-end (`migrations/006-atom-v3.sql`, `search.ts:264-278`) — the schema isn't the
-  problem. What's missing is that automatic extraction doesn't populate a fact's own
+  correct end-to-end (`migrations/006-atom-v3.sql`, `validityFilterClause()` in `src/search/search.ts`)
+  — the schema isn't the problem. What's missing is that automatic extraction doesn't populate a fact's own
   `valid_at`/`invalid_at` window yet, so most memories carry no fact-level validity interval for
   `as_of` to filter on. Treat point-in-time recall as schema-ready but not yet
   extraction-populated.
@@ -652,11 +652,12 @@ Documenting these here so they're a five-minute read instead of a surprise:
   models can silently return an empty `{"atoms":[]}` extraction — a well-formed,
   successful-looking response — if their thinking mode consumes the whole turn before
   `format:json` output is produced. The fix in this repo is a **model-name regex**
-  (`/^qwen3/i`, `src/providers/llm/ollama.ts:31-37,95`), not general thinking-mode detection.
-  That same config's own doc comment names `deepseek-r1` as an equally affected model family
-  that is **not** covered. `doctor`'s `llmChatProbe` won't catch this either — it never passes
-  `format:json` (`src/doctor/probes/llm-chat-probe.ts:19-22`), so a green probe is not evidence
-  extraction actually works. **Stick to a tested extraction model** (`qwen3:8b` or
+  (`/^qwen3/i`, on the `think` field of `OllamaLLMConfig` in `src/providers/llm/ollama.ts`), not
+  general thinking-mode detection. That same config's own doc comment names `deepseek-r1` as an
+  equally affected model family that is **not** covered. `doctor`'s `llmChatProbe`
+  (`src/doctor/probes/llm-chat-probe.ts`) won't catch this either — it never passes `format:json`,
+  so a green probe is not evidence extraction actually works. **Stick to a tested extraction
+  model** (`qwen3:8b` or
   `qwen2.5-coder:7b`); if you switch to another local reasoning model, verify with a real
   extraction run, not just `doctor`.
 
