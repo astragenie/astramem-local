@@ -437,12 +437,30 @@ export function renderDashboard(data: DashboardData, config: Config): string {
   const { label } = bannerStatus(data.health);
   const statusColor = label === 'OK' ? '#2ecc71' : label === 'DEGRADED' ? '#e74c3c' : '#888';
 
+  // Refresh interval was 5s. The page COLD-RENDERS IN ~7.9s on a real store
+  // (16k memories) — warm it's 0.03s, but the cold path aggregates across
+  // memories/jobs/entities/proposals. A 5s auto-refresh on an 8s render means
+  // the browser reloads BEFORE the previous render finishes, so requests stack.
+  //
+  // That is not merely a slow page. `better-sqlite3` is SYNCHRONOUS: a running
+  // query blocks the entire event loop, so stacked dashboard renders starve
+  // /health, /recall, and every other route. On 2026-07-13 the daemon was
+  // reported "down" while actually alive — it was wedged behind exactly this.
+  //
+  // It also feeds the new hang-watchdog (#206), which kills a daemon whose
+  // /health stops answering: dashboard open -> stacked renders -> /health slow
+  // -> watchdog kills -> restart -> dashboard reconnects -> repeat. A
+  // self-inflicted restart loop.
+  //
+  // 30s is comfortably above the cold render, so a refresh can never overlap
+  // its predecessor. The real fix is to stop doing aggregate scans on the hot
+  // path (own ticket) — this removes the amplifier.
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="5">
+<meta http-equiv="refresh" content="30">
 <title>AstraMemory Dashboard</title>
 <style>${CSS}</style>
 </head>

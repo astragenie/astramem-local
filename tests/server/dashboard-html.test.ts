@@ -173,7 +173,10 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     expect(html).not.toMatch(/<script[^>]+src=/i);
     expect(html).not.toContain('eval(');
     expect(html).not.toMatch(/onclick=/i);
-    expect(html).toContain('<meta http-equiv="refresh" content="5">');
+    // 30s, not 5s: the page cold-renders in ~7.9s on a real store, so a 5s
+    // refresh reloaded BEFORE the previous render finished — stacking synchronous
+    // better-sqlite3 queries and starving /health. See dashboard-html.ts.
+    expect(html).toContain('<meta http-equiv="refresh" content="30">');
     expect(html).not.toMatch(/https?:\/\//);
   });
 
