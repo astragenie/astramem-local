@@ -121,4 +121,7 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       -- same create-copy-swap pattern as 021/023 -- plus the additive
 //       nullable memories.purge_batch_id column + partial index, and the
 //       new purge_batches audit table.
-export const SCHEMA_VERSION = 25 as const;
+// 026 = transcripts.proxy_usage_json, additive nullable column (FEAT-458 S6
+//       -- wires extractUsageMetadata's token/cost telemetry, S5-authored
+//       and previously unattached, into durable storage).
+export const SCHEMA_VERSION = 26 as const;

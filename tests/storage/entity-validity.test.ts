@@ -47,9 +47,9 @@ describe('migration 023-entity-link-validity', () => {
     expect(invalidAtCol.notnull).toBe(0);
   });
 
-  it('DB max schema version is 25 after migration (023 FEAT-453 + 024 FEAT-455 + 025 FEAT-467, all applied by migrate())', () => {
+  it('DB max schema version is 26 after migration (023 FEAT-453 + 024 FEAT-455 + 025 FEAT-467 + 026 FEAT-458 S6, all applied by migrate())', () => {
     const row = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(row.v).toBe(25);
+    expect(row.v).toBe(26);
   });
 
   // AC-1: migration preserves existing links, generating a fresh id and
