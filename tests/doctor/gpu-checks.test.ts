@@ -194,48 +194,110 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
   });
 
   describe('Ollama tuning env vars', () => {
-    it('is always informational (ok:true) whether vars are set or not', async () => {
+    // REGRESSION (2026-07-13): the original check read `process.env` — the
+    // DOCTOR process's own environment, not Ollama's. On the operator's box
+    // every one of these vars was set at Windows User scope and demonstrably
+    // active (qwen3:8b loaded at 5.76 GB, the flash-attn+q8-KV figure, not
+    // the 6.2 GB no-tuning figure) — yet the doctor process didn't inherit
+    // them and the check confidently printed "(unset)" for all five. A check
+    // that reports "off" for a setting that is verifiably ON is worse than no
+    // check at all. These tests pin the fix: report a real persisted value
+    // when it can be read, and say so honestly (never claim "(unset)") when
+    // it can't.
+
+    it('is always informational (ok:true) whether persisted lookup succeeds or not', async () => {
       const checks = getGpuChecks({
         listProcesses: async () => [],
         queryGpuMemory: async () => null,
         fetchOllamaPs: async () => null,
-        env: {},
+        readPersistedEnvVars: async () => null,
       });
       const result = await findCheck(checks, 'Ollama tuning env vars').run();
       expect(result.ok).toBe(true);
     });
 
-    it('reports the configured values when set', async () => {
+    it('reports persisted values with their scope when the registry lookup succeeds', async () => {
       const checks = getGpuChecks({
         listProcesses: async () => [],
         queryGpuMemory: async () => null,
         fetchOllamaPs: async () => null,
-        env: {
-          OLLAMA_NUM_PARALLEL: '2',
-          OLLAMA_MAX_LOADED_MODELS: '2',
-          OLLAMA_FLASH_ATTENTION: '1',
-          OLLAMA_KV_CACHE_TYPE: 'q8_0',
-          OLLAMA_KEEP_ALIVE: '-1',
-        },
+        readPersistedEnvVars: async () =>
+          new Map([
+            ['OLLAMA_NUM_PARALLEL', { value: '2', scope: 'user' as const }],
+            ['OLLAMA_FLASH_ATTENTION', { value: '1', scope: 'user' as const }],
+            ['OLLAMA_KV_CACHE_TYPE', { value: 'q8_0', scope: 'user' as const }],
+          ]),
       });
       const result = await findCheck(checks, 'Ollama tuning env vars').run();
       expect(result.ok).toBe(true);
       expect(result.message).toContain('OLLAMA_NUM_PARALLEL=2');
       expect(result.message).toContain('OLLAMA_FLASH_ATTENTION=1');
       expect(result.message).toContain('OLLAMA_KV_CACHE_TYPE=q8_0');
+      expect(result.message).toContain('[persisted:user]');
     });
 
-    it('reports unset vars distinctly from set ones', async () => {
+    it('never claims a persisted-but-unread var is "(unset)" — reports "not set at User/Machine scope" instead', async () => {
       const checks = getGpuChecks({
         listProcesses: async () => [],
         queryGpuMemory: async () => null,
         fetchOllamaPs: async () => null,
-        env: { OLLAMA_FLASH_ATTENTION: '1' },
+        readPersistedEnvVars: async () => new Map([['OLLAMA_FLASH_ATTENTION', { value: '1', scope: 'user' as const }]]),
       });
       const result = await findCheck(checks, 'Ollama tuning env vars').run();
       expect(result.ok).toBe(true);
       expect(result.message).toContain('OLLAMA_FLASH_ATTENTION=1');
-      expect(result.message).toMatch(/OLLAMA_NUM_PARALLEL=\(unset\)/);
+      expect(result.message).not.toMatch(/=\(unset\)/);
+      expect(result.message).toContain('OLLAMA_NUM_PARALLEL=(not set at User/Machine scope)');
+    });
+
+    it('the exact regression: doctor process env is empty but persisted registry has the value — must report the real value, not (unset)', async () => {
+      const checks = getGpuChecks({
+        listProcesses: async () => [],
+        queryGpuMemory: async () => null,
+        fetchOllamaPs: async () => null,
+        env: {}, // doctor process sees nothing, mirroring the operator's shell
+        readPersistedEnvVars: async () =>
+          new Map([
+            ['OLLAMA_NUM_PARALLEL', { value: '2', scope: 'user' as const }],
+            ['OLLAMA_MAX_LOADED_MODELS', { value: '2', scope: 'user' as const }],
+            ['OLLAMA_FLASH_ATTENTION', { value: '1', scope: 'user' as const }],
+            ['OLLAMA_KV_CACHE_TYPE', { value: 'q8_0', scope: 'user' as const }],
+            ['OLLAMA_KEEP_ALIVE', { value: '-1', scope: 'user' as const }],
+          ]),
+      });
+      const result = await findCheck(checks, 'Ollama tuning env vars').run();
+      expect(result.ok).toBe(true);
+      expect(result.message).not.toContain('(unset)');
+      expect(result.message).toContain('OLLAMA_FLASH_ATTENTION=1 [persisted:user]');
+      expect(result.message).toContain('OLLAMA_KV_CACHE_TYPE=q8_0 [persisted:user]');
+    });
+
+    it('reports honestly (never "(unset)") when persisted-env lookup is unavailable on this platform', async () => {
+      const checks = getGpuChecks({
+        listProcesses: async () => [],
+        queryGpuMemory: async () => null,
+        fetchOllamaPs: async () => null,
+        env: {},
+        readPersistedEnvVars: async () => null, // e.g. non-Windows, or the registry read failed
+      });
+      const result = await findCheck(checks, 'Ollama tuning env vars').run();
+      expect(result.ok).toBe(true);
+      expect(result.message).not.toMatch(/OLLAMA_\w+=\(unset\)/);
+      expect(result.message.toLowerCase()).toMatch(/cannot determine|unavailable|unknown/);
+    });
+
+    it('degrades gracefully (ok:true, honest) when readPersistedEnvVars itself throws', async () => {
+      const checks = getGpuChecks({
+        listProcesses: async () => [],
+        queryGpuMemory: async () => null,
+        fetchOllamaPs: async () => null,
+        readPersistedEnvVars: async () => {
+          throw new Error('registry access denied');
+        },
+      });
+      const result = await findCheck(checks, 'Ollama tuning env vars').run();
+      expect(result.ok).toBe(true);
+      expect(result.message).not.toMatch(/OLLAMA_\w+=\(unset\)/);
     });
   });
 

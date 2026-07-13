@@ -121,6 +121,81 @@ export async function queryNvidiaSmiUsedMemory(): Promise<Map<number, number> | 
   }
 }
 
+export interface PersistedEnvValue {
+  value: string;
+  scope: 'user' | 'machine';
+}
+
+/**
+ * Read named env vars from Windows' PERSISTED User/Machine environment
+ * (`[Environment]::GetEnvironmentVariables`, which reads the same
+ * `HKCU:\Environment` / `HKLM:\...\Session Manager\Environment` registry
+ * keys that `setx` and the System Properties dialog write to) — NOT from
+ * `process.env` of the calling (doctor) process.
+ *
+ * This distinction is the whole point: `process.env` only reflects whatever
+ * environment the doctor process happened to inherit from the shell that
+ * launched it, which can differ from what a long-running Ollama service
+ * actually has (different shell, different service account, set after
+ * Ollama started, etc). A 2026-07-13 incident on a real box had all five
+ * `OLLAMA_*` tuning vars persisted at User scope and demonstrably active in
+ * Ollama (confirmed via `size_vram` on a loaded model), while the doctor
+ * process's `process.env` had none of them — the original check read
+ * `process.env` and confidently reported all five as "(unset)", which was
+ * false and pointed debugging in the wrong direction.
+ *
+ * Returns `null` on non-Windows platforms (there is no equivalent concept of
+ * a single persisted user environment on POSIX — env vars there are typically
+ * sourced from shell rc files, systemd unit files, launchd plists, etc., with
+ * no one canonical read path) or when the PowerShell query itself fails
+ * (permissions, PowerShell unavailable, unparsable output). Callers must
+ * treat `null` as "cannot determine" and say so honestly — never fall back
+ * to silently asserting "(unset)".
+ *
+ * Even a non-null result is a best-effort proxy, not a guarantee: it reflects
+ * what a NEW process would inherit right now, which may still differ from
+ * what an already-running Ollama process has if it was launched before the
+ * value was set, from a different account, or with an explicit override.
+ */
+export async function readPersistedEnvVars(
+  names: readonly string[],
+): Promise<Map<string, PersistedEnvValue> | null> {
+  if (platform() !== 'win32') return null;
+  try {
+    const out = await runCmd(
+      'powershell -NoProfile -NonInteractive -Command ' +
+      '"$u = [Environment]::GetEnvironmentVariables(\'User\'); ' +
+      '$m = [Environment]::GetEnvironmentVariables(\'Machine\'); ' +
+      '[PSCustomObject]@{User=$u; Machine=$m} | ConvertTo-Json -Compress -Depth 4"',
+    );
+    const trimmed = out.trim();
+    if (!trimmed) return null;
+    const parsed = JSON.parse(trimmed) as { User?: Record<string, unknown>; Machine?: Record<string, unknown> };
+
+    const findCaseInsensitive = (obj: Record<string, unknown> | undefined, name: string): string | undefined => {
+      if (!obj) return undefined;
+      const key = Object.keys(obj).find((k) => k.toUpperCase() === name.toUpperCase());
+      return key !== undefined ? String(obj[key]) : undefined;
+    };
+
+    const map = new Map<string, PersistedEnvValue>();
+    for (const name of names) {
+      const userVal = findCaseInsensitive(parsed.User, name);
+      if (userVal !== undefined) {
+        map.set(name, { value: userVal, scope: 'user' });
+        continue;
+      }
+      const machineVal = findCaseInsensitive(parsed.Machine, name);
+      if (machineVal !== undefined) {
+        map.set(name, { value: machineVal, scope: 'machine' });
+      }
+    }
+    return map;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Fetch Ollama's `GET /api/ps` (currently-loaded models, with `size` and
  * `size_vram` per model — THE tell for silent CPU offload, invisible from

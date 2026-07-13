@@ -29,8 +29,10 @@ import {
   listProcesses as defaultListProcesses,
   queryNvidiaSmiUsedMemory,
   fetchOllamaPs as defaultFetchOllamaPs,
+  readPersistedEnvVars as defaultReadPersistedEnvVars,
   type ProcessInfo,
   type OllamaPsModel,
+  type PersistedEnvValue,
 } from './probes/gpu-vram-probe.js';
 
 export interface GpuCheckOpts {
@@ -45,9 +47,18 @@ export interface GpuCheckOpts {
   /** Injectable Ollama /api/ps fetch — tests substitute a stub; `null`
    *  means Ollama is unreachable. */
   fetchOllamaPs?: (baseUrl: string) => Promise<OllamaPsModel[] | null>;
-  /** Injectable environment map for the tuning-vars row. Defaults to
-   *  `process.env`. */
+  /** Injectable environment map for the tuning-vars row's "doctor process
+   *  couldn't determine the real value" fallback text. Defaults to
+   *  `process.env`. Never used as the primary source of truth — see
+   *  `readPersistedEnvVars`. */
   env?: NodeJS.ProcessEnv;
+  /** Injectable persisted-env reader for the tuning-vars row — this is the
+   *  actual source of truth, not `env`/`process.env` (which is only the
+   *  doctor process's own inherited environment, not Ollama's). Tests
+   *  substitute a stub; `null` means "cannot determine" (non-Windows, or the
+   *  lookup failed) and must be reported honestly, never as "(unset)".
+   *  Defaults to the real Windows registry-backed implementation. */
+  readPersistedEnvVars?: (names: readonly string[]) => Promise<Map<string, PersistedEnvValue> | null>;
 }
 
 const LLAMA_SERVER_RE = /^llama-server(\.exe)?$/i;
@@ -229,18 +240,54 @@ function checkSilentCpuOffload(opts: {
 
 // ─── Check: Ollama tuning env vars (informational) ───────────────────────
 
-function checkOllamaTuningEnvVars(env: NodeJS.ProcessEnv): Check {
+const TUNING_VARS_CONTEXT =
+  'these materially affect Ollama throughput/VRAM fit (flash-attn + q8 KV cache dropped qwen3:8b from 6.2 to ' +
+  '5.76 GB on the operator\'s box, the difference between fitting and not fitting on 8 GB).';
+
+function checkOllamaTuningEnvVars(opts: {
+  env: NodeJS.ProcessEnv;
+  readPersistedEnvVars: (names: readonly string[]) => Promise<Map<string, PersistedEnvValue> | null>;
+}): Check {
   return {
     name: 'Ollama tuning env vars',
     async run(): Promise<CheckResult> {
-      const parts = TUNING_VARS.map((v) => `${v}=${env[v] ?? '(unset)'}`);
+      let persisted: Map<string, PersistedEnvValue> | null;
+      try {
+        persisted = await opts.readPersistedEnvVars(TUNING_VARS);
+      } catch {
+        persisted = null;
+      }
+
+      // Cannot determine Ollama's real environment from here (non-Windows,
+      // or the registry lookup failed) — report that honestly. Do NOT fall
+      // back to `process.env`/`opts.env` as if it were the answer: that is
+      // the doctor process's OWN environment, which is exactly what caused
+      // this check to falsely report five active vars as "(unset)" on
+      // 2026-07-13. It's shown below only as a clearly-labeled, separate
+      // hint, never as the claimed value.
+      if (persisted === null) {
+        const doctorEnvHint = TUNING_VARS.map((v) => `${v}=${opts.env[v] ?? '(unset in doctor process)'}`).join(', ');
+        return {
+          ok: true,
+          message:
+            `cannot determine Ollama's actual tuning env vars from here — persisted-environment lookup is ` +
+            `unavailable on this platform (or failed), and this doctor process's own environment is NOT ` +
+            `necessarily what the running Ollama service sees. For reference only, the doctor process itself ` +
+            `sees: ${doctorEnvHint}. ${TUNING_VARS_CONTEXT} Verify with \`ollama ps\` / observed VRAM instead of ` +
+            `trusting this row.`,
+        };
+      }
+
+      const parts = TUNING_VARS.map((v) => {
+        const p = persisted!.get(v);
+        return p ? `${v}=${p.value} [persisted:${p.scope}]` : `${v}=(not set at User/Machine scope)`;
+      });
       return {
         ok: true,
         message:
-          `${parts.join(', ')} — these materially affect Ollama throughput/VRAM fit (flash-attn + q8 KV cache ` +
-          `dropped qwen3:8b from 6.2 to 5.76 GB on the operator's box, the difference between fitting and not ` +
-          `fitting on 8 GB). Reflects the environment this doctor process itself sees, not necessarily the ` +
-          `running Ollama server's own environment if it was launched from a different shell/service.`,
+          `${parts.join(', ')} — read from the Windows persisted User/Machine environment (registry), not this ` +
+          `doctor process's own environment. ${TUNING_VARS_CONTEXT} May still not exactly match a running Ollama ` +
+          `service launched from a different account or with an explicit environment override.`,
       };
     },
   };
@@ -254,10 +301,11 @@ export function getGpuChecks(rawOpts: GpuCheckOpts = {}): Check[] {
   const queryGpuMemory = rawOpts.queryGpuMemory ?? (() => queryNvidiaSmiUsedMemory());
   const fetchOllamaPs = rawOpts.fetchOllamaPs ?? defaultFetchOllamaPs;
   const env = rawOpts.env ?? process.env;
+  const readPersistedEnvVars = rawOpts.readPersistedEnvVars ?? defaultReadPersistedEnvVars;
 
   return [
     checkOrphanedLlamaServer({ ollamaBaseUrl, listProcesses, queryGpuMemory, fetchOllamaPs }),
     checkSilentCpuOffload({ ollamaBaseUrl, fetchOllamaPs }),
-    checkOllamaTuningEnvVars(env),
+    checkOllamaTuningEnvVars({ env, readPersistedEnvVars }),
   ];
 }
