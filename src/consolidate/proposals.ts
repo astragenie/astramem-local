@@ -6,7 +6,7 @@
  */
 
 import type { DB } from '../storage/db.js';
-import type { SupersedeProvenance } from '../storage/memory-events.js';
+import type { SupersedeProvenance, CorrectionSource } from '../storage/memory-events.js';
 import { mergeAsSupersede } from './consolidate.js';
 
 export interface ConsolidationProposal {
@@ -104,11 +104,22 @@ export class ProposalRepo {
    * event as resolved via the bulk `consolidate accept --all` CLI path
    * rather than a single manual accept — see {@link markBulkAccepted} for
    * why this is a separate, additive mechanism from `provenance`.
+   *
+   * `opts.correctionSource` (issue #190) defaults to `'external'` — this
+   * method is called from THREE places: the two automatic consolidate.ts
+   * sweeps (which explicitly pass `'consolidation_auto'`) and the human
+   * REST/MCP/dashboard `resolve_consolidation_proposal` path (which passes
+   * nothing at all). Defaulting to `'external'` here means a human accepting
+   * a proposal is correctly counted as genuine feedback in
+   * `feedbackLoopSummary()`, distinct from the two unattended sweeps.
    */
-  accept(id: string, provenance?: SupersedeProvenance, opts?: { bulkAccepted?: boolean }): ConsolidationProposal {
+  accept(
+    id: string, provenance?: SupersedeProvenance,
+    opts?: { bulkAccepted?: boolean; correctionSource?: CorrectionSource },
+  ): ConsolidationProposal {
     const tx = this.db.transaction((): ConsolidationProposal => {
       const p = this.mustBePending(id);
-      mergeAsSupersede(this.db, p.winner_id, p.loser_id, provenance);
+      mergeAsSupersede(this.db, p.winner_id, p.loser_id, provenance, opts?.correctionSource ?? 'external');
       if (opts?.bulkAccepted) this.markBulkAccepted(p.loser_id);
       return this.resolve(p.id, 'accepted');
     });

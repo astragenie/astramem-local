@@ -27,11 +27,12 @@
 
 import { createHash } from 'node:crypto';
 import type { DB } from './db.js';
-import { MemoryEventRepo } from './memory-events.js';
+import { MemoryEventRepo, type CorrectionSource } from './memory-events.js';
 
 export type UsefulnessSurface = 'mcp' | 'rest' | 'cli';
 export type UsefulnessSignal = 'explicit' | 'heuristic';
 export type CorrectionAction = 'invalidated' | 'superseded' | 'demoted' | 'edited';
+export type { CorrectionSource };
 
 /** sha256 hex digest of the raw query, truncated to 16 chars — never store the query text itself. */
 export function hashQuery(query: string): string {
@@ -98,6 +99,10 @@ export function recordRecallUsed(db: DB, input: RecordRecallUsedInput): void {
 export interface RecordMemoryCorrectedInput {
   atomId: string;
   action: CorrectionAction;
+  /** issue #190: who decided this correction — defaults to 'external' (a
+   *  future demote/edit flow is, like invalidate(), assumed human/API-driven
+   *  unless the caller says otherwise). See {@link CorrectionSource}. */
+  source?: CorrectionSource;
 }
 
 /**
@@ -111,7 +116,7 @@ export function recordMemoryCorrected(db: DB, input: RecordMemoryCorrectedInput)
   new MemoryEventRepo(db).append({
     event_type: 'usefulness',
     atom_id: input.atomId,
-    payload: { family: 'memory_corrected', action: input.action },
+    payload: { family: 'memory_corrected', action: input.action, source: input.source ?? 'external' },
   });
 }
 
@@ -226,6 +231,23 @@ export interface FeedbackLoopSummary {
   servedDistinct: number;
   usedDistinct: number;
   correctedDistinct: number;
+  /**
+   * issue #190 AC-2: distinct atoms with at least one memory_corrected event
+   * tagged `source: 'consolidation_auto'` — the system deduplicating itself,
+   * with no human/API decision in the loop (see {@link CorrectionSource}).
+   * Not necessarily <= correctedDistinct - correctedExternalDistinct: an atom
+   * can carry corrections from BOTH sources over its lifetime and would count
+   * in both buckets. Events written before this field existed have no
+   * `source` key and count in NEITHER bucket (see correctedUnknownDistinct).
+   */
+  correctedConsolidationDistinct: number;
+  /** Distinct atoms with at least one memory_corrected event explicitly
+   *  tagged `source: 'external'` — a human or direct API/MCP caller decided. */
+  correctedExternalDistinct: number;
+  /** Distinct atoms whose ONLY memory_corrected event(s) predate this field
+   *  (no `source` key at all) — cannot be classified either way. Nonzero here
+   *  on an existing install is expected and not a bug: it's pre-fix history. */
+  correctedUnknownDistinct: number;
 }
 
 /**
@@ -240,7 +262,14 @@ export interface FeedbackLoopSummary {
  * period for the day-to-day dashboard rate — "has this EVER fired, even
  * once" is a different question than "what's this week's rate".
  *
- * Split into three per-family queries (not one combined CASE/SELECT) so
+ * issue #190 follow-up: `correctedDistinct` alone is NOT evidence the loop is
+ * alive — the 2026-07-13 finding was that all 854 live corrections came from
+ * consolidate.ts's own auto-merge, self-referentially, with zero positive
+ * signal ever recorded. The three `correctedXDistinct` fields below split
+ * that count by who decided (see `CorrectionSource`); doctor's canary now
+ * gates purely on `usedDistinct`, never on `correctedDistinct` alone.
+ *
+ * Split into three-plus per-family queries (not one combined CASE/SELECT) so
  * served/used each ride the migration 019/021/025 partial indexes
  * (idx_memory_events_usefulness_served/used) exactly like usefulnessRate()
  * above — filtering `family` inside a SELECT-list CASE instead of the WHERE
@@ -272,7 +301,40 @@ export function feedbackLoopSummary(db: DB): FeedbackLoopSummary {
     WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
   `).get() as { n: number }).n;
 
-  return { servedDistinct, usedDistinct, correctedDistinct };
+  // issue #190 AC-2: same unindexed-scan tradeoff as correctedDistinct above
+  // (no partial index covers memory_corrected — see this function's doc
+  // comment) — three more predicates on the same small-volume event family,
+  // not a new full-table scan.
+  const correctedConsolidationDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
+      AND json_extract(payload_json, '$.source') = 'consolidation_auto'
+  `).get() as { n: number }).n;
+
+  const correctedExternalDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
+      AND json_extract(payload_json, '$.source') = 'external'
+  `).get() as { n: number }).n;
+
+  const correctedUnknownDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
+      AND json_extract(payload_json, '$.source') IS NULL
+      AND atom_id NOT IN (
+        SELECT atom_id FROM memory_events
+        WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
+          AND json_extract(payload_json, '$.source') IS NOT NULL
+      )
+  `).get() as { n: number }).n;
+
+  return {
+    servedDistinct, usedDistinct, correctedDistinct,
+    correctedConsolidationDistinct, correctedExternalDistinct, correctedUnknownDistinct,
+  };
 }
 
 export interface UsefulnessByType {

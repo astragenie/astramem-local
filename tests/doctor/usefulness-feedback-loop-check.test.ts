@@ -88,7 +88,7 @@ describe('doctor "Usefulness feedback loop" canary (2026-07-12 "never fired" bug
 
     const result = await checkFor().run();
     expect(result.ok).toBe(false);
-    expect(result.message).toContain('NEVER fired');
+    expect(result.message).toContain('NEVER received a POSITIVE signal');
     expect(result.message).toContain('20 active');
     expect(result.fix).toBeDefined();
   });
@@ -109,7 +109,10 @@ describe('doctor "Usefulness feedback loop" canary (2026-07-12 "never fired" bug
     expect(result.message).toContain('1 used');
   });
 
-  it('>= threshold activity but at least one memory_corrected event (invalidate) — ok:true (loop is alive)', async () => {
+  // issue #190 regression: this is the EXACT production shape (0 used, N
+  // corrected) that used to read as "loop is alive" — the bug the canary
+  // exists to catch. Corrections are not positive signal; this must WARN.
+  it('>= threshold activity but only memory_corrected events (invalidate), 0 used — WARN, not "loop is alive"', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -118,15 +121,65 @@ describe('doctor "Usefulness feedback loop" canary (2026-07-12 "never fired" bug
     // by 1 (invalidate excludes it from the active set), so 21 seeded keeps
     // activeCount at 20 post-invalidate — otherwise this would fall through
     // to the "not enough activity yet" branch instead of exercising the
-    // "loop is alive" branch this test targets.
+    // branch this test targets.
     const ids = seedFacts(repo, 21);
     recordRecallServed(db, { query: 'q', atomIds: ids, surface: 'mcp', mode: 'search' });
     new MemoryEventRepo(db).invalidate(ids[0]!, 'test correction');
     db.close();
 
     const result = await checkFor().run();
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('NEVER received a POSITIVE signal');
     expect(result.message).toContain('1 corrected');
+    expect(result.message).toContain('0 consolidation-auto');
+    expect(result.message).toContain('1 external');
+    expect(result.fix).toBeDefined();
+  });
+
+  // issue #190 AC-2: the exact live-production shape — corrections sourced
+  // from consolidation's own auto-merge, not a human/API caller — must be
+  // distinguishable in the WARN message, not lumped in with genuine external
+  // corrections.
+  it('corrections sourced from consolidation auto-merge are broken out separately in the WARN message', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    const repo = new MemoryRepo(db);
+    const ids = seedFacts(repo, 22);
+    recordRecallServed(db, { query: 'q', atomIds: ids, surface: 'mcp', mode: 'search' });
+    const events = new MemoryEventRepo(db);
+    // Mirrors consolidate.ts's mergeAsSupersede: supersede with no human step.
+    events.supersede(ids[0]!, ids[1]!, undefined, 'consolidation_auto');
+    events.invalidate(ids[2]!, 'a real human correction');
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('2 corrected');
+    expect(result.message).toContain('1 consolidation-auto');
+    expect(result.message).toContain('1 external');
+  });
+
+  // Even with a positive signal present, doctor should still surface the
+  // consolidation/external split for corrections rather than silently
+  // dropping it once the check goes green.
+  it('with a positive signal AND consolidation-sourced corrections — ok:true, breakdown still visible', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    const repo = new MemoryRepo(db);
+    const ids = seedFacts(repo, 22);
+    recordRecallServed(db, { query: 'q', atomIds: ids, surface: 'mcp', mode: 'search' });
+    recordRecallUsed(db, { atomId: ids[0]!, surface: 'mcp', signal: 'explicit' });
+    new MemoryEventRepo(db).supersede(ids[1]!, ids[2]!, undefined, 'consolidation_auto');
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('1 used');
+    expect(result.message).toContain('1 corrected');
+    expect(result.message).toContain('1 consolidation-auto');
+    expect(result.message).toContain('0 external');
   });
 
   it('>= threshold memories but recalls never served — ok:true (below the served floor, not enough activity to judge)', async () => {

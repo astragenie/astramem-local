@@ -173,8 +173,8 @@ describe('ProposalRepo accept/reject', () => {
     const w = await seedEmbedded(db, 'w', 'h-p-5', vecAt(0));
     const l1 = await seedEmbedded(db, 'l1', 'h-p-6', vecAt(1));
     const l2 = await seedEmbedded(db, 'l2', 'h-p-7', vecAt(2));
-    mergeAsSupersede(db, w, l1);
-    mergeAsSupersede(db, w, l2);
+    mergeAsSupersede(db, w, l1, undefined, 'consolidation_auto');
+    mergeAsSupersede(db, w, l2, undefined, 'consolidation_auto');
     expect(new MemoryRepo(db).get(w)!.derived_from).toEqual([l1, l2]);
   });
 });
@@ -476,11 +476,11 @@ describe('stale-proposal sweep (FEAT-410 follow-up)', () => {
 
     // Pair 1's work happens out-of-band (same as the scheduled consolidate
     // job's pair-scan): loser superseded by winner directly.
-    mergeAsSupersede(db, w1, l1);
+    mergeAsSupersede(db, w1, l1, undefined, 'consolidation_auto');
     // Pair 2's loser becomes unactionable for a different reason: superseded
     // by an unrelated atom.
     const other = await seedEmbedded(db, 'unrelated survivor', 'h-st-5', vecAt(7));
-    mergeAsSupersede(db, other, l2);
+    mergeAsSupersede(db, other, l2, undefined, 'consolidation_auto');
 
     const second = await runConsolidation(db);
     expect(second.autoAcceptedProposals).toHaveLength(1);   // pair 1: already done

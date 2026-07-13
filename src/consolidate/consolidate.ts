@@ -38,7 +38,7 @@ import { randomUUID } from 'node:crypto';
 import type { DB } from '../storage/db.js';
 import type { Config } from '../config/config.js';
 import type { LLMProvider } from '../contracts/llm.js';
-import { MemoryEventRepo, type SupersedeProvenance } from '../storage/memory-events.js';
+import { MemoryEventRepo, type SupersedeProvenance, type CorrectionSource } from '../storage/memory-events.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
 import { judgeContradiction, type JudgeVerdict } from './contradiction-judge.js';
@@ -234,13 +234,22 @@ export function cosine(a: Float32Array, b: Float32Array): number {
  * untouched — see that method and {@link SupersedeProvenance}. Omitted by
  * every pre-existing caller (containment auto-merge, human
  * `ProposalRepo.accept`), so their payload shape is unchanged.
+ *
+ * `correctionSource` (issue #190) is REQUIRED, deliberately with no default —
+ * every call site in this module is either fully automatic (containment tier,
+ * mergeThreshold tier: always `'consolidation_auto'`) or routes through
+ * `ProposalRepo.accept`, which itself decides `'consolidation_auto'` vs
+ * `'external'` based on whether a human resolved the proposal (see
+ * `proposals.ts`). Forcing every caller to say which, rather than defaulting,
+ * is exactly what a silently-wrong default would have re-created here.
  */
 export function mergeAsSupersede(
-  db: DB, winnerId: string, loserId: string, provenance?: SupersedeProvenance,
+  db: DB, winnerId: string, loserId: string,
+  provenance: SupersedeProvenance | undefined, correctionSource: CorrectionSource,
 ): void {
   const events = new MemoryEventRepo(db);
   const tx = db.transaction(() => {
-    events.supersede(loserId, winnerId, provenance);
+    events.supersede(loserId, winnerId, provenance, correctionSource);
     const row = db.prepare('SELECT derived_from FROM memories WHERE id = ?')
       .get(winnerId) as { derived_from: string | null };
     const lineage = row.derived_from ? (JSON.parse(row.derived_from) as string[]) : [];
@@ -300,7 +309,10 @@ function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: s
     const c = containment(r.winner_text, r.loser_text);
     if (c === 'equal' || c === 'a-contains-b') {
       try {
-        repo.accept(r.id);
+        // issue #190: this sweep runs unattended inside runConsolidation with
+        // no human in the loop — 'consolidation_auto', same as the two direct
+        // merge tiers above.
+        repo.accept(r.id, undefined, { correctionSource: 'consolidation_auto' });
         accepted.push(r.id);
       } catch {
         // 409-style race (already resolved / memory gone) — leave for manual.
@@ -574,7 +586,9 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
             if (c === 'a-contains-b') { winner = a; loser = b; }
             else if (c === 'b-contains-a') { winner = b; loser = a; }
             // 'equal' keeps the usefulness-based pick.
-            mergeAsSupersede(db, winner.id, loser.id);
+            // issue #190: this tier merges immediately with no proposal row
+            // and no human step possible — always 'consolidation_auto'.
+            mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
             invalidatedThisRun.add(loser.id);
             summary.merged.push({ winner: winner.id, loser: loser.id, similarity: sim, reason: 'contained' });
             continue;
@@ -582,7 +596,8 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
         }
 
         if (sim >= mergeThreshold) {
-          mergeAsSupersede(db, winner.id, loser.id);
+          // issue #190: same reasoning as the containment tier above.
+          mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
           invalidatedThisRun.add(loser.id);
           summary.merged.push({ winner: winner.id, loser: loser.id, similarity: sim });
         } else {
@@ -606,7 +621,11 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
             // (proposal row created THEN accepted, same audit trail as a
             // manual accept) instead of leaving it pending.
             if (autoAcceptThreshold !== null && sim >= autoAcceptThreshold) {
-              proposalRepo.accept(proposalId, { autoAccepted: true, threshold: autoAcceptThreshold, similarity: sim });
+              // issue #190: also automatic, no human step — 'consolidation_auto'.
+              proposalRepo.accept(
+                proposalId, { autoAccepted: true, threshold: autoAcceptThreshold, similarity: sim },
+                { correctionSource: 'consolidation_auto' },
+              );
               invalidatedThisRun.add(loser.id);
               summary.autoAccepted.push({ winner: winner.id, loser: loser.id, similarity: sim, proposalId });
             } else {

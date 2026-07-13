@@ -186,6 +186,24 @@ export interface SupersedeProvenance {
   similarity: number;
 }
 
+/**
+ * issue #190: which side of the loop produced a `memory_corrected` usefulness
+ * event. `SupersedeProvenance` above only distinguishes ONE narrow opt-in
+ * feature (autoAcceptThreshold) — it is `undefined` for BOTH of consolidate.ts's
+ * own default-on auto-merge tiers (containment + mergeThreshold, `consolidate.ts`
+ * `mergeAsSupersede` direct calls) AND a genuine human accepting a proposal via
+ * `resolve_consolidation_proposal`, which made those two cases indistinguishable
+ * — exactly what let 854 self-generated supersedes read as if they were external
+ * feedback. `'consolidation_auto'` means the correction was produced by the
+ * consolidation job with no human decision in the loop (any of: containment
+ * auto-merge, mergeThreshold auto-merge, the containment-sweep auto-accept of a
+ * pending proposal, or the opt-in autoAcceptThreshold auto-accept). `'external'`
+ * (the default when omitted) means a human or direct API/MCP caller decided —
+ * `invalidate_memory`/`supersede_memory`, a human resolving a proposal, or a
+ * bulk `consolidate accept --all` operator action.
+ */
+export type CorrectionSource = 'consolidation_auto' | 'external';
+
 export class MemoryEventRepo {
   constructor(private db: DB) {}
 
@@ -229,10 +247,13 @@ export class MemoryEventRepo {
       this.append({ event_type: 'invalidate', atom_id: atomId, payload: { reason: reason ?? null }, created_at: now });
       // ADR-010: negative usefulness signal — same tx as the state change.
       // Payload shape documented in src/storage/usefulness.ts (memory_corrected family).
+      // issue #190: invalidate() has no automated caller anywhere in the
+      // codebase today (only invalidate_memory MCP / POST /memory/:id/invalidate,
+      // both direct human/client actions) — source is always 'external'.
       this.append({
         event_type: 'usefulness',
         atom_id: atomId,
-        payload: { family: 'memory_corrected', action: 'invalidated' },
+        payload: { family: 'memory_corrected', action: 'invalidated', source: 'external' satisfies CorrectionSource },
         created_at: now,
       });
     });
@@ -268,8 +289,18 @@ export class MemoryEventRepo {
    * byte-identical to pre-FEAT-442 behavior (`{ superseded_by: newId }`).
    * Passed, it merges in `auto_accepted: true` + `threshold` + `similarity`
    * — see {@link SupersedeProvenance}. Reversible via `unsupersede()`.
+   *
+   * `correctionSource` (issue #190, additive, default `'external'`) is
+   * INDEPENDENT of `provenance` — it tags the `memory_corrected` usefulness
+   * event (not the `supersede` event payload above) with who decided this
+   * pair merges, so `feedbackLoopSummary()` can tell a fully-automatic
+   * consolidation self-merge apart from a human/API-initiated one. See
+   * {@link CorrectionSource}.
    */
-  supersede(oldId: string, newId: string, provenance?: SupersedeProvenance): void {
+  supersede(
+    oldId: string, newId: string, provenance?: SupersedeProvenance,
+    correctionSource: CorrectionSource = 'external',
+  ): void {
     const tx = this.db.transaction(() => {
       const oldRow = this.db
         .prepare('SELECT id, valid_to FROM memories WHERE id = ?')
@@ -317,7 +348,7 @@ export class MemoryEventRepo {
       this.append({
         event_type: 'usefulness',
         atom_id: oldId,
-        payload: { family: 'memory_corrected', action: 'superseded' },
+        payload: { family: 'memory_corrected', action: 'superseded', source: correctionSource },
         created_at: now,
       });
     });

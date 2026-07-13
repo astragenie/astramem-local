@@ -556,14 +556,29 @@ function checkUsefulness(dataDir: string, encryptionEnabled: boolean): Check {
 
 /**
  * WARNs when the ADR-010 usefulness feedback loop has demonstrably NEVER
- * fired despite meaningful daemon activity — the bug found live in
- * production 2026-07-12: GET /profile returned 30 entries, every single one
- * pinned at the Laplace prior 0.5 (0 recall_used, 0 memory_corrected events,
+ * received a POSITIVE signal despite meaningful daemon activity — the bug
+ * found live in production 2026-07-12: GET /profile returned 30 entries,
+ * every single one pinned at the Laplace prior 0.5 (0 recall_used events,
  * ever). The mechanism itself is sound (see tests/e2e/usefulness-feedback-
  * loop.e2e.test.ts — submit_feedback/mark_memory_used, invalidate_memory/
  * supersede_memory, and usefulnessScores() all work correctly when actually
  * invoked); this check exists because CI cannot catch "wired but nobody
  * calls it" — only live usage data can, and only doctor sees live usage data.
+ *
+ * issue #190 (2026-07-13): the ORIGINAL version of this check treated
+ * `usedDistinct > 0 || correctedDistinct > 0` as "the loop is alive" — which
+ * a live daemon satisfied with `(0 used, 854 corrected)` and reported GREEN.
+ * Every one of those 854 corrections turned out to be consolidate.ts's own
+ * auto-merge superseding its own near-duplicates (`correctionSource:
+ * 'consolidation_auto'`, see memory-events.ts) — the system deduplicating
+ * itself, not a human or agent saying "this was wrong". A loop that can only
+ * ever demote (corrected keeps incrementing) and never promote (used stays
+ * frozen at 0) is a one-way punishment term wearing a learning label, and the
+ * canary that exists specifically to catch "built, wired, never invoked" was
+ * itself fooled by exactly that pattern. Fix: `hasPositiveSignal` below is
+ * `usedDistinct > 0` ALONE — corrections, of any source, never count as
+ * evidence the loop is alive. correctedDistinct is still surfaced (split by
+ * source) for visibility, but no longer gates ok/warn.
  *
  * Reads ALL-TIME totals (feedbackLoopSummary — no sinceMs window), because
  * "has this ever happened even once" is a different question than "what's
@@ -596,20 +611,28 @@ function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean
         const summary = feedbackLoopSummary(db);
         db.close();
 
-        const hasSignal = summary.usedDistinct > 0 || summary.correctedDistinct > 0;
+        // issue #190 AC-1: corrections — of ANY source — are not positive
+        // signal. Only usedDistinct means the loop is actually learning.
+        const hasPositiveSignal = summary.usedDistinct > 0;
         const meaningfulUsage =
           report.activeCount >= MEANINGFUL_USAGE_THRESHOLD &&
           summary.servedDistinct >= MEANINGFUL_USAGE_THRESHOLD;
+        const correctedBreakdown =
+          `${summary.correctedDistinct} corrected (${summary.correctedConsolidationDistinct} consolidation-auto, ` +
+          `${summary.correctedExternalDistinct} external` +
+          (summary.correctedUnknownDistinct > 0 ? `, ${summary.correctedUnknownDistinct} pre-fix/unclassified` : '') +
+          ')';
 
-        if (meaningfulUsage && !hasSignal) {
+        if (meaningfulUsage && !hasPositiveSignal) {
           return {
             ok: false,
             message:
-              `usefulness feedback loop has NEVER fired: ${report.activeCount} active memories, ` +
-              `${summary.servedDistinct} distinct atoms served from recall/search, 0 marked used and 0 ` +
-              `corrected — every score is still pinned at the neutral 0.5 prior (2026-07-12 "built, wired, ` +
-              `never invoked" bug class). Ranking is not adapting to anything.`,
-            fix: 'Confirm something in the real usage path actually calls submit_feedback/mark_memory_used for positive signal, and invalidate_memory/supersede_memory for corrections — today nothing does (ADR-010 v1 shipped the mechanism only).',
+              `usefulness feedback loop has NEVER received a POSITIVE signal: ${report.activeCount} active ` +
+              `memories, ${summary.servedDistinct} distinct atoms served from recall/search, 0 marked used, ` +
+              `${correctedBreakdown} — corrections alone are not evidence the loop is alive (a loop that can ` +
+              `only ever demote and never promote silently biases ranking one-way; see issue #190). Every ` +
+              `score is still pinned at or below the neutral 0.5 prior.`,
+            fix: 'Wire something in the real usage/recall path to call submit_feedback/mark_memory_used for positive signal — today nothing does (ADR-010 v1 shipped the mechanism only; see issue #190 for the missing-caller analysis). Corrections from consolidation auto-merge do not substitute for this.',
           };
         }
 
@@ -624,7 +647,7 @@ function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: boolean
 
         return {
           ok: true,
-          message: `usefulness feedback loop: active (${summary.usedDistinct} used, ${summary.correctedDistinct} corrected, distinct atoms, all-time)`,
+          message: `usefulness feedback loop: active (${summary.usedDistinct} used, ${correctedBreakdown}, distinct atoms, all-time)`,
         };
       } catch (err) {
         // Informational failure mode — never fail doctor over a metric query

@@ -84,7 +84,30 @@ export interface Config {
   /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
    * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed
    * ranking; atoms with no signal score a neutral 0.5, so ε never reshuffles
-   * an unsignaled corpus), ζ entity-relevance bonus (FEAT-402 AC-6: DEFAULT
+   * an unsignaled corpus). issue #190 (2026-07-13) re-evaluated this default
+   * given that `recall_used` never fires automatically in production and
+   * `memory_corrected` is dominated by consolidation self-merge — see the PR
+   * for full numbers. Evidence: running tests/eval/retrieval-eval.test.ts
+   * with epsilon 0.1 vs 0 is OBSERVATIONALLY IDENTICAL on the ADR-005 floors
+   * (no fixture atom carries real usefulness signal, so ε adds an identical
+   * constant to every candidate — provably rank-invariant there) and
+   * negligible under a synthetic worst-case (a reopened/unsupersede()'d atom
+   * keeping a stale corrected-only score: recall unaffected, NDCG within
+   * noise, ~0.0006). That is NEUTRAL evidence, not evidence FOR zeroing it —
+   * and zeroing it has a real cost: `tests/search/usefulness-rank.test.ts`
+   * ("recall_used breaks the tie...") proves the mechanism correctly
+   * rewards an EXPLICIT mark_memory_used/submit_feedback call today (the
+   * channel that's missing is automatic wiring, not the mechanism itself —
+   * see doctor's checkUsefulnessFeedbackLoop fix message), and
+   * ADR-014/FEAT-428's shipped-config gate (tests/config/fusion-governance-
+   * shipped-config.test.ts) deliberately exempts epsilon's nonzero default as
+   * an already-evidenced baseline. Kept at 0.1: no evidence it regresses
+   * anything, and zeroing it would silence the one positive-signal path that
+   * demonstrably works when actually called. Revisit once issue #190 item 2
+   * (a real automatic positive-signal caller) ships — at that point ε will
+   * have non-uniform signal to reflect and the eval floors will actually be
+   * able to measure it, unlike today.
+   * ζ entity-relevance bonus (FEAT-402 AC-6: DEFAULT
    * 0 = OFF; a candidate entity-linked to an entity mentioned in the query
    * text gets +ζ. At zeta=0 ranking is byte-identical to no-entity ranking —
    * see the AC-6 snapshot test in tests/eval/retrieval-eval.test.ts), η
