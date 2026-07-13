@@ -107,9 +107,17 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   // "Auto-capture" canary can tell real close-capture traffic apart from a
   // genuinely wired-but-never-firing hook. --auto-capture overrides this to
   // 'auto_capture' once its config opt-in gate (below) passes.
+  // A3 (Wave A): resolved once here (rather than only inside the
+  // auto-capture branch, as before this slice) so the plain hook_close path
+  // also has the operator's real config available for spool-write redaction
+  // below — writeToSpool's default (defaultConfig()) is a fail-safe
+  // fallback, not a substitute for honoring an operator's actual
+  // security.redaction.* settings (custom patterns, entropy threshold, or an
+  // explicit opt-out).
+  const { cfg } = resolveRuntimeConfig();
+
   let captureSource: 'auto_capture' | 'hook_close' = 'hook_close';
   if (autoCaptureFlag) {
-    const { cfg } = resolveRuntimeConfig();
     if (!cfg.capture.autoCapture.enabled) {
       if (asJson) {
         console.log(JSON.stringify({ transcript: transcriptPath, status: 'auto-capture-disabled' }, null, 2));
@@ -151,7 +159,7 @@ async function runCaptureClaudeOnce(args: string[]): Promise<void> {
   const dataDir = process.env.ASTRA_MEMORY_DATADIR ?? defaultDataDir();
   const envelope = buildClaudeEnvelope(parsed, event, PKG_VERSION, undefined, captureSource);
   const key = claudeIdempotencyKey(envelope);
-  const spooledPath = writeToSpool(dataDir, key, envelope);
+  const spooledPath = writeToSpool(dataDir, key, envelope, cfg);
 
   if (asJson) {
     console.log(JSON.stringify({

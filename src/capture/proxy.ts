@@ -48,6 +48,7 @@ import { gateRelevance, recordCapturedTurnHash, type RelevanceGateOptions } from
 import { writeToSpool } from '../ingest/spool.js';
 import type { ProxyTeeSink } from '../proxy/server.js';
 import { localIsoString } from './local-time.js';
+import type { Config } from '../config/config.js';
 
 /** Upper bound on a single decompressed body — a malformed or hostile
  *  upstream response must never let this module inflate unbounded bytes
@@ -739,6 +740,19 @@ export interface ProxyCaptureOptions {
   dataDir: string;
   clientVersion: string;
   relevanceGate: RelevanceGateOptions;
+  /**
+   * Wave A slice A3: the operator's real resolved config, threaded through
+   * to `writeToSpool` so spool-write redaction honors the same
+   * `security.redaction.*` settings (enabled flag, entropy threshold, custom
+   * patterns) the daemon's own ingest-time redaction does — never a second,
+   * independently-drifting redaction posture for the proxy path. Optional
+   * only so existing callers/tests that construct `ProxyCaptureOptions`
+   * without it keep compiling; `writeToSpool` itself still defaults to
+   * `defaultConfig()` (redaction ON) when omitted, so leaving this unset is
+   * fail-safe, not fail-open. `src/cli/proxy.ts` (the only real production
+   * caller) always passes the resolved config.
+   */
+  redactConfig?: Config;
 }
 
 /**
@@ -798,7 +812,11 @@ export function createProxyCaptureTee(opts: ProxyCaptureOptions): () => ProxyTee
       const usage = extractUsageMetadata(reqBody, resBody);
       const envelope = buildProxyEnvelope(gated, opts.clientVersion, usage);
       const key = proxyIdempotencyKey(envelope);
-      writeToSpool(opts.dataDir, key, envelope);
+      // A3: idempotency key is computed on the UNREDACTED envelope above (as
+      // before this slice) — the key only needs to identify identical
+      // content, and writeToSpool's own redaction pass runs after this call,
+      // on its own copy, never mutating `envelope`.
+      writeToSpool(opts.dataDir, key, envelope, opts.redactConfig);
     }
 
     function maybeFinish(): void {
