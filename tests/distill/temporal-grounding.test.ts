@@ -38,6 +38,42 @@ describe('groundRelativeDates', () => {
       expect(groundRelativeDates('It is planned for next month.', ANCHOR).text).toBe('It is planned for August 2023.');
     });
 
+    it('last week / this week resolve to a reference-point phrase naming the anchor, not a guessed day', () => {
+      expect(groundRelativeDates('Caroline had a picnic last week.', ANCHOR).text)
+        .toBe('Caroline had a picnic the week before 15 July 2023.');
+      expect(groundRelativeDates('Caroline applied this week.', ANCHOR).text)
+        .toBe('Caroline applied the week of 15 July 2023.');
+    });
+
+    it('last weekend / next weekend resolve to a reference-point phrase naming the anchor', () => {
+      expect(groundRelativeDates('Caroline went biking last weekend.', ANCHOR).text)
+        .toBe('Caroline went biking the weekend before 15 July 2023.');
+      expect(groundRelativeDates('The trip is next weekend.', ANCHOR).text)
+        .toBe('The trip is the weekend after 15 July 2023.');
+    });
+
+    it('a week-phrase built off a month-end anchor formats the anchor date correctly (no addMonthsUtc involved)', () => {
+      // Week-granularity patterns format the ANCHOR itself, not an
+      // arithmetic result -- confirms they're unaffected by the
+      // addMonthsUtc month-overflow class of bug even on a boundary date.
+      expect(groundRelativeDates('It happened last week.', '2023-07-31').text)
+        .toBe('It happened the week before 31 July 2023.');
+      expect(groundRelativeDates('It happens this week.', '2023-01-31').text)
+        .toBe('It happens the week of 31 January 2023.');
+    });
+
+    it('"last weekend" is not mangled by the "last week" pattern (word-boundary discipline)', () => {
+      const r = groundRelativeDates('Caroline went biking last weekend, it was fun.', ANCHOR);
+      expect(r.text).toBe('Caroline went biking the weekend before 15 July 2023, it was fun.');
+      expect(r.text).not.toContain('week before 15 July 2023end');
+    });
+
+    it('does NOT resolve "this weekend" or "next week" — not part of the measured, approved scope', () => {
+      const r = groundRelativeDates('The plan is for this weekend, or maybe next week.', ANCHOR);
+      expect(r.grounded).toBe(false);
+      expect(r.text).toBe('The plan is for this weekend, or maybe next week.');
+    });
+
     it('last <weekday> resolves to the most recent prior occurrence, never the anchor day itself', () => {
       // ANCHOR (2023-07-15) is itself a Saturday — "last Saturday" must mean
       // 7 days ago, not today.
