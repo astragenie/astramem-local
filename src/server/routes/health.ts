@@ -69,6 +69,9 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
                 attempts: healthState.embed.attempts,
               },
               worker: workerBlock(healthState),
+              // A2-lite (ADR-015): last unattended doctor-schedule result —
+              // readable without a human present, per the ADR's binding rule.
+              doctor: healthState.doctor,
               ...(db
                 ? { queue: queueCounts(db), pending_proposals: pendingProposals(db), memory_health: memoryHealthBlock(db) }
                 : {}),

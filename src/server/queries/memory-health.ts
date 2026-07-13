@@ -172,6 +172,58 @@ function poisonDistillSessionCount(db: DB): number {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Distill-session poison rate (ADR-015 rule 6/2, A2-lite) — doctor-only, NOT
+// wired into buildMemoryHealthCheap()/`/health` (see file header: the cheap
+// tier is index-backed-only, and the `state IN (...)` scan below is bounded
+// by terminal-job count, not a single equality prefix like the poison-only
+// count above — same O(N)-over-a-bounded-table cost class as
+// countsByTypeAndScope()/stalenessDistribution() in the full tier, not the
+// cheap one). checkMemoryHealth (src/doctor/checks.ts) already calls
+// buildMemoryHealthFull(), so this is a second read alongside that, not a
+// replacement for it.
+// ---------------------------------------------------------------------------
+
+export interface DistillSessionStats {
+  /** Distinct session_id values among distill jobs that reached a terminal
+   *  state (completed or poison). Pending/running/retrying('failed') jobs
+   *  are excluded — they have not concluded yet, so counting them would
+   *  move the denominator under a still-running backlog rather than
+   *  reflecting outcomes. */
+  terminal: number;
+  /** Distinct session_id values among distill jobs in the 'poison' state —
+   *  permanently failed after exhausting retries (JobRepo.markPoison). */
+  poison: number;
+  /** poison / terminal. null when terminal === 0 (nothing concluded yet to
+   *  judge a rate from — mirrors the null convention usefulnessRate() and
+   *  correctionStats() above already use for an empty denominator). */
+  poisonRate: number | null;
+}
+
+/**
+ * The ADR-015 rule 6 "state the denominator" counter checkMemoryHealth was
+ * missing — its only return path was `{ok: true}`; a 100% poison rate still
+ * reported "memory health: OK" (see checks.ts's doc comment on
+ * checkMemoryHealth). `terminal` rides idx_jobs_distill_session (migration
+ * 018, partial `WHERE kind = 'distill'`) the same way
+ * poisonDistillSessionCount above does; degrades to a null rate rather than
+ * throwing on a bare/pre-migration test DB.
+ */
+export function distillSessionStats(db: DB): DistillSessionStats {
+  try {
+    const terminalRow = db.prepare(`
+      SELECT COUNT(DISTINCT json_extract(payload_json, '$.session_id')) AS n
+      FROM jobs
+      WHERE kind = 'distill' AND state IN ('completed', 'poison')
+    `).get() as { n: number };
+    const terminal = terminalRow.n;
+    const poison = poisonDistillSessionCount(db);
+    return { terminal, poison, poisonRate: terminal > 0 ? poison / terminal : null };
+  } catch {
+    return { terminal: 0, poison: 0, poisonRate: null }; // jobs table absent — degrade, never throw.
+  }
+}
+
 /**
  * The ONLY builder `GET /health` (src/server/routes/health.ts) may call —
  * every query above is index-backed; none scans the full memories or
