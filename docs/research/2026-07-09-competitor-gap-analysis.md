@@ -113,6 +113,69 @@ These are factual flips, not new opinions — cite them when reusing the 2026-07
 
 ---
 
+## Corrections to prior research (2026-07-13 update — code-verified)
+
+A second code-verification pass (2026-07-13, part of the same investigation documented in
+`docs/research/20260713-teardown-and-reinvent.md` §6, plus a formal LoCoMo comparability
+review in `docs/research/20260713-locomo-cohort-scoreboard.md` — see that doc for the sample-size
+methodology, not duplicated here) overturns several premises this report's earlier passes took
+at face value. These are factual flips, same standard as the 2026-07-08 corrections above.
+
+- **mem0's write-time intelligence (the ADD/UPDATE/DELETE memory-manager LLM decision) is DEAD
+  CODE — the biggest flip in this update.** The memory-manager prompt (`mem0/configs/prompts.py:176`)
+  and `get_update_memory_messages()` (`mem0/configs/prompts.py:406`) have **zero callers anywhere
+  in the repo except their own unit test** — confirmed independently in the TS SDK too
+  (`mem0-ts/.../memory/index.ts:21` imports the equivalent logic but never calls it). The real
+  ingest path's system prompt states **"Your sole operation is ADD."** Dedup is **MD5 equality on
+  exact text**, not semantic merge. This is deliberate, not an oversight: mem0's own README claims
+  **+21 LoCoMo points** for abandoning the write-time-intelligence design. **Strategic
+  consequence: the market leader tried pay-at-write memory management, walked away from it, and
+  converged on append-and-rank-at-read — the same shape astramem-local already ships.** This is
+  validation of our architecture, not a gap to close. (Also worth recording: their dead code has a
+  *passing* unit test — "built, wired, never invoked" is not an astramem-specific failure mode,
+  theirs is just better camouflaged than ours usually is.)
+- **mem0 PAYWALLS temporal reasoning in its own OSS package.** `add(timestamp=…)` **raises
+  `ValueError`** in the open-source path (`mem0/memory/main.py:769-770`); `search(reference_date=…)`
+  is blocked the same way. A 1,582-line `notices.py` module exists specifically to detect
+  free-tier temporal usage attempts and fire upsell nudges. **The one capability that would most
+  directly explain mem0's LoCoMo temporal-question lead is the one capability OSS users are
+  structurally prevented from testing.**
+- **Supermemory's "embedded graph engine" is a canvas renderer, not a graph database.**
+  `packages/memory-graph/` is d3-force physics, viewport handling, and input handling —
+  presentation code. The real backend that would do graph reasoning is closed-source and was
+  already flagged as such in the 2026-07-09 pass above; this update narrows *what* "graph engine"
+  referred to. Separately, a real and cheap-to-copy DX lesson from the same codebase: their MCP
+  `memorize` tool schema is deliberately tiny (`{content, action}` plus one optional tag; scoping
+  is pushed to OAuth context rather than tool parameters) — worth weighing against
+  astramem-local's comparatively many-parameter tools.
+- **Graphiti's temporal win is an extraction-stage implementation detail, not an ontology
+  advantage.** `_extract_edge_timestamps` (`edge_operations.py:576-620`) threads the session date
+  into the extraction LLM call — the identical mechanism astramem-local's own architect
+  independently proposed the same day as a one-day additive fix (see
+  `docs/research/20260713-teardown-and-reinvent.md` §6 for the full argument; a formal
+  six-investigator review tested "does Graphiti's ontology beat astramem-local's" and the
+  answer was **no**). Its honest costs, not previously itemized here: **Neo4j and OpenAI are both
+  non-optional base dependencies** (`pyproject.toml:15-16`), there is **no offline mode**, a
+  single episode costs **4-6+ LLM calls**, contradiction detection is a non-deterministic LLM
+  judgment call with no deterministic fallback, and its temporal query filter is **opt-in, not a
+  safe default** (`SearchFilters()` defaults `valid_at=None`, so a naive caller silently retrieves
+  facts that have since been contradicted).
+- **Retract reliance on Zep's LoCoMo numbers.** They appear **nowhere in Zep's own arXiv paper**
+  (2501.13956) — every public figure traces back to a blog post that was later edited, published
+  amid an active public dispute with mem0 over the correct number (Zep's original 84% claim, mem0's
+  recalculation to 58.44%, Zep's counter-claim of 75.14%). None of the three is citable as a stable
+  fact.
+- **Demote "local-first" as a standalone moat claim.** mem0 OSS can already run fully local today
+  (faiss + Ollama + SQLite conversation history) — the earlier framing that competitors can't go
+  local at all overclaims, and a reader who clones mem0 will disprove it immediately. The moat that
+  actually survives scrutiny is the **combination**: single-file portability, bitemporal-adjacent
+  query composability (see the terminology-correction note at the top of this report — valid-time,
+  not true bitemporal), default-on whole-database encryption, and a CI-gated retrieval eval that no
+  competitor in this report runs as a merge gate (Graphiti explicitly **excludes** its own eval
+  harness from CI). Lead with the combination, not "local-first" alone.
+
+---
+
 ## Strategic recommendations
 
 1. **Reframe "local-first" as "default-local" in all external messaging.** Every serious competitor (mem0, Letta, Graphiti, Cognee) is *capable* of running local/Ollama — none *ship* that as the default, all default to an OpenAI key requirement in their quickstart. That's the real, defensible distinction; the current framing overclaims by implying competitors can't go local at all, which a reader who clones their repo will immediately disprove (as this report did).

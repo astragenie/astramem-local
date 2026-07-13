@@ -7,14 +7,22 @@
 > line number.** The line is a hint; the symbol is the claim.
 >
 > This is not a hypothetical. **During the writing of this ADR, `src/config/config.ts` grew from
-> 785 to 896 lines**, and three independent agents — each verifying honestly against source —
-> reported the contradiction-detection default at line **555**, then **715**, then **623**. All
-> three were correct at the moment they looked. The file moved underneath each of them.
+> 785 to 896 lines.** Three independent agents — each verifying honestly against source — reported
+> the contradiction-detection default at line **555**, then **715**, then **623**. Each was correct
+> at the moment they looked. The file moved underneath all of them.
 >
-> That is the same lesson as the ADR itself, applied to prose: **a citation that silently rots is
-> indistinguishable from a citation that was always wrong.** A reader cannot tell the difference,
-> and will trust it either way — which is precisely the class of failure this document exists to
-> outlaw. **Cite the symbol. Line numbers are a convenience, not evidence.**
+> It went one step further, and this is the part worth keeping: **the lead agent then "corrected" a
+> writer's accurate `623` back to a stale `555`** — citing a snapshot of a file that no longer
+> existed. The writer **refused the instruction, re-read the source, and pushed back.** It was
+> right. A stale correction is indistinguishable from a live one to everyone downstream, and it
+> arrives with *more* authority than the thing it overrides.
+>
+> That is the same lesson as this ADR, applied to prose: **a citation that silently rots is
+> indistinguishable from a citation that was always wrong.** The reader cannot tell, and will trust
+> it either way — precisely the class of failure this document exists to outlaw. The document
+> caught its own author violating its own thesis in its own footnotes.
+>
+> **Cite the symbol. Line numbers are a convenience, not evidence.**
 
 **Status:** Accepted
 **Date:** 2026-07-13 · **Confidence:** High (grounded in code-verified findings from a 6-agent

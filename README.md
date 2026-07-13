@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Test](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml/badge.svg)](https://github.com/astragenie/astramemory-local/actions/workflows/test.yml)
 
-Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.15.0.
+Local-first memory daemon for AI coding agents — wire-compatible with [astramem-plugin](https://github.com/astragenie/astramem-plugin) (v0.5.2+). Current daemon release: v0.15.1.
 
 ## Wire compatibility
 
@@ -122,6 +122,46 @@ installing Ollama or running `init`:
 ```bash
 astramem-local demo
 ```
+
+---
+
+## Two ways to run this: full daemon vs. MCP-only stdio
+
+Everything above (`service install`, `serve`) runs `astramem-local` as a long-lived HTTP
+daemon. There is a second, much lighter mode if all you want is the MCP tool surface inside
+Claude Code (or another MCP host) and you don't need the LLM-proxy auto-capture path,
+background distillation, or sync:
+
+```bash
+astramem-local mcp-stdio
+```
+
+This spawns **one process per MCP client session** over the stdio transport
+([src/cli/mcp-stdio.ts](src/cli/mcp-stdio.ts)) — same tool set and same on-disk SQLite store as
+the daemon's `POST /mcp`, but no instance lock, no worker loop, no timers, and no service
+lifecycle at all. It exits automatically when the MCP host closes stdin. Point an MCP host at
+it directly instead of running `service install`:
+
+```json
+{
+  "mcpServers": {
+    "astramem": { "command": "astramem-local", "args": ["mcp-stdio"] }
+  }
+}
+```
+
+**What you don't get in this mode:** `remember` (direct insert) still works, but transcript
+capture from the plugin's hooks (`POST /ingest/transcript`) and the LLM-proxy auto-capture path
+both require an HTTP listener — `proxy/server.ts` binds one — so both structurally need the
+long-lived daemon. So does background distillation of anything that would otherwise sit in the
+worker's job queue, and `sync`. `mcp-stdio` is a real way to use the MCP tools against your
+local store with no daemon install; it is not a replacement for the daemon if you rely on
+automatic capture.
+
+One more thing worth knowing: the CLI's own code comment currently labels this "test-enabling
+infrastructure" and calls the daemon's `POST /mcp` "the supported production surface"
+([src/cli/index.ts](src/cli/index.ts), the `mcp-stdio` case) — it works today, but the project
+doesn't yet treat it as the primary supported path the way this README treats `service install`.
 
 ---
 
@@ -543,6 +583,7 @@ check every other route gets under that mode.
 | `astramem-local token print`                 | Print the current Bearer token                     |
 | `astramem-local token rotate`                | Generate new token, invalidate the old one         |
 | `astramem-local mcp install --client <name>` | Write/update an MCP client's config to point at this daemon's `POST /mcp` (see [MCP tools](#mcp-tools-claude-code-auto-discovery)) |
+| `astramem-local mcp-stdio`                   | Run the MCP tool surface over stdio, one process per client session — no daemon, no service install (see [Two ways to run this](#two-ways-to-run-this-full-daemon-vs-mcp-only-stdio)) |
 | `astramem-local demo`                        | 30s zero-dependency trial: in-memory daemon, seeded example memories, one sample recall, no Ollama required |
 
 ---
@@ -575,9 +616,49 @@ by CI from a fixture set checked into the repo (`contracts/fixtures/eval/`), on 
 anyone — not hand-picked and reported after the fact. A PR that regresses ranking behavior fails
 the same test suite as any other broken behavior; there is no separate step to remember to run.
 
+No external benchmark figure (e.g. LoCoMo) is published in this README. The only LoCoMo run to
+date used a 10% sample — one conversation, n=199 — which is not comparable to the full
+~1986-question set that published competitor baselines run on, so we're not quoting a number
+here until a full-sample rerun lands. The CI-gated floor above is what's real and checkable
+today.
+
 See [docs/eval/methodology.md](docs/eval/methodology.md) for what each of the project's eval
 harnesses measures (including the manual extraction-quality benchmark and the LongMemEval
 adapter's current status) and how to reproduce them.
+
+---
+
+## Known limitations
+
+Documenting these here so they're a five-minute read instead of a surprise:
+
+- **Temporal queries are weak.** Bitemporal storage and `as_of` point-in-time filtering are
+  correct end-to-end (`migrations/006-atom-v3.sql`, `search.ts:264-278`) — the schema isn't the
+  problem. What's missing is that automatic extraction doesn't populate a fact's own
+  `valid_at`/`invalid_at` window yet, so most memories carry no fact-level validity interval for
+  `as_of` to filter on. Treat point-in-time recall as schema-ready but not yet
+  extraction-populated.
+- **LLM-proxy captured transcripts are spooled to disk unredacted.** The stage-0 secret-redaction
+  pass is enforced at ingest time, not at spool-write time (`src/capture/proxy.ts`) — a
+  transcript captured via the LLM-proxy path sits in the spool directory before redaction ever
+  runs over it. Redacting at spool-write time is planned, not yet shipped.
+- **Contradicting memories can both be returned by recall.** Contradiction detection ships
+  `mode: 'enabled'` by default (`src/config/config.ts`) but only *proposes* — it doesn't
+  auto-resolve. Until a consolidation proposal is accepted or rejected
+  (`list_consolidation_proposals` / `resolve_consolidation_proposal`), the original memory and
+  the one that contradicts it are both live and both eligible to surface in the same
+  search/recall call.
+- **The reasoning-model extraction guard only covers one model family.** Thinking-mode local
+  models can silently return an empty `{"atoms":[]}` extraction — a well-formed,
+  successful-looking response — if their thinking mode consumes the whole turn before
+  `format:json` output is produced. The fix in this repo is a **model-name regex**
+  (`/^qwen3/i`, `src/providers/llm/ollama.ts:31-37,95`), not general thinking-mode detection.
+  That same config's own doc comment names `deepseek-r1` as an equally affected model family
+  that is **not** covered. `doctor`'s `llmChatProbe` won't catch this either — it never passes
+  `format:json` (`src/doctor/probes/llm-chat-probe.ts:19-22`), so a green probe is not evidence
+  extraction actually works. **Stick to a tested extraction model** (`qwen3:8b` or
+  `qwen2.5-coder:7b`); if you switch to another local reasoning model, verify with a real
+  extraction run, not just `doctor`.
 
 ---
 
@@ -598,7 +679,7 @@ publishing flow.
 
 ## Status
 
-**v0.15.0** — local-first memory daemon with 29 migrations, a 20-tool MCP surface, hybrid
+**v0.15.1** — local-first memory daemon with 32 migrations, a 20-tool MCP surface, hybrid
 BM25+vector+importance+freshness search, event-sourced memory lifecycle (invalidate/supersede/
 promote) with full provenance (`why_memory`), consolidation proposals, entity-tagged memory
 with point-in-time (`as_of`) filtering, usefulness-ranked user/agent profiles (live-computed,

@@ -179,10 +179,21 @@ check can never trip. The live guards are `maxPerRun: 200` + `maxWallClockMs: 30
 If you're touching this again: don't flip the default, don't re-add a dollar cap. If
 `maxPerRun`/`maxWallClockMs` ever need tightening, that's the lever — not `mode`.
 
+## Citation drift caution
+
+`src/distill/**` and `src/search/**` are under active edit as of 2026-07-13 — several
+`file:line` citations across the docs written this session have already drifted (e.g.
+`validityFilterClause` moved from `search.ts:264-278` to `search.ts:272-291` mid-session).
+**Anchor on the symbol name, not the line number** — the line is a hint, the symbol is the
+claim. See `docs/adr/ADR-015-loud-failure-invariant.md`'s citation policy for the same rule
+stated in full. Every `config.ts`/`checks.ts`/etc. line cited below was re-verified against
+this worktree's live source at write time, but re-verify before trusting a line number that's
+more than a session old.
+
 ## Temporal reasoning — the schema is NOT at fault
 
 Bitemporal storage (`migrations/006-atom-v3.sql`) and `as_of`-aware retrieval
-(`src/search/search.ts:264-278`) are **both correct**. The LoCoMo temporal category score
+(`validityFilterClause`, `src/search/search.ts:272-291`) are **both correct**. The LoCoMo temporal category score
 (12.4) was an **extraction** gap, not a data-model gap — a full architecture investigation
 concluded this; do not let any doc imply the schema needs replacing.
 
