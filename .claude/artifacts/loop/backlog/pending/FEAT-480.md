@@ -58,6 +58,45 @@ alpha (bm25) 0.4   beta (cosine) 0.4   gamma 0.1   delta 0.1   epsilon 0.1
 **40% of the ranking weight is allocated to a leg that returns nothing.** The product
 describes itself as "6-signal hybrid retrieval." It is currently running on one.
 
+## CONFIRMED independently, at the index level (2026-07-13, architecture review)
+
+A reviewer reproduced this with **raw FTS5 MATCH queries against the index itself** — not
+inferred from HTTP responses — using in-process `search({debug: true})` calls against a
+decrypted copy (no server, no network surface):
+
+```
+bm25(raw=null, norm=0.000)  src=vec      <- on ALL 10 cases, EVERY hit, no exceptions
+
+MATCH '"vitest" "bunx" "run" "fail"'  ->  0 rows
+MATCH '"vitest"'                       ->  5 rows
+query "vitest bunx run"                ->  FTS matches (src=both)
+query "bun test vitest fail"           ->  bm25.raw=null, 0 FTS rows
+```
+
+**BM25 is not weighted low. It is ABSENT.** `bm25.raw` is `null` — the leg returns zero
+candidates, not a low-scoring set.
+
+### The consequence that matters: NO WEIGHT RETUNING CAN FIX THIS
+
+`alpha × 0 = 0` regardless of `alpha`. Sweeping the fusion weights cannot recover a leg
+that produces no candidates. **Any plan that proposes "tune alpha/beta" as the fix for the
+residual gap is wrong**, and this FEAT must land before a weight sweep is even meaningful.
+
+### And it explains the "ceiling" we were measuring against
+
+The literal-keyword arm scores 0.750 precisely *because* those queries are hand-built 2–4
+word bags of the memory's **own vocabulary** — the one shape that satisfies an
+AND-of-all-tokens. **Plain English structurally cannot reach that ceiling under the current
+query construction.** The 0.750 "ceiling" was never a fair target; it was a measure of how
+well the system does when you already know the answer's exact words.
+
+### A SECOND, separate issue (smaller, do not conflate)
+
+Two cases (`gzip-capture`, and partly `test-runner`) fail even on the vector leg alone —
+the correct memory loses to 2–4 decoys with similarly generic phrasing. That is a
+**candidate-pool / embedding-quality** problem, not AND-starvation. Different mechanism,
+smaller scope, separate work item.
+
 ## What is NOT proven — read this before "fixing" it
 
 This FEAT establishes that **the leg is dead**. It does **NOT** establish that reviving
