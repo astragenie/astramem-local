@@ -44,6 +44,7 @@
     "eval:locomo:sample": "bun scripts/eval/locomo/sample.mts",
     "eval:locomo:run": "bun scripts/eval/locomo/run.mts",
     "eval:locomo:judge": "bun scripts/eval/locomo/judge.mts",
+    "eval:locomo:diagnose": "bun scripts/eval/locomo/diagnose-retrieval.mts",
     "eval:extraction-bench": "bun scripts/eval/extraction-bench/run-bench.mts",
     "perf:baseline": "bun scripts/perf/seed.mts && bun scripts/perf/bench.mts && node scripts/perf/fusion-profile.mts && bun scripts/perf/embed-cost.mts"
   },

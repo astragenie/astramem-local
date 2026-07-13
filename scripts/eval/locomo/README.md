@@ -265,6 +265,142 @@ Useful flags on `run.mts` (mirrors `../longmemeval/run-smoke.mts`'s surface):
 | `--run-dir` | `.eval-data/locomo/runs/<timestamp>` | override output location |
 | `--ollama-url` | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | Ollama status/tuning query target |
 | `--resume <run-dir>` | (none) | resume a killed run — see "Resume behavior" below |
+| `--cross-encoder` | off | flip `crossEncoder.enabled` (provider `mock`) on every shard's isolated daemon via config only — see "Retrieval diagnosis (WS2)" below |
+| `--diagnose` | off | run the not-in-db/rank-miss/rank-ok retrieval diagnosis against each shard's daemon and write `<run-dir>/diagnosis.json` — see "Retrieval diagnosis (WS2)" below |
+
+## Retrieval diagnosis (WS2) — not-in-db / rank-miss / rank-ok
+
+`docs/specs/20260713-locomo-architect-design.md` workstream 2: single-hop is
+the largest lever on the board (35% of all LoCoMo questions, answered-F1
+0.57) but no root cause was established before this tooling existed. A wrong
+answer on a single-hop question can mean one of two very different things,
+needing opposite remedies:
+
+- **not-in-db** — the fact was never captured as a distinct, findable atom.
+  Fix belongs upstream of search (distill/extraction), not in ranking.
+- **rank-miss** — the atom exists and is embeddable/findable, but the fused
+  ranking put it below the k=10 window the real answerer sees. Fix belongs
+  in `src/search/fuse.ts` weights or the rerank stage, not in extraction.
+- **rank-ok** — retrieval already worked; a wrong answer here is answerer/
+  ambiguity, out of scope per the benchmark-integrity constraint (only
+  `h.text` reaches the answerer, per `answer.mts`'s own docstring).
+
+`diagnose-retrieval.mts` answers this with **zero production code changes**:
+`POST /recall`'s `limit` has no upper clamp (unlike `GET /search`'s
+`Math.min(100, ...)`), so a diagnostic call with a high `--limit` (default
+500) returns the complete, untruncated fused ranking for one LoCoMo
+conversation's project — no candidate-window blind spot to work around.
+Classification walks that full ranking in order and finds the first hit
+whose Porter-stemmed token containment against the gold answer clears
+`--threshold` (default 0.6, same normalize+stem pipeline
+`judge/metrics.mts`'s real scorer uses) — not found at all = not-in-db;
+found beyond `--rank-boundary` (default 10, matching the real answerer's
+k=10) = rank-miss; found within it = rank-ok.
+
+Category-agnostic by design (`--category`, default `1,2,3,4` — every
+category with a real `answer` field; category 5/adversarial is always
+excluded, since the correct behavior there is to abstain, not retrieve, so
+there's no ground-truth atom to locate). This means WS4 (open-domain,
+category 3) reuses this file for free once its full-sample rerun exists —
+no separate tooling investment, just `--category 3`.
+
+### Running it as part of a normal run
+
+```powershell
+# One shot: ingest + distill-wait + answer + diagnose, all in the same
+# already-live daemon (reuses it before ../shared/spawn-daemon.ts's
+# teardown, so no separate daemon lifecycle to manage).
+bun scripts/eval/locomo/run.mts --diagnose --run-dir .eval-data/locomo/runs/<timestamp>
+```
+
+Writes `<run-dir>/diagnosis.json` (per-question detail + per-category/
+overall not-in-db/rank-miss/rank-ok breakdown) alongside the usual
+`hypotheses.jsonl`/`run-manifest.json`. `run-manifest.json`'s
+`config.diagnosed` records whether this run had the flag on.
+
+### Running it standalone against an already-populated daemon
+
+Mirrors `answer.mts`'s CLI shape — point it at any live daemon + the
+`sample.json` that daemon's project was ingested from:
+
+```powershell
+bun scripts/eval/locomo/diagnose-retrieval.mts \
+  --sample .eval-data/locomo/runs/<timestamp>/sample.json \
+  --daemon-url http://127.0.0.1:<port> --token <token> \
+  [--limit 500] [--threshold 0.6] [--rank-boundary 10] \
+  [--category 1,2,3,4] [--out diagnosis.json] \
+  [--ready .eval-data/locomo/runs/<timestamp>/distill-wait-result.json]
+```
+
+Or via the package script: `bun run eval:locomo:diagnose -- --sample ... --daemon-url ... --token ...`.
+
+### Rerank-flip experiment — same-day, partial answer for free
+
+`src/search/rerank.ts` already ships a complete, tested, OFF-by-default
+cross-encoder rerank stage — its own header calls it "the OFF-by-default
+seam that lets a future rerank rollout happen via config flip + eval
+evidence." Flipping it on and re-scoring partially answers WS2's diagnosis
+question at near-zero cost: if the judge score jumps, ranking/rerank was
+(part of) the problem; if it doesn't move, look at recall/embedding
+instead. This is a config-only variant — **rerank.ts's own logic is never
+touched**, only `crossEncoder.enabled` in the isolated daemon's
+`config.yaml` (`../shared/spawn-daemon.ts`'s `makeIsolatedEvalEnv` grew an
+additive `crossEncoder` override for exactly this).
+
+```powershell
+# Baseline (existing off-by-default behavior, unchanged)
+bun scripts/eval/locomo/run.mts --run-dir .eval-data/locomo/runs/baseline --diagnose
+
+# Same sample, cross-encoder (mock provider — deterministic Jaccard overlap,
+# no network/model) flipped on
+bun scripts/eval/locomo/run.mts --run-dir .eval-data/locomo/runs/rerank-flip --cross-encoder --diagnose
+
+# Compare judge scores
+bun run eval:locomo:judge -- --hyp .eval-data/locomo/runs/baseline/hypotheses.jsonl --ref .eval-data/locomo/runs/baseline/sample.json
+bun run eval:locomo:judge -- --hyp .eval-data/locomo/runs/rerank-flip/hypotheses.jsonl --ref .eval-data/locomo/runs/rerank-flip/sample.json
+
+# And compare diagnosis.json's rank-miss counts between the two run dirs
+# directly -- a shrinking rank-miss bucket under --cross-encoder is a much
+# more direct signal than the aggregate judge score alone.
+```
+
+`--cross-encoder` uses `provider: 'mock'` (the deterministic Jaccard
+stand-in described in `rerank.ts`'s header, not a real semantic
+cross-encoder) — enough to prove whether REORDERING the top-k candidates
+moves the score at all. A real semantic verdict would need a live HTTP
+sidecar (`crossEncoder.provider: 'http'` + `sidecarUrl`, see
+`docs/runbooks/cross-encoder-rerank.md`), out of scope for this same-day
+experiment.
+
+### Known simplifications
+
+- **Multi-hop (category 1)** containment is computed against the whole
+  gold-answer string (after the same category-3 semicolon-truncation the
+  real scorer applies), not per comma-separated answer fragment the way the
+  real `multiAnswerF1` scores it. A genuinely multi-hop question whose
+  answer requires evidence merged from two different memories can read as
+  "not-in-db" here even when each fragment is individually retrievable —
+  treat multi-hop's bucketing as directionally useful, not as precise as
+  single-hop's.
+- **Short gold answers** (a bare name, "yes"/"no", a lone date — stemming to
+  <= 2 tokens) get an extra guard, not just a disclosed gap: `containment`
+  is deliberately recall-only (a long, correct hit sentence shouldn't be
+  penalized on precision), but 100% recall of a single common token is weak
+  evidence on its own — any hit sharing that one word, however unrelated,
+  would otherwise clear the default threshold. `classify` additionally
+  requires `precision()` (the shared token(s) as a fraction of the HIT's own
+  tokens) to clear `--short-answer-min-precision` (default 0.12 — tuned down
+  from an initial 0.2 after a live smoke test caught it rejecting a genuine
+  single-token-date match inside a realistic 6-token atom sentence; see
+  `DEFAULT_SHORT_ANSWER_MIN_PRECISION`'s doc comment for the exact numbers)
+  for these records specifically. Every record carries `short_answer: bool`
+  and each breakdown row reports its `short_answer_n` count — spot-check
+  that bucket in `diagnosis.json` (filter on `short_answer: true`) rather
+  than trust it folded silently into the aggregate.
+- A failed shard contributes no diagnosis records for its questions (unlike
+  `hypotheses.jsonl`, which gets synthetic "(skipped: shard failed)"
+  placeholders) — there's nothing meaningful to classify for a question
+  whose conversation never got ingested.
 
 `--dry-run-throughput` (ingest+distill only, no Azure) measures real
 sessions/sec on your own machine before committing to a full run —
