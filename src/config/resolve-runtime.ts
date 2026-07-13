@@ -20,6 +20,7 @@ import { readSyncSettings } from './sync-settings.js';
 import { migrateLegacyDirsIfPresent } from './migrate-dirs.js';
 import { defaultConfig, type Config } from './config.js';
 import { isIsolatedMode } from './isolated-mode.js';
+import { assertNotProdDatadirFromWorktree } from './worktree-guard.js';
 import { ts } from '../log/logger.js';
 
 export type ValueSource = 'cli' | 'env' | 'config.yaml' | 'default';
@@ -117,6 +118,15 @@ export function resolveRuntimeConfig(overrides: RuntimeOverrides = {}): RuntimeC
     dataDir = cfg.dataDir;
     dataDirSource = cfg.dataDir === defaultDataDir() ? 'default' : 'config.yaml';
   }
+
+  // Issue #187: a linked git worktree has its own branch and dist/, but NOT its
+  // own datadir — defaultDataDir() resolves to the same production directory
+  // regardless of which checkout you run from. On 2026-07-13 that let an agent
+  // apply an UNCOMMITTED migration to the live prod DB and take the daemon down.
+  // Refuse, unless the caller named a datadir explicitly (cli/env), is isolated,
+  // or opted in with ASTRA_ALLOW_PROD_DATADIR=1. No-ops for the primary checkout
+  // and for npm-installed users (no .git at all).
+  assertNotProdDatadirFromWorktree({ dataDir, dataDirSource, defaultDataDir: defaultDataDir(), isolated });
 
   if (isolated) {
     // Adjacent-to-data config path, per the task's "if present" allowance —
