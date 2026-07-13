@@ -3,6 +3,7 @@ import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { getChecks, openProductionDbReadonly } from '../doctor/checks.js';
 import { getHardeningChecks } from '../doctor/hardening-checks.js';
 import { runChecks, formatTable, formatJson } from '../doctor/runner.js';
+import { isLoopbackHost } from '../server/lib/network.js';
 
 function parseFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
@@ -35,6 +36,10 @@ export async function doctorCommand(args: string[]): Promise<void> {
       autoCaptureEnabled: cfg.capture.autoCapture.enabled,
       proxyEnabled: cfg.proxy.enabled,
       proxyCaptureEnabled: cfg.proxy.capture.enabled,
+      // Mirrors buildApp's devNoAuthActive (src/server/app.ts) — a
+      // non-loopback bind refuses devNoAuth at boot, so doctor must apply
+      // the same gate rather than reporting the raw config value.
+      devNoAuthActive: cfg.auth.devNoAuth === true && isLoopbackHost(cfg.network.host),
     }),
     // W1.3: parity with `reinstall`'s assertions — stranded legacy DB,
     // plaintext pre-encryption backup, served-vs-build version, zombie

@@ -21,6 +21,10 @@ describe('loadConfig', () => {
     expect(cfg.embedding.provider).toBe('ollama');
   });
 
+  it('dev no-auth mode defaults to off', () => {
+    expect(defaultConfig().auth.devNoAuth).toBe(false);
+  });
+
   it('default config search weights are unchanged by governance (default behavior preserved)', () => {
     const cfg = loadConfig(undefined);
     expect(cfg.search).toEqual(defaultConfig().search);

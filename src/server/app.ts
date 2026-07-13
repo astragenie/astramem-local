@@ -26,11 +26,11 @@ import { consolidationRoutes } from './routes/consolidation.js';
 import { entitiesRoute } from './routes/entities.js';
 import { syncStatusRoute } from './routes/sync-status.js';
 import { makeFakeVec } from '../search/search.js';
-import { childLogger } from '../log/logger.js';
+import { childLogger, logger } from '../log/logger.js';
 import { newRequestId, runWithRequestId } from '../log/correlation.js';
 import { type Config, defaultConfig } from '../config/config.js';
 import type { HealthState } from './health-state.js';
-import { isLoopbackHost } from './lib/network.js';
+import { isLoopbackHost, isLoopbackHostHeader } from './lib/network.js';
 import { safeBearerEqual } from './lib/secure-compare.js';
 
 /** Default no-op embed provider used when no real provider is injected.
@@ -110,10 +110,54 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   // routes together — isLoopbackHost is the one predicate that decides this,
   // so the bind and the auth boundary can never drift apart.
   const isLocalBind = isLoopbackHost(config.network.host);
+
+  // Dev no-auth mode (Config['auth'] doc comment has the full rationale).
+  // Refused — forced back to false with a loud boot-time log, daemon keeps
+  // booting normally — whenever the bind isn't loopback: devNoAuth on a
+  // LAN/remote bind would mean credential-free exposure to the whole
+  // network, which must be structurally impossible, not just discouraged.
+  // A hard boot-time exit was considered and rejected: it would turn one
+  // dev-convenience config combination into a full daemon outage, whereas
+  // forcing this one flag false keeps every other route working exactly as
+  // it already does on a non-loopback bind (Bearer required — the existing,
+  // tested FEAT-406 behavior) — fail-closed on auth without fail-stopping
+  // the whole process.
+  const devNoAuthConfigured = config.auth?.devNoAuth === true;
+  if (devNoAuthConfigured && !isLocalBind) {
+    logger.warn(
+      { host: config.network.host },
+      'auth.devNoAuth=true but network.host is not loopback — refusing to skip auth; ' +
+      'Bearer token is still required on every route. Set network.host back to 127.0.0.1 ' +
+      '(or localhost/::1) to use dev no-auth mode.',
+    );
+  }
+  const devNoAuthActive = devNoAuthConfigured && isLocalBind;
+
   app.addHook('preHandler', async (req, reply) => {
     const path = req.url.split('?')[0];
     if (path === '/dashboard' || path?.startsWith('/dashboard/')) return;
     if (isLocalBind && (path === '/health' || path === '/version')) return;
+
+    if (devNoAuthActive) {
+      // DNS-rebinding defense: the Bearer token was also the one thing
+      // stopping an arbitrary website the operator's browser visits from
+      // reading the whole memory store via `fetch('http://127.0.0.1:7777/
+      // ...')`. With auth skipped entirely, the Host header is the only
+      // remaining signal that the request actually originated from a
+      // loopback-addressed client rather than a rebound hostname — reject
+      // anything else outright (see isLoopbackHostHeader doc comment).
+      const hostHeader = req.headers.host ?? '';
+      if (!isLoopbackHostHeader(hostHeader)) {
+        const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
+        childLogger({ request_id: requestId ?? 'unknown' }).warn(
+          { method: req.method, path: req.url, host: hostHeader },
+          'dev no-auth mode: rejected non-loopback Host header',
+        );
+        return reply.code(403).send({ error: 'forbidden', reason: 'non-loopback Host header' });
+      }
+      return;
+    }
+
     // FEAT-430: constant-time compare — a naive `!==` leaks the token via
     // response-timing (first differing byte short-circuits the compare).
     const auth = req.headers.authorization ?? '';
