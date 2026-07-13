@@ -101,6 +101,11 @@ const has = (flag: string): boolean => args.includes(flag);
 const datasetPath = get('--dataset') ?? '.eval-data/locomo/locomo10.json';
 const seed = Number(get('--seed') ?? '42');
 const k = Number(get('--k') ?? '10');
+// How many QA pairs are answered at once. Purely a scheduling knob — the prompt,
+// deployment, token budget and k are untouched, so the hypotheses (and therefore
+// the score) are identical to the old strictly-serial loop. See
+// DEFAULT_ANSWER_CONCURRENCY in answer.mts.
+const answerConcurrency = Number(get('--answer-concurrency') ?? '8');
 const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
@@ -282,7 +287,7 @@ async function runShard(opts: {
         { baseUrl: daemon.baseUrl, token },
         azureCfg,
         samples,
-        { k, readySampleIds: new Set(distillResult.ready_sample_ids) },
+        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency },
       );
       timings.answer_ms = Date.now() - t;
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);
