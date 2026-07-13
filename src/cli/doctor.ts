@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { getChecks, openProductionDbReadonly } from '../doctor/checks.js';
 import { getHardeningChecks } from '../doctor/hardening-checks.js';
+import { getGpuChecks } from '../doctor/gpu-checks.js';
 import { runChecks, formatTable, formatJson } from '../doctor/runner.js';
 import { isLoopbackHost } from '../server/lib/network.js';
 
@@ -51,6 +52,11 @@ export async function doctorCommand(args: string[]): Promise<void> {
       openDbReadonly: () =>
         openProductionDbReadonly(join(dataDir, 'memory.sqlite'), cfg.security.encryption.enabled),
     }),
+    // FEAT-485: orphaned llama-server processes (VRAM leak) + silent CPU
+    // offload — both invisible from latency alone, both cost a debugging
+    // night on 2026-07-13. Diagnostic only; degrades gracefully with no
+    // NVIDIA GPU / nvidia-smi / Ollama running.
+    ...getGpuChecks({ ollamaBaseUrl: cfg.ollama.baseUrl }),
   ];
   const results = await runChecks(checks);
 
