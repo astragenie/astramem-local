@@ -49,7 +49,7 @@ describe('upgrade-path e2e — schema-v12 fixture on current build', () => {
     migrate(db);
 
     const versionRow = db.prepare('SELECT MAX(version) AS v FROM schema_version').get() as { v: number };
-    expect(versionRow.v).toBe(31);
+    expect(versionRow.v).toBe(32);
 
     const countOf = (table: string): number =>
       (db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number }).n;

@@ -635,6 +635,10 @@ describe('createProxyCaptureTee', () => {
       { role: 'user', text: 'what is the daemon default port' },
       { role: 'assistant', text: '7777 by default.' },
     ]);
+    // 2026-07-13 timezone-offset bugfix — regression guard against silently
+    // reverting captured_at back to `new Date().toISOString()` (see
+    // src/capture/local-time.ts's module doc for the bug this closes).
+    expect(envelope.captured_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{2}:\d{2})$/);
   });
 
   it('defers the spool write off the sink callback via setImmediate — never synchronous', () => {

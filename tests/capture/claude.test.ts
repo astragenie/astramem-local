@@ -130,6 +130,18 @@ describe('buildClaudeEnvelope', () => {
     const validated = CanonicalIngestSchema.safeParse(env);
     expect(validated.success).toBe(true);
   });
+
+  // 2026-07-13 timezone-offset bugfix — regression guard against silently
+  // reverting captured_at back to `new Date().toISOString()` (which would
+  // resurrect the bug: see src/capture/local-time.ts's module doc).
+  it('defaults captured_at to an offset-bearing local timestamp (not a bare-Z UTC one), still schema-valid', () => {
+    const parsed = parseClaudeTranscript(SESSION, '/x/session.jsonl');
+    const env = buildClaudeEnvelope(parsed, 'subagent_stop', '0.9.0'); // captured_at omitted — real default
+
+    expect(env.captured_at).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}(Z|[+-]\d{2}:\d{2})$/);
+    const validated = CanonicalIngestSchema.safeParse(env);
+    expect(validated.success).toBe(true);
+  });
 });
 
 describe('claudeIdempotencyKey — AC-2 (content-stable, captured_at-independent)', () => {

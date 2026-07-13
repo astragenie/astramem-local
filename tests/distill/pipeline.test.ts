@@ -333,3 +333,106 @@ describe('runPipeline', () => {
     expect(afterInvalidate).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// sessionDateIso — capturedAtLocalDate precedence (2026-07-13 timezone-offset
+// fix)
+//
+// Root cause: the original temporal-grounding fix (#189) derived the stage-5
+// extraction anchor via `new Date(capturedAtMs).toISOString().slice(0, 10)`
+// — capturedAtMs is a bare epoch with no timezone information, so this
+// always yielded the UTC calendar date. A user in UTC-8 capturing at 21:00
+// local is at 05:00 UTC the NEXT day, so "yesterday" in that session
+// resolved one day off. capturedAtLocalDate (plumbed from the transcripts
+// row's new captured_at_local_date column) carries the user's TRUE local
+// calendar date and is now preferred whenever present; the UTC-derived
+// computation survives only as a fallback for capturedAtMs-only rows (from
+// before this fix).
+// ---------------------------------------------------------------------------
+
+describe('sessionDateIso — capturedAtLocalDate precedence (2026-07-13 timezone-offset fix)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  /** Captures every user message sent to the extraction (json:true) call —
+   *  compaction calls are answered separately and ignored here, mirroring
+   *  makeMockLLM's own json-flag branch above. */
+  function makeCapturingLLM(): { llm: LLMProvider; extractUserMessages: string[] } {
+    const extractUserMessages: string[] = [];
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (opts?.json) {
+          extractUserMessages.push(msgs.find((m) => m.role === 'user')?.content ?? '');
+          return { text: EXTRACTION_RESPONSE, usage: { in: 100, out: 50, usd: 0 } };
+        }
+        return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    return { llm, extractUserMessages };
+  }
+
+  it('AC-4a: prefers capturedAtLocalDate over the UTC-derived date from capturedAtMs', async () => {
+    const { llm, extractUserMessages } = makeCapturingLLM();
+    const embed = makeMockEmbed();
+
+    // The exact bug scenario: 21:00 local on 2026-07-13 in UTC-8 is 05:00 UTC
+    // on 2026-07-14 — capturedAtMs alone names the WRONG (UTC) calendar date.
+    const capturedAtMs = new Date('2026-07-14T05:00:00.000Z').getTime();
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      capturedAtMs,
+      capturedAtLocalDate: '2026-07-13',
+    });
+
+    expect(extractUserMessages.length).toBeGreaterThan(0);
+    for (const msg of extractUserMessages) {
+      expect(msg).toMatch(/^Observation date: 2026-07-13\n\n/);
+    }
+  });
+
+  it('AC-3/AC-4b: falls back to the UTC-derived-from-epoch date when capturedAtLocalDate is null (a row from before this fix)', async () => {
+    const { llm, extractUserMessages } = makeCapturingLLM();
+    const embed = makeMockEmbed();
+    const capturedAtMs = new Date('2026-07-14T05:00:00.000Z').getTime();
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      capturedAtMs,
+      capturedAtLocalDate: null,
+    });
+
+    expect(extractUserMessages.length).toBeGreaterThan(0);
+    for (const msg of extractUserMessages) {
+      // The old (pre-timezone-fix) fallback behavior — not the correct local
+      // date, but a documented, non-crashing degrade for legacy rows.
+      expect(msg).toMatch(/^Observation date: 2026-07-14\n\n/);
+    }
+  });
+
+  it('AC-4c: no anchor at all when both fields are omitted — byte-identical to pre-fix behavior', async () => {
+    const { llm, extractUserMessages } = makeCapturingLLM();
+    const embed = makeMockEmbed();
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    expect(extractUserMessages.length).toBeGreaterThan(0);
+    for (const msg of extractUserMessages) {
+      expect(msg).not.toMatch(/Observation date/);
+    }
+  });
+});

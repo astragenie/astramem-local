@@ -286,14 +286,15 @@ export function ingestCanonicalTranscript(
     string | null, string | null,
     string | null, string, string | null,
     string | null, string | null,
+    string,
   ]>(`
     INSERT INTO transcripts (
       id, session_id, source, content, ingested_at,
       event, captured_at, client_scrub_applied, client_scrub_hits,
       client_scrub_version, client_scrub_hits_by_label_json,
       client_version, wire_version, capture_source, proxy_usage_json,
-      extract_profile
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      extract_profile, captured_at_local_date
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const stmtInsertJob = db.prepare<[string, string, number, number]>(`
     INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
@@ -325,6 +326,16 @@ export function ingestCanonicalTranscript(
   const bodyHash = createHash('sha256').update(stableStringify(data)).digest('hex');
   const now = Date.now();
   const capturedAtMs = new Date(data.captured_at).getTime();
+  // 2026-07-13 timezone-offset bugfix: the wire string's own YYYY-MM-DD
+  // prefix IS the correct local calendar date at capture (that's what an
+  // offset-bearing ISO-8601 datetime means) — captured BEFORE the string is
+  // collapsed to the bare epoch above, which discards the offset entirely.
+  // CanonicalIngestSchema's `z.string().datetime({ offset: true })` already
+  // guarantees this 10-char prefix is well-formed. A legacy `...Z` envelope
+  // (no real offset — pre-fix client) still slices out a valid date here;
+  // it's simply the UTC one, byte-identical to the old fallback pipeline.ts
+  // now uses when this column is NULL for even-older rows.
+  const capturedAtLocalDate = data.captured_at.slice(0, 10);
 
   let transcriptId!: string;
   let jobId!: string;
@@ -383,6 +394,7 @@ export function ingestCanonicalTranscript(
       // FEAT-479 (D3 §3.2) AC-3: same "schema instance covers both the HTTP
       // route and spool-drain" note as capture_source above applies here too.
       data.extract_profile ?? null,
+      capturedAtLocalDate,
     );
 
     recordRedactionEvents(db, redactionEvents, data.session_id);

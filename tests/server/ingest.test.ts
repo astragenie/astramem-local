@@ -927,3 +927,89 @@ describe('a rejected ingest names the offending field (never a blind "Invalid in
     expect(res.statusCode).toBe(200);
   });
 });
+
+// ---------------------------------------------------------------------------
+// captured_at_local_date (2026-07-13 timezone-offset bugfix)
+//
+// Root cause: PipelineContext.sessionDateIso (src/distill/pipeline.ts) used
+// to derive the stage-5 extraction anchor via
+// `new Date(capturedAtMs).toISOString().slice(0, 10)` — capturedAtMs is a
+// bare epoch with no timezone information, so this always yielded the UTC
+// calendar date rather than the user's local one. The fix threads a
+// SEPARATE local-date column, captured verbatim from the offset-bearing
+// wire string's own YYYY-MM-DD prefix at ingest time, before the string is
+// ever collapsed to a bare epoch.
+// ---------------------------------------------------------------------------
+
+describe('captured_at_local_date (2026-07-13 timezone-offset bugfix)', () => {
+  it('AC-4a: an offset-bearing captured_at stores the LOCAL date, not the UTC one', async () => {
+    const { db, app } = makeApp();
+    // 21:00 on 2026-07-13 in UTC-8 — 05:00 UTC on 2026-07-14. The bug this
+    // fix closes: naively deriving the date from the epoch alone would say
+    // "2026-07-14", the user's tomorrow.
+    const payload = {
+      ...CANONICAL_PAYLOAD,
+      session_id: 'sess-tz-offset',
+      captured_at: '2026-07-13T21:00:00.000-08:00',
+    };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const t = db
+      .prepare('SELECT captured_at, captured_at_local_date FROM transcripts WHERE session_id = ?')
+      .get('sess-tz-offset') as { captured_at: number; captured_at_local_date: string };
+
+    expect(t.captured_at_local_date).toBe('2026-07-13');
+    // The epoch itself is unaffected — it's the same instant a Z-suffixed
+    // string for 05:00 UTC on the 14th would name.
+    expect(t.captured_at).toBe(new Date('2026-07-13T21:00:00.000-08:00').getTime());
+    expect(new Date(t.captured_at).toISOString()).toBe('2026-07-14T05:00:00.000Z');
+  });
+
+  it('AC-4b/AC-4c: a legacy Z-suffixed (no real offset) captured_at stores the UTC date — no crash, documented fallback', async () => {
+    const { db, app } = makeApp();
+    const payload = {
+      ...CANONICAL_PAYLOAD,
+      session_id: 'sess-tz-legacy-utc',
+      captured_at: '2026-07-13T21:00:00.000Z',
+    };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    const t = db
+      .prepare('SELECT captured_at_local_date FROM transcripts WHERE session_id = ?')
+      .get('sess-tz-legacy-utc') as { captured_at_local_date: string };
+
+    expect(t.captured_at_local_date).toBe('2026-07-13');
+  });
+
+  it('a row from before this fix (column NULL) does not crash the read path', async () => {
+    const { db, app } = makeApp();
+    const payload = { ...CANONICAL_PAYLOAD, session_id: 'sess-tz-pre-fix-row' };
+    const res = await (await app).inject({
+      method: 'POST',
+      url: '/ingest/transcript',
+      headers: AUTH,
+      payload,
+    });
+    expect(res.statusCode).toBe(200);
+
+    // Simulate a row written before this migration's write path existed.
+    db.prepare('UPDATE transcripts SET captured_at_local_date = NULL WHERE session_id = ?').run('sess-tz-pre-fix-row');
+
+    const t = db
+      .prepare('SELECT captured_at_local_date FROM transcripts WHERE session_id = ?')
+      .get('sess-tz-pre-fix-row') as { captured_at_local_date: string | null };
+    expect(t.captured_at_local_date).toBeNull();
+  });
+});

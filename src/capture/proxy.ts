@@ -47,6 +47,7 @@ import { stableStringify } from '../server/lib/stable-stringify.js';
 import { gateRelevance, recordCapturedTurnHash, type RelevanceGateOptions } from './relevance-gate.js';
 import { writeToSpool } from '../ingest/spool.js';
 import type { ProxyTeeSink } from '../proxy/server.js';
+import { localIsoString } from './local-time.js';
 
 /** Upper bound on a single decompressed body — a malformed or hostile
  *  upstream response must never let this module inflate unbounded bytes
@@ -688,7 +689,12 @@ function buildProxyEnvelope(
   turns: ProxyTurn[],
   clientVersion: string,
   usage: ProxyUsageMetadata | null,
-  capturedAt = new Date().toISOString(),
+  // 2026-07-13 timezone-offset bugfix: offset-bearing (local-time.ts's
+  // localIsoString) rather than `new Date().toISOString()` — see that
+  // module's doc for why. This is a plain formatter with nothing tool-
+  // specific about it, so importing it here does not violate this file's
+  // own "must not depend on claude.ts" invariant (module doc above).
+  capturedAt = localIsoString(),
 ): ProxyCaptureEnvelope {
   return {
     event: 'session_end',

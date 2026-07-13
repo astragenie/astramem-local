@@ -45,6 +45,12 @@ interface TranscriptRow {
    *  ingestCanonicalTranscript, src/server/routes/ingest.ts) — NULL for
    *  every envelope that omits it. */
   extract_profile: 'engineering' | 'conversational' | null;
+  /** 2026-07-13 timezone-offset bugfix: the local calendar date at capture
+   *  (the offset-bearing `captured_at` string's own YYYY-MM-DD prefix),
+   *  carried on the transcripts row at ingest time (see
+   *  ingestCanonicalTranscript, src/server/routes/ingest.ts) — NULL for
+   *  every row from before this fix and for legacy v0.0 ingests. */
+  captured_at_local_date: string | null;
 }
 
 interface SessionRow {
@@ -69,7 +75,7 @@ export const distillHandler: JobHandler = {
 
     // Fetch transcript content
     const transcript = ctx.db
-      .prepare('SELECT id, session_id, content, source, captured_at, capture_source, extract_profile FROM transcripts WHERE id = ?')
+      .prepare('SELECT id, session_id, content, source, captured_at, capture_source, extract_profile, captured_at_local_date FROM transcripts WHERE id = ?')
       .get(transcript_id) as TranscriptRow | undefined;
 
     if (!transcript) {
@@ -132,6 +138,12 @@ export const distillHandler: JobHandler = {
       // NULL for every envelope that omits `extract_profile`. runPipeline
       // falls back to config.distill.extractProfile, then 'engineering'.
       extractProfile: transcript.extract_profile ?? null,
+      // 2026-07-13 timezone-offset bugfix: carried on the transcripts row at
+      // ingest time (see ingestCanonicalTranscript, src/server/routes/
+      // ingest.ts) — NULL for every row from before this fix and for legacy
+      // v0.0 ingests. runPipeline falls back to the old UTC-derived-from-
+      // epoch date when this is null.
+      capturedAtLocalDate: transcript.captured_at_local_date ?? null,
       // FEAT-441: durability gate mode + config threaded straight from the
       // running config — undefined durabilityGateMode falls back to 'off'
       // deep in embedAndIndex (AC-2 byte-identical default).

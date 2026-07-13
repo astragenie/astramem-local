@@ -149,4 +149,14 @@ export const CONTRACT_SCHEMA_VERSION = '1' as const;
 //       (maxPerRun) and wall-clock time (maxWallClockMs) instead, and this
 //       table makes the actual cost visible to the doctor "Consolidation
 //       judge" canary rather than gated behind a currency that can't see it.
-export const SCHEMA_VERSION = 31 as const;
+// 032 = transcripts.captured_at_local_date, additive nullable column
+//       (2026-07-13 timezone-offset bugfix) -- the local calendar date at
+//       capture (the offset-bearing captured_at string's own YYYY-MM-DD
+//       prefix), alongside the pre-existing epoch-only captured_at column.
+//       Flows transcripts row -> distillHandler -> PipelineContext.
+//       capturedAtLocalDate -> stage-5 sessionDateIso, replacing the old
+//       UTC-derived-from-epoch anchor that ignored the user's local offset.
+//       NULL (falls back to the old UTC-derived behavior) for every row
+//       from before this fix and for the events-kind ingest path, which
+//       never runs extraction and so never needed this.
+export const SCHEMA_VERSION = 32 as const;

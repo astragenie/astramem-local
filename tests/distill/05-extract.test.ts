@@ -1120,4 +1120,38 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       expect(msg).toMatch(/^Observation date: 2023-05-15\n\n/);
     }
   });
+
+  // AC-5 (2026-07-13 timezone-offset fix, closing a gap the #189 reviewer
+  // found): an anchor being present must never cause a date to be stamped
+  // into an atom whose source chunk carries no relative-date expression at
+  // all. A stray injected date is noise in the only field the LoCoMo
+  // answerer (and every recall path) actually reads — worse than doing
+  // nothing. This exercises our own plumbing, not the real LLM's judgment:
+  // the mock plays a model that correctly leaves text alone when there's
+  // nothing to ground, and the assertion is that OUR code passes that text
+  // through byte-for-byte rather than mechanically appending/injecting the
+  // anchor date itself.
+  it('AC-5: anchor present + chunk with no relative-date expression → atom text passes through unchanged, no date stamped', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeMockLLM([VALID_EXTRACTION_JSON]);
+
+    const result = await extractChunk(
+      0,
+      'We decided to use sqlite-vec for vector storage in v1. Port 7777 is the default.',
+      llm,
+      budget,
+      10.0,
+      'engineering',
+      '2023-05-15',
+    );
+
+    expect(result.atoms).toHaveLength(2);
+    expect(result.atoms[0].text).toBe('use sqlite-vec for vector storage in v1');
+    expect(result.atoms[1].text).toBe('port 7777 is the default daemon port');
+    for (const atom of result.atoms) {
+      expect(atom.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    }
+  });
 });

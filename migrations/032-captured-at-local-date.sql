@@ -1,0 +1,34 @@
+-- 032: local calendar date at capture, alongside the existing epoch
+-- `captured_at` column (2026-07-13 timezone-offset bugfix).
+--
+-- Bug: PipelineContext's `sessionDateIso` (src/distill/pipeline.ts, added by
+-- the same-day temporal-grounding fix, #189) derived the stage-5 extraction
+-- anchor via `new Date(capturedAtMs).toISOString().slice(0, 10)`.
+-- `capturedAtMs` is a bare epoch with no timezone information, so this
+-- always yielded the UTC calendar date, never the user's local one. A user
+-- in UTC-8 capturing at 21:00 local is at 05:00 UTC the NEXT day, so
+-- "yesterday" in that session resolved one day off — a confidently wrong
+-- absolute date written into the atom text the LoCoMo answerer (and every
+-- recall path) actually reads.
+--
+-- Fix: `captured_at` is now emitted offset-bearing at the two capture sites
+-- (src/capture/claude.ts, src/capture/proxy.ts — see src/capture/
+-- local-time.ts) instead of forced-UTC `Z`. CanonicalIngestSchema's
+-- `captured_at: z.string().datetime({ offset: true })` (src/server/routes/
+-- ingest.ts) already accepted this form; the SaaS sibling's `CapturedAt`
+-- field is a .NET `DateTimeOffset?`, and the plugin's own wire.ts validates
+-- `captured_at` as a bare `z.string()` — neither breaks. An offset-bearing
+-- ISO-8601 string's own `YYYY-MM-DD` prefix already IS the correct local
+-- calendar date (that's what the offset notation means), so ingest.ts
+-- captures it verbatim into this new column at parse time, before the
+-- string is ever collapsed down to a bare epoch for `transcripts.
+-- captured_at`.
+--
+-- One additive nullable column, same ALTER TABLE ADD COLUMN pattern
+-- migrations 022/024/025/026/028 used — NULL on every existing row, and on
+-- any future row from a write path that doesn't set it (the events-kind
+-- ingest path, which never runs extraction and so never needed this).
+-- pipeline.ts falls back to the old UTC-derived-from-epoch date when this
+-- column is NULL — the exact backward-compat behavior legacy rows and
+-- legacy `...Z` envelopes (no real offset) need.
+ALTER TABLE transcripts ADD COLUMN captured_at_local_date TEXT;
