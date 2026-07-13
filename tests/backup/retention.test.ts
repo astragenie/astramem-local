@@ -68,7 +68,7 @@ describe('pruneOldBackups', () => {
     expect(result.deleted).toHaveLength(1);
 
     // The oldest file should be deleted
-    expect(existsSync(paths[0])).toBe(false);
+    expect(existsSync(paths[0]!)).toBe(false);
 
     // All newer 7 files should still exist
     for (const p of paths.slice(1)) {
@@ -96,7 +96,7 @@ describe('pruneOldBackups', () => {
     expect(result.deleted).toHaveLength(4);
 
     // Only the newest should survive
-    expect(existsSync(paths[4])).toBe(true);
+    expect(existsSync(paths[4]!)).toBe(true);
     for (const p of paths.slice(0, 4)) {
       expect(existsSync(p)).toBe(false);
     }

@@ -28,7 +28,7 @@ describe('CLI --project forwards to the filter key the server routes consume', (
 
     await cliSearch('ingest concurrency', { project: 'runner-plugin' });
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.pathname).toBe('/search');
     expect(calledUrl.searchParams.get('project')).toBe('runner-plugin');
   });
@@ -39,7 +39,7 @@ describe('CLI --project forwards to the filter key the server routes consume', (
 
     await cliSearch('ingest concurrency', {});
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.has('project')).toBe(false);
   });
 
@@ -72,7 +72,7 @@ describe('CLI --project forwards to the filter key the server routes consume', (
 
     await cliSearch('prior review lessons', { agent: 'crew:reviewer' });
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.get('agent')).toBe('crew:reviewer');
   });
 

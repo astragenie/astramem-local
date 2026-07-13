@@ -44,12 +44,13 @@ const SECOND_ATTEMPT_VALID = JSON.stringify({
 });
 
 function makeMockLLM(responses: string[], usdCost = 0): LLMProvider {
+  if (responses.length === 0) throw new Error('makeMockLLM requires at least one response');
   let call = 0;
   return {
     name: 'ollama' as const,
     model: 'test-model',
     async chat(_msgs: ChatMsg[], _opts?: ChatOpts): Promise<ChatResult> {
-      const text = responses[call] ?? responses[responses.length - 1];
+      const text = responses[call] ?? responses[responses.length - 1]!;
       call++;
       return { text, usage: { in: 100, out: 50, usd: usdCost } };
     },
@@ -70,8 +71,8 @@ describe('extract stage', () => {
 
     expect(result.chunkIndex).toBe(0);
     expect(result.atoms.length).toBe(2);
-    expect(result.atoms[0].type).toBe('decision');
-    expect(result.atoms[0].text).toContain('sqlite-vec');
+    expect(result.atoms[0]!.type).toBe('decision');
+    expect(result.atoms[0]!.text).toContain('sqlite-vec');
     expect(result.retried).toBe(false);
   });
 
@@ -117,8 +118,8 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].type).toBe('lesson');
-    expect(result.atoms[0].text).toContain('better-sqlite3');
+    expect(result.atoms[0]!.type).toBe('lesson');
+    expect(result.atoms[0]!.text).toContain('better-sqlite3');
   });
 
   it('returns empty atoms without LLM call for empty chunk', async () => {
@@ -187,8 +188,8 @@ describe('extract stage', () => {
     );
 
     expect(results.length).toBe(2);
-    expect(results[0].atoms.length).toBe(2);
-    expect(results[1].atoms.length).toBe(2);
+    expect(results[0]!.atoms.length).toBe(2);
+    expect(results[1]!.atoms.length).toBe(2);
   });
 
   it('rejects atoms with text shorter than 5 chars', async () => {
@@ -225,7 +226,7 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+    expect(result.atoms[0]!.entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
   });
 
   it('atom with no named entity omits/empties entities without failing validation', async () => {
@@ -235,7 +236,7 @@ describe('extract stage', () => {
     const llm = makeMockLLM([VALID_EXTRACTION_JSON]); // no entities field on either atom
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(2);
-    expect(result.atoms[0].entities).toBeUndefined();
+    expect(result.atoms[0]!.entities).toBeUndefined();
   });
 
   it('coerces an out-of-enum entity kind to "other" instead of dropping the whole atom', async () => {
@@ -260,8 +261,8 @@ describe('extract stage', () => {
     // data loss) — it is safe-narrowed to 'other', matching the cloud-side
     // EntityKinds.Normalize() pattern (AstraMemory.Domain/EntityKinds.cs).
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].text).toBe('some fact about a thing');
-    expect(result.atoms[0].entities).toEqual([{ name: 'Whatever', kind: 'other' }]);
+    expect(result.atoms[0]!.text).toBe('some fact about a thing');
+    expect(result.atoms[0]!.entities).toEqual([{ name: 'Whatever', kind: 'other' }]);
   });
 
   it('coerces only the bad entity, leaving valid entities on the same atom untouched', async () => {
@@ -286,7 +287,7 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities).toEqual([
+    expect(result.atoms[0]!.entities).toEqual([
       { name: 'Postgres', kind: 'tech' },
       { name: 'Alice', kind: 'other' },
     ]);
@@ -337,7 +338,7 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities).toEqual([{
+    expect(result.atoms[0]!.entities).toEqual([{
       name: 'Alice', kind: 'actor', subtype: 'human',
       valid_at: '2026-01-01T00:00:00.000Z',
       invalid_at: '2026-03-01T00:00:00.000Z',
@@ -365,8 +366,8 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities?.[0].valid_at).toBeUndefined();
-    expect(result.atoms[0].entities?.[0].invalid_at).toBeUndefined();
+    expect(result.atoms[0]!.entities?.[0]!.valid_at).toBeUndefined();
+    expect(result.atoms[0]!.entities?.[0]!.invalid_at).toBeUndefined();
   });
 
   // FEAT-481 (SLICE-2/SLICE-435) AC-6/AC-7 — relations[] schema + guard.
@@ -396,7 +397,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
       ]);
     });
@@ -408,8 +409,8 @@ describe('extract stage', () => {
       const llm = makeMockLLM([VALID_EXTRACTION_JSON]); // no relations field anywhere
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(2);
-      expect(result.atoms[0].relations).toBeUndefined();
-      expect(result.atoms[1].relations).toBeUndefined();
+      expect(result.atoms[0]!.relations).toBeUndefined();
+      expect(result.atoms[1]!.relations).toBeUndefined();
     });
 
     it('drops a relation with an unknown predicate — NOT coerced to "other", NOT atom-fatal', async () => {
@@ -439,8 +440,8 @@ describe('extract stage', () => {
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       // The atom itself survives; only the bad relation is dropped.
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].text).toBe('Alice manages the deploy pipeline for the team');
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.text).toBe('Alice manages the deploy pipeline for the team');
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('drops a relation whose subject is not in this atom\'s own entities[] (no-hallucination guard, AC-7)', async () => {
@@ -466,7 +467,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('drops a relation whose object is not in this atom\'s own entities[]', async () => {
@@ -491,7 +492,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('name-matching is case/whitespace-normalized (normalizeEntityName), same seam as entity linking', async () => {
@@ -520,7 +521,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'Astramemory-Local', predicate: 'uses', object: 'sqlite' },
       ]);
     });
@@ -547,7 +548,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('keeps valid relations while dropping only the invalid ones on the same atom', async () => {
@@ -581,7 +582,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
         { subject: 'astramemory-local', predicate: 'replaces', object: 'Postgres' },
       ]);
@@ -667,7 +668,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'Alice', predicate: 'other', object: 'Bob' },
       ]);
     });
@@ -701,7 +702,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
     });
 
     it('drops a bare number ("123") entity name', async () => {
@@ -723,7 +724,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([]);
+      expect(result.atoms[0]!.entities).toEqual([]);
     });
 
     it('drops a single-character entity name ("x") — below the length floor', async () => {
@@ -745,7 +746,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([]);
+      expect(result.atoms[0]!.entities).toEqual([]);
     });
 
     it('keeps a legitimate 2-char entity name ("Go") — the length floor must not reject real short words', async () => {
@@ -767,7 +768,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'Go', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Go', kind: 'tech' }]);
     });
 
     // The length floor was `< 2 -> too_short`, which silently destroyed "C" and
@@ -792,7 +793,7 @@ describe('extract stage', () => {
       });
       const result = await extractChunk(0, 'chunk text', makeMockLLM([legit]), budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'C', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'C', kind: 'tech' }]);
     });
 
     it('keeps a SINGLE-CHARACTER tech name ("R") — the statistics language', async () => {
@@ -812,7 +813,7 @@ describe('extract stage', () => {
       });
       const result = await extractChunk(0, 'chunk text', makeMockLLM([legit]), budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'R', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'R', kind: 'tech' }]);
     });
 
     // The junk actually observed in production: single letters tagged `repo`.
@@ -835,7 +836,7 @@ describe('extract stage', () => {
       });
       const result = await extractChunk(0, 'chunk text', makeMockLLM([junk]), budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([]);
+      expect(result.atoms[0]!.entities).toEqual([]);
     });
 
     it('keeps legitimate multi-char entity names unaffected ("Postgres", "astramem-local")', async () => {
@@ -860,7 +861,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([
+      expect(result.atoms[0]!.entities).toEqual([
         { name: 'astramem-local', kind: 'project' },
         { name: 'Postgres', kind: 'tech' },
       ]);
@@ -891,12 +892,12 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'Alice', kind: 'actor' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Alice', kind: 'actor' }]);
       // The relation's object ("#110") no longer exists in entities[] once
       // filterAtomEntities drops it, so filterAtomRelations' pre-existing
       // no-hallucination guard drops the relation too — no separate check
       // needed for this cascade.
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('entityDropCounts tallies one entry per drop reason', async () => {
@@ -927,7 +928,8 @@ describe('extract stage', () => {
         bare_number: 1,
         too_short: 1,
       });
-      expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
     });
 
     it('entityDropCounts is {} when every entity name in the chunk survives filtering', async () => {
@@ -1311,7 +1313,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'Caroline went to a support group yesterday.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2023-05-14');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('2023-05-14');
   });
 
   it('anchor 2023-05-15 + "last week" → resolved atom text contains 2023-05-08', async () => {
@@ -1324,7 +1327,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'Caroline went last week.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2023-05-08');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('2023-05-08');
   });
 
   it('anchor 2023-05-15 + "last year" → resolved atom text contains 2022', async () => {
@@ -1337,7 +1341,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'Melanie painted it last year.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2022');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('2022');
   });
 
   it('anchor 2023-05-15 + "three years ago" → resolved atom text contains 2020', async () => {
@@ -1350,7 +1355,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'It happened three years ago.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2020');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('2020');
   });
 
   // Negative case (AC-6): with no anchor available, behavior is unchanged —
@@ -1370,8 +1376,9 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     expect(userMessages[0]).toBe(
       'Extract knowledge atoms from this transcript chunk:\n\nCaroline went to a support group yesterday.',
     );
-    expect(result.atoms[0].text).toContain('yesterday');
-    expect(result.atoms[0].text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('yesterday');
+    expect(result.atoms[0]!.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
   it('extract() threads sessionDateIso through to every chunk, same as extractProfile', async () => {
@@ -1424,8 +1431,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     );
 
     expect(result.atoms).toHaveLength(2);
-    expect(result.atoms[0].text).toBe('use sqlite-vec for vector storage in v1');
-    expect(result.atoms[1].text).toBe('port 7777 is the default daemon port');
+    expect(result.atoms[0]!.text).toBe('use sqlite-vec for vector storage in v1');
+    expect(result.atoms[1]!.text).toBe('port 7777 is the default daemon port');
     for (const atom of result.atoms) {
       expect(atom.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     }

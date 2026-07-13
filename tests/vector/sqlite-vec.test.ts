@@ -28,8 +28,8 @@ describe('SqliteVecStore', () => {
     await store.upsert(id1, vec(1));
     await store.upsert(id2, vec(100));
     const hits = await store.search(vec(1), 1);
-    expect(hits[0].id).toBe(id1);
-    expect(hits[0].score).toBeGreaterThan(0);
+    expect(hits[0]!.id).toBe(id1);
+    expect(hits[0]!.score).toBeGreaterThan(0);
   });
 
   it('orders by similarity', async () => {
@@ -44,8 +44,8 @@ describe('SqliteVecStore', () => {
     await store.upsert(idB, vec(1.01));
     await store.upsert(idC, vec(50));
     const hits = await store.search(vec(1), 3);
-    expect(hits[0].id).toBe(idA);
-    expect(hits[1].id).toBe(idB);
-    expect(hits[2].id).toBe(idC);
+    expect(hits[0]!.id).toBe(idA);
+    expect(hits[1]!.id).toBe(idB);
+    expect(hits[2]!.id).toBe(idC);
   });
 });

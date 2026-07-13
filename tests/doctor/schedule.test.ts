@@ -46,16 +46,16 @@ import { makeMockProviders } from '../../src/pipeline/mock-providers.js';
 // cli/providers.ts) — the ONE genuinely CI-run typecheck job
 // (`bunx tsc --noEmit` against the root tsconfig.json, `.github/workflows/
 // lint.yml`) already covers all of them, since its `include` is
-// `["src/**/*"]`. `bun run typecheck:tests` (tsconfig.tests.json,
-// tests/**/* included) is NOT wired into any CI workflow and currently has
-// ~10 pre-existing unrelated failures — do not rely on it as a gate; it is
-// a local/manual tool only. `vitest run` never type-checks at all (esbuild
-// strips types without validating them). This function is never called —
-// its only job is to fail a real `tsc` invocation (either the lint.yml job,
-// or a plain `tsc --noEmit`/`typecheck:tests` run by hand) if the `tier`
-// field is ever made optional again, which is the actual #226 bug class
-// this PR closes: a check silently defaulting into the frequent tier
-// because nothing forced its author to make a cost decision.
+// `["src/**/*"]`. As of #235, `bun run typecheck:tests` (tsconfig.tests.json,
+// tests/**/* included) is ALSO wired into `.github/workflows/lint.yml` as a
+// required job and is green — this proof is now doubly enforced (both jobs
+// fail if `tier` is ever made optional again). `vitest run` never
+// type-checks at all (esbuild strips types without validating them). This
+// function is never called — its only job is to fail a real `tsc`
+// invocation (either lint.yml job) if the `tier` field is ever made
+// optional again, which is the actual #226 bug class this PR closes: a
+// check silently defaulting into the frequent tier because nothing forced
+// its author to make a cost decision.
 function _typeOnlyTierRequiredProof(): Check {
   // @ts-expect-error — `tier` is required; omitting it must not compile.
   return { name: 'no tier declared', run: async () => ({ ok: true, message: 'x' }) };

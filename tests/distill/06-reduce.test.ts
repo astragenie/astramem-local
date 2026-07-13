@@ -25,7 +25,7 @@ describe('reduce stage', () => {
     ];
     const result = reduce(atoms);
     expect(result.length).toBe(1);
-    expect(result[0].importance).toBe(0.8); // highest importance kept
+    expect(result[0]!.importance).toBe(0.8); // highest importance kept
   });
 
   it('keeps highest importance on duplicate', () => {
@@ -36,14 +36,15 @@ describe('reduce stage', () => {
     ];
     const result = reduce(atoms);
     expect(result.length).toBe(1);
-    expect(result[0].importance).toBe(0.9);
+    expect(result[0]!.importance).toBe(0.9);
   });
 
   it('adds contentHash to each result', () => {
     const atoms = [atom('some decision was made', 0.7)];
     const result = reduce(atoms);
-    expect(typeof result[0].contentHash).toBe('string');
-    expect(result[0].contentHash.length).toBe(64);
+    expect(result.length).toBe(1);
+    expect(typeof result[0]!.contentHash).toBe('string');
+    expect(result[0]!.contentHash.length).toBe(64);
   });
 
   it('deduplicates by whitespace-collapsed form', () => {
@@ -68,7 +69,7 @@ describe('reduce stage', () => {
     const result = reduce(atoms);
     expect(result.length).toBe(1);
     // Keeps the higher importance (0.9) instance — type follows it
-    expect(result[0].importance).toBe(0.9);
-    expect(result[0].type).toBe('decision');
+    expect(result[0]!.importance).toBe(0.9);
+    expect(result[0]!.type).toBe('decision');
   });
 });

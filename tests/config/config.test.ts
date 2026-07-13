@@ -167,13 +167,13 @@ describe('applyFusionGovernance', () => {
 describe('applyDurabilityGateGovernance', () => {
   it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
     for (const mode of ['strict', 'lenient', 'off'] as const) {
-      const distill = { durabilityGate: mode };
+      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const };
       expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to off and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'strcit' as any };
+    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const };
     const logs: string[] = [];
     const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -200,13 +200,13 @@ describe('applyDurabilityGateGovernance', () => {
 describe('applyExtractProfileGovernance', () => {
   it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
     for (const profile of ['engineering', 'conversational'] as const) {
-      const distill = { durabilityGate: 'off' as const, extractProfile: profile };
+      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile };
       expect(applyExtractProfileGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to engineering and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'off' as const, extractProfile: 'enginering' as any };
+    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any };
     const logs: string[] = [];
     const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
 

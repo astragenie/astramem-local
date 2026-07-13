@@ -115,7 +115,7 @@ describe('proxy failure-mode matrix', () => {
         // Never respond — this handler's only job is to observe the socket.
       });
     });
-    const upstreamPort = await listenEphemeral(fakeUpstream);
+    const upstreamPort = await listenEphemeral(fakeUpstream!);
     proxy = await startProxyServer({ port: 0, host: '127.0.0.1', upstream: `http://127.0.0.1:${upstreamPort}` });
 
     const controller = new AbortController();

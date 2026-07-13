@@ -12,15 +12,15 @@ describe('chunk stage', () => {
   it('returns empty chunk for empty input', () => {
     const chunks = chunk('');
     expect(chunks.length).toBe(1);
-    expect(chunks[0].text).toBe('');
+    expect(chunks[0]!.text).toBe('');
   });
 
   it('does not split within a single short turn', () => {
     const input = 'user: what is sqlite-vec?\nassistant: it is a vector extension for SQLite.';
     const chunks = chunk(input);
     expect(chunks.length).toBe(1);
-    expect(chunks[0].text).toContain('sqlite-vec');
-    expect(chunks[0].text).toContain('vector extension');
+    expect(chunks[0]!.text).toContain('sqlite-vec');
+    expect(chunks[0]!.text).toContain('vector extension');
   });
 
   it('splits at turn boundaries when content exceeds limit', () => {
@@ -47,7 +47,7 @@ describe('chunk stage', () => {
     const chunks = chunk(turns.join('\n\n'));
     expect(chunks.length).toBeGreaterThan(1);
     for (let i = 0; i < chunks.length; i++) {
-      expect(chunks[i].index).toBe(i);
+      expect(chunks[i]!.index).toBe(i);
     }
   });
 
@@ -63,6 +63,6 @@ describe('chunk stage', () => {
     const input = 'this is a plain paragraph\nwithout any role prefix\njust text';
     const chunks = chunk(input);
     expect(chunks.length).toBe(1);
-    expect(chunks[0].text).toContain('paragraph');
+    expect(chunks[0]!.text).toContain('paragraph');
   });
 });

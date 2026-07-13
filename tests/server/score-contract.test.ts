@@ -52,7 +52,7 @@ function buildMockEmbed(): EmbedProvider {
     name: 'ollama' as const,
     model: 'mock',
     dim: 1024 as const,
-    embed: async (texts: string[]) => texts.map(() => new Array(1024).fill(0)),
+    embed: async (texts: string[]) => texts.map(() => new Float32Array(1024)),
     health: async () => ({ ok: true, model: 'mock', dim: 1024 as const }),
   };
 }

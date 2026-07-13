@@ -84,7 +84,7 @@ export function runEmbedContractSuite(
       const results = await p.embed(['single']);
       expect(results).toHaveLength(1);
       expect(results[0]).toBeInstanceOf(Float32Array);
-      expect(results[0].length).toBe(1024);
+      expect(results[0]!.length).toBe(1024);
     });
 
     it('health() returns {ok, model, dim}', async () => {

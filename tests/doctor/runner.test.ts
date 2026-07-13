@@ -7,6 +7,7 @@ import { runChecks, formatTable, formatJson } from '../../src/doctor/runner.js';
 function makeCheck(name: string, ok: boolean, message: string, fix?: string): Check {
   return {
     name,
+    tier: 'cheap',
     run: vi.fn().mockResolvedValue({ ok, message, fix }),
   };
 }
@@ -19,8 +20,8 @@ describe('runChecks', () => {
     ];
     const results = await runChecks(checks);
     expect(results).toHaveLength(2);
-    expect(results[0].ok).toBe(true);
-    expect(results[1].ok).toBe(false);
+    expect(results[0]!.ok).toBe(true);
+    expect(results[1]!.ok).toBe(false);
   });
 
   it('returns empty array for empty check list', async () => {
@@ -31,11 +32,12 @@ describe('runChecks', () => {
   it('captures check exceptions as failed result', async () => {
     const throwingCheck: Check = {
       name: 'Throwing check',
+      tier: 'cheap',
       run: vi.fn().mockRejectedValue(new Error('unexpected error')),
     };
     const results = await runChecks([throwingCheck]);
-    expect(results[0].ok).toBe(false);
-    expect(results[0].message).toContain('unexpected error');
+    expect(results[0]!.ok).toBe(false);
+    expect(results[0]!.message).toContain('unexpected error');
   });
 });
 
