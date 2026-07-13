@@ -161,11 +161,95 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     expect(html.toLowerCase()).not.toContain('astramem_dash');
   });
 
-  it('keeps zero-JS, no external assets, and the <meta refresh> poll', () => {
+  it('stays zero-JS except the one deliberate copy-to-clipboard script, no external assets, keeps <meta refresh>', () => {
     const html = renderDashboard(baseData(), config);
-    expect(html.toLowerCase()).not.toContain('<script');
+    // Exactly one inline <script> — the copy-to-clipboard exception — not
+    // scattered inline onclick handlers or a second script block.
+    const scriptMatches = html.match(/<script[\s>]/g) ?? [];
+    expect(scriptMatches.length).toBe(1);
+    expect(html).toContain('navigator.clipboard.writeText');
+    // No external script src, no CDN, no eval — the exception stays a tiny
+    // self-contained block.
+    expect(html).not.toMatch(/<script[^>]+src=/i);
+    expect(html).not.toContain('eval(');
+    expect(html).not.toMatch(/onclick=/i);
     expect(html).toContain('<meta http-equiv="refresh" content="5">');
     expect(html).not.toMatch(/https?:\/\//);
+  });
+
+  // Operator request: INFO column truncation gave no way to read or copy the
+  // full memory/error text (screenshot in the originating handoff).
+  describe('expandable INFO cell (full text + copy)', () => {
+    it('renders the full, untruncated memory text in the DOM even though the visible summary is still short', () => {
+      const longText = 'A review was sent to team-lead with a PASS summary for `.claude/artifacts/crew/reviews/some-long-review-file-name-that-would-normally-be-truncated.md` and other details that go on for a while.';
+      const html = renderDashboard(baseData({
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: longText, importance: 0.5, confidence: 0.5,
+          session_id: null, created_at: Date.now(),
+        }],
+      }), config);
+      // Full text appears verbatim (HTML-escaped) inside a <pre>, not just
+      // the truncated preview.
+      expect(html).toContain('<pre class="full-text">');
+      expect(html).toContain(longText);
+      expect(html).toContain('<details>');
+      expect(html).toContain('<summary class="trunc">');
+    });
+
+    it('escapes <, &, ", and backticks in memory text in both the preview and the full text', () => {
+      const nasty = 'a <script>alert("x")</script> & `backtick` "quoted" text';
+      const html = renderDashboard(baseData({
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: nasty, importance: 0.5, confidence: 0.5,
+          session_id: null, created_at: Date.now(),
+        }],
+      }), config);
+      expect(html).toContain('&lt;script&gt;');
+      expect(html).toContain('&amp;');
+      expect(html).toContain('&quot;quoted&quot;');
+      // Backticks need no HTML escaping to be safe (they're not HTML-special),
+      // but the raw nasty payload must never appear as an executable <script>
+      // tag distinct from the one fixed copy-to-clipboard block.
+      expect(html).toContain('`backtick`');
+      const scriptTags = html.match(/<script[\s>]/g) ?? [];
+      expect(scriptTags.length).toBe(1);
+      expect(html).not.toContain('<script>alert("x")</script>');
+    });
+
+    it('escapes <, &, ", and backticks in job error text the same way', () => {
+      const nasty = 'timeout on <tag> & "quoted" `backtick`';
+      const html = renderDashboard(baseData({
+        recentFailedJobs: [
+          { id: 'j1', kind: 'distill', state: 'poison', last_error: nasty, updated_at: Date.now() },
+        ],
+      }), config);
+      expect(html).toContain('&lt;tag&gt;');
+      expect(html).toContain('&amp;');
+      expect(html).toContain('&quot;quoted&quot;');
+      expect(html).toContain('`backtick`');
+    });
+
+    it('renders one copy button per expandable row, each reading its sibling <pre> rather than an embedded JS string', () => {
+      const html = renderDashboard(baseData({
+        recentMemories: [
+          { id: 'm1', type: 'fact', text: 'first memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now() },
+          { id: 'm2', type: 'fact', text: 'second memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now() - 1000 },
+        ],
+      }), config);
+      const copyButtons = html.match(/class="copy-btn"/g) ?? [];
+      expect(copyButtons.length).toBe(2);
+      // Neither memory's text is templated into the script block itself —
+      // the button reads DOM content at click time instead.
+      const scriptBody = html.slice(html.indexOf('<script>'), html.indexOf('</script>'));
+      expect(scriptBody).not.toContain('first memory text');
+      expect(scriptBody).not.toContain('second memory text');
+      expect(scriptBody).toContain('previousElementSibling');
+    });
+
+    it('the INFO column is wider than before (readability requirement)', () => {
+      const html = renderDashboard(baseData(), config);
+      expect(html).toMatch(/\.trunc\{max-width:460px/);
+    });
   });
 
   it('renders the Mission Control nav tab row', () => {

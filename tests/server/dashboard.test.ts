@@ -110,9 +110,12 @@ describe('GET /dashboard', () => {
     expect(res.body).toContain('<title>');
   });
 
-  it('HTML contains no <script> tags', async () => {
+  it('HTML contains exactly one <script> tag — the deliberate copy-to-clipboard exception (see dashboard-html.ts header)', async () => {
     const res = await app.inject({ method: 'GET', url: '/dashboard', headers: AUTH });
-    expect(res.body.toLowerCase()).not.toContain('<script');
+    const scriptTags = res.body.match(/<script[\s>]/g) ?? [];
+    expect(scriptTags.length).toBe(1);
+    expect(res.body).toContain('navigator.clipboard.writeText');
+    expect(res.body).not.toMatch(/<script[^>]+src=/i);
   });
 
   it('cache-control is no-store', async () => {
