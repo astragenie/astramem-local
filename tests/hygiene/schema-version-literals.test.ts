@@ -179,7 +179,10 @@ function scanFile(absPath: string): Offense[] {
   const toBeRe = /\.(?:toBe|toHaveLength|toEqual|toStrictEqual)\(\s*(\d+)\s*\)/;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    // `!` is backed by the loop bound (`i < lines.length`) — not a silenced
+    // warning. Required under tsconfig's `noUncheckedIndexedAccess`, which
+    // types `lines[i]` as `string | undefined` regardless.
+    const line = lines[i]!;
 
     const declMatch = declEqRe.exec(line) ?? declColonRe.exec(line);
     if (declMatch && Number(declMatch[1]) === FORBIDDEN) {
