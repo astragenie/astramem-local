@@ -770,6 +770,74 @@ describe('extract stage', () => {
       expect(result.atoms[0].entities).toEqual([{ name: 'Go', kind: 'tech' }]);
     });
 
+    // The length floor was `< 2 -> too_short`, which silently destroyed "C" and
+    // "R" — real, commonly-referenced languages. The only test exercising the
+    // floor used the placeholder "x", which MASKED the gap: "x" is junk, so the
+    // test passed while the guard was eating real facts. A test written against
+    // a placeholder cannot catch a bug about real values.
+    it('keeps a SINGLE-CHARACTER tech name ("C") — a real language, not junk', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const legit = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'the parser was originally written in C',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [{ name: 'C', kind: 'tech' }],
+          },
+        ],
+      });
+      const result = await extractChunk(0, 'chunk text', makeMockLLM([legit]), budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([{ name: 'C', kind: 'tech' }]);
+    });
+
+    it('keeps a SINGLE-CHARACTER tech name ("R") — the statistics language', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const legit = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'the analysis was done in R',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [{ name: 'R', kind: 'tech' }],
+          },
+        ],
+      });
+      const result = await extractChunk(0, 'chunk text', makeMockLLM([legit]), budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([{ name: 'R', kind: 'tech' }]);
+    });
+
+    // The junk actually observed in production: single letters tagged `repo`.
+    // A one-character REPO is not plausible; a one-character TECH is. Hence the
+    // guard is kind-aware rather than a flat length floor.
+    it('DROPS a single-character repo name ("a") — the actual junk seen in prod', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const budget = new BudgetTracker(db);
+      const junk = JSON.stringify({
+        atoms: [
+          {
+            type: 'fact',
+            text: 'some fact',
+            importance: 0.5,
+            confidence: 0.5,
+            entities: [{ name: 'a', kind: 'repo' }],
+          },
+        ],
+      });
+      const result = await extractChunk(0, 'chunk text', makeMockLLM([junk]), budget, 10.0);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0].entities).toEqual([]);
+    });
+
     it('keeps legitimate multi-char entity names unaffected ("Postgres", "astramem-local")', async () => {
       const db = openDb(':memory:');
       migrate(db);
