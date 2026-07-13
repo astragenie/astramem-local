@@ -92,12 +92,14 @@ export async function installServiceFlow(port: number, opts: InstallFlowOptions 
 
   const result = await adapter.install(taskExecPath, port);
 
-  // Hang-watchdog probe timer (FEAT-443 SLICE-2) — systemd/launchd only
-  // (hasWatchdogTimer duck-types the capability; win32's SchtasksAdapter and
-  // plain-object test mocks don't have it, so this is a silent no-op there).
-  // Registered unconditionally alongside the main unit/plist — unlike the
-  // backup timer (opt-in via --with-backup-timer), a hang-blind keepalive
-  // isn't optional. Best-effort: never fails the overall install.
+  // Hang-watchdog probe timer (FEAT-443 SLICE-2, extended to win32 by issue
+  // #206) — hasWatchdogTimer duck-types the capability; all three real
+  // adapters (systemd/launchd/schtasks) implement it, so only bare
+  // plain-object test mocks that omit the two extra methods skip this as a
+  // silent no-op. Registered unconditionally alongside the main unit/plist/
+  // task — unlike the backup timer (opt-in via --with-backup-timer), a
+  // hang-blind keepalive isn't optional. Best-effort: never fails the
+  // overall install.
   if (result.kind === 'task' && hasWatchdogTimer(adapter)) {
     try {
       await adapter.installWatchdogTimer(build.rawExecPath, WATCHDOG_PROBE_INTERVAL_SEC);

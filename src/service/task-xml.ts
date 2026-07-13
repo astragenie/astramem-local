@@ -23,6 +23,16 @@ export interface TaskXmlOpts {
   /** User id for the principal — DOMAIN\user or plain username. */
   userId: string;
   description?: string;
+  /**
+   * ISO-8601 duration for the LogonTrigger's Repetition Interval. Defaults
+   * to 'PT5M' (the daemon task's own keepalive tick). The hang-watchdog
+   * probe task (schtasks.ts's installWatchdogTimer, issue #206) reuses this
+   * exact same logon-trigger-with-repetition mechanism at
+   * WATCHDOG_PROBE_INTERVAL_SEC's cadence instead — same proven trigger
+   * shape (fires once at logon, then repeats indefinitely with no
+   * Duration), just a different command and interval.
+   */
+  repetitionIso?: string;
 }
 
 function xmlEscape(s: string): string {
@@ -66,7 +76,7 @@ export function buildTaskXml(opts: TaskXmlOpts): string {
       <Enabled>true</Enabled>
       <UserId>${xmlEscape(opts.userId)}</UserId>
       <Repetition>
-        <Interval>PT5M</Interval>
+        <Interval>${opts.repetitionIso ?? 'PT5M'}</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>
       </Repetition>
     </LogonTrigger>

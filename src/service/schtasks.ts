@@ -7,6 +7,7 @@ import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
 const TASK_NAME = 'AstraMemoryD';
 const BACKUP_TASK_NAME = 'AstraMemoryDBackup';
+const WATCHDOG_TASK_NAME = 'AstraMemoryDWatchdog';
 
 /** User-scope Startup folder. Files placed here auto-run at logon — no admin. */
 function startupDir(): string {
@@ -278,6 +279,61 @@ export class SchtasksAdapter implements ServiceAdapter {
   async uninstallBackupTimer(): Promise<void> {
     try {
       await runCmd(`schtasks /delete /tn "${BACKUP_TASK_NAME}" /f`);
+    } catch {
+      // Task may not exist — ignore
+    }
+  }
+
+  /**
+   * Hang-watchdog probe task (issue #206, mirroring FEAT-443 SLICE-2's
+   * systemd/launchd timer — see watchdog-probe.ts's header for why the
+   * PT5M keepalive alone can never catch a wedged-but-lock-holding daemon).
+   * Registers a SECOND scheduled task that runs
+   * `<execCmd> service watchdog-probe` on its own repeating cadence,
+   * independent of the daemon task's own PT5M keepalive tick.
+   *
+   * XML-first, same reason as install()/installBackupTimer(): a current-user
+   * XML registration installs without elevation on boxes where the CLI
+   * `/create` form gets "Access is denied". Reuses buildTaskXml's proven
+   * logon-trigger-with-repetition shape (task-xml.ts) at `intervalSec`'s
+   * cadence instead of the daemon task's fixed PT5M.
+   */
+  async installWatchdogTimer(execPath: string, intervalSec: number): Promise<void> {
+    try {
+      const userId = await resolveUserId();
+      const { command, args } = splitCommand(execPath);
+      const xml = buildTaskXml({
+        command,
+        args: [args, 'service watchdog-probe'].filter(Boolean).join(' '),
+        userId,
+        description: 'AstraMemory hang-watchdog probe. Managed by astramem-local reinstall / service install.',
+        repetitionIso: `PT${intervalSec}S`,
+      });
+      const xmlPath = join(tmpdir(), 'AstraMemoryDWatchdog.xml');
+      const bom = Buffer.from([0xff, 0xfe]);
+      writeFileSync(xmlPath, Buffer.concat([bom, Buffer.from(xml, 'utf16le')]));
+      await runCmd(`schtasks /create /tn "${WATCHDOG_TASK_NAME}" /xml "${xmlPath}" /f`);
+      return;
+    } catch {
+      // Fall through to a legacy CLI form. Unlike the daemon/backup tasks,
+      // there's no logon-trigger-with-repetition equivalent in the CLI
+      // grammar — /sc MINUTE /mo <n> is the native CLI schedule type for
+      // "repeat forever every N minutes", so use that instead of trying to
+      // hack together an onlogon+repetition approximation. MINUTE only
+      // takes whole minutes, so sub-minute intervalSec values round up to 1.
+    }
+    const minutes = Math.max(1, Math.round(intervalSec / 60));
+    const tr = quoteForSchtasks(`${execPath} service watchdog-probe`);
+    const user = process.env['USERNAME'] ?? '';
+    const ruFlag = user ? `/RU "${user}" /IT` : '';
+    const cmd = `schtasks /create /sc MINUTE /mo ${minutes} /tn "${WATCHDOG_TASK_NAME}" /tr ${tr} ${ruFlag} /RL LIMITED /f`;
+    await runCmd(cmd);
+  }
+
+  /** Idempotent — no-op if the watchdog task was never installed. */
+  async uninstallWatchdogTimer(): Promise<void> {
+    try {
+      await runCmd(`schtasks /delete /tn "${WATCHDOG_TASK_NAME}" /f`);
     } catch {
       // Task may not exist — ignore
     }

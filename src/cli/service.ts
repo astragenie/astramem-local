@@ -121,11 +121,13 @@ export async function serviceCommand(args: string[]): Promise<void> {
 
     case 'watchdog-probe': {
       // astramem-local service watchdog-probe — invoked unattended by the
-      // systemd timer / launchd StartInterval agent installed alongside the
-      // main service (FEAT-443 SLICE-2, install-flow.ts). Never exits
-      // non-zero on an unhealthy probe: this runs on a schedule with no one
-      // watching in real time, and the recovery action (or its failure) is
-      // reported on stdout for the unit's own journal/log, not via exit code.
+      // systemd timer / launchd StartInterval agent / Windows
+      // AstraMemoryDWatchdog scheduled task installed alongside the main
+      // service (FEAT-443 SLICE-2; win32 added by issue #206,
+      // install-flow.ts). Never exits non-zero on an unhealthy probe: this
+      // runs on a schedule with no one watching in real time, and the
+      // recovery action (or its failure) is reported on stdout for the
+      // unit's/task's own log, not via exit code.
       const portArg = parseArg(rest, '--port');
       const { port, dataDir } = resolveRuntimeConfig({ port: portArg ? Number(portArg) : undefined });
       const result = await runWatchdogProbe({ port, dataDir, adapter });
@@ -149,11 +151,12 @@ Subcommands:
   stop                 Stop service via OS init
   status               Show service status
   watchdog-probe [--port N]
-                       Hang-detection probe (FEAT-443 SLICE-2, systemd/launchd
-                       only) — hits /health and force-restarts the daemon if
-                       unresponsive. Installed as a recurring timer/agent
-                       automatically by 'install'; not meant to be run
-                       interactively, but safe to invoke by hand.`);
+                       Hang-detection probe (FEAT-443 SLICE-2 + issue #206;
+                       systemd/launchd/schtasks) — hits /health and, after N
+                       consecutive failures, force-restarts the daemon if
+                       still unresponsive. Installed as a recurring
+                       timer/agent/task automatically by 'install'; not meant
+                       to be run interactively, but safe to invoke by hand.`);
       break;
 
     default:

@@ -157,14 +157,31 @@ describe('installServiceFlow — cross-platform shim unification (FEAT-443 SLICE
     expect(installWatchdogTimer).toHaveBeenCalledWith(outcome.build.rawExecPath, WATCHDOG_PROBE_INTERVAL_SEC);
   });
 
-  it('skips the watchdog timer silently when the adapter lacks it (plain mock, e.g. win32 today)', async () => {
+  it('skips the watchdog timer silently when the adapter lacks it (bare plain-object mock)', async () => {
     // makeMockAdapter() deliberately does NOT implement installWatchdogTimer —
-    // this must not throw or otherwise affect the install outcome.
+    // this must not throw or otherwise affect the install outcome. The real
+    // win32 SchtasksAdapter DOES implement it as of issue #206 (see the
+    // real-adapter test below); this test only exercises the duck-typing
+    // guard's degrade-safely path for a bare mock missing the two methods.
     const adapter = makeMockAdapter('win32');
     vi.doMock('../../src/service/index.js', () => ({ getServiceAdapter: () => adapter }));
     const { installServiceFlow } = await import('../../src/service/install-flow.js');
 
     await expect(installServiceFlow(7777, { entryJsOverride: fixtureEntry })).resolves.toBeDefined();
+  });
+
+  it('win32: registers the hang-watchdog probe timer via the real SchtasksAdapter (issue #206)', async () => {
+    const { SchtasksAdapter } = await import('../../src/service/schtasks.js');
+    const adapter = new SchtasksAdapter();
+    const installWatchdogTimerSpy = vi.spyOn(adapter, 'installWatchdogTimer').mockResolvedValue(undefined);
+    vi.spyOn(adapter, 'install').mockResolvedValue({ kind: 'task' });
+    vi.doMock('../../src/service/index.js', () => ({ getServiceAdapter: () => adapter }));
+    const { installServiceFlow } = await import('../../src/service/install-flow.js');
+    const { WATCHDOG_PROBE_INTERVAL_SEC } = await import('../../src/service/watchdog-probe.js');
+
+    const outcome = await installServiceFlow(7777, { entryJsOverride: fixtureEntry });
+
+    expect(installWatchdogTimerSpy).toHaveBeenCalledWith(outcome.build.rawExecPath, WATCHDOG_PROBE_INTERVAL_SEC);
   });
 
   it('does not register the watchdog timer when install fell back to the Startup shortcut', async () => {

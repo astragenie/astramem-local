@@ -77,17 +77,25 @@ on linux/darwin exactly like it does on win32 (SLICE-1).
 daemon process actually exits — a daemon that's alive but wedged (blocked
 event loop, deadlocked native call) keeps holding `daemon.lock` and answering
 nothing, and neither mechanism ever notices (same blind spot Windows' PT5M
-keepalive has always had). SLICE-2 closes this for linux/darwin with a
-separate recurring hang-watchdog probe (systemd `OnUnitActiveSec` timer /
-launchd `StartInterval` agent, installed automatically alongside the main
-service — not opt-in) that hits `/health` every 3 minutes and, on failure,
-kills whatever actually holds `daemon.lock` and restarts via the adapter —
-see `src/service/watchdog-probe.ts` for why this shells out to a probe+kill
-cycle instead of genuine `sd_notify`/`WatchdogSec` (Node has no built-in Unix
-datagram socket support). Invoke by hand with
-`astramem-local service watchdog-probe`; remove with `service uninstall`.
-Windows is out of scope here — its PT5M keepalive has the same hang blind
-spot, unaddressed by this FEAT.
+keepalive has always had — a healthy-looking re-run only checks that the
+lock is HELD, not that the holder is responsive, so it restarts a *dead*
+daemon but can never restart a *hung* one). SLICE-2 closes this for
+linux/darwin with a separate recurring hang-watchdog probe (systemd
+`OnUnitActiveSec` timer / launchd `StartInterval` agent, installed
+automatically alongside the main service — not opt-in) that hits `/health`
+every 3 minutes and, after 2 consecutive failures (not one flaky probe —
+see `DEFAULT_FAILURE_THRESHOLD` in `src/service/watchdog-probe.ts`), kills
+whatever actually holds `daemon.lock` and restarts via the adapter — see
+that file for why this shells out to a probe+kill cycle instead of genuine
+`sd_notify`/`WatchdogSec` (Node has no built-in Unix datagram socket
+support). Invoke by hand with `astramem-local service watchdog-probe`;
+remove with `service uninstall`.
+**Windows parity (issue #206, 2026-07-13):** the same probe now also runs
+on win32 as a second scheduled task (`AstraMemoryDWatchdog`, `schtasks.ts`'s
+`installWatchdogTimer`) registered automatically by `install-flow.ts`
+alongside the main `AstraMemoryD` task — closing the exact gap that bit in
+production: a wedged-but-lock-holding daemon that the PT5M keepalive alone
+could never recover, only a human noticing and killing the PID by hand.
 
 **Package name: `astramem-local` on npmjs** — first published 2026-07-08 as v0.9.0
 (this repo, SQLCipher-capable). The OLD stale 0.4.0 lives under the scoped name
