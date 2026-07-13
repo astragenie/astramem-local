@@ -25,6 +25,7 @@ import { mapWithConcurrency } from '../concurrency.js';
 import { chunkCheckpoints } from '../chunk-checkpoint.js';
 import { normalizeEntityName } from '../../entity/normalize.js';
 import { childLogger } from '../../log/logger.js';
+import { groundRelativeDates } from '../temporal-grounding.js';
 
 export type { ExtractProfile };
 
@@ -136,7 +137,7 @@ export async function extractChunk(
   if (parsed !== null) {
     return {
       chunkIndex,
-      atoms: parsed.atoms,
+      atoms: groundAtomDates(parsed.atoms, sessionDateIso),
       usageUsd: result.usageUsd,
       retried: false,
       relationDropCounts: parsed.relationDropCounts,
@@ -424,6 +425,24 @@ function filterAtomRelations(raw: unknown, dropCounts: Record<string, number>): 
   });
 
   return { ...atom, relations };
+}
+
+/**
+ * Deterministic backstop for the prompt's own "Date grounding" rule (WS1,
+ * 2026-07-13 — see temporal-grounding.ts's header for the full diagnosis and
+ * why a prompt-only fix (already shipped, see sessionDateIso threading
+ * throughout this file) is not sufficient on its own). Rewrites recognized
+ * relative-date expressions in each atom's `text` field in place; every
+ * other atom field (including `evidence`, which must stay a verbatim quote)
+ * is untouched. A no-op (byte-identical atoms returned) when `sessionDateIso`
+ * is undefined — every caller without a real anchor sees no change.
+ */
+function groundAtomDates(atoms: Atom[], sessionDateIso: string | undefined): Atom[] {
+  if (!sessionDateIso) return atoms;
+  return atoms.map((atom) => {
+    const { text } = groundRelativeDates(atom.text, sessionDateIso);
+    return text === atom.text ? atom : { ...atom, text };
+  });
 }
 
 /**

@@ -1438,3 +1438,112 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     }
   });
 });
+
+describe('deterministic date-grounding backstop (WS1, 2026-07-13)', () => {
+  /**
+   * Unlike makeDateGroundingLLM above (which plays a model that already
+   * follows the date-grounding instruction correctly), this mock plays the
+   * REAL observed failure mode: a model that returns otherwise-valid JSON
+   * but ignores the "resolve the relative date into text" instruction and
+   * emits the relative phrase verbatim — exactly what a real LoCoMo run's
+   * memory rows showed (qwen3:8b, conversational profile; see
+   * temporal-grounding.ts's header for the diagnosis). extractChunk must
+   * still return a grounded atom, because 05-extract.ts now applies
+   * groundRelativeDates as a deterministic backstop AFTER parsing, not
+   * only via the prompt.
+   */
+  function makeNonCompliantLLM(atomText: string): LLMProvider {
+    return {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        return {
+          text: JSON.stringify({ atoms: [{ type: 'fact', text: atomText, importance: 0.5, confidence: 0.8 }] }),
+          usage: { in: 100, out: 50, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+  }
+
+  it('grounds "yesterday" even when the model ignores the prompt instruction and emits it verbatim', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeNonCompliantLLM(
+      'Caroline attended an LGBTQ support group yesterday, which she found meaningful.',
+    );
+
+    const result = await extractChunk(
+      0, 'Caroline went to a support group yesterday.', llm, budget, 10.0, 'conversational', '2023-05-15',
+    );
+
+    expect(result.atoms).toHaveLength(1);
+    expect(result.atoms[0]!.text).toBe(
+      'Caroline attended an LGBTQ support group 14 May 2023, which she found meaningful.',
+    );
+  });
+
+  it('grounds "last year" to a bare numeral year, matching LoCoMo gold answer format', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeNonCompliantLLM('Melanie shared a painting of a sunset, which she painted last year.');
+
+    const result = await extractChunk(
+      0, 'Melanie painted it last year.', llm, budget, 10.0, 'conversational', '2023-05-15',
+    );
+
+    expect(result.atoms[0]!.text).toBe('Melanie shared a painting of a sunset, which she painted 2022.');
+  });
+
+  it('does not touch evidence — only atom.text is grounded, verbatim quotes stay verbatim', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        return {
+          text: JSON.stringify({
+            atoms: [{
+              type: 'fact',
+              text: 'Caroline attended a support group yesterday.',
+              importance: 0.5,
+              confidence: 0.8,
+              evidence: 'I went to the support group yesterday',
+            }],
+          }),
+          usage: { in: 100, out: 50, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+
+    const result = await extractChunk(
+      0, 'chunk', llm, budget, 10.0, 'conversational', '2023-05-15',
+    );
+
+    expect(result.atoms[0]!.text).toBe('Caroline attended a support group 14 May 2023.');
+    expect(result.atoms[0]!.evidence).toBe('I went to the support group yesterday');
+  });
+
+  it('leaves text unchanged (no hallucinated date) when the model is non-compliant AND no sessionDateIso is available', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeNonCompliantLLM('Caroline attended a support group yesterday.');
+
+    const result = await extractChunk(
+      0, 'chunk', llm, budget, 10.0, 'conversational',
+      // sessionDateIso omitted
+    );
+
+    expect(result.atoms[0]!.text).toBe('Caroline attended a support group yesterday.');
+  });
+});
