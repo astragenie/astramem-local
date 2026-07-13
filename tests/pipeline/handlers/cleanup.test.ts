@@ -157,4 +157,53 @@ describe('cleanupHandler', () => {
       expect(keys).not.toContain('eight-days-old');
     });
   });
+
+  // Issue #209: the durable safety net behind the write-time retry-job
+  // enqueue — every memory still flagged needs_vec_index gets a `reembed`
+  // job on this same 24h tick (ADR-015 §4: reuse the existing cadence
+  // rather than a new timer).
+  describe('vec-index sweep (issue #209)', () => {
+    function insertMemory(db: DB, id: string, needsVecIndex: boolean): void {
+      const now = Date.now();
+      db.prepare(`
+        INSERT INTO memories
+          (id, type, text, normalized_text, hash, importance, confidence,
+           created_at, updated_at, valid_from, scope, needs_vec_index)
+        VALUES (?, 'fact', 'x', 'x', ?, 0.5, 0.5, ?, ?, ?, 'private', ?)
+      `).run(id, id, now, now, now, needsVecIndex ? 1 : 0);
+    }
+
+    it('enqueues a reembed job for every needs_vec_index=1 memory', async () => {
+      insertMemory(db, 'mem-flagged-1', true);
+      insertMemory(db, 'mem-flagged-2', true);
+      insertMemory(db, 'mem-not-flagged', false);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const jobs = db.prepare("SELECT payload_json FROM jobs WHERE kind = 'reembed'").all() as { payload_json: string }[];
+      const enqueuedIds = jobs.map(j => (JSON.parse(j.payload_json) as { memory_id: string }).memory_id).sort();
+      expect(enqueuedIds).toEqual(['mem-flagged-1', 'mem-flagged-2']);
+    });
+
+    it('does not enqueue anything when no memory is flagged', async () => {
+      insertMemory(db, 'mem-clean-1', false);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const count = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'reembed'").get() as { n: number }).n;
+      expect(count).toBe(0);
+    });
+
+    it('caps the sweep at VEC_INDEX_SWEEP_LIMIT (500) per pass', async () => {
+      for (let i = 0; i < 501; i++) insertMemory(db, `mem-bulk-${i}`, true);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const count = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'reembed'").get() as { n: number }).n;
+      expect(count).toBe(500);
+    });
+  });
 });

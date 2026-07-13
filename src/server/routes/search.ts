@@ -27,6 +27,7 @@ import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { recordRecallServed } from '../../storage/usefulness.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
+import { JobRepo } from '../../pipeline/job-repo.js';
 import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
 import { resolveRerankOpts } from '../../search/rerank.js';
 import { resolveDecomposeOpts } from '../../search/decompose.js';
@@ -300,9 +301,12 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       // Embed + upsert into vec store. Non-fatal: the memory itself is
       // already durably saved above (FTS still works), but a caller that
       // gets back `ok: true` unconditionally would have no way to know the
-      // memory is vector-search-blind until an operator manually runs
-      // `rebuild`/`reembed-dim` — see `vec_indexed` below, which makes that
-      // degraded state visible instead of silently swallowing it.
+      // memory is vector-search-blind — `vec_indexed` below surfaces the
+      // degraded state to THIS caller. Issue #209: that response field used
+      // to be the only record of the failure — nothing durable, nothing
+      // retried. Now a failure also marks needs_vec_index on the row and
+      // enqueues a `reembed` job, so the memory self-heals via the worker
+      // instead of waiting on an operator to notice and run `rebuild`.
       let vecIndexed = true;
       try {
         const vecs = await embed.embed([text]);
@@ -311,7 +315,16 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         await vecStore.upsert(id, vecs[0]);
       } catch (err) {
         vecIndexed = false;
-        childLogger({}).warn({ error_message: err instanceof Error ? err.message : String(err), id }, 'remember: embed/vec upsert failed — memory saved but NOT vector-indexed; run `astramem-local rebuild` to backfill');
+        repo.markNeedsVecIndex(id);
+        try {
+          new JobRepo(db).enqueue('reembed', { kind: 'reembed', memory_id: id });
+        } catch (enqueueErr) {
+          childLogger({}).warn(
+            { error_message: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr), id },
+            'remember: retry-job enqueue failed after vec upsert failure — needs_vec_index still set, cleanup sweep will catch it',
+          );
+        }
+        childLogger({}).warn({ error_message: err instanceof Error ? err.message : String(err), id }, 'remember: embed/vec upsert failed — memory saved but NOT vector-indexed; needs_vec_index set, reembed job enqueued');
       }
 
       return vecIndexed ? { id, ok: true } : { id, ok: true, vec_indexed: false };

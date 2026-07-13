@@ -96,12 +96,13 @@ export interface InsertInput {
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
- *  string[] | null in get()); archived/validity_extracted are stored as
- *  SQLite INTEGER 0/1 (hydrated to boolean). */
-type MemoryRow = Omit<Memory, 'derived_from' | 'archived' | 'validity_extracted'> & {
+ *  string[] | null in get()); archived/validity_extracted/needs_vec_index
+ *  are stored as SQLite INTEGER 0/1 (hydrated to boolean). */
+type MemoryRow = Omit<Memory, 'derived_from' | 'archived' | 'validity_extracted' | 'needs_vec_index'> & {
   derived_from: string | null;
   archived: number;
   validity_extracted: number;
+  needs_vec_index: number;
 };
 
 export interface FtsHit {
@@ -200,7 +201,41 @@ export class MemoryRepo {
       derived_from: row.derived_from ? (JSON.parse(row.derived_from) as string[]) : null,
       archived: row.archived === 1,
       validity_extracted: row.validity_extracted === 1,
+      needs_vec_index: row.needs_vec_index === 1,
     };
+  }
+
+  /**
+   * Issue #209: durably mark a memory as vector-search-blind after its vec
+   * upsert failed. Called from the write-time catch sites (08-embed-index,
+   * POST /remember, MCP remember) instead of letting the failure live only
+   * in an ephemeral response field. Idempotent (repeat failures are a no-op
+   * past the first).
+   */
+  markNeedsVecIndex(id: string): void {
+    this.db.prepare('UPDATE memories SET needs_vec_index = 1 WHERE id = ?').run(id);
+  }
+
+  /**
+   * Issue #209: clear the retry marker once a vec upsert for this memory
+   * succeeds (inline or via the `reembed` retry drain). Idempotent — a row
+   * that was never flagged is unaffected.
+   */
+  clearNeedsVecIndex(id: string): void {
+    this.db.prepare('UPDATE memories SET needs_vec_index = 0 WHERE id = ?').run(id);
+  }
+
+  /**
+   * Issue #209: memory ids currently flagged `needs_vec_index = 1`, oldest
+   * first. Used by the `cleanup` job's 24h sweep to enqueue a `reembed` job
+   * for any row whose write-time retry-enqueue didn't happen or didn't
+   * stick — the durable safety net behind the immediate enqueue.
+   */
+  listNeedingVecIndex(limit: number): string[] {
+    const rows = this.db.prepare(
+      'SELECT id FROM memories WHERE needs_vec_index = 1 ORDER BY updated_at ASC LIMIT ?',
+    ).all(limit) as { id: string }[];
+    return rows.map(r => r.id);
   }
 
   searchFts(query: string, limit: number): FtsHit[] {
