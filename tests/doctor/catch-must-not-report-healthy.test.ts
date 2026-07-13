@@ -43,12 +43,28 @@ import { dirname, join } from 'node:path';
 // only the shim would silently stop finding any of them (exactly the
 // "scanner silently matching nothing" failure the first test below guards
 // against), so this scans every source file in the split directory instead.
-const CHECKS_DIR = join(dirname(fileURLToPath(import.meta.url)), '../../src/doctor/checks');
+const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../..');
+const CHECKS_DIR = join(REPO_ROOT, 'src/doctor/checks');
+
+// checks/ is not the only place `Check` literals get constructed. #232's
+// tier audit confirmed these three files are the complete remainder:
+// gpu-checks.ts and hardening-checks.ts are sibling registries to checks/
+// (their own `Check[]` factories, just not folded into coreChecks() yet),
+// and cli/providers.ts builds ad-hoc Check literals inline for the
+// `providers` CLI command's live probes. A catch block reporting `ok: true`
+// in any of them is exactly as capable of lying about health as one inside
+// checks/ — scoping this scanner to checks/ alone would have missed them.
+const EXTRA_FILES = [
+  join(REPO_ROOT, 'src/doctor/gpu-checks.ts'),
+  join(REPO_ROOT, 'src/doctor/hardening-checks.ts'),
+  join(REPO_ROOT, 'src/cli/providers.ts'),
+];
 
 function checkFiles(): string[] {
-  return readdirSync(CHECKS_DIR)
+  const splitDir = readdirSync(CHECKS_DIR)
     .filter(f => f.endsWith('.ts'))
     .map(f => join(CHECKS_DIR, f));
+  return [...splitDir, ...EXTRA_FILES];
 }
 
 /** Extract the body of every `catch (...) { ... }` block, brace-matched. */

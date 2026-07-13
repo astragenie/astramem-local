@@ -58,7 +58,9 @@ function checkPendingProposals(openDbReadonly: () => Promise<DB>): Check {
           fix: "Review with 'astramem-local consolidate proposals' then accept/reject",
         };
       } catch (err) {
-        return { ok: true, message: `proposal check skipped: ${err instanceof Error ? err.message : String(err)}` };
+        // The query itself failed — did NOT verify there are no pending
+        // proposals, so it must not render/count as if it had.
+        return { ok: true, inconclusive: true, message: `proposal check failed to run (non-fatal): ${err instanceof Error ? err.message : String(err)}` };
       } finally {
         try { db?.close(); } catch { /* ignore */ }
       }
@@ -117,7 +119,10 @@ function checkServedVersion(port: number): Check {
         const res = await fetch(`http://127.0.0.1:${port}/version`, { signal: AbortSignal.timeout(2000) });
         body = (await res.json()) as { version?: string };
       } catch {
-        return { ok: true, message: 'daemon not reachable — version check skipped' };
+        // Cannot reach the daemon to ask its version — this did NOT verify
+        // the served version matches this build, so it must not render as
+        // a confirmed match.
+        return { ok: true, inconclusive: true, message: 'daemon not reachable — cannot verify served version matches this build' };
       }
       if (body.version === PKG_VERSION) {
         return { ok: true, message: `daemon serving v${body.version} (matches build)` };
@@ -184,7 +189,9 @@ function checkPoisonJobs(openDbReadonly: () => Promise<DB>): Check {
           fix: "Inspect with 'astramem-local queue'; purged automatically after 30 days",
         };
       } catch (err) {
-        return { ok: true, message: `poison check skipped: ${err instanceof Error ? err.message : String(err)}` };
+        // The query itself failed — did NOT verify there are no poisoned
+        // jobs, so it must not render/count as if it had.
+        return { ok: true, inconclusive: true, message: `poison check failed to run (non-fatal): ${err instanceof Error ? err.message : String(err)}` };
       } finally {
         try { db?.close(); } catch { /* ignore */ }
       }
