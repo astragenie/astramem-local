@@ -15,7 +15,7 @@
 
 import { cleanup } from './stages/01-cleanup.js';
 import { normalize } from './stages/02-normalize.js';
-import { chunk } from './stages/03-chunk.js';
+import { chunk, resolveMaxChunkChars } from './stages/03-chunk.js';
 import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
 import { extract, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
 import { reduce } from './stages/06-reduce.js';
@@ -24,6 +24,7 @@ import { memoryNormalize } from './stages/07-memory-normalize.js';
 import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
 import { resolveChunkConcurrency } from './concurrency.js';
+import { DistillCostCapTracker, resolveDistillCostCap } from './cost-cap.js';
 import { chunkCheckpoints } from './chunk-checkpoint.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
@@ -33,6 +34,7 @@ import { childLogger } from '../log/logger.js';
 import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
 import { recordEntityGuardDrops } from '../storage/entity-guard-log.js';
 import { recordEvidenceGuardDrops } from '../storage/evidence-guard-log.js';
+import { recordExtractionYield } from '../storage/extraction-yield-log.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
 
@@ -125,11 +127,26 @@ export async function runPipeline(
   pipeLog.info({ stage: 'normalize' }, 'stage complete');
 
   // Stage 3: Chunk
-  pipeLog.info({ stage: 'chunk' }, 'stage start');
-  const chunks = chunk(normalized);
+  // #273 (WS7): maxChunkChars resolved from config the same way stage 4/5's
+  // chunkConcurrency is below — falls back to defaultConfig() (byte-
+  // identical to pre-#273) when ctx.config is omitted.
+  const maxChunkChars = resolveMaxChunkChars(ctx.config ?? defaultConfig());
+  pipeLog.info({ stage: 'chunk', max_chunk_chars: maxChunkChars }, 'stage start');
+  const chunks = chunk(normalized, maxChunkChars);
   pipeLog.info({ stage: 'chunk', chunk_count: chunks.length }, 'stage complete');
 
   const budget = new BudgetTracker(ctx.db);
+
+  // Opt-in call-count/wall-clock cap on compact()+extract() LLM calls,
+  // combined, for THIS job — disabled by default (config.distill.costCap,
+  // see src/distill/cost-cap.ts's doc comment for why this is separate
+  // from BudgetTracker's dollar cap above). ONE tracker instance shared by
+  // both stages below so maxCallsPerJob bounds the two stages together, not
+  // independently.
+  const costCap = new DistillCostCapTracker(
+    resolveDistillCostCap(ctx.config ?? defaultConfig()),
+    (message) => pipeLog.warn({ stage: 'cost-cap' }, message),
+  );
 
   // FEAT-487: chunk-level fan-out width for stages 4/5, resolved once per
   // run from config (falls back to defaultConfig() when ctx.config is
@@ -161,7 +178,7 @@ export async function runPipeline(
   try {
     const compactResults = await compact(
       chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey,
-      { profile: resolvedExtractProfile, mode: compactionMode },
+      { profile: resolvedExtractProfile, mode: compactionMode, costCap },
     );
     compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
     pipeLog.info({ stage: 'compact', chunks_compacted: compactedChunks.length }, 'stage complete');
@@ -205,7 +222,7 @@ export async function runPipeline(
   pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile, chunk_concurrency: chunkConcurrency }, 'stage start');
   let extractResults;
   try {
-    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso);
+    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso, costCap);
     const atomsExtracted = extractResults.reduce((sum, r) => sum + r.atoms.length, 0);
     pipeLog.info({ stage: 'extract', atoms_extracted: atomsExtracted }, 'stage complete');
   } catch (err) {
@@ -298,6 +315,30 @@ export async function runPipeline(
 
   // Flatten all atoms
   const allAtoms = extractResults.flatMap(r => r.atoms);
+
+  // ADR-015 headline finding: a well-formed `{"atoms":[]}` extraction
+  // completes as SUCCESS at every other layer -- not the Zod gate, not the
+  // job queue, not the poison counter (which only increments on failure).
+  // A broken model and a genuinely empty transcript are indistinguishable
+  // anywhere else. Record chunks-in vs atoms-out for every run (including
+  // zero-atom ones -- that IS the signal) so the doctor "Extraction yield"
+  // canary can compute a zero-yield RATE over a recent window instead of
+  // an existence check. Same diagnostic-only posture as the relation/
+  // entity guard-drop writes immediately above: its own try/catch, never
+  // re-thrown, so a counter-write failure can never be mistaken for the
+  // extract stage itself failing.
+  try {
+    recordExtractionYield(ctx.db, {
+      sessionId: ctx.sessionId,
+      chunksIn: chunks.length,
+      atomsOut: allAtoms.length,
+    });
+  } catch (err) {
+    pipeLog.warn(
+      { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'extraction-yield counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
+    );
+  }
 
   // Stage 6: Reduce (merge by content hash)
   pipeLog.info({ stage: 'reduce', atoms_in: allAtoms.length }, 'stage start');

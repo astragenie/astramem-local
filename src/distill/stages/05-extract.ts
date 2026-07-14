@@ -25,6 +25,7 @@ import { mapWithConcurrency } from '../concurrency.js';
 import { chunkCheckpoints } from '../chunk-checkpoint.js';
 import { normalizeEntityName } from '../../entity/normalize.js';
 import { childLogger } from '../../log/logger.js';
+import type { DistillCostCapTracker } from '../cost-cap.js';
 
 export type { ExtractProfile };
 
@@ -128,8 +129,20 @@ export async function extractChunk(
    * caller that has no real anchor (legacy v0.0 envelopes, direct
    * `/remember` calls) sees no change. */
   sessionDateIso?: string,
+  /** Opt-in call-count/wall-clock cap (`config.distill.costCap`, see
+   *  `src/distill/cost-cap.ts`) — `undefined`/disabled is a pure no-op.
+   *  Shares the SAME tracker instance compactChunk() checks, so the budget
+   *  is one combined compact()+extract() total per job. Checked BEFORE the
+   *  LLM call; when it trips, this chunk contributes zero atoms (same
+   *  shape as the empty-text case above) and no `provider.chat()` call is
+   *  made. */
+  costCap?: DistillCostCapTracker,
 ): Promise<ExtractResult> {
   if (!text.trim()) {
+    return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {}, evidenceDropCounts: {} };
+  }
+
+  if (costCap?.shouldStop()) {
     return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {}, evidenceDropCounts: {} };
   }
 
@@ -140,6 +153,7 @@ export async function extractChunk(
   budget.assertCanSpend(estimateUsd, capUsd);
 
   const result = await callExtract(text, activePrompt, provider, sessionDateIso);
+  costCap?.recordCall();
   budget.record(result.usageUsd);
 
   const parsed = tryParseAtoms(result.text);
@@ -586,10 +600,14 @@ export async function extract(
   concurrency = 1,
   jobKey?: string,
   sessionDateIso?: string,
+  /** Opt-in call-count/wall-clock cap — see `extractChunk`'s param doc and
+   *  `src/distill/cost-cap.ts`. Pass the SAME tracker instance given to
+   *  compact() so the two stages share one per-job budget. */
+  costCap?: DistillCostCapTracker,
 ): Promise<ExtractResult[]> {
   if (!jobKey) {
     return mapWithConcurrency(chunks, concurrency, (chk) =>
-      extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso),
+      extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso, costCap),
     );
   }
 
@@ -607,7 +625,7 @@ export async function extract(
   }
 
   const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
-    const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso);
+    const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso, costCap);
     chunkCheckpoints.set(jobKey, 'extract', chk.index, result, extractProfile);
     return result;
   });

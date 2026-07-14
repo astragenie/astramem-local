@@ -96,14 +96,17 @@ import { checkRedaction } from './redaction.js';
 import { checkEncryption } from './encryption.js';
 import { checkBearerLocation } from './bearer-location.js';
 import { checkSyncTokenLocation } from './sync-token-location.js';
+import { checkSyncExperimentalGate } from './sync-experimental-gate.js';
 import { checkUsefulness } from './usefulness.js';
 import { checkUsefulnessFeedbackLoop } from './usefulness-feedback-loop.js';
 import { checkMemoryHealth } from './memory-health.js';
 import { checkDurabilityGateMode } from './durability-gate-mode.js';
 import { checkExtractProfile } from './extract-profile.js';
+import { checkDistillCostCap } from './distill-cost-cap.js';
 import { checkEntityRelations } from './entity-relations.js';
 import { checkEvidenceProvenance } from './evidence-provenance.js';
 import { checkTranscriptSessionProvenance } from './transcript-session-provenance.js';
+import { checkExtractionYield } from './extraction-yield.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
 import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
 import { checkEntityLinkRate } from './entity-link-rate.js';
@@ -116,9 +119,11 @@ import { checkDevNoAuth } from './dev-no-auth.js';
 import { checkSpoolQuarantine } from './spool-quarantine.js';
 import { checkLLMChat } from './llm-chat.js';
 import { checkEmbed } from './embed.js';
+import { checkEmbedCacheHitRate } from './embed-cache.js';
 import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-supplementary.js';
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
+import { checkMemorySentinel } from './memory-sentinel.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -174,24 +179,35 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkEncryption(dataDir, encryptionEnabled),
     checkBearerLocation(),
     checkSyncTokenLocation(),
+    checkSyncExperimentalGate(opts.syncEnabled ?? false, opts.syncExperimental ?? false),
     checkUsefulness(dataDir, encryptionEnabled),
     checkUsefulnessFeedbackLoop(dataDir, encryptionEnabled),
     checkMemoryHealth(dataDir, encryptionEnabled),
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkExtractProfile(opts.extractProfile ?? 'engineering'),
+    checkDistillCostCap(opts.distillCostCap),
     checkEntityRelations(dataDir, opts.extractProfile ?? 'engineering', encryptionEnabled),
     checkEvidenceProvenance(dataDir, encryptionEnabled),
     checkTranscriptSessionProvenance(dataDir, encryptionEnabled),
+    checkExtractionYield(dataDir, encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
     checkAtomValidityExtraction(dataDir, encryptionEnabled),
     checkEntityLinkRate(dataDir, encryptionEnabled),
     checkVecIndex(dataDir, encryptionEnabled),
     checkConsolidationJudgeTelemetry(dataDir, encryptionEnabled),
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
-    checkProxyCapture(dataDir, opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false, encryptionEnabled),
+    checkProxyCapture(
+      dataDir,
+      opts.proxyEnabled ?? false,
+      opts.proxyExperimental ?? false,
+      opts.proxyCaptureEnabled ?? false,
+      encryptionEnabled,
+    ),
     checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),
     checkDevNoAuth(opts.devNoAuthActive ?? false),
     checkSpoolQuarantine(dataDir),
+    checkEmbedCacheHitRate(dataDir, encryptionEnabled),
+    checkMemorySentinel(),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

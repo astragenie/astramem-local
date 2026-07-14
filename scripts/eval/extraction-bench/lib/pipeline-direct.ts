@@ -35,7 +35,7 @@ import { redactIfEnabled } from '../../../../src/redact/index.js';
 import { flattenTranscriptContent } from '../../../../src/distill/flatten-turns.js';
 import { cleanup } from '../../../../src/distill/stages/01-cleanup.js';
 import { normalize } from '../../../../src/distill/stages/02-normalize.js';
-import { chunk } from '../../../../src/distill/stages/03-chunk.js';
+import { chunk, resolveMaxChunkChars } from '../../../../src/distill/stages/03-chunk.js';
 import { compact } from '../../../../src/distill/stages/04-compact.js';
 import { extract } from '../../../../src/distill/stages/05-extract.js';
 import { reduce } from '../../../../src/distill/stages/06-reduce.js';
@@ -113,7 +113,10 @@ export async function runDirectPipeline(
 
   const cleaned = cleanup(transcriptText);
   const normalized = normalize(cleaned);
-  const chunks = chunk(normalized);
+  // #273 (WS7): resolved from opts.config.distill.maxChunkChars so a sweep
+  // caller can vary chunk size per run — falls back to the stage-3 default
+  // when the caller passes no override.
+  const chunks = chunk(normalized, resolveMaxChunkChars(config));
 
   const budgetDb = makeBudgetDb();
   try {

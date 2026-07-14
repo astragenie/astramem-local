@@ -164,10 +164,12 @@ export class OllamaLLMProvider implements LLMProvider {
     // defaultConfig() (src/config/config.ts) always supplies, so this only
     // fires for direct/ad-hoc instantiation with no model. Keep in sync with
     // that default by hand (no shared import between this provider and
-    // config/config.ts) — was 'qwen3:8b' until 2026-07-13, which doesn't fit
+    // config/config.ts) — was 'qwen3.5:4b' until 2026-07-14, retired for
+    // under-extracting atoms (see src/cli/init.ts's DEFAULT_OLLAMA_LLM_MODEL
+    // comment); before that 'qwen3:8b' until 2026-07-13, which doesn't fit
     // this hardware class's VRAM ceiling; see CLAUDE.md's "Ollama 8GB VRAM
     // ceiling" note.
-    this.model = config.model ?? 'qwen3.5:4b';
+    this.model = config.model ?? 'qwen2.5:7b';
     // Disable thinking by default for every known thinking model (see
     // OllamaLLMConfig.think and KNOWN_THINKING_MODEL_PREFIXES above) so
     // structured `format:json` extraction gets JSON in message.content instead

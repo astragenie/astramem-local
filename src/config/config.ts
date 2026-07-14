@@ -226,6 +226,17 @@ export interface Config {
     workspaceId: string | null;
     batchSize: number;
     intervalMs: number;
+    /** Hard gate on top of `enabled` (astramem-local, sync-experimental-gate
+     * slice): sync-to-astramem-cloud is currently broken (8868 events
+     * failing HTTP 400, not yet root-caused). `astramem-local pair` sets
+     * `enabled: true` in sync.json on a successful redeem — by itself that
+     * used to be enough to start shipping to the broken path. Both `enabled`
+     * (sync.json, pairing-owned) AND `experimental` (config.yaml, hand-edit
+     * only — `pair` never touches this field) must be true for the shipper
+     * to start. Default false so pairing alone can never ship broken data;
+     * see cli/serve.ts's shipper-start gate and shouldStartShipper() in
+     * sync/shipper.ts. */
+    experimental: boolean;
   };
   security: {
     redaction: {
@@ -480,6 +491,68 @@ export interface Config {
      *  behavior for anyone who needs it (e.g. a genuinely long engineering
      *  session with heavy repeated tool output, where compaction earns its keep). */
     compaction: 'auto' | 'always' | 'never';
+    /** #273 (WS7): stage 3's (`03-chunk.ts`) per-chunk character cap, as an
+     *  operator-facing knob instead of a hardcoded constant. Root-caused
+     *  finding: a long single chunk approaching the cap systematically loses
+     *  content from its first ~80% (recency bias) — measured on real
+     *  conv-26/conv-44 sessions, both flagged facts sat in turns the model
+     *  never attended to. Default 3200 matches stage 3's own
+     *  DEFAULT_MAX_CHUNK_CHARS. Clamped to [400, 8000] at resolution time
+     *  (`resolveMaxChunkChars`, `03-chunk.ts`) — a bad/hand-edited value
+     *  never blocks a run. Lowering this raises extraction-call count
+     *  roughly proportionally (halving the cap roughly doubles compact()/
+     *  extract() calls per session) — a real latency/cost tradeoff, not a
+     *  free win; see the #273 sweep evidence before changing the default. */
+    maxChunkChars: number;
+    /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
+     *  counted TOGETHER as one per-job budget — mirrors
+     *  `Config['consolidation']['contradictionDetection']`'s `maxPerRun`/
+     *  `maxWallClockMs` shape (see that field's doc comment for the full
+     *  rationale this one reuses verbatim).
+     *
+     *  WHY CALL-COUNT + WALL-CLOCK, NOT A DOLLAR CAP: codex-subscription (the
+     *  default compaction/extraction provider) is metered by ChatGPT
+     *  subscription quota, not per-token, and reports `usage.usd: 0` on
+     *  every call — exactly like `contradiction-judge.ts`'s doc comment
+     *  describes. `src/budget/tracker.ts`'s `BudgetTracker`/`BudgetExceeded`
+     *  already exists for a DOLLAR cap and stays in place unchanged (Ollama
+     *  pricing, Azure pricing); this is a SEPARATE, additional guard for the
+     *  usd-blind case, not a replacement.
+     *
+     *  Optional (unlike `contradictionDetection`, which is always present) —
+     *  `undefined` and `{ enabled: false }` are both treated as fully off by
+     *  `resolveDistillCostCap` (`src/distill/cost-cap.ts`).
+     *
+     *  **`enabled: false` is the shipped BETA default** (see `defaultConfig`
+     *  below) — BYTE-IDENTICAL to pre-this-field behavior: no call is
+     *  counted, no wall-clock timer is started, `compact()`/`extract()` never
+     *  skip a chunk. Unlike `contradictionDetection` (shipped `'enabled'`
+     *  after its own eval), this cap ships OFF because BYO-subscription
+     *  operators own their own quota — a default-on hard pause on the
+     *  hottest LLM paths in the pipeline (every distill job calls both
+     *  stages) would be friction, not safety, for the common case. Opt in
+     *  per-operator by setting `enabled: true` with `maxCallsPerJob` and/or
+     *  `maxWallClockMs`. */
+    costCap?: {
+      enabled: boolean;
+      /** Cap on compact()+extract() LLM calls combined, for a SINGLE
+       *  distill job (not a daily/global total — see `BudgetTracker` for
+       *  that). Once reached, `compactChunk`/`extractChunk` skip their LLM
+       *  call for every remaining chunk in the job — compact() falls
+       *  through to the pass-through-raw-chunk path it already has for a
+       *  skipped/empty result, extract() returns zero atoms for that chunk
+       *  (the same "fewer atoms is not an error" posture the rest of this
+       *  pipeline already tolerates, see `distill.compaction`'s doc comment)
+       *  — the job still completes rather than failing/pausing. Ignored
+       *  when omitted (no count cap, only wall-clock if set). */
+      maxCallsPerJob?: number;
+      /** Wall-clock cap (ms) on the SAME per-job sweep, measured from the
+       *  first compact()/extract() call — same rationale as
+       *  `contradictionDetection.maxWallClockMs`: call count alone doesn't
+       *  bound duration against a slow/rate-limited provider. Same graceful
+       *  fall-through as the count cap. Ignored when omitted. */
+      maxWallClockMs?: number;
+    };
   };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
@@ -555,6 +628,16 @@ export interface Config {
    *  only, always false and unread until then. */
   proxy: {
     enabled: boolean;
+    /** Release-scoped hard gate (release no-go): the LLM proxy relay is
+     *  EXPERIMENTAL and not production-ready for the first release. Default
+     *  `false`. `astramem-local proxy serve` (src/cli/proxy.ts) refuses to
+     *  start the listener at all unless this is explicitly `true` in
+     *  config.yaml — independent of, and checked in ADDITION to, whatever
+     *  else gates the subcommand. There is no CLI flag and no `init` wizard
+     *  prompt for this (matches `proxy.enabled`'s own "no one-click toggle"
+     *  posture above): an operator who wants the experimental proxy has to
+     *  hand-edit config.yaml, deliberately, knowing what they're opting into. */
+    experimental: boolean;
     port: number;
     upstream: string;
     /** Idle deadline for an upstream request, in ms (FEAT-458 S4a). Armed at
@@ -583,21 +666,40 @@ export function defaultConfig(): Config {
     network: { host: '127.0.0.1' },
     auth: { devNoAuth: false },
     llm: {
-      // qwen3:8b (5896 MB resident) + the mxbai-embed-large embedder (590 MB)
-      // exceed this hardware class's 8 GB VRAM ceiling before any KV cache is
-      // added; Ollama then spills layers to CPU, calls that should take
-      // seconds take 9-35s, and distill jobs time out and poison (see
-      // "Ollama 8GB VRAM ceiling" in CLAUDE.md). qwen3.5:4b (3292 MB) fits
-      // with headroom and is the strongest local model in the extraction
-      // bench on BOTH measured axes (F1 68% vs 65%, recall 54% vs 48% for
-      // qwen3:8b) — see PR body for the caveat: that number measures
-      // extraction, not compaction, quality; this is a safety +
-      // measured-extraction case, not a measured-compaction-quality case.
+      // v0.18.0: shipped default switched from local-ollama qwen to
+      // codex-subscription (gpt-5.4-mini, the DEFAULT_MODEL cheap tier —
+      // see src/providers/llm/codex-subscription.ts). Every local-ollama
+      // qwen default tried here has broken in production at least once:
+      // qwen3:8b returned empty output under thinking mode + format:json
+      // (see "qwen3:8b breaks distill extract" in CLAUDE.md) and also blew
+      // this hardware class's 8 GB VRAM ceiling once the mxbai-embed-large
+      // embedder (590 MB) was resident alongside it, spilling layers to CPU
+      // and timing distill jobs out into poison; qwen3.5:4b fit VRAM but
+      // under-extracted atoms from real conversational transcripts (retired
+      // 2026-07-14, see src/cli/init.ts's DEFAULT_OLLAMA_LLM_MODEL comment).
+      // codex-subscription runs off-box against the operator's own ChatGPT
+      // plan, so it is immune to this box's VRAM ceiling entirely.
+      //
+      // Tradeoff the operator must accept: this requires `codex login`
+      // (a paid ChatGPT plan) before compaction/extraction will work at
+      // all — there is no anonymous/free path. Cost is metered by the
+      // ChatGPT subscription's own quota, NOT by `budget.daily_usd` above:
+      // every shipped LLM provider (including this one) hardcodes
+      // `usage.usd: 0`, so the daily-dollar budget guard can never see or
+      // cap codex-subscription spend (see the FEAT-482 dollar-cap-guard
+      // retraction in CLAUDE.md for why that guard was tried and reverted
+      // instead of relied on here).
+      //
+      // Embedding is untouched — codex-subscription has no embeddings
+      // endpoint, so embedding stays on ollama/mxbai-embed-large below.
       // Same value for both roles — mirrors src/cli/init.ts's
-      // DEFAULT_OLLAMA_LLM_MODEL, which the `init` wizard writes into both
-      // this compaction key and the extraction key below from one tier pick.
-      compaction: { provider: 'ollama', model: 'qwen3.5:4b' },
-      extraction: { provider: 'ollama', model: 'qwen3.5:4b' }
+      // codex-subscription default, which the `init` wizard writes into
+      // both this compaction key and the extraction key below from one
+      // provider pick. Users who explicitly pick ollama in the wizard still
+      // get DEFAULT_OLLAMA_LLM_MODEL (qwen2.5:7b) as that provider's
+      // sub-default.
+      compaction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
+      extraction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' }
     },
     embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
     vector: { store: 'sqlite-vec' },
@@ -620,7 +722,7 @@ export function defaultConfig(): Config {
       budgetTokens: 1500,
       policy: { enabled: true, minScore: 0.15, minPromptChars: 12 },
     },
-    sync: { enabled: false, url: '', workspaceId: null, batchSize: 200, intervalMs: 30_000 },
+    sync: { enabled: false, url: '', workspaceId: null, batchSize: 200, intervalMs: 30_000, experimental: false },
     security: {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
       encryption: { enabled: true }
@@ -699,7 +801,19 @@ export function defaultConfig(): Config {
     // gates 4 of the 5 reasons and holds back only `git_derivable`, which carries
     // the highest false-positive risk (a terse commit reference can still be
     // meaningful in a way a bare imperative cannot).
-    distill: { durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto' },
+    // costCap.enabled: false — beta default. codex-subscription (the
+    // default compaction/extraction provider) reports usage.usd: 0 always,
+    // so BudgetTracker's dollar cap can't see this cost (same blind spot
+    // FEAT-482 hit for the contradiction judge). The call-count/wall-clock
+    // cap below EXISTS as an opt-in guard but ships OFF: BYO-subscription
+    // operators own their own quota, and a default-on pause on the two
+    // hottest LLM paths in the pipeline (every distill job) would be
+    // friction, not safety, for beta. See Config['distill']['costCap']'s
+    // doc comment before flipping this default.
+    distill: {
+      durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto',
+      maxChunkChars: 3200, costCap: { enabled: false },
+    },
     capture: {
       autoCapture: {
         enabled: false,
@@ -709,6 +823,7 @@ export function defaultConfig(): Config {
     },
     proxy: {
       enabled: false,
+      experimental: false,
       port: 7778,
       upstream: '',
       upstreamTimeoutMs: 30_000,

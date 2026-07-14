@@ -33,6 +33,8 @@
  */
 import { writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { execSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { loadFixtures, type GoldFixture } from './lib/fixtures.js';
 import { runOllamaCandidate, DEFAULT_COMPACTION_MODEL, type DaemonFixtureResult } from './lib/daemon-runner.js';
 import { runDirectPipeline } from './lib/pipeline-direct.js';
@@ -290,11 +292,61 @@ async function runModelOnce(
   };
 }
 
+/**
+ * Run-identity metadata (added 2026-07-13, model-ab investigation).
+ *
+ * The ab-run-2026-07-08 report shipped a qwen3:8b row that looked like a
+ * real quality/speed measurement but was actually an artifact of a since-
+ * fixed bug (Ollama's `think` default), and nothing in that run recorded
+ * enough to tell the two apart after the fact — no code version, no Ollama
+ * env, no fixture-set identity. `results.json` itself keeps its documented
+ * plain-array shape (AC-5, see the write below) so this writes a SIBLING
+ * `run-metadata.json` instead of changing that contract.
+ */
+function collectRunMetadata(fixtures: GoldFixture[]): Record<string, unknown> {
+  const repoRoot = join(import.meta.dirname, '..', '..', '..');
+  const tryGit = (cmd: string): string => {
+    try {
+      return execSync(cmd, { cwd: repoRoot, stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+    } catch {
+      return 'unknown';
+    }
+  };
+  const ollamaEnv = Object.fromEntries(
+    Object.entries(process.env).filter(([k]) => k.startsWith('OLLAMA_')),
+  );
+  // Sorted-by-id content hash — identifies exactly which fixture bytes were
+  // run, not just a count, so a fixture edit that keeps the same file names
+  // is still detectable.
+  const fixtureSetHash = createHash('sha256')
+    .update(JSON.stringify([...fixtures].sort((a, b) => a.id.localeCompare(b.id))))
+    .digest('hex');
+
+  return {
+    recordedAt: new Date().toISOString(),
+    gitSha: tryGit('git rev-parse HEAD'),
+    gitBranch: tryGit('git rev-parse --abbrev-ref HEAD'),
+    gitDirty: tryGit('git status --porcelain').length > 0,
+    ollamaEnv, // whatever OLLAMA_* vars were visible to THIS process — may not reflect the Ollama server's own env if it was started elsewhere (see note below)
+    ollamaEnvNote: 'reflects the bench process env, not necessarily the Ollama server process env if it runs as a separate service — treat absence as "unrecorded", not "unset"',
+    modelsUnderTest: models,
+    compactionModel: `ollama/${compactionModel}`, // held constant for every candidate — see README "What it measures"; sourced from the --compaction-model flag (default DEFAULT_COMPACTION_MODEL), not hardcoded
+    runsPerModel: runsCount,
+    judgeReasoningEffort,
+    fixtureCount: fixtures.length,
+    fixtureSetHash,
+  };
+}
+
 async function main(): Promise<void> {
   const fixtures = fixturesDir ? loadFixtures(fixturesDir) : loadFixtures();
   console.log(`Loaded ${fixtures.length} gold fixtures.`);
   console.log(`Models under test: ${models.join(', ')}`);
   if (runsCount > 1) console.log(`Runs per model: ${runsCount} (multi-run variance mode — FEAT-450)`);
+
+  const runMetadataStart = Date.now();
+  const runMetadata = collectRunMetadata(fixtures);
+  writeFileSync(join(outDir, 'run-metadata.json'), JSON.stringify(runMetadata, null, 2));
 
   const azureCfgForJudge = skipJudge ? null : resolveAzureConfig({ answererDeployment: 'gpt-5-mini' });
   const reports: ModelReport[] = [];
@@ -356,9 +408,15 @@ async function main(): Promise<void> {
   const md = renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort, agreement });
   writeFileSync(join(outDir, 'report.md'), md);
 
+  writeFileSync(
+    join(outDir, 'run-metadata.json'),
+    JSON.stringify({ ...runMetadata, finishedAt: new Date().toISOString(), durationMs: Date.now() - runMetadataStart }, null, 2),
+  );
+
   console.log(`\n${md}`);
   console.log(`\nResults -> ${join(outDir, 'results.json')}`);
   console.log(`Report  -> ${join(outDir, 'report.md')}`);
+  console.log(`Metadata -> ${join(outDir, 'run-metadata.json')}`);
   if (agreement.length > 0) console.log(`Judge self-agreement -> ${join(outDir, 'judge-agreement.json')}`);
 }
 

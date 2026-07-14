@@ -26,15 +26,21 @@ describe('loadConfig', () => {
   });
 
   // A shipped default with no assertion is how it silently drifts.
-  // 2026-07-13 (#264/PR follow-up, same-day reversal): both compaction and
-  // extraction moved off qwen3:8b to qwen3.5:4b — qwen3:8b spills VRAM and
-  // times out on 8GB-class hardware (see "Ollama 8GB VRAM ceiling" in
-  // CLAUDE.md) AND scores lower in the 3-run extraction bench (F1 65% vs
-  // 68%, recall 48% vs 54%). No remaining case for qwen3:8b as a default.
-  it('llm.compaction/extraction default to qwen3.5:4b', () => {
+  // 2026-07-14 (v0.18.0): both compaction and extraction moved off
+  // ollama/qwen3.5:4b to codex-subscription/gpt-5.4-mini — every local-ollama
+  // qwen default has broken at least one shipped install (empty output under
+  // thinking mode, VRAM spill; see "qwen3:8b breaks distill extract" /
+  // "Ollama 8GB VRAM ceiling" in CLAUDE.md). codex-subscription runs off-box
+  // against the operator's own ChatGPT plan and requires `codex login`.
+  // Embedding is unaffected — stays on ollama/mxbai-embed-large.
+  it('llm.compaction/extraction default to codex-subscription/gpt-5.4-mini', () => {
     const cfg = defaultConfig();
-    expect(cfg.llm.compaction.model).toBe('qwen3.5:4b');
-    expect(cfg.llm.extraction.model).toBe('qwen3.5:4b');
+    expect(cfg.llm.compaction.provider).toBe('codex-subscription');
+    expect(cfg.llm.compaction.model).toBe('gpt-5.4-mini');
+    expect(cfg.llm.extraction.provider).toBe('codex-subscription');
+    expect(cfg.llm.extraction.model).toBe('gpt-5.4-mini');
+    expect(cfg.embedding.provider).toBe('ollama');
+    expect(cfg.embedding.model).toBe('mxbai-embed-large');
   });
 
   it('default config search weights are unchanged by governance (default behavior preserved)', () => {
@@ -70,6 +76,28 @@ describe('loadConfig', () => {
   it('capture.autoCapture.enabled can be overridden — an explicit opt-in round-trips', () => {
     const cfg = loadConfig({ capture: { autoCapture: { enabled: true } } } as any);
     expect(cfg.capture.autoCapture.enabled).toBe(true);
+  });
+
+  // distill.costCap ships OFF for beta — codex-subscription (the default
+  // compaction/extraction provider) reports usage.usd: 0 always, so a
+  // dollar cap can never trip; this call-count/wall-clock cap is opt-in
+  // per-operator instead. See Config['distill']['costCap']'s doc comment.
+  it('distill.costCap defaults to disabled (beta default, byte-identical no-op)', () => {
+    const cfg = loadConfig(undefined);
+    expect(cfg.distill.costCap).toEqual({ enabled: false });
+    expect(defaultConfig().distill.costCap).toEqual({ enabled: false });
+  });
+
+  it('distill.costCap can be overridden — an explicit opt-in with limits round-trips', () => {
+    // loadConfig's top-level override merge is shallow (see
+    // applyContradictionDetectionGovernance's doc comment), so the override
+    // spreads the rest of defaultConfig().distill to avoid losing sibling
+    // fields (durabilityGate/extractProfile/etc.) — this test only cares
+    // about costCap round-tripping.
+    const cfg = loadConfig({
+      distill: { ...defaultConfig().distill, costCap: { enabled: true, maxCallsPerJob: 20, maxWallClockMs: 60_000 } },
+    } as any);
+    expect(cfg.distill.costCap).toEqual({ enabled: true, maxCallsPerJob: 20, maxWallClockMs: 60_000 });
   });
 });
 
@@ -170,13 +198,13 @@ describe('applyFusionGovernance', () => {
 describe('applyDurabilityGateGovernance', () => {
   it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
     for (const mode of ['strict', 'lenient', 'off'] as const) {
-      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const };
+      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 };
       expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to off and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const };
+    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 };
     const logs: string[] = [];
     const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -203,13 +231,13 @@ describe('applyDurabilityGateGovernance', () => {
 describe('applyExtractProfileGovernance', () => {
   it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
     for (const profile of ['engineering', 'conversational'] as const) {
-      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const };
+      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 };
       expect(applyExtractProfileGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to engineering and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const };
+    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 };
     const logs: string[] = [];
     const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
 

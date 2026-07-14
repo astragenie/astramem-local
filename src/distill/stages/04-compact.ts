@@ -13,6 +13,7 @@ import type { Chunk } from './03-chunk.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { mapWithConcurrency } from '../concurrency.js';
 import { chunkCheckpoints } from '../chunk-checkpoint.js';
+import type { DistillCostCapTracker } from '../cost-cap.js';
 
 export { BudgetExceeded };
 
@@ -137,8 +138,18 @@ export async function compactChunk(
   budget: BudgetTracker,
   capUsd: number,
   profile?: CompactProfile | null,
+  /** Opt-in call-count/wall-clock cap (`config.distill.costCap`, see
+   *  `src/distill/cost-cap.ts`) — `undefined`/disabled is a pure no-op.
+   *  Checked BEFORE the LLM call; when it trips, this chunk is passed
+   *  through raw (same as the existing empty-text skip above) instead of
+   *  compacted, and no `provider.chat()` call is made. */
+  costCap?: DistillCostCapTracker,
 ): Promise<CompactResult> {
   if (!chk.text.trim()) {
+    return { index: chk.index, text: '', usageUsd: 0 };
+  }
+
+  if (costCap?.shouldStop()) {
     return { index: chk.index, text: '', usageUsd: 0 };
   }
 
@@ -162,6 +173,7 @@ export async function compactChunk(
     maxTokens: 2000,
   });
 
+  costCap?.recordCall();
   // Record actual cost (0 for Ollama, real for Azure)
   budget.record(result.usage.usd);
 
@@ -200,6 +212,9 @@ export interface CompactOpts {
   /** 'auto' (default): run for engineering, SKIP for conversational.
    *  'never': skip always. 'always': run always (pre-fix behavior). */
   mode?: 'auto' | 'always' | 'never';
+  /** Opt-in call-count/wall-clock cap shared with extract() for this same
+   *  job — see `compactChunk`'s param doc and `src/distill/cost-cap.ts`. */
+  costCap?: DistillCostCapTracker;
 }
 
 /**
@@ -240,7 +255,7 @@ export async function compact(
   }
 
   if (!jobKey) {
-    return mapWithConcurrency(chunks, concurrency, (chk) => compactChunk(chk, provider, budget, capUsd, opts?.profile));
+    return mapWithConcurrency(chunks, concurrency, (chk) => compactChunk(chk, provider, budget, capUsd, opts?.profile, opts?.costCap));
   }
 
   const pending: Chunk[] = [];
@@ -252,7 +267,7 @@ export async function compact(
   }
 
   const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
-    const result = await compactChunk(chk, provider, budget, capUsd, opts?.profile);
+    const result = await compactChunk(chk, provider, budget, capUsd, opts?.profile, opts?.costCap);
     chunkCheckpoints.set(jobKey, 'compact', chk.index, result);
     return result;
   });

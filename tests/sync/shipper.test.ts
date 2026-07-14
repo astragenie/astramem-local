@@ -29,6 +29,7 @@ import {
   readErrorBody,
   countRejected,
   clearRejected,
+  shouldStartShipper,
 } from '../../src/sync/shipper.js';
 
 function seedMemory(db: DB, scope: 'private' | 'team' | 'org', hash: string): string {
@@ -229,6 +230,7 @@ describe('shipOnce — ack cursor semantics', () => {
       return {
         ok: (response.status ?? 200) < 400,
         status: response.status ?? 200,
+        headers: new Headers(),
         json: async () => response.body ?? {},
         text: async () => bodyText,
       } as Response;
@@ -277,16 +279,18 @@ describe('shipOnce — ack cursor semantics', () => {
   // in the daemon log without extra instrumentation.
   it('HTTP failure includes the response body in the thrown error', async () => {
     const { impl } = fakeFetch({ status: 403, bodyText: '{"error":"sync_disabled"}' });
-    await expect(shipOnce(baseOpts(impl))).rejects.toThrow('sync ship failed: HTTP 403 {"error":"sync_disabled"}');
+    await expect(shipOnce(baseOpts(impl))).rejects.toThrow('sync ship failed: HTTP 403 body={"error":"sync_disabled"}');
   });
 
   it('bounds an oversized error body to ~500 chars', async () => {
     const huge = 'x'.repeat(2000);
     const { impl } = fakeFetch({ status: 500, bodyText: huge });
-    await expect(shipOnce(baseOpts(impl))).rejects.toThrow(/x{500}…$/);
+    // Truncated body + ellipsis still present; a diagnostics suffix ([...]) now
+    // follows the body, so this no longer anchors at end-of-string.
+    await expect(shipOnce(baseOpts(impl))).rejects.toThrow(/body=x{500}…/);
   });
 
-  it('omits the trailing space when the failure response has no body', async () => {
+  it('marks an empty failure body as "(empty body)" rather than a bare status', async () => {
     const { impl } = fakeFetch({ status: 500, bodyText: '' });
     let caught: Error | undefined;
     try {
@@ -294,7 +298,9 @@ describe('shipOnce — ack cursor semantics', () => {
     } catch (err) {
       caught = err as Error;
     }
-    expect(caught?.message).toBe('sync ship failed: HTTP 500');
+    // sync-400-visibility: an empty-body reject is exactly the case we could
+    // not diagnose before — it must read "(empty body)", not omit the marker.
+    expect(caught?.message).toContain('sync ship failed: HTTP 500 (empty body)');
   });
 
   it('network failure leaves everything unsynced', async () => {
@@ -448,9 +454,14 @@ describe('readErrorBody', () => {
     expect(out).toBe(`${'y'.repeat(500)}…`);
   });
 
-  it('never throws — a body-read failure resolves to empty string', async () => {
+  it('never throws — a body-read failure surfaces as a distinct "<unreadable body>" marker', async () => {
     const res = { text: async () => { throw new Error('stream already consumed'); } } as unknown as Response;
-    expect(await readErrorBody(res)).toBe('');
+    // sync-400-visibility: a body we FAILED to read is diagnostically distinct
+    // from a truly empty body — it must not collapse to '' (which reads as
+    // "gateway rejected with no payload") but carry the read error.
+    const out = await readErrorBody(res);
+    expect(out).toMatch(/^<unreadable body: /);
+    expect(out).toContain('stream already consumed');
   });
 });
 
@@ -590,5 +601,39 @@ describe('startShipper — records attempt state across rounds (FEAT-434)', () =
     expect(afterSuccess.consecutive_failures).toBe(0);
     expect(afterSuccess.last_error).toBeNull();
     expect(afterSuccess.next_retry_at).toBeNull();
+  });
+});
+
+// sync-experimental-gate slice: hard gate on top of `enabled` — sync-to-
+// astramem-cloud is currently broken (8868 events failing HTTP 400, not yet
+// root-caused). `astramem-local pair` alone sets sync.json's `enabled: true`
+// and used to be sufficient to start shipping. Both `enabled` (pairing-owned)
+// AND `experimental` (config.yaml, hand-edit only) must now be true.
+describe('shouldStartShipper — experimental hard gate (sync-experimental-gate)', () => {
+  const base = { enabled: true, experimental: true, dataDir: '/tmp/astra-data', isolated: false };
+
+  it('does NOT start when enabled=true but experimental=false', () => {
+    expect(shouldStartShipper({ ...base, experimental: false })).toBe(false);
+  });
+
+  it('starts when both enabled=true and experimental=true', () => {
+    expect(shouldStartShipper(base)).toBe(true);
+  });
+
+  it('does not start when enabled=false, regardless of experimental', () => {
+    expect(shouldStartShipper({ ...base, enabled: false })).toBe(false);
+    expect(shouldStartShipper({ ...base, enabled: false, experimental: false })).toBe(false);
+  });
+
+  it('does not start when neither enabled nor experimental is set', () => {
+    expect(shouldStartShipper({ ...base, enabled: false, experimental: false })).toBe(false);
+  });
+
+  it('pre-existing dataDir guard (:memory: eval/test daemon) still applies on top of the new gate', () => {
+    expect(shouldStartShipper({ ...base, dataDir: ':memory:' })).toBe(false);
+  });
+
+  it('pre-existing isolated-mode guard (ASTRA_MEMORY_ISOLATED=1) still applies on top of the new gate', () => {
+    expect(shouldStartShipper({ ...base, isolated: true })).toBe(false);
   });
 });

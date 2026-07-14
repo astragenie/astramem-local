@@ -9,7 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Content-hash embedding cache (FEAT-492), document-role only.** Ports cloud's
+  `CachingEmbeddingProvider.cs` pattern: a SQLite table (migration 043) keyed
+  `(content_hash, model, dim)` caches document-side embeddings so re-running
+  distill/reembed over unchanged content issues zero Ollama embed calls.
+  `dim` rides in the key alongside `model` (not inferred from it) so a
+  configured-dim change without a model-name change can never serve a
+  wrong-length vector. Scoped to document-role embeds only — the worker's
+  extended context (`src/cli/serve.ts`) gets its own `providers.embed` wrapped
+  in `CachingEmbedProvider`; the raw provider still flows to query-role search
+  routes and the doctor/preflight probes, since a query embed is never
+  repeated verbatim and caching it buys nothing while adding a correctness
+  risk (see `src/providers/embed/cache.ts`'s doc comment). LRU eviction caps
+  the table at 20,000 rows. New doctor check "Embed cache hit rate" surfaces
+  cumulative hit/miss counters (purely informational, never fails).
+
+## [0.18.0] - 2026-07-14
+
 ### Changed
+
+- **Default LLM provider (compaction AND extraction): `ollama` (qwen3.5:4b) -> `codex-subscription` (`gpt-5.4-mini`).**
+  Every local-ollama qwen default tried here has broken shipped installs at
+  least once — `qwen3:8b` returned empty output under thinking mode +
+  `format:json` (distill poison), and separately blew this hardware class's
+  8 GB VRAM ceiling once the `mxbai-embed-large` embedder was resident
+  alongside it (see "Ollama 8GB VRAM ceiling" / "qwen3:8b breaks distill
+  extract" in CLAUDE.md); `qwen3.5:4b` fixed the VRAM fit but is still a weak
+  local model relative to a cloud-tier LLM. `codex-subscription` runs off-box
+  against the operator's own ChatGPT plan and is immune to this box's VRAM
+  ceiling entirely. **Requires `codex login` (a paid ChatGPT plan)** before
+  compaction/extraction will work — there is no anonymous/free path. Cost is
+  metered by the ChatGPT subscription's own quota, not by `budget.daily_usd`
+  (every shipped LLM provider, including this one, hardcodes `usage.usd: 0`).
+  Embedding is unchanged — stays on `ollama`/`mxbai-embed-large`; codex has
+  no embeddings endpoint. Changed in `defaultConfig()`
+  (`src/config/config.ts`) and the `init` wizard's default LLM provider pick
+  (`src/cli/init.ts`, both the interactive `promptSelect` default and the
+  non-TTY `gatherNonInteractive` fallback). `ollama` and the other cloud
+  providers (`azure-openai`, `openai-compatible`) remain fully selectable —
+  only the default choice changed.
+
+### Changed (carried from Unreleased)
 
 - **Default Ollama model (compaction AND extraction): `qwen3:8b` -> `qwen3.5:4b`.**
   `qwen3:8b` (5896 MB resident) plus the `mxbai-embed-large` embedder (590 MB)

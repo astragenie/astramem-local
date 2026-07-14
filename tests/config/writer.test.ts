@@ -50,7 +50,7 @@ function buildFullyPopulatedConfig(): Config {
       budgetTokens: 2200,
       policy: { enabled: false, minScore: 0.35, minPromptChars: 20 },
     },
-    sync: { enabled: true, url: 'https://sync.example.com', workspaceId: 'ws-123', batchSize: 500, intervalMs: 60_000 },
+    sync: { enabled: true, url: 'https://sync.example.com', workspaceId: 'ws-123', batchSize: 500, intervalMs: 60_000, experimental: true },
     security: {
       redaction: { enabled: false, entropyThreshold: 3.5, customPatterns: ['SECRET-\\d+', 'sk-[a-zA-Z0-9]{20,}'] },
       encryption: { enabled: false },
@@ -65,7 +65,10 @@ function buildFullyPopulatedConfig(): Config {
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: true } },
     ingest: { spoolMaxBytes: 1_048_576 },
-    distill: { durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never' },
+    distill: {
+      durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never',
+      maxChunkChars: 2400, costCap: { enabled: true, maxCallsPerJob: 40, maxWallClockMs: 180_000 },
+    },
     capture: {
       autoCapture: {
         enabled: true,
@@ -75,6 +78,7 @@ function buildFullyPopulatedConfig(): Config {
     },
     proxy: {
       enabled: true,
+      experimental: true,
       port: 9001,
       upstream: 'https://api.openai.com/v1',
       upstreamTimeoutMs: 45_000,
@@ -139,7 +143,8 @@ describe('configToYaml', () => {
     const yaml = configToYaml(cfg);
     expect(yaml).toContain('compaction:');
     expect(yaml).toContain('extraction:');
-    expect(yaml.match(/model: ['"]?qwen3\.5:4b['"]?/g)).toHaveLength(2);
+    expect(yaml.match(/provider: ['"]?codex-subscription['"]?/g)).toHaveLength(2);
+    expect(yaml.match(/model: ['"]?gpt-5\.4-mini['"]?/g)).toHaveLength(2);
   });
 
   // FEAT-442: autonomous consolidation auto-accept — default null (OFF) round-trips.
@@ -155,6 +160,29 @@ describe('configToYaml', () => {
     cfg.consolidation.autoAcceptThreshold = 0.9;
     const yaml = configToYaml(cfg);
     expect(yaml).toContain('autoAcceptThreshold: 0.9');
+  });
+
+  // distill.costCap ships OFF for beta — see Config['distill']['costCap'].
+  it('emits distill.costCap.enabled: false by default, with no maxCallsPerJob/maxWallClockMs lines under it', () => {
+    const cfg = defaultConfig();
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain('costCap:');
+    // Scope to the distill block only — consolidation.contradictionDetection
+    // always emits its OWN maxWallClockMs, so a bare global
+    // not.toContain('maxWallClockMs') would false-fail on that unrelated field.
+    const distillBlock = yaml.slice(yaml.indexOf('\ndistill:'), yaml.indexOf('\nmemoryHealth:'));
+    expect(distillBlock).toContain('costCap:');
+    expect(distillBlock).toContain('enabled: false');
+    expect(distillBlock).not.toContain('maxCallsPerJob');
+    expect(distillBlock).not.toContain('maxWallClockMs');
+  });
+
+  it('emits a configured distill.costCap with limits', () => {
+    const cfg = defaultConfig();
+    cfg.distill.costCap = { enabled: true, maxCallsPerJob: 25, maxWallClockMs: 90_000 };
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain('maxCallsPerJob: 25');
+    expect(yaml).toContain('maxWallClockMs: 90000');
   });
 });
 
@@ -221,15 +249,18 @@ describe('writeConfig tmp-file cleanup on failure', () => {
 // (plus crossEncoder.model and security.redaction.customPatterns) on every
 // writeConfig() call — the loader deep-merges over defaultConfig(), so any
 // key the emitter failed to write silently reverted to its default on next
-// load. sync stays an intentional, documented exclusion (owned by
-// sync.json) throughout — not part of this bug.
+// load. sync's CONNECTION fields (enabled/url/workspaceId/batchSize/
+// intervalMs) stay an intentional, documented exclusion (owned by
+// sync.json) throughout — not part of this bug. `sync.experimental`
+// (sync-experimental-gate slice) is the one sync field the emitter DOES
+// own and round-trip — see Config['sync'] doc comment.
 describe('FEAT-461: configToYaml emit completeness', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   // AC-1: exhaustive round-trip fidelity.
-  it('a fully-populated Config round-trips through writeConfig -> loadConfigFromDisk unchanged (except sync)', () => {
+  it('a fully-populated Config round-trips through writeConfig -> loadConfigFromDisk unchanged (except sync connection fields)', () => {
     const cfg = buildFullyPopulatedConfig();
     const path = tmpPath();
     writeConfig(cfg, path);
@@ -238,7 +269,9 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     // Two pre-existing, documented, orthogonal exclusions from strict
     // round-trip equality — neither is part of the FEAT-461 emit-completeness
     // bug this test targets:
-    //  - sync: never written to config.yaml at all (owned by sync.json).
+    //  - sync's connection fields (enabled/url/workspaceId/batchSize/
+    //    intervalMs): never written to config.yaml (owned by sync.json).
+    //    `experimental` DOES round-trip — see the dedicated assertion below.
     //  - search.eta: FEAT-428 fusion governance (applyFusionGovernance, run
     //    by loadConfigFromDisk) forces any configured eta > 0 back to 0
     //    unless a passing ADR-005 eval-harness run is recorded for it — a
@@ -249,7 +282,7 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(loadedRest).toEqual(cfgRest);
     expect(loadedSearch).toEqual({ ...cfgSearch, eta: 0 });
 
-    expect(loadedSync).toEqual(defaultConfig().sync);
+    expect(loadedSync).toEqual({ ...defaultConfig().sync, experimental: cfgSync.experimental });
     expect(cfgSync).not.toEqual(defaultConfig().sync);
   });
 
@@ -393,10 +426,16 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(yaml).toContain('  enabled: false'); // capture.autoCapture.enabled (default)
   });
 
-  it('never emits a sync: block — the exclusion is intentional, not something a generic emitter can regress', () => {
+  it('emits a sync: block containing ONLY experimental — connection fields stay the intentional sync.json exclusion (sync-experimental-gate)', () => {
     const yaml = configToYaml(buildFullyPopulatedConfig());
-    // 'sync' should never appear as a top-level YAML key (indent 0, own line).
-    expect(yaml).not.toMatch(/^sync:/m);
+    expect(yaml).toMatch(/^sync:/m);
+    expect(yaml).toContain('  experimental: true');
+    // Connection fields owned by sync.json must never leak into config.yaml,
+    // even though buildFullyPopulatedConfig() sets non-default values for them.
+    expect(yaml).not.toContain('workspaceId');
+    expect(yaml).not.toContain('sync.example.com');
+    expect(yaml).not.toMatch(/^\s+batchSize:/m);
+    expect(yaml).not.toMatch(/^\s+intervalMs:/m);
   });
 });
 
