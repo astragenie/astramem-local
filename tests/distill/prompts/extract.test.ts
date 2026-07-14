@@ -161,6 +161,21 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/keep the original relative phrasing/);
   });
 
+  // WS4 (2026-07-13, LoCoMo score plan): the full-sample run proved a
+  // resolved date written as ISO-8601 into `text` scores ~0 on the LoCoMo
+  // scorer even when exactly correct (normalizeAnswer strips hyphens,
+  // collapsing "2023-05-14" into one glued token) — 93% of the 115 ISO-dated
+  // temporal answers in that run scored EXACTLY 0. `text` is prose read by
+  // people/other models later, not the machine-parsed `valid_at`/
+  // `invalid_at` fields, which correctly stay ISO-8601 (see the schema
+  // description tests above/below — untouched by this fix). This test pins
+  // the natural-language instruction so a future edit can't silently
+  // reintroduce the ISO-8601 wording into the `text` grounding rule.
+  it('instructs natural-language dates (not ISO-8601) for the grounded text field', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/natural-language\s+absolute date/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).not.toMatch(/resolve "yesterday".*to an absolute ISO-8601/s);
+  });
+
   it('carries over the 7-type taxonomy and priority order unchanged from v1/v2', () => {
     for (const marker of [
       '1. command:', '2. todo:', '3. event:', '4. decision:', '5. lesson:', '6. fact:', '7. note:',
@@ -318,6 +333,16 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Observation date/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/if the transcript states or implies/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/keep the original relative phrasing/);
+  });
+
+  // WS4 (2026-07-13, LoCoMo score plan) — same fix and same rationale as the
+  // EXTRACTION_SYSTEM_PROMPT_V3 test above: this is the profile actually
+  // used by the LoCoMo eval, and the full-sample run's own stored atoms
+  // (241/2488, 9.7%) had an ISO-shaped date baked into `text` as a direct
+  // result of this instruction's old "ISO-8601 form (YYYY-MM-DD)" wording.
+  it('instructs natural-language dates (not ISO-8601) for the grounded text field', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/natural-language form/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/ISO-8601 form \(YYYY-MM-DD\) directly into the atom's text/);
   });
 
   it('states the banned-abstractions negative list (vague summaries, meta-commentary, sentiment padding)', () => {
