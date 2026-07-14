@@ -77,6 +77,28 @@ describe('loadConfig', () => {
     const cfg = loadConfig({ capture: { autoCapture: { enabled: true } } } as any);
     expect(cfg.capture.autoCapture.enabled).toBe(true);
   });
+
+  // distill.costCap ships OFF for beta — codex-subscription (the default
+  // compaction/extraction provider) reports usage.usd: 0 always, so a
+  // dollar cap can never trip; this call-count/wall-clock cap is opt-in
+  // per-operator instead. See Config['distill']['costCap']'s doc comment.
+  it('distill.costCap defaults to disabled (beta default, byte-identical no-op)', () => {
+    const cfg = loadConfig(undefined);
+    expect(cfg.distill.costCap).toEqual({ enabled: false });
+    expect(defaultConfig().distill.costCap).toEqual({ enabled: false });
+  });
+
+  it('distill.costCap can be overridden — an explicit opt-in with limits round-trips', () => {
+    // loadConfig's top-level override merge is shallow (see
+    // applyContradictionDetectionGovernance's doc comment), so the override
+    // spreads the rest of defaultConfig().distill to avoid losing sibling
+    // fields (durabilityGate/extractProfile/etc.) — this test only cares
+    // about costCap round-tripping.
+    const cfg = loadConfig({
+      distill: { ...defaultConfig().distill, costCap: { enabled: true, maxCallsPerJob: 20, maxWallClockMs: 60_000 } },
+    } as any);
+    expect(cfg.distill.costCap).toEqual({ enabled: true, maxCallsPerJob: 20, maxWallClockMs: 60_000 });
+  });
 });
 
 // FEAT-428: fusion-model governance — component ceiling + η eval-evidence

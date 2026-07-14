@@ -65,18 +65,20 @@ function defaultCodexAuthPath(): string {
 }
 
 /** Default Ollama extraction/compaction model — used when no tier is chosen.
- * Swapped from qwen3:8b to qwen3.5:4b (2026-07-13, same-day reversal — see
- * CHANGELOG). qwen3:8b was worse on every axis that's actually been
- * measured: lower extraction F1 in the 3-run extraction bench (65% vs 68%
- * for qwen3.5:4b) AND it doesn't fit this hardware class — 5896 MB resident
- * plus the mxbai-embed-large embedder's 590 MB exceeds an 8 GB VRAM ceiling
- * before any KV cache, so Ollama spills layers to CPU, calls take 9-35s
- * instead of seconds, and distill jobs time out and poison (see "Ollama 8GB
- * VRAM ceiling" in CLAUDE.md). qwen3.5:4b is 3292 MB and fits with headroom.
+ * Swapped from qwen3.5:4b to qwen2.5:7b (2026-07-14) — qwen3.5:4b was
+ * RETIRED because it under-extracts atoms in real conversational sessions
+ * (see the LoCoMo conversational-profile A/B in CLAUDE.md); a fast, VRAM-safe
+ * model that finds too little is not actually a safe default. qwen2.5:7b is
+ * the recommended local model instead: F1 67%/precision 99% in the
+ * 2026-07-08 extraction-bench A/B (beats qwen2.5-coder:7b's F1 59%). It is
+ * ~4.7 GB and fits an 8 GB VRAM card with real headroom alongside the
+ * mxbai-embed-large embedder's ~0.59 GB — unlike qwen3:8b (5.76 GB
+ * resident), which exceeded the ceiling, spilled layers to CPU, and poisoned
+ * distill jobs via timeout (see "Ollama 8GB VRAM ceiling" in CLAUDE.md).
  * This is a safety + measured-extraction-quality case, not a
  * measured-compaction-quality case — nobody has benchmarked either model as
  * a compactor specifically; see scripts/eval/extraction-bench. */
-const DEFAULT_OLLAMA_LLM_MODEL = 'qwen3.5:4b';
+const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5:7b';
 
 /** Default Ollama embedding model (fixed — the wizard doesn't offer a tier
  * picker for embeddings, only for the extraction/compaction LLM). */
@@ -88,23 +90,22 @@ const DEFAULT_OLLAMA_EMBED_MODEL = 'mxbai-embed-large';
  * guidance surfaced to the user before any pull happens (see
  * `confirmOllamaDownload` below) — not enforced, just informative.
  *
- * Only one curated tier as of 2026-07-13: the operator standardized on
- * qwen3.5:4b for compaction/extraction (same-day reversal from qwen3:8b —
- * see DEFAULT_OLLAMA_LLM_MODEL's comment above), retiring both prior
- * candidates (qwen2.5:7b, the former "RECOMMENDED" default with F1
- * 67%/precision 99% from the 2026-07-08 A/B benchmark, and
- * qwen2.5-coder:7b, the former "fastest" tier at F1 59%). qwen3.5:4b scores
- * F1 68%/recall 54% in the 3-run extraction bench — the strongest local
- * model measured, and the only one that also fits this hardware class
- * (3292 MB resident vs qwen3:8b's 5896 MB, which spills VRAM and poisons
- * distill jobs). `qwen2.5-coder:14b` remains dropped (20%
+ * Only one curated tier as of 2026-07-14: qwen2.5:7b, restored as
+ * RECOMMENDED/default (2026-07-14) after qwen3.5:4b — the brief same-day-
+ * reversal pick from 2026-07-13 — proved to under-extract atoms from real
+ * conversational transcripts (see DEFAULT_OLLAMA_LLM_MODEL's comment above).
+ * qwen2.5:7b scores F1 67%/precision 99% in the 2026-07-08 A/B benchmark —
+ * the strongest local model measured on actual atom extraction — and fits
+ * this hardware class (~4.7 GB resident vs qwen3:8b's 5.76 GB, which spills
+ * VRAM and poisons distill jobs). `qwen2.5-coder:7b` remains dropped (the
+ * former "fastest" tier at F1 59%); `qwen2.5-coder:14b` remains dropped (20%
  * permanent-failure/poison rate, 72.7s/session in the same benchmark);
  * `llama3.1:8b` remains dropped per operator decision (~3x latency vs
- * qwen3.5:4b at comparable F1). Any of these, or another model, is still
+ * qwen2.5:7b at comparable F1). Any of these, or another model, is still
  * reachable via the "custom" tier below.
  */
 const OLLAMA_EXTRACTION_TIERS: { value: string; label: string; size: string; ram: string; stats: string }[] = [
-  { value: 'qwen3.5:4b', label: 'RECOMMENDED (default)', size: '~3.3 GB', ram: '8 GB', stats: 'F1 68%, recall 54%, precision 93% (extraction-bench, 3-run avg)' },
+  { value: 'qwen2.5:7b', label: 'RECOMMENDED (default)', size: '~4.7 GB', ram: '8 GB', stats: 'F1 67%, precision 99% (extraction-bench, 2026-07-08 A/B)' },
 ];
 
 /** Sentinel values for the non-model tier-picker choices (item 3/4). One of
@@ -250,7 +251,7 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   // providers remain fully selectable regardless of the default.
   let llmProvider = (await promptSelect(
     'LLM provider:',
-    [{ name: 'ollama (qwen3.5:4b)', value: 'ollama' }, ...cloudLlmChoices],
+    [{ name: 'ollama (qwen2.5:7b)', value: 'ollama' }, ...cloudLlmChoices],
     codexLoginDetected ? 'codex-subscription' : 'ollama'
   )) as LlmProviderChoice;
 

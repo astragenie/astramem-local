@@ -1,0 +1,31 @@
+{
+  "schema": "astramem/atom@2",
+  "id": "00000000-0000-4000-8000-000000000201",
+  "type": "note",
+  "text": "Alice confirmed the Q3 rollout date on the call.",
+  "evidence": [
+    {
+      "transcript_id": "meet-caption-2026-07-14-001",
+      "span": [120, 168],
+      "speaker_label": "Alice",
+      "segment_start_ms": 452300
+    }
+  ],
+  "confidence": 0.8,
+  "importance": 0.5,
+  "provenance": {
+    "tool": "astramem-plugin",
+    "session_id": "sess-meeting-caption-001",
+    "project": "astramem",
+    "extractor": "astramem-local@0.7.0"
+  },
+  "valid_from": "2026-07-14T00:00:00.000Z",
+  "valid_to": null,
+  "superseded_by": null,
+  "derived_from": null,
+  "scope": "private",
+  "content_hash": "72dd0931909386d1c02a4c5a6fb9d0176d0e491417ad0d24da94947bd32c4945",
+  "entities": [],
+  "created_at": "2026-07-14T00:00:00.000Z",
+  "updated_at": "2026-07-14T00:00:00.000Z"
+}

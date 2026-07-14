@@ -15,6 +15,8 @@ import { getOrCreateKey } from '../../storage/keystore.js';
 import type { DB } from '../../storage/db.js';
 import type { DurabilityGateMode } from '../../distill/durability-gate.js';
 import type { ExtractProfile } from '../../distill/prompts/extract.js';
+import type { DistillCostCapConfig } from '../../distill/cost-cap.js';
+import type { Config } from '../../config/config.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────────
 
@@ -71,15 +73,35 @@ export interface DoctorCheckOpts {
    * disclosure every doctor run, not just buried in a config comment — see
    * `checkExtractProfile` below. */
   extractProfile?: ExtractProfile;
+  /** Current `distill.costCap` — the opt-in compact()+extract() call-count/
+   *  wall-clock cap (disabled by default for beta). Defaults to
+   *  `{ enabled: false }` when not supplied — see `checkDistillCostCap`. */
+  distillCostCap?: DistillCostCapConfig;
   /** FEAT-455 / ADR-012 decision 4: current `capture.autoCapture.enabled`.
    * Defaults to `false` (the shipped default) when not supplied. */
   autoCaptureEnabled?: boolean;
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.enabled`. Defaults to
    * `false` (the shipped default) when not supplied. */
   proxyEnabled?: boolean;
+  /** Release no-go hard gate: current `proxy.experimental`. Defaults to
+   * `false` (the shipped default) when not supplied — the state where
+   * `astramem-local proxy serve` refuses to start regardless of
+   * `proxy.enabled` (see src/cli/proxy.ts). */
+  proxyExperimental?: boolean;
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.capture.enabled`. Defaults
    * to `false` (the shipped default) when not supplied. */
   proxyCaptureEnabled?: boolean;
+  /** sync-experimental-gate slice: current `sync.enabled` (merged with
+   * sync.json pairing state by resolve-runtime.ts — pairing-owned, set by
+   * `astramem-local pair` on a successful redeem). Defaults to `false`
+   * (the shipped default) when not supplied. */
+  syncEnabled?: boolean;
+  /** sync-experimental-gate slice: current `sync.experimental` — the
+   * config.yaml-only hand-edit hard gate `astramem-local pair` never
+   * touches; both this AND `syncEnabled` must be true for the shipper to
+   * start (see `shouldStartShipper` in sync/shipper.ts). Defaults to
+   * `false` (the shipped default) when not supplied. */
+  syncExperimental?: boolean;
   /** Whether dev no-auth mode is genuinely ACTIVE — i.e. `config.auth.
    * devNoAuth === true` AND the bind is loopback (mirrors buildApp's
    * `devNoAuthActive` in src/server/app.ts). NOT the same as the raw config
@@ -97,6 +119,10 @@ export interface DoctorCheckOpts {
    * deliberately NOT reusing that seam for this check). Defaults to `false`
    * when not supplied. */
   codexSubscriptionInUse?: boolean;
+  /** FEAT-493 (scaffolding): current `retention` config block. Defaults to
+   * `defaultConfig().retention` (mode 'off') when not supplied — see
+   * `checkRetention`. */
+  retentionConfig?: Config['retention'];
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────

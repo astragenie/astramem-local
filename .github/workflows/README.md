@@ -91,12 +91,16 @@ Triggers: push/PR to `main`, `workflow_dispatch`.
 ## nightly-live.yml (FEAT-421 / SLICE-415)
 
 Wires the EXISTING `INTEGRATION_LIVE=ollama` gated tests
-(`tests/providers/ollama-llm.test.ts`, `tests/providers/ollama-embed.test.ts`,
-`tests/e2e/plugin-flow.test.ts`) into an automatic run against a real Ollama,
-so provider drift (model renames, API changes, embed-dim changes — see the
-nomic-embed-text-v2-moe 768-dim vs mxbai-embed-large 1024-dim incident behind
-hotfix v0.2.1) is caught before release instead of by a user. Wiring only —
-no new tests were authored for this lane.
+(`tests/providers/ollama-llm.test.ts`, `tests/providers/ollama-embed.test.ts`)
+into an automatic run against a real Ollama, so provider drift (model
+renames, API changes, embed-dim changes — see the nomic-embed-text-v2-moe
+768-dim vs mxbai-embed-large 1024-dim incident behind hotfix v0.2.1) is
+caught before release instead of by a user. Wiring only — no new tests were
+authored for this lane.
+
+`tests/e2e/plugin-flow.test.ts` also runs every nightly, but in **mock
+mode** (no `INTEGRATION_LIVE`), as a separate step — see "2026-07-14: took
+live generation off this lane" below for why.
 
 **Triggers**: `schedule` (nightly, `17 9 * * *` UTC) + `workflow_dispatch`
 only. Deliberately never `push` or `pull_request` — merges to `main` must
@@ -117,22 +121,34 @@ above in this same README).
 **Models pulled**: listed once in the `OLLAMA_MODELS` env var at the top of
 the workflow (single source of truth — also drives the cache key, so bumping
 a model tag there automatically busts the cache):
-- `mxbai-embed-large` — current production embed default
-- `qwen3:8b` — current production LLM default (since 2026-07-13)
+- `mxbai-embed-large` — current production embed default. The embed live
+  block still constructs its provider against this production default, so
+  this half of the lane exercises what users actually run.
+- `qwen2.5:0.5b` — **not** a production default, pinned deliberately (see
+  "2026-07-14: took live generation off this lane" below). The LLM live
+  block only calls `.health()` (GET `/api/tags`, no inference), which just
+  needs some model present in the tags list, not the real (much heavier)
+  production LLM default.
 
-Both live blocks now construct providers against the **production defaults**
-(`config.ts`) rather than pinned legacy tags, so this lane exercises what users
-actually run. Dropped from the pull list on 2026-07-13: `qwen2.5-coder:7b` (no
-longer the default — `ollama-llm.test.ts` was updated to `qwen3:8b`, and
-`plugin-flow.test.ts` spawns a daemon with no model override, so it resolves to
-the default too) and `nomic-embed-text-v2-moe` (its only live consumer stopped
-using it — it is 768-dim against a 1024-dim provider, a guaranteed
-dim-mismatch). Every surviving reference to either name is a **mocked** unit
-test, which pulls nothing.
+A stale pin on the embed side is worse than useless: the lane would burn CI
+pulling a model no user has, while real embed-dim drift in the actual
+default — the thing this half of the lane exists to catch — goes unnoticed.
 
-A stale pin here is worse than useless: the lane burns CI pulling a model no
-user has, while real drift in the actual default — the thing this lane exists to
-catch — goes unnoticed.
+**2026-07-14: took live generation off this lane (Option A / CPU-runner
+fix).** The self-hosted runner this lane executes on has no GPU/VRAM, so
+real Ollama generation runs CPU-only. `tests/e2e/plugin-flow.test.ts`'s live
+mode drives the full ingest→distill→search pipeline through several real LLM
+calls (compaction + extraction) — slow on CPU, and it timed out here (see
+"Known risks" #2 below, which this resolves). That test was removed from the
+`INTEGRATION_LIVE=ollama` subset and now runs as its own nightly step in
+**mock mode** instead (deterministic, ~4s) — the pipeline wiring is still
+exercised every night, just not through real generation. The production LLM
+default's pin was correspondingly shrunk from `qwen3:8b` (4.7 GB, needed only
+because the removed live pipeline test used to drive real generation with it)
+down to `qwen2.5:0.5b`, since the one remaining LLM live test never runs
+inference. Real-model generation-quality drift is the extraction-bench's job
+on a GPU box now, not this lane's — this lane keeps the cheap drift checks
+(API/tags shape, embed-dim) live and moves generation off the CPU runner.
 
 **Caching**: `actions/cache` keyed on
 `ollama-models-${OLLAMA_CACHE_VERSION}-${OLLAMA_MODELS}`, restoring into
@@ -141,35 +157,34 @@ as `/root/.ollama`. Because the key is a direct function of the model list
 and a manual version bump, any model-tag change or forced invalidation is
 grep-verifiable in the workflow diff — no stale silent cache hits.
 
-**Timing (measured, first-ever run, cold cache)**: 3m58s total —
-checkout/install/build/cache-restore/probe ~30s, Docker image pull +
-container start 68s, pulling all three models (~6 GB) 92s, live test subset
-36s, smoke suite 9s, issue automation + cleanup ~3s. Comfortably under the
-≤15 min target even cold, on a CPU-only host. Warm-cache timing (model pull
-steps become near-instant manifest checks) will be confirmed on a
-subsequent run once the cache-save fix below has landed.
+**Timing (measured, first-ever run, cold cache, pre-2026-07-14)**: 3m58s
+total — checkout/install/build/cache-restore/probe ~30s, Docker image pull +
+container start 68s, pulling all three models (~6 GB, back when `qwen3:8b`
+was pinned) 92s, live test subset 36s, smoke suite 9s, issue automation +
+cleanup ~3s. Predates both the model-pin shrink (`qwen3:8b` → `qwen2.5:0.5b`,
+far less to pull) and the plugin-flow.test.ts move to mock mode covered
+below — numbers will be lower post-fix but haven't been re-measured on a
+real dispatched run yet. Comfortably under the ≤15 min target even at the
+old, heavier weight.
 
-**Known risks (documented, not fixed by this slice — both confirmed via a
-real dispatched run, not speculation)**:
+**Known risks (documented, not fixed by this slice unless noted — confirmed
+via a real dispatched run, not speculation)**:
 
-1. The live block in `tests/providers/ollama-embed.test.ts` still hardcodes
-   model name `nomic-embed-text-v2-moe` from before the v0.2.1 hotfix. That
-   model is natively 768-dim; `OllamaEmbedProvider` expects 1024 regardless
-   of the model string passed in, so a real run of that specific test is
-   expected to fail with a dimension-mismatch error until someone updates
-   the test's model reference to `mxbai-embed-large`.
-2. `tests/e2e/plugin-flow.test.ts`'s live-mode pipeline test failed on its
-   first real run with a 30s search-poll timeout. Real `qwen2.5-coder:7b`
-   distillation across the pipeline's several LLM stages, running on a
-   CPU-only host, plausibly exceeds that test's hardcoded 30s poll window —
-   this looks like a CPU-inference-timing limitation in the pre-existing
-   test rather than a functional regression, but is unconfirmed pending a
-   second data point.
+1. ~~The live block in `tests/providers/ollama-embed.test.ts` hardcoded model
+   name `nomic-embed-text-v2-moe`, natively 768-dim against a 1024-dim
+   provider~~ — resolved; the live block now uses `mxbai-embed-large` (see
+   `tests/providers/ollama-embed.test.ts` live integration block).
+2. ~~`tests/e2e/plugin-flow.test.ts`'s live-mode pipeline test failed with a
+   search-poll timeout: real LLM distillation across several pipeline
+   stages, running on a CPU-only self-hosted runner (no GPU/VRAM), exceeded
+   the poll window~~ — resolved 2026-07-14 (Option A / CPU-runner fix, see
+   above): the test no longer runs in live mode on this lane at all. It runs
+   in mock mode as its own nightly step instead, so pipeline wiring is still
+   exercised nightly without depending on CPU-only generation speed.
 
-Both are follow-up FEAT candidates, not this slice's scope (they touch test
-code, not CI wiring). A red run from one or both of these is expected on
-the first several nightly runs — check the pinned issue body for the
-specific failing test names before assuming a new regression.
+A red run should now point at a genuine regression rather than a known,
+CPU-inference-timing limitation — check the pinned issue body for the
+specific failing test names before assuming otherwise.
 
 **Failure path**: a red run opens or updates a single pinned issue titled
 `nightly-live: red` with the failing test names (via

@@ -268,10 +268,16 @@ Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answ
   genuinely empty transcript are indistinguishable at every layer — not the Zod gate, not
   the job queue, not the poison counter (which only increments on failure, and a zero-atom
   success never fails). This is the headline finding of the teardown; see ADR-015.
-- **Four tables have zero writers:** day-one `messages`, `artifacts`, `provider_state`
-  (never written in this repo's history), plus in-flight `evidence_guard_drops`.
-  `provider_state` is the worst — nothing writes it, but `src/server/queries/dashboard.ts:245`
-  reads it, so it's an always-empty dashboard widget shipping to users, not just dead code.
+- **Corrected 2026-07-14 (caught by FEAT-493's build):** this bullet used to claim the
+  `artifacts` SQL table was a live zero-writer table. Wrong — `messages`, `artifacts`, and
+  `provider_state` were all **dropped, irreversibly**, by `migrations/040-drop-dead-tables.sql`
+  (none had ever been written; `provider_state` also had a dead reader,
+  `src/server/queries/dashboard.ts`, repointed at live `HealthState` in the same migration's
+  paired dashboard change). FEAT-493's first retention design targeted the `artifacts` table and
+  failed at runtime against it — exactly the stale-doc-read-as-authoritative class this repo
+  otherwise documents. Only `evidence_guard_drops` (migration 030) remains an actual zero-writer,
+  in-flight table. Disk artifacts (the thing FEAT-489/493 actually govern) live under
+  `<dataDir>/artifacts/<kind>/` on the filesystem, not in SQLite — see `src/storage/retention.ts`.
 - **LLM-proxy transcripts spool to disk plaintext, unredacted** (redaction happens at the
   daemon's stage-0 ingest, not at proxy capture). Files that fail JSON-parse or
   schema-validate quarantine to `.quarantine/` **before** ever reaching redaction — no TTL,
