@@ -320,6 +320,31 @@ export function configToYaml(cfg: Config): string {
     line(1, 'ageThresholdDays', (cfg.archival ?? EMIT_DEFAULTS.archival).ageThresholdDays),
     line(1, 'usefulnessFloor', (cfg.archival ?? EMIT_DEFAULTS.archival).usefulnessFloor),
     '',
+    // Tiered disk-artifact retention (FEAT-493, scaffolding) — mode: 'off'
+    // (default) is a hard no-op, see Config['retention'] doc comment.
+    // heavyArtifact.types / tierScope.media / tierScope.lean are string[]
+    // fields that ship empty by default (no `artifacts` producer exists yet)
+    // — only emitted when non-empty, same "omit when unset/empty" shape as
+    // security.redaction.customPatterns above.
+    line(0, 'retention'),
+    line(1, 'mode', (cfg.retention ?? EMIT_DEFAULTS.retention).mode),
+    line(1, 'ageThresholdDays', (cfg.retention ?? EMIT_DEFAULTS.retention).ageThresholdDays),
+    ...((cfg.retention ?? EMIT_DEFAULTS.retention).artifactsDir
+      ? [line(1, 'artifactsDir', (cfg.retention ?? EMIT_DEFAULTS.retention).artifactsDir)]
+      : []),
+    line(1, 'heavyArtifact'),
+    line(2, 'minSizeBytes', (cfg.retention ?? EMIT_DEFAULTS.retention).heavyArtifact.minSizeBytes),
+    ...(((cfg.retention ?? EMIT_DEFAULTS.retention).heavyArtifact.types.length > 0)
+      ? [arrayLine(2, 'types', (cfg.retention ?? EMIT_DEFAULTS.retention).heavyArtifact.types)]
+      : []),
+    line(1, 'tierScope'),
+    ...(((cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.media.length > 0)
+      ? [arrayLine(2, 'media', (cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.media)]
+      : []),
+    ...(((cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.lean.length > 0)
+      ? [arrayLine(2, 'lean', (cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.lean)]
+      : []),
+    '',
     // ingest_idempotency row retention (FEAT-432) — previously dropped on
     // every writeConfig() call (FEAT-461).
     line(0, 'ingestIdempotency'),

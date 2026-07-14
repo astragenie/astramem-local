@@ -16,6 +16,7 @@ import type { DB } from '../../storage/db.js';
 import type { DurabilityGateMode } from '../../distill/durability-gate.js';
 import type { ExtractProfile } from '../../distill/prompts/extract.js';
 import type { DistillCostCapConfig } from '../../distill/cost-cap.js';
+import type { Config } from '../../config/config.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────────
 
@@ -118,6 +119,10 @@ export interface DoctorCheckOpts {
    * deliberately NOT reusing that seam for this check). Defaults to `false`
    * when not supplied. */
   codexSubscriptionInUse?: boolean;
+  /** FEAT-493 (scaffolding): current `retention` config block. Defaults to
+   * `defaultConfig().retention` (mode 'off') when not supplied — see
+   * `checkRetention`. */
+  retentionConfig?: Config['retention'];
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
