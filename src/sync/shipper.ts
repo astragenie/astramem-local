@@ -390,10 +390,14 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
     // DIAG (sync-400-visibility): an empty-body 400 hides whether the reject is
     // auth, model-binding, or an upstream gateway — surface status-line headers
     // + token presence so the cause is diagnosable from the daemon log alone.
-    const ct = res.headers.get('content-type') ?? '';
-    const wa = res.headers.get('www-authenticate') ?? '';
-    const srv = res.headers.get('server') ?? '';
-    const reqId = res.headers.get('x-request-id') ?? res.headers.get('request-id') ?? '';
+    // Optional-chain every header read: this block exists to make the HTTP
+    // failure diagnosable, so it must never itself throw and REPLACE the real
+    // `HTTP <status>` error with a `TypeError: cannot read 'get'` (which is
+    // exactly what a non-standard/headers-less Response would otherwise cause).
+    const ct = res.headers?.get('content-type') ?? '';
+    const wa = res.headers?.get('www-authenticate') ?? '';
+    const srv = res.headers?.get('server') ?? '';
+    const reqId = res.headers?.get('x-request-id') ?? res.headers?.get('request-id') ?? '';
     const diag = `ct='${ct}' www-auth='${wa}' server='${srv}' reqId='${reqId}' tokenLen=${opts.token?.length ?? 0} batch=${rows.length}`;
     throw new Error(
       `sync ship failed: HTTP ${res.status}${bodyText ? ` body=${bodyText}` : ' (empty body)'} [${diag}]`,
