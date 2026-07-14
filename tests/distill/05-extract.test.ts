@@ -1601,6 +1601,18 @@ describe('adversarial pipeline validation (WS1 review + validation, 2026-07-13)'
           confidence: 0.6,
           evidence: 'I started therapy recently',
         },
+        {
+          // Round-2 validation repro: Saxon genitive ("<referent>'s last
+          // <unit>'s...") is the exact syntactic mirror of "of <referent>",
+          // and the fabrication the round-1 "of"-only blocklist never
+          // touched. Must ALSO stay completely unresolved at the full
+          // pipeline level, not just at the direct groundRelativeDates probe.
+          type: 'fact',
+          text: "The project's last week's progress was the worst on record.",
+          importance: 0.6,
+          confidence: 0.7,
+          evidence: "the project's last week's progress was the worst on record",
+        },
       ],
     });
 
@@ -1616,11 +1628,11 @@ describe('adversarial pipeline validation (WS1 review + validation, 2026-07-13)'
     };
 
     const result = await extractChunk(0, 'some realistic transcript chunk', llm, budget, 10.0, 'engineering', '2023-07-15');
-    expect(result.atoms).toHaveLength(5);
+    expect(result.atoms).toHaveLength(6);
 
-    // The confirmed fabrication case: "last week of the project" MUST stay
-    // completely unresolved -- not "the the week before...", not any
-    // rewrite at all.
+    // The confirmed round-1 fabrication case: "last week of the project"
+    // MUST stay completely unresolved -- not "the the week before...", not
+    // any rewrite at all.
     expect(result.atoms[0]!.text).toBe('Caroline described the last week of the project as extremely stressful.');
     expect(result.atoms[0]!.text).not.toContain('the the');
 
@@ -1628,20 +1640,28 @@ describe('adversarial pipeline validation (WS1 review + validation, 2026-07-13)'
     // -- the guard is narrow, not a kill switch for the whole module.
     expect(result.atoms[1]!.text).toBe('Caroline mentioned she visited the clinic 14 July 2023 and plans to return August 2023.');
 
-    // Quoted speech and possessive continuations resolve normally (known,
-    // documented, intentional tradeoffs -- see temporal-grounding.ts).
+    // Quoted speech resolves normally (known, documented, intentional
+    // tradeoff -- see temporal-grounding.ts). A following possessive "'s"
+    // does NOT resolve -- reversed in round 2 of validation after "The
+    // project's last week's numbers..." proved the same construction is
+    // also a fabrication vector once something else precedes it.
     expect(result.atoms[2]!.text).toBe('She said "I saw her the week before 15 July 2023" during the call.');
-    expect(result.atoms[3]!.text).toBe("We are targeting the weekend after 15 July 2023's release.");
+    expect(result.atoms[3]!.text).toBe("We are targeting next weekend's release.");
 
     // "recently" stays permanently excluded.
     expect(result.atoms[4]!.text).toBe('Caroline started therapy recently.');
 
-    // evidence is NEVER touched, on every atom in the batch, including the
-    // fabrication-guard case and the recently-excluded case.
+    // The confirmed round-2 fabrication case: Saxon genitive MUST stay
+    // completely unresolved at the full pipeline level too.
+    expect(result.atoms[5]!.text).toBe("The project's last week's progress was the worst on record.");
+
+    // evidence is NEVER touched, on every atom in the batch, including both
+    // fabrication-guard cases and the recently-excluded case.
     expect(result.atoms[0]!.evidence).toBe('it was the last week of the project and I barely slept');
     expect(result.atoms[1]!.evidence).toBe('I went to the clinic yesterday, I will go back next month');
     expect(result.atoms[2]!.evidence).toBe('She said "I saw her last week" during the call');
     expect(result.atoms[3]!.evidence).toBe("We are targeting next weekend's release");
     expect(result.atoms[4]!.evidence).toBe('I started therapy recently');
+    expect(result.atoms[5]!.evidence).toBe("the project's last week's progress was the worst on record");
   });
 });
