@@ -130,6 +130,12 @@ const modelOverrides: EvalModelOverrides | undefined =
 // FEAT-479 D3 §3.2: additive — omit to inherit the shipped 'engineering'
 // default exactly as before this flag existed.
 const extractProfileFlag = get('--extract-profile') as 'engineering' | 'conversational' | undefined;
+const extractionPassesRaw = get('--extraction-passes');
+const extractionPassesFlag = extractionPassesRaw !== undefined ? (Number(extractionPassesRaw) as 1 | 2) : undefined;
+if (extractionPassesFlag !== undefined && extractionPassesFlag !== 1 && extractionPassesFlag !== 2) {
+  console.error(`--extraction-passes must be 1 or 2, got: ${extractionPassesRaw}`);
+  process.exit(1);
+}
 // WS2 rerank-flip experiment (docs/specs/20260713-locomo-architect-design.md
 // workstream 2): `--cross-encoder` flips the isolated eval daemon's
 // crossEncoder.enabled via config only (src/search/rerank.ts's own logic is
@@ -195,6 +201,8 @@ async function runShard(opts: {
   /** Additive (FEAT-479 D3 §3.2) — undefined reproduces the shipped
    *  'engineering' default exactly. */
   extractProfile?: 'engineering' | 'conversational';
+  /** Additive (W2 dual-pass A/B) — undefined inherits the shipped default (1). */
+  extractionPasses?: 1 | 2;
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -212,7 +220,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -223,7 +231,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -523,7 +531,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,

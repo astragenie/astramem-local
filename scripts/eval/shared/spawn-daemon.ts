@@ -152,7 +152,7 @@ function withEnvOverrides<T>(overrides: Record<string, string>, fn: () => T): T 
  *  atoms/session). */
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational' },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2 },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -191,8 +191,10 @@ export function makeIsolatedEvalEnv(
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
   }
-  if (opts?.extractProfile !== undefined) {
-    configLines.push('distill:', `  extractProfile: ${opts.extractProfile}`);
+  if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined) {
+    configLines.push('distill:');
+    if (opts.extractProfile !== undefined) configLines.push(`  extractProfile: ${opts.extractProfile}`);
+    if (opts.extractionPasses !== undefined) configLines.push(`  extractionPasses: ${opts.extractionPasses}`);
   }
   writeFileSync(join(configDir, 'config.yaml'), configLines.join('\n') + '\n', 'utf8');
 
