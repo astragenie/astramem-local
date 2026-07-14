@@ -38,7 +38,11 @@ const SECOND_ATTEMPT_VALID = JSON.stringify({
       type: 'lesson',
       text: 'Bun does not support better-sqlite3 on Windows without special flags',
       importance: 0.8,
-      confidence: 0.85
+      confidence: 0.85,
+      // FEAT-485: lesson/decision atoms are dropped without a non-empty
+      // evidence excerpt (requireEvidenceForRichTypes) — this fixture tests
+      // the retry path, not evidence policy, so it supplies one.
+      evidence: 'Bun does not support better-sqlite3 on Windows without special flags'
     }
   ]
 });
@@ -218,6 +222,9 @@ describe('extract stage', () => {
           text: 'use Postgres for the analytics store',
           importance: 0.8,
           confidence: 0.9,
+          // FEAT-485: decision atoms require non-empty evidence — this
+          // fixture tests entity parsing, not evidence policy.
+          evidence: 'We decided to use Postgres for the analytics store',
           entities: [{ name: 'Postgres', kind: 'tech' }],
         },
       ],
@@ -383,6 +390,9 @@ describe('extract stage', () => {
             text: 'astramemory-local uses SQLite for storage',
             importance: 0.8,
             confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relations[] parsing, not evidence policy.
+            evidence: 'astramemory-local uses SQLite for storage',
             entities: [
               { name: 'astramemory-local', kind: 'project' },
               { name: 'SQLite', kind: 'tech' },
@@ -562,6 +572,9 @@ describe('extract stage', () => {
             text: 'astramemory-local uses SQLite instead of Postgres',
             importance: 0.8,
             confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relations[] filtering, not evidence policy.
+            evidence: 'astramemory-local uses SQLite instead of Postgres',
             entities: [
               { name: 'astramemory-local', kind: 'project' },
               { name: 'SQLite', kind: 'tech' },
@@ -605,6 +618,9 @@ describe('extract stage', () => {
             text: 'astramemory-local uses SQLite instead of Postgres',
             importance: 0.8,
             confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relationDropCounts tallying, not evidence policy.
+            evidence: 'astramemory-local uses SQLite instead of Postgres',
             entities: [
               { name: 'astramemory-local', kind: 'project' },
               { name: 'SQLite', kind: 'tech' },
@@ -637,6 +653,9 @@ describe('extract stage', () => {
         atoms: [
           {
             type: 'decision', text: 'astramemory-local uses SQLite', importance: 0.8, confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relationDropCounts being empty, not evidence policy.
+            evidence: 'astramemory-local uses SQLite',
             entities: [{ name: 'astramemory-local', kind: 'project' }, { name: 'SQLite', kind: 'tech' }],
             relations: [{ subject: 'astramemory-local', predicate: 'uses', object: 'SQLite' }],
           },
@@ -850,6 +869,9 @@ describe('extract stage', () => {
             text: 'astramem-local uses Postgres',
             importance: 0.7,
             confidence: 0.8,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests entity-name-quality filtering, not evidence policy.
+            evidence: 'astramem-local uses Postgres',
             entities: [
               { name: 'astramem-local', kind: 'project' },
               { name: 'Postgres', kind: 'tech' },

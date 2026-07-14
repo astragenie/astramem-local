@@ -102,6 +102,8 @@ import { checkMemoryHealth } from './memory-health.js';
 import { checkDurabilityGateMode } from './durability-gate-mode.js';
 import { checkExtractProfile } from './extract-profile.js';
 import { checkEntityRelations } from './entity-relations.js';
+import { checkEvidenceProvenance } from './evidence-provenance.js';
+import { checkTranscriptSessionProvenance } from './transcript-session-provenance.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
 import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
 import { checkEntityLinkRate } from './entity-link-rate.js';
@@ -178,6 +180,8 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkExtractProfile(opts.extractProfile ?? 'engineering'),
     checkEntityRelations(dataDir, opts.extractProfile ?? 'engineering', encryptionEnabled),
+    checkEvidenceProvenance(dataDir, encryptionEnabled),
+    checkTranscriptSessionProvenance(dataDir, encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
     checkAtomValidityExtraction(dataDir, encryptionEnabled),
     checkEntityLinkRate(dataDir, encryptionEnabled),
