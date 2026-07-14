@@ -89,6 +89,10 @@ export interface AtomV2 {
      * FEAT-496: reserved, currently unwritten by any producer. Opaque attestation/signature string for the extraction (e.g. a hash or signed claim proving which worker/model ran), for future tamper-evidence use cases. Freeform string, no enum.
      */
     attestation?: string | null;
+    /**
+     * FEAT-496/ADR-017: whether the operator disclosure/opt-in required for capturing a non-user speaker (audio FEAT-489, meeting captions FEAT-491) was satisfied at capture time. Scoped onto atom@2 by ADR-017 deliberately, so consent provenance has one schema-change surface rather than being duplicated per capture source. null/absent = not applicable or not recorded (e.g. atoms with no non-user speaker involved); true/false = an explicit disclosure determination was made.
+     */
+    consent_disclosed?: boolean | null;
   };
   /**
    * Bitemporal valid-time start.

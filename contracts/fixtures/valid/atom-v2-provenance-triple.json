@@ -13,7 +13,8 @@
     "extractor": "astramem-local@0.7.0",
     "worker": "local-gpu",
     "model": "qwen3-8b@2026-06",
-    "attestation": "sha256:9f8e7d6c5b4a3928170695847362514049382716059483726150493827160f"
+    "attestation": "sha256:9f8e7d6c5b4a3928170695847362514049382716059483726150493827160f",
+    "consent_disclosed": true
   },
   "valid_from": "2026-07-14T00:00:00.000Z",
   "valid_to": null,

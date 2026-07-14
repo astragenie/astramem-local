@@ -287,6 +287,16 @@ identity and timing to reach stored atom provenance, not just the wire.
   `attestation` is an opaque signature/hash for future tamper-evidence use.
   No enum on any of the three — freeform strings, since the value sets don't
   exist yet.
+- **`provenance.consent_disclosed`** (optional, nullable boolean; ADR-017
+  decision 6) — whether the operator disclosure/opt-in required for capturing
+  a non-user speaker (audio FEAT-489, meeting captions FEAT-491) was
+  satisfied at capture time. Tri-state semantics: `null`/absent = not
+  applicable or not recorded (e.g. atoms with no non-user speaker involved);
+  `true`/`false` = an explicit disclosure determination was made. Scoped onto
+  atom@2 provenance deliberately (ADR-017) so consent provenance has ONE
+  schema-change surface instead of being duplicated per capture source.
+  Server-side enforcement policy (hard-reject on missing/false at ingest) is
+  FEAT-489/491 daemon-side work, not part of this contract.
 
 **Deliberately NOT added here: `platform` / `meeting_id`.** FEAT-491's
 meeting-caption capture source needs these, but they describe the *capture
@@ -301,7 +311,8 @@ above rather than a competing shape.
 
 Fixtures: `atom-v2-speaker-segment-evidence.json` (valid, exercises both new
 evidence fields) and `atom-v2-provenance-triple.json` (valid, exercises the
-reserved provenance triple) added under `fixtures/valid/`.
+reserved provenance triple plus `consent_disclosed: true`) added under
+`fixtures/valid/`.
 
 ## Fixture naming convention (load-bearing)
 
@@ -614,6 +625,15 @@ explicitly (point 4 above), not infer it from the npm package's semver.
 
 ## Changelog
 
+- **2.3.0** — `atom.v2.schema.json` additive extension (FEAT-496, 2026-07-14;
+  see "atom@2 additive extension" above). New optional fields, no schema
+  version bump per the additive-minor rule: `evidence[].speaker_label`,
+  `evidence[].segment_start_ms`, the reserved provenance triple
+  `provenance.worker`/`model`/`attestation`, and
+  `provenance.consent_disclosed` (ADR-017 decision 6 consent provenance).
+  New fixtures: `atom-v2-speaker-segment-evidence.json`,
+  `atom-v2-provenance-triple.json` (the latter also exercises
+  `consent_disclosed: true`).
 - **2.1.0** — `atom.v2.schema.json` `entities[]` items gain optional
   `valid_at`/`invalid_at` (both nullable `date-time`, FEAT-453 fact-level
   bitemporal tracking) — additive, in place, no schema major bump per the
