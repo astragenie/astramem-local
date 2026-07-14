@@ -117,6 +117,7 @@ import { checkEmbed } from './embed.js';
 import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-supplementary.js';
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
+import { checkMemorySentinel } from './memory-sentinel.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -188,6 +189,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),
     checkDevNoAuth(opts.devNoAuthActive ?? false),
     checkSpoolQuarantine(dataDir),
+    checkMemorySentinel(),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
