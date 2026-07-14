@@ -1,11 +1,13 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
   resolveAnswerString, containment, precision, classify, computeBreakdown, vecKMatchedLimit,
-  diagnoseRetrieval, type DiagnosisRecord,
+  diagnoseRetrieval, judgeContainsFact, JudgeBudgetTracker, RETRIEVAL_JUDGE_MARKER,
+  DEFAULT_JUDGE_TOP_N, type DiagnosisRecord,
 } from './diagnose-retrieval.mts';
 import { stemmedTokens } from './judge/metrics.mts';
 import type { SearchHit } from '../shared/daemon-client.js';
 import type { LoCoMoSample } from './lib/types.js';
+import type { LLMProvider, ChatMsg, ChatResult } from '../../../src/contracts/llm.js';
 
 function hit(text: string): SearchHit {
   return { id: 'x', type: 'fact', text, score: 0.5, source: 'fused' };
@@ -280,6 +282,7 @@ describe('computeBreakdown', () => {
       classification, match_rank: classification === 'rank-ok' ? 1 : classification === 'rank-miss' ? 11 : null,
       match_overlap: classification === 'not-in-db' ? null : 0.8, rank_verified: rankVerified,
       short_answer: shortAnswer, total_hits: 20,
+      judged: false, judge_calls: 0, judge_failures: 0, judge_capped: false,
     };
   }
 
@@ -336,5 +339,272 @@ describe('computeBreakdown', () => {
     expect(overall.n).toBe(3);
     expect(overall.rank_miss).toBe(2);
     expect(overall.unverified_rank_n).toBe(1);
+  });
+});
+
+// ── #267 fix: LLM-judge classifier ──────────────────────────────────────
+
+/** Fake LLMProvider whose chat() decides {"match": true|false} by testing
+ *  `matchesWhen` against the "Stored memory: " line of the user message --
+ *  lets a test control exactly which candidate hit the judge accepts
+ *  without any real network/model call. Mirrors
+ *  tests/consolidate/contradiction-judge-onfallback.test.ts's fakeProvider. */
+function fakeJudge(matchesWhen: (hitText: string) => boolean): LLMProvider {
+  return {
+    name: 'ollama',
+    model: 'fake-judge',
+    chat: async (messages: ChatMsg[]): Promise<ChatResult> => {
+      const userMsg = messages.find(m => m.role === 'user')?.content ?? '';
+      const hitText = userMsg.split('Stored memory: ')[1] ?? '';
+      return { text: JSON.stringify({ match: matchesWhen(hitText) }), usage: { in: 0, out: 0, usd: 0 } };
+    },
+    health: async () => ({ ok: true, model: 'fake-judge', latency_ms: 0 }),
+  };
+}
+
+function throwingJudge(): LLMProvider {
+  return {
+    name: 'ollama',
+    model: 'fake-judge',
+    chat: async () => { throw new Error('judge unreachable'); },
+    health: async () => ({ ok: true, model: 'fake-judge', latency_ms: 0 }),
+  };
+}
+
+describe('judgeContainsFact', () => {
+  it('returns match:true, ok:true on a well-formed {"match":true} response', async () => {
+    const llm = fakeJudge(() => true);
+    const result = await judgeContainsFact(llm, 'q', 'gold', 'hit');
+    expect(result).toEqual({ match: true, ok: true });
+  });
+
+  it('returns match:false, ok:true on a well-formed {"match":false} response', async () => {
+    const llm = fakeJudge(() => false);
+    const result = await judgeContainsFact(llm, 'q', 'gold', 'hit');
+    expect(result).toEqual({ match: false, ok: true });
+  });
+
+  it('falls back to ok:false on unparsable JSON (never throws)', async () => {
+    const llm: LLMProvider = {
+      name: 'ollama', model: 'x',
+      chat: async () => ({ text: 'not json', usage: { in: 0, out: 0, usd: 0 } }),
+      health: async () => ({ ok: true, model: 'x', latency_ms: 0 }),
+    };
+    expect(await judgeContainsFact(llm, 'q', 'gold', 'hit')).toEqual({ match: false, ok: false });
+  });
+
+  it('falls back to ok:false on a well-formed-JSON-but-wrong-shape response (never throws)', async () => {
+    const llm: LLMProvider = {
+      name: 'ollama', model: 'x',
+      chat: async () => ({ text: '{"verdict":"yes"}', usage: { in: 0, out: 0, usd: 0 } }),
+      health: async () => ({ ok: true, model: 'x', latency_ms: 0 }),
+    };
+    expect(await judgeContainsFact(llm, 'q', 'gold', 'hit')).toEqual({ match: false, ok: false });
+  });
+
+  it('falls back to ok:false on a rejected chat() call (never throws)', async () => {
+    const result = await judgeContainsFact(throwingJudge(), 'q', 'gold', 'hit');
+    expect(result).toEqual({ match: false, ok: false });
+  });
+
+  it('the system prompt carries the stable marker (for a real judge-routing mock elsewhere)', async () => {
+    let capturedSystem = '';
+    const llm: LLMProvider = {
+      name: 'ollama', model: 'x',
+      chat: async (messages: ChatMsg[]) => {
+        capturedSystem = messages.find(m => m.role === 'system')?.content ?? '';
+        return { text: '{"match":true}', usage: { in: 0, out: 0, usd: 0 } };
+      },
+      health: async () => ({ ok: true, model: 'x', latency_ms: 0 }),
+    };
+    await judgeContainsFact(llm, 'q', 'gold', 'hit');
+    expect(capturedSystem).toContain(RETRIEVAL_JUDGE_MARKER);
+  });
+});
+
+describe('JudgeBudgetTracker', () => {
+  it('trips once maxCalls is reached', () => {
+    const tracker = new JudgeBudgetTracker(2, 60_000);
+    expect(tracker.tripped()).toBe(false);
+    tracker.spend();
+    expect(tracker.tripped()).toBe(false);
+    tracker.spend();
+    expect(tracker.tripped()).toBe(true);
+  });
+
+  it('trips once maxWallClockMs elapses, independent of call count', async () => {
+    const tracker = new JudgeBudgetTracker(1000, 10);
+    expect(tracker.tripped()).toBe(false);
+    await new Promise(r => setTimeout(r, 20));
+    expect(tracker.tripped()).toBe(true);
+  });
+});
+
+describe('diagnoseRetrieval with --llm-judge (#267 fix)', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function sampleWithOneQuestion(question: string, answer: string, category: 1 | 2 | 3 | 4 = 4): LoCoMoSample {
+    return {
+      sample_id: 'conv-x',
+      conversation: { speaker_a: 'A', speaker_b: 'B' } as LoCoMoSample['conversation'],
+      qa: [{ question, answer, evidence: [], category }],
+    };
+  }
+
+  function stubRecallByLimit(textsByLimit: Record<number, string[]>): ReturnType<typeof vi.fn> {
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { limit: number };
+      const texts = textsByLimit[body.limit] ?? [];
+      const hits = texts.map((text, i) => ({ id: `h${i}`, type: 'fact', text, score: 0.5, source: 'fused' }));
+      return new Response(JSON.stringify({ hits }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  }
+
+  // Regression test: the exact worked example from issue #267 (conv-26 qa#87).
+  // Real containment score, computed against the actual containment()/
+  // stemmedTokens() functions: 0.5 -- below the 0.6 threshold, so pure
+  // containment buckets this 'not-in-db' even though the fact IS stored.
+  const GOLD = 'because of their inclusivity and support for LGBTQ+ individuals';
+  const STORED = "Caroline chose an adoption agency because it helps LGBTQ+ folks with adoption and its inclusivity and support appealed to her.";
+
+  it('pure containment (no --llm-judge) reproduces the #267 false negative: 0.5 < 0.6 threshold -> not-in-db', async () => {
+    expect(containment(stemmedTokens(GOLD), STORED)).toBeCloseTo(0.5, 5);
+    stubRecallByLimit({ 12: [STORED] });
+    const sample = sampleWithOneQuestion('Why did Caroline choose that agency?', GOLD);
+    const report = await diagnoseRetrieval({ baseUrl: 'http://x', token: 't' }, [sample], { productionK: 10 });
+    expect(report.records[0]!.classification).toBe('not-in-db');
+    expect(report.judge_summary.enabled).toBe(false);
+  });
+
+  it('--llm-judge reclassifies the #267 false negative correctly: the judge confirms the paraphrase -> rank-ok', async () => {
+    stubRecallByLimit({ 12: [STORED] });
+    const llm = fakeJudge(text => text.includes('LGBTQ+ folks'));
+    const sample = sampleWithOneQuestion('Why did Caroline choose that agency?', GOLD);
+    const report = await diagnoseRetrieval({ baseUrl: 'http://x', token: 't' }, [sample], { productionK: 10, llm });
+
+    const record = report.records[0]!;
+    expect(record.classification).toBe('rank-ok');
+    expect(record.match_rank).toBe(1);
+    expect(record.judged).toBe(true);
+    expect(record.judge_calls).toBe(1);
+    expect(record.judge_failures).toBe(0);
+    expect(report.judge_summary).toEqual({ enabled: true, total_calls: 1, total_failures: 0, capped_records: 0 });
+  });
+
+  // Regression test: the WS6 mirror-image defect -- a hit that clears
+  // containment's threshold on coincidental overlap, but the judge
+  // (correctly) rejects it as unrelated. Must demote rank-ok -> not-in-db
+  // when nothing else in either pool matches.
+  it('--llm-judge demotes a WS6-style coincidental-overlap false positive from rank-ok to not-in-db', async () => {
+    // "Gina's physical store location" vs an online-store-only atom sharing
+    // just enough tokens to clear old containment+precision, but about a
+    // different fact entirely.
+    const coincidental = 'Gina runs her business as an online store with no physical location.';
+    stubRecallByLimit({ 12: [coincidental], 500: [coincidental] });
+    expect(containment(stemmedTokens('a strip mall downtown'), coincidental)).toBeGreaterThanOrEqual(0); // sanity: function still callable
+    const llm = fakeJudge(() => false); // judge correctly rejects every candidate as unrelated
+    const sample = sampleWithOneQuestion("What did Gina find for her store's physical location?", 'a strip mall downtown');
+    const report = await diagnoseRetrieval({ baseUrl: 'http://x', token: 't' }, [sample], { productionK: 10, llm });
+
+    const record = report.records[0]!;
+    expect(record.classification).toBe('not-in-db');
+    expect(record.judged).toBe(true);
+    expect(record.judge_calls).toBeGreaterThan(0);
+  });
+
+  it('falls through matched-pool judge rejection to the wide pool and finds a judge-confirmed match there', async () => {
+    stubRecallByLimit({
+      12: ['totally unrelated filler'],
+      500: ['totally unrelated filler', 'Caroline attended a support group'],
+    });
+    const llm = fakeJudge(text => text.includes('support group'));
+    const sample = sampleWithOneQuestion('q', 'Caroline attended a support group');
+    const report = await diagnoseRetrieval({ baseUrl: 'http://x', token: 't' }, [sample], { productionK: 10, llm });
+
+    const record = report.records[0]!;
+    expect(record.classification).toBe('rank-miss'); // found only in the wide pool -- rank_verified: false, same as pre-#267
+    expect(record.rank_verified).toBe(false);
+    expect(record.match_rank).toBe(2);
+    expect(record.judged).toBe(true);
+  });
+
+  it('a judge call failure falls back to the old containment+precision decision for that one candidate', async () => {
+    stubRecallByLimit({ 12: ['Caroline attended a support group.'] });
+    const sample = sampleWithOneQuestion('q', 'Caroline attended a support group');
+    const report = await diagnoseRetrieval({ baseUrl: 'http://x', token: 't' }, [sample], { productionK: 10, llm: throwingJudge() });
+
+    const record = report.records[0]!;
+    // Old containment on this hit is 1.0 -- clears threshold, so the
+    // per-candidate fallback still finds it even though the judge itself
+    // never successfully answered.
+    expect(record.classification).toBe('rank-ok');
+    expect(record.judge_calls).toBe(1);
+    expect(record.judge_failures).toBe(1);
+    expect(record.judged).toBe(true); // judge got a turn (call was made), even though it failed
+  });
+
+  it('exhausting the shared judge-call budget mid-run falls back to pure containment and flags judge_capped', async () => {
+    // Two questions, each with a matched-pool hit that would need a judge
+    // call to resolve. maxCalls=1 lets only the FIRST question's call
+    // through; the second must fall back to plain containment.
+    const fetchMock = vi.fn(async (_url: string, init: RequestInit) => {
+      const body = JSON.parse(init.body as string) as { limit: number; text: string };
+      const text = body.text.includes('first') ? 'Caroline attended a support group.' : 'Melanie went hiking yesterday.';
+      const hits = body.limit === 12 ? [{ id: 'h0', type: 'fact', text, score: 0.5, source: 'fused' }] : [];
+      return new Response(JSON.stringify({ hits }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const samples: LoCoMoSample[] = [
+      sampleWithOneQuestion('first question', 'Caroline attended a support group'),
+      sampleWithOneQuestion('second question', 'Melanie went hiking'),
+    ];
+    const llm = fakeJudge(() => true); // would confirm both if given the chance
+    const report = await diagnoseRetrieval({ baseUrl: 'http://x', token: 't' }, samples, { productionK: 10, llm, judgeMaxCalls: 1 });
+
+    // First question: judged normally (containment 1.0 on an exact-text
+    // hit means it's also picked as the sole top-N candidate).
+    expect(report.records[0]!.judged).toBe(true);
+    expect(report.records[0]!.judge_capped).toBe(false);
+    expect(report.records[0]!.classification).toBe('rank-ok');
+
+    // Second question: budget already exhausted -- falls back to plain
+    // containment (still correctly finds the exact-text hit at rank 1,
+    // containment 1.0, threshold 0.6) rather than being silently
+    // mislabeled not-in-db just because the judge never got a turn.
+    expect(report.records[1]!.judge_capped).toBe(true);
+    expect(report.records[1]!.judged).toBe(false);
+    expect(report.records[1]!.classification).toBe('rank-ok');
+
+    expect(report.judge_summary.capped_records).toBe(1);
+    expect(report.judge_summary.total_calls).toBe(1);
+  });
+
+  it('judges at most DEFAULT_JUDGE_TOP_N candidates per pool, in production rank order', async () => {
+    const noise = Array.from({ length: 8 }, (_, i) => `filler number ${i}`);
+    stubRecallByLimit({ 12: [...noise, 'match candidate A', 'match candidate B'] });
+    const calls: string[] = [];
+    const llm: LLMProvider = {
+      name: 'ollama', model: 'x',
+      chat: async (messages: ChatMsg[]) => {
+        const hitText = (messages.find(m => m.role === 'user')?.content ?? '').split('Stored memory: ')[1] ?? '';
+        calls.push(hitText);
+        return { text: JSON.stringify({ match: hitText === 'match candidate B' }), usage: { in: 0, out: 0, usd: 0 } };
+      },
+      health: async () => ({ ok: true, model: 'x', latency_ms: 0 }),
+    };
+    const sample = sampleWithOneQuestion('q', 'match candidate');
+    const report = await diagnoseRetrieval({ baseUrl: 'http://x', token: 't' }, [sample], { productionK: 10, llm });
+
+    // Only the top DEFAULT_JUDGE_TOP_N=3 containment-ranked candidates
+    // ("match candidate A"/"B" score highest, one filler makes up the third)
+    // are ever sent to the judge -- not all 10 hits.
+    expect(calls.length).toBeLessThanOrEqual(DEFAULT_JUDGE_TOP_N);
+    expect(report.records[0]!.classification).toBe('rank-ok');
+    expect(report.records[0]!.match_rank).toBe(10); // "match candidate B" is the 10th hit in production rank order
   });
 });
