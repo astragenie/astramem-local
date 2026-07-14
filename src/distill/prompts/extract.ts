@@ -267,6 +267,43 @@ export type ExtractProfile = 'engineering' | 'conversational';
  * when no sessionDateIso was available (legacy v0.0 envelopes, direct
  * /remember calls) — those callers see byte-identical behavior to before
  * this fix.
+ *
+ * UPDATE (LoCoMo WS3, 2026-07-13): narrowed the "sentiment padding"
+ * banned-abstraction. It used to exclude ANY standalone reaction, which
+ * meant the model was correctly following instructions when it dropped
+ * things like "Melanie thinks Caroline will be an awesome mom" — a real,
+ * durable fact about the two people's relationship, not conversational
+ * filler. Root-caused via a direct root-cause trace on questions from
+ * `docs/research/20260713-locomo-retrieval-diagnosis.md`'s not-in-db
+ * bucket: real production extraction, run twice (once pre-fix, once
+ * post-fix) on the same source session, showed the fix adds exactly the
+ * missing atom and nothing else (see PR discussion for the before/after).
+ * DO NOT widen this back to "any reaction with a named cause survives" —
+ * an early draft of this fix used exactly that wording and a reviewer
+ * caught that it would let "the user was frustrated with the build" back
+ * in (a named cause, but still the user's own mood, still padding). The
+ * test that actually holds, verbatim, so a future "cleanup" doesn't
+ * re-break it: the dividing line is WHOSE LIFE the reaction is about, not
+ * whether a cause is named — a reaction to your own circumstances is
+ * banned even with a named cause; a reaction to another specifically
+ * named person's specific event is a keeper.
+ * Known limitation, not yet fixed: when a session has BOTH people
+ * reacting to each other repeatedly, extraction still shows a lopsided
+ * capture rate — it tends to keep the reactions belonging to whichever
+ * person's event is the subject and drop the other person's commentary,
+ * even after this fix (measured ~77% capture on one dense two-way session,
+ * both losses on the same side). Same shape as the pre-existing
+ * Caroline/Melanie 58/42 extraction asymmetry flagged in the WS2
+ * root-cause research's "A secondary, correlated signal: speaker
+ * asymmetry" section (as of this writing that doc is an uncommitted
+ * local research artifact, not yet merged to origin/main — anchor on the
+ * section title, not a file:line, until it lands; see ADR-015's citation
+ * policy) — likely one mechanism, not confirmed. A dedicated
+ * reactions-extraction pass (giving reactions their own call instead of
+ * competing with headline facts for one call's attention) is the
+ * candidate fix if this turns out not to be good enough on its own; not
+ * built yet, gated on measuring whether the prompt fix alone is sufficient
+ * at full-sample scale.
  */
 export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL = `You extract durable PERSONAL knowledge from conversational transcripts — chats, journals, voice-note transcripts, casual check-ins between a person and an assistant — not engineering or coding sessions.
 
@@ -298,7 +335,7 @@ Date grounding: if a line reading "Observation date: <YYYY-MM-DD>" appears immed
 Banned abstractions — NEVER emit these shapes, even when a summary version is technically accurate:
 - Vague summaries: "discussed plans for the weekend", "talked about work stuff", "had a conversation about the move" — these describe the CONVERSATION itself, not a fact about the person's life; extract the actual plan, fact, or decision underneath instead, or emit nothing if there genuinely isn't one.
 - Meta-commentary: "the user shared an update", "mentioned something about the family" — never describe that a topic came up; state plainly what was actually said.
-- Sentiment padding: "seemed happy about it", "expressed some excitement" — skip a standalone mood observation unless the feeling itself is the durable, recurring fact (an ongoing preference or aversion belongs in "note", not a one-off reaction).
+- Sentiment padding: "seemed happy about it", "expressed some excitement" — the test is NOT "does this mood have a named cause." A person's reaction to their OWN circumstances is banned even with a specific named cause: "the user was frustrated with the build", "the user was thrilled after the workout", "the user was annoyed about the delayed flight" are all sentiment padding — skip them, cause or no cause. What is NOT banned, and must be kept as its own atom: one person's stated reaction or opinion about ANOTHER specifically named person's specific event, decision, or plan. That reaction is a fact about their relationship, not a mood — e.g. "Melanie told Caroline she thinks Caroline is doing something amazing by pursuing adoption and will be an awesome mom" is a keeper: it names who is reacting, who the reaction is about, and the specific thing that prompted it. The dividing line is whose life the reaction is about, not whether a cause is named — a reaction to your own life is still banned; a reaction to someone else's specific, named event is a keeper.
 
 Type-conditioned shape: conversational content maps mostly onto fact, note, event, and decision (a settled plan or choice); command and todo apply only when the source is literally a task, chore, or reminder, and lesson only when the person explicitly names something they personally learned. Regardless of type, every atom here stays atomic, single-valued, and roughly 15-80 words — do NOT apply the engineering profile's 300-800-character rich-shape rule (claim + rationale + consequence + provenance). Personal facts — a job, a relationship status, an address, a due date — are frequently corrected or superseded as life moves on, so keep each one a single clean, independently replaceable statement rather than a multi-clause paragraph.
 
@@ -365,7 +402,18 @@ WRONG (vague summary + unresolved possessor + meta-commentary about the conversa
 RIGHT (self-contained, possessor-qualified, states the actual fact instead of describing the conversation):
 {"type":"fact","text":"Sergey's sister Priya is currently going through a divorce, and has been having a difficult time with it lately.","importance":0.7,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}
 
-6. Input (issue #205 — atom-level validity, a genuine life-timeline, not a same-conversation correction): "I lived in Denver for about three years, then moved to Austin last year for a new job. Loving it here so far." ->
+6. Input: "Priya: I finally handed in my notice at the old job! -- Sergey: That's amazing, Priya! You've been wanting this for months, I'm so proud of you." ->
+{"atoms":[
+  {"type":"event","text":"Priya handed in her notice at her old job.","importance":0.7,"confidence":0.9,"entities":[{"name":"Priya","kind":"actor","subtype":"human"}]},
+  {"type":"note","text":"Sergey told Priya he is proud of her for handing in her notice, noting she had been wanting to make this move for months.","importance":0.5,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}
+]}
+(Sergey's reaction is kept as its own atom, NOT skipped as sentiment padding — it names who reacted, who it's about, and the specific event that prompted it.)
+
+7. Input: "Ugh, I'm so frustrated with the build today, it's been failing all afternoon." ->
+{"atoms":[]}
+(Sentiment padding, still — even though a cause is named ("the build"). The test is whose life the reaction is about, not whether a cause is named: this is Sergey reacting to his OWN circumstances, not to another named person's specific event. Compare to example 6 above, where the reaction is about Priya's stated event — that one is a keeper, this one is not.)
+
+8. Input (issue #205 — atom-level validity, a genuine life-timeline, not a same-conversation correction): "I lived in Denver for about three years, then moved to Austin last year for a new job. Loving it here so far." ->
 {"atoms":[
   {"type":"fact","text":"Sergey lived in Denver for about three years before moving away last year.","importance":0.6,"confidence":0.8,"invalid_at":"2025-07-13","entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Denver","kind":"other"}]},
   {"type":"fact","text":"Sergey moved to Austin last year for a new job, and has been enjoying it there so far.","importance":0.7,"confidence":0.85,"valid_at":"2025-07-13","entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]}
