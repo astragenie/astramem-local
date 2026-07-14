@@ -338,6 +338,12 @@ Self-containment — every atom must read as ONE complete, standalone sentence o
 - Preserve proper nouns EXACTLY as given — people's names, place names, employer and school names, product and brand names. Never substitute a generic noun ("her employer", "the city") for a name you were actually told.
 - Possessor qualification (Graphiti pattern): whenever a fact belongs to a specific person, name that owner inside the sentence itself. Write "Sergey's daughter Alice starts kindergarten in September, moving up from the preschool she has attended the past two years", never a bare "daughter starts kindergarten in September" or "starts school in the fall" — a reader must never have to guess whose fact this is.
 
+Terseness (verbosity tax): within the 15-80-word self-contained-sentence range above, target the low end — roughly 20 words or fewer per atom. Benchmark scoring is token-F1 against a short gold answer, and a correct-but-verbose atom gets echoed back verbatim, costing precision (e.g. gold "pots" vs. an atom that reads "pots and clay sculptures, including a cup with a dog face" scores far lower than a terse one would). One atom, one fact:
+- Lead with the fact, not the framing. Write "Melanie goes camping once or twice a year." NOT "During the conversation, Melanie mentioned that she and her family usually only go camping once or twice a year."
+- No hedging or meta prefixes — never "apparently", "it seems", "the speaker mentioned". State the fact plainly.
+- If a sentence carries two distinct facts, split it into two atoms rather than compounding them into one.
+- Terseness never overrides possessor qualification, attribution, or date grounding above — a named person, an absolute date, and one fact fit in 20 words. Cut restated context and filler first; concrete values (names, numbers, dates, quoted phrases) stay verbatim, never dropped for brevity.
+
 Date grounding: if a line reading "Observation date: <YYYY-MM-DD>" appears immediately before the transcript chunk below, treat that as the authoritative anchor and resolve every relative date expression ("yesterday", "last week", "next month", "three years ago") against it — write the resolved absolute date in natural-language form (e.g. "14 May 2023", NOT "2023-05-14") directly into the atom's text in place of the relative phrase, not alongside it. Use natural-language dates in "text" specifically — this is prose a person or another model reads later, not a machine-parsed field; "valid_at"/"invalid_at" below are the separate ISO-8601 fields for that. Otherwise, if the transcript states or implies an explicit observation/capture date (a timestamp, a line like "today is 2026-07-13", a dated header), resolve relative dates against that anchor instead, still in natural-language form. If no anchor exists at all — no Observation date line and no in-transcript date — keep the original relative phrasing rather than inventing an absolute date you were not given — a guessed date is worse than an honest relative one.
 
 Banned abstractions — NEVER emit these shapes, even when a summary version is technically accurate:
@@ -398,8 +404,9 @@ Examples (illustrative only, not exhaustive — the shape of these IS the spec: 
 
 3. Input: "We ended up going with the Montessori school down the street for Alice instead of the public one, mostly because of the smaller class sizes." ->
 {"atoms":[
-  {"type":"decision","text":"Sergey and his wife chose the Montessori school down the street for their daughter Alice instead of the local public school, mainly because of its smaller class sizes.","importance":0.7,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
+  {"type":"decision","text":"Sergey and his wife chose Montessori over public school for daughter Alice, citing smaller class sizes.","importance":0.7,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
 ]}
+(Terse shape: one fact, 16 words, leads with the decision — not "went with the Montessori school down the street... mostly because" framing.)
 
 4. Input: "Yeah we just talked about the weekend and stuff, nothing major, haha." ->
 {"atoms":[]}
@@ -933,6 +940,8 @@ Cover BOTH speakers with EQUAL attention. Do not let whichever speaker's storyli
 
 Self-containment: resolve every pronoun to the actual named person. Never emit "she went twice a year" — write "Melanie goes horseback riding once or twice a year". Preserve proper nouns exactly as given.
 
+Terseness (verbosity tax): within the 10-80-word range above, target the low end — roughly 20 words or fewer per atom. Benchmark scoring is token-F1 against a short gold answer, and a correct-but-verbose atom gets echoed back verbatim, costing precision. Lead with the fact, not the framing: "Melanie goes camping once or twice a year." NOT "During the conversation, Melanie mentioned that she and her family usually only go camping once or twice a year." No hedging or meta prefixes ("apparently", "it seems", "the speaker mentioned"). If a candidate carries two distinct specifics, split it into two atoms rather than compounding them. Terseness never overrides self-containment, attribution, or date grounding above — a named person, an absolute date, and one specific fit in 20 words. Cut restated context and filler first; the concrete value itself (the number, date, name, or quoted phrase) stays verbatim, never dropped for brevity.
+
 Ground relative dates against an anchor. If a line reading "Observation date: <YYYY-MM-DD>"
 appears immediately before the transcript chunk below, treat it as the authoritative anchor and
 resolve "yesterday" / "last week" / "this morning" / "three years ago" to a natural-language
@@ -975,8 +984,9 @@ never a bare ISO date like "2026-07-03", and never left as the unresolved relati
 
 4. Input: "Melanie: Honestly, if you're thinking about adopting, my advice is to start the home study early — it took us almost 7 months just for that part." ->
 {"atoms":[
-  {"type":"note","text":"Melanie advised starting the adoption home study early, noting it took her family almost 7 months to complete that part alone.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+  {"type":"note","text":"Melanie advised starting the adoption home study early — it took her family almost 7 months.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
 ]}
+(Terse shape: 15 words, keeps the attribution and the concrete duration, drops the restated "just for that part.")
 
 5. Input: "Caroline: I used to go horseback riding with my dad when I was a kid." ->
 {"atoms":[

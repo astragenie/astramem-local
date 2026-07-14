@@ -414,6 +414,41 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
 
     expect(estimatedTotal).toBeLessThanOrEqual(NUM_CTX_CAP);
   });
+
+  // W4 (verbosity-tax fix, docs/research/20260713-single-hop-root-cause.md):
+  // a correct-but-verbose atom loses precision against the token-F1 scorer.
+  // The terseness rule tightens the target inside the existing 15-80-word
+  // self-contained range rather than replacing it — do not weaken either.
+  it('states the terseness rule with a <=20-word target and the lead-with-the-fact example', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Terseness \(verbosity tax\)/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/20 words or fewer/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Lead with the fact, not the framing/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Melanie goes camping once or twice a year/);
+  });
+
+  it('terseness never overrides possessor qualification, attribution, or date grounding', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(
+      /Terseness never overrides possessor qualification, attribution, or date grounding/,
+    );
+  });
+
+  // Guard against the terseness rule silently swallowing the date-grounding
+  // rule it sits next to in the prompt body.
+  it('still states the date-grounding rule after the terseness rule was added', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Date grounding/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Observation date/);
+  });
+
+  it('the reworked Montessori few-shot example is <=20 words and starts with the subject name', () => {
+    const match = EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL.match(
+      /"decision","text":"([^"]+)"/,
+    );
+    expect(match).not.toBeNull();
+    const text = match![1];
+    expect(text.startsWith('Sergey')).toBe(true);
+    const wordCount = text.trim().split(/\s+/).length;
+    expect(wordCount).toBeLessThanOrEqual(20);
+  });
 });
 
 describe('conversational prompt — the exhaustiveness checklist is MECHANICAL, not an exhortation', () => {
@@ -509,5 +544,40 @@ describe('EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER content (dual-pass extracti
 
   it('still names DATES/TIMES as its own category 1 — the rule above is not decoration', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/1\. DATES\/TIMES/);
+  });
+
+  // W4 (verbosity-tax fix, docs/research/20260713-single-hop-root-cause.md):
+  // the sweeper pass gets the same terseness rule as the conversational
+  // prompt above — tightens the target inside the existing 10-80-word
+  // self-contained range, does not replace it.
+  it('states the terseness rule with a <=20-word target and the lead-with-the-fact example', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Terseness \(verbosity tax\)/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/20 words or fewer/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Lead with the fact, not the framing/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Melanie goes camping once or twice a year/);
+  });
+
+  it('terseness never overrides self-containment, attribution, or date grounding', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(
+      /Terseness never overrides self-containment, attribution, or date grounding/,
+    );
+  });
+
+  // Guard against the terseness rule silently swallowing the date-grounding
+  // rule it sits next to in the prompt body (mirrors the CONVERSATIONAL guard).
+  it('still states the date-grounding rule after the terseness rule was added', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Ground relative dates/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Observation date/);
+  });
+
+  it('the reworked advice few-shot example is <=20 words and starts with the subject name', () => {
+    const match = EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER.match(
+      /"note","text":"(Melanie advised[^"]+)"/,
+    );
+    expect(match).not.toBeNull();
+    const text = match![1];
+    expect(text.startsWith('Melanie')).toBe(true);
+    const wordCount = text.trim().split(/\s+/).length;
+    expect(wordCount).toBeLessThanOrEqual(20);
   });
 });
