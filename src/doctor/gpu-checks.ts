@@ -67,8 +67,11 @@ const LLAMA_SERVER_RE = /^llama-server(\.exe)?$/i;
 const OLLAMA_RE = /^ollama(\.exe)?$/i;
 
 /** Below this fraction of a loaded model's bytes resident in VRAM, doctor
- *  WARNs — this is the exact 2026-07-13 signature (0.59/4.99 ≈ 0.12). */
-const CPU_OFFLOAD_RATIO_FLOOR = 0.9;
+ *  WARNs — this is the exact 2026-07-13 signature (0.59/4.99 ≈ 0.12).
+ *  Exported so `src/doctor/checks/model-fit.ts` (issue #279) can apply the
+ *  SAME live-offload floor to a specific config-pinned model instead of
+ *  duplicating the constant. */
+export const CPU_OFFLOAD_RATIO_FLOOR = 0.9;
 
 const TUNING_VARS = [
   'OLLAMA_NUM_PARALLEL',

@@ -53,6 +53,10 @@ export async function doctorCommand(args: string[]): Promise<void> {
       // non-loopback bind refuses devNoAuth at boot, so doctor must apply
       // the same gate rather than reporting the raw config value.
       devNoAuthActive: cfg.auth.devNoAuth === true && isLoopbackHost(cfg.network.host),
+      // Issue #279: "Model fit canary" — config-only + live-VRAM WARN for a
+      // pinned Ollama model that no longer fits (see model-fit.ts).
+      llmConfig: cfg.llm,
+      ollamaBaseUrl: cfg.ollama.baseUrl,
     }),
     // W1.3: parity with `reinstall`'s assertions — stranded legacy DB,
     // plaintext pre-encryption backup, served-vs-build version, zombie

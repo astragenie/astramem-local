@@ -64,3 +64,27 @@ whichever has the cleaner session-export surface at build time) to make neutrali
 - Docs: "write an adapter" page = the ecosystem invitation. The protocol doc is public by design.
   See [docs/capture-protocol.md](../capture-protocol.md) for the envelope reference, both kinds,
   and a runner-plugin `events` curl example.
+
+## Addendum (2026-07-14, FEAT-495 item 2): cursor/watermark convention for future watched-directory or event-stream capture modes
+
+Today's sources (Claude Code hook capture, Codex, the LLM-proxy) have **no cursor concept at
+all** — each is a synchronous, hook-fired read of one already-complete transcript/turn, not a
+resumable stream. There is nothing to initialize, so this convention is **N/A for them by
+construction**; it exists for the file-watching stopgap option 3 above ever gets built (FEAT-489's
+possible watched-folder mode, FEAT-491), or any other future source that maintains a resumable
+position (a cursor, offset, or watermark) into a stream or directory of historical content:
+
+**Any such source MUST initialize its cursor/watermark to "now" the first time it sees a given
+directory/stream, never to "the beginning."** Enabling capture for a source must only ever start
+capturing NEW activity going forward — it must never replay a backlog of historical content that
+predates the moment capture was turned on. This mirrors the existing convention
+`src/sync/puller.ts`'s pull watermark and `src/sync/shipper.ts`'s ship cursor already follow (both
+start from "nothing shipped/pulled yet," never "replay all history"), generalized to any future
+capture source that isn't itself a sync channel.
+
+Rationale: a user enabling a new capture source is opting into observation from that point
+forward, not retroactively. Silently ingesting months of pre-existing file/log history the moment
+a watcher starts would be both a surprising privacy behavior and a redaction-and-distillation cost
+spike with no corresponding "the user asked for this" signal — the daemon has no way to tell
+"pre-existing content the user never intended to capture" apart from "content generated after
+they opted in" except by the enable-time boundary itself.

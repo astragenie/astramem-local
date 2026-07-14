@@ -27,6 +27,7 @@ import { mcpStdio } from './mcp-stdio.js';
 import { mcpInstallCommand } from './mcp-install.js';
 import { demoCommand } from './demo.js';
 import { proxyCommand } from './proxy.js';
+import { configCommand } from './config.js';
 import { installCliCrashHandlers } from './crash-handlers.js';
 
 const PKG_VERSION: string = (() => {
@@ -290,6 +291,12 @@ async function main() {
       break;
     }
 
+    case 'config': {
+      // astramem-local config upgrade-model [--yes] [--json]
+      await configCommand(rest);
+      break;
+    }
+
     case 'demo': {
       // astramem-local demo — 30s zero-dependency trial: in-memory daemon,
       // mock embed/LLM providers (no Ollama), seeded example memories, one
@@ -398,6 +405,11 @@ Commands:
                                          SAME rule as the guard and the doctor canary.
                                          PREVIEWS by default — --yes to actually delete.
                                          Never deletes a MEMORY, only entity rows.
+  config upgrade-model [--yes] [--json]  Detect a config-pinned Ollama LLM model that is
+                                         known-bad or no longer fits local VRAM (issue #279,
+                                         see doctor's "Model fit canary") and print the exact
+                                         recommended config.yaml edit. PREVIEW by default —
+                                         --yes required to actually write config.yaml.
   providers [--json]                     Show configured providers + live health probes
   capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
                                          Ingest new Codex CLI sessions (ADR-008);

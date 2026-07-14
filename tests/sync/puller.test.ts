@@ -8,7 +8,7 @@
 // AC-5 in particular is proven here as a same-process two-database
 // simulation, NOT a live device-A -> cloud -> device-B round trip.
 
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -181,6 +181,127 @@ describe('AC-4 — watermark persists across a daemon restart (resume, no gap, n
     expect(total.n).toBe(3); // all three, no duplicates, no gap
 
     db.close();
+  });
+});
+
+describe('FEAT-495 item 3 — a malformed usefulness-typed payload arriving mid-batch does not wedge the pull', () => {
+  // dedupInsertEvent (src/sync/puller.ts) always routes payload_json through
+  // JSON.stringify before insert, which by construction can never itself
+  // produce syntactically INVALID JSON text from valid JS input — so a
+  // literally malformed wire payload cannot be smuggled through the typed
+  // RemotePullEvent contract as-is (review finding: this is why the fix's
+  // narrative is "guards against a malformed row however it got there," not
+  // "the wire literally sends broken JSON text"). To exercise the REAL
+  // pullOnce()/dedupInsertEvent() code paths end-to-end with a payload that
+  // becomes genuinely malformed at the DB boundary, this spies on
+  // JSON.stringify for exactly ONE object (matched by identity, `===`, so
+  // every other call — including pino's own internal JSON.stringify use for
+  // structured logging — passes through to the real implementation
+  // unaffected) and makes THAT ONE call return invalid JSON text, standing
+  // in for "this payload arrived corrupted, by whatever mechanism." This
+  // proves the acceptance-critical claim directly through puller.ts's own
+  // exported functions, not a bespoke script: a poisoned event mixed into a
+  // real pull batch no longer wedges the batch or the watermark.
+  // NOTE: `run` is async and must be AWAITED inside the try block — restoring
+  // the spy in `finally` without awaiting would restore the real
+  // JSON.stringify before pullOnce's internal async work (which awaits the
+  // fetcher first, then synchronously calls JSON.stringify from inside its
+  // db.transaction callback) ever reaches the point that needs the fake.
+  async function withMalformedStringifyFor<T>(sentinel: object, run: () => Promise<T>): Promise<T> {
+    const real = JSON.stringify;
+    const spy = vi.spyOn(JSON, 'stringify').mockImplementation((value: unknown, ...rest: unknown[]) => {
+      if (value === sentinel) return '{not valid json';
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return (real as any)(value, ...rest);
+    });
+    try {
+      return await run();
+    } finally {
+      spy.mockRestore();
+    }
+  }
+
+  it('lands every healthy event and advances the watermark past the batch, with the poisoned event mixed in', async () => {
+    const db = openDb(':memory:');
+    migrate(db); // applies migration 045's guard — this is the FIXED schema
+
+    const atomA = randomUUID();
+    const atomB = randomUUID();
+    const malformedPayloadSentinel = { family: 'recall_served' }; // identity-matched below, content irrelevant
+
+    const batch: RemotePullEvent[] = [
+      makeCreateEvent(atomA, {
+        type: 'fact', text: 'first remote memory', normalized_text: 'first remote memory',
+        hash: 'a'.repeat(64), scope: 'team', repo: 'r1',
+      }, 1000),
+      // The poisoned event: a 'usefulness' event (the type whose leading
+      // equality predicate the vulnerable partial indexes share) whose
+      // payload_json will stringify to malformed text — mixed in the MIDDLE
+      // of the batch, same as a real interleaved multi-device event stream.
+      {
+        seq: 0,
+        event_id: randomUUID(),
+        event_type: 'usefulness',
+        atom_id: atomA,
+        payload_json: malformedPayloadSentinel,
+        content_hash: null,
+        created_at: 1500,
+      },
+      makeCreateEvent(atomB, {
+        type: 'fact', text: 'second remote memory', normalized_text: 'second remote memory',
+        hash: 'b'.repeat(64), scope: 'team', repo: 'r1',
+      }, 2000),
+    ];
+
+    // Page size 2: page 1 is [healthy A, poisoned] — the poisoned event lands
+    // in the SAME round as a healthy one, and page 1's cursor is a genuine
+    // non-null intermediate value (not "everything fit in one page, cursor
+    // trivially null" — a real mid-stream position the next round must not
+    // re-select).
+    const fetcher = fakeFetcher(batch, 2);
+
+    const round1 = await withMalformedStringifyFor(malformedPayloadSentinel, () =>
+      pullOnce({ db, fetcher }),
+    );
+
+    // The batch did not roll back: both page-1 events landed (not 0, not
+    // just the healthy one with the poisoned one silently dropped).
+    expect(round1.fetched).toBe(2);
+    expect(round1.inserted).toBe(2);
+    expect(db.prepare('SELECT id FROM memories WHERE id = ?').get(atomA)).toBeDefined();
+
+    // The poisoned event itself is durably recorded (not silently dropped —
+    // this repo's own "no silent error swallowing" rule), just with payload
+    // text that doesn't parse as JSON.
+    const poisonedRow = db.prepare(
+      `SELECT payload_json FROM memory_events WHERE atom_id = ? AND event_type = 'usefulness'`,
+    ).get(atomA) as { payload_json: string } | undefined;
+    expect(poisonedRow?.payload_json).toBe('{not valid json');
+
+    // The watermark ADVANCED past page 1 — the acceptance-critical claim. A
+    // stuck-at-null (or stuck-at-the-prior-cursor) watermark is exactly the
+    // "re-fetch the same poisoned batch forever" failure this fix closes.
+    expect(round1.cursor).not.toBeNull();
+    expect(getPullWatermark(db)).toBe(round1.cursor);
+
+    // Round 2 continues from that watermark and picks up ONLY page 2 (the
+    // remaining healthy atom B) — proving the watermark genuinely moved past
+    // the poisoned event rather than re-selecting page 1 forever.
+    const round2 = await pullOnce({ db, fetcher });
+    expect(round2.fetched).toBe(1);
+    expect(round2.inserted).toBe(1);
+    expect(db.prepare('SELECT id FROM memories WHERE id = ?').get(atomB)).toBeDefined();
+    expect(round2.cursor).toBeNull(); // fully drained
+    expect(getPullWatermark(db)).toBeNull();
+
+    // A third round: `fakeFetcher` treats a null cursor as "start from index
+    // 0" (same quirk AC-2's replay test exercises), so this re-offers the
+    // same 3 events rather than reporting idle — but event_id dedup
+    // (AC-2) means nothing NEW is inserted and nothing throws. No infinite
+    // re-fetch loop that WEDGES (rolls back / never advances) on the
+    // poisoned batch, which is the actual claim this test proves.
+    const round3 = await pullOnce({ db, fetcher });
+    expect(round3.inserted).toBe(0);
   });
 });
 

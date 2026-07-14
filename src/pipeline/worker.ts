@@ -7,6 +7,7 @@ import { DistillBudgetPausedError } from './handlers/distill.js';
 import { classifyError } from './failure-classifier.js';
 import { TransientError } from './errors.js';
 import { logger, childLogger } from '../log/logger.js';
+import { recordHandlerRun } from '../storage/handler-run-log.js';
 
 const MAX_ATTEMPTS = 3;
 
@@ -174,11 +175,14 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
         return;
       }
 
+      const handlerStartedAt = Date.now();
       try {
         await handler.handle(payload, ctx);
         repo.complete(job.id);
         jobLog.info('job completed');
+        recordHandlerRun(db, { handler: job.kind, status: 'success', durationMs: Date.now() - handlerStartedAt });
       } catch (err) {
+        const durationMs = Date.now() - handlerStartedAt;
         // Budget exceeded → pause the job (not a failure, not retried).
         // Do NOT call fail() — that would increment attempts and eventually
         // poison the job after repeated daily cap hits, preventing recovery
@@ -188,6 +192,7 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
           repo.setLastError(job.id, errMsg);
           repo.pause(job.id);
           jobLog.warn({ error_message: errMsg, error_kind: 'BudgetPaused' }, 'job paused — budget exceeded');
+          recordHandlerRun(db, { handler: job.kind, status: 'paused', durationMs, errorType: 'BudgetPaused', errorMessage: errMsg });
           scheduleNext();
           return;
         }
@@ -201,9 +206,11 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
           repo.fail(job.id, errMsg);
           repo.markPoison(job.id);
           jobLog.warn({ error_message: errMsg.slice(0, 200), error_kind: 'DeterministicFailure' }, 'job poisoned — deterministic failure');
+          recordHandlerRun(db, { handler: job.kind, status: 'failed', durationMs, errorType: 'deterministic', errorMessage: errMsg.slice(0, 500) });
         } else {
           // Transient failure — retry with exponential backoff up to MAX_ATTEMPTS.
           repo.fail(job.id, errMsg);
+          recordHandlerRun(db, { handler: job.kind, status: 'failed', durationMs, errorType: 'transient', errorMessage: errMsg.slice(0, 500) });
           const updated = repo.get(job.id);
           if (updated && updated.attempts >= MAX_ATTEMPTS) {
             repo.markPoison(job.id);

@@ -59,6 +59,7 @@ import { spawnSync } from 'node:child_process';
 import { randomUUID, createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, relative, isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
 import { defaultDataDir } from '../config/datadir.js';
 
 export interface MaterializeReleaseOptions {
@@ -175,6 +176,10 @@ const BUN_INSTALL_TIMEOUT_MS = 5 * 60_000;
 /** Boot-verify (`node dist/cli/index.js --version`) exits before migrate()
  *  — should be near-instant; matches the repo's other cold-start bound. */
 const BOOT_VERIFY_TIMEOUT_MS = 15_000;
+/** Probe (`<bun> --version`) to confirm a candidate bun path actually RUNS —
+ *  catches the issue #305 case where `bun` on PATH is an npm shim (a bash
+ *  script, not a native exe) that Node's spawnSync cannot execute (ENOENT). */
+const BUN_PROBE_TIMEOUT_MS = 10_000;
 
 /**
  * `--version` reports `"<version> (<entry-path>)"` since issue #308 (the
@@ -188,8 +193,62 @@ function versionMatches(reported: string, expected: string): boolean {
   return reported === expected || reported.startsWith(`${expected} `);
 }
 
-function runCaptured(cmd: string, args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS): CapturedRun {
-  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutMs });
+/** The install command materializeRelease should use, resolved at call time. */
+interface InstallCommand {
+  cmd: string;
+  args: string[];
+  /** npm on win32 is `npm.cmd` — spawnSync needs shell:true to resolve it. A
+   *  resolved absolute bun path needs no shell. */
+  shell: boolean;
+  kind: 'bun' | 'npm';
+}
+
+/**
+ * Confirm a candidate `bun` executable actually runs (`--version` exits 0).
+ * Node's spawnSync CANNOT execute a non-native shim (the issue #305 ENOENT),
+ * so a bare existsSync isn't enough — we probe. Returns the path if runnable.
+ */
+function bunRuns(bunPath: string): boolean {
+  try {
+    const res = spawnSync(bunPath, ['--version'], { encoding: 'utf8', timeout: BUN_PROBE_TIMEOUT_MS });
+    return res.status === 0 && !res.error;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Resolve the package-manager command for materializeRelease's production
+ * install (issue #305). Prefers a RUNNABLE bun so `--frozen-lockfile` gives a
+ * deterministic install off the copied `bun.lock`; falls back to
+ * `npm install --omit=dev` when no bun on this box actually executes (a
+ * common Windows state: `bun` on PATH is only an npm shim, or `~/.bun/bin`
+ * isn't on the service's inherited PATH). Candidate order: `$BUN_INSTALL/bin`,
+ * `~/.bun/bin`, then bare `bun` (PATH). npm has no frozen-lock equivalent here
+ * (we copy bun.lock, not package-lock.json), so the fallback does a fresh
+ * production resolve from package.json — noted at the call site.
+ */
+export function resolveInstallCommand(): InstallCommand {
+  const exe = process.platform === 'win32' ? 'bun.exe' : 'bun';
+  const candidates: string[] = [];
+  if (process.env.BUN_INSTALL) candidates.push(join(process.env.BUN_INSTALL, 'bin', exe));
+  candidates.push(join(homedir(), '.bun', 'bin', exe));
+
+  for (const c of candidates) {
+    if (existsSync(c) && bunRuns(c)) {
+      return { cmd: c, args: ['install', '--production', '--frozen-lockfile'], shell: false, kind: 'bun' };
+    }
+  }
+  // Bare `bun` on PATH — spawnSync resolves it; probe confirms it isn't a shim.
+  if (bunRuns('bun')) {
+    return { cmd: 'bun', args: ['install', '--production', '--frozen-lockfile'], shell: false, kind: 'bun' };
+  }
+  // No runnable bun anywhere — fall back to npm (shell:true so win32 resolves npm.cmd).
+  return { cmd: 'npm', args: ['install', '--omit=dev'], shell: true, kind: 'npm' };
+}
+
+function runCaptured(cmd: string, args: string[], cwd: string, timeoutMs = GIT_TIMEOUT_MS, shell = false): CapturedRun {
+  const res = spawnSync(cmd, args, { cwd, encoding: 'utf8', timeout: timeoutMs, shell });
   const stderrParts = [res.stderr ?? ''];
   if (res.error) stderrParts.push(res.error.message);
   // Empirically verified on this runtime (Node on this box): spawnSync's
@@ -339,10 +398,25 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
     copyFileSync(pkgSrc, join(tmpDir, 'package.json'));
     copyFileSync(lockSrc, join(tmpDir, lockfileName));
 
-    const install = runCaptured('bun', ['install', '--production', '--frozen-lockfile'], tmpDir, BUN_INSTALL_TIMEOUT_MS);
+    // Issue #305: resolve a RUNNABLE package manager rather than blindly
+    // shelling out to `bun` — on Windows `bun` on PATH is frequently an npm
+    // shim (not a native exe) that spawnSync cannot execute → ENOENT → reinstall
+    // never touches the service. Prefer a verified bun (deterministic
+    // --frozen-lockfile off the copied bun.lock); fall back to npm.
+    const pm = resolveInstallCommand();
+    if (pm.kind === 'npm') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `materializeRelease: no runnable bun found (checked $BUN_INSTALL, ~/.bun/bin, PATH) — ` +
+          `falling back to 'npm install --omit=dev'. This does a fresh production resolve from ` +
+          `package.json rather than a frozen install off bun.lock.`,
+      );
+    }
+    const install = runCaptured(pm.cmd, pm.args, tmpDir, BUN_INSTALL_TIMEOUT_MS, pm.shell);
     if (install.status !== 0) {
       throw new Error(
-        `materializeRelease: 'bun install --production --frozen-lockfile' failed (exit ${install.status}) in ${tmpDir}\n` +
+        `materializeRelease: '${pm.kind === 'bun' ? 'bun install --production --frozen-lockfile' : 'npm install --omit=dev'}' ` +
+          `failed (exit ${install.status}) in ${tmpDir}\n` +
           `--- stdout ---\n${install.stdout}\n--- stderr ---\n${install.stderr}`,
       );
     }
