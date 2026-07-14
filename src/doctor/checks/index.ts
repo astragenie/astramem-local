@@ -103,6 +103,7 @@ import { checkDurabilityGateMode } from './durability-gate-mode.js';
 import { checkExtractProfile } from './extract-profile.js';
 import { checkDistillCostCap } from './distill-cost-cap.js';
 import { checkEntityRelations } from './entity-relations.js';
+import { checkExtractionYield } from './extraction-yield.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
 import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
 import { checkEntityLinkRate } from './entity-link-rate.js';
@@ -180,6 +181,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkExtractProfile(opts.extractProfile ?? 'engineering'),
     checkDistillCostCap(opts.distillCostCap),
     checkEntityRelations(dataDir, opts.extractProfile ?? 'engineering', encryptionEnabled),
+    checkExtractionYield(dataDir, encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
     checkAtomValidityExtraction(dataDir, encryptionEnabled),
     checkEntityLinkRate(dataDir, encryptionEnabled),
