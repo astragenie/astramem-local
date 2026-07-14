@@ -89,6 +89,60 @@ describe('hasUnresolvedRelativeDate (detection-only, never used to rewrite)', ()
   ])('does NOT match: %s', (text) => {
     expect(hasUnresolvedRelativeDate(text)).toBe(false);
   });
+
+  // Widened patterns (feat/widen-relative-date-detect) — each class below was
+  // previously missed, meaning an atom kept an unresolved relative date and
+  // scored ~0 on the LoCoMo temporal category. Grouped by the class it covers.
+  it.each([
+    // 1. Article quantifiers ("a <unit> ago", "a couple/few ... ago/back")
+    'It happened a week ago.',
+    'It happened a month ago.',
+    'It happened a year ago.',
+    'It happened a couple of weeks ago.',
+    'It happened a few days ago.',
+    // 2. "...back" variants
+    'It happened a couple of months back.',
+    'It happened years back.',
+    'It happened two months back.',
+    // 3. Vague recency
+    'She mentioned it the other day.',
+    'He has been busy lately.',
+    'She called earlier today.',
+    'He mentioned it earlier this week.',
+    // 4. Seasons
+    'We traveled last summer.',
+    'They are moving this winter.',
+    'She will graduate next spring.',
+    'We went camping over the summer.',
+    // 5. Bare month references (no year)
+    'She started the job back in March.',
+    'He visited in early June.',
+    'They moved in late September.',
+    // 6. Time-of-day
+    'We had dinner this morning.',
+    'She called this evening.',
+    'He left last night.',
+    'They are meeting tonight.',
+    // 7. Weekend / holidays
+    'We relaxed over the weekend.',
+    'They traveled during the holidays.',
+  ])('matches (widened): %s', (text) => {
+    expect(hasUnresolvedRelativeDate(text)).toBe(true);
+  });
+
+  it.each([
+    // Already-absolute — a 4-digit year adjacent to the phrase must block the match.
+    'She started the job back in March 2023.',
+    'He visited in early June 2023.',
+    'The meeting is scheduled for June 2023.',
+    '2023-05-07 was the launch date.',
+    // "back" as a plain verb/adverb, not a "<unit> back" quantifier.
+    'Please call me back.',
+    'I need to get back to work.',
+    'The team decided to scale back.',
+  ])('does NOT match (widened): %s', (text) => {
+    expect(hasUnresolvedRelativeDate(text)).toBe(false);
+  });
 });
 
 describe('groundAtomDates — plumbing and safety', () => {
@@ -253,10 +307,31 @@ describe('groundAtomDates — plumbing and safety', () => {
       atom('Third happened last year.'),
     ];
 
-    const result = await groundAtomDates(atoms, '2023-07-15', llm, { maxCalls: 2 });
+    const result = await groundAtomDates(atoms, '2023-07-15', llm, { maxCalls: 2, log: () => {} });
 
     expect(result.fired).toBe(2);
     expect(result.atoms[2]!.text).toBe('Third happened last year.'); // never fired, untouched
+  });
+
+  it('logs once (not once per skipped atom) when maxCalls truncation skips matching atoms', async () => {
+    const { llm } = makeRetryLLM({ 'last year': '2022' });
+    const atoms = [
+      atom('First happened last year.'),
+      atom('Second happened last year.'), // fires — hits the cap here
+      atom('Third happened last year.'), // matched but skipped by the cap
+      atom('Fourth happened last year.'), // matched but skipped by the cap
+      atom('No relative date here.'), // not a candidate — must not affect the log
+    ];
+    const logs: string[] = [];
+
+    const result = await groundAtomDates(atoms, '2023-07-15', llm, {
+      maxCalls: 2,
+      log: (message) => logs.push(message),
+    });
+
+    expect(result.fired).toBe(2);
+    const cappedLogs = logs.filter((message) => message.includes('maxCalls'));
+    expect(cappedLogs).toHaveLength(1);
   });
 
   it('totalAtoms always reflects the full input length regardless of fire rate', async () => {
