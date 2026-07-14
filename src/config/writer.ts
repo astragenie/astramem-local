@@ -241,6 +241,18 @@ export function configToYaml(cfg: Config): string {
     // round-trip test instead).
     line(1, 'governance'),
     line(2, 'maxComponentWeight', cfg.search.governance.maxComponentWeight),
+    // issue #190: the implicit positive-usefulness sweep's config sub-object
+    // — a sibling of governance above, same reason for existing (a config.yaml
+    // written before this field existed round-trips fine via defaultConfig()
+    // merge; this only matters for a config that DID set it, which must not
+    // be silently dropped on the next write-back).
+    line(1, 'usefulness'),
+    line(2, 'implicitPositive'),
+    line(3, 'enabled', cfg.search.usefulness.implicitPositive.enabled),
+    line(3, 'windowDays', cfg.search.usefulness.implicitPositive.windowDays),
+    line(3, 'minDistinctQueries', cfg.search.usefulness.implicitPositive.minDistinctQueries),
+    line(3, 'weight', cfg.search.usefulness.implicitPositive.weight),
+    line(3, 'maxGrantsPerRun', cfg.search.usefulness.implicitPositive.maxGrantsPerRun),
     '',
     // Cross-encoder rerank stage (issue #26, ADR-005) — OFF by default. See
     // docs/runbooks/cross-encoder-rerank.md before flipping `enabled: true`.

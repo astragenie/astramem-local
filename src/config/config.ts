@@ -1,6 +1,6 @@
 import { defaultDataDir } from './datadir.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
-import { hasPassingEvalEvidence } from '../eval/eval-evidence.js';
+import { hasPassingEvalEvidence, type GatedFusionComponent } from '../eval/eval-evidence.js';
 
 export interface Config {
   port: number;
@@ -132,6 +132,52 @@ export interface Config {
        * (1.0) sits well above every shipped default weight (max 0.4) so it
        * only ever guards a runaway/typo'd value, never a normal config. */
       maxComponentWeight: number;
+    };
+    /** issue #190: the missing automatic positive-signal caller for ε
+     * (usefulness). "Cross-query survival" — an atom served to at least
+     * `minDistinctQueries` genuinely different queries within a trailing
+     * `windowDays` window, and never `memory_corrected`, earns exactly ONE
+     * fractionally-weighted `recall_used`/`signal:'heuristic'` event, granted
+     * out-of-band by a periodic sweep (`runImplicitPositivePass`,
+     * src/storage/usefulness.ts) on the cleanup-job cadence — never inline in
+     * the request path. See docs/specs/20260714-implicit-usefulness-signal-190.md
+     * for the full anti-pathology argument (once-per-atom, distinct-query
+     * corroboration, time-decoupling, fractional weight — four independent
+     * guards against a rank-promotes-itself runaway).
+     *
+     * This is deliberately a SIBLING of alpha..eta, not a fusion weight
+     * itself: `weight` only reweights the `used` term inside
+     * `usefulnessScores()` (upstream of fusion), it never appears in
+     * `fuseScores`/`fuseHits`, and `applyFusionGovernance`'s component-
+     * ceiling clamp does not apply to it. `enabled` IS gated the same way η
+     * is, though (see `applyFusionGovernance` below / `GatedFusionComponent`
+     * in src/eval/eval-evidence.ts) — this is a new, unvalidated ranking-
+     * influencing signal, so it ships OFF by default and requires a passing
+     * ADR-005 harness entry before a loaded config may honor `enabled: true`. */
+    usefulness: {
+      implicitPositive: {
+        /** OFF by default (ADR-014 posture: ζ/η both shipped weight-0/OFF
+         *  until eval-evidenced) — see `applyFusionGovernance`'s
+         *  'implicitPositive' eval-evidence gate below. */
+        enabled: boolean;
+        /** Trailing lookback, in days, for distinct-query-hash counting. */
+        windowDays: number;
+        /** Minimum DISTINCT `recall_served.query_hash` values required in
+         *  the window to qualify — deliberately distinct-query, not
+         *  serve-count, so being ranked #1 repeatedly for the SAME query can
+         *  never alone satisfy this (anti-pathology safeguard 2). */
+        minDistinctQueries: number;
+        /** Weight applied to a `signal:'heuristic'` recall_used event inside
+         *  `usefulnessScores()`'s Laplace-smoothed sum — LESS than the
+         *  explicit path's implicit 1.0, so an implicit-only grant lifts an
+         *  atom to (weight+1)/(weight+2) rather than the explicit path's
+         *  0.667, per issue #190's "weak positive" requirement. */
+        weight: number;
+        /** Batch cap per sweep — mirrors the contradiction-detection
+         *  `maxPerRun` precedent (FEAT-482 incident, CLAUDE.md): a bounded
+         *  background pass, not an unbounded one. */
+        maxGrantsPerRun: number;
+      };
     };
   };
   /** Cross-encoder rerank stage (issue #26, ADR-005). OFF by default — ADR-005
@@ -880,6 +926,11 @@ export function defaultConfig(): Config {
     search: {
       alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0,
       governance: { maxComponentWeight: 1.0 },
+      usefulness: {
+        implicitPositive: {
+          enabled: false, windowDays: 30, minDistinctQueries: 2, weight: 0.35, maxGrantsPerRun: 500,
+        },
+      },
     },
     crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
     multiHop: {
@@ -1043,6 +1094,13 @@ export function defaultConfig(): Config {
  *    FEAT-428 — see that module), a configured `eta > 0` is forced back to
  *    0 (the safe, byte-identical-ranking default) and a warning is logged,
  *    instead of silently shipping an unvalidated ranking change.
+ * 3. issue #190 implicitPositive eval-evidence gate: same shape as guard 2,
+ *    for `search.usefulness.implicitPositive.enabled` — a config that turns
+ *    the automatic positive-usefulness-signal sweep on is forced back to
+ *    `enabled: false` unless a passing ADR-005 entry is recorded for
+ *    'implicitPositive'. Not a weight clamp (guard 1 doesn't apply — there's
+ *    no fusion weight here, see the field's own doc comment), just the same
+ *    "prove it before it ships active" posture.
  *
  * `checkEvalEvidence` is an injectable seam for tests; production always
  * uses the real `hasPassingEvalEvidence` lookup. `log` defaults to
@@ -1053,14 +1111,17 @@ export function applyFusionGovernance(
   search: Config['search'],
   opts: {
     log?: (message: string) => void;
-    checkEvalEvidence?: (component: 'eta') => boolean;
+    checkEvalEvidence?: (component: GatedFusionComponent) => boolean;
   } = {},
 ): Config['search'] {
   const log = opts.log ?? ((message: string) => console.warn(message));
   const checkEvalEvidence = opts.checkEvalEvidence ?? hasPassingEvalEvidence;
   const ceiling = search.governance.maxComponentWeight;
 
-  const governed: Config['search'] = { ...search };
+  const governed: Config['search'] = {
+    ...search,
+    usefulness: { implicitPositive: { ...search.usefulness.implicitPositive } },
+  };
   const componentKeys = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta'] as const;
   for (const key of componentKeys) {
     const value = governed[key];
@@ -1081,6 +1142,16 @@ export function applyFusionGovernance(
       'shipping a nonzero eta.',
     );
     governed.eta = 0;
+  }
+
+  if (governed.usefulness.implicitPositive.enabled && !checkEvalEvidence('implicitPositive')) {
+    log(
+      '[fusion-governance] search.usefulness.implicitPositive.enabled=true is configured but no passing ' +
+      "ADR-005 eval-harness evidence is recorded for 'implicitPositive' (src/eval/eval-evidence.ts) — " +
+      'forcing enabled=false for this config. Record a passing tests/eval/retrieval-eval.test.ts run ' +
+      'before shipping this on. See issue #190.',
+    );
+    governed.usefulness.implicitPositive.enabled = false;
   }
 
   return governed;

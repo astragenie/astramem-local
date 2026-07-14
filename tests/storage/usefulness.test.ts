@@ -11,6 +11,9 @@ import {
   recordMemoryCorrected,
   usefulnessRate,
   usefulnessByType,
+  usefulnessScores,
+  runImplicitPositivePass,
+  feedbackLoopSummary,
 } from '../../src/storage/usefulness.js';
 
 function insertMem(repo: MemoryRepo, hash: string, type = 'fact'): string {
@@ -304,5 +307,188 @@ describe('POST /memory/:id/used (REST explicit recall-used channel)', () => {
     const id = insertMem(repo, 'rest-used-2');
     const res = await app.inject({ method: 'POST', url: `/memory/${id}/used` });
     expect(res.statusCode).toBe(401);
+  });
+});
+
+// issue #190: "cross-query survival" implicit positive-usefulness sweep —
+// docs/specs/20260714-implicit-usefulness-signal-190.md.
+describe('runImplicitPositivePass', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  const OPTS = { windowDays: 30, minDistinctQueries: 2, maxGrantsPerRun: 500 };
+  const NOW = 1_700_000_000_000; // fixed instant so "trailing window" math is deterministic
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+  });
+
+  function servedAt(atomId: string, queryHash: string, createdAt: number) {
+    new MemoryEventRepo(db).append({
+      event_type: 'usefulness', atom_id: atomId, created_at: createdAt,
+      payload: { family: 'recall_served', query_hash: queryHash, score: null, surface: 'rest', mode: null },
+    });
+  }
+
+  // AC-1: at most one heuristic grant per atom, ever — a second pass over
+  // the same fixture data grants nothing more for an already-granted atom.
+  it('AC-1: grants at most one heuristic recall_used event per atom, ever — re-running is a no-op', () => {
+    const a = insertMem(repo, 'implicit-ac1');
+    servedAt(a, 'q1', NOW - 1000);
+    servedAt(a, 'q2', NOW - 500);
+
+    const first = runImplicitPositivePass(db, OPTS, NOW);
+    expect(first).toEqual({ candidates: 1, granted: 1 });
+
+    const second = runImplicitPositivePass(db, OPTS, NOW);
+    expect(second).toEqual({ candidates: 0, granted: 0 });
+
+    const grants = new MemoryEventRepo(db).listForAtom(a).filter(e => {
+      const p = JSON.parse(e.payload_json ?? '{}');
+      return p.family === 'recall_used' && p.signal === 'heuristic';
+    });
+    expect(grants).toHaveLength(1);
+  });
+
+  // AC-2: 1 distinct query, however many times served, never qualifies.
+  it('AC-2: an atom served under only 1 distinct query_hash never qualifies, regardless of serve count', () => {
+    const a = insertMem(repo, 'implicit-ac2');
+    servedAt(a, 'same-query', NOW - 5000);
+    servedAt(a, 'same-query', NOW - 4000);
+    servedAt(a, 'same-query', NOW - 3000);
+
+    const result = runImplicitPositivePass(db, OPTS, NOW);
+    expect(result).toEqual({ candidates: 0, granted: 0 });
+  });
+
+  // AC-3: any memory_corrected event, at any time, permanently excludes.
+  it('AC-3: an atom with any memory_corrected event is permanently excluded from a grant', () => {
+    const a = insertMem(repo, 'implicit-ac3');
+    servedAt(a, 'q1', NOW - 1000);
+    servedAt(a, 'q2', NOW - 500);
+    recordMemoryCorrected(db, { atomId: a, action: 'demoted' });
+
+    const result = runImplicitPositivePass(db, OPTS, NOW);
+    expect(result).toEqual({ candidates: 0, granted: 0 });
+  });
+
+  it('AC-3: a correction recorded AFTER the qualifying window still excludes the atom', () => {
+    const a = insertMem(repo, 'implicit-ac3b');
+    servedAt(a, 'q1', NOW - 1000);
+    servedAt(a, 'q2', NOW - 500);
+    // Correction event itself falls outside the window's created_at bound —
+    // the exclusion subquery has no window filter, so it still applies.
+    new MemoryEventRepo(db).append({
+      event_type: 'usefulness', atom_id: a, created_at: NOW + 10_000,
+      payload: { family: 'memory_corrected', action: 'demoted', source: 'external' },
+    });
+
+    const result = runImplicitPositivePass(db, OPTS, NOW);
+    expect(result).toEqual({ candidates: 0, granted: 0 });
+  });
+
+  it('does not grant for a serve outside the trailing window', () => {
+    const a = insertMem(repo, 'implicit-outside-window');
+    const windowStartMs = NOW - OPTS.windowDays * 24 * 60 * 60 * 1000;
+    servedAt(a, 'q1', windowStartMs - 10_000); // before the window
+    servedAt(a, 'q2', windowStartMs - 5_000); // before the window
+
+    const result = runImplicitPositivePass(db, OPTS, NOW);
+    expect(result).toEqual({ candidates: 0, granted: 0 });
+  });
+
+  it('caps grants at maxGrantsPerRun', () => {
+    const ids = [insertMem(repo, 'implicit-cap-a'), insertMem(repo, 'implicit-cap-b'), insertMem(repo, 'implicit-cap-c')];
+    for (const id of ids) {
+      servedAt(id, 'q1', NOW - 1000);
+      servedAt(id, 'q2', NOW - 500);
+    }
+
+    const result = runImplicitPositivePass(db, { ...OPTS, maxGrantsPerRun: 2 }, NOW);
+    expect(result).toEqual({ candidates: 2, granted: 2 });
+  });
+
+  it('the granted event carries surface:system, signal:heuristic, basis:no_correction_survival', () => {
+    const a = insertMem(repo, 'implicit-payload-shape');
+    servedAt(a, 'q1', NOW - 1000);
+    servedAt(a, 'q2', NOW - 500);
+    runImplicitPositivePass(db, OPTS, NOW);
+
+    const grant = new MemoryEventRepo(db).listForAtom(a).find(e => {
+      const p = JSON.parse(e.payload_json ?? '{}');
+      return p.family === 'recall_used';
+    });
+    const payload = JSON.parse(grant?.payload_json ?? '{}');
+    expect(payload).toEqual({
+      family: 'recall_used', surface: 'system', signal: 'heuristic', basis: 'no_correction_survival',
+    });
+  });
+
+  it('feedbackLoopSummary counts an implicit-only atom as used (heuristic bucket)', () => {
+    const a = insertMem(repo, 'implicit-canary');
+    servedAt(a, 'q1', NOW - 1000);
+    servedAt(a, 'q2', NOW - 500);
+    runImplicitPositivePass(db, OPTS, NOW);
+
+    const summary = feedbackLoopSummary(db);
+    expect(summary.usedDistinct).toBe(1);
+    expect(summary.usedExplicitDistinct).toBe(0);
+    expect(summary.usedHeuristicDistinct).toBe(1);
+  });
+});
+
+describe('usefulnessScores (weighted, issue #190)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+  });
+
+  it('no signal at all -> neutral 0.5', () => {
+    const a = insertMem(repo, 'scores-neutral');
+    expect(usefulnessScores(db, [a]).get(a)).toBe(0.5);
+  });
+
+  it('one explicit recall_used -> 0.667 (unchanged from pre-#190 behavior)', () => {
+    const a = insertMem(repo, 'scores-explicit');
+    recordRecallUsed(db, { atomId: a, surface: 'mcp', signal: 'explicit' });
+    expect(usefulnessScores(db, [a]).get(a)).toBeCloseTo(2 / 3, 6);
+  });
+
+  // AC-4: heuristic weighting is wired, not just event presence — a
+  // heuristic-only atom must score DIFFERENTLY from an explicit-only one.
+  it('AC-4: one heuristic recall_used at the default weight (0.35) -> 0.574, not 0.667', () => {
+    const a = insertMem(repo, 'scores-heuristic-default');
+    recordRecallUsed(db, { atomId: a, surface: 'system', signal: 'heuristic' });
+    const score = usefulnessScores(db, [a]).get(a)!;
+    expect(score).toBeCloseTo((0.35 + 1) / (0.35 + 2), 6); // 0.574074...
+    expect(score).not.toBeCloseTo(2 / 3, 3);
+  });
+
+  it('AC-4: an explicit caller-supplied weight is honored, not hardcoded', () => {
+    const a = insertMem(repo, 'scores-heuristic-custom-weight');
+    recordRecallUsed(db, { atomId: a, surface: 'system', signal: 'heuristic' });
+    const score = usefulnessScores(db, [a], 0.6).get(a)!;
+    expect(score).toBeCloseTo((0.6 + 1) / (0.6 + 2), 6);
+  });
+
+  it('a correction still demotes an implicit-only grant exactly as it would an explicit one', () => {
+    const a = insertMem(repo, 'scores-heuristic-corrected');
+    recordRecallUsed(db, { atomId: a, surface: 'system', signal: 'heuristic' });
+    recordMemoryCorrected(db, { atomId: a, action: 'demoted' });
+    const score = usefulnessScores(db, [a]).get(a)!;
+    expect(score).toBeCloseTo((0.35 + 1) / (0.35 + 1 + 2), 6);
+  });
+
+  it('explicit + heuristic on the same atom both contribute to the weighted sum', () => {
+    const a = insertMem(repo, 'scores-both-signals');
+    recordRecallUsed(db, { atomId: a, surface: 'mcp', signal: 'explicit' });
+    recordRecallUsed(db, { atomId: a, surface: 'system', signal: 'heuristic' });
+    const score = usefulnessScores(db, [a]).get(a)!;
+    expect(score).toBeCloseTo((1 + 0.35 + 1) / (1 + 0.35 + 2), 6);
   });
 });

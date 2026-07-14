@@ -117,9 +117,19 @@ export function checkUsefulnessFeedbackLoop(dataDir: string, encryptionEnabled: 
           };
         }
 
+        // issue #190 (implicit signal design, phase 5): split the used
+        // count by signal so an operator can tell a real client action
+        // (explicit) apart from the automatic cross-query-survival grant
+        // (heuristic, runImplicitPositivePass) — both flip this canary
+        // green (see that function's doc comment), but they are not the
+        // same strength of evidence the loop is alive.
+        const usedBreakdown =
+          `${summary.usedDistinct} used (${summary.usedExplicitDistinct} explicit, ` +
+          `${summary.usedHeuristicDistinct} heuristic)`;
+
         return {
           ok: true,
-          message: `usefulness feedback loop: active (${summary.usedDistinct} used, ${correctedBreakdown}, distinct atoms, all-time)`,
+          message: `usefulness feedback loop: active (${usedBreakdown}, ${correctedBreakdown}, distinct atoms, all-time)`,
         };
       } catch (err) {
         // The query itself failed — this did NOT verify the feedback loop is

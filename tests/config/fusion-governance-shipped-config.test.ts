@@ -56,4 +56,15 @@ describe('FEAT-428 hard gate: shipped default config carries no unevidenced fusi
     expect(shipped.alpha).toBeGreaterThan(0);
     expect(shipped.beta).toBeGreaterThan(0);
   });
+
+  // issue #190: search.usefulness.implicitPositive.enabled follows the exact
+  // same "ships OFF, needs recorded evidence" posture as eta above — see
+  // GatedFusionComponent in src/eval/eval-evidence.ts.
+  it('implicitPositive.enabled ships false unless a passing recorded eval-evidence entry licenses it', () => {
+    if (shipped.usefulness.implicitPositive.enabled) {
+      expect(hasPassingEvalEvidence('implicitPositive')).toBe(true);
+    } else {
+      expect(shipped.usefulness.implicitPositive.enabled).toBe(false);
+    }
+  });
 });

@@ -3,6 +3,8 @@ import { openDb } from '../../../src/storage/db.js';
 import { migrate } from '../../../src/storage/migrate.js';
 import { cleanupHandler } from '../../../src/pipeline/handlers/cleanup.js';
 import { defaultConfig } from '../../../src/config/config.js';
+import { MemoryRepo } from '../../../src/storage/memories.js';
+import { MemoryEventRepo } from '../../../src/storage/memory-events.js';
 import type { DB } from '../../../src/storage/db.js';
 import type { HandlerCtx } from '../../../src/pipeline/handler.js';
 import type { CleanupPayload } from '../../../src/contracts/index.js';
@@ -204,6 +206,67 @@ describe('cleanupHandler', () => {
 
       const count = (db.prepare("SELECT COUNT(*) AS n FROM jobs WHERE kind = 'reembed'").get() as { n: number }).n;
       expect(count).toBe(500);
+    });
+  });
+
+  // issue #190 build-sequence phase 3 / AC-5: implicit positive-usefulness
+  // sweep runs on this same cadence, gated behind
+  // config.search.usefulness.implicitPositive.enabled (default false).
+  describe('implicit positive-usefulness sweep (issue #190)', () => {
+    function insertFact(db: DB, hash: string): string {
+      return new MemoryRepo(db).insert({
+        type: 'fact', text: 'x', normalized_text: 'x',
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+        hash, source_hash: null,
+      });
+    }
+
+    function servedTwice(db: DB, atomId: string): void {
+      const events = new MemoryEventRepo(db);
+      events.append({ event_type: 'usefulness', atom_id: atomId, payload: { family: 'recall_served', query_hash: 'q1', score: null, surface: 'rest', mode: null } });
+      events.append({ event_type: 'usefulness', atom_id: atomId, payload: { family: 'recall_served', query_hash: 'q2', score: null, surface: 'rest', mode: null } });
+    }
+
+    // AC-5: default-off is a true no-op — a fixture that would otherwise
+    // qualify gets no grant, and no heuristic recall_used event appears.
+    it('AC-5: enabled:false (default) never invokes the pass — a qualifying atom gets no grant', async () => {
+      const atomId = insertFact(db, 'implicit-cleanup-off');
+      servedTwice(db, atomId);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx); // ctx uses defaultConfig() — implicitPositive.enabled === false
+
+      const grants = new MemoryEventRepo(db).listForAtom(atomId).filter(e => {
+        const p = JSON.parse(e.payload_json ?? '{}');
+        return p.family === 'recall_used';
+      });
+      expect(grants).toHaveLength(0);
+    });
+
+    it('enabled:true grants a heuristic recall_used event for a qualifying atom', async () => {
+      const atomId = insertFact(db, 'implicit-cleanup-on');
+      servedTwice(db, atomId);
+
+      const enabledCtx: HandlerCtx = {
+        db,
+        config: {
+          ...defaultConfig(),
+          search: {
+            ...defaultConfig().search,
+            usefulness: { implicitPositive: { ...defaultConfig().search.usefulness.implicitPositive, enabled: true } },
+          },
+        },
+      };
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, enabledCtx);
+
+      const grant = new MemoryEventRepo(db).listForAtom(atomId).find(e => {
+        const p = JSON.parse(e.payload_json ?? '{}');
+        return p.family === 'recall_used';
+      });
+      expect(grant).toBeDefined();
+      const payloadJson = JSON.parse(grant?.payload_json ?? '{}');
+      expect(payloadJson.signal).toBe('heuristic');
     });
   });
 });

@@ -24,12 +24,19 @@
  * epsilon=0.1 is exercised by every retrieval-eval.test.ts run), and ζ's
  * default is 0 with its own dedicated snapshot test (AC-6). η is the
  * component FEAT-428 was opened for — see FEAT-428.md.
+ *
+ * issue #190: `implicitPositive` was added alongside η — it gates
+ * `search.usefulness.implicitPositive.enabled` (the automatic positive-
+ * usefulness-signal sweep, src/storage/usefulness.ts's
+ * `runImplicitPositivePass`), not a fusion weight, but follows the identical
+ * "ships OFF, needs a recorded ADR-005 run before going live" posture: see
+ * docs/specs/20260714-implicit-usefulness-signal-190.md.
  */
 
-/** Fusion weight keys this module can record evidence for. Only 'eta' is
- * currently gated (see module doc); the union leaves room for a future
- * component without implying ε/ζ are gated today. */
-export type GatedFusionComponent = 'eta';
+/** Fusion weight keys this module can record evidence for. 'eta' and
+ * 'implicitPositive' are currently gated (see module doc); the union leaves
+ * room for a future component without implying ε/ζ are gated today. */
+export type GatedFusionComponent = 'eta' | 'implicitPositive';
 
 export interface FusionEvalEvidence {
   /** The fusion weight key this evidence licenses. */

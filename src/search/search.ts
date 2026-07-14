@@ -18,7 +18,7 @@ import type { Memory, MemoryType, MemoryScope } from '../contracts/index.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { fuseHits, normalizeScores, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
-import { usefulnessScores } from '../storage/usefulness.js';
+import { usefulnessScores, DEFAULT_IMPLICIT_POSITIVE_WEIGHT } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
 import { applyRerank, type RerankOpts } from './rerank.js';
 import { getSubQueries, type DecomposeOpts } from './decompose.js';
@@ -216,7 +216,16 @@ export interface SearchHit {
 export interface SearchOpts {
   db: DB;
   embed: EmbedProvider;
-  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number };
+  weights: {
+    alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number;
+    /** issue #190: optional so every existing caller (eval harness's own
+     *  narrower weights type, hand-built test fixtures) keeps compiling
+     *  unchanged — see the DEFAULT_IMPLICIT_POSITIVE_WEIGHT fallback where
+     *  this is consumed below. Real production callers pass the full
+     *  `Config['search']` (via resolvePresetWeights), which always carries
+     *  this field. */
+    usefulness?: { implicitPositive: { weight: number } };
+  };
   /** Multiplier used by vector search (cap to limit vector scan) */
   vecK?: number;
   /**
@@ -619,7 +628,16 @@ export async function search(
   // (FEAT-402 AC-6) joins as an entity-relevance bonus: DEFAULT 0 (config
   // search.zeta) means the term is skipped entirely — no query, no DB scan,
   // no change to ranking order versus pre-AC-6 behavior.
-  const usefulness = usefulnessScores(db, Array.from(allIds));
+  // issue #190: thread the live configured weight through explicitly rather
+  // than rely on usefulnessScores()'s own fallback constant — the design
+  // doc's "must NOT silently default inside SQL to avoid drift from the
+  // config value" requirement, applied at this ranking-facing call site.
+  // Falls back to DEFAULT_IMPLICIT_POSITIVE_WEIGHT only for callers whose
+  // narrower weights type omits `usefulness` (eval harness, hand-built test
+  // fixtures) — production callers always pass the full Config['search'].
+  const usefulness = usefulnessScores(
+    db, Array.from(allIds), weights.usefulness?.implicitPositive.weight ?? DEFAULT_IMPLICIT_POSITIVE_WEIGHT,
+  );
   const zeta = weights.zeta ?? 0;
   const entityBonus = zeta > 0 ? entityBonusForQuery(db, query, allIds) : undefined;
   // FEAT-426: η agent-match soft-boost — only computed when the caller

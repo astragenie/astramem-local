@@ -36,6 +36,9 @@ function buildFullyPopulatedConfig(): Config {
     search: {
       alpha: 0.25, beta: 0.35, gamma: 0.15, delta: 0.05, epsilon: 0.2, zeta: 0.05, eta: 0.03,
       governance: { maxComponentWeight: 0.8 },
+      usefulness: {
+        implicitPositive: { enabled: true, windowDays: 45, minDistinctQueries: 3, weight: 0.5, maxGrantsPerRun: 250 },
+      },
     },
     crossEncoder: {
       enabled: true, provider: 'http', topK: 77, timeoutMs: 450,
@@ -287,10 +290,18 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     //    unless a passing ADR-005 eval-harness run is recorded for it — a
     //    real value here would never survive loadConfigFromDisk regardless
     //    of whether the emitter wrote it correctly.
+    //  - search.usefulness.implicitPositive.enabled: issue #190's own
+    //    eval-evidence gate (same applyFusionGovernance call), same reason —
+    //    this fixture's enabled:true has no recorded evidence, so it is
+    //    forced back to false regardless of round-trip fidelity.
     const { sync: loadedSync, search: loadedSearch, ...loadedRest } = loaded;
     const { sync: cfgSync, search: cfgSearch, ...cfgRest } = cfg;
     expect(loadedRest).toEqual(cfgRest);
-    expect(loadedSearch).toEqual({ ...cfgSearch, eta: 0 });
+    expect(loadedSearch).toEqual({
+      ...cfgSearch,
+      eta: 0,
+      usefulness: { implicitPositive: { ...cfgSearch.usefulness.implicitPositive, enabled: false } },
+    });
 
     expect(loadedSync).toEqual({ ...defaultConfig().sync, experimental: cfgSync.experimental });
     expect(cfgSync).not.toEqual(defaultConfig().sync);

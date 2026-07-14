@@ -30,7 +30,11 @@ import type { DB } from './db.js';
 import { MemoryEventRepo, type CorrectionSource } from './memory-events.js';
 import { safeJsonColumn } from './json-guard.js';
 
-export type UsefulnessSurface = 'mcp' | 'rest' | 'cli';
+/** issue #190: 'system' covers background/pipeline-originated events (e.g.
+ *  `runImplicitPositivePass`'s heuristic grants) — no live request surface
+ *  serves those, so tagging them 'cli' (which means "the CLI tool" to every
+ *  other reader of this field) would be misleading for observability. */
+export type UsefulnessSurface = 'mcp' | 'rest' | 'cli' | 'system';
 export type UsefulnessSignal = 'explicit' | 'heuristic';
 export type CorrectionAction = 'invalidated' | 'superseded' | 'demoted' | 'edited';
 export type { CorrectionSource };
@@ -121,31 +125,153 @@ export function recordMemoryCorrected(db: DB, input: RecordMemoryCorrectedInput)
   });
 }
 
+/** Default weight applied to a `signal:'heuristic'` recall_used event inside
+ *  {@link usefulnessScores}'s Laplace-smoothed sum, when the caller doesn't
+ *  supply one explicitly. Mirrors `defaultConfig().search.usefulness.
+ *  implicitPositive.weight` (src/config/config.ts) — kept here too so this
+ *  module has no hard compile-time dependency on config.ts (avoids a
+ *  storage->config import direction this codebase doesn't otherwise have),
+ *  while still defaulting to the same value in practice. Real callers
+ *  (src/search — wherever usefulnessScores feeds fusion) should thread the
+ *  live `config.search.usefulness.implicitPositive.weight` through
+ *  explicitly rather than rely on this fallback, per the design doc's "must
+ *  NOT silently default inside SQL to avoid drift from the config value"
+ *  requirement — this constant exists for callers/tests that have no config
+ *  object in hand, not to let production drift from a hand-edited weight. */
+export const DEFAULT_IMPLICIT_POSITIVE_WEIGHT = 0.35;
+
 /**
  * Per-atom usefulness score for ranking (ADR-010 v1.x). Laplace-smoothed:
  * (used + 1) / (used + corrected + 2) — an atom with no signal scores a
  * neutral 0.5, one explicit recall_used lifts it to 0.67, one correction
  * drops it to 0.33. Every requested id gets an entry so callers never have
  * to special-case missing atoms.
+ *
+ * issue #190: `used` is now a WEIGHTED sum, not a raw count — an explicit
+ * (`signal:'explicit'`) recall_used event counts as 1.0 exactly as before;
+ * a heuristic (`signal:'heuristic'`, the `runImplicitPositivePass` grant)
+ * counts as `implicitWeight` (default {@link DEFAULT_IMPLICIT_POSITIVE_WEIGHT},
+ * 0.35) — deliberately less than the explicit path's full weight, per the
+ * "weak positive" requirement. Every OTHER reader of the recall_used family
+ * (usefulnessRate, perAtomUsefulnessRate7d, usefulnessByType,
+ * feedbackLoopSummary) stays an unweighted existence/rate count — only this
+ * ranking-facing function gets the weighted treatment (see
+ * docs/specs/20260714-implicit-usefulness-signal-190.md).
  */
-export function usefulnessScores(db: DB, atomIds: string[]): Map<string, number> {
+export function usefulnessScores(
+  db: DB,
+  atomIds: string[],
+  implicitWeight: number = DEFAULT_IMPLICIT_POSITIVE_WEIGHT,
+): Map<string, number> {
   const scores = new Map<string, number>(atomIds.map(id => [id, 0.5]));
   if (atomIds.length === 0) return scores;
 
   const ph = atomIds.map(() => '?').join(',');
   const rows = db.prepare(`
     SELECT atom_id,
-      SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1 ELSE 0 END) AS used,
+      SUM(CASE
+        WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
+         AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'heuristic' THEN ?
+        WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1.0
+        ELSE 0 END) AS used,
       SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
     FROM memory_events
     WHERE event_type = 'usefulness' AND atom_id IN (${ph})
     GROUP BY atom_id
-  `).all(...atomIds) as Array<{ atom_id: string; used: number; corrected: number }>;
+  `).all(implicitWeight, ...atomIds) as Array<{ atom_id: string; used: number; corrected: number }>;
 
   for (const r of rows) {
     scores.set(r.atom_id, (r.used + 1) / (r.used + r.corrected + 2));
   }
   return scores;
+}
+
+export interface ImplicitPositiveOpts {
+  /** Trailing lookback, in days, for distinct-query-hash counting. */
+  windowDays: number;
+  /** Minimum DISTINCT recall_served.query_hash values required in the
+   *  window to qualify (anti-pathology safeguard 2: distinct-query
+   *  corroboration, not repeat-serve count). */
+  minDistinctQueries: number;
+  /** Batch cap per sweep — mirrors the contradiction-detection maxPerRun
+   *  precedent (FEAT-482 incident): a bounded background pass. */
+  maxGrantsPerRun: number;
+}
+
+export interface ImplicitPositiveResult {
+  /** Atoms that cleared the distinct-query threshold and had no prior
+   *  disqualifying correction/grant — i.e. rows the qualifying query
+   *  returned, before the maxGrantsPerRun cap. */
+  candidates: number;
+  /** Atoms that actually received a new heuristic recall_used event this
+   *  pass (== candidates, capped at maxGrantsPerRun). */
+  granted: number;
+}
+
+/**
+ * issue #190: "cross-query survival" implicit positive-usefulness sweep.
+ * Runs on the cleanup-job cadence (src/pipeline/handlers/cleanup.ts),
+ * time-decoupled from any single request (anti-pathology safeguard 3) — see
+ * docs/specs/20260714-implicit-usefulness-signal-190.md for the full
+ * argument. For every atom with at least `minDistinctQueries` distinct
+ * `recall_served.query_hash` values in the trailing `windowDays` window,
+ * ZERO `memory_corrected` events ever (any time, not just in-window), and
+ * no prior heuristic grant (ever — safeguard 1: once-per-atom, forever),
+ * appends exactly one `recall_used`/`signal:'heuristic'` event.
+ *
+ * Single transaction, capped by `maxGrantsPerRun`. Callers gate this behind
+ * `config.search.usefulness.implicitPositive.enabled` (default false) — this
+ * function itself has no config dependency and always runs when called,
+ * mirroring `runArchivalPass`'s own enabled-check-lives-at-the-call-site
+ * shape... except archival checks `enabled` internally; here the check lives
+ * in the pipeline handler instead, so this function stays trivially testable
+ * without needing a full Config object.
+ */
+export function runImplicitPositivePass(db: DB, opts: ImplicitPositiveOpts, now: number = Date.now()): ImplicitPositiveResult {
+  const windowStartMs = now - opts.windowDays * 24 * 60 * 60 * 1000;
+  const payload = safeJsonColumn('payload_json');
+
+  const rows = db.prepare(`
+    SELECT atom_id
+    FROM memory_events
+    WHERE event_type = 'usefulness'
+      AND json_extract(${payload},'$.family') = 'recall_served'
+      AND created_at >= ?
+    GROUP BY atom_id
+    HAVING COUNT(DISTINCT json_extract(${payload},'$.query_hash')) >= ?
+      AND atom_id NOT IN (
+        SELECT atom_id FROM memory_events
+        WHERE event_type = 'usefulness' AND json_extract(${payload},'$.family') = 'memory_corrected'
+      )
+      AND atom_id NOT IN (
+        SELECT atom_id FROM memory_events
+        WHERE event_type = 'usefulness' AND json_extract(${payload},'$.family') = 'recall_used'
+          AND json_extract(${payload},'$.signal') = 'heuristic'
+      )
+    LIMIT ?
+  `).all(windowStartMs, opts.minDistinctQueries, opts.maxGrantsPerRun) as Array<{ atom_id: string }>;
+
+  if (rows.length === 0) return { candidates: 0, granted: 0 };
+
+  const events = new MemoryEventRepo(db);
+  const tx = db.transaction(() => {
+    for (const row of rows) {
+      events.append({
+        event_type: 'usefulness',
+        atom_id: row.atom_id,
+        payload: {
+          family: 'recall_used',
+          surface: 'system',
+          signal: 'heuristic',
+          basis: 'no_correction_survival',
+        },
+        created_at: now,
+      });
+    }
+  });
+  tx();
+
+  return { candidates: rows.length, granted: rows.length };
 }
 
 export interface UsefulnessRateOpts {
@@ -231,6 +357,18 @@ export function perAtomUsefulnessRate7d(db: DB, atomIds: string[], sinceMs: numb
 export interface FeedbackLoopSummary {
   servedDistinct: number;
   usedDistinct: number;
+  /** issue #190: distinct atoms with at least one recall_used event tagged
+   *  `signal: 'explicit'` — a real client called submit_feedback/
+   *  mark_memory_used/POST /memory/:id/used. Unlike the corrected split
+   *  below, `signal` has been a required field on every recall_used event
+   *  since ADR-010 v1 shipped, so there is no "unknown/pre-fix" bucket here. */
+  usedExplicitDistinct: number;
+  /** issue #190: distinct atoms with at least one recall_used event tagged
+   *  `signal: 'heuristic'` — granted by `runImplicitPositivePass`, not a
+   *  real client action. Not necessarily disjoint from usedExplicitDistinct:
+   *  an atom can carry both an explicit AND a heuristic grant over its
+   *  lifetime. */
+  usedHeuristicDistinct: number;
   correctedDistinct: number;
   /**
    * issue #190 AC-2: distinct atoms with at least one memory_corrected event
@@ -296,6 +434,22 @@ export function feedbackLoopSummary(db: DB): FeedbackLoopSummary {
     WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
   `).get() as { n: number }).n;
 
+  // issue #190 phase 5: split used by signal, same unindexed-scan tradeoff
+  // as the corrected split below — small volume relative to served.
+  const usedExplicitDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'explicit'
+  `).get() as { n: number }).n;
+
+  const usedHeuristicDistinct = (db.prepare(`
+    SELECT COUNT(DISTINCT atom_id) AS n
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'heuristic'
+  `).get() as { n: number }).n;
+
   const correctedDistinct = (db.prepare(`
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
@@ -333,7 +487,7 @@ export function feedbackLoopSummary(db: DB): FeedbackLoopSummary {
   `).get() as { n: number }).n;
 
   return {
-    servedDistinct, usedDistinct, correctedDistinct,
+    servedDistinct, usedDistinct, usedExplicitDistinct, usedHeuristicDistinct, correctedDistinct,
     correctedConsolidationDistinct, correctedExternalDistinct, correctedUnknownDistinct,
   };
 }

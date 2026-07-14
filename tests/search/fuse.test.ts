@@ -190,6 +190,10 @@ describe('fuseScores', () => {
 describe('fuseScores wire-contract invariant (memory-plugin#8)', () => {
   it('perfect-storm input (all components maxed, default weights) stays within [0,1]', () => {
     const weights = defaultConfig().search; // alpha .4 beta .4 gamma .1 delta .1 epsilon .1 zeta 0 (sums to 1.1)
+    // issue #190: pick weight keys explicitly — Config['search'] now also
+    // carries its own `usefulness` key (the implicit-positive-sweep config
+    // sub-object), an unrelated meaning from the `usefulness` SCORE field
+    // this test sets below. See the matching fix in src/search/fuse.ts.
     const score = fuseScores({
       normBm25: 1,
       normCosine: 1,
@@ -197,7 +201,8 @@ describe('fuseScores wire-contract invariant (memory-plugin#8)', () => {
       freshness: 1,
       usefulness: 1,
       entityBonus: 1,
-      ...weights,
+      alpha: weights.alpha, beta: weights.beta, gamma: weights.gamma, delta: weights.delta,
+      epsilon: weights.epsilon, zeta: weights.zeta, eta: weights.eta,
     });
     expect(score).toBeLessThanOrEqual(1);
     expect(score).toBeGreaterThan(0);

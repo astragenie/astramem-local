@@ -199,6 +199,13 @@ export function fuseHits(
     const normBm25 = normBm25Map.get(id) ?? 0;
     const normCosine = normCosineMap.get(id) ?? 0;
 
+    // issue #190: pick only the fusion weight keys off `weights` explicitly,
+    // rather than spreading the whole object in — production callers now
+    // pass the full `Config['search']`, which carries its OWN `usefulness`
+    // key (the implicit-positive-sweep config sub-object, an unrelated
+    // meaning from the `usefulness` SCORE field above). A trailing
+    // `...weights` spread would silently clobber the real per-atom
+    // usefulness score with that config object on every real search call.
     const score = fuseScores({
       normBm25,
       normCosine,
@@ -207,7 +214,13 @@ export function fuseHits(
       usefulness: usefulness?.get(id),
       entityBonus: entityBonus?.get(id),
       agentBonus: agentBonus?.get(id),
-      ...weights
+      alpha: weights.alpha,
+      beta: weights.beta,
+      gamma: weights.gamma,
+      delta: weights.delta,
+      epsilon: weights.epsilon,
+      zeta: weights.zeta,
+      eta: weights.eta,
     });
 
     const inFts = ftsMap.has(id);
