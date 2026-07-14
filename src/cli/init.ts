@@ -15,7 +15,6 @@
 
 import { join } from 'node:path';
 import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
 import { execSync, execFileSync } from 'node:child_process';
 import { defaultConfig, type Config } from '../config/config.js';
 import { defaultConfigDir, defaultDataDir } from '../config/datadir.js';
@@ -33,6 +32,7 @@ import { waitForHealth } from './wait-health.js';
 import { installServiceFlow } from '../service/install-flow.js';
 import { installMemoryPackHook } from './hook-install.js';
 import { activateGitHooks } from '../service/git-hooks-activate.js';
+import { defaultAuthPath as defaultCodexAuthPath, hasCodexLogin } from '../providers/llm/codex-subscription.js';
 
 // ─── Non-interactive env var map ─────────────────────────────────────────────
 
@@ -59,10 +59,6 @@ const NON_INTERACTIVE_ENV = {
 
 /** LLM provider values the wizard can select for compaction/extraction. */
 type LlmProviderChoice = 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
-
-function defaultCodexAuthPath(): string {
-  return join(homedir(), '.codex', 'auth.json');
-}
 
 /** Default Ollama extraction/compaction model — used when no tier is chosen.
  * Swapped from qwen3.5:4b to qwen2.5:7b (2026-07-14) — qwen3.5:4b was
@@ -438,6 +434,26 @@ function gatherNonInteractive(): WizardAnswers {
   const codexAuthPath = process.env[NON_INTERACTIVE_ENV.codexAuthPath];
   const ollamaModelTag = process.env[NON_INTERACTIVE_ENV.ollamaModelTag];
   const ollamaBaseUrl = process.env[NON_INTERACTIVE_ENV.ollamaBaseUrl];
+
+  // First-run guard: unlike gatherInteractive (which only ever offers
+  // codex-subscription as a choice when codexLoginDetected is true, see
+  // above), this non-TTY path has no such gate — it always resolves
+  // llmProvider to the shipped codex-subscription default regardless of
+  // whether `codex login` has ever run. Writing that config silently would
+  // reproduce the exact "every distill call throws, poison-rate canary
+  // stays quiet below MEANINGFUL_USAGE_THRESHOLD" footgun this guard exists
+  // to close (see architect review answer 6). This warns but does not
+  // block or rewrite the choice — a scripted/CI install may intentionally
+  // provision a login that arrives later.
+  if (llmProvider === 'codex-subscription' && !hasCodexLogin(codexAuthPath)) {
+    console.warn(
+      `\n  WARNING: codex-subscription selected but no Codex CLI login found at ` +
+      `${codexAuthPath ?? defaultCodexAuthPath()}.\n` +
+      '  Every extraction/compaction call will fail until you run `codex login`.\n' +
+      `  Alternative: set ${NON_INTERACTIVE_ENV.llmProvider}=ollama before init to use the ` +
+      `local Ollama default (${DEFAULT_OLLAMA_LLM_MODEL}) instead.\n`,
+    );
+  }
 
   return {
     vector, embedProvider, llmProvider, dataDir, port, budget, installService,

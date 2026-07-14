@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 import type { ChatMsg, ChatOpts, ChatResult, LLMHealth, LLMProvider } from '../../contracts/llm.js';
@@ -229,8 +229,27 @@ function parseSseResponse(raw: string): CodexChatResult {
   return { text, inputTokens, outputTokens };
 }
 
-function defaultAuthPath(): string {
+/** Default location of the Codex CLI's own auth file — exported so every
+ * caller that needs to know "is Codex logged in" (init wizard, the doctor
+ * probe, and the serve.ts first-run boot guard) derives the same path
+ * instead of re-deriving `join(homedir(), '.codex', 'auth.json')`
+ * independently. `src/cli/init.ts` previously duplicated this exact
+ * expression under its own `defaultCodexAuthPath()` name. */
+export function defaultAuthPath(): string {
   return join(homedir(), '.codex', 'auth.json');
+}
+
+/**
+ * Presence-only check: "does a Codex CLI login file exist at this path".
+ * Deliberately does NOT parse or validate the file — a malformed or
+ * token-expired auth.json is a different, more specific failure that
+ * `codexAuthProbe` (doctor/probes/codex-subscription-probe.ts) already
+ * reports with an actionable message. This helper answers the narrower,
+ * cheaper question a boot-time guard needs before the first extraction call
+ * is even attempted: has `codex login` ever been run at all.
+ */
+export function hasCodexLogin(authPath: string = defaultAuthPath()): boolean {
+  return existsSync(authPath);
 }
 
 /** Decode a JWT's payload (middle segment) without verifying the signature —

@@ -326,6 +326,37 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // background timer below follows.
   const codexSubscriptionInUse =
     cfg.llm.compaction.provider === 'codex-subscription' || cfg.llm.extraction.provider === 'codex-subscription';
+
+  // First-run guard (architect review 20260714T130000Z, answer 6):
+  // codex-subscription is the shipped default (CLAUDE.md "v0.18.0: codex is
+  // the DEFAULT provider"). A fresh install with no `codex login` throws a
+  // loud DeterministicError on every extraction/compaction call
+  // (codex-subscription.ts's loadAuthFile), but with too few completed
+  // sessions the poison-rate doctor branch (checkMemoryHealth) stays quiet
+  // below MEANINGFUL_USAGE_THRESHOLD, and the doctor check that WOULD catch
+  // this (checkCodexAuth, doctor/checks/provider-supplementary.ts) only runs
+  // on the 24h full-tier piggyback below — an operator who never tails logs
+  // or runs `doctor` by hand can go a full day with a healthy-looking daemon
+  // and zero memories. Check immediately at boot instead of waiting for that
+  // tier. Presence-only (hasCodexLogin) — this does NOT auto-rewrite
+  // config.yaml (the init wizard already handles interactive steering); it
+  // is a loud, actionable log line only. Skipped under mock providers (no
+  // real Codex call will ever happen there).
+  if (!useMock && codexSubscriptionInUse) {
+    const { hasCodexLogin, defaultAuthPath } = await import('../providers/llm/codex-subscription.js');
+    const authPath = cfg.codexSubscription.authPath ?? defaultAuthPath();
+    if (!hasCodexLogin(authPath)) {
+      console.warn(
+        `${ts()} [astramem-local] WARNING: codex-subscription is selected (llm.compaction/extraction.provider) ` +
+        `but no Codex CLI login found at ${authPath}. Every extraction/compaction call will fail with a loud ` +
+        `error until you run \`codex login\` — and with too few completed sessions, the poison-rate doctor ` +
+        `check won't flag it either, so this daemon can look healthy while storing zero memories. ` +
+        `Fix: run \`codex login\`, or edit config.yaml to set llm.compaction.provider / llm.extraction.provider ` +
+        `to 'ollama' (local sub-default model qwen2.5:7b) and restart.`,
+      );
+    }
+  }
+
   const baseDoctorOpts: DoctorCheckOpts = {
     port: actualPort,
     dataDir,
