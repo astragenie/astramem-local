@@ -114,6 +114,7 @@ import { checkDevNoAuth } from './dev-no-auth.js';
 import { checkSpoolQuarantine } from './spool-quarantine.js';
 import { checkLLMChat } from './llm-chat.js';
 import { checkEmbed } from './embed.js';
+import { checkEmbedCacheHitRate } from './embed-cache.js';
 import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-supplementary.js';
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
@@ -188,6 +189,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),
     checkDevNoAuth(opts.devNoAuthActive ?? false),
     checkSpoolQuarantine(dataDir),
+    checkEmbedCacheHitRate(dataDir, encryptionEnabled),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
