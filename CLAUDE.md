@@ -218,15 +218,40 @@ harness actually reads. This also helps live production ingest, not just the ben
 both `buildClaudeEnvelope` and `buildProxyEnvelope` already carry a per-session
 `captured_at` anchor. Only legacy v0.0 envelopes and direct `/remember` calls lack one.
 
-**Still open:** `AtomSchema` (`src/distill/prompts/extract.ts`) has no atom-level
-`valid_at`/`invalid_at` field — only entities and relations get one. `InsertInput`
-(`src/storage/memories.ts`) has no `valid_to` param at all, so nothing populates the
-correct bitemporal columns for atoms. A fact that was "true Jan–Mar, false now" still
-returns as eternally true. This earns zero LoCoMo points (the harness never sets `as_of`)
-but is a real product gap. See `docs/specs/20260713-teardown-remediation-plan.md` §2.3
-before building it — there's a migration hazard (legacy rows have `valid_to = NULL`,
-which `as_of` filtering treats as "valid forever"; mixing in atoms with a real `valid_to`
-makes that mixed state permanent unless the semantics are decided deliberately first).
+**BUILT, WIRED — and `invalid_at` has NEVER FIRED (corrected 2026-07-14; the
+previous text here said it was unbuilt and was wrong).** `AtomSchema`
+(`src/distill/prompts/extract.ts`) DOES have atom-level `valid_at`/`invalid_at`
+(issue #205 AC-1, merged in PR #216), `InsertInput` (`src/storage/memories.ts`)
+DOES have `valid_to`, and `src/distill/stages/08-embed-index.ts` maps
+`atom.valid_at → valid_from` / `atom.invalid_at → valid_to` behind a validity
+guard. **Do not "build" this — it exists.**
+
+What is actually open is its **invocation rate**. Measured on 2499 real atoms
+(codex extraction, conversational profile, full LoCoMo suite):
+
+```
+valid_to NOT NULL     :    0     <- invalid_at emitted ZERO times in 2499 atoms
+validity_guard_drops  :    0     <- and the guard never refused one either
+distinct valid_from   :  423     <- the valid_at half DOES work
+```
+
+Zero drops means this is **not** "model emits, guard rejects" — the model never
+emits an `invalid_at` at all. Built-wired-never-invoked, rate 0.0%, behind no
+canary. Whether that is a BUG or CORRECT (conversations may genuinely never state
+an invalidation) is **unmeasured** — sample transcripts by hand before changing the
+prompt. The prompt itself discourages it (`extract.ts` ~104-108: a hallucinated
+`invalid_at` silently expires a true fact, which is a worse bug).
+
+Either way this earns **zero LoCoMo points** — the harness never sets `as_of`, so
+bitemporal filtering is never exercised; the temporal category (0.2300) is answered
+from atom TEXT. **Temporal is an extraction-into-text problem, not a data-model one.**
+
+Migration hazard if you do touch `valid_to`: legacy rows have `valid_to = NULL`,
+which `as_of` filtering treats as "valid forever," not "unknown." See
+`docs/specs/20260713-teardown-remediation-plan.md` §2.3. A prior attempt at this
+silently hid still-true facts — any fixture's "now" must be in the PAST.
+
+Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answerer-and-second-llm-call.md`
 
 ## Known open gaps (2026-07-13) — this is a working doc, not a clean bill of health
 
