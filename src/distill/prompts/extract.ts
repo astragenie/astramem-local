@@ -933,6 +933,18 @@ Cover BOTH speakers with EQUAL attention. Do not let whichever speaker's storyli
 
 Self-containment: resolve every pronoun to the actual named person. Never emit "she went twice a year" — write "Melanie goes horseback riding once or twice a year". Preserve proper nouns exactly as given.
 
+Ground relative dates against an anchor. If a line reading "Observation date: <YYYY-MM-DD>"
+appears immediately before the transcript chunk below, treat it as the authoritative anchor and
+resolve "yesterday" / "last week" / "this morning" / "three years ago" to a natural-language
+absolute date (e.g. "10 July 2026", NOT "2026-07-10") against it, replacing the relative phrase
+rather than appending to it — "text" is prose, not the machine-parsed "valid_at"/"invalid_at"
+fields above, which stay ISO-8601. Otherwise, ground against an anchor stated in the transcript
+itself (a log timestamp, an explicit "as of 2026-07-10") when one exists, still in
+natural-language form. If no date anchor exists anywhere — no Observation date line and no
+in-transcript anchor — keep the original relative phrasing rather than inventing a date. This
+matters especially for you: DATES/TIMES is category 1 above and the category most likely to fire,
+so a bare/unresolved date here is not a corner case — it is the common path.
+
 Duplicating something the first pass likely already caught is FINE and expected — a separate merge step deduplicates the two passes' output afterward, so do not spend effort trying to guess what the first pass kept or skipped. Your only job is to sweep for the eight specific categories above, exhaustively, from BOTH speakers.
 
 Skip noise: greetings, small talk with no durable specific, filler acknowledgments.
@@ -949,10 +961,12 @@ Examples (illustrative only, not exhaustive):
   {"type":"fact","text":"Caroline said they don't go often — usually only once or twice a year.","importance":0.6,"confidence":0.85,"evidence":"usually only once or twice a year"}
 ]}
 
-2. Input: "Melanie: My son got into an accident last week, but he's okay, thank god." ->
+2. Input: "Observation date: 2026-07-10\n\nMelanie: My son got into an accident last week, but he's okay, thank god." ->
 {"atoms":[
-  {"type":"event","text":"Melanie's son got into an accident last week and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+  {"type":"event","text":"Melanie's son got into an accident on 3 July 2026 and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
 ]}
+(The Observation date anchor resolves "last week" to a natural-language absolute date IN "text" —
+never a bare ISO date like "2026-07-03", and never left as the unresolved relative phrase.)
 
 3. Input: "Caroline: I saw a sign that said 'Trans Lives Matter' at the rally and took a photo of it." ->
 {"atoms":[
