@@ -126,6 +126,7 @@ import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
 import { checkMemorySentinel } from './memory-sentinel.js';
 import { checkRetention } from './retention.js';
+import { checkAudioAddon } from './audio-addon.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -211,6 +212,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkEmbedCacheHitRate(dataDir, encryptionEnabled),
     checkMemorySentinel(),
     checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
+    checkAudioAddon(opts.audioMode ?? 'off'),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

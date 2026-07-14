@@ -123,6 +123,10 @@ export interface DoctorCheckOpts {
    * `defaultConfig().retention` (mode 'off') when not supplied — see
    * `checkRetention`. */
   retentionConfig?: Config['retention'];
+  /** FEAT-489 Slice A / ADR-017: current `audio.mode`. Defaults to `'off'`
+   * (the shipped, ADR-017-required default) when not supplied — see
+   * `checkAudioAddon`. */
+  audioMode?: Config['audio']['mode'];
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
