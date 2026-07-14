@@ -181,6 +181,18 @@ const BOOT_VERIFY_TIMEOUT_MS = 15_000;
  *  script, not a native exe) that Node's spawnSync cannot execute (ENOENT). */
 const BUN_PROBE_TIMEOUT_MS = 10_000;
 
+/**
+ * `--version` reports `"<version> (<entry-path>)"` since issue #308 (the
+ * path suffix helps a human spot a PATH-shadowed stale install) — but a
+ * fixture entry script or an older release's dist/ may still report the
+ * bare version. Accept either: exact match, or version-followed-by-space
+ * (the real CLI's shape). Never a bare `startsWith` on its own, which
+ * would wrongly accept "1.2.30" as a match for expected "1.2.3".
+ */
+function versionMatches(reported: string, expected: string): boolean {
+  return reported === expected || reported.startsWith(`${expected} `);
+}
+
 /** The install command materializeRelease should use, resolved at call time. */
 interface InstallCommand {
   cmd: string;
@@ -444,7 +456,7 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
     const entryJs = join(tmpDir, 'dist', 'cli', 'index.js');
     const verify = runCaptured(nodeBin, [entryJs, '--version'], releasesRoot, BOOT_VERIFY_TIMEOUT_MS);
     const reported = verify.stdout.trim();
-    if (verify.status !== 0 || reported !== pkgversion) {
+    if (verify.status !== 0 || !versionMatches(reported, pkgversion)) {
       throw new Error(
         `materializeRelease: boot-verify failed for ${manifest.id} (exit ${verify.status}, reported "${reported}", expected "${pkgversion}")\n` +
           `--- stdout ---\n${verify.stdout}\n--- stderr ---\n${verify.stderr}`,
@@ -473,7 +485,7 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
         ? runCaptured(nodeBin, [existingEntryJs, '--version'], releasesRoot, BOOT_VERIFY_TIMEOUT_MS)
         : { status: 1, stdout: '', stderr: `entry missing: ${existingEntryJs}` };
       const reverifyReported = reverify.stdout.trim();
-      const bootOk = reverify.status === 0 && reverifyReported === pkgversion;
+      const bootOk = reverify.status === 0 && versionMatches(reverifyReported, pkgversion);
 
       let existing: ReleaseManifest | null = null;
       try {

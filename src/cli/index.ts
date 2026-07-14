@@ -41,6 +41,13 @@ const PKG_VERSION: string = (() => {
   }
 })();
 
+// The resolved path of the entry module actually executing this process —
+// printed alongside PKG_VERSION on `--version` so a shadowed install
+// (issue #308: a stale PATH entry resolving to an old binary with no hint
+// a newer install exists elsewhere) is visible at a glance instead of
+// silently running whichever binary the shell found first.
+const ENTRY_PATH: string = fileURLToPath(import.meta.url);
+
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
   return i >= 0 ? args[i + 1] : undefined;
@@ -300,7 +307,11 @@ async function main() {
 
     case '--version':
     case '-v':
-      console.log(PKG_VERSION);
+      // Version stays the leading token so existing exact/startsWith
+      // consumers (src/service/release.ts's materializeRelease boot-verify)
+      // keep working unmodified-in-spirit; the path is appended for human
+      // diagnosis of PATH-shadowing installs (issue #308).
+      console.log(`${PKG_VERSION} (${ENTRY_PATH})`);
       break;
 
     case undefined:

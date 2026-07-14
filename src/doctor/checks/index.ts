@@ -123,6 +123,7 @@ import { checkEmbed } from './embed.js';
 import { checkEmbedCacheHitRate } from './embed-cache.js';
 import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-supplementary.js';
 import { checkPluginCoexistence } from './plugin-coexistence.js';
+import { checkPathShadow } from './path-shadow.js';
 import { checkBackupRecency } from './backup-recency.js';
 import { checkMemorySentinel } from './memory-sentinel.js';
 import { checkMigrationSelfHeal } from './migration-self-heal.js';
@@ -180,6 +181,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkBudget(dataDir, dailyBudgetUsd, encryptionEnabled),
     checkBudgetCapCodexBlind(dailyBudgetUsd, opts.codexSubscriptionInUse ?? false),
     checkConfigDirDivergence(),
+    checkPathShadow(),
     checkRedaction(
       dataDir, opts.redactionEnabled ?? true, encryptionEnabled,
       // FEAT-498: same enablement signals checkProxyCapture/checkAutoCapture
