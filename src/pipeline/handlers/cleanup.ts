@@ -3,6 +3,7 @@ import { ts } from '../../log/logger.js';
 import type { JobHandler, HandlerCtx } from '../handler.js';
 import { runArchivalPass } from '../../storage/archival.js';
 import { pruneIngestIdempotency } from '../../storage/ingest-idempotency.js';
+import { runImplicitPositivePass } from '../../storage/usefulness.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { JobRepo } from '../job-repo.js';
 
@@ -22,6 +23,11 @@ import { JobRepo } from '../job-repo.js';
  * `config.ingestIdempotency.retentionDays` (default 7 days) on the same
  * pass — see src/storage/ingest-idempotency.ts for the replay-safety
  * rationale behind that default.
+ *
+ * issue #190: also runs the implicit positive-usefulness sweep
+ * (`runImplicitPositivePass`, src/storage/usefulness.ts) on the same
+ * cadence — config.search.usefulness.implicitPositive.enabled === false
+ * (the default) makes it a hard no-op, same posture as archival above.
  *
  * Issue #209: also the durable safety net for the vec-index retry drain —
  * every memory still flagged `needs_vec_index = 1` (a write-time vec upsert
@@ -86,6 +92,23 @@ export const cleanupHandler: JobHandler = {
         `${ts()} [cleanup] pruned ${idempotency.pruned} ingest_idempotency row(s) older than ` +
         `${ctx.config.ingestIdempotency.retentionDays} day(s)`,
       );
+    }
+
+    // issue #190: implicit positive-usefulness sweep — off unless the
+    // operator opted in AND the config-load-time eval-evidence gate
+    // (applyFusionGovernance) let `enabled` stay true.
+    if (ctx.config.search.usefulness.implicitPositive.enabled) {
+      const implicitPositive = runImplicitPositivePass(ctx.db, {
+        windowDays: ctx.config.search.usefulness.implicitPositive.windowDays,
+        minDistinctQueries: ctx.config.search.usefulness.implicitPositive.minDistinctQueries,
+        maxGrantsPerRun: ctx.config.search.usefulness.implicitPositive.maxGrantsPerRun,
+      });
+      if (implicitPositive.granted > 0) {
+        console.log(
+          `${ts()} [cleanup] implicit positive pass: ${implicitPositive.granted}/${implicitPositive.candidates} ` +
+          `atoms granted heuristic usefulness credit`,
+        );
+      }
     }
 
     // Issue #209: sweep every memory still flagged needs_vec_index and

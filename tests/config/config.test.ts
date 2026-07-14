@@ -190,6 +190,66 @@ describe('applyFusionGovernance', () => {
     } as any);
     expect(cfg.search.zeta).toBe(cfg.search.governance.maxComponentWeight);
   });
+
+  // issue #190 build-sequence phase 4 / AC-7: implicitPositive.enabled gated
+  // the same way eta is — a config that turns it on without recorded
+  // ADR-005 evidence is forced back to false, mirroring the eta tests above.
+  describe('implicitPositive eval-evidence gate', () => {
+    const searchWithImplicitEnabled = () => ({
+      ...baseSearch(),
+      usefulness: { implicitPositive: { ...baseSearch().usefulness.implicitPositive, enabled: true } },
+    });
+
+    it('enabled:true with no recorded eval evidence is refused — forced back to false — and logs why', () => {
+      const search = searchWithImplicitEnabled();
+      const logs: string[] = [];
+      const governed = applyFusionGovernance(search, {
+        log: (m) => logs.push(m),
+        checkEvalEvidence: () => false,
+      });
+
+      expect(governed.usefulness.implicitPositive.enabled).toBe(false);
+      expect(logs.some(m => m.includes('implicitPositive') && m.includes('eval'))).toBe(true);
+    });
+
+    it('enabled:true WITH passing recorded eval evidence is allowed to activate', () => {
+      const search = searchWithImplicitEnabled();
+      const governed = applyFusionGovernance(search, { checkEvalEvidence: () => true });
+      expect(governed.usefulness.implicitPositive.enabled).toBe(true);
+    });
+
+    it('enabled:false (default) never consults eval evidence at all — the gate only fires when enabled', () => {
+      const search = baseSearch();
+      const checkEvalEvidence = vi.fn(() => false);
+      const governed = applyFusionGovernance(search, { checkEvalEvidence });
+      expect(governed.usefulness.implicitPositive.enabled).toBe(false);
+      expect(checkEvalEvidence).not.toHaveBeenCalled();
+    });
+
+    it('the real (uninjected) evidence lookup also refuses enabled:true today (no evidence recorded yet)', () => {
+      const search = searchWithImplicitEnabled();
+      const governed = applyFusionGovernance(search, { log: () => {} });
+      expect(governed.usefulness.implicitPositive.enabled).toBe(false);
+    });
+
+    it('loadConfig wires the gate in: an override setting enabled:true without evidence comes back false', () => {
+      const cfg = loadConfig({
+        search: {
+          ...defaultConfig().search,
+          usefulness: { implicitPositive: { ...defaultConfig().search.usefulness.implicitPositive, enabled: true } },
+        },
+      } as any);
+      expect(cfg.search.usefulness.implicitPositive.enabled).toBe(false);
+    });
+
+    it('does not mutate the caller-supplied search.usefulness object (governed is a fresh copy)', () => {
+      const search = searchWithImplicitEnabled();
+      applyFusionGovernance(search, { checkEvalEvidence: () => false, log: () => {} });
+      // The input object itself must be untouched — governed.usefulness is a
+      // shallow-cloned sibling, not the same reference mutated in place.
+      expect(search.usefulness.implicitPositive.enabled).toBe(true);
+    });
+  });
 });
 
 // FEAT-441 fix pass (2026-07-09 review MEDIUM): distill.durabilityGate is a
