@@ -551,10 +551,15 @@ export function defaultConfig(): Config {
       // seconds take 9-35s, and distill jobs time out and poison (see
       // "Ollama 8GB VRAM ceiling" in CLAUDE.md). qwen3.5:4b (3292 MB) fits
       // with headroom and is the strongest local model in the extraction
-      // bench (68% F1 vs 65% for qwen3:8b) — see PR body for the full
-      // caveat: that number measures extraction, not compaction quality.
+      // bench on BOTH measured axes (F1 68% vs 65%, recall 54% vs 48% for
+      // qwen3:8b) — see PR body for the caveat: that number measures
+      // extraction, not compaction, quality; this is a safety +
+      // measured-extraction case, not a measured-compaction-quality case.
+      // Same value for both roles — mirrors src/cli/init.ts's
+      // DEFAULT_OLLAMA_LLM_MODEL, which the `init` wizard writes into both
+      // this compaction key and the extraction key below from one tier pick.
       compaction: { provider: 'ollama', model: 'qwen3.5:4b' },
-      extraction: { provider: 'ollama', model: 'qwen3:8b' }
+      extraction: { provider: 'ollama', model: 'qwen3.5:4b' }
     },
     embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
     vector: { store: 'sqlite-vec' },

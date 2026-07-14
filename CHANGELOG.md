@@ -11,27 +11,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Default compaction model: `qwen3:8b` -> `qwen3.5:4b`.** `qwen3:8b` (5896 MB
-  resident) plus the `mxbai-embed-large` embedder (590 MB) exceed the ~8 GB
-  VRAM ceiling on consumer-class GPUs before any KV cache is added — Ollama
-  spills layers to CPU, calls that should take seconds take 9-35s, and distill
-  jobs time out and poison (see "Ollama 8GB VRAM ceiling" in CLAUDE.md).
-  `qwen3.5:4b` (3292 MB) fits with real headroom and is the strongest local
-  model in the extraction bench (68% F1 vs 65% for `qwen3:8b`, 3-run average).
-  **Caveat: that number measures extraction, not compaction, quality** —
-  nobody has benchmarked `qwen3.5:4b` specifically as a compactor. This is a
-  safety fix (stop thrashing VRAM and poisoning jobs), not a proven
-  quality win for compaction specifically.
-  **Only affects fresh configs.** `config.yaml` is read once at boot with no
-  live reload, and an existing config only picks up this new default if it has
-  no explicit `llm.compaction.model` key at all — most installs, including
-  every `init` wizard install, write one explicitly and are unaffected. The
-  `init` wizard's own default (`src/cli/init.ts`'s `DEFAULT_OLLAMA_LLM_MODEL`)
-  still ships `qwen3:8b` for both compaction and extraction — untouched here
-  because the wizard uses one model tier for both roles, and splitting them is
-  a separate decision. Extraction's default is unchanged (`qwen3:8b`).
+- **Default Ollama model (compaction AND extraction): `qwen3:8b` -> `qwen3.5:4b`.**
+  `qwen3:8b` (5896 MB resident) plus the `mxbai-embed-large` embedder (590 MB)
+  exceed the ~8 GB VRAM ceiling on consumer-class GPUs before any KV cache is
+  added — Ollama spills layers to CPU, calls that should take seconds take
+  9-35s, and distill jobs time out and poison (see "Ollama 8GB VRAM ceiling"
+  in CLAUDE.md). `qwen3.5:4b` (3292 MB) fits with real headroom and scores
+  higher on every axis actually measured: F1 68% vs 65%, recall 54% vs 48%
+  (extraction bench, 3-run average). There is no remaining case for
+  `qwen3:8b` as a default.
+  **Caveat: that F1/recall number measures extraction, not compaction,
+  quality** — nobody has benchmarked either model specifically as a
+  compactor. Compaction's move to `qwen3.5:4b` is a safety + VRAM fix, not a
+  proven compaction-quality win; extraction's move is both a safety fix and
+  a measured quality improvement.
+  Changed in three places, all now consistent:
+  `defaultConfig()` (`src/config/config.ts`) for both `llm.compaction.model`
+  and `llm.extraction.model`; the `init` wizard's `DEFAULT_OLLAMA_LLM_MODEL`
+  (`src/cli/init.ts`), which is what real installs actually get (see below);
+  and `OllamaLLMProvider`'s constructor fallback (`src/providers/llm/ollama.ts`),
+  a defensive default for ad-hoc instantiation with no model.
   This change does not touch the extraction prompt
   (`src/distill/prompts/extract.ts`).
+  **Who this affects:** new `init`-wizard installs get `qwen3.5:4b` for both
+  roles — the wizard writes an explicit value from its single compaction+
+  extraction tier picker, so this is the change that actually reaches users.
+  Existing installs with an explicit `llm.*.model` in `config.yaml` are
+  **unaffected** — `config.yaml` is read once per process at boot with no
+  live reload, deep-merged, and an explicit value always wins over the
+  default; they stay on whatever they were pinned to (including `qwen3:8b`,
+  if that's what an earlier `init` wrote) until they hand-edit `config.yaml`
+  or re-run `init`. **`reinstall` does not re-run the wizard or rewrite
+  `config.yaml`** — it only repoints the release pointer (see CLAUDE.md's
+  "Service / upgrade" section) — so users on the old default are not
+  auto-upgraded by upgrading the binary. Follow-up worth naming: there is no
+  migration path today that moves an already-installed user off a pinned
+  `qwen3:8b` onto the new default; doctor could plausibly flag it but
+  doesn't yet.
 - **extraction-bench (#264): the bench's own `--compaction-model` default was
   hardcoded to `qwen3:8b`** (`scripts/eval/extraction-bench/lib/daemon-runner.ts`'s
   `DEFAULT_COMPACTION_MODEL`), the known-broken model above. Any bench run that

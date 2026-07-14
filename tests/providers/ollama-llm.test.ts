@@ -69,12 +69,14 @@ describe('ollama-llm', () => {
 
   // 2026-07-13 operator standardization — the constructor's `model` fallback
   // had no test asserting it (every other test here passes an explicit
-  // model), so the qwen2.5:7b -> qwen3:8b swap at src/providers/llm/ollama.ts
-  // would have silently drifted from the shipped default with nothing red.
+  // model), so a shipped-default swap at src/providers/llm/ollama.ts would
+  // silently drift from the shipped default with nothing red. Same-day
+  // reversal: qwen3:8b -> qwen3.5:4b (doesn't fit the 8GB VRAM ceiling and
+  // scores lower in the extraction bench — see CLAUDE.md).
   describe('constructor defaults', () => {
-    it('falls back to qwen3:8b when no model is configured', () => {
+    it('falls back to qwen3.5:4b when no model is configured', () => {
       const p = new OllamaLLMProvider({});
-      expect(p.model).toBe('qwen3:8b');
+      expect(p.model).toBe('qwen3.5:4b');
     });
   });
 
