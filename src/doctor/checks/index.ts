@@ -96,6 +96,7 @@ import { checkRedaction } from './redaction.js';
 import { checkEncryption } from './encryption.js';
 import { checkBearerLocation } from './bearer-location.js';
 import { checkSyncTokenLocation } from './sync-token-location.js';
+import { checkSyncExperimentalGate } from './sync-experimental-gate.js';
 import { checkUsefulness } from './usefulness.js';
 import { checkUsefulnessFeedbackLoop } from './usefulness-feedback-loop.js';
 import { checkMemoryHealth } from './memory-health.js';
@@ -174,6 +175,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkEncryption(dataDir, encryptionEnabled),
     checkBearerLocation(),
     checkSyncTokenLocation(),
+    checkSyncExperimentalGate(opts.syncEnabled ?? false, opts.syncExperimental ?? false),
     checkUsefulness(dataDir, encryptionEnabled),
     checkUsefulnessFeedbackLoop(dataDir, encryptionEnabled),
     checkMemoryHealth(dataDir, encryptionEnabled),

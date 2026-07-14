@@ -50,7 +50,7 @@ function buildFullyPopulatedConfig(): Config {
       budgetTokens: 2200,
       policy: { enabled: false, minScore: 0.35, minPromptChars: 20 },
     },
-    sync: { enabled: true, url: 'https://sync.example.com', workspaceId: 'ws-123', batchSize: 500, intervalMs: 60_000 },
+    sync: { enabled: true, url: 'https://sync.example.com', workspaceId: 'ws-123', batchSize: 500, intervalMs: 60_000, experimental: true },
     security: {
       redaction: { enabled: false, entropyThreshold: 3.5, customPatterns: ['SECRET-\\d+', 'sk-[a-zA-Z0-9]{20,}'] },
       encryption: { enabled: false },
@@ -248,15 +248,18 @@ describe('writeConfig tmp-file cleanup on failure', () => {
 // (plus crossEncoder.model and security.redaction.customPatterns) on every
 // writeConfig() call — the loader deep-merges over defaultConfig(), so any
 // key the emitter failed to write silently reverted to its default on next
-// load. sync stays an intentional, documented exclusion (owned by
-// sync.json) throughout — not part of this bug.
+// load. sync's CONNECTION fields (enabled/url/workspaceId/batchSize/
+// intervalMs) stay an intentional, documented exclusion (owned by
+// sync.json) throughout — not part of this bug. `sync.experimental`
+// (sync-experimental-gate slice) is the one sync field the emitter DOES
+// own and round-trip — see Config['sync'] doc comment.
 describe('FEAT-461: configToYaml emit completeness', () => {
   afterEach(() => {
     vi.restoreAllMocks();
   });
 
   // AC-1: exhaustive round-trip fidelity.
-  it('a fully-populated Config round-trips through writeConfig -> loadConfigFromDisk unchanged (except sync)', () => {
+  it('a fully-populated Config round-trips through writeConfig -> loadConfigFromDisk unchanged (except sync connection fields)', () => {
     const cfg = buildFullyPopulatedConfig();
     const path = tmpPath();
     writeConfig(cfg, path);
@@ -265,7 +268,9 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     // Two pre-existing, documented, orthogonal exclusions from strict
     // round-trip equality — neither is part of the FEAT-461 emit-completeness
     // bug this test targets:
-    //  - sync: never written to config.yaml at all (owned by sync.json).
+    //  - sync's connection fields (enabled/url/workspaceId/batchSize/
+    //    intervalMs): never written to config.yaml (owned by sync.json).
+    //    `experimental` DOES round-trip — see the dedicated assertion below.
     //  - search.eta: FEAT-428 fusion governance (applyFusionGovernance, run
     //    by loadConfigFromDisk) forces any configured eta > 0 back to 0
     //    unless a passing ADR-005 eval-harness run is recorded for it — a
@@ -276,7 +281,7 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(loadedRest).toEqual(cfgRest);
     expect(loadedSearch).toEqual({ ...cfgSearch, eta: 0 });
 
-    expect(loadedSync).toEqual(defaultConfig().sync);
+    expect(loadedSync).toEqual({ ...defaultConfig().sync, experimental: cfgSync.experimental });
     expect(cfgSync).not.toEqual(defaultConfig().sync);
   });
 
@@ -420,10 +425,16 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(yaml).toContain('  enabled: false'); // capture.autoCapture.enabled (default)
   });
 
-  it('never emits a sync: block — the exclusion is intentional, not something a generic emitter can regress', () => {
+  it('emits a sync: block containing ONLY experimental — connection fields stay the intentional sync.json exclusion (sync-experimental-gate)', () => {
     const yaml = configToYaml(buildFullyPopulatedConfig());
-    // 'sync' should never appear as a top-level YAML key (indent 0, own line).
-    expect(yaml).not.toMatch(/^sync:/m);
+    expect(yaml).toMatch(/^sync:/m);
+    expect(yaml).toContain('  experimental: true');
+    // Connection fields owned by sync.json must never leak into config.yaml,
+    // even though buildFullyPopulatedConfig() sets non-default values for them.
+    expect(yaml).not.toContain('workspaceId');
+    expect(yaml).not.toContain('sync.example.com');
+    expect(yaml).not.toMatch(/^\s+batchSize:/m);
+    expect(yaml).not.toMatch(/^\s+intervalMs:/m);
   });
 });
 

@@ -85,6 +85,17 @@ export interface DoctorCheckOpts {
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.capture.enabled`. Defaults
    * to `false` (the shipped default) when not supplied. */
   proxyCaptureEnabled?: boolean;
+  /** sync-experimental-gate slice: current `sync.enabled` (merged with
+   * sync.json pairing state by resolve-runtime.ts — pairing-owned, set by
+   * `astramem-local pair` on a successful redeem). Defaults to `false`
+   * (the shipped default) when not supplied. */
+  syncEnabled?: boolean;
+  /** sync-experimental-gate slice: current `sync.experimental` — the
+   * config.yaml-only hand-edit hard gate `astramem-local pair` never
+   * touches; both this AND `syncEnabled` must be true for the shipper to
+   * start (see `shouldStartShipper` in sync/shipper.ts). Defaults to
+   * `false` (the shipped default) when not supplied. */
+  syncExperimental?: boolean;
   /** Whether dev no-auth mode is genuinely ACTIVE — i.e. `config.auth.
    * devNoAuth === true` AND the bind is loopback (mirrors buildApp's
    * `devNoAuthActive` in src/server/app.ts). NOT the same as the raw config

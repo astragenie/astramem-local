@@ -29,6 +29,7 @@ import {
   readErrorBody,
   countRejected,
   clearRejected,
+  shouldStartShipper,
 } from '../../src/sync/shipper.js';
 
 function seedMemory(db: DB, scope: 'private' | 'team' | 'org', hash: string): string {
@@ -590,5 +591,39 @@ describe('startShipper — records attempt state across rounds (FEAT-434)', () =
     expect(afterSuccess.consecutive_failures).toBe(0);
     expect(afterSuccess.last_error).toBeNull();
     expect(afterSuccess.next_retry_at).toBeNull();
+  });
+});
+
+// sync-experimental-gate slice: hard gate on top of `enabled` — sync-to-
+// astramem-cloud is currently broken (8868 events failing HTTP 400, not yet
+// root-caused). `astramem-local pair` alone sets sync.json's `enabled: true`
+// and used to be sufficient to start shipping. Both `enabled` (pairing-owned)
+// AND `experimental` (config.yaml, hand-edit only) must now be true.
+describe('shouldStartShipper — experimental hard gate (sync-experimental-gate)', () => {
+  const base = { enabled: true, experimental: true, dataDir: '/tmp/astra-data', isolated: false };
+
+  it('does NOT start when enabled=true but experimental=false', () => {
+    expect(shouldStartShipper({ ...base, experimental: false })).toBe(false);
+  });
+
+  it('starts when both enabled=true and experimental=true', () => {
+    expect(shouldStartShipper(base)).toBe(true);
+  });
+
+  it('does not start when enabled=false, regardless of experimental', () => {
+    expect(shouldStartShipper({ ...base, enabled: false })).toBe(false);
+    expect(shouldStartShipper({ ...base, enabled: false, experimental: false })).toBe(false);
+  });
+
+  it('does not start when neither enabled nor experimental is set', () => {
+    expect(shouldStartShipper({ ...base, enabled: false, experimental: false })).toBe(false);
+  });
+
+  it('pre-existing dataDir guard (:memory: eval/test daemon) still applies on top of the new gate', () => {
+    expect(shouldStartShipper({ ...base, dataDir: ':memory:' })).toBe(false);
+  });
+
+  it('pre-existing isolated-mode guard (ASTRA_MEMORY_ISOLATED=1) still applies on top of the new gate', () => {
+    expect(shouldStartShipper({ ...base, isolated: true })).toBe(false);
   });
 });

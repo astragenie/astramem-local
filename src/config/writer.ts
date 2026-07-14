@@ -272,8 +272,16 @@ export function configToYaml(cfg: Config): string {
     line(2, 'minScore', cfg.recallPack.policy.minScore),
     line(2, 'minPromptChars', cfg.recallPack.policy.minPromptChars),
     '',
-    // sync is deliberately NOT emitted here — `astramem-local pair` owns it
-    // via sync.json (single source of truth, merged at serve boot).
+    // sync's CONNECTION fields (enabled/url/workspaceId/batchSize/intervalMs)
+    // are deliberately NOT emitted here — `astramem-local pair` owns them via
+    // sync.json (single source of truth, merged at serve boot). `experimental`
+    // is the one sync field config.yaml DOES own: a hand-edit-only hard gate
+    // `pair` never touches, so redeeming a claim code can never by itself
+    // start shipping to the (currently broken) cloud sync path — see
+    // Config['sync'] doc comment and cli/serve.ts's shipper-start gate.
+    line(0, 'sync'),
+    line(1, 'experimental', cfg.sync.experimental),
+    '',
     line(0, 'security'),
     line(1, 'redaction'),
     line(2, 'enabled', cfg.security.redaction.enabled),
