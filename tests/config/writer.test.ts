@@ -65,7 +65,10 @@ function buildFullyPopulatedConfig(): Config {
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: true } },
     ingest: { spoolMaxBytes: 1_048_576 },
-    distill: { durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never', maxChunkChars: 2400 },
+    distill: {
+      durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never',
+      maxChunkChars: 2400, costCap: { enabled: true, maxCallsPerJob: 40, maxWallClockMs: 180_000 },
+    },
     capture: {
       autoCapture: {
         enabled: true,
@@ -156,6 +159,29 @@ describe('configToYaml', () => {
     cfg.consolidation.autoAcceptThreshold = 0.9;
     const yaml = configToYaml(cfg);
     expect(yaml).toContain('autoAcceptThreshold: 0.9');
+  });
+
+  // distill.costCap ships OFF for beta — see Config['distill']['costCap'].
+  it('emits distill.costCap.enabled: false by default, with no maxCallsPerJob/maxWallClockMs lines under it', () => {
+    const cfg = defaultConfig();
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain('costCap:');
+    // Scope to the distill block only — consolidation.contradictionDetection
+    // always emits its OWN maxWallClockMs, so a bare global
+    // not.toContain('maxWallClockMs') would false-fail on that unrelated field.
+    const distillBlock = yaml.slice(yaml.indexOf('\ndistill:'), yaml.indexOf('\nmemoryHealth:'));
+    expect(distillBlock).toContain('costCap:');
+    expect(distillBlock).toContain('enabled: false');
+    expect(distillBlock).not.toContain('maxCallsPerJob');
+    expect(distillBlock).not.toContain('maxWallClockMs');
+  });
+
+  it('emits a configured distill.costCap with limits', () => {
+    const cfg = defaultConfig();
+    cfg.distill.costCap = { enabled: true, maxCallsPerJob: 25, maxWallClockMs: 90_000 };
+    const yaml = configToYaml(cfg);
+    expect(yaml).toContain('maxCallsPerJob: 25');
+    expect(yaml).toContain('maxWallClockMs: 90000');
   });
 });
 

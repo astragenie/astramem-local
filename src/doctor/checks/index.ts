@@ -101,6 +101,7 @@ import { checkUsefulnessFeedbackLoop } from './usefulness-feedback-loop.js';
 import { checkMemoryHealth } from './memory-health.js';
 import { checkDurabilityGateMode } from './durability-gate-mode.js';
 import { checkExtractProfile } from './extract-profile.js';
+import { checkDistillCostCap } from './distill-cost-cap.js';
 import { checkEntityRelations } from './entity-relations.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
 import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
@@ -177,6 +178,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkMemoryHealth(dataDir, encryptionEnabled),
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkExtractProfile(opts.extractProfile ?? 'engineering'),
+    checkDistillCostCap(opts.distillCostCap),
     checkEntityRelations(dataDir, opts.extractProfile ?? 'engineering', encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
     checkAtomValidityExtraction(dataDir, encryptionEnabled),

@@ -24,6 +24,7 @@ import { memoryNormalize } from './stages/07-memory-normalize.js';
 import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
 import { resolveChunkConcurrency } from './concurrency.js';
+import { DistillCostCapTracker, resolveDistillCostCap } from './cost-cap.js';
 import { chunkCheckpoints } from './chunk-checkpoint.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
@@ -134,6 +135,17 @@ export async function runPipeline(
 
   const budget = new BudgetTracker(ctx.db);
 
+  // Opt-in call-count/wall-clock cap on compact()+extract() LLM calls,
+  // combined, for THIS job — disabled by default (config.distill.costCap,
+  // see src/distill/cost-cap.ts's doc comment for why this is separate
+  // from BudgetTracker's dollar cap above). ONE tracker instance shared by
+  // both stages below so maxCallsPerJob bounds the two stages together, not
+  // independently.
+  const costCap = new DistillCostCapTracker(
+    resolveDistillCostCap(ctx.config ?? defaultConfig()),
+    (message) => pipeLog.warn({ stage: 'cost-cap' }, message),
+  );
+
   // FEAT-487: chunk-level fan-out width for stages 4/5, resolved once per
   // run from config (falls back to defaultConfig() when ctx.config is
   // omitted — same convention as ctx.config's other consumer, stage 8's
@@ -164,7 +176,7 @@ export async function runPipeline(
   try {
     const compactResults = await compact(
       chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey,
-      { profile: resolvedExtractProfile, mode: compactionMode },
+      { profile: resolvedExtractProfile, mode: compactionMode, costCap },
     );
     compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
     pipeLog.info({ stage: 'compact', chunks_compacted: compactedChunks.length }, 'stage complete');
@@ -208,7 +220,7 @@ export async function runPipeline(
   pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile, chunk_concurrency: chunkConcurrency }, 'stage start');
   let extractResults;
   try {
-    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso);
+    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso, costCap);
     const atomsExtracted = extractResults.reduce((sum, r) => sum + r.atoms.length, 0);
     pipeLog.info({ stage: 'extract', atoms_extracted: atomsExtracted }, 'stage complete');
   } catch (err) {
