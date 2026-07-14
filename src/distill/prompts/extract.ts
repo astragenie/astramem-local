@@ -315,7 +315,7 @@ Output STRICT JSON matching:
       "text": "<one self-contained sentence, roughly 15-80 words>",
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
-      "evidence": "<optional, short excerpt from source>",
+      "evidence": "<an EXACT verbatim quote from the source turn this atom is based on — copy, never paraphrase; omit only if the atom synthesizes multiple turns with no single quotable line>",
       "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }],
       "valid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact started being true>",
       "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact stopped being true>"
@@ -428,7 +428,13 @@ RIGHT (self-contained, possessor-qualified, states the actual fact instead of de
 ]}
 NEGATIVE COUNTER-EXAMPLE — do NOT invent a bound the text never stated. Input: "I live in Austin and love it here." (no prior residence, no timeline mentioned) ->
 WRONG: {"type":"fact","text":"Sergey lives in Austin.","invalid_at":"2026-07-13", ...} — nothing in the source bounds this fact; a guessed invalid_at would silently mark a still-true fact as expired.
-RIGHT: {"type":"fact","text":"Sergey currently lives in Austin and enjoys living there.","importance":0.5,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]} — valid_at/invalid_at both omitted, per the "omit by default" rule above.`;
+RIGHT: {"type":"fact","text":"Sergey currently lives in Austin and enjoys living there.","importance":0.5,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]} — valid_at/invalid_at both omitted, per the "omit by default" rule above.
+
+9. Input (multi-speaker meeting/call transcript with per-turn speaker labels — a "decision" or "lesson" atom REQUIRES a populated "evidence" field, or it is dropped entirely; every example above omitted "evidence" because none of them were decision/lesson — this is the pattern to copy when one is): "assistant: [Priya Nair] let's make the call now: we will ship the doctor WARN row for meeting captions before flipping on the new consent gate." ->
+{"atoms":[
+  {"type":"decision","text":"Priya Nair decided the doctor WARN row for meeting captions must ship before the team flips on the new consent gate.","importance":0.7,"confidence":0.85,"evidence":"we will ship the doctor WARN row for meeting captions before flipping on the new consent gate","entities":[{"name":"Priya Nair","kind":"actor","subtype":"human"}]}
+]}
+"evidence" here is copied verbatim from the ONE turn the decision came from — not the whole line, not a paraphrase — specifically so the exact speaker who said it can be traced back later. Do this for every decision/lesson atom, always.`;
 
 /**
  * Resolve the extraction system prompt for one pipeline run. Precedence
