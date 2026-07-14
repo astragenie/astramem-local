@@ -332,6 +332,17 @@ export function configToYaml(cfg: Config): string {
     // #273 (WS7) — stage 3's per-chunk character cap. Default 3200 matches
     // 03-chunk.ts's DEFAULT_MAX_CHUNK_CHARS.
     line(1, 'maxChunkChars', (cfg.distill ?? EMIT_DEFAULTS.distill).maxChunkChars),
+    // Opt-in distill compact()+extract() cost cap — enabled: false is the
+    // shipped beta default (byte-identical to pre-this-field behavior).
+    // See Config['distill']['costCap']'s doc comment before flipping it.
+    line(1, 'costCap'),
+    line(2, 'enabled', ((cfg.distill ?? EMIT_DEFAULTS.distill).costCap ?? { enabled: false }).enabled),
+    ...(((cfg.distill ?? EMIT_DEFAULTS.distill).costCap?.maxCallsPerJob !== undefined)
+      ? [line(2, 'maxCallsPerJob', (cfg.distill ?? EMIT_DEFAULTS.distill).costCap!.maxCallsPerJob as number)]
+      : []),
+    ...(((cfg.distill ?? EMIT_DEFAULTS.distill).costCap?.maxWallClockMs !== undefined)
+      ? [line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).costCap!.maxWallClockMs as number)]
+      : []),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes

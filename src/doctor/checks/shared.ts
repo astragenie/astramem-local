@@ -15,6 +15,7 @@ import { getOrCreateKey } from '../../storage/keystore.js';
 import type { DB } from '../../storage/db.js';
 import type { DurabilityGateMode } from '../../distill/durability-gate.js';
 import type { ExtractProfile } from '../../distill/prompts/extract.js';
+import type { DistillCostCapConfig } from '../../distill/cost-cap.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────────
 
@@ -71,6 +72,10 @@ export interface DoctorCheckOpts {
    * disclosure every doctor run, not just buried in a config comment — see
    * `checkExtractProfile` below. */
   extractProfile?: ExtractProfile;
+  /** Current `distill.costCap` — the opt-in compact()+extract() call-count/
+   *  wall-clock cap (disabled by default for beta). Defaults to
+   *  `{ enabled: false }` when not supplied — see `checkDistillCostCap`. */
+  distillCostCap?: DistillCostCapConfig;
   /** FEAT-455 / ADR-012 decision 4: current `capture.autoCapture.enabled`.
    * Defaults to `false` (the shipped default) when not supplied. */
   autoCaptureEnabled?: boolean;
