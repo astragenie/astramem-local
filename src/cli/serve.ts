@@ -206,10 +206,22 @@ export async function serve(opts: ServeOpts): Promise<void> {
   registry.register(consolidateHandler);
   registry.register(reembedHandler);
 
+  // FEAT-492: content-hash embedding cache, DOCUMENT-role only. The worker's
+  // extended context gets its OWN `providers` object with `embed` swapped for
+  // a caching wrapper — `providers.embed` above (already handed to buildApp
+  // for the query-role search routes, and used unchanged for the preflight/
+  // doctor probes below) stays raw. See src/providers/embed/cache.ts's doc
+  // comment for why the two must not share one wrapped instance.
+  const { CachingEmbedProvider } = await import('../providers/embed/cache.js');
+  const workerProviders: ProviderSet | MockProviderSet = {
+    ...providers,
+    embed: new CachingEmbedProvider(providers.embed, db),
+  };
+
   const extCtx: ExtendedHandlerCtx = {
     db,
     config: cfg,
-    providers,
+    providers: workerProviders,
     memoryRepo: new MemoryRepo(db),
     vecStore: new SqliteVecStore(db, cfg.embedding.dim),
   };

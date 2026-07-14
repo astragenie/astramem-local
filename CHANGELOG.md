@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Content-hash embedding cache (FEAT-492), document-role only.** Ports cloud's
+  `CachingEmbeddingProvider.cs` pattern: a SQLite table (migration 042) keyed
+  `(content_hash, model, dim)` caches document-side embeddings so re-running
+  distill/reembed over unchanged content issues zero Ollama embed calls.
+  `dim` rides in the key alongside `model` (not inferred from it) so a
+  configured-dim change without a model-name change can never serve a
+  wrong-length vector. Scoped to document-role embeds only — the worker's
+  extended context (`src/cli/serve.ts`) gets its own `providers.embed` wrapped
+  in `CachingEmbedProvider`; the raw provider still flows to query-role search
+  routes and the doctor/preflight probes, since a query embed is never
+  repeated verbatim and caching it buys nothing while adding a correctness
+  risk (see `src/providers/embed/cache.ts`'s doc comment). LRU eviction caps
+  the table at 20,000 rows. New doctor check "Embed cache hit rate" surfaces
+  cumulative hit/miss counters (purely informational, never fails).
+
 ## [0.18.0] - 2026-07-14
 
 ### Changed
