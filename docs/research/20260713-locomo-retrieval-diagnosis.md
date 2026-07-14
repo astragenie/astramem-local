@@ -190,17 +190,47 @@ Mean F1 = 0.596. This is the basis for the corrected +7.86 ceiling above.
 
 ### The bucket boundary is soft — cross-reference #267
 
-**2/50 sampled records (4%) are mislabeled `rank-ok`** — verified directly
-against the DB, not just against the diagnostic's own score. `conv-30#47`
-asks what Gina found for her physical store location; every atom about Gina's
-store in the project describes it as an *online* store — no location-finding
-fact exists anywhere. `conv-49#83` asks what car Evan replaced his broken
-Prius with; the "got a new Prius" event was never captured as its own atom,
-only the phrase "new Prius" appears incidentally in an unrelated Rockies-trip
-atom. Both cleared the diagnostic's 0.6 containment + 0.12 short-answer-
-precision guard purely on coincidental token overlap. **These are really
-`not-in-db`, mislabeled `rank-ok`** — the true `not-in-db` count is a bit
-higher than 344, the true `rank-ok` count a bit lower than 386.
+**Correction (WS6, second pass):** this section originally reported 2/50
+(4%) mislabeled, found with a display script that only ever showed the
+top-3-by-containment atoms per question. A follow-up mechanical check —
+does the question's named person actually appear in the matched atom's
+text? — caught two more the first pass missed, because the true supporting
+atom for two OTHER questions was sitting un-displayed below a coincidentally
+tied wrong-entity atom, which masked the search in both directions. Net
+result after re-verifying every flag against the DB directly: **4/50
+sampled records (8%) are mislabeled `rank-ok`, not 2/50 (4%) — a 2x
+correction to the originally published number.**
+
+- `conv-26#94` asks what MELANIE's hand-painted bowl reminds her of. The
+  matched atom ("connects her hand-painted bowl with art and
+  self-expression") belongs to **CAROLINE**, a different person in the same
+  conversation. Melanie has her own, separate bowl atom (a pottery-class
+  flower design) that says nothing about art or self-expression. Pure
+  entity-name coincidence — the diagnostic's token containment has no notion
+  of grammatical subject, so "Melanie... bowl... reminder" matched on shared
+  words alone regardless of whose bowl it was.
+- `conv-30#47` asks what Gina found for her physical store location; every
+  atom about Gina's store in the project describes it as an *online* store —
+  no location-finding fact exists anywhere.
+- `conv-49#83` asks what car Evan replaced his broken Prius with; the "got a
+  new Prius" event was never captured as its own atom, only the phrase "new
+  Prius" appears incidentally in an unrelated Rockies-trip atom.
+- `conv-50#96` asks what type of car Dave worked on *during the workshop*.
+  Neither of the project's two workshop atoms names a car type; "classic
+  muscle car" belongs to a separate atom about Dave's personal car style
+  preference, unconnected to the workshop.
+
+All four cleared the diagnostic's 0.6 containment + 0.12 short-answer-
+precision guard purely on coincidental token overlap with an atom about a
+different person or a different specific event than the one asked about.
+**These are really `not-in-db`, mislabeled `rank-ok`** — the true
+`not-in-db` count is a bit higher than 344, the true `rank-ok` count a bit
+lower than 386.
+
+A fifth record, `conv-42#90`, is a related but distinct failure mode — see
+"Coreference/entity-linking gap" below — and is reported separately rather
+than folded into the count above, since no single atom states the queried
+fact at all (a fragmentation gap) rather than a wrong atom being matched.
 
 This is the **same root cause** as **[#267](https://github.com/astragenie/astramem-local/issues/267)**
 (open), which independently measured a 42% *false-negative* rate for this same
@@ -208,12 +238,14 @@ token-containment heuristic on the temporal category (`docs/research/20260713-te
 #267 found the heuristic wrongly says "not found" too often; WS6 found it
 wrongly says "found" too often. **Both directions are the same defect: crude
 token containment doesn't verify the matched atom is actually *about* the
-question, only that it shares enough words with the gold answer.** The
+question — not the right event, and in `conv-26#94`'s case not even the
+right person — only that it shares enough words with the gold answer.** The
 instrument shares the bias of the thing it measures. Neither `not-in-db`'s
 344 nor `rank-ok`'s 386 should be read as exact until this heuristic is
-replaced or independently audited — WS6 did not attempt that re-audit (2/50
-is too small a sample to correct the population counts, only to flag that
-they're soft).
+replaced or independently audited — WS6 did not attempt that re-audit (4/50
+is still too small a sample to correct the population counts, only to flag
+more firmly that they're soft, and that the true rate may run higher than
+8% given how easily the first pass itself undercounted).
 
 ### Coreference/entity-linking gap — the opposite lever from atom-splitting
 
