@@ -746,12 +746,16 @@ describe('migration 019-health-agent-profile-indexes', () => {
     expect(names).toContain('idx_memory_events_usefulness_served');
     expect(names).toContain('idx_memory_events_usefulness_used');
 
+    // FEAT-495 item 3 (migration 044) re-guarded both predicates with
+    // json_valid(...) ELSE '[]' so a malformed payload_json can't throw at
+    // INSERT time (partial-index WHERE clauses are evaluated on every write)
+    // — see json-guard.ts's file header and migration 044's own comment.
     const served = idx.find(i => i.name === 'idx_memory_events_usefulness_served')!;
-    expect(served.sql).toContain("json_extract(payload_json, '$.family') = 'recall_served'");
+    expect(served.sql).toContain("json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served'");
     expect(served.sql).toContain("event_type = 'usefulness'");
 
     const used = idx.find(i => i.name === 'idx_memory_events_usefulness_used')!;
-    expect(used.sql).toContain("json_extract(payload_json, '$.family') = 'recall_used'");
+    expect(used.sql).toContain("json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_used'");
     expect(used.sql).toContain("event_type = 'usefulness'");
   });
 
@@ -785,12 +789,15 @@ describe('migration 019-health-agent-profile-indexes', () => {
       "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
     ).run('m1', JSON.stringify({ family: 'recall_used', surface: 'rest' }), 200);
 
+    // Query text must match the index's guarded predicate (migration 044)
+    // expression-for-expression for SQLite's partial-index matching to ride
+    // it — same guarded shape src/storage/usefulness.ts's real queries use.
     const plan = db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT COUNT(DISTINCT atom_id) AS n
       FROM memory_events
       WHERE event_type = 'usefulness'
-        AND json_extract(payload_json, '$.family') = 'recall_served'
+        AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served'
         AND created_at >= ?
     `).all(0) as { detail: string }[];
     expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);

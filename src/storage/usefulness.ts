@@ -28,6 +28,7 @@
 import { createHash } from 'node:crypto';
 import type { DB } from './db.js';
 import { MemoryEventRepo, type CorrectionSource } from './memory-events.js';
+import { safeJsonColumn } from './json-guard.js';
 
 export type UsefulnessSurface = 'mcp' | 'rest' | 'cli';
 export type UsefulnessSignal = 'explicit' | 'heuristic';
@@ -134,8 +135,8 @@ export function usefulnessScores(db: DB, atomIds: string[]): Map<string, number>
   const ph = atomIds.map(() => '?').join(',');
   const rows = db.prepare(`
     SELECT atom_id,
-      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'recall_used' THEN 1 ELSE 0 END) AS used,
-      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
+      SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1 ELSE 0 END) AS used,
+      SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
     FROM memory_events
     WHERE event_type = 'usefulness' AND atom_id IN (${ph})
     GROUP BY atom_id
@@ -162,7 +163,7 @@ export interface UsefulnessRate {
 
 function surfaceFilter(opts: UsefulnessRateOpts, column: string): { clause: string; params: (string | number)[] } {
   if (!opts.surface) return { clause: '', params: [] };
-  return { clause: `AND json_extract(${column}, '$.surface') = ?`, params: [opts.surface] };
+  return { clause: `AND json_extract(${safeJsonColumn(column)}, '$.surface') = ?`, params: [opts.surface] };
 }
 
 /**
@@ -178,7 +179,7 @@ export function usefulnessRate(db: DB, opts: UsefulnessRateOpts = {}): Usefulnes
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
     WHERE event_type = 'usefulness'
-      AND json_extract(payload_json, '$.family') = 'recall_served'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_served'
       AND created_at >= ?
       ${clause}
   `).get(since, ...params) as { n: number }).n;
@@ -187,7 +188,7 @@ export function usefulnessRate(db: DB, opts: UsefulnessRateOpts = {}): Usefulnes
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
     WHERE event_type = 'usefulness'
-      AND json_extract(payload_json, '$.family') = 'recall_used'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
       AND created_at >= ?
       ${clause}
   `).get(since, ...params) as { n: number }).n;
@@ -214,8 +215,8 @@ export function perAtomUsefulnessRate7d(db: DB, atomIds: string[], sinceMs: numb
   const ph = atomIds.map(() => '?').join(',');
   const rows = db.prepare(`
     SELECT atom_id,
-      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'recall_served' THEN 1 ELSE 0 END) AS served,
-      SUM(CASE WHEN json_extract(payload_json, '$.family') = 'recall_used' THEN 1 ELSE 0 END) AS used
+      SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_served' THEN 1 ELSE 0 END) AS served,
+      SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1 ELSE 0 END) AS used
     FROM memory_events
     WHERE event_type = 'usefulness' AND atom_id IN (${ph}) AND created_at >= ?
     GROUP BY atom_id
@@ -286,19 +287,19 @@ export function feedbackLoopSummary(db: DB): FeedbackLoopSummary {
   const servedDistinct = (db.prepare(`
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'recall_served'
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_served'
   `).get() as { n: number }).n;
 
   const usedDistinct = (db.prepare(`
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'recall_used'
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
   `).get() as { n: number }).n;
 
   const correctedDistinct = (db.prepare(`
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
   `).get() as { n: number }).n;
 
   // issue #190 AC-2: same unindexed-scan tradeoff as correctedDistinct above
@@ -308,26 +309,26 @@ export function feedbackLoopSummary(db: DB): FeedbackLoopSummary {
   const correctedConsolidationDistinct = (db.prepare(`
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
-      AND json_extract(payload_json, '$.source') = 'consolidation_auto'
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.source') = 'consolidation_auto'
   `).get() as { n: number }).n;
 
   const correctedExternalDistinct = (db.prepare(`
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
-      AND json_extract(payload_json, '$.source') = 'external'
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.source') = 'external'
   `).get() as { n: number }).n;
 
   const correctedUnknownDistinct = (db.prepare(`
     SELECT COUNT(DISTINCT atom_id) AS n
     FROM memory_events
-    WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
-      AND json_extract(payload_json, '$.source') IS NULL
+    WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.source') IS NULL
       AND atom_id NOT IN (
         SELECT atom_id FROM memory_events
-        WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'memory_corrected'
-          AND json_extract(payload_json, '$.source') IS NOT NULL
+        WHERE event_type = 'usefulness' AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected'
+          AND json_extract(${safeJsonColumn('payload_json')},'$.source') IS NOT NULL
       )
   `).get() as { n: number }).n;
 
@@ -354,7 +355,7 @@ export function usefulnessByType(db: DB, opts: UsefulnessRateOpts = {}): Usefuln
     FROM memory_events e
     JOIN memories m ON m.id = e.atom_id
     WHERE e.event_type = 'usefulness'
-      AND json_extract(e.payload_json, '$.family') = 'recall_served'
+      AND json_extract(${safeJsonColumn('e.payload_json')},'$.family') = 'recall_served'
       AND e.created_at >= ?
       ${clause}
     GROUP BY m.type
@@ -365,7 +366,7 @@ export function usefulnessByType(db: DB, opts: UsefulnessRateOpts = {}): Usefuln
     FROM memory_events e
     JOIN memories m ON m.id = e.atom_id
     WHERE e.event_type = 'usefulness'
-      AND json_extract(e.payload_json, '$.family') = 'recall_used'
+      AND json_extract(${safeJsonColumn('e.payload_json')},'$.family') = 'recall_used'
       AND e.created_at >= ?
       ${clause}
     GROUP BY m.type
