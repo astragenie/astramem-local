@@ -36,12 +36,29 @@ export interface SessionDigest {
   memories: Array<{ id: string; type: string; text: string }>;
 }
 
+/**
+ * FEAT-500: per-signal ScoreExplanation, already on the wire since
+ * 2026-07-13 (CONTRACT-FREEZE, astragenie/memory#759) but not previously
+ * typed on this eval-only client — `/recall` already returns the full
+ * SearchHit shape (src/server/routes/search.ts, clampScores passthrough),
+ * this interface just widens to match. `top_signal` is the FEAT-500 argmax
+ * addition. Optional throughout: an older daemon (pre-FEAT-500 or
+ * pre-CONTRACT-FREEZE) simply omits these keys, and callers must not assume
+ * their presence.
+ */
+export interface ScoreExplanation {
+  final: number;
+  signals: Record<string, { raw: number; weight: number; final: number }>;
+  top_signal?: string;
+}
+
 export interface SearchHit {
   id: string;
   type: string;
   text: string;
   score: number;
   source: string;
+  explanation?: ScoreExplanation;
 }
 
 export interface RecallFilters {

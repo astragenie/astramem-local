@@ -45,6 +45,14 @@
  * it) and compare judge.mts scores between the two run dirs. Omitted:
  * byte-identical to before this flag existed.
  *
+ * ANSWERER_SIGNALS=1 (env, not a flag; FEAT-500 A/B prep, additive): includes
+ * each retrieved hit's `top_signal` + a compact per-signal breakdown in the
+ * answerer prompt (see answer.mts's formatSignalBreakdown). Unset (the
+ * default): the prompt is byte-identical to every prior recorded score. Run
+ * the same sample twice (once unset, once with it) and diff judge.mts scores
+ * between the two run dirs — see the FEAT-500 backlog file for the exact A/B
+ * command.
+ *
  * --diagnose (WS2 diagnostic, same doc, additive): runs the not-in-db/
  * rank-miss/rank-ok retrieval diagnosis (see diagnose-retrieval.mts) against
  * each shard's daemon right after the answer step, before it's torn down,
@@ -106,6 +114,10 @@ const k = Number(get('--k') ?? '10');
 // the score) are identical to the old strictly-serial loop. See
 // DEFAULT_ANSWER_CONCURRENCY in answer.mts.
 const answerConcurrency = Number(get('--answer-concurrency') ?? '8');
+// FEAT-500 A/B prep: env, not a flag, so it composes with --resume unchanged
+// and default runs (unset) stay byte-identical to every prior recorded
+// score. See answer.mts's buildAnswerPrompt/formatSignalBreakdown.
+const answererIncludeSignals = process.env.ANSWERER_SIGNALS === '1';
 const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
@@ -325,7 +337,7 @@ async function runShard(opts: {
         { baseUrl: daemon.baseUrl, token },
         azureCfg,
         samples,
-        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency },
+        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency, includeSignals: answererIncludeSignals },
       );
       timings.answer_ms = Date.now() - t;
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);
