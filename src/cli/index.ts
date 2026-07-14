@@ -27,6 +27,7 @@ import { mcpStdio } from './mcp-stdio.js';
 import { mcpInstallCommand } from './mcp-install.js';
 import { demoCommand } from './demo.js';
 import { proxyCommand } from './proxy.js';
+import { ingestAudioCommand } from './audio.js';
 import { installCliCrashHandlers } from './crash-handlers.js';
 
 const PKG_VERSION: string = (() => {
@@ -283,6 +284,12 @@ async function main() {
       break;
     }
 
+    case 'ingest-audio': {
+      // astramem-local ingest-audio <file> [--session-id ID]
+      await ingestAudioCommand(rest);
+      break;
+    }
+
     case 'demo': {
       // astramem-local demo — 30s zero-dependency trial: in-memory daemon,
       // mock embed/LLM providers (no Ollama), seeded example memories, one
@@ -415,6 +422,13 @@ Commands:
                                          ADR-013). Loopback-only bind; refuses a
                                          non-loopback --host outright. Zero
                                          capture in this slice — pure passthrough.
+  ingest-audio <file> [--session-id ID]  Transcribe a local audio file on-device
+                                         (FEAT-489 Slice A) and feed it through
+                                         the existing distill pipeline. Requires
+                                         audio.mode != 'off' in config.yaml
+                                         (default off — ADR-017 third-party
+                                         consent gate) and the optional
+                                         astramem-audio add-on installed.
   demo                                    30-second zero-dependency trial: in-memory
                                          daemon, mock embed/LLM providers (no Ollama
                                          required), seeds a few example memories, runs
