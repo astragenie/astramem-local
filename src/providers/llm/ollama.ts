@@ -80,13 +80,26 @@ interface OllamaTagsResponse {
   models?: Array<{ name: string }>;
 }
 
+/**
+ * Combines a caller-supplied cancellation signal with a fixed-duration
+ * internal ceiling (issue #261): whichever fires first wins, and the
+ * caller's signal is never dropped in favor of the internal one. When no
+ * caller signal is passed, behaves exactly like the pre-fix
+ * `AbortSignal.timeout(timeoutMs)`.
+ */
+function combineSignals(timeoutMs: number, externalSignal?: AbortSignal): AbortSignal {
+  const ownSignal = AbortSignal.timeout(timeoutMs);
+  return externalSignal ? AbortSignal.any([externalSignal, ownSignal]) : ownSignal;
+}
+
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
   const attempt = async (): Promise<Response> => {
-    return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    return fetch(url, { ...init, signal: combineSignals(timeoutMs, externalSignal) });
   };
 
   let lastError: unknown;
@@ -186,11 +199,14 @@ export class OllamaLLMProvider implements LLMProvider {
     if (opts?.temperature !== undefined) options.temperature = opts.temperature;
     if (opts?.maxTokens !== undefined) options.num_predict = opts.maxTokens;
 
+    // FEAT-261: a schema, when supplied, constrains the actual JSON shape —
+    // `format: 'json'` alone only guarantees valid JSON, not a particular
+    // top-level type (see ChatOpts.jsonSchema doc comment).
     const body = {
       model: this.model,
       messages,
       stream: false,
-      ...(useJson ? { format: 'json' } : {}),
+      ...(useJson ? { format: opts?.jsonSchema ?? 'json' } : {}),
       ...(this.think !== undefined ? { think: this.think } : {}),
       options,
     };
@@ -203,6 +219,7 @@ export class OllamaLLMProvider implements LLMProvider {
         body: JSON.stringify(body),
       },
       CHAT_TIMEOUT_MS,
+      opts?.signal,
     );
 
     if (!res.ok) {

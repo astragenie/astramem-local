@@ -1,5 +1,8 @@
 import type { LLMProvider } from '../../contracts/llm.js';
 import type { CheckResult } from '../types.js';
+import { withAbortableTimeout } from '../../util/abortable-timeout.js';
+
+class LlmChatProbeTimeoutError extends Error {}
 
 /**
  * LLM chat probe: sends a real 1-token chat request to the configured provider.
@@ -8,6 +11,15 @@ import type { CheckResult } from '../types.js';
  * unloaded, or the name may mismatch (qwen2.5-coder vs qwen2.5-coder:7b).
  * A real chat call exercises the full path: model loaded, prompt handled,
  * response non-empty.
+ *
+ * Issue #261: a bare Promise.race abandoned the losing promise rather than
+ * cancelling it — a slow/hung provider call kept running to completion in
+ * the background after this probe already "timed out", invisibly holding
+ * the provider's execution slot. `withAbortableTimeout` both cancels the
+ * in-flight request via ChatOpts.signal (combined with, not replacing, the
+ * provider's own internal timeout) AND still races a timer so a provider
+ * that ignores the signal degrades to the old bounded-wait behavior rather
+ * than hanging this probe forever.
  */
 export async function llmChatProbe(
   provider: LLMProvider,
@@ -15,15 +27,15 @@ export async function llmChatProbe(
 ): Promise<CheckResult> {
   try {
     const start = Date.now();
-    const result = await Promise.race([
-      provider.chat([{ role: 'user', content: '1' }], {
+    const result = await withAbortableTimeout(
+      (signal) => provider.chat([{ role: 'user', content: '1' }], {
         maxTokens: 1,
         temperature: 0,
+        signal,
       }),
-      new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error('timeout')), timeoutMs),
-      ),
-    ]);
+      timeoutMs,
+      () => new LlmChatProbeTimeoutError('timeout'),
+    );
     const latency = Date.now() - start;
 
     if (!result.text || result.text.trim().length === 0) {
