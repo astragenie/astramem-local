@@ -144,7 +144,7 @@ describe('compactChunk / extractChunk — costCap integration', () => {
     const { llm, callCount } = makeCountingLLM(VALID_EXTRACTION_JSON);
     const tracker = new DistillCostCapTracker({ enabled: true, maxCallsPerJob: 0 }, () => {});
 
-    const result = await extractChunk(0, 'some chunk text', llm, budget, 10.0, 'engineering', undefined, tracker);
+    const result = await extractChunk(0, 'some chunk text', llm, budget, 10.0, 'engineering', undefined, undefined, tracker);
 
     expect(result.atoms).toEqual([]);
     expect(callCount()).toBe(0);
@@ -162,7 +162,7 @@ describe('compactChunk / extractChunk — costCap integration', () => {
     expect(compactCalls()).toBe(1);
 
     const { llm: extractLlm, callCount: extractCalls } = makeCountingLLM(VALID_EXTRACTION_JSON);
-    const extractResult = await extractChunk(0, 'chunk text', extractLlm, budget, 10.0, 'engineering', undefined, disabled);
+    const extractResult = await extractChunk(0, 'chunk text', extractLlm, budget, 10.0, 'engineering', undefined, undefined, disabled);
     expect(extractResult.atoms).toHaveLength(1);
     expect(extractCalls()).toBe(1);
   });

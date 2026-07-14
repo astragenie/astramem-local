@@ -16,6 +16,7 @@ import type { DB } from '../../storage/db.js';
 import type { DurabilityGateMode } from '../../distill/durability-gate.js';
 import type { ExtractProfile } from '../../distill/prompts/extract.js';
 import type { DistillCostCapConfig } from '../../distill/cost-cap.js';
+import type { Config } from '../../config/config.js';
 
 // ─── Options ─────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,11 @@ export interface DoctorCheckOpts {
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.enabled`. Defaults to
    * `false` (the shipped default) when not supplied. */
   proxyEnabled?: boolean;
+  /** Release no-go hard gate: current `proxy.experimental`. Defaults to
+   * `false` (the shipped default) when not supplied — the state where
+   * `astramem-local proxy serve` refuses to start regardless of
+   * `proxy.enabled` (see src/cli/proxy.ts). */
+  proxyExperimental?: boolean;
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.capture.enabled`. Defaults
    * to `false` (the shipped default) when not supplied. */
   proxyCaptureEnabled?: boolean;
@@ -113,6 +119,10 @@ export interface DoctorCheckOpts {
    * deliberately NOT reusing that seam for this check). Defaults to `false`
    * when not supplied. */
   codexSubscriptionInUse?: boolean;
+  /** FEAT-493 (scaffolding): current `retention` config block. Defaults to
+   * `defaultConfig().retention` (mode 'off') when not supplied — see
+   * `checkRetention`. */
+  retentionConfig?: Config['retention'];
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────

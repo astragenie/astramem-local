@@ -523,7 +523,18 @@ describe('Worker + distillHandler (parse-failure retry policy)', () => {
         }
         return {
           text: JSON.stringify({
-            atoms: [{ type: 'decision', text: 'use sqlite-vec for v1 vector storage', importance: 0.9, confidence: 0.9 }],
+            atoms: [{
+              type: 'decision',
+              text: 'use sqlite-vec for v1 vector storage',
+              importance: 0.9,
+              confidence: 0.9,
+              // FEAT-485: `decision`/`lesson` atoms without a non-empty
+              // `evidence` excerpt are now dropped by the extract-stage
+              // provenance guard (requireEvidenceForRichTypes). A retry that
+              // is meant to LAND a memory must emit an evidence-bearing atom,
+              // same as a real extraction now must.
+              evidence: 'we should use sqlite-vec for v1 vector storage',
+            }],
           }),
           usage: { in: 10, out: 10, usd: 0 },
         };

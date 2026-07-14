@@ -2,7 +2,7 @@
  * tests/doctor/migration-self-heal-check.test.ts
  *
  * FEAT-495 item 1: the "Migration self-heal" doctor row surfaces past
- * self-heal actions from migration_self_heal_log (migration 045) — see
+ * self-heal actions from migration_self_heal_log (migration 046) — see
  * src/storage/migration-self-heal.ts.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

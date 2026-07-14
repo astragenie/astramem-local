@@ -1,4 +1,4 @@
--- 044: guard the two usefulness partial indexes against malformed
+-- 045: guard the two usefulness partial indexes against malformed
 -- payload_json (FEAT-495 item 3).
 --
 -- migrations/019-health-agent-profile-indexes.sql (recreated verbatim by

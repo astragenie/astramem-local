@@ -57,6 +57,12 @@ function buildFullyPopulatedConfig(): Config {
     },
     tagHygiene: { tier2Enabled: true, tier2ConfidenceThreshold: 0.85 },
     archival: { enabled: true, ageThresholdDays: 90, usefulnessFloor: 0.1 },
+    retention: {
+      mode: 'dry-run',
+      ageThresholdDays: 30,
+      heavyArtifact: { minSizeBytes: 2_097_152, types: ['audio-raw', 'transcript-raw'] },
+      tierScope: { media: ['audio-raw'], lean: ['audio-raw', 'transcript-raw'] },
+    },
     ingestIdempotency: { retentionDays: 14 },
     pipeline: { concurrency: 4 },
     consolidation: {
@@ -67,7 +73,7 @@ function buildFullyPopulatedConfig(): Config {
     ingest: { spoolMaxBytes: 1_048_576 },
     distill: {
       durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never',
-      maxChunkChars: 2400, costCap: { enabled: true, maxCallsPerJob: 40, maxWallClockMs: 180_000 },
+      maxChunkChars: 2400, extractionPasses: 1, costCap: { enabled: true, maxCallsPerJob: 40, maxWallClockMs: 180_000 },
     },
     capture: {
       autoCapture: {
@@ -78,6 +84,7 @@ function buildFullyPopulatedConfig(): Config {
     },
     proxy: {
       enabled: true,
+      experimental: true,
       port: 9001,
       upstream: 'https://api.openai.com/v1',
       upstreamTimeoutMs: 45_000,

@@ -2,7 +2,7 @@
  * tests/doctor/handler-run-log-check.test.ts
  *
  * FEAT-495 item 4a: the "Pipeline handler run-log" doctor row surfaces
- * per-handler last-run status from handler_runs (migration 046) — see
+ * per-handler last-run status from handler_runs (migration 047) — see
  * src/storage/handler-run-log.ts and src/pipeline/worker.ts's wiring.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';

@@ -37,6 +37,7 @@ describe('FEAT-458 S2: proxy config block does not break a pre-FEAT-458 loader',
     const cfgWithProxy = defaultConfig();
     cfgWithProxy.proxy = {
       enabled: true,
+      experimental: true,
       port: 7778,
       upstream: 'https://api.openai.com/v1',
       upstreamTimeoutMs: 30_000,
@@ -71,6 +72,7 @@ describe('FEAT-458 S2: proxy config block does not break a pre-FEAT-458 loader',
     // object). Confirms the mechanism, not just the absence of a crash.
     expect(loaded?.proxy).toEqual({
       enabled: true,
+      experimental: true,
       port: 7778,
       upstream: 'https://api.openai.com/v1',
       upstreamTimeoutMs: 30_000,

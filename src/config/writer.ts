@@ -320,6 +320,31 @@ export function configToYaml(cfg: Config): string {
     line(1, 'ageThresholdDays', (cfg.archival ?? EMIT_DEFAULTS.archival).ageThresholdDays),
     line(1, 'usefulnessFloor', (cfg.archival ?? EMIT_DEFAULTS.archival).usefulnessFloor),
     '',
+    // Tiered disk-artifact retention (FEAT-493, scaffolding) — mode: 'off'
+    // (default) is a hard no-op, see Config['retention'] doc comment.
+    // heavyArtifact.types / tierScope.media / tierScope.lean are string[]
+    // fields that ship empty by default (no `artifacts` producer exists yet)
+    // — only emitted when non-empty, same "omit when unset/empty" shape as
+    // security.redaction.customPatterns above.
+    line(0, 'retention'),
+    line(1, 'mode', (cfg.retention ?? EMIT_DEFAULTS.retention).mode),
+    line(1, 'ageThresholdDays', (cfg.retention ?? EMIT_DEFAULTS.retention).ageThresholdDays),
+    ...((cfg.retention ?? EMIT_DEFAULTS.retention).artifactsDir
+      ? [line(1, 'artifactsDir', (cfg.retention ?? EMIT_DEFAULTS.retention).artifactsDir)]
+      : []),
+    line(1, 'heavyArtifact'),
+    line(2, 'minSizeBytes', (cfg.retention ?? EMIT_DEFAULTS.retention).heavyArtifact.minSizeBytes),
+    ...(((cfg.retention ?? EMIT_DEFAULTS.retention).heavyArtifact.types.length > 0)
+      ? [arrayLine(2, 'types', (cfg.retention ?? EMIT_DEFAULTS.retention).heavyArtifact.types)]
+      : []),
+    line(1, 'tierScope'),
+    ...(((cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.media.length > 0)
+      ? [arrayLine(2, 'media', (cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.media)]
+      : []),
+    ...(((cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.lean.length > 0)
+      ? [arrayLine(2, 'lean', (cfg.retention ?? EMIT_DEFAULTS.retention).tierScope.lean)]
+      : []),
+    '',
     // ingest_idempotency row retention (FEAT-432) — previously dropped on
     // every writeConfig() call (FEAT-461).
     line(0, 'ingestIdempotency'),
@@ -340,6 +365,10 @@ export function configToYaml(cfg: Config): string {
     // #273 (WS7) — stage 3's per-chunk character cap. Default 3200 matches
     // 03-chunk.ts's DEFAULT_MAX_CHUNK_CHARS.
     line(1, 'maxChunkChars', (cfg.distill ?? EMIT_DEFAULTS.distill).maxChunkChars),
+    // Dual-pass extraction (opt-in). Default 1 is byte-identical to
+    // pre-dual-pass behavior — see Config['distill']['extractionPasses']'s
+    // own doc comment.
+    line(1, 'extractionPasses', (cfg.distill ?? EMIT_DEFAULTS.distill).extractionPasses),
     // Opt-in distill compact()+extract() cost cap — enabled: false is the
     // shipped beta default (byte-identical to pre-this-field behavior).
     // See Config['distill']['costCap']'s doc comment before flipping it.
@@ -392,6 +421,9 @@ export function configToYaml(cfg: Config): string {
     // tests/config/proxy-downgrade.test.ts.
     line(0, 'proxy'),
     line(1, 'enabled', (cfg.proxy ?? EMIT_DEFAULTS.proxy).enabled),
+    // Release no-go hard gate — default false, no wizard prompt, no CLI flag.
+    // See Config['proxy']['experimental']'s doc comment (src/config/config.ts).
+    line(1, 'experimental', (cfg.proxy ?? EMIT_DEFAULTS.proxy).experimental),
     line(1, 'port', (cfg.proxy ?? EMIT_DEFAULTS.proxy).port),
     line(1, 'upstream', (cfg.proxy ?? EMIT_DEFAULTS.proxy).upstream),
     line(1, 'upstreamTimeoutMs', (cfg.proxy ?? EMIT_DEFAULTS.proxy).upstreamTimeoutMs),

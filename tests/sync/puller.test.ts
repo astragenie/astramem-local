@@ -223,7 +223,7 @@ describe('FEAT-495 item 3 — a malformed usefulness-typed payload arriving mid-
 
   it('lands every healthy event and advances the watermark past the batch, with the poisoned event mixed in', async () => {
     const db = openDb(':memory:');
-    migrate(db); // applies migration 044's guard — this is the FIXED schema
+    migrate(db); // applies migration 045's guard — this is the FIXED schema
 
     const atomA = randomUUID();
     const atomB = randomUUID();

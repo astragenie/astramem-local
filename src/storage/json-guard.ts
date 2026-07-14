@@ -19,7 +19,7 @@
  * Corrected 2026-07-14 (per review): SQLite DOES short-circuit an AND on a
  * false leading operand, both in a read query's WHERE clause and in a
  * partial index's own WHERE expression (which is evaluated on every INSERT
- * to decide index membership — see migration 044's header for that half of
+ * to decide index membership — see migration 045's header for that half of
  * the story). A malformed-payload row whose `event_type` does NOT match an
  * adjacent `event_type = 'usefulness'` equality predicate does NOT throw —
  * confirmed directly, including through `dedupInsertEvent`'s real

@@ -283,6 +283,65 @@ export interface Config {
      * in the trailing 7 days. */
     usefulnessFloor: number;
   };
+  /** Tiered disk-artifact retention (FEAT-493, scaffolding slice). Reclaims
+   * HEAVY BINARY/DERIVED ARTIFACTS ON DISK ONLY — never `memories` rows.
+   * That axis belongs exclusively to `archival` above (FEAT-404,
+   * src/storage/archival.ts); do not entangle the two (arch-review boundary,
+   * 2026-07-14). Off by default, and for a different reason than most
+   * config-off defaults in this file: this pass DELETES files on disk once
+   * `enabled` actually ships (it does not yet — see
+   * `applyRetentionGovernance`), so an operator must opt in deliberately
+   * rather than discover a reclaim happened silently. `dry-run` is the safe
+   * rollout step: computes and reports what WOULD be reclaimed, deletes
+   * nothing. See src/storage/retention.ts. */
+  retention: {
+    mode: 'off' | 'dry-run' | 'enabled';
+    /** Files older than this (by mtime) are candidates. Sanity-clamped to
+     * [1, 3650] days at governance time (FEAT-493 acceptance hint) — an
+     * unbounded value would let a typo'd config silently mean "everything is
+     * a candidate" the moment `enabled` ships for real. */
+    ageThresholdDays: number;
+    /** Directory scanned for candidates: `<artifactsDir>/<kind>/<file>`, one
+     * subdirectory per `heavyArtifact.types` entry. Defaults to
+     * `<dataDir>/artifacts` (see `defaultArtifactsDir`,
+     * src/storage/retention.ts) when unset — override only for tests or a
+     * non-default layout. NOT a database table: the obvious-looking
+     * `artifacts` SQL table (migrations/001-init.sql) was DROPPED in
+     * migrations/040-drop-dead-tables.sql (zero writers ever, confirmed,
+     * irreversible) — do not resurrect it or point this at a table name. */
+    artifactsDir?: string;
+    /** Config-driven "heavy artifact" predicate — deliberately data-driven
+     * rather than a hardcoded kind list. TBD/placeholder: nothing in this
+     * repo writes into `<dataDir>/artifacts/` yet, so `types` ships empty
+     * until a producer exists. L1-1 (audio ingest, FEAT-489, consent-ADR
+     * gated — not yet dispatched) is expected to register real kind
+     * subdirectories and finalize this predicate against its actual output
+     * sizes; this scaffolding is shaped so that finalization is a
+     * config/data change, not a rework of retention.ts. */
+    heavyArtifact: {
+      /** Per-file size floor in bytes — a file below this is never a
+       * candidate regardless of kind. Default 1 MiB. */
+      minSizeBytes: number;
+      /** Kind-subdirectory names under `artifactsDir` considered "heavy" for
+       * retention purposes. */
+      types: string[];
+    };
+    /** Per-tier delete scope on top of `heavyArtifact.types`. `media`
+     * reclaims only the kinds listed here; `lean` reclaims `media`'s kinds
+     * PLUS its own extra kinds (it "also strips heavy derived payloads",
+     * per the FEAT description, while distilled memories/transcripts stay
+     * searchable). `all` (this FEAT's disk-artifact axis only) reclaims
+     * every kind in `heavyArtifact.types` — it is NOT a memory-row wipe
+     * despite the FEAT-493 description's "All = wipe everything past the
+     * cutoff" wording; the arch-review boundary above restricts this whole
+     * feature to disk artifacts, so a literal full-wipe "All" tier over
+     * memory rows remains an explicit non-goal here and would need its own
+     * decision if ever built. */
+    tierScope: {
+      media: string[];
+      lean: string[];
+    };
+  };
   /** Retention for `ingest_idempotency` rows (FEAT-432, HARD hardening pass).
    * The table exists so a retried `POST /ingest/transcript` with the same
    * `Idempotency-Key` + body replays a 200 instead of double-writing; nothing
@@ -504,6 +563,29 @@ export interface Config {
      *  extract() calls per session) — a real latency/cost tradeoff, not a
      *  free win; see the #273 sweep evidence before changing the default. */
     maxChunkChars: number;
+    /** Dual-pass extraction (opt-in). `1` (the default) is BYTE-IDENTICAL to
+     *  pre-dual-pass behavior — stage 5 runs the single existing extraction
+     *  prompt (resolveExtractionPrompt) and nothing else. `2` adds a SECOND
+     *  extraction call per chunk, on the SAME provider (ctx.llmExtraction,
+     *  no new provider config), using the narrow "specifics sweeper" prompt
+     *  (EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER, src/distill/prompts/
+     *  extract.ts) — targeting concrete specifics (durations, frequencies,
+     *  quantities, verbatim quotes, one-off events, advice from the giving
+     *  speaker) that the single-hop root-cause investigation found the
+     *  primary prompt systematically drops (36-47% of gold single-hop facts
+     *  never became an atom at all — docs/research/20260713-single-hop-root-
+     *  cause.md). The hypothesis ledger (docs/research/20260714-locomo-
+     *  hypothesis-ledger.md §2.11) never killed multi-pass extraction, only
+     *  left it untested — this is that test.
+     *
+     *  Pass B fires ONLY after pass A completes successfully for a run (a
+     *  pass-A BudgetExceeded/TransientError aborts the run before pass B is
+     *  ever attempted — no doubling of retry storms). The two passes' atoms
+     *  are merged/deduped per chunk (src/distill/dedup-merge.ts) BEFORE
+     *  stage 6 (reduce) — string-only, deterministic, no embedding call.
+     *  Doubles extraction LLM calls when on — a real cost tradeoff, not a
+     *  free win. */
+    extractionPasses: 1 | 2;
     /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
      *  counted TOGETHER as one per-job budget — mirrors
      *  `Config['consolidation']['contradictionDetection']`'s `maxPerRun`/
@@ -628,6 +710,16 @@ export interface Config {
    *  only, always false and unread until then. */
   proxy: {
     enabled: boolean;
+    /** Release-scoped hard gate (release no-go): the LLM proxy relay is
+     *  EXPERIMENTAL and not production-ready for the first release. Default
+     *  `false`. `astramem-local proxy serve` (src/cli/proxy.ts) refuses to
+     *  start the listener at all unless this is explicitly `true` in
+     *  config.yaml — independent of, and checked in ADDITION to, whatever
+     *  else gates the subcommand. There is no CLI flag and no `init` wizard
+     *  prompt for this (matches `proxy.enabled`'s own "no one-click toggle"
+     *  posture above): an operator who wants the experimental proxy has to
+     *  hand-edit config.yaml, deliberately, knowing what they're opting into. */
+    experimental: boolean;
     port: number;
     upstream: string;
     /** Idle deadline for an upstream request, in ms (FEAT-458 S4a). Armed at
@@ -719,6 +811,12 @@ export function defaultConfig(): Config {
     },
     tagHygiene: { tier2Enabled: false, tier2ConfidenceThreshold: 0.7 },
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
+    retention: {
+      mode: 'off',
+      ageThresholdDays: 90,
+      heavyArtifact: { minSizeBytes: 1_048_576, types: [] },
+      tierScope: { media: [], lean: [] },
+    },
     ingestIdempotency: { retentionDays: 7 },
     pipeline: { concurrency: 2 },
     consolidation: {
@@ -800,9 +898,11 @@ export function defaultConfig(): Config {
     // hottest LLM paths in the pipeline (every distill job) would be
     // friction, not safety, for beta. See Config['distill']['costCap']'s
     // doc comment before flipping this default.
+    // extractionPasses: 1 — dual-pass off by default, byte-identical to
+    // pre-dual-pass behavior.
     distill: {
       durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto',
-      maxChunkChars: 3200, costCap: { enabled: false },
+      maxChunkChars: 3200, extractionPasses: 1, costCap: { enabled: false },
     },
     capture: {
       autoCapture: {
@@ -813,6 +913,7 @@ export function defaultConfig(): Config {
     },
     proxy: {
       enabled: false,
+      experimental: false,
       port: 7778,
       upstream: '',
       upstreamTimeoutMs: 30_000,
@@ -964,6 +1065,79 @@ export function applyContradictionDetectionGovernance(
 }
 
 /**
+ * FEAT-493 (scaffolding slice): `retention.mode` is a closed 3-value enum,
+ * same governance concern `applyDurabilityGateGovernance` already documents
+ * — config.yaml is hand-parsed scalars with no schema, so a typo'd mode
+ * value would otherwise pass straight through `deepMerge` unchecked. An
+ * invalid or missing block falls back to `'off'` (the documented default),
+ * logged, never fatal.
+ *
+ * Also downgrades `'enabled'` to `'dry-run'` unconditionally, loudly logged.
+ * This is NOT the same "invalid value" case above: `'enabled'` is a
+ * documented, valid enum member, but this scaffolding slice ships mode +
+ * dry-run reporting only (see src/storage/retention.ts) — no code path
+ * actually deletes a file yet. Silently letting `mode: 'enabled'` sit in
+ * config while the runtime quietly behaves like `dry-run` would be exactly
+ * the "green check, nothing actually happened" class this repo's ADR-015
+ * exists to kill; downgrading with a loud log makes the gap visible instead.
+ * Remove this clamp in the follow-up slice that wires real deletion behind
+ * `enabled`.
+ *
+ * `ageThresholdDays` is clamped to [1, RETENTION_MAX_AGE_DAYS] for the same
+ * "never let a bad config value silently mean something extreme" reason
+ * `applyMultiHopGovernance` clamps `supplementalWeight` — see that function.
+ */
+const VALID_RETENTION_MODES: ReadonlySet<Config['retention']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+/** 10 years — generous enough that no legitimate retention window ever needs
+ * more, tight enough that a fat-fingered value (an extra zero) can't
+ * silently mean "never reclaim anything" while still reading as configured. */
+const RETENTION_MAX_AGE_DAYS = 3650;
+
+export function applyRetentionGovernance(
+  retention: Config['retention'],
+  opts: { log?: (message: string) => void } = {},
+): Config['retention'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().retention;
+
+  if (!retention || !VALID_RETENTION_MODES.has(retention.mode)) {
+    log(
+      retention
+        ? `[retention-governance] retention.mode=${JSON.stringify(retention.mode)} is not one of ` +
+          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-493 / " +
+          'src/storage/retention.ts.'
+        : "[retention-governance] retention is missing — falling back to defaults (mode: 'off'). " +
+          'See FEAT-493 / src/storage/retention.ts.',
+    );
+    return { ...fallback, ...retention, mode: 'off' };
+  }
+
+  let governed = retention;
+
+  if (governed.mode === 'enabled') {
+    log(
+      "[retention-governance] retention.mode='enabled' is not implemented yet (FEAT-493 scaffolding ships " +
+      "mode + dry-run reporting only) — running as 'dry-run' instead. No files will be deleted. See " +
+      'src/storage/retention.ts.',
+    );
+    governed = { ...governed, mode: 'dry-run' };
+  }
+
+  const clampedAge = Math.min(RETENTION_MAX_AGE_DAYS, Math.max(1, governed.ageThresholdDays));
+  if (clampedAge !== governed.ageThresholdDays) {
+    log(
+      `[retention-governance] retention.ageThresholdDays=${governed.ageThresholdDays} is outside ` +
+      `[1, ${RETENTION_MAX_AGE_DAYS}]; clamping to ${clampedAge}.`,
+    );
+    governed = { ...governed, ageThresholdDays: clampedAge };
+  }
+
+  return governed;
+}
+
+/**
  * FEAT-479 (D3 §3.2): `distill.extractProfile` is a closed 2-value enum,
  * same governance concern `applyDurabilityGateGovernance` already documents
  * for `distill.durabilityGate` — config.yaml is hand-parsed scalars with no
@@ -991,6 +1165,34 @@ export function applyExtractProfileGovernance(
       'See FEAT-479 / src/distill/prompts/extract.ts.',
     );
     return { ...distill, extractProfile: 'engineering' };
+  }
+  return distill;
+}
+
+/**
+ * Dual-pass extraction (opt-in): `distill.extractionPasses` is a closed
+ * 2-value enum (1|2), same governance concern `applyExtractProfileGovernance`
+ * documents just above — config.yaml is hand-parsed scalars with no schema,
+ * so a typo'd or out-of-range value (e.g. a hand-edited `3`) would otherwise
+ * reach `runPipeline`'s `ctx.config?.distill.extractionPasses ?? 1` read
+ * unchecked. Invalid values fall back to `1` (the documented default, BYTE-
+ * IDENTICAL to pre-dual-pass behavior) and are logged, never fatal. See
+ * src/distill/dedup-merge.ts for what `2` actually does.
+ */
+const VALID_EXTRACTION_PASSES: ReadonlySet<Config['distill']['extractionPasses']> = new Set([1, 2]);
+
+export function applyExtractionPassesGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  if (!VALID_EXTRACTION_PASSES.has(distill.extractionPasses)) {
+    log(
+      `[extraction-passes-governance] distill.extractionPasses=${JSON.stringify(distill.extractionPasses)} is not ` +
+      "one of 1|2 — falling back to 1 (the documented default, byte-identical to pre-dual-pass behavior). " +
+      'See src/distill/dedup-merge.ts.',
+    );
+    return { ...distill, extractionPasses: 1 };
   }
   return distill;
 }
@@ -1044,8 +1246,9 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
   return {
     ...merged,
     search: applyFusionGovernance(merged.search),
-    distill: applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)),
+    distill: applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill))),
     consolidation: applyContradictionDetectionGovernance(merged.consolidation),
     multiHop: applyMultiHopGovernance(merged.multiHop),
+    retention: applyRetentionGovernance(merged.retention),
   };
 }

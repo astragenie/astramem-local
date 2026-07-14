@@ -1,4 +1,4 @@
--- 045: migration self-heal log (FEAT-495 item 1).
+-- 046: migration self-heal log (FEAT-495 item 1).
 --
 -- SQLite has no `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`. schema_version
 -- recording a migration as applied does not PROVE its DDL actually landed —

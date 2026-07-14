@@ -45,6 +45,14 @@
  * it) and compare judge.mts scores between the two run dirs. Omitted:
  * byte-identical to before this flag existed.
  *
+ * ANSWERER_SIGNALS=1 (env, not a flag; FEAT-500 A/B prep, additive): includes
+ * each retrieved hit's `top_signal` + a compact per-signal breakdown in the
+ * answerer prompt (see answer.mts's formatSignalBreakdown). Unset (the
+ * default): the prompt is byte-identical to every prior recorded score. Run
+ * the same sample twice (once unset, once with it) and diff judge.mts scores
+ * between the two run dirs — see the FEAT-500 backlog file for the exact A/B
+ * command.
+ *
  * --diagnose (WS2 diagnostic, same doc, additive): runs the not-in-db/
  * rank-miss/rank-ok retrieval diagnosis (see diagnose-retrieval.mts) against
  * each shard's daemon right after the answer step, before it's torn down,
@@ -106,6 +114,10 @@ const k = Number(get('--k') ?? '10');
 // the score) are identical to the old strictly-serial loop. See
 // DEFAULT_ANSWER_CONCURRENCY in answer.mts.
 const answerConcurrency = Number(get('--answer-concurrency') ?? '8');
+// FEAT-500 A/B prep: env, not a flag, so it composes with --resume unchanged
+// and default runs (unset) stay byte-identical to every prior recorded
+// score. See answer.mts's buildAnswerPrompt/formatSignalBreakdown.
+const answererIncludeSignals = process.env.ANSWERER_SIGNALS === '1';
 const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
@@ -130,6 +142,12 @@ const modelOverrides: EvalModelOverrides | undefined =
 // FEAT-479 D3 §3.2: additive — omit to inherit the shipped 'engineering'
 // default exactly as before this flag existed.
 const extractProfileFlag = get('--extract-profile') as 'engineering' | 'conversational' | undefined;
+const extractionPassesRaw = get('--extraction-passes');
+const extractionPassesFlag = extractionPassesRaw !== undefined ? (Number(extractionPassesRaw) as 1 | 2) : undefined;
+if (extractionPassesFlag !== undefined && extractionPassesFlag !== 1 && extractionPassesFlag !== 2) {
+  console.error(`--extraction-passes must be 1 or 2, got: ${extractionPassesRaw}`);
+  process.exit(1);
+}
 // WS2 rerank-flip experiment (docs/specs/20260713-locomo-architect-design.md
 // workstream 2): `--cross-encoder` flips the isolated eval daemon's
 // crossEncoder.enabled via config only (src/search/rerank.ts's own logic is
@@ -195,6 +213,8 @@ async function runShard(opts: {
   /** Additive (FEAT-479 D3 §3.2) — undefined reproduces the shipped
    *  'engineering' default exactly. */
   extractProfile?: 'engineering' | 'conversational';
+  /** Additive (W2 dual-pass A/B) — undefined inherits the shipped default (1). */
+  extractionPasses?: 1 | 2;
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -212,7 +232,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -223,7 +243,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -325,7 +345,7 @@ async function runShard(opts: {
         { baseUrl: daemon.baseUrl, token },
         azureCfg,
         samples,
-        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency },
+        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency, includeSignals: answererIncludeSignals },
       );
       timings.answer_ms = Date.now() - t;
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);
@@ -523,7 +543,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,

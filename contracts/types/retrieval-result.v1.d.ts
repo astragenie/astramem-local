@@ -54,6 +54,10 @@ export interface RetrievalResultV1 {
        * OPTIONAL (added 2026-07-13, CONTRACT-FREEZE §2). Human-readable summary. Cloud already emits this (ScoreExplanationDto.reason) and had nowhere to put it under a closed schema; local does not generate one today and omits the key rather than fake it.
        */
       reason?: string;
+      /**
+       * OPTIONAL (FEAT-500, added 2026-07-14). Argmax of `signals` by `.final` — the single signal name that contributed the most to this hit's fused score (Mnemon's `via` equivalent). Deterministic tie-break: alphabetical by signal name.
+       */
+      top_signal?: string;
     };
     /**
      * OPTIONAL (added 2026-07-13). Local already stores this (atom@2 requires it) and was projecting it away.

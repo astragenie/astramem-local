@@ -14,7 +14,7 @@ import { openProductionDbReadonly } from './shared.js';
 const KNOWN_HANDLER_KINDS = ['distill', 'distill-events', 'cleanup', 'consolidate', 'reembed'] as const;
 
 /**
- * Reads `handler_runs` (migration 046, src/storage/handler-run-log.ts),
+ * Reads `handler_runs` (migration 047, src/storage/handler-run-log.ts),
  * written by src/pipeline/worker.ts at each terminal outcome of a handler
  * invocation. Makes two failure shapes visible that were previously only
  * discoverable by noticing missing memories or a growing poison-job count:

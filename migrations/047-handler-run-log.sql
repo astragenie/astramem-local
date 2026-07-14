@@ -1,4 +1,4 @@
--- 046: pipeline handler run-log (FEAT-495 item 4a).
+-- 047: pipeline handler run-log (FEAT-495 item 4a).
 --
 -- One append-only row per job-handler invocation (distill / distill-events /
 -- consolidate / cleanup / reembed — src/pipeline/worker.ts's tick loop,

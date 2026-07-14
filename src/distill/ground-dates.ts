@@ -109,6 +109,10 @@ The overriding principle: a WEEK/MONTH/YEAR-granularity source expression must r
 
 const RetryResponseSchema = z.object({ resolved_text: z.string().min(1) });
 
+/** Month names for the bare "back in <month>" / "in early|late <month>" detector below. */
+const MONTH_NAMES =
+  'january|february|march|april|may|june|july|august|september|october|november|december';
+
 /**
  * Narrow, DETECTION-ONLY regex — decides whether an atom is a CANDIDATE for
  * the retry call. Never used to rewrite text (that is exactly the mistake PR
@@ -116,19 +120,32 @@ const RetryResponseSchema = z.object({ resolved_text: z.string().min(1) });
  * doesn't fire on unrelated prose ("last chance", "at last", "recent commit"
  * — note "recent" alone is deliberately NOT matched, only "recently", since
  * "recent" mostly modifies a noun rather than acting as a time adverbial).
+ * Also does not fire on already-absolute month references ("in June 2023") —
+ * the bare-month alternative below excludes a trailing 4-digit year via a
+ * negative lookahead, since that phrase needs no grounding at all.
  */
 const RELATIVE_DATE_DETECT_RE = new RegExp(
   [
-    '\\b(?:yesterday|tomorrow|today)\\b',
+    '\\b(?:yesterday|tomorrow|today|tonight)\\b',
     '\\b(?:last|this|next)\\s+(?:week|weekend|month|year)\\b',
     '\\b(?:last|next)\\s+(?:sunday|monday|tuesday|wednesday|thursday|friday|saturday)\\b',
     // Any single quantifier word before "day(s)/week(s)/month(s)/year(s) ago"
-    // — digits ("3 years ago") and spelled-out numbers/quantifiers ("three
-    // years ago", "a few weeks ago", "several months ago") all match. A
-    // false positive here only costs one extra bounded LLM call.
-    '\\b\\S+\\s+(?:day|week|month|year)s?\\s+ago\\b',
-    '\\bearlier\\s+(?:this|that)\\s+(?:week|month|year)\\b',
-    '\\brecently\\b',
+    // or "...back" — digits ("3 years ago") and spelled-out numbers/quantifiers
+    // ("three years ago", "a few weeks ago", "a couple of months back",
+    // "several months ago") all match via the unconstrained single-token
+    // lookback (the token directly before the unit need not be the leading
+    // "a"/number itself — "a couple of weeks ago" matches on "of weeks ago").
+    // A false positive here only costs one extra bounded LLM call.
+    '\\b\\S+\\s+(?:day|week|month|year)s?\\s+(?:ago|back)\\b',
+    '\\bearlier\\s+(?:today|(?:this|that)\\s+(?:week|month|year))\\b',
+    '\\b(?:recently|lately|the other day)\\b',
+    // Seasons are session-relative the same way weekday/month names are;
+    // "over the summer/winter/weekend/holidays" is the non-last/this/next form.
+    '\\b(?:last|this|next)\\s+(?:summer|winter|spring|fall|autumn)\\b',
+    '\\b(?:over|during)\\s+the\\s+(?:summer|winter|spring|fall|autumn|weekend|holidays?)\\b',
+    `\\b(?:back\\s+in|in\\s+(?:early|late))\\s+(?:${MONTH_NAMES})\\b(?!\\s*,?\\s*\\d{4})`,
+    '\\bthis\\s+(?:morning|afternoon|evening)\\b',
+    '\\blast\\s+night\\b',
   ].join('|'),
   'i',
 );
@@ -193,10 +210,26 @@ export async function groundAtomDates(
   let fired = 0;
   let resolved = 0;
   let errors = 0;
+  let cappedWarned = false;
   const out: ReducedAtom[] = [];
 
   for (const atom of atoms) {
-    if (fired >= maxCalls || !hasUnresolvedRelativeDate(atom.text)) {
+    const isCandidate = hasUnresolvedRelativeDate(atom.text);
+
+    if (fired >= maxCalls) {
+      // Visibility only — the cap itself is unchanged; this just makes a
+      // silent truncation (an atom that DID match but never got a call)
+      // observable. Logged once per invocation, not once per skipped atom,
+      // to avoid spamming the same fact for a large batch.
+      if (isCandidate && !cappedWarned) {
+        cappedWarned = true;
+        log(`[date-grounding-retry] maxCalls (${maxCalls}) reached — remaining matching atoms left ungrounded`);
+      }
+      out.push(atom);
+      continue;
+    }
+
+    if (!isCandidate) {
       out.push(atom);
       continue;
     }

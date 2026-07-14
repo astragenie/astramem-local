@@ -6,6 +6,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT_V2,
   EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
+  EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
 } from '../../../src/distill/prompts/extract.js';
 
 /** chars/4 token estimate — mirrors src/providers/llm/ollama.ts's
@@ -469,5 +470,44 @@ describe('conversational prompt — the exhaustiveness checklist is MECHANICAL, 
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Banned abstractions/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Vague summaries/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Meta-commentary/);
+  });
+});
+
+// Dual-pass extraction (opt-in, distill.extractionPasses: 2) — review fix
+// (2026-07-14): the sweeper's #1 extraction category is DATES/TIMES, so it
+// must carry the SAME date-grounding rule V3/CONVERSATIONAL both have.
+// callExtract prepends the "Observation date: ..." line to pass B's user
+// message exactly like pass A (05-extract.ts's promptOverride path is
+// prompt-agnostic) — a sweeper that doesn't know what that line means would
+// emit unresolved relative dates or bare ISO dates straight into `text`,
+// which scores 0 on the LoCoMo temporal category (see the WS4 test above,
+// same underlying finding).
+describe('EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER content (dual-pass extraction)', () => {
+  it('states the same date-grounding rule V3/CONVERSATIONAL carry', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Ground relative dates/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Observation date/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/keep the original relative phrasing/);
+  });
+
+  it('instructs natural-language dates (not ISO-8601) for the grounded text field, mirroring V3', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/natural-language\s+absolute date/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).not.toMatch(/resolve "yesterday".*to an absolute ISO-8601/s);
+  });
+
+  it('its own few-shot example demonstrates a relative-date resolution, not an echoed-back relative phrase', () => {
+    // The worked example resolves "last week" (given "Observation date:
+    // 2026-07-10" prepended to the input, same shape callExtract produces)
+    // into a natural-language absolute date INSIDE the atom's own text.
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Observation date: 2026-07-10/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/accident on 3 July 2026/);
+    // The OUTPUT atom text must not simply echo the unresolved relative
+    // phrase back (the exact anti-pattern flagged in review).
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).not.toMatch(
+      /"text":"Melanie's son got into an accident last week/,
+    );
+  });
+
+  it('still names DATES/TIMES as its own category 1 — the rule above is not decoration', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/1\. DATES\/TIMES/);
   });
 });

@@ -45,6 +45,7 @@ export async function doctorCommand(args: string[]): Promise<void> {
         cfg.llm.compaction.provider === 'codex-subscription' || cfg.llm.extraction.provider === 'codex-subscription',
       autoCaptureEnabled: cfg.capture.autoCapture.enabled,
       proxyEnabled: cfg.proxy.enabled,
+      proxyExperimental: cfg.proxy.experimental,
       proxyCaptureEnabled: cfg.proxy.capture.enabled,
       syncEnabled: cfg.sync.enabled,
       syncExperimental: cfg.sync.experimental,

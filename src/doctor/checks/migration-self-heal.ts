@@ -10,7 +10,7 @@ import { openProductionDbReadonly } from './shared.js';
 const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Reads `migration_self_heal_log` (migration 045) — populated by
+ * Reads `migration_self_heal_log` (migration 046) — populated by
  * `selfHealMissingColumns` (src/storage/migration-self-heal.ts), which
  * migrate() runs on every boot. An empty log is the healthy, expected state
  * (`ok: true`): it means every ADD COLUMN this codebase has ever shipped is
