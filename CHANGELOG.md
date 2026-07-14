@@ -9,6 +9,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Default compaction model: `qwen3:8b` -> `qwen3.5:4b`.** `qwen3:8b` (5896 MB
+  resident) plus the `mxbai-embed-large` embedder (590 MB) exceed the ~8 GB
+  VRAM ceiling on consumer-class GPUs before any KV cache is added — Ollama
+  spills layers to CPU, calls that should take seconds take 9-35s, and distill
+  jobs time out and poison (see "Ollama 8GB VRAM ceiling" in CLAUDE.md).
+  `qwen3.5:4b` (3292 MB) fits with real headroom and is the strongest local
+  model in the extraction bench (68% F1 vs 65% for `qwen3:8b`, 3-run average).
+  **Caveat: that number measures extraction, not compaction, quality** —
+  nobody has benchmarked `qwen3.5:4b` specifically as a compactor. This is a
+  safety fix (stop thrashing VRAM and poisoning jobs), not a proven
+  quality win for compaction specifically.
+  **Only affects fresh configs.** `config.yaml` is read once at boot with no
+  live reload, and an existing config only picks up this new default if it has
+  no explicit `llm.compaction.model` key at all — most installs, including
+  every `init` wizard install, write one explicitly and are unaffected. The
+  `init` wizard's own default (`src/cli/init.ts`'s `DEFAULT_OLLAMA_LLM_MODEL`)
+  still ships `qwen3:8b` for both compaction and extraction — untouched here
+  because the wizard uses one model tier for both roles, and splitting them is
+  a separate decision. Extraction's default is unchanged (`qwen3:8b`).
+  This change does not touch the extraction prompt
+  (`src/distill/prompts/extract.ts`).
+- **extraction-bench (#264): the bench's own `--compaction-model` default was
+  hardcoded to `qwen3:8b`** (`scripts/eval/extraction-bench/lib/daemon-runner.ts`'s
+  `DEFAULT_COMPACTION_MODEL`), the known-broken model above. Any bench run that
+  didn't pass `--compaction-model` explicitly silently ran its compaction stage
+  on it — including the historical `qwen3-live-2026-07-13` result (20 failed
+  fixtures, 154.5s/session, no F1) that was cited as evidence `qwen3:8b` is
+  broken as an *extractor*, without ever isolating extraction from compaction
+  as the failing stage. Default now tracks the production compaction default
+  (`qwen3.5:4b`).
+
 ## [0.17.1] - 2026-07-13
 
 ### Fixed

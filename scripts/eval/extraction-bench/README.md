@@ -22,12 +22,14 @@ with nothing worth remembering — an **over-extraction count**. Aggregated
 per model: recall / precision / F1 / junk-rate / avg wall-clock per session,
 optionally as **mean ± stdev across N runs** with `--runs N` (FEAT-450).
 
-`llm.compaction` is held constant (default `ollama/qwen3:8b`, the current
+`llm.compaction` is held constant (default `ollama/qwen3.5:4b`, the current
 production default — overridable via `--compaction-model`, see
 `lib/daemon-runner.ts`'s `DEFAULT_COMPACTION_MODEL`) for every candidate —
 only `llm.extraction.model` varies. This isolates "which model extracts atoms
 best" as the one variable under test; letting compaction vary too would
-confound the comparison.
+confound the comparison. (Until #264, this defaulted to `qwen3:8b` — the
+known-broken model on 8GB-class VRAM — which silently confounded any run
+that didn't pass `--compaction-model` explicitly.)
 
 ## Layout
 

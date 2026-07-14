@@ -545,7 +545,15 @@ export function defaultConfig(): Config {
     network: { host: '127.0.0.1' },
     auth: { devNoAuth: false },
     llm: {
-      compaction: { provider: 'ollama', model: 'qwen3:8b' },
+      // qwen3:8b (5896 MB resident) + the mxbai-embed-large embedder (590 MB)
+      // exceed this hardware class's 8 GB VRAM ceiling before any KV cache is
+      // added; Ollama then spills layers to CPU, calls that should take
+      // seconds take 9-35s, and distill jobs time out and poison (see
+      // "Ollama 8GB VRAM ceiling" in CLAUDE.md). qwen3.5:4b (3292 MB) fits
+      // with headroom and is the strongest local model in the extraction
+      // bench (68% F1 vs 65% for qwen3:8b) — see PR body for the full
+      // caveat: that number measures extraction, not compaction quality.
+      compaction: { provider: 'ollama', model: 'qwen3.5:4b' },
       extraction: { provider: 'ollama', model: 'qwen3:8b' }
     },
     embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },

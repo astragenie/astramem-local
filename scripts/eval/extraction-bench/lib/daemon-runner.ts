@@ -41,9 +41,17 @@ import type { GoldFixture } from './fixtures.js';
 /** Default compaction model held constant across every extraction candidate
  * (see the module comment above). Named + exported so callers (run-bench.mts's
  * --compaction-model flag) can override it in one place instead of hunting
- * string literals — was a bare 'qwen2.5-coder:7b' literal here until the
- * 2026-07-13 qwen3:8b operator standardization swept it. */
-export const DEFAULT_COMPACTION_MODEL = 'qwen3:8b';
+ * string literals. Tracks `defaultConfig().llm.compaction.model`
+ * (src/config/config.ts) — was a bare 'qwen2.5-coder:7b' literal here until
+ * the 2026-07-13 qwen3:8b operator standardization swept it to the
+ * known-broken model (issue #264): qwen3:8b spills VRAM on 8GB-class
+ * hardware and silently poisoned the compaction stage of every bench run
+ * that didn't pass --compaction-model explicitly, including the
+ * qwen3-live-2026-07-13 result that was (wrongly) cited as evidence
+ * qwen3:8b is broken as an *extractor*. Keep this in sync with the config
+ * default by hand — there is no shared import between scripts/ and src/
+ * config for this constant. */
+export const DEFAULT_COMPACTION_MODEL = 'qwen3.5:4b';
 const BENCH_PROJECT_ID = 'extraction-bench';
 
 export interface DaemonAtom {

@@ -25,12 +25,21 @@ describe('loadConfig', () => {
     expect(defaultConfig().auth.devNoAuth).toBe(false);
   });
 
-  // 2026-07-13 operator standardization (qwen3:8b, was qwen2.5:7b) — a
-  // shipped default with no assertion is how it silently drifts; see the
-  // CHANGELOG [Unreleased] entry for why this isn't an A/B-benchmarked swap.
-  it('llm.compaction/extraction default to qwen3:8b', () => {
+  // A shipped default with no assertion is how it silently drifts.
+  // 2026-07-13 (#264/PR follow-up): compaction moved off qwen3:8b —
+  // it spills VRAM and times out on 8GB-class hardware (see "Ollama
+  // 8GB VRAM ceiling" in CLAUDE.md) — to qwen3.5:4b, which fits with
+  // headroom. Extraction is untouched by that change; it still defaults
+  // to qwen3:8b (2026-07-13 operator standardization, was qwen2.5:7b —
+  // see the CHANGELOG [Unreleased] entry for why that swap isn't
+  // A/B-benchmarked).
+  it('llm.compaction defaults to qwen3.5:4b', () => {
     const cfg = defaultConfig();
-    expect(cfg.llm.compaction.model).toBe('qwen3:8b');
+    expect(cfg.llm.compaction.model).toBe('qwen3.5:4b');
+  });
+
+  it('llm.extraction defaults to qwen3:8b', () => {
+    const cfg = defaultConfig();
     expect(cfg.llm.extraction.model).toBe('qwen3:8b');
   });
 
