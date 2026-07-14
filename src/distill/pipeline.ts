@@ -33,6 +33,7 @@ import type { DurabilityGateMode } from './durability-gate.js';
 import { childLogger } from '../log/logger.js';
 import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
 import { recordEntityGuardDrops } from '../storage/entity-guard-log.js';
+import { recordExtractionYield } from '../storage/extraction-yield-log.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
 
@@ -288,6 +289,30 @@ export async function runPipeline(
 
   // Flatten all atoms
   const allAtoms = extractResults.flatMap(r => r.atoms);
+
+  // ADR-015 headline finding: a well-formed `{"atoms":[]}` extraction
+  // completes as SUCCESS at every other layer -- not the Zod gate, not the
+  // job queue, not the poison counter (which only increments on failure).
+  // A broken model and a genuinely empty transcript are indistinguishable
+  // anywhere else. Record chunks-in vs atoms-out for every run (including
+  // zero-atom ones -- that IS the signal) so the doctor "Extraction yield"
+  // canary can compute a zero-yield RATE over a recent window instead of
+  // an existence check. Same diagnostic-only posture as the relation/
+  // entity guard-drop writes immediately above: its own try/catch, never
+  // re-thrown, so a counter-write failure can never be mistaken for the
+  // extract stage itself failing.
+  try {
+    recordExtractionYield(ctx.db, {
+      sessionId: ctx.sessionId,
+      chunksIn: chunks.length,
+      atomsOut: allAtoms.length,
+    });
+  } catch (err) {
+    pipeLog.warn(
+      { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'extraction-yield counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
+    );
+  }
 
   // Stage 6: Reduce (merge by content hash)
   pipeLog.info({ stage: 'reduce', atoms_in: allAtoms.length }, 'stage start');
