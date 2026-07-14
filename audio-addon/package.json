@@ -1,7 +1,7 @@
 {
   "name": "astramem-audio",
-  "version": "0.1.0-skeleton",
-  "description": "Optional on-device whisper.cpp add-on for astramem-local's audio-file transcription capture (FEAT-489). SKELETON — real whisper.cpp binding + prebuilt binaries ship in Slice B; astramem-local's transcribe handler works with this package absent (add-on-not-installed is a handled, non-crashing state).",
+  "version": "0.2.0",
+  "description": "Optional on-device whisper.cpp add-on for astramem-local's audio-file transcription capture (FEAT-489). Wraps the official ggml-org/whisper.cpp CPU-only CLI (bundled per-platform, v1: win32-x64 + linux-x64); GGML model downloaded + checksum-verified on first use. astramem-local's transcribe handler works with this package absent (add-on-not-installed is a handled, non-crashing state).",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -31,13 +31,19 @@
   },
   "scripts": {
     "build": "tsc -p .",
-    "typecheck": "tsc -p . --noEmit"
+    "typecheck": "tsc -p . --noEmit",
+    "fetch-binaries": "node scripts/fetch-binaries.mjs",
+    "fetch-binaries:all": "node scripts/fetch-binaries.mjs --all",
+    "fetch-model": "node scripts/fetch-model.mjs",
+    "prepublishOnly": "node scripts/fetch-binaries.mjs --all && tsc -p ."
   },
   "files": [
     "dist",
+    "bin",
     "README.md"
   ],
   "devDependencies": {
+    "@types/node": "^22.0.0",
     "typescript": "^5.5.0"
   }
 }
