@@ -26,6 +26,7 @@ import { gateDurability, type DurabilityGateMode, type GatedReason } from '../du
 import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
+import { attributeSpeaker } from '../attribute-speaker.js';
 
 export interface IndexResult {
   memoryId: string;
@@ -65,7 +66,19 @@ export interface EmbedIndexContext {
    * "LLM proxy" doctor canary and its own disable -> purge query, isolated
    * from the auto-capture ones above.
    */
-  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions' | null;
+  /** FEAT-491: the flattened transcript text (flatten-turns.ts output) this
+   *  batch's atoms were extracted from — used to recover per-atom speaker
+   *  attribution via `attributeSpeaker` below. `undefined` for any caller
+   *  that doesn't have it (e.g. distill-events.ts's atom-to-memory path,
+   *  which has no source transcript at all) — every atom then gets
+   *  `speaker_label: null`, byte-identical to pre-FEAT-491 behavior. */
+  sourceText?: string;
+  /** FEAT-491 (ADR-017 decision 6): plumbed from the transcripts row via
+   *  distillHandler -> PipelineContext -> here — stamped onto every atom
+   *  this batch produces. `null`/undefined for every non-meeting-captions
+   *  transcript (byte-identical to today). */
+  consentDisclosed?: boolean | null;
   /**
    * FEAT-441: durability quality gate mode. Undefined/omitted behaves as
    * 'off' — every pre-FEAT-441 caller (and the existing test suite) that
@@ -267,6 +280,13 @@ export async function embedAndIndex(
       // field and correctly default to `false`.
       validity_extracted: true,
       capture_source: ctx.captureSource ?? null,
+      // FEAT-491: best-effort, deterministic line-level match (see
+      // attribute-speaker.ts's doc comment for why this isn't full span
+      // tracking) — null whenever ctx.sourceText is absent, no turn in it
+      // carries a speaker marker, or this atom's evidence doesn't literally
+      // appear in a labeled turn's utterance.
+      speaker_label: ctx.sourceText ? attributeSpeaker(ctx.sourceText, mem.evidence) : null,
+      consent_disclosed: ctx.consentDisclosed ?? null,
       // atom@2: stage 5 always runs entity extraction as part of this same
       // atom's LLM call, so every atom from this pipeline has "declared"
       // entities even when it found none — default to [] (not undefined)

@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Meeting-caption capture, daemon-side acceptance (FEAT-491, contracts
+  2.3.0 -> 2.4.0).** Accepts caption-sourced transcripts scraped by the
+  astramem-plugin browser extension (Meet/Teams native live captions —
+  bot-free, zero-ASR): `capture-envelope.v1.schema.json` widens
+  `capture_source` to add `meeting_captions`, adds capture-session
+  `platform`/`meeting_id` fields and a per-turn `speaker` label, and adds an
+  ADR-017 `consent_disclosed` server-side consent marker (required `true`
+  whenever `capture_source: "meeting_captions"` is present). Ingest
+  (`CanonicalIngestSchema`) mirrors the widen and hard-rejects a
+  meeting-captions envelope missing consent or with
+  `captureSource.meetingCaptions.enabled` off in config (default OFF, ADR-017
+  decision 3). Turn speaker labels flow through distill to the stored atom's
+  `evidence[].speaker_label` (FEAT-496); `memories.consent_disclosed` and
+  `transcripts.platform/meeting_id/consent_disclosed` are new columns
+  (migration 050 — provisional number, see that file's own header comment).
+  New doctor "Meeting-captions capture reminder" WARN row
+  (mirrors `checkProxyCaptureReminder`) and `capture meeting-captions disable
+  [--purge|--keep]` CLI, scoped to `capture_source = 'meeting_captions'`
+  only, reusing the existing generic `/capture/purge` route.
 - **Content-hash embedding cache (FEAT-492), document-role only.** Ports cloud's
   `CachingEmbeddingProvider.cs` pattern: a SQLite table (migration 043) keyed
   `(content_hash, model, dim)` caches document-side embeddings so re-running

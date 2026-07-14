@@ -219,6 +219,20 @@ export const KNOWN_STRUCTURAL_FIELD_PATHS: ReadonlySet<string> = new Set([
   'proxy_usage.cache_read_input_tokens',
   'proxy_usage.stop_reason',
   'proxy_usage.truncated',
+  // FEAT-491 (ADR-017): `platform`/`meeting_id` are capture-session
+  // identifiers the daemon correlates on, not narrative content — same
+  // treatment as `session_id`/`project_id` above. `consent_disclosed` is a
+  // boolean flag the ingest route hard-gates on (see CanonicalIngestSchema's
+  // superRefine), not free text. `turns[].speaker` is a display-name/label
+  // for WHO said a turn — identification metadata like `agent_type`/`cwd`
+  // above (also human-authored strings this module protects rather than
+  // redacts), not narrative content a person or model composed; redacting it
+  // would silently destroy the exact per-speaker attribution FEAT-491 exists
+  // to preserve into the stored atom's evidence[].speaker_label.
+  'platform',
+  'meeting_id',
+  'consent_disclosed',
+  'turns[].speaker',
 ]);
 
 /** The shape every `writeToSpool` caller's envelope is checked against.

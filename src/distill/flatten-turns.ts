@@ -21,10 +21,26 @@ import { z } from 'zod';
  * per line) — the format the pipeline stages already parse. Legacy
  * plain-text content (or any JSON that isn't a turns array) passes through
  * unchanged.
+ *
+ * FEAT-491: a turn may also carry an optional `speaker` (display name/label
+ * from a diarized or caption-labeled source, e.g. meeting captions naming
+ * each participant — see contracts/schemas/capture-envelope.v1.schema.json
+ * `turns[].speaker`). The line prefix stays `role: ` UNCHANGED — 03-chunk.ts's
+ * `TURN_BOUNDARY_RE` matches only the closed `user|assistant|system|human|ai`
+ * vocabulary, so replacing it with an arbitrary speaker name would silently
+ * break turn-boundary detection for every consumer of this function, not
+ * just meeting-caption transcripts. Instead `speaker`, when present, is
+ * inlined as a `[Speaker Name]` marker immediately after the role prefix:
+ * `assistant: [Alice Chen] the actual utterance`. This keeps every existing
+ * regex/consumer of the `role: text` shape working unchanged while making
+ * per-turn speaker identity visible to both the extraction LLM and
+ * `attributeSpeaker` (src/distill/attribute-speaker.ts), which recovers it
+ * post-hoc from an atom's evidence excerpt.
  */
 const TurnLikeSchema = z.object({
   role: z.string(),
   text: z.string(),
+  speaker: z.string().optional(),
 });
 
 export function flattenTranscriptContent(content: string): string {
@@ -39,7 +55,7 @@ export function flattenTranscriptContent(content: string): string {
     return content;
   }
 
-  const turns: Array<{ role: string; text: string }> = [];
+  const turns: Array<{ role: string; text: string; speaker?: string }> = [];
   for (const item of parsed) {
     const result = TurnLikeSchema.safeParse(item);
     if (!result.success) {
@@ -49,5 +65,7 @@ export function flattenTranscriptContent(content: string): string {
     turns.push(result.data);
   }
 
-  return turns.map(t => `${t.role}: ${t.text}`).join('\n');
+  return turns
+    .map(t => (t.speaker ? `${t.role}: [${t.speaker}] ${t.text}` : `${t.role}: ${t.text}`))
+    .join('\n');
 }

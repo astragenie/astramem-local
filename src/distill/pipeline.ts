@@ -75,7 +75,13 @@ export interface PipelineContext {
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12, widened again
    *  FEAT-458 S3 (ADR-013): provenance tag plumbed from the transcripts row
    *  via distillHandler — see EmbedIndexContext.captureSource. */
-  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions' | null;
+  /** FEAT-491 (ADR-017 decision 6): plumbed from `transcripts.consent_disclosed`
+   *  via distillHandler, the same "flows straight through" pattern
+   *  `captureSource` above already uses — stamped onto every atom this
+   *  transcript produces (EmbedIndexContext.consentDisclosed). `null`/omitted
+   *  for every non-meeting-captions transcript (byte-identical to today). */
+  consentDisclosed?: boolean | null;
   /** FEAT-479 (D3 §3.2) AC-3: per-transcript extraction profile override,
    *  plumbed from the transcripts row via distillHandler the same way
    *  captureSource is above — NULL for every envelope that omits the
@@ -456,6 +462,15 @@ export async function runPipeline(
     durabilityGateMode: ctx.durabilityGateMode,
     redactConfig: ctx.config,
     gatedOutCounter,
+    // FEAT-491: the flattened transcript text this run's atoms were
+    // extracted from (this function's own `transcript` parameter) — stage 8
+    // uses it to recover per-atom speaker attribution from the
+    // `role: [Speaker] text` markers flatten-turns.ts embeds (see
+    // attribute-speaker.ts). `null` for every atom whose evidence doesn't
+    // match a labeled turn, including every transcript with no speaker
+    // labels at all (the overwhelming majority).
+    sourceText: transcript,
+    consentDisclosed: ctx.consentDisclosed,
   });
 
   const created = indexResults.filter(r => r.created).length;

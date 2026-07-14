@@ -91,6 +91,10 @@ export interface DoctorCheckOpts {
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.capture.enabled`. Defaults
    * to `false` (the shipped default) when not supplied. */
   proxyCaptureEnabled?: boolean;
+  /** FEAT-491 / ADR-017 decision 3: current
+   * `captureSource.meetingCaptions.enabled`. Defaults to `false` (the
+   * shipped default) when not supplied. */
+  meetingCaptionsEnabled?: boolean;
   /** sync-experimental-gate slice: current `sync.enabled` (merged with
    * sync.json pairing state by resolve-runtime.ts — pairing-owned, set by
    * `astramem-local pair` on a successful redeem). Defaults to `false`

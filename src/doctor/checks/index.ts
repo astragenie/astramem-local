@@ -116,6 +116,7 @@ import { checkConsolidationJudgeTelemetry } from './consolidation-judge.js';
 import { checkAutoCapture } from './auto-capture.js';
 import { checkProxyCapture } from './proxy-capture.js';
 import { checkProxyCaptureReminder } from './proxy-capture-reminder.js';
+import { checkMeetingCaptionsReminder } from './meeting-captions-reminder.js';
 import { checkDevNoAuth } from './dev-no-auth.js';
 import { checkSpoolQuarantine } from './spool-quarantine.js';
 import { checkLLMChat } from './llm-chat.js';
@@ -206,6 +207,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
       encryptionEnabled,
     ),
     checkProxyCaptureReminder(opts.proxyEnabled ?? false, opts.proxyCaptureEnabled ?? false),
+    checkMeetingCaptionsReminder(opts.meetingCaptionsEnabled ?? false),
     checkDevNoAuth(opts.devNoAuthActive ?? false),
     checkSpoolQuarantine(dataDir),
     checkEmbedCacheHitRate(dataDir, encryptionEnabled),

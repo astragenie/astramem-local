@@ -739,6 +739,30 @@ export interface Config {
       enabled: boolean;
     };
   };
+  /** Third-party-speaker capture sources gated by ADR-017 (FEAT-491). Kept
+   *  a separate top-level block, not nested under `capture` (the
+   *  hook-tap auto-capture tier above) or `proxy` — ADR-017's own framing
+   *  is that recording/transcribing OTHER people is a different threat
+   *  class from capturing the operator's own agent sessions, and gets its
+   *  own opt-in surface for the same reason ADR-013 didn't fold the
+   *  LLM-proxy tier into ADR-012's config shape. */
+  captureSource: {
+    /** Google Meet / Teams live-caption scraping (astramem-plugin browser
+     *  extension) accepted daemon-side (FEAT-491). `enabled: false`
+     *  (default, and the field's ABSENCE on an existing config.yaml) means
+     *  `ingestCanonicalTranscript` (src/server/routes/ingest.ts) hard-rejects
+     *  every `capture_source: 'meeting_captions'` envelope regardless of
+     *  what the client sends — defense-in-depth ON TOP OF the plugin's own
+     *  client-side opt-in gate and the schema-level `consent_disclosed`
+     *  requirement (ADR-017 decision 3/5/6), not a replacement for either.
+     *  No `init` wizard prompt yet (v1 ships opt-in via hand-edited
+     *  config.yaml only, matching `proxy.experimental`'s posture) — a
+     *  disclosed wizard prompt is a product-copy follow-up, not blocking
+     *  this daemon-side acceptance slice. */
+    meetingCaptions: {
+      enabled: boolean;
+    };
+  };
 }
 
 export function defaultConfig(): Config {
@@ -919,8 +943,28 @@ export function defaultConfig(): Config {
       upstreamTimeoutMs: 30_000,
       capture: { enabled: false },
     },
+    captureSource: {
+      meetingCaptions: { enabled: false },
+    },
   };
 }
+
+/**
+ * ADR-017 decision 3: canonical disclosure copy, shared verbatim across the
+ * astramem-local `init` wizard (audio, FEAT-489) and the astramem-plugin
+ * opt-in UI (meeting captions, FEAT-491) — so an operator who has seen one
+ * recognizes the same posture in the other. Exported (not inlined at the
+ * one call site) so both this daemon's future wizard prompt and the doctor
+ * WARN row (src/doctor/checks/meeting-captions-reminder.ts) read the exact
+ * same string rather than two hand-copied near-duplicates drifting apart.
+ * Functional draft per ADR-017's own acceptance checklist item 2 — not yet
+ * legal/marketing-reviewed language.
+ */
+export const THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE =
+  'This will capture what other people say in your meetings/calls, not just your own words. ' +
+  'Recording or transcribing someone without their knowledge is restricted or illegal in many ' +
+  'places. Turning this on does not make it legal — you are responsible for informing other ' +
+  'participants and getting consent where required.';
 
 /**
  * FEAT-428: fusion-model governance guard (arch-review of FEAT-426 findings

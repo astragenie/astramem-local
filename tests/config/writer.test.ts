@@ -90,6 +90,9 @@ function buildFullyPopulatedConfig(): Config {
       upstreamTimeoutMs: 45_000,
       capture: { enabled: true },
     },
+    captureSource: {
+      meetingCaptions: { enabled: true },
+    },
   };
 }
 

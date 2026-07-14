@@ -39,7 +39,11 @@ interface TranscriptRow {
    *  'hook_close' when it came from the ordinary close-capture hook, NULL
    *  for every other producer. Widened again FEAT-458 S3 (ADR-013): 'proxy'
    *  when it came from the LLM proxy relay's capture fork. */
-  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions' | null;
+  /** FEAT-491 (ADR-017 decision 6): raw SQLite INTEGER 0/1/NULL — see
+   *  migrations/050-meeting-captions.sql. Hydrated to boolean|null below
+   *  before threading onto PipelineContext.consentDisclosed. */
+  consent_disclosed: number | null;
   /** FEAT-479 (D3 §3.2) AC-3: the optional per-ingest `extract_profile`
    *  envelope field, carried on the transcripts row at ingest time (see
    *  ingestCanonicalTranscript, src/server/routes/ingest.ts) — NULL for
@@ -75,7 +79,7 @@ export const distillHandler: JobHandler = {
 
     // Fetch transcript content
     const transcript = ctx.db
-      .prepare('SELECT id, session_id, content, source, captured_at, capture_source, extract_profile, captured_at_local_date FROM transcripts WHERE id = ?')
+      .prepare('SELECT id, session_id, content, source, captured_at, capture_source, extract_profile, captured_at_local_date, consent_disclosed FROM transcripts WHERE id = ?')
       .get(transcript_id) as TranscriptRow | undefined;
 
     if (!transcript) {
@@ -133,6 +137,10 @@ export const distillHandler: JobHandler = {
       // ingest.ts) — NULL for every producer except the hook-tap
       // auto-capture trigger.
       captureSource: transcript.capture_source ?? null,
+      // FEAT-491 (ADR-017 decision 6): hydrate the raw 0/1/NULL column to
+      // boolean|null — mirrors captureSource's own "carried on the
+      // transcripts row at ingest time" note above.
+      consentDisclosed: transcript.consent_disclosed === null ? null : transcript.consent_disclosed === 1,
       // FEAT-479 (D3 §3.2) AC-3: carried on the transcripts row at ingest
       // time (see ingestCanonicalTranscript, src/server/routes/ingest.ts) —
       // NULL for every envelope that omits `extract_profile`. runPipeline

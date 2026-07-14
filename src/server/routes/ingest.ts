@@ -46,6 +46,16 @@ export const TranscriptTurnSchema = z.object({
   role: z.enum(['user', 'assistant']),
   text: z.string(),
   ts: z.string().optional(), // ISO-8601 if present
+  /** FEAT-491: optional display-name/label for who actually said this turn,
+   *  as surfaced by a diarized or caption-labeled source (meeting captions
+   *  naming each participant). Additive alongside `role`, not a replacement
+   *  for it — `role` stays the closed user|assistant discriminator
+   *  flatten-turns.ts's line-prefix convention already depends on; a
+   *  multi-participant caption transcript cannot be losslessly collapsed
+   *  into that binary, so `speaker` carries the real per-turn identity.
+   *  Mirrors contracts/schemas/capture-envelope.v1.schema.json's
+   *  `turns[].speaker` (contracts 2.4.0). */
+  speaker: z.string().min(1).optional(),
 });
 
 // ---------------------------------------------------------------------------
@@ -91,8 +101,32 @@ export const CanonicalIngestSchema = z.object({
    *  quarantine every proxy-captured envelope at drain time. Kept a closed
    *  enum rather than an open string deliberately — an unrecognized value is
    *  a real client bug worth surfacing as 400 on the direct
-   *  `/ingest/transcript` path, not something to silently coerce to null. */
-  capture_source: z.enum(['auto_capture', 'hook_close', 'proxy']).optional(),
+   *  `/ingest/transcript` path, not something to silently coerce to null.
+   *  Widened again FEAT-491 (ADR-017): `'meeting_captions'` from the
+   *  astramem-plugin browser extension's Meet/Teams live-caption scraper.
+   *  This is the one capture source that also requires `consent_disclosed`
+   *  (below) and a runtime config gate (`captureSource.meetingCaptions.
+   *  enabled`, checked in `ingestCanonicalTranscript` since zod schemas
+   *  can't see runtime config) — see the superRefine block and
+   *  `ingestCanonicalTranscript`'s consent-gate check. */
+  capture_source: z.enum(['auto_capture', 'hook_close', 'proxy', 'meeting_captions']).optional(),
+  /** FEAT-491: capture-session metadata for a meeting-captions envelope —
+   *  which platform (open string, e.g. 'google_meet'/'teams') and which
+   *  platform-native meeting/call id, when the extension can read one.
+   *  Deliberately NOT threaded onto atom.v2.schema.json's `provenance`
+   *  (contracts/README.md's FEAT-496 section) — these describe the capture
+   *  SESSION, not a single atom/evidence span; atoms correlate back via the
+   *  existing `session_id` bridge. Optional on every non-meeting-captions
+   *  envelope, byte-identical to today. */
+  platform: z.string().optional(),
+  meeting_id: z.string().optional(),
+  /** ADR-017 decision 6: server-side consent marker. Optional in general
+   *  (every capture source with no third-party speaker omits it), but the
+   *  superRefine block below hard-rejects a `capture_source:
+   *  'meeting_captions'` envelope where this is missing or `false` — the
+   *  contract-level backstop for the plugin's client-side opt-in gate.
+   *  Mirrors capture-envelope.v1.schema.json's new `allOf` conditional. */
+  consent_disclosed: z.boolean().optional(),
   /** FEAT-479 (D3 §3.2) AC-3: optional per-ingest override of
    *  `distill.extractProfile` (src/config/config.ts) for this transcript
    *  only. Additive zod field, no wire break — every client that omits it
@@ -143,6 +177,19 @@ export const CanonicalIngestSchema = z.object({
     }
   } else if (!data.turns || data.turns.length === 0) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'transcript kind requires a non-empty `turns` array', path: ['turns'] });
+  }
+  // ADR-017 decision 6 / FEAT-491: mirrors capture-envelope.v1.schema.json's
+  // allOf conditional — a meeting-captions envelope with no true
+  // consent_disclosed is a hard reject at the schema layer, not a silent
+  // accept. This is the shape-level half of the gate; the runtime
+  // `captureSource.meetingCaptions.enabled` config check (which zod can't
+  // see) happens in ingestCanonicalTranscript below.
+  if (data.capture_source === 'meeting_captions' && data.consent_disclosed !== true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "capture_source 'meeting_captions' requires consent_disclosed: true (ADR-017)",
+      path: ['consent_disclosed'],
+    });
   }
 });
 
@@ -228,6 +275,22 @@ export class IdempotencyConflictError extends Error {
   }
 }
 
+/**
+ * ADR-017 decision 3 / FEAT-491: a meeting-captions envelope is rejected
+ * unless the OPERATOR RUNNING THIS DAEMON has also explicitly opted in
+ * (`captureSource.meetingCaptions.enabled: true`, default `false`) —
+ * defense-in-depth on top of the plugin's own client-side opt-in gate and
+ * the schema-level `consent_disclosed` requirement (zod superRefine above,
+ * which zod cannot cross-reference runtime config for). Thrown, not a zod
+ * issue, because config is only available here, not inside the pure schema.
+ */
+export class MeetingCaptionsDisabledError extends Error {
+  constructor() {
+    super('meeting_captions_capture_disabled');
+    this.name = 'MeetingCaptionsDisabledError';
+  }
+}
+
 export interface CanonicalTranscriptIngestResult {
   transcriptId: string;
   jobId: string;
@@ -268,6 +331,16 @@ export function ingestCanonicalTranscript(
     throw new Error('ingestCanonicalTranscript: requires a non-empty `turns` array (transcript kind only)');
   }
 
+  // ADR-017 decision 3 / FEAT-491 runtime gate — see MeetingCaptionsDisabledError.
+  // Schema-level consent_disclosed is already guaranteed true by superRefine
+  // above (config can't be checked there); this is the second, independent
+  // gate the config default (false) protects against a client that sends a
+  // well-formed, consent-stamped envelope to a daemon whose operator never
+  // opted in locally.
+  if (data.capture_source === 'meeting_captions' && !config.captureSource.meetingCaptions.enabled) {
+    throw new MeetingCaptionsDisabledError();
+  }
+
   const stmtSelectIdempotency = db.prepare<[string], { body_hash: string; summary_memory_id: string | null }>(
     'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
   );
@@ -287,14 +360,16 @@ export function ingestCanonicalTranscript(
     string | null, string, string | null,
     string | null, string | null,
     string,
+    string | null, string | null, number | null,
   ]>(`
     INSERT INTO transcripts (
       id, session_id, source, content, ingested_at,
       event, captured_at, client_scrub_applied, client_scrub_hits,
       client_scrub_version, client_scrub_hits_by_label_json,
       client_version, wire_version, capture_source, proxy_usage_json,
-      extract_profile, captured_at_local_date
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      extract_profile, captured_at_local_date,
+      platform, meeting_id, consent_disclosed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const stmtInsertJob = db.prepare<[string, string, number, number]>(`
     INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
@@ -395,6 +470,16 @@ export function ingestCanonicalTranscript(
       // route and spool-drain" note as capture_source above applies here too.
       data.extract_profile ?? null,
       capturedAtLocalDate,
+      // FEAT-491 (ADR-017): platform/meeting_id describe the capture
+      // session (null on every non-meeting-captions envelope, byte-identical
+      // to today). consent_disclosed is guaranteed true here whenever
+      // capture_source is 'meeting_captions' (superRefine + the runtime gate
+      // above both already refused anything else) — stored as 0/1/NULL so
+      // distillHandler can thread it onto every atom this transcript
+      // produces (src/pipeline/handlers/distill.ts).
+      data.platform ?? null,
+      data.meeting_id ?? null,
+      data.consent_disclosed === undefined ? null : (data.consent_disclosed ? 1 : 0),
     );
 
     recordRedactionEvents(db, redactionEvents, data.session_id);
@@ -779,6 +864,20 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
               error: 'idempotency_conflict',
               idempotency_key: idempotencyKey,
               detail: 'key reused with different body',
+            });
+          }
+
+          // ADR-017 decision 3 / FEAT-491: this daemon's operator has not
+          // opted into meeting-captions capture (captureSource.
+          // meetingCaptions.enabled, default false) — reject rather than
+          // silently accept a well-formed, consent-stamped envelope from a
+          // client whose plugin-side opt-in the daemon has no way to verify
+          // is the SAME operator's own choice.
+          if (err instanceof MeetingCaptionsDisabledError) {
+            log.warn({ session_id: data.session_id }, 'meeting-captions capture rejected — captureSource.meetingCaptions.enabled is false');
+            return reply.code(400).send({
+              error: 'meeting_captions_capture_disabled',
+              detail: 'captureSource.meetingCaptions.enabled is false on this daemon — enable it before sending meeting-captions envelopes (ADR-017)',
             });
           }
 

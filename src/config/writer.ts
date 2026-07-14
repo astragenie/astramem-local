@@ -430,6 +430,15 @@ export function configToYaml(cfg: Config): string {
     line(1, 'capture'),
     line(2, 'enabled', (cfg.proxy ?? EMIT_DEFAULTS.proxy).capture.enabled),
     '',
+    // Third-party-speaker capture sources (FEAT-491, ADR-017) — a wholly new
+    // top-level block, same "verified inert on rollback" posture as `proxy`
+    // above. `enabled: false` (default) means ingestCanonicalTranscript
+    // hard-rejects every meeting_captions envelope regardless of what the
+    // client sends.
+    line(0, 'captureSource'),
+    line(1, 'meetingCaptions'),
+    line(2, 'enabled', (cfg.captureSource ?? EMIT_DEFAULTS.captureSource).meetingCaptions.enabled),
+    '',
   ];
   const yaml = lines.join('\n');
 

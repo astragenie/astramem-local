@@ -442,6 +442,133 @@ async function runProxyCaptureDisable(args: string[]): Promise<void> {
   if (failed) process.exitCode = 1;
 }
 
+/**
+ * `astramem-local capture meeting-captions disable [--purge|--keep] [--json]`
+ * (FEAT-491, ADR-017 decision 3). Mirrors `runProxyCaptureDisable` exactly —
+ * same immediate-config-write / offered-not-forced-purge shape — scoped to
+ * `captureSource.meetingCaptions.enabled` and `capture_source =
+ * 'meeting_captions'` ONLY. `'auto_capture'` / `'hook_close'` / `'proxy'`
+ * atoms are never queried or purged by this flow.
+ */
+async function runMeetingCaptionsDisable(args: string[]): Promise<void> {
+  const asJson = args.includes('--json');
+  const purgeFlag = args.includes('--purge');
+  const keepFlag = args.includes('--keep');
+
+  if (purgeFlag && keepFlag) {
+    console.error('capture meeting-captions disable: pass only one of --purge / --keep');
+    process.exitCode = 1;
+    return;
+  }
+
+  const { cfg, configDir } = resolveRuntimeConfig();
+  const wasEnabled = cfg.captureSource.meetingCaptions.enabled;
+  cfg.captureSource.meetingCaptions.enabled = false;
+  const configPath = join(configDir, 'config.yaml');
+  writeConfig(cfg, configPath);
+
+  if (!asJson) {
+    console.log(
+      wasEnabled
+        ? `meeting-captions capture disabled — captureSource.meetingCaptions.enabled=false persisted to ${configPath}`
+        : `meeting-captions capture was already disabled — config.yaml re-confirmed at ${configPath}`,
+    );
+  }
+
+  const { db } = openRuntimeDb();
+  // Literal 'meeting_captions' only — deliberately NOT widened to include
+  // any other capture_source value, same isolation guarantee
+  // runProxyCaptureDisable/runAutoCaptureDisable already give their own
+  // capture tiers.
+  const rows = db
+    .prepare(`SELECT id FROM memories WHERE capture_source = 'meeting_captions' AND valid_to IS NULL`)
+    .all() as { id: string }[];
+  db.close();
+
+  if (rows.length === 0) {
+    if (asJson) {
+      console.log(JSON.stringify({ disabled: true, was_enabled: wasEnabled, meeting_captions_captured_count: 0, purge: 'no-op' }, null, 2));
+    } else {
+      console.log('No meeting-captions memories found — nothing to purge.');
+    }
+    return;
+  }
+
+  let purge: boolean;
+  if (purgeFlag) {
+    purge = true;
+  } else if (keepFlag) {
+    purge = false;
+  } else if (process.stdout.isTTY && process.stdin.isTTY) {
+    const { confirm } = await import('@inquirer/prompts');
+    purge = await confirm({
+      message:
+        `${rows.length} meeting-captions ${rows.length === 1 ? 'memory' : 'memories'} found (may include another ` +
+        'meeting participant\'s captured words). Purge them now? (Reversible for a bounded window, then ' +
+        'permanently erased — No = keep them, meeting-captions capture stays off either way)',
+      default: false,
+    });
+  } else {
+    console.log(
+      `${rows.length} meeting-captions ${rows.length === 1 ? 'memory' : 'memories'} found. ` +
+      'Re-run with --purge to erase them or --keep to leave them (non-interactive, no action taken).',
+    );
+    return;
+  }
+
+  if (!purge) {
+    const msg = `Kept ${rows.length} meeting-captions ${rows.length === 1 ? 'memory' : 'memories'} — offered, not forced (ADR-017).`;
+    if (asJson) console.log(JSON.stringify({ disabled: true, was_enabled: wasEnabled, meeting_captions_captured_count: rows.length, purge: 'declined' }, null, 2));
+    else console.log(msg);
+    return;
+  }
+
+  // Reuses the same generic /capture/purge route every other capture tier's
+  // disable flow uses (FEAT-467) — capture_source is a plain scoping
+  // parameter with no branching in that route, so no server-side change is
+  // needed for this new value.
+  const baseUrl = process.env.ASTRA_MEMORY_URL ?? `http://127.0.0.1:${cfg.port}`;
+  const token = process.env.ASTRA_MEMORY_TOKEN ?? 'devtok';
+  let batchId: string | null = null;
+  let purgedCount = 0;
+  let failed = false;
+  try {
+    const res = await fetch(`${baseUrl}/capture/purge`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ capture_source: 'meeting_captions' }),
+    });
+    if (res.status === 200) {
+      const body = (await res.json()) as { batch_id: string; count: number };
+      batchId = body.batch_id;
+      purgedCount = body.count;
+    } else {
+      failed = true;
+    }
+  } catch {
+    failed = true;
+  }
+
+  if (asJson) {
+    console.log(JSON.stringify(
+      {
+        disabled: true, was_enabled: wasEnabled, meeting_captions_captured_count: rows.length,
+        purge: failed ? 'failed' : 'completed', purged: purgedCount, batch_id: batchId,
+      },
+      null, 2,
+    ));
+  } else if (failed) {
+    console.log('Purge failed — is the daemon running? Re-run this command to retry.');
+  } else {
+    console.log(
+      `Purge batch ${batchId}: ${purgedCount} ${purgedCount === 1 ? 'memory' : 'memories'} soft-purged — ` +
+      'restorable within the configured window (POST /capture/purge/:batchId/restore) before being ' +
+      'permanently erased.',
+    );
+  }
+  if (failed) process.exitCode = 1;
+}
+
 export async function captureCommand(args: string[]): Promise<void> {
   const source = args[0];
   if (source === 'claude') {
@@ -468,8 +595,18 @@ export async function captureCommand(args: string[]): Promise<void> {
     process.exit(1);
     return;
   }
+  if (source === 'meeting-captions') {
+    const sub = args[1];
+    if (sub === 'disable') {
+      await runMeetingCaptionsDisable(args.slice(2));
+      return;
+    }
+    console.error(`capture meeting-captions: unknown subcommand '${sub ?? ''}' — supported: disable`);
+    process.exit(1);
+    return;
+  }
   if (source !== 'codex') {
-    console.error(`capture: unknown source '${source ?? ''}' — supported: codex, claude, auto-capture, proxy`);
+    console.error(`capture: unknown source '${source ?? ''}' — supported: codex, claude, auto-capture, proxy, meeting-captions`);
     process.exit(1);
   }
 

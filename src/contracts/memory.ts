@@ -109,7 +109,15 @@ export interface Memory {
    *  capture — the vast majority of rows). Widened again FEAT-458 S3:
    *  `'proxy'` from the LLM proxy relay's capture fork (ADR-013). See
    *  InsertInput.capture_source. */
-  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions' | null;
+  /** FEAT-491: display-name/label this atom's `evidence` excerpt was traced
+   *  back to (src/distill/attribute-speaker.ts) — see InsertInput.speaker_label. */
+  speaker_label: string | null;
+  /** FEAT-491 (ADR-017 decision 6): tri-state — `null` means "not applicable
+   *  or not recorded" (every non-meeting-captions atom), `true`/`false` means
+   *  an explicit disclosure determination was made at capture time. See
+   *  InsertInput.consent_disclosed. */
+  consent_disclosed: boolean | null;
   /** Issue #205 provenance flag — `false` (default, every pre-fix row) means
    *  "extraction never considered this atom's validity"; `true` means
    *  extraction looked (`valid_to` is `null` because the source text left

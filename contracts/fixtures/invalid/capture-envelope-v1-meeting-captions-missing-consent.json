@@ -1,0 +1,18 @@
+{
+  "event": "session_end",
+  "session_id": "sess-meet-no-consent",
+  "project_id": "proj-astramem",
+  "captured_at": "2026-07-14T15:03:00.000Z",
+  "kind": "transcript",
+  "capture_source": "meeting_captions",
+  "platform": "google_meet",
+  "meeting_id": "abc-defg-hij",
+  "turns": [
+    { "role": "user", "text": "this envelope forgot to stamp consent_disclosed", "speaker": "Alice Chen" }
+  ],
+  "client_scrub_applied": true,
+  "client_scrub_hits": 0,
+  "client_version": "0.19.0",
+  "client_scrub_version": "1.2.0",
+  "wire_version": "v1.0"
+}
