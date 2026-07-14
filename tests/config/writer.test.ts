@@ -73,7 +73,7 @@ function buildFullyPopulatedConfig(): Config {
     ingest: { spoolMaxBytes: 1_048_576 },
     distill: {
       durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never',
-      maxChunkChars: 2400, costCap: { enabled: true, maxCallsPerJob: 40, maxWallClockMs: 180_000 },
+      maxChunkChars: 2400, extractionPasses: 1, costCap: { enabled: true, maxCallsPerJob: 40, maxWallClockMs: 180_000 },
     },
     capture: {
       autoCapture: {
