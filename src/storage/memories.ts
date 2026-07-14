@@ -180,6 +180,29 @@ export class MemoryRepo {
       // extracted" (the field is entirely absent from payload_json in the
       // latter case, matching the atom@2 dual-read/enrichment-cursor
       // architecture). shipper.ts ships this payload verbatim.
+      //
+      // FEAT-496 provenance (astramemory-local#... / memory C2-2): this is
+      // the live JSON-emission path migration 049's doc comment said didn't
+      // exist yet. `evidence` (atom@2 structured-receipt array form) is
+      // included ONLY when the caller supplied `speaker_label` — the one
+      // FEAT-496 evidence-level field this storage layer actually has data
+      // for (`segment_start_ms` has no producer anywhere in the local
+      // pipeline today — attribute-speaker.ts does line-level substring
+      // matching, not span/timing tracking — so it is never emitted; wiring
+      // it here would fabricate a value with no source of truth). The
+      // array item's `transcript_id` (required by atom.v2.schema.json) uses
+      // `source_hash` — the sha256(transcript content) identifier already
+      // threaded through the distill pipeline (see EmbedIndexContext /
+      // chunk-checkpoint.ts) — falling back to the atom's own content hash
+      // only for the theoretical case a caller sets speaker_label without a
+      // source_hash, so the field is never empty (schema minLength: 1).
+      // `provenance.consent_disclosed` is tri-state by KEY PRESENCE, not by
+      // shipping a JSON `null`: the cloud reader (ReadCaptionProvenanceJson,
+      // SyncIngestService.cs) treats absence and `null` identically as "not
+      // recorded", so the key is added only for an explicit true/false
+      // determination — undefined/null (every pre-FEAT-489/491 caller)
+      // stays byte-identical to today (no `evidence`/`provenance` keys at
+      // all).
       events.append({
         event_type: 'create',
         atom_id: id,
@@ -192,6 +215,12 @@ export class MemoryRepo {
           confidence: input.confidence ?? 0.5,
           repo: input.repo ?? input.project ?? '',
           ...(input.entities !== undefined ? { entities: input.entities } : {}),
+          ...(input.speaker_label != null
+            ? { evidence: [{ transcript_id: input.source_hash ?? input.hash, speaker_label: input.speaker_label }] }
+            : {}),
+          ...(input.consent_disclosed === true || input.consent_disclosed === false
+            ? { provenance: { consent_disclosed: input.consent_disclosed } }
+            : {}),
         },
       });
       return { id, created: true };
