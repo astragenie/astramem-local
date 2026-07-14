@@ -1,6 +1,6 @@
 /**
  * Persistence for the FEAT-490 confidence-filter guard-drop counters
- * (migration 044). Mirrors src/storage/evidence-guard-log.ts field-for-field
+ * (migration 048). Mirrors src/storage/evidence-guard-log.ts field-for-field
  * (which itself mirrors relation-guard-log.ts / redaction-log.ts) — counts
  * + a reason label only, never the raw segment text. Exists so dropped
  * segments are visible in stats, never silent (FEAT-490 acceptance hint).

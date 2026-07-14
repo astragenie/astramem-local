@@ -1,16 +1,17 @@
--- 044: audio-file transcription capture surface (FEAT-489 Slice A / FEAT-490,
+-- 048: audio-file transcription capture surface (FEAT-489 Slice A / FEAT-490,
 -- ADR-017 decision 6).
 --
--- Migration number note (race, expected): this worktree branched from
--- origin/main at 043-embed-cache.sql. origin/main has since gained its own
--- 044 (consolidation-judge-near-threshold), and a sibling parallel wave
--- (L1-4) is independently also claiming 044-046 on its own branch. The
--- "contiguous from 001" invariant (tests/storage/migration-renumber.test.ts)
--- means THIS branch must number sequentially from what it can see on disk
--- (043), so this file is 044 here — it WILL collide at merge time and needs
--- renumbering then. Cheap fix (rename + SCHEMA_VERSION re-derives
--- automatically, see src/storage/schema-version.ts) — not a reason to leave
--- a gap or guess a "safer" number nobody can actually reserve up front.
+-- Migration number history (renumbered once, cheap by construction): this
+-- worktree originally branched from origin/main at 043-embed-cache.sql and
+-- authored this file as 044. By finalize time origin/main had independently
+-- claimed 044 (an unrelated in-flight lane, #318) and 045-047 (L1-4, #322,
+-- merged as FEAT-495 hardening) -- confirmed via `git merge origin/main`,
+-- which pulled all four of those files in cleanly with no conflicts. This
+-- file was renamed 044 -> 048 (the next free number on live main at merge
+-- time) with no other change -- SCHEMA_VERSION re-derives automatically
+-- from the highest migration number on disk (src/storage/schema-version.ts),
+-- so no manual version bump was needed. Content below is unchanged from the
+-- original 044 draft.
 --
 -- Three additive, nullable/new-table changes, no rewrite of an existing row:
 --
