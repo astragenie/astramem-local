@@ -1547,3 +1547,101 @@ describe('deterministic date-grounding backstop (WS1, 2026-07-13)', () => {
     expect(result.atoms[0]!.text).toBe('Caroline attended a support group yesterday.');
   });
 });
+
+describe('adversarial pipeline validation (WS1 review + validation, 2026-07-13)', () => {
+  /**
+   * A live behavior-validation pass drove extractChunk (mock LLM, no GPU)
+   * against pushed ref 3ebf40b and reproduced real date FABRICATION written
+   * to atom.text: "Caroline described the last week of the project as
+   * extremely stressful" became "...the the week before 15 July 2023 of the
+   * project..." — a confident, precisely-formatted, and completely FALSE
+   * claim. Adapted directly from that report's own repro atoms rather than
+   * re-derived, so this fails against 3ebf40b and passes after the "of"
+   * continuation guard (temporal-grounding.ts).
+   */
+  it('does not fabricate a date into atom.text through the full pipeline, and never touches evidence, across a mixed adversarial batch', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+
+    const atomsJson = JSON.stringify({
+      atoms: [
+        {
+          type: 'fact',
+          text: 'Caroline described the last week of the project as extremely stressful.',
+          importance: 0.7,
+          confidence: 0.8,
+          evidence: 'it was the last week of the project and I barely slept',
+        },
+        {
+          type: 'fact',
+          text: 'Caroline mentioned she visited the clinic yesterday and plans to return next month.',
+          importance: 0.6,
+          confidence: 0.85,
+          evidence: 'I went to the clinic yesterday, I will go back next month',
+        },
+        {
+          type: 'fact',
+          text: 'She said "I saw her last week" during the call.',
+          importance: 0.5,
+          confidence: 0.7,
+          evidence: 'She said "I saw her last week" during the call',
+        },
+        {
+          type: 'fact',
+          text: "We are targeting next weekend's release.",
+          importance: 0.6,
+          confidence: 0.75,
+          evidence: "We are targeting next weekend's release",
+        },
+        {
+          type: 'fact',
+          text: 'Caroline started therapy recently.',
+          importance: 0.4,
+          confidence: 0.6,
+          evidence: 'I started therapy recently',
+        },
+      ],
+    });
+
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        return { text: atomsJson, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+
+    const result = await extractChunk(0, 'some realistic transcript chunk', llm, budget, 10.0, 'engineering', '2023-07-15');
+    expect(result.atoms).toHaveLength(5);
+
+    // The confirmed fabrication case: "last week of the project" MUST stay
+    // completely unresolved -- not "the the week before...", not any
+    // rewrite at all.
+    expect(result.atoms[0]!.text).toBe('Caroline described the last week of the project as extremely stressful.');
+    expect(result.atoms[0]!.text).not.toContain('the the');
+
+    // Ordinary session-relative expressions in the SAME batch still resolve
+    // -- the guard is narrow, not a kill switch for the whole module.
+    expect(result.atoms[1]!.text).toBe('Caroline mentioned she visited the clinic 14 July 2023 and plans to return August 2023.');
+
+    // Quoted speech and possessive continuations resolve normally (known,
+    // documented, intentional tradeoffs -- see temporal-grounding.ts).
+    expect(result.atoms[2]!.text).toBe('She said "I saw her the week before 15 July 2023" during the call.');
+    expect(result.atoms[3]!.text).toBe("We are targeting the weekend after 15 July 2023's release.");
+
+    // "recently" stays permanently excluded.
+    expect(result.atoms[4]!.text).toBe('Caroline started therapy recently.');
+
+    // evidence is NEVER touched, on every atom in the batch, including the
+    // fabrication-guard case and the recently-excluded case.
+    expect(result.atoms[0]!.evidence).toBe('it was the last week of the project and I barely slept');
+    expect(result.atoms[1]!.evidence).toBe('I went to the clinic yesterday, I will go back next month');
+    expect(result.atoms[2]!.evidence).toBe('She said "I saw her last week" during the call');
+    expect(result.atoms[3]!.evidence).toBe("We are targeting next weekend's release");
+    expect(result.atoms[4]!.evidence).toBe('I started therapy recently');
+  });
+});

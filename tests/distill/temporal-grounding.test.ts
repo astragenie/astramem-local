@@ -202,4 +202,148 @@ describe('groundRelativeDates', () => {
       expect(groundRelativeDates('It happens this year.', '2024-02-29').text).toBe('It happens 2024.');
     });
   });
+
+  describe('does NOT fabricate a date when the phrase modifies a DIFFERENT referent (validation finding, 2026-07-13)', () => {
+    // A live behavior validation pass against 3ebf40b reproduced real date
+    // FABRICATION: "the last week of the project" resolved to "the the week
+    // before 15 July 2023 of the project" — a confident, precisely-formatted,
+    // and completely FALSE claim (the project's own final week has nothing
+    // to do with the session capture date). Every case below is a VERBATIM
+    // repro from that validation report and MUST resolve to the input
+    // UNCHANGED. See the module header's "Guarding against non-session-
+    // relative continuations" for the full mechanism and rationale.
+    const OF_CONTINUATION_CASES = [
+      'It was last week of school when everything changed.',
+      'That was during last week of the semester.',
+      'Melanie described it as the toughest last week of training.',
+      'They finished last week of rehearsals before opening night.',
+      'The championship final falls on next weekend of the tournament.',
+      'Caroline described the last week of the project as extremely stressful.',
+      // Same construction, generalized past week/weekend to every other
+      // last/next-<unit> pattern — the vulnerability is structural (any
+      // "last/next X" idiomatically takes an "of <noun>" complement
+      // describing a DIFFERENT timeline), not week/weekend-specific.
+      'This was the last month of the semester.',
+      'It happened during the last year of the war.',
+      'They always meet on the last Friday of the month.',
+      'She dreaded the last Friday of training camp.',
+    ];
+
+    it.each(OF_CONTINUATION_CASES)('leaves %j completely unresolved', (input) => {
+      const r = groundRelativeDates(input, ANCHOR);
+      expect(r.grounded).toBe(false);
+      expect(r.text).toBe(input);
+    });
+
+    // The guard is narrow (only " of <noun>"), not a blanket refusal near
+    // any punctuation or nested clause — these three, also verbatim from the
+    // validation report's fixtures, are genuinely session-relative (no "of"
+    // continuation) and MUST still resolve normally. Pinned alongside the
+    // unresolved cases above so the guard's boundary is tested from both
+    // sides, not just the side that must refuse.
+    it('still resolves "next weekend" when nothing follows it but an ordinary verb (no "of")', () => {
+      const r = groundRelativeDates('This coming next weekend marks the start of finals.', ANCHOR);
+      expect(r.text).toBe('This coming the weekend after 15 July 2023 marks the start of finals.');
+    });
+
+    it('still resolves "last month" when followed by a comma, not "of" — and leaves the unsupported "next week" inside the same string alone', () => {
+      const r = groundRelativeDates(
+        "Caroline mentioned that in her email last month, she wrote: 'I'll see you next week.'",
+        ANCHOR,
+      );
+      expect(r.text).toBe("Caroline mentioned that in her email June 2023, she wrote: 'I'll see you next week.'");
+    });
+
+    it('still resolves "last year" and "next month" in the same sentence when neither is followed by "of"', () => {
+      const r = groundRelativeDates(
+        'The article, published last year, said the district plans to open next month.',
+        ANCHOR,
+      );
+      expect(r.text).toBe('The article, published 2022, said the district plans to open August 2023.');
+    });
+
+    it('does not fabricate a date through the full extractChunk-style flow either (regression pin, not just the direct probe)', () => {
+      // Mirrors the validation report's pipeline-level repro shape directly
+      // against groundRelativeDates, since that's the exact function
+      // extractChunk calls per atom (see 05-extract.ts's groundAtomDates).
+      const r = groundRelativeDates(
+        'Caroline described the last week of the project as extremely stressful.',
+        ANCHOR,
+      );
+      expect(r.text).not.toContain('the the');
+      expect(r.text).toBe('Caroline described the last week of the project as extremely stressful.');
+    });
+  });
+
+  describe('does NOT guard a following possessive "\'s" — intentional, pinned (validation finding, 2026-07-13)', () => {
+    // Unlike a following " of <noun>", a trailing possessive does not change
+    // what the phrase refers to: "last week's numbers" is still ordinary
+    // session-relative time (the numbers FROM last week). No confirmed case
+    // shows this construction producing a false claim the way "of" does, so
+    // it resolves normally — pinned here so a future "helpful" broadening of
+    // the guard doesn't silently regress this on a hunch. See the module
+    // header for the full rationale.
+    it('"last week\'s X" resolves normally (still session-relative)', () => {
+      const r = groundRelativeDates("Last week's numbers were bad.", ANCHOR);
+      expect(r.grounded).toBe(true);
+      expect(r.text).toBe("The week before 15 July 2023's numbers were bad.");
+    });
+
+    it('"next weekend\'s X" resolves normally (still session-relative)', () => {
+      const r = groundRelativeDates("We are targeting next weekend's release.", ANCHOR);
+      expect(r.text).toBe("We are targeting the weekend after 15 July 2023's release.");
+    });
+  });
+
+  describe('sentence-initial capitalization is preserved (validation finding, 2026-07-13)', () => {
+    // The week/weekend resolutions are the only ones whose replacement text
+    // starts with a lowercase word ("the week before...") — every other
+    // resolution starts with a digit or a proper-noun month name, which
+    // never needs re-capitalizing. Left unhandled, a sentence-initial "Last
+    // week's numbers..." would become "the week before...'s numbers...",
+    // silently breaking capitalization on real atom text.
+    it('capitalizes the resolution at the true start of the string', () => {
+      const r = groundRelativeDates("Last week's numbers were bad.", ANCHOR);
+      expect(r.text.startsWith('The week before')).toBe(true);
+    });
+
+    it('capitalizes the resolution after a sentence boundary mid-string', () => {
+      const r = groundRelativeDates('Last month was busy. Next weekend is the trip.', ANCHOR);
+      expect(r.text).toBe('June 2023 was busy. The weekend after 15 July 2023 is the trip.');
+    });
+
+    it('does not capitalize (and does not need to) a resolution that is not sentence-initial', () => {
+      const r = groundRelativeDates('Caroline had a picnic last week with friends.', ANCHOR);
+      expect(r.text).toBe('Caroline had a picnic the week before 15 July 2023 with friends.');
+    });
+  });
+
+  describe('quoted/reported speech resolves against the session anchor — known, documented limitation, pinned not silently accepted', () => {
+    // No discourse model exists in a pure regex pass (module header, "Known
+    // limitation... quoted or reported speech"). In an ordinary same-session
+    // transcript this is usually still correct — the quote was uttered close
+    // to the session's own capture time — so it resolves normally rather
+    // than being guarded. Pinned so the tradeoff is visible and intentional,
+    // not an accidental gap nobody noticed.
+    it('resolves a relative phrase inside a same-session quotation', () => {
+      const r = groundRelativeDates('Caroline said "I saw her last week" during the call.', ANCHOR);
+      expect(r.text).toBe('Caroline said "I saw her the week before 15 July 2023" during the call.');
+    });
+  });
+
+  describe('"recently" is never resolved — permanent exclusion, pinned (review request, 2026-07-13)', () => {
+    // The module header calls this exclusion a standing principle, but
+    // nothing previously pinned it with a dedicated test — a future change
+    // could silently add a "recently" pattern without any test failing.
+    it('leaves "recently" completely untouched even with a valid anchor', () => {
+      const r = groundRelativeDates('Caroline started therapy recently.', ANCHOR);
+      expect(r.grounded).toBe(false);
+      expect(r.text).toBe('Caroline started therapy recently.');
+    });
+
+    it('leaves "recently" untouched even alongside other resolvable expressions in the same atom', () => {
+      const r = groundRelativeDates('She started therapy recently and saw a specialist yesterday.', ANCHOR);
+      expect(r.text).toBe('She started therapy recently and saw a specialist 14 July 2023.');
+    });
+  });
 });

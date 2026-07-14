@@ -78,6 +78,63 @@
  * Never add a pattern here whose resolution is a guess rather than a
  * deterministic consequence of the anchor.
  *
+ * ── Guarding against non-session-relative continuations (review finding,
+ * validation, 2026-07-13) ──────────────────────────────────────────────────
+ *
+ * A live behavior-validation pass reproduced real date FABRICATION: "Caroline
+ * described the last week of the project as extremely stressful" resolved to
+ * "...the the week before 15 July 2023 of the project..." — a confident,
+ * precisely-formatted, and completely FALSE claim. "the last week OF THE
+ * PROJECT" describes the project's own final week — a property of the
+ * project's timeline, unrelated to the session capture date — not a
+ * session-relative reference at all. The same construction generalizes past
+ * week/weekend to every "last/next X" pattern here: "the last month of the
+ * semester," "the last year of the war," "the last Friday of the month" (a
+ * common recurring-event idiom) are all real English and all equally wrong
+ * to resolve against the session anchor.
+ *
+ * Every "last/next <unit>" pattern below (year, month, week, weekend, named
+ * weekday, and the bare-weekday pattern) therefore carries a negative
+ * lookahead refusing to match when immediately followed by " of <noun>" —
+ * the idiomatic marker that the phrase modifies a DIFFERENT referent's own
+ * timeline rather than referring to session-relative time. Leaving the
+ * phrase untouched in that case is always correct: an honest vague statement
+ * beats a confident false one, the same principle "recently" is excluded
+ * under above.
+ *
+ * Deliberately does NOT guard a following possessive "'s" ("last week's
+ * numbers were bad," "next weekend's release") — unlike "of," a trailing
+ * possessive does not change what the phrase refers to; "last week's X" is
+ * still ordinary session-relative time (the numbers FROM last week), just
+ * like "last week" alone. Resolving it produces grammatically dense but
+ * factually correct output ("the week before 15 July 2023's numbers were
+ * bad") — this is intentional and pinned by a test, not an oversight; see
+ * "measure, don't guess" above — there is no confirmed case showing 's
+ * continuations produce a false claim the way "of" continuations do, so no
+ * guard was added for one that hasn't been demonstrated broken.
+ *
+ * Every "last <unit>"/"next <unit>" pattern that can idiomatically take a
+ * preceding "the" ("the last week," "the last Friday," "the next weekend")
+ * also optionally consumes it as part of the match, so it gets replaced
+ * along with the rest of the phrase rather than left behind duplicated —
+ * fixes a related cosmetic bug ("the last week of the project" — before the
+ * "of" guard existed — used to become "the the week before...", a doubled
+ * article) by construction: the resolution text already supplies exactly
+ * the article grammar calls for (or none, for weekday/month/year
+ * resolutions, which never need one), so consuming any pre-existing "the "
+ * into the match and discarding it can never double it.
+ *
+ * Known limitation, not fixed here (regex has no discourse model): a
+ * relative phrase inside quoted or reported speech ("Caroline said 'I saw
+ * her last week' during the call") resolves against the SESSION anchor even
+ * if the quoted speaker meant something else. In an ordinary same-session
+ * transcript this is usually still correct (the quote was uttered close to
+ * the session's own capture time), so it is left resolving normally rather
+ * than guarded — but a transcript excerpting an OLDER quote (a message
+ * forwarded from days earlier, a journal entry read aloud) could anchor
+ * incorrectly. No regex-only fix exists for this; would need real discourse/
+ * quote-span tracking. Flagged, not attempted.
+ *
  * Output is natural-language ("D Month YYYY" / "Month YYYY" / "YYYY"), NOT
  * ISO-8601. This matters beyond style: LoCoMo's token-F1 scorer
  * (scripts/eval/locomo/judge/metrics.mts) strips ALL punctuation, including
@@ -162,16 +219,22 @@ interface Pattern {
   resolve: (match: RegExpMatchArray, anchor: Date) => string;
 }
 
+// Negative lookahead: refuse to match when the phrase is immediately
+// followed by " of <noun>" -- see the module header's "Guarding against
+// non-session-relative continuations" for why. Spliced into each pattern's
+// source below rather than duplicated as a literal in every regex.
+const NOT_FOLLOWED_BY_OF = String.raw`(?!\s+of\b)`;
+
 const PATTERNS: Pattern[] = [
   { re: /\byesterday\b/gi, resolve: (_m, anchor) => formatDay(addDaysUtc(anchor, -1)) },
   { re: /\btomorrow\b/gi, resolve: (_m, anchor) => formatDay(addDaysUtc(anchor, 1)) },
   { re: /\btoday\b/gi, resolve: (_m, anchor) => formatDay(anchor) },
-  { re: /\blast year\b/gi, resolve: (_m, anchor) => String(addYearsUtc(anchor, -1).getUTCFullYear()) },
-  { re: /\bnext year\b/gi, resolve: (_m, anchor) => String(addYearsUtc(anchor, 1).getUTCFullYear()) },
-  { re: /\bthis year\b/gi, resolve: (_m, anchor) => String(anchor.getUTCFullYear()) },
-  { re: /\blast month\b/gi, resolve: (_m, anchor) => formatMonthYear(addMonthsUtc(anchor, -1)) },
-  { re: /\bnext month\b/gi, resolve: (_m, anchor) => formatMonthYear(addMonthsUtc(anchor, 1)) },
-  { re: /\bthis month\b/gi, resolve: (_m, anchor) => formatMonthYear(anchor) },
+  { re: new RegExp(String.raw`\b(?:the )?last year\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => String(addYearsUtc(anchor, -1).getUTCFullYear()) },
+  { re: new RegExp(String.raw`\b(?:the )?next year\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => String(addYearsUtc(anchor, 1).getUTCFullYear()) },
+  { re: new RegExp(String.raw`\bthis year\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => String(anchor.getUTCFullYear()) },
+  { re: new RegExp(String.raw`\b(?:the )?last month\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => formatMonthYear(addMonthsUtc(anchor, -1)) },
+  { re: new RegExp(String.raw`\b(?:the )?next month\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => formatMonthYear(addMonthsUtc(anchor, 1)) },
+  { re: new RegExp(String.raw`\bthis month\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => formatMonthYear(anchor) },
   // Week-granularity -- reference-point phrasing, not a single guessed day.
   // See the module header ("Why reference-point phrasing, not a single day")
   // for the measured rationale. Only the 4 patterns actually measured
@@ -180,16 +243,16 @@ const PATTERNS: Pattern[] = [
   // generalize; add it only once a real case measures it (module doc's own
   // "measure, don't guess" rule applies to this module's own construction,
   // not just to what it resolves).
-  { re: /\blast week\b/gi, resolve: (_m, anchor) => `the week before ${formatDay(anchor)}` },
-  { re: /\bthis week\b/gi, resolve: (_m, anchor) => `the week of ${formatDay(anchor)}` },
-  { re: /\blast weekend\b/gi, resolve: (_m, anchor) => `the weekend before ${formatDay(anchor)}` },
-  { re: /\bnext weekend\b/gi, resolve: (_m, anchor) => `the weekend after ${formatDay(anchor)}` },
+  { re: new RegExp(String.raw`\b(?:the )?last week\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => `the week before ${formatDay(anchor)}` },
+  { re: new RegExp(String.raw`\bthis week\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => `the week of ${formatDay(anchor)}` },
+  { re: new RegExp(String.raw`\b(?:the )?last weekend\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => `the weekend before ${formatDay(anchor)}` },
+  { re: new RegExp(String.raw`\b(?:the )?next weekend\b${NOT_FOLLOWED_BY_OF}`, 'gi'), resolve: (_m, anchor) => `the weekend after ${formatDay(anchor)}` },
   {
-    re: /\blast (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi,
+    re: new RegExp(String.raw`\b(?:the )?last (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b${NOT_FOLLOWED_BY_OF}`, 'gi'),
     resolve: (m, anchor) => formatDay(lastWeekday(anchor, WEEKDAY_NAMES.indexOf(m[1]!.toLowerCase() as (typeof WEEKDAY_NAMES)[number]))),
   },
   {
-    re: /\bnext (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi,
+    re: new RegExp(String.raw`\b(?:the )?next (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b${NOT_FOLLOWED_BY_OF}`, 'gi'),
     resolve: (m, anchor) => formatDay(nextWeekday(anchor, WEEKDAY_NAMES.indexOf(m[1]!.toLowerCase() as (typeof WEEKDAY_NAMES)[number]))),
   },
   // Bare weekday in past-tense narration ("...on Friday..."), no last/next
@@ -198,7 +261,7 @@ const PATTERNS: Pattern[] = [
   // been rewritten to an absolute date by the earlier patterns and no longer
   // contain the bare word "Friday" for this one to (mis)match.
   {
-    re: /\bon (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b/gi,
+    re: new RegExp(String.raw`\bon (sunday|monday|tuesday|wednesday|thursday|friday|saturday)\b${NOT_FOLLOWED_BY_OF}`, 'gi'),
     resolve: (m, anchor) => `on ${formatDay(nearestPastOrSameWeekday(anchor, WEEKDAY_NAMES.indexOf(m[1]!.toLowerCase() as (typeof WEEKDAY_NAMES)[number])))}`,
   },
 ];
@@ -207,6 +270,23 @@ export interface GroundingResult {
   text: string;
   /** True iff at least one relative-date pattern was found and replaced. */
   grounded: boolean;
+}
+
+/**
+ * True when `offset` in `fullString` starts a sentence — the very start of
+ * the string, or right after `. ` / `! ` / `? ` (optionally followed by a
+ * closing quote/paren before the whitespace). Used only to decide whether a
+ * resolution's leading letter needs re-capitalizing (see below) — a
+ * heuristic, not real sentence segmentation, but sufficient for the cases
+ * that actually arise in atom text.
+ */
+function isSentenceStart(fullString: string, offset: number): boolean {
+  const before = fullString.slice(0, offset);
+  return /^\s*$/.test(before) || /[.!?]['"”’)]*\s+$/.test(before);
+}
+
+function capitalizeFirst(s: string): string {
+  return s.length > 0 ? s[0]!.toUpperCase() + s.slice(1) : s;
 }
 
 /**
@@ -233,7 +313,19 @@ export function groundRelativeDates(text: string, sessionDateIso: string | undef
       // RegExpMatchArray-shaped enough for resolve()'s use (m[1] on the
       // weekday patterns) — replace()'s callback args are [match, ...groups,
       // offset, string], which is what a real exec() match array holds too.
-      return resolve(args as unknown as RegExpMatchArray, anchor);
+      let resolved = resolve(args as unknown as RegExpMatchArray, anchor);
+      // Regardless of capture-group count, a String.replace callback's LAST
+      // two arguments are always (offset, fullString) — reliable positional
+      // access, unlike indexing from the front. Re-capitalize the
+      // resolution's first letter when it replaces the start of a sentence
+      // (e.g. "Last week's numbers..." must not become "the week
+      // before..."'s numbers..." with a stray lowercase "the"); a no-op for
+      // resolutions already starting with a digit or capital (dates, month
+      // names), so this is safe to apply unconditionally.
+      const offset = args[args.length - 2] as number;
+      const fullString = args[args.length - 1] as string;
+      if (isSentenceStart(fullString, offset)) resolved = capitalizeFirst(resolved);
+      return resolved;
     });
     result = next;
   }
