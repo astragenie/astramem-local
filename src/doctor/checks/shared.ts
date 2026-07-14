@@ -83,6 +83,11 @@ export interface DoctorCheckOpts {
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.enabled`. Defaults to
    * `false` (the shipped default) when not supplied. */
   proxyEnabled?: boolean;
+  /** Release no-go hard gate: current `proxy.experimental`. Defaults to
+   * `false` (the shipped default) when not supplied — the state where
+   * `astramem-local proxy serve` refuses to start regardless of
+   * `proxy.enabled` (see src/cli/proxy.ts). */
+  proxyExperimental?: boolean;
   /** FEAT-458 S1-AC-2 / ADR-013: current `proxy.capture.enabled`. Defaults
    * to `false` (the shipped default) when not supplied. */
   proxyCaptureEnabled?: boolean;

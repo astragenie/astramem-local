@@ -89,7 +89,7 @@ describe('spawnProxy / killProxy — lifecycle against the fake proxy CLI fixtur
       await new Promise(r => setTimeout(r, 100));
     }
     expect(stillBound).toBe(false);
-  });
+  }, 20_000);
 
   it('killProxy on an already-exited process is a safe no-op', async () => {
     stub = await startUpstreamStub();

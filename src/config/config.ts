@@ -687,6 +687,16 @@ export interface Config {
    *  only, always false and unread until then. */
   proxy: {
     enabled: boolean;
+    /** Release-scoped hard gate (release no-go): the LLM proxy relay is
+     *  EXPERIMENTAL and not production-ready for the first release. Default
+     *  `false`. `astramem-local proxy serve` (src/cli/proxy.ts) refuses to
+     *  start the listener at all unless this is explicitly `true` in
+     *  config.yaml — independent of, and checked in ADDITION to, whatever
+     *  else gates the subcommand. There is no CLI flag and no `init` wizard
+     *  prompt for this (matches `proxy.enabled`'s own "no one-click toggle"
+     *  posture above): an operator who wants the experimental proxy has to
+     *  hand-edit config.yaml, deliberately, knowing what they're opting into. */
+    experimental: boolean;
     port: number;
     upstream: string;
     /** Idle deadline for an upstream request, in ms (FEAT-458 S4a). Armed at
@@ -878,6 +888,7 @@ export function defaultConfig(): Config {
     },
     proxy: {
       enabled: false,
+      experimental: false,
       port: 7778,
       upstream: '',
       upstreamTimeoutMs: 30_000,

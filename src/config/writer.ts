@@ -417,6 +417,9 @@ export function configToYaml(cfg: Config): string {
     // tests/config/proxy-downgrade.test.ts.
     line(0, 'proxy'),
     line(1, 'enabled', (cfg.proxy ?? EMIT_DEFAULTS.proxy).enabled),
+    // Release no-go hard gate — default false, no wizard prompt, no CLI flag.
+    // See Config['proxy']['experimental']'s doc comment (src/config/config.ts).
+    line(1, 'experimental', (cfg.proxy ?? EMIT_DEFAULTS.proxy).experimental),
     line(1, 'port', (cfg.proxy ?? EMIT_DEFAULTS.proxy).port),
     line(1, 'upstream', (cfg.proxy ?? EMIT_DEFAULTS.proxy).upstream),
     line(1, 'upstreamTimeoutMs', (cfg.proxy ?? EMIT_DEFAULTS.proxy).upstreamTimeoutMs),

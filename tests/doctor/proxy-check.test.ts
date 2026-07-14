@@ -11,7 +11,7 @@
  * insert() path every other test in this suite uses, no bypass needed.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -37,18 +37,21 @@ describe('doctor "LLM proxy" check (FEAT-458 S1-AC-2 / ADR-013)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  // Every one of these passes proxyExperimental: true — they exercise the
+  // "live state" branch (the release no-go gate is off scope for them; see
+  // the "release no-go gate" describe block below for that dimension).
   function checkFor(proxyEnabled: boolean, proxyCaptureEnabled: boolean) {
     return findCheck(
-      getChecks({ dataDir: dir, encryptionEnabled: false, proxyEnabled, proxyCaptureEnabled }),
+      getChecks({ dataDir: dir, encryptionEnabled: false, proxyEnabled, proxyExperimental: true, proxyCaptureEnabled }),
       'LLM proxy',
     );
   }
 
-  it('defaults to off when proxyEnabled/proxyCaptureEnabled are omitted, and is always ok', async () => {
+  it('defaults to gated (experimental not opted in) when every proxy opt is omitted, and is always ok', async () => {
     const check = findCheck(getChecks({ dataDir: dir, encryptionEnabled: false }), 'LLM proxy');
     const result = await check.run();
     expect(result.ok).toBe(true);
-    expect(result.message).toBe('proxy: off (default)');
+    expect(result.message).toContain('experimental (not for production)');
   });
 
   it('proxy disabled — reports off verbatim, never touching the DB', async () => {
@@ -135,5 +138,46 @@ describe('doctor "LLM proxy" check (FEAT-458 S1-AC-2 / ADR-013)', () => {
     const result = await checkFor(true, true).run();
     expect(result.ok).toBe(true);
     expect(result.message).toContain('2 proxy-captured memories');
+  });
+});
+
+describe('doctor "LLM proxy" check — release no-go gate (proxy.experimental)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-doctor-proxy-gate-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('proxyExperimental omitted — gated message, ok:true, never touching the DB, regardless of proxyEnabled', async () => {
+    const result = await findCheck(
+      getChecks({ dataDir: dir, encryptionEnabled: false, proxyEnabled: true, proxyCaptureEnabled: true }),
+      'LLM proxy',
+    ).run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe(
+      'proxy: experimental (not for production) — set proxy.experimental: true to opt in; `proxy serve` refuses to start otherwise',
+    );
+  });
+
+  it('proxyExperimental: false, proxyEnabled: false — still the gated message (experimental dominates, not "off (default)")', async () => {
+    const result = await findCheck(
+      getChecks({ dataDir: dir, encryptionEnabled: false, proxyEnabled: false, proxyExperimental: false }),
+      'LLM proxy',
+    ).run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('experimental (not for production)');
+  });
+
+  it('proxyExperimental: true, proxyEnabled: false — falls through to the live "off" state, not the gated message', async () => {
+    const result = await findCheck(
+      getChecks({ dataDir: dir, encryptionEnabled: false, proxyEnabled: false, proxyExperimental: true }),
+      'LLM proxy',
+    ).run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toBe('proxy: off (default)');
   });
 });
