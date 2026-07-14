@@ -63,9 +63,22 @@ export interface EmbedIndexContext {
    * disable -> purge query. Widened again FEAT-458 S3 (ADR-013): `'proxy'`
    * when captured by the LLM proxy relay's capture fork — scoped for its own
    * "LLM proxy" doctor canary and its own disable -> purge query, isolated
-   * from the auto-capture ones above.
+   * from the auto-capture ones above. Widened again FEAT-489 (Slice A):
+   * `'audio_transcribe'` when captured by the on-device audio-file
+   * transcription pipeline — its own "Audio add-on" doctor row.
    */
-  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null;
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | null;
+  /**
+   * FEAT-489 (ADR-017 decision 6): whether the operator disclosure/opt-in
+   * required for capturing a non-user speaker was satisfied at capture time,
+   * carried on the transcripts row this distill run's atoms were extracted
+   * from. Passed straight through to `MemoryRepo.insertWithCreateEvent`'s
+   * `consent_disclosed` so a memory produced from a third-party recording
+   * can self-identify as such even if its source transcript is later pruned
+   * by retention (FEAT-493) independently. `null`/omitted for every
+   * non-audio-transcribe producer.
+   */
+  consentDisclosed?: boolean | null;
   /**
    * FEAT-441: durability quality gate mode. Undefined/omitted behaves as
    * 'off' — every pre-FEAT-441 caller (and the existing test suite) that
@@ -267,6 +280,7 @@ export async function embedAndIndex(
       // field and correctly default to `false`.
       validity_extracted: true,
       capture_source: ctx.captureSource ?? null,
+      consent_disclosed: ctx.consentDisclosed ?? null,
       // atom@2: stage 5 always runs entity extraction as part of this same
       // atom's LLM call, so every atom from this pipeline has "declared"
       // entities even when it found none — default to [] (not undefined)

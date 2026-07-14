@@ -123,6 +123,15 @@ export interface DoctorCheckOpts {
    * `defaultConfig().retention` (mode 'off') when not supplied — see
    * `checkRetention`. */
   retentionConfig?: Config['retention'];
+  /** FEAT-489 Slice A / ADR-017: current `audio.mode`. Defaults to `'off'`
+   * (the shipped, ADR-017-required default) when not supplied — see
+   * `checkAudioAddon`. */
+  audioMode?: Config['audio']['mode'];
+  /** FEAT-489 Slice A / ADR-017 decision 3: current
+   * `audio.disclosureAcknowledged`. Defaults to `false` (the shipped
+   * default — nothing is acknowledged until the operator explicitly sets
+   * this) when not supplied — see `checkAudioAddon`. */
+  audioDisclosureAcknowledged?: boolean;
   /** Issue #279: current `llm.compaction`/`llm.extraction` config (provider
    * + model only — NOT provider instances, unlike `llmProviders` above).
    * A cheap, config-only derivation, same shape as `codexSubscriptionInUse`

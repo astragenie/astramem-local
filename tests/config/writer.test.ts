@@ -82,6 +82,7 @@ function buildFullyPopulatedConfig(): Config {
       },
       purge: { restoreWindowDays: 45 },
     },
+    audio: { mode: 'dry-run', modelPath: '/custom/model/path.bin', disclosureAcknowledged: true },
     proxy: {
       enabled: true,
       experimental: true,

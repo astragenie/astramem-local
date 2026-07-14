@@ -129,6 +129,7 @@ import { checkMemorySentinel } from './memory-sentinel.js';
 import { checkMigrationSelfHeal } from './migration-self-heal.js';
 import { checkHandlerRunLog } from './handler-run-log.js';
 import { checkRetention } from './retention.js';
+import { checkAudioAddon } from './audio-addon.js';
 import { checkModelFitCanary } from './model-fit.js';
 
 export type { Check, CheckResult };
@@ -224,6 +225,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkMigrationSelfHeal(dataDir, encryptionEnabled),
     checkHandlerRunLog(dataDir, encryptionEnabled),
     checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
+    checkAudioAddon(opts.audioMode ?? 'off', opts.audioDisclosureAcknowledged ?? false),
     // Issue #279: `reinstall` never rewrites an existing operator's pinned
     // llm.compaction/extraction.model, so a bad pin (qwen3:8b — doesn't fit
     // an 8 GB VRAM card) survives every upgrade forever. See model-fit.ts's

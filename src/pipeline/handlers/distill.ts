@@ -38,8 +38,18 @@ interface TranscriptRow {
    *  this transcript came from the hook-tap auto-capture trigger,
    *  'hook_close' when it came from the ordinary close-capture hook, NULL
    *  for every other producer. Widened again FEAT-458 S3 (ADR-013): 'proxy'
-   *  when it came from the LLM proxy relay's capture fork. */
-  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | null;
+   *  when it came from the LLM proxy relay's capture fork. Widened again
+   *  FEAT-489 (Slice A): 'audio_transcribe' when it came from the on-device
+   *  audio-file transcription pipeline (src/pipeline/handlers/transcribe.ts). */
+  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | null;
+  /** FEAT-489 (ADR-017 decision 6): whether the operator disclosure/opt-in
+   *  required for capturing a non-user speaker was satisfied at capture
+   *  time, stored as SQLite INTEGER 0/1/NULL (tri-state — see
+   *  PipelineContext.consentDisclosed's doc comment for why NULL must
+   *  survive distinctly from `false`) by the audio-transcribe pipeline. NULL
+   *  for every other producer. Converted to boolean | null below before
+   *  threading onto PipelineContext.consentDisclosed. */
+  consent_disclosed: number | null;
   /** FEAT-479 (D3 §3.2) AC-3: the optional per-ingest `extract_profile`
    *  envelope field, carried on the transcripts row at ingest time (see
    *  ingestCanonicalTranscript, src/server/routes/ingest.ts) — NULL for
@@ -75,7 +85,7 @@ export const distillHandler: JobHandler = {
 
     // Fetch transcript content
     const transcript = ctx.db
-      .prepare('SELECT id, session_id, content, source, captured_at, capture_source, extract_profile, captured_at_local_date FROM transcripts WHERE id = ?')
+      .prepare('SELECT id, session_id, content, source, captured_at, capture_source, extract_profile, captured_at_local_date, consent_disclosed FROM transcripts WHERE id = ?')
       .get(transcript_id) as TranscriptRow | undefined;
 
     if (!transcript) {
@@ -133,6 +143,10 @@ export const distillHandler: JobHandler = {
       // ingest.ts) — NULL for every producer except the hook-tap
       // auto-capture trigger.
       captureSource: transcript.capture_source ?? null,
+      // FEAT-489 (ADR-017 decision 6): tri-state INTEGER 0/1/NULL from the
+      // transcripts row must convert to boolean|null, never collapse NULL
+      // into `false` (see TranscriptRow.consent_disclosed's doc comment).
+      consentDisclosed: transcript.consent_disclosed === null ? null : transcript.consent_disclosed === 1,
       // FEAT-479 (D3 §3.2) AC-3: carried on the transcripts row at ingest
       // time (see ingestCanonicalTranscript, src/server/routes/ingest.ts) —
       // NULL for every envelope that omits `extract_profile`. runPipeline

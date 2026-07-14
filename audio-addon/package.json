@@ -1,0 +1,43 @@
+{
+  "name": "astramem-audio",
+  "version": "0.1.0-skeleton",
+  "description": "Optional on-device whisper.cpp add-on for astramem-local's audio-file transcription capture (FEAT-489). SKELETON — real whisper.cpp binding + prebuilt binaries ship in Slice B; astramem-local's transcribe handler works with this package absent (add-on-not-installed is a handled, non-crashing state).",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/astragenie/astramem-local.git",
+    "directory": "audio-addon"
+  },
+  "publishConfig": {
+    "registry": "https://registry.npmjs.org",
+    "access": "public"
+  },
+  "peerDependencies": {
+    "astramem-local": ">=0.18.0"
+  },
+  "peerDependenciesMeta": {
+    "astramem-local": {
+      "optional": true
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p .",
+    "typecheck": "tsc -p . --noEmit"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

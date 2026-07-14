@@ -73,9 +73,15 @@ export interface PipelineContext {
    * epoch) behavior — see runPipeline's `sessionDateIso` local. */
   capturedAtLocalDate?: string | null;
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12, widened again
-   *  FEAT-458 S3 (ADR-013): provenance tag plumbed from the transcripts row
-   *  via distillHandler — see EmbedIndexContext.captureSource. */
-  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null;
+   *  FEAT-458 S3 (ADR-013) and FEAT-489 (Slice A): provenance tag plumbed
+   *  from the transcripts row via distillHandler — see
+   *  EmbedIndexContext.captureSource. */
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | null;
+  /** FEAT-489 (ADR-017 decision 6): plumbed from `transcripts.consent_disclosed`
+   *  via distillHandler the same way captureSource is above — see
+   *  EmbedIndexContext.consentDisclosed. `null`/omitted for every envelope
+   *  whose source transcript has no `consent_disclosed` value. */
+  consentDisclosed?: boolean | null;
   /** FEAT-479 (D3 §3.2) AC-3: per-transcript extraction profile override,
    *  plumbed from the transcripts row via distillHandler the same way
    *  captureSource is above — NULL for every envelope that omits the
@@ -453,6 +459,7 @@ export async function runPipeline(
     sourceHash: ctx.sourceHash,
     capturedAtMs: ctx.capturedAtMs,
     captureSource: ctx.captureSource,
+    consentDisclosed: ctx.consentDisclosed,
     durabilityGateMode: ctx.durabilityGateMode,
     redactConfig: ctx.config,
     gatedOutCounter,
