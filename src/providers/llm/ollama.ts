@@ -159,7 +159,15 @@ export class OllamaLLMProvider implements LLMProvider {
 
   constructor(config: OllamaLLMConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
-    this.model = config.model ?? 'qwen3:8b';
+    // Defensive fallback only — every real call path (src/providers/index.ts)
+    // passes config.llm.{compaction,extraction}.model explicitly, which
+    // defaultConfig() (src/config/config.ts) always supplies, so this only
+    // fires for direct/ad-hoc instantiation with no model. Keep in sync with
+    // that default by hand (no shared import between this provider and
+    // config/config.ts) — was 'qwen3:8b' until 2026-07-13, which doesn't fit
+    // this hardware class's VRAM ceiling; see CLAUDE.md's "Ollama 8GB VRAM
+    // ceiling" note.
+    this.model = config.model ?? 'qwen3.5:4b';
     // Disable thinking by default for every known thinking model (see
     // OllamaLLMConfig.think and KNOWN_THINKING_MODEL_PREFIXES above) so
     // structured `format:json` extraction gets JSON in message.content instead

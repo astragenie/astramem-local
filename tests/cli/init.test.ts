@@ -289,7 +289,7 @@ describe('init wizard — non-TTY mode', () => {
   // default with no test is how it silently drifts (see the ASTRA_MEMORY_
   // INIT_OLLAMA_MODEL_TAG test right below, which only covers the override
   // path).
-  it('non-TTY init with no model-tag override writes the shipped default (qwen3:8b) to config.yaml', async () => {
+  it('non-TTY init with no model-tag override writes the shipped default (qwen3.5:4b) to config.yaml', async () => {
     const dataDir = makeTmpDir();
     const cfgDir = makeTmpDir();
 
@@ -311,7 +311,7 @@ describe('init wizard — non-TTY mode', () => {
     const configPath = findFile(cfgDir, 'config.yaml');
     expect(configPath, 'config.yaml must exist').toBeDefined();
     const content = readFileSync(configPath!, 'utf8');
-    expect(content).toContain("model: 'qwen3:8b'");
+    expect(content).toContain("model: 'qwen3.5:4b'");
   });
 
   it('ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG overrides compaction/extraction model in config.yaml', async () => {

@@ -65,15 +65,18 @@ function defaultCodexAuthPath(): string {
 }
 
 /** Default Ollama extraction/compaction model — used when no tier is chosen.
- * Swapped from qwen2.5:7b to qwen3:8b (2026-07-13, operator standardization —
- * see CHANGELOG). NOTE: this swap has NO F1 benchmark evidence yet — the
- * 2026-07-08 A/B run only compared qwen2.5:7b vs qwen2.5-coder:7b, and its
- * one qwen3:8b row is invalid (predates the `think:false` fix in commit
- * 1915521; qwen3 ran with thinking on + format:json and returned empty
- * bodies). A fresh benchmark against qwen3:8b is pending — see
- * scripts/eval/extraction-bench. Do not cite the old F1 numbers for this
- * model. */
-const DEFAULT_OLLAMA_LLM_MODEL = 'qwen3:8b';
+ * Swapped from qwen3:8b to qwen3.5:4b (2026-07-13, same-day reversal — see
+ * CHANGELOG). qwen3:8b was worse on every axis that's actually been
+ * measured: lower extraction F1 in the 3-run extraction bench (65% vs 68%
+ * for qwen3.5:4b) AND it doesn't fit this hardware class — 5896 MB resident
+ * plus the mxbai-embed-large embedder's 590 MB exceeds an 8 GB VRAM ceiling
+ * before any KV cache, so Ollama spills layers to CPU, calls take 9-35s
+ * instead of seconds, and distill jobs time out and poison (see "Ollama 8GB
+ * VRAM ceiling" in CLAUDE.md). qwen3.5:4b is 3292 MB and fits with headroom.
+ * This is a safety + measured-extraction-quality case, not a
+ * measured-compaction-quality case — nobody has benchmarked either model as
+ * a compactor specifically; see scripts/eval/extraction-bench. */
+const DEFAULT_OLLAMA_LLM_MODEL = 'qwen3.5:4b';
 
 /** Default Ollama embedding model (fixed — the wizard doesn't offer a tier
  * picker for embeddings, only for the extraction/compaction LLM). */
@@ -86,19 +89,22 @@ const DEFAULT_OLLAMA_EMBED_MODEL = 'mxbai-embed-large';
  * `confirmOllamaDownload` below) — not enforced, just informative.
  *
  * Only one curated tier as of 2026-07-13: the operator standardized on
- * qwen3:8b for compaction/extraction, retiring both prior candidates
- * (qwen2.5:7b, the former "RECOMMENDED" default with F1 67%/precision 99%
- * from the 2026-07-08 A/B benchmark, and qwen2.5-coder:7b, the former
- * "fastest" tier at F1 59%). There is NO F1 benchmark yet for qwen3:8b — see
- * DEFAULT_OLLAMA_LLM_MODEL's comment above for why the old numbers can't be
- * carried over. `stats` intentionally points at the pending benchmark rather
- * than a number. `qwen2.5-coder:14b` remains dropped (20% permanent-failure/
- * poison rate, 72.7s/session in the same benchmark); `llama3.1:8b` remains
- * dropped per operator decision (~3x latency). Any of these, or another
- * model, is still reachable via the "custom" tier below.
+ * qwen3.5:4b for compaction/extraction (same-day reversal from qwen3:8b —
+ * see DEFAULT_OLLAMA_LLM_MODEL's comment above), retiring both prior
+ * candidates (qwen2.5:7b, the former "RECOMMENDED" default with F1
+ * 67%/precision 99% from the 2026-07-08 A/B benchmark, and
+ * qwen2.5-coder:7b, the former "fastest" tier at F1 59%). qwen3.5:4b scores
+ * F1 68%/recall 54% in the 3-run extraction bench — the strongest local
+ * model measured, and the only one that also fits this hardware class
+ * (3292 MB resident vs qwen3:8b's 5896 MB, which spills VRAM and poisons
+ * distill jobs). `qwen2.5-coder:14b` remains dropped (20%
+ * permanent-failure/poison rate, 72.7s/session in the same benchmark);
+ * `llama3.1:8b` remains dropped per operator decision (~3x latency vs
+ * qwen3.5:4b at comparable F1). Any of these, or another model, is still
+ * reachable via the "custom" tier below.
  */
 const OLLAMA_EXTRACTION_TIERS: { value: string; label: string; size: string; ram: string; stats: string }[] = [
-  { value: 'qwen3:8b', label: 'RECOMMENDED (default)', size: '~5.2 GB', ram: '16 GB', stats: 'benchmark pending (see scripts/eval/extraction-bench)' },
+  { value: 'qwen3.5:4b', label: 'RECOMMENDED (default)', size: '~3.3 GB', ram: '8 GB', stats: 'F1 68%, recall 54%, precision 93% (extraction-bench, 3-run avg)' },
 ];
 
 /** Sentinel values for the non-model tier-picker choices (item 3/4). One of
@@ -234,7 +240,7 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   // user then picks (see promptOllamaModelTier / OLLAMA_TIER_BYO_CLOUD).
   let llmProvider = (await promptSelect(
     'LLM provider:',
-    [{ name: 'ollama (qwen3:8b)', value: 'ollama' }, ...cloudLlmChoices],
+    [{ name: 'ollama (qwen3.5:4b)', value: 'ollama' }, ...cloudLlmChoices],
     'ollama'
   )) as LlmProviderChoice;
 
@@ -606,7 +612,7 @@ function defaultLlmModelFor(provider: LlmProviderChoice): string {
     case 'azure-openai': return 'gpt-4.1';
     case 'openai-compatible': return 'gpt-4o-mini';
     case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
-    case 'ollama': default: return 'qwen3:8b';
+    case 'ollama': default: return DEFAULT_OLLAMA_LLM_MODEL;
   }
 }
 
