@@ -19,6 +19,7 @@ import { chunk } from './stages/03-chunk.js';
 import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
 import { extract, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
 import { reduce } from './stages/06-reduce.js';
+import { groundAtomDates } from './ground-dates.js';
 import { memoryNormalize } from './stages/07-memory-normalize.js';
 import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
@@ -267,9 +268,36 @@ export async function runPipeline(
   const reducedAtoms = reduce(allAtoms);
   pipeLog.info({ stage: 'reduce', atoms_out: reducedAtoms.length }, 'stage complete');
 
+  // Date-grounding retry (2026-07-13): a second, narrow LLM call for atoms
+  // whose text still carries an unresolved relative-date expression after
+  // stage 5's own resolve-in-place instruction — see ground-dates.ts's doc
+  // comment (graphiti's pattern; NOT PR #257's regex rewrite, which
+  // fabricated dates and was closed unmerged). Runs AFTER reduce (not
+  // between 5 and 6) so a phrase repeated across chunks is only ever
+  // resolved once, not once per chunk occurrence. `sessionDateIso` absent is
+  // a total no-op inside groundAtomDates — byte-identical to pre-retry
+  // behavior for every caller with no real anchor (legacy v0.0 envelopes,
+  // direct /remember calls). Reuses ctx.llmExtraction — same posture as
+  // contradiction-judge.ts (no new provider config surface). Never throws:
+  // any call/parse failure inside groundAtomDates is its own no-op fallback,
+  // so this can never turn a successful extraction into a failed pipeline
+  // run.
+  pipeLog.info({ stage: 'ground-dates', atoms_in: reducedAtoms.length }, 'stage start');
+  const groundResult = await groundAtomDates(reducedAtoms, sessionDateIso, ctx.llmExtraction);
+  pipeLog.info(
+    {
+      stage: 'ground-dates',
+      atoms_in: groundResult.totalAtoms,
+      fired: groundResult.fired,
+      resolved: groundResult.resolved,
+      errors: groundResult.errors,
+    },
+    'stage complete',
+  );
+
   // Stage 7: Memory-normalize
   pipeLog.info({ stage: 'memory-normalize' }, 'stage start');
-  const normalizedMemories = memoryNormalize(reducedAtoms);
+  const normalizedMemories = memoryNormalize(groundResult.atoms);
   pipeLog.info({ stage: 'memory-normalize', memories: normalizedMemories.length }, 'stage complete');
 
   // Stage 8: Embed + index
