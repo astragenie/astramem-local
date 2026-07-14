@@ -50,13 +50,24 @@ export function zeroYieldCount(db: DB, sinceMs = 0): number {
   return row.n;
 }
 
+/** Number of extraction-yield rows recorded since `sinceMs` that are ELIGIBLE for a
+ *  yield-rate judgment (chunks_in > 0) -- as opposed to totalYield's raw row count, which
+ *  also counts zero-chunk rows (empty/redacted transcripts that never attempted a real
+ *  extraction and are not real extraction attempts). This is the denominator the doctor
+ *  "Extraction yield" canary's MEANINGFUL_USAGE_THRESHOLD floor and WARN message must both
+ *  use -- see the #300 review finding: gating/reporting on totalYield let zero-chunk rows
+ *  inflate the "enough activity to judge" floor while the true eligible sample stayed small. */
+export function eligibleRunCount(db: DB, sinceMs = 0): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM extraction_yield WHERE created_at >= ? AND chunks_in > 0')
+    .get(sinceMs) as { n: number };
+  return row.n;
+}
+
 /** Fraction (0..1) of runs since `sinceMs` with chunks_in > 0 that yielded zero atoms. Returns
  *  null when there is no eligible (chunks_in > 0) run in the window -- rate is undefined, not 0. */
 export function zeroYieldRate(db: DB, sinceMs = 0): number | null {
-  const eligibleRow = db
-    .prepare('SELECT COUNT(*) AS n FROM extraction_yield WHERE created_at >= ? AND chunks_in > 0')
-    .get(sinceMs) as { n: number };
-  const eligible = eligibleRow.n;
+  const eligible = eligibleRunCount(db, sinceMs);
   if (eligible === 0) return null;
   return zeroYieldCount(db, sinceMs) / eligible;
 }

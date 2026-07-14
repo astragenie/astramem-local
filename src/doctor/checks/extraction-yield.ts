@@ -2,7 +2,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Check, CheckResult } from '../types.js';
 import type { DB } from '../../storage/db.js';
-import { zeroYieldCount, zeroYieldRate, totalYield } from '../../storage/extraction-yield-log.js';
+import { zeroYieldCount, zeroYieldRate, eligibleRunCount } from '../../storage/extraction-yield-log.js';
 import { openProductionDbReadonly, SEVEN_DAYS_MS, MEANINGFUL_USAGE_THRESHOLD } from './shared.js';
 
 // ─── Check: Extraction yield (ADR-015 headline finding) ─────────────────────
@@ -22,7 +22,12 @@ import { openProductionDbReadonly, SEVEN_DAYS_MS, MEANINGFUL_USAGE_THRESHOLD } f
  * Mirrors checkEntityRelations' gating exactly: silent until
  * MEANINGFUL_USAGE_THRESHOLD eligible runs (chunks_in > 0) have accumulated
  * in the window — a brand-new or low-activity install legitimately has too
- * small a sample to judge a rate from, and must not warn.
+ * small a sample to judge a rate from, and must not warn. The floor and the
+ * WARN message denominator both count ELIGIBLE runs only (`eligibleRunCount`,
+ * chunks_in > 0) — zero-chunk rows (empty/redacted transcripts that never
+ * attempted a real extraction) do not count toward either, so they can't
+ * inflate the "enough activity to judge" floor while the true eligible
+ * sample stays small (#300 review finding).
  *
  * A run with zero atoms out is not automatically a bug — a transcript that
  * genuinely carries nothing memorable is a valid zero. This check does not
@@ -51,21 +56,24 @@ export function checkExtractionYield(dataDir: string, encryptionEnabled: boolean
         db = await openProductionDbReadonly(dbPath, encryptionEnabled);
         const since = Date.now() - SEVEN_DAYS_MS;
 
-        const total7d = totalYield(db, since);
-        if (total7d < MEANINGFUL_USAGE_THRESHOLD) {
+        const eligible7d = eligibleRunCount(db, since);
+        if (eligible7d < MEANINGFUL_USAGE_THRESHOLD) {
           return {
             ok: true,
             message:
-              `extraction yield: ${total7d} run(s) in last 7d — not enough distill activity yet to judge ` +
-              `(below the ${MEANINGFUL_USAGE_THRESHOLD} floor)`,
+              `extraction yield: ${eligible7d} eligible run(s) (chunks_in > 0) in last 7d — not enough distill ` +
+              `activity yet to judge (below the ${MEANINGFUL_USAGE_THRESHOLD} floor)`,
           };
         }
 
         const rate = zeroYieldRate(db, since);
         if (rate === null) {
+          // Unreachable in normal operation: eligible7d >= MEANINGFUL_USAGE_THRESHOLD (> 0)
+          // already guarantees zeroYieldRate has a non-null denominator. Kept as a defensive
+          // fallback in case the two reads race against concurrent writes.
           return {
             ok: true,
-            message: `extraction yield: ${total7d} run(s) in last 7d, none had any input chunks — nothing to judge`,
+            message: `extraction yield: ${eligible7d} eligible run(s) in last 7d, none had any input chunks — nothing to judge`,
           };
         }
 
@@ -75,7 +83,7 @@ export function checkExtractionYield(dataDir: string, encryptionEnabled: boolean
             ok: true,
             message:
               `extraction yield: ${(rate * 100).toFixed(1)}% zero-atom rate over last 7d ` +
-              `(${zeroCount}/${total7d} runs) — below the ${(ZERO_YIELD_RATE_ALARM * 100).toFixed(0)}% alarm floor`,
+              `(${zeroCount}/${eligible7d} eligible runs) — below the ${(ZERO_YIELD_RATE_ALARM * 100).toFixed(0)}% alarm floor`,
           };
         }
 
@@ -83,7 +91,7 @@ export function checkExtractionYield(dataDir: string, encryptionEnabled: boolean
           ok: false,
           message:
             `extraction yield: ${(rate * 100).toFixed(1)}% of runs in the last 7d produced ZERO atoms ` +
-            `(${zeroCount}/${total7d} runs) — at or above the ${(ZERO_YIELD_RATE_ALARM * 100).toFixed(0)}% alarm ` +
+            `(${zeroCount}/${eligible7d} eligible runs) — at or above the ${(ZERO_YIELD_RATE_ALARM * 100).toFixed(0)}% alarm ` +
             `floor. This is indistinguishable from a healthy install at every other layer (no Zod failure, no ` +
             `job failure, no poison count) — it can mean the extraction model is broken (empty/truncated ` +
             `output) or that recent transcripts genuinely carried nothing memorable.`,

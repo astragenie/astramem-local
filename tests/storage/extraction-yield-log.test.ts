@@ -15,6 +15,7 @@ import {
   totalYield,
   zeroYieldCount,
   zeroYieldRate,
+  eligibleRunCount,
 } from '../../src/storage/extraction-yield-log.js';
 import type { DB } from '../../src/storage/db.js';
 
@@ -69,5 +70,24 @@ describe('extraction-yield-log', () => {
     expect(totalYield(db)).toBe(5);
     expect(zeroYieldCount(db)).toBe(0);
     expect(zeroYieldRate(db)).toBe(0);
+  });
+
+  it('eligibleRunCount excludes zero-chunk rows that totalYield includes', () => {
+    // 3 zero-chunk rows (not real extraction attempts) + 2 eligible rows.
+    for (let i = 0; i < 3; i++) {
+      recordExtractionYield(db, { sessionId: `empty${i}`, chunksIn: 0, atomsOut: 0 });
+    }
+    for (let i = 0; i < 2; i++) {
+      recordExtractionYield(db, { sessionId: `s${i}`, chunksIn: 1, atomsOut: 0 });
+    }
+
+    expect(totalYield(db)).toBe(5);
+    expect(eligibleRunCount(db)).toBe(2);
+  });
+
+  it('eligibleRunCount respects sinceMs like the other readers', () => {
+    recordExtractionYield(db, { sessionId: 's1', chunksIn: 2, atomsOut: 0 });
+    const cutoff = Date.now() + 1000;
+    expect(eligibleRunCount(db, cutoff)).toBe(0);
   });
 });
