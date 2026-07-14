@@ -59,35 +59,95 @@ export interface AnswerOutcome {
   hit_count: number;
 }
 
+/**
+ * How many questions are answered at once.
+ *
+ * Every question is INDEPENDENT: same prompt template, same deployment, same k,
+ * no shared state, no ordering dependency between them. So answering them
+ * concurrently produces byte-identical hypotheses to answering them one at a
+ * time — this is a scheduling change, not a scoring change (see the header note
+ * on benchmark integrity, which this deliberately does not touch).
+ *
+ * 8 is a deliberately unambitious default: high enough to turn ~55 minutes of
+ * serial waiting into a few minutes, low enough to stay well clear of Azure's
+ * per-deployment rate limit. Raise it with `--answer-concurrency` if your
+ * deployment has the headroom; a 429 storm would cost far more than it saves.
+ */
+const DEFAULT_ANSWER_CONCURRENCY = 8;
+
+/**
+ * Run `worker` over `items` with at most `limit` in flight, preserving INPUT
+ * ORDER in the returned array.
+ *
+ * Order matters even though every outcome carries its own `qa_id`: the written
+ * `hypotheses.jsonl` should be byte-stable across runs so two runs of the same
+ * commit diff cleanly. Completion order under concurrency is nondeterministic;
+ * index-keyed writes make the output deterministic anyway.
+ */
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  worker: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      results[i] = await worker(items[i]!, i);
+    }
+  });
+  await Promise.all(runners);
+  return results;
+}
+
 export async function answerConversations(
   daemonClient: DaemonClientOpts,
   azureCfg: AzureConfig,
   samples: LoCoMoSample[],
-  opts: { k?: number; readySampleIds?: Set<string> } = {},
+  opts: { k?: number; readySampleIds?: Set<string>; concurrency?: number } = {},
 ): Promise<AnswerOutcome[]> {
   const k = opts.k ?? 10;
-  const outcomes: AnswerOutcome[] = [];
+  const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_ANSWER_CONCURRENCY);
 
+  // Flatten to a single work list first. The previous nested loop answered
+  // strictly one question at a time — 1986 questions x ~1.5-2s each = ~55
+  // minutes of pure waiting, for work that has no sequential dependency at all.
+  // A full-suite eval that takes an hour is an eval people stop running, and
+  // that is how a "45.4" ends up being quoted from a single conversation
+  // (n=199) instead of the full 1986-question set.
+  type Task = { qa: LoCoMoSample['qa'][number]; sampleId: string; id: string; notReady: boolean };
+  const tasks: Task[] = [];
   for (const sample of samples) {
     const notReady = opts.readySampleIds !== undefined && !opts.readySampleIds.has(sample.sample_id);
     for (let i = 0; i < sample.qa.length; i++) {
-      const qa = sample.qa[i]!;
-      const id = qaId(sample.sample_id, i);
-      if (notReady) {
-        outcomes.push({ qa_id: id, sample_id: sample.sample_id, category: qa.category, hypothesis: '(skipped: conversation did not finish distilling within timeout)', hit_count: 0 });
-        continue;
-      }
-      const hits = await recall(daemonClient, { text: qa.question, limit: k, filters: { project: projectIdFor(sample.sample_id) } });
-      const prompt = buildAnswerPrompt(qa.question, hits);
-      const hypothesis = await azureChatComplete(azureCfg, {
-        deployment: azureCfg.answererDeployment,
-        messages: [{ role: 'user', content: prompt }],
-        maxCompletionTokens: ANSWER_MAX_COMPLETION_TOKENS,
-        reasoningEffort: 'minimal',
-      });
-      outcomes.push({ qa_id: id, sample_id: sample.sample_id, category: qa.category, hypothesis: hypothesis.trim(), hit_count: hits.length });
+      tasks.push({ qa: sample.qa[i]!, sampleId: sample.sample_id, id: qaId(sample.sample_id, i), notReady });
     }
   }
+
+  const outcomes = await mapWithConcurrency(tasks, concurrency, async (t): Promise<AnswerOutcome> => {
+    if (t.notReady) {
+      return {
+        qa_id: t.id,
+        sample_id: t.sampleId,
+        category: t.qa.category,
+        hypothesis: '(skipped: conversation did not finish distilling within timeout)',
+        hit_count: 0,
+      };
+    }
+    // IDENTICAL to the serial version: same recall, same k, same project filter,
+    // same prompt, same deployment, same token budget, same reasoning effort.
+    const hits = await recall(daemonClient, { text: t.qa.question, limit: k, filters: { project: projectIdFor(t.sampleId) } });
+    const prompt = buildAnswerPrompt(t.qa.question, hits);
+    const hypothesis = await azureChatComplete(azureCfg, {
+      deployment: azureCfg.answererDeployment,
+      messages: [{ role: 'user', content: prompt }],
+      maxCompletionTokens: ANSWER_MAX_COMPLETION_TOKENS,
+      reasoningEffort: 'minimal',
+    });
+    return { qa_id: t.id, sample_id: t.sampleId, category: t.qa.category, hypothesis: hypothesis.trim(), hit_count: hits.length };
+  });
 
   assertStoreNotEmpty(outcomes);
   return outcomes;
@@ -189,9 +249,10 @@ if (isMain) {
   const k = Number(get('--k') ?? '10');
   const outPath = get('--out') ?? 'hypotheses.jsonl';
   const readyPath = get('--ready');
+  const answerConcurrency = Number(get('--answer-concurrency') ?? String(DEFAULT_ANSWER_CONCURRENCY));
 
   if (!samplePath || !daemonUrl || !token) {
-    console.error('Usage: bun answer.mts --sample <path> --daemon-url <url> --token <token> [--k 10] [--out hypotheses.jsonl] [--ready <distill-wait-result.json>]');
+    console.error('Usage: bun answer.mts --sample <path> --daemon-url <url> --token <token> [--k 10] [--out hypotheses.jsonl] [--ready <distill-wait-result.json>] [--answer-concurrency 8]');
     process.exit(1);
   }
 
@@ -206,7 +267,7 @@ if (isMain) {
   const totalQa = samples.reduce((n, s) => n + s.qa.length, 0);
   console.log(`Answering ${totalQa} QA pairs across ${samples.length} conversations via Azure deployment "${azureCfg.answererDeployment}" (k=${k})...`);
 
-  const outcomes = await answerConversations({ baseUrl: daemonUrl, token }, azureCfg, samples, { k, readySampleIds });
+  const outcomes = await answerConversations({ baseUrl: daemonUrl, token }, azureCfg, samples, { k, readySampleIds, concurrency: answerConcurrency });
   writeHypothesesJsonl(outcomes, outPath);
 
   const abstained = outcomes.filter(o => o.hypothesis.startsWith('(skipped')).length;
