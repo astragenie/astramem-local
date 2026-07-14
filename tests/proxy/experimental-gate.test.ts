@@ -69,29 +69,41 @@ describe('proxy serve — experimental hard gate (release no-go)', () => {
     });
 
     it('starts the listener once opted in via config.yaml', async () => {
-      // Sandbox BOTH the config dir (APPDATA on win32) the daemon resolves
-      // config.yaml from, and the datadir (via the explicit env override,
-      // which also short-circuits the worktree production-datadir guard) —
-      // never point either at the real OS locations from a test.
+      // Sandbox the config dir the daemon resolves config.yaml from on EVERY
+      // platform, plus the datadir. `defaultConfigDir()` (src/config/datadir.ts)
+      // is platform-specific — %APPDATA%\Astramem on win32 but
+      // $XDG_CONFIG_HOME/astra-memory (~/.config/astra-memory) on linux/darwin.
+      // The CI runner is Linux; redirecting only APPDATA leaves the CLI reading
+      // the REAL operator config there (no proxy.experimental), so the gate
+      // fires and this test fails only on CI. Write the config under BOTH dir
+      // names and redirect APPDATA/LOCALAPPDATA + XDG_CONFIG_HOME/XDG_DATA_HOME/
+      // HOME so whichever resolver the runner's OS uses lands in the sandbox.
       configParent = mkdtempSync(join(tmpdir(), 'astramem-proxy-gate-cfg-'));
       dataDir = mkdtempSync(join(tmpdir(), 'astramem-proxy-gate-data-'));
-      const configDir = join(configParent, 'Astramem');
-      mkdirSync(configDir, { recursive: true });
 
       const cfg = defaultConfig();
       cfg.proxy.experimental = true;
-      writeFileSync(join(configDir, 'config.yaml'), configToYaml(cfg), 'utf8');
+      const yaml = configToYaml(cfg);
+      for (const dirName of ['Astramem', 'astra-memory']) {
+        const configDir = join(configParent, dirName);
+        mkdirSync(configDir, { recursive: true });
+        writeFileSync(join(configDir, 'config.yaml'), yaml, 'utf8');
+      }
 
       proc = spawn('node', ['dist/cli/index.js', 'proxy', 'serve', '--host', '127.0.0.1', '--port', '0', '--upstream', 'http://127.0.0.1:1'], {
         env: {
           ...process.env,
-          // Sandbox BOTH APPDATA and LOCALAPPDATA — migrateLegacyDirsIfPresent()
-          // (src/config/migrate-dirs.ts) runs unconditionally on every
-          // non-isolated boot and reads LOCALAPPDATA directly, ahead of the
-          // ASTRA_MEMORY_DATADIR override below; leaving it unset here would
-          // have this test's boot path probe the REAL production data dir.
+          // win32: %APPDATA%\Astramem — also LOCALAPPDATA because
+          // migrateLegacyDirsIfPresent() (src/config/migrate-dirs.ts) runs on
+          // every non-isolated boot and reads LOCALAPPDATA directly.
           APPDATA: configParent,
           LOCALAPPDATA: configParent,
+          // linux/darwin: $XDG_CONFIG_HOME/astra-memory + HOME fallback for the
+          // ~/.config resolver when XDG is unset. XDG_DATA_HOME sandboxes the
+          // data dir the same way ASTRA_MEMORY_DATADIR does, belt-and-suspenders.
+          XDG_CONFIG_HOME: configParent,
+          XDG_DATA_HOME: dataDir,
+          HOME: configParent,
           ASTRA_MEMORY_DATADIR: dataDir,
         },
         stdio: 'pipe',
