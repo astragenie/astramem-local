@@ -16,6 +16,7 @@ import {
   EntityKindSchema,
   RELATION_PREDICATES,
   resolveExtractionPrompt,
+  EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
   type Atom,
   type ExtractProfile,
 } from '../prompts/extract.js';
@@ -118,12 +119,21 @@ export async function extractChunk(
    * caller that has no real anchor (legacy v0.0 envelopes, direct
    * `/remember` calls) sees no change. */
   sessionDateIso?: string,
+  /** Dual-pass extraction (opt-in): when present, this REPLACES the profile/
+   * env-resolved prompt entirely — `extractProfile` is still accepted (so
+   * checkpoint variant keying and call signatures stay uniform) but plays no
+   * role in prompt selection once this is set. Used by extractSpecifics()
+   * below to run the "specifics sweeper" prompt without going through
+   * resolveExtractionPrompt's profile/env precedence chain, which is pass-A
+   * only by design. `undefined` (the default) is byte-identical to pre-
+   * dual-pass behavior for every existing caller. */
+  promptOverride?: string,
 ): Promise<ExtractResult> {
   if (!text.trim()) {
     return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {} };
   }
 
-  const activePrompt = resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
+  const activePrompt = promptOverride ?? resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
   const promptChars = activePrompt.length + text.length + (sessionDateIso ? sessionDateIso.length + 20 : 0);
   const estimateUsd = BudgetTracker.estimateUsd(promptChars, 0.000002, 0.000002);
 
@@ -547,6 +557,65 @@ export async function extract(
   const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
     const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso);
     chunkCheckpoints.set(jobKey, 'extract', chk.index, result, extractProfile);
+    return result;
+  });
+
+  return [...cached, ...fresh].sort((a, b) => a.chunkIndex - b.chunkIndex);
+}
+
+/**
+ * Dual-pass extraction, Pass B ("specifics sweeper") — opt-in via
+ * `distill.extractionPasses: 2` (src/config/config.ts). Runs
+ * EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER (prompts/extract.ts) over the
+ * SAME compacted chunks pass A already processed, on the SAME provider
+ * instance — no new provider config, no new budget surface.
+ *
+ * Mirrors extract()'s chunk-checkpoint contract exactly (same jobKey, same
+ * chunk indices) but under its OWN checkpoint variant (`'specifics-sweeper'`)
+ * so a collision with pass A's cached results under the same jobKey/index is
+ * impossible — see chunk-checkpoint.ts's own doc comment on why `variant`
+ * disambiguation is load-bearing, not decoration.
+ *
+ * Caller contract (pipeline.ts): only invoke this AFTER pass A's `extract()`
+ * call has returned successfully for the run — never on a failed/aborted
+ * pass A. This is enforced by the CALLER's control flow (pass A's own
+ * try/catch already re-throws before this would be reached), not by this
+ * function itself.
+ */
+export async function extractSpecifics(
+  chunks: Array<{ index: number; text: string }>,
+  provider: LLMProvider,
+  budget: BudgetTracker,
+  capUsd: number,
+  concurrency = 1,
+  jobKey?: string,
+  sessionDateIso?: string,
+): Promise<ExtractResult[]> {
+  const variant = 'specifics-sweeper';
+
+  if (!jobKey) {
+    return mapWithConcurrency(chunks, concurrency, (chk) =>
+      extractChunk(
+        chk.index, chk.text, provider, budget, capUsd,
+        'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+      ),
+    );
+  }
+
+  const pending: Array<{ index: number; text: string }> = [];
+  const cached: ExtractResult[] = [];
+  for (const chk of chunks) {
+    const hit = chunkCheckpoints.get<ExtractResult>(jobKey, 'extract', chk.index, variant);
+    if (hit !== undefined) cached.push(hit);
+    else pending.push(chk);
+  }
+
+  const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
+    const result = await extractChunk(
+      chk.index, chk.text, provider, budget, capUsd,
+      'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+    );
+    chunkCheckpoints.set(jobKey, 'extract', chk.index, result, variant);
     return result;
   });
 

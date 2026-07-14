@@ -6,6 +6,8 @@ import { BudgetTracker } from '../../src/budget/tracker.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { EntityRepo } from '../../src/storage/entities.js';
 import { EntityRelationRepo } from '../../src/storage/entity-relations.js';
+import { defaultConfig } from '../../src/config/config.js';
+import { EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER } from '../../src/distill/prompts/extract.js';
 import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth, EmbedHealth } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
 
@@ -434,5 +436,106 @@ describe('sessionDateIso — capturedAtLocalDate precedence (2026-07-13 timezone
     for (const msg of extractUserMessages) {
       expect(msg).not.toMatch(/Observation date/);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dual-pass extraction (opt-in, distill.extractionPasses: 2) — FEAT: single-
+// hop root-cause investigation (docs/research/20260713-single-hop-root-
+// cause.md) found 36-47% of gold single-hop facts never became an atom at
+// all. A second "specifics sweeper" extraction call (prompts/extract.ts's
+// EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER) runs over the same chunks and
+// is merged/deduped with pass A (src/distill/dedup-merge.ts) before stage 6.
+// ---------------------------------------------------------------------------
+
+describe('dual-pass extraction (distill.extractionPasses)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  // Deliberately overlaps EXTRACTION_RESPONSE's port-7777 fact (same words,
+  // different case/punctuation — an exact-normalized duplicate the merge
+  // step must drop) plus ONE genuinely new, disjoint fact.
+  const SPECIFICS_RESPONSE = JSON.stringify({
+    atoms: [
+      {
+        type: 'fact',
+        text: 'Default daemon port is 7777.',
+        importance: 0.6,
+        confidence: 0.9,
+      },
+      {
+        type: 'fact',
+        text: 'The team evaluated pgvector before choosing sqlite-vec.',
+        importance: 0.5,
+        confidence: 0.8,
+      },
+    ],
+  });
+
+  /** Distinguishes pass A's extraction call from pass B's ("specifics
+   *  sweeper") by inspecting the actual system prompt sent, not call order —
+   *  the real signal that differentiates the two passes in production. */
+  function makeDualPassMockLLM(): { llm: LLMProvider; extractionCallCount: () => number } {
+    let extractionCalls = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (!opts?.json) {
+          return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+        }
+        extractionCalls++;
+        const system = msgs.find((m) => m.role === 'system')?.content ?? '';
+        const reply = system === EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER ? SPECIFICS_RESPONSE : EXTRACTION_RESPONSE;
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    return { llm, extractionCallCount: () => extractionCalls };
+  }
+
+  it('extractionPasses: 1 (default/unset) is byte-identical to pre-dual-pass behavior — one extraction call per chunk', async () => {
+    const { llm, extractionCallCount } = makeDualPassMockLLM();
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 1 } },
+    });
+
+    expect(extractionCallCount()).toBe(1); // FIXTURE_TRANSCRIPT is a single chunk
+    expect(result.memoriesCreated).toBe(3); // exactly pass A's 3 atoms — pass B never ran
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('pgvector'))).toBe(false);
+  });
+
+  it('extractionPasses: 2 runs a second "specifics sweeper" call per chunk and merges the two passes', async () => {
+    const { llm, extractionCallCount } = makeDualPassMockLLM();
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    expect(extractionCallCount()).toBe(2); // pass A + pass B, one chunk
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    // The new, disjoint pass-B fact survived the merge.
+    expect(texts.some((t: string) => t.includes('pgvector'))).toBe(true);
+    // The exact-normalized duplicate ("Default daemon port is 7777.") did
+    // NOT create a second port memory — the merge dropped it before stage 6.
+    const portMemories = texts.filter((t: string) => t.includes('7777'));
+    expect(portMemories.length).toBe(1);
+    // 3 pass-A atoms + 1 disjoint pass-B atom (the duplicate was deduped away).
+    expect(result.memoriesCreated).toBe(4);
   });
 });

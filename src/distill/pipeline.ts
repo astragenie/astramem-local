@@ -17,7 +17,8 @@ import { cleanup } from './stages/01-cleanup.js';
 import { normalize } from './stages/02-normalize.js';
 import { chunk, resolveMaxChunkChars } from './stages/03-chunk.js';
 import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
-import { extract, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
+import { extract, extractSpecifics, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
+import { mergeDualPassAtoms } from './dedup-merge.js';
 import { reduce } from './stages/06-reduce.js';
 import { groundAtomDates } from './ground-dates.js';
 import { memoryNormalize } from './stages/07-memory-normalize.js';
@@ -25,6 +26,7 @@ import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
 import { resolveChunkConcurrency } from './concurrency.js';
 import { chunkCheckpoints } from './chunk-checkpoint.js';
+import type { Atom } from './prompts/extract.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -159,6 +161,12 @@ export async function runPipeline(
   // written first.
   const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
   const compactionMode = ctx.config?.distill.compaction ?? 'auto';
+  // Dual-pass extraction (opt-in): `1` (no ctx.config, or an unset/explicit
+  // 1) is BYTE-IDENTICAL to pre-dual-pass behavior — see
+  // Config['distill']['extractionPasses']'s own doc comment for the full
+  // design. No per-transcript envelope override (unlike extractProfile) —
+  // this is a config-only knob.
+  const resolvedExtractionPasses = ctx.config?.distill.extractionPasses ?? 1;
 
   let compactedChunks: Array<{ index: number; text: string }>;
   try {
@@ -220,6 +228,29 @@ export async function runPipeline(
     throw err;
   }
 
+  // Stage 5b: Extract, Pass B ("specifics sweeper") — opt-in
+  // (distill.extractionPasses: 2). Cost guard: only reached once pass A above
+  // has ALREADY returned successfully (the try/catch above re-throws on any
+  // pass-A failure before this line is ever reached) — never doubles a
+  // retry storm on a failing/paused pass A. Same provider instance
+  // (ctx.llmExtraction), same chunks, same budget tracker.
+  let extractResultsSpecifics: typeof extractResults | undefined;
+  if (resolvedExtractionPasses === 2) {
+    pipeLog.info({ stage: 'extract-specifics', chunk_count: compactedChunks.length, chunk_concurrency: chunkConcurrency }, 'stage start');
+    try {
+      extractResultsSpecifics = await extractSpecifics(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso);
+      const specificsAtoms = extractResultsSpecifics.reduce((sum, r) => sum + r.atoms.length, 0);
+      pipeLog.info({ stage: 'extract-specifics', atoms_extracted: specificsAtoms }, 'stage complete');
+    } catch (err) {
+      if (err instanceof ExtractBudgetExceeded) {
+        pipeLog.warn({ stage: 'extract-specifics', error_kind: 'BudgetExceeded' }, 'stage aborted — budget exceeded');
+        throw err;
+      }
+      pipeLog.warn({ stage: 'extract-specifics', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200), error_kind: err instanceof Error ? err.name : 'Unknown' }, 'stage failed');
+      throw err;
+    }
+  }
+
   // FEAT-481 SLICE-430: persist filterAtomRelations' per-reason drop counts
   // (aggregated across every chunk this run) so the doctor "Entity
   // relations extraction" canary can tell "model never emitted a relation"
@@ -233,7 +264,7 @@ export async function runPipeline(
   // an already-successful extraction (review finding, this slice).
   try {
     const relationDropTotals: Record<string, number> = {};
-    for (const r of extractResults) {
+    for (const r of [...extractResults, ...(extractResultsSpecifics ?? [])]) {
       for (const [reason, count] of Object.entries(r.relationDropCounts)) {
         relationDropTotals[reason] = (relationDropTotals[reason] ?? 0) + count;
       }
@@ -257,7 +288,7 @@ export async function runPipeline(
   // extract stage itself failing.
   try {
     const entityDropTotals: Record<string, number> = {};
-    for (const r of extractResults) {
+    for (const r of [...extractResults, ...(extractResultsSpecifics ?? [])]) {
       for (const [reason, count] of Object.entries(r.entityDropCounts)) {
         entityDropTotals[reason] = (entityDropTotals[reason] ?? 0) + count;
       }
@@ -274,8 +305,37 @@ export async function runPipeline(
     );
   }
 
-  // Flatten all atoms
-  const allAtoms = extractResults.flatMap(r => r.atoms);
+  // Flatten all atoms. Dual-pass (extractResultsSpecifics present): merge
+  // pass A + pass B per chunk BEFORE reduce (design constraint — dedup must
+  // run before stage 6, which merges by content hash, not by the
+  // normalized-substring rules dual-pass needs). Single-pass (the default):
+  // byte-identical to pre-dual-pass behavior — just pass A's atoms flattened.
+  let allAtoms: Atom[];
+  if (extractResultsSpecifics) {
+    const specificsByChunk = new Map(extractResultsSpecifics.map(r => [r.chunkIndex, r]));
+    const mergedAtoms: Atom[] = [];
+    for (const passAResult of extractResults) {
+      const passBResult = specificsByChunk.get(passAResult.chunkIndex);
+      const passAAtoms = passAResult.atoms;
+      const passBAtoms = passBResult?.atoms ?? [];
+      const { merged, dedupedAway } = mergeDualPassAtoms(passAAtoms, passBAtoms);
+      pipeLog.info(
+        {
+          stage: 'extract-dual-pass-merge',
+          chunk_index: passAResult.chunkIndex,
+          passA_atoms: passAAtoms.length,
+          passB_atoms: passBAtoms.length,
+          merged: merged.length,
+          deduped_away: dedupedAway,
+        },
+        'chunk merged',
+      );
+      mergedAtoms.push(...merged);
+    }
+    allAtoms = mergedAtoms;
+  } else {
+    allAtoms = extractResults.flatMap(r => r.atoms);
+  }
 
   // Stage 6: Reduce (merge by content hash)
   pipeLog.info({ stage: 'reduce', atoms_in: allAtoms.length }, 'stage start');

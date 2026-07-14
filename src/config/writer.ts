@@ -332,6 +332,10 @@ export function configToYaml(cfg: Config): string {
     // #273 (WS7) — stage 3's per-chunk character cap. Default 3200 matches
     // 03-chunk.ts's DEFAULT_MAX_CHUNK_CHARS.
     line(1, 'maxChunkChars', (cfg.distill ?? EMIT_DEFAULTS.distill).maxChunkChars),
+    // Dual-pass extraction (opt-in). Default 1 is byte-identical to
+    // pre-dual-pass behavior — see Config['distill']['extractionPasses']'s
+    // own doc comment.
+    line(1, 'extractionPasses', (cfg.distill ?? EMIT_DEFAULTS.distill).extractionPasses),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes
