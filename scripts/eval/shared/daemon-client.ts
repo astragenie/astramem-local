@@ -72,9 +72,44 @@ export async function ingestTranscript(
   return { status: res.status, body };
 }
 
-export async function sessionDigest(client: DaemonClientOpts, sessionId: string): Promise<SessionDigest | null> {
+/**
+ * Per-request timeout for the digest poll.
+ *
+ * WHY THIS EXISTS (2026-07-14 incident): this fetch had no timeout and no abort
+ * signal. `waitForSamplesDistilled` polls it in a loop whose deadline is only
+ * checked BETWEEN outer iterations — so a single digest request that never
+ * settles parks the loop inside this `await` forever, and the caller's 15-minute
+ * distill timeout can never be reached. It is not a timeout that fired late; it
+ * is a timeout that STRUCTURALLY CANNOT FIRE.
+ *
+ * Observed: a full-suite LoCoMo run sat here for 90 minutes with its ingest
+ * already complete (272/272 transcripts, 2521 atoms on disk). One socket open to
+ * its own daemon, zero to the answer provider, CPU flat. The run would never have
+ * produced a score.
+ *
+ * A bounded request is what makes the caller's deadline reachable. Keep both:
+ * this bounds ONE request, the caller bounds the WHOLE wait.
+ */
+export const DIGEST_TIMEOUT_MS = Number(process.env.ASTRA_EVAL_DIGEST_TIMEOUT_MS ?? 30_000);
+
+/**
+ * `timeoutMs` lets the CALLER shorten this bound to whatever time it has left.
+ *
+ * A fixed 30s bound is not enough on its own: a poll loop that enters this await
+ * one millisecond before its own deadline still blocks for the full 30s, so the
+ * loop's deadline is still overshot — just by less. The caller must be able to say
+ * "I have 200ms left, do not exceed it." (My first pass at this fix had the fixed
+ * bound only, and the hung-request test below caught it. Worth stating plainly:
+ * bounded-but-not-by-the-right-clock is still unbounded from the caller's view.)
+ */
+export async function sessionDigest(
+  client: DaemonClientOpts,
+  sessionId: string,
+  timeoutMs: number = DIGEST_TIMEOUT_MS,
+): Promise<SessionDigest | null> {
   const res = await fetch(`${client.baseUrl}/sessions/${encodeURIComponent(sessionId)}/digest`, {
     headers: authHeaders(client.token),
+    signal: AbortSignal.timeout(Math.max(1, timeoutMs)),
   });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`GET /sessions/${sessionId}/digest failed: HTTP ${res.status}`);

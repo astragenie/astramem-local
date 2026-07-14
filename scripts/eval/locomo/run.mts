@@ -88,7 +88,7 @@ import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance } fr
 import { ledgerCompletedMap } from '../shared/resume-ledger.js';
 import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
 import { evaluateDetachDecision, isDetachedChild, buildDetachedChildArgs, spawnDetached } from '../shared/detach.js';
-import { patchRunStatus, printRunStatus, shouldFlushProgress } from '../shared/run-status.js';
+import { patchRunStatus, printRunStatus, shouldFlushProgress, readRunStatus, type RunStatus } from '../shared/run-status.js';
 import { writeDaemonManifest, type DaemonManifestEntry } from '../shared/daemon-manifest.js';
 
 const args = process.argv.slice(2);
@@ -270,10 +270,43 @@ async function runShard(opts: {
     console.log(`${tag}ingest done in ${timings.ingest_ms}ms: ${ingestManifest.ok_count} ok, ${ingestManifest.failed_count} failed.`);
 
     t = Date.now();
+    // run-status must track the phases that TAKE THE TIME, not just the ones that
+    // are quick to describe. Before this, `phase` was stamped 'ingesting' once and
+    // then not written again until 'completed' — so the two longest phases
+    // (distill-wait, answering) were invisible. On 2026-07-14 a run sat at
+    // `{phase: "ingesting", sessions_done: 1}` for 90 minutes while its ingest was
+    // in fact complete (272/272, 2521 atoms) and its wait loop was wedged. The
+    // status file was not merely unhelpful, it was actively misleading: it named
+    // the wrong phase and a session count off by 271.
+    // Only the single-shard path owns run-status.json. In multi-shard mode every
+    // shard shares one runDir, so N shards patching one file would race and the
+    // last writer would win — a status that flickers between shards is no better
+    // than one that lies. The parent aggregates shard progress separately.
+    const ownsStatus = label === undefined;
+    const startedAt = readRunStatus(runDir)?.started_at ?? new Date().toISOString();
+    const statusBase = { orchestrator_pid: process.pid, started_at: startedAt };
+    const patchStatus = (patch: Partial<RunStatus>): void => {
+      if (ownsStatus) patchRunStatus(runDir, { ...statusBase, ...patch });
+    };
+
+    patchStatus({ phase: 'distill_wait', sessions_done: ingestManifest.ok_count });
+    let lastFlushMs = Date.now();
     const distillResult = await waitForSamplesDistilled(
       { baseUrl: daemon.baseUrl, token },
       ingestManifest.by_sample,
-      { timeoutMs: distillTimeoutMs, onProgress: (r, total) => { checkDaemonAlive(); process.stdout.write(`\r  ${tag}${r}/${total} conversations distilled`); } },
+      {
+        timeoutMs: distillTimeoutMs,
+        onProgress: (r, total) => {
+          checkDaemonAlive();
+          process.stdout.write(`\r  ${tag}${r}/${total} conversations distilled`);
+          // Throttled so a 5s poll loop doesn't rewrite the file every round.
+          const now = Date.now();
+          if (shouldFlushProgress(lastFlushMs, now)) {
+            lastFlushMs = now;
+            patchStatus({ phase: 'distill_wait', conversations_ready: r, conversations_total: total });
+          }
+        },
+      },
     );
     process.stdout.write('\n');
     timings.distill_wait_ms = Date.now() - t;
@@ -283,6 +316,11 @@ async function runShard(opts: {
     let outcomes: AnswerOutcome[] | null = null;
     if (azureCfg) {
       t = Date.now();
+      patchStatus({
+        phase: 'answering',
+        conversations_ready: distillResult.ready_sample_ids.length,
+        conversations_timed_out: distillResult.timed_out_sample_ids.length,
+      });
       outcomes = await answerConversations(
         { baseUrl: daemon.baseUrl, token },
         azureCfg,

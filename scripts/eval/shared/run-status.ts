@@ -21,7 +21,29 @@
 import { writeFileSync, readFileSync, mkdirSync, renameSync, unlinkSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 
-export type RunPhase = 'starting' | 'sampling' | 'ingesting' | 'completed' | 'failed';
+/**
+ * `distill_wait` and `answering` were missing, and they are the two phases that
+ * TAKE THE TIME. A run could only ever report itself as 'ingesting' or
+ * 'completed' — so for the entire multi-hour middle of a run, the status file
+ * named a phase the run had already left.
+ *
+ * 2026-07-14: a full-suite LoCoMo run reported `{phase: "ingesting",
+ * sessions_done: 1}` for 90 minutes. Ingest had in fact finished — 272/272
+ * transcripts, 2521 atoms on disk — and the run was wedged in the distill wait.
+ * Every field in that status line was wrong, and it was wrong in the reassuring
+ * direction: it looked like early, healthy progress.
+ *
+ * A status file that can only describe the phases you don't need to watch is
+ * worse than none: it is trusted, and it lies.
+ */
+export type RunPhase =
+  | 'starting'
+  | 'sampling'
+  | 'ingesting'
+  | 'distill_wait'
+  | 'answering'
+  | 'completed'
+  | 'failed';
 
 export interface RunStatus {
   status: 'running' | 'completed' | 'failed';
@@ -34,6 +56,10 @@ export interface RunStatus {
   updated_at: string;
   sessions_done: number;
   sessions_total: number;
+  /** Distill-wait progress. Absent before that phase begins. */
+  conversations_ready?: number;
+  conversations_total?: number;
+  conversations_timed_out?: number;
   exit_code?: number;
   error?: string;
 }

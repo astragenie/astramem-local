@@ -21,13 +21,28 @@ export interface DistillWaitResult {
   per_sample_ms: Record<string, number>;
 }
 
-async function isSessionReady(client: DaemonClientOpts, sessionId: string): Promise<boolean> {
-  const digest = await sessionDigest(client, sessionId);
-  // A session that never shows up (404) has nothing queued for it (e.g. an
-  // ingest that failed before creating the session row) -- treat as "not
-  // ready", the caller's timeout will surface it rather than silently
-  // treating a missing session as done.
-  return digest?.status === 'ready';
+async function isSessionReady(
+  client: DaemonClientOpts,
+  sessionId: string,
+  budgetMs: number,
+): Promise<boolean> {
+  try {
+    // Never spend more than the wait has left. See sessionDigest's doc comment:
+    // a fixed per-request bound still overshoots the caller's deadline.
+    const digest = await sessionDigest(client, sessionId, budgetMs);
+    // A session that never shows up (404) has nothing queued for it (e.g. an
+    // ingest that failed before creating the session row) -- treat as "not
+    // ready", the caller's timeout will surface it rather than silently
+    // treating a missing session as done.
+    return digest?.status === 'ready';
+  } catch {
+    // A digest request that times out or errors is NOT ready -- and, crucially,
+    // is not fatal either. Rethrowing would abort a whole eval run over one flaky
+    // poll; swallowing it into `true` would race ahead of distillation and
+    // silently deflate the answers. "Not ready, try again next round" is the only
+    // honest reading, and the caller's deadline still bounds how long we retry.
+    return false;
+  }
 }
 
 export async function waitForSamplesDistilled(
@@ -51,8 +66,15 @@ export async function waitForSamplesDistilled(
 
   let pending = new Set(sampleIds.filter(sid => bySample[sid]!.session_ids.length > 0));
 
+  // The deadline is checked at EVERY level that awaits, not just here. A round
+  // over 272 sessions issues 272 sequential requests; checking the clock only
+  // between rounds means a slow round overshoots the deadline by however long the
+  // round takes, and a HUNG request overshoots it forever (the 2026-07-14
+  // 90-minute wedge). `sessionDigest` is independently bounded too -- belt and
+  // braces, because this is the loop that decides whether a run finishes at all.
   while (pending.size > 0 && Date.now() < deadline) {
     for (const sid of [...pending]) {
+      if (Date.now() >= deadline) break;
       const sessionIds = bySample[sid]!.session_ids;
       // Sequential with short-circuit, same rationale as LongMemEval's
       // adapter: during distill almost every conversation has an unready
@@ -60,7 +82,9 @@ export async function waitForSamplesDistilled(
       // round substantially.
       let allReady = true;
       for (const sessionId of sessionIds) {
-        if (!(await isSessionReady(client, sessionId))) { allReady = false; break; }
+        const budgetMs = deadline - Date.now();
+        if (budgetMs <= 0) { allReady = false; break; }
+        if (!(await isSessionReady(client, sessionId, budgetMs))) { allReady = false; break; }
       }
       if (allReady) {
         ready.add(sid);
@@ -69,7 +93,7 @@ export async function waitForSamplesDistilled(
       }
     }
     opts.onProgress?.(ready.size, sampleIds.length);
-    if (pending.size > 0) await sleep(intervalMs);
+    if (pending.size > 0 && Date.now() < deadline) await sleep(intervalMs);
   }
 
   return {
