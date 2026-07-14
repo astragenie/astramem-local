@@ -632,3 +632,82 @@ describe('Worker + distillHandler (parse-failure retry policy)', () => {
     expect(memories).toHaveLength(0);
   });
 });
+
+describe('Worker + handler run-log (FEAT-495 item 4a)', () => {
+  let db: DB;
+  let repo: JobRepo;
+  let registry: HandlerRegistry;
+  let stopWorker: (() => void | Promise<void>) | null = null;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new JobRepo(db);
+    registry = new HandlerRegistry();
+  });
+
+  afterEach(async () => {
+    await stopWorker?.();
+    stopWorker = null;
+  });
+
+  function runs(handler: string): { status: string; duration_ms: number; error_type: string | null }[] {
+    return db.prepare('SELECT status, duration_ms, error_type FROM handler_runs WHERE handler = ? ORDER BY id ASC')
+      .all(handler) as { status: string; duration_ms: number; error_type: string | null }[];
+  }
+
+  it('records a success row on a successful handler invocation', async () => {
+    registry.register({ kind: 'cleanup', async handle() { /* no-op success */ } });
+    repo.enqueue('cleanup', { kind: 'cleanup', older_than_days: 30 });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => runs('cleanup').length >= 1);
+    expect(runs('cleanup')[0]).toMatchObject({ status: 'success', error_type: null });
+    expect(runs('cleanup')[0]!.duration_ms).toBeGreaterThanOrEqual(0);
+  });
+
+  it('records one failed row per attempt on a deterministic (poison-immediately) error', async () => {
+    registry.register({
+      kind: 'distill',
+      async handle() { throw new DeterministicError('bad extraction JSON'); },
+    });
+    repo.enqueue('distill', { kind: 'distill', transcript_id: 't1', session_id: 's1' });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => runs('distill').length >= 1);
+    expect(runs('distill')[0]).toMatchObject({ status: 'failed', error_type: 'deterministic' });
+  });
+
+  it('records a failed row for each transient-error attempt, one per retry', async () => {
+    registry.register({
+      kind: 'distill',
+      async handle() { throw new TransientError('flaky provider'); },
+    });
+    repo.enqueue('distill', { kind: 'distill', transcript_id: 't1', session_id: 's1' });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs').get() as { state: string } | undefined;
+      return job?.state === 'poison';
+    }, 10_000);
+
+    const rows = runs('distill');
+    expect(rows.length).toBeGreaterThanOrEqual(1);
+    expect(rows.every(r => r.status === 'failed' && r.error_type === 'transient')).toBe(true);
+  });
+
+  it('does NOT record a handler run when no handler is registered for the job kind (the handler never actually ran)', async () => {
+    repo.enqueue('reembed', { kind: 'reembed' });
+    const { stop } = startWorker({ pollMs: 50, registry, db, config: defaultConfig() });
+    stopWorker = stop;
+
+    await waitFor(() => {
+      const job = db.prepare('SELECT state FROM jobs').get() as { state: string } | undefined;
+      return job?.state === 'poison';
+    });
+    expect(runs('reembed')).toEqual([]);
+  });
+});
