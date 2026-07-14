@@ -1236,29 +1236,51 @@ describe('extract() retry checkpointing (chunk-retry-amplification fix)', () => 
 // isolation — and (c) the negative case: with no anchor available, the user
 // message is byte-identical to pre-fix (no injected line, relative phrasing
 // left untouched) — no hallucinated date.
+//
+// WS4 correction (2026-07-13): the mock below originally had the "correctly
+// following" model resolve dates to ISO-8601 ("2023-05-14"). That was wrong,
+// proven against the real full-sample LoCoMo run and the real scorer, not
+// asserted on faith: 115/321 temporal answers in that run were bare ISO
+// dates, 93% of which scored EXACTLY 0 — including cases where the date was
+// exactly right (`"2023-05-07"` vs gold `"7 May 2023"` = 0.0) — because
+// scripts/eval/locomo/judge/metrics.mts's normalizeAnswer strips ALL
+// punctuation including hyphens, collapsing "2023-05-14" into one glued
+// token ("20230514") that shares nothing with a gold answer's word tokens.
+// `text` is prose a person or another model reads later, not the
+// machine-parsed `valid_at`/`invalid_at` columns (which correctly stay
+// ISO-8601, untouched by this fix) — natural-language dates in `text` score
+// correctly AND read better independent of any benchmark. The extraction
+// prompt (src/distill/prompts/extract.ts) now says so explicitly; this mock
+// is updated to match what a compliant model should now produce.
 describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
   /**
    * A mock LLM that plays the role of a model correctly following the
    * date-grounding rule: it reads the "Observation date: <date>" line (if
    * present) out of the user message, and if the chunk text contains one of
    * a few known relative-date phrases, emits an atom whose text has that
-   * phrase replaced by the resolved absolute ISO date. This is deliberately
-   * NOT testing the real LLM's ability to do the date arithmetic (that's
-   * prompt-engineering territory, validated by the full-sample LoCoMo
-   * rerun) — it's testing that our plumbing (a) actually delivers the
-   * anchor to the call and (b) does not corrupt/drop a correctly-resolved
-   * atom on the way back out.
+   * phrase replaced by the resolved absolute date IN NATURAL-LANGUAGE FORM
+   * (e.g. "14 May 2023", not "2023-05-14" — see the WS4 correction note
+   * above this describe block for why ISO-8601 in `text` is wrong, not just
+   * a style choice). This is deliberately NOT testing the real LLM's
+   * ability to do the date arithmetic (that's prompt-engineering territory,
+   * validated by the full-sample LoCoMo rerun) — it's testing that our
+   * plumbing (a) actually delivers the anchor to the call and (b) does not
+   * corrupt/drop a correctly-resolved atom on the way back out.
    */
   function makeDateGroundingLLM(): { llm: LLMProvider; userMessages: string[] } {
     const userMessages: string[] = [];
     const RELATIVE_PHRASES: Record<string, (anchor: Date) => string> = {
-      yesterday: (anchor) => isoDate(new Date(anchor.getTime() - 24 * 60 * 60 * 1000)),
-      'last week': (anchor) => isoDate(new Date(anchor.getTime() - 7 * 24 * 60 * 60 * 1000)),
+      yesterday: (anchor) => naturalDate(new Date(anchor.getTime() - 24 * 60 * 60 * 1000)),
+      'last week': (anchor) => naturalDate(new Date(anchor.getTime() - 7 * 24 * 60 * 60 * 1000)),
       'last year': (anchor) => `${anchor.getUTCFullYear() - 1}`,
       'three years ago': (anchor) => `${anchor.getUTCFullYear() - 3}`,
     };
-    function isoDate(d: Date): string {
-      return d.toISOString().slice(0, 10);
+    const MONTH_NAMES = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ];
+    function naturalDate(d: Date): string {
+      return `${d.getUTCDate()} ${MONTH_NAMES[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
     }
     const llm: LLMProvider = {
       name: 'ollama' as const,
@@ -1303,7 +1325,7 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     expect(userMessages[0]).toMatch(/^Observation date: 2023-05-15\n\n/);
   });
 
-  it('anchor 2023-05-15 + "yesterday" → resolved atom text contains 2023-05-14', async () => {
+  it('anchor 2023-05-15 + "yesterday" → resolved atom text contains "14 May 2023" (natural-language, not ISO)', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
@@ -1314,10 +1336,11 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     );
 
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0]!.text).toContain('2023-05-14');
+    expect(result.atoms[0]!.text).toContain('14 May 2023');
+    expect(result.atoms[0]!.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
-  it('anchor 2023-05-15 + "last week" → resolved atom text contains 2023-05-08', async () => {
+  it('anchor 2023-05-15 + "last week" → resolved atom text contains "8 May 2023" (natural-language, not ISO)', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
@@ -1328,7 +1351,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     );
 
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0]!.text).toContain('2023-05-08');
+    expect(result.atoms[0]!.text).toContain('8 May 2023');
+    expect(result.atoms[0]!.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
   it('anchor 2023-05-15 + "last year" → resolved atom text contains 2022', async () => {
