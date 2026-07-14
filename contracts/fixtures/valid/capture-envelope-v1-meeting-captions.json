@@ -1,0 +1,21 @@
+{
+  "event": "session_end",
+  "session_id": "sess-meet-standup-0714",
+  "project_id": "proj-astramem",
+  "captured_at": "2026-07-14T15:03:00.000Z",
+  "kind": "transcript",
+  "capture_source": "meeting_captions",
+  "platform": "google_meet",
+  "meeting_id": "abc-defg-hij",
+  "consent_disclosed": true,
+  "turns": [
+    { "role": "user", "text": "should we cut the caption capture over to the new consent gate today?", "speaker": "Alice Chen" },
+    { "role": "assistant", "text": "yeah, I think so — ADR-017 landed and the disclosure copy is ready.", "speaker": "Bob Okafor" },
+    { "role": "assistant", "text": "one thing though, we still need the doctor WARN row before this ships.", "speaker": "Priya Nair" }
+  ],
+  "client_scrub_applied": true,
+  "client_scrub_hits": 0,
+  "client_version": "0.19.0",
+  "client_scrub_version": "1.2.0",
+  "wire_version": "v1.0"
+}

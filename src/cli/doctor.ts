@@ -47,6 +47,7 @@ export async function doctorCommand(args: string[]): Promise<void> {
       proxyEnabled: cfg.proxy.enabled,
       proxyExperimental: cfg.proxy.experimental,
       proxyCaptureEnabled: cfg.proxy.capture.enabled,
+      meetingCaptionsEnabled: cfg.captureSource.meetingCaptions.enabled,
       syncEnabled: cfg.sync.enabled,
       syncExperimental: cfg.sync.experimental,
       // Mirrors buildApp's devNoAuthActive (src/server/app.ts) — a

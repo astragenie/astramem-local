@@ -26,6 +26,7 @@ import { gateDurability, type DurabilityGateMode, type GatedReason } from '../du
 import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
+import { attributeSpeaker } from '../attribute-speaker.js';
 
 export interface IndexResult {
   memoryId: string;
@@ -67,16 +68,24 @@ export interface EmbedIndexContext {
    * `'audio_transcribe'` when captured by the on-device audio-file
    * transcription pipeline — its own "Audio add-on" doctor row.
    */
-  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | null;
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | 'meeting_captions' | null;
+  /** FEAT-491: the flattened transcript text (flatten-turns.ts output) this
+   *  batch's atoms were extracted from — used to recover per-atom speaker
+   *  attribution via `attributeSpeaker` below. `undefined` for any caller
+   *  that doesn't have it (e.g. distill-events.ts's atom-to-memory path,
+   *  which has no source transcript at all) — every atom then gets
+   *  `speaker_label: null`, byte-identical to pre-FEAT-491 behavior. */
+  sourceText?: string;
   /**
-   * FEAT-489 (ADR-017 decision 6): whether the operator disclosure/opt-in
-   * required for capturing a non-user speaker was satisfied at capture time,
-   * carried on the transcripts row this distill run's atoms were extracted
-   * from. Passed straight through to `MemoryRepo.insertWithCreateEvent`'s
-   * `consent_disclosed` so a memory produced from a third-party recording
-   * can self-identify as such even if its source transcript is later pruned
-   * by retention (FEAT-493) independently. `null`/omitted for every
-   * non-audio-transcribe producer.
+   * FEAT-489/FEAT-491 (ADR-017 decision 6): whether the operator
+   * disclosure/opt-in required for capturing a non-user speaker was
+   * satisfied at capture time, carried on the transcripts row this distill
+   * run's atoms were extracted from. Passed straight through to
+   * `MemoryRepo.insertWithCreateEvent`'s `consent_disclosed` so a memory
+   * produced from a third-party recording can self-identify as such even if
+   * its source transcript is later pruned by retention (FEAT-493)
+   * independently. `null`/omitted for every producer without a
+   * third-party-speaker capture source.
    */
   consentDisclosed?: boolean | null;
   /**
@@ -280,6 +289,12 @@ export async function embedAndIndex(
       // field and correctly default to `false`.
       validity_extracted: true,
       capture_source: ctx.captureSource ?? null,
+      // FEAT-491: best-effort, deterministic line-level match (see
+      // attribute-speaker.ts's doc comment for why this isn't full span
+      // tracking) — null whenever ctx.sourceText is absent, no turn in it
+      // carries a speaker marker, or this atom's evidence doesn't literally
+      // appear in a labeled turn's utterance.
+      speaker_label: ctx.sourceText ? attributeSpeaker(ctx.sourceText, mem.evidence) : null,
       consent_disclosed: ctx.consentDisclosed ?? null,
       // atom@2: stage 5 always runs entity extraction as part of this same
       // atom's LLM call, so every atom from this pipeline has "declared"

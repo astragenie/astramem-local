@@ -98,14 +98,27 @@ export interface InsertInput {
    * (`checkAudioAddon`) and its own disable/purge story (ADR-017 decision 3),
    * isolated from the other provenance values the same way.
    */
-  capture_source?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | null;
+  capture_source?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | 'meeting_captions' | null;
   /**
-   * FEAT-489 (ADR-017 decision 6): whether the operator disclosure/opt-in
-   * required for capturing a non-user speaker (everyone in a recorded
-   * audio file, not just the operator) was satisfied at capture time,
-   * plumbed straight through from `transcripts.consent_disclosed` the same
-   * way `capture_source` already flows. `null`/undefined for every atom from
-   * a non-audio-transcribe source.
+   * FEAT-491: display-name/label this atom's `evidence` excerpt was traced
+   * back to (src/distill/attribute-speaker.ts), when the source transcript
+   * had per-turn speaker labels (meeting captions) AND a match was found.
+   * `null`/undefined for every atom from a source with no speaker labels —
+   * the overwhelming majority of rows, byte-identical to pre-FEAT-491
+   * behavior. This is the storage-side half of contracts'
+   * `atom.v2.schema.json` `evidence[].speaker_label` (FEAT-496) — see
+   * migrations/049-meeting-captions.sql's doc comment for why there is no
+   * live JSON-emission path yet.
+   */
+  speaker_label?: string | null;
+  /**
+   * FEAT-489/FEAT-491 (ADR-017 decision 6): whether the operator
+   * disclosure/opt-in required for capturing a non-user speaker (everyone
+   * in a recorded audio file or meeting-caption session, not just the
+   * operator) was satisfied at capture time, plumbed straight through from
+   * `transcripts.consent_disclosed` the same way `capture_source` already
+   * flows. `null`/undefined for every atom from a source without a
+   * third-party-speaker capture source.
    */
   consent_disclosed?: boolean | null;
 }
@@ -195,8 +208,8 @@ export class MemoryRepo {
         (id, type, text, normalized_text, repo, project, branch, agent, session_id,
          importance, confidence, hash, embedding_provider, embedding_model, embedding_dim,
          created_at, updated_at, source_hash, evidence, valid_from, valid_to, scope, capture_source,
-         validity_extracted, consent_disclosed)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         validity_extracted, speaker_label, consent_disclosed)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.type, input.text, input.normalized_text,
       input.repo, input.project, input.branch, input.agent, input.session_id,
@@ -204,6 +217,7 @@ export class MemoryRepo {
       input.embedding_provider ?? null, input.embedding_model ?? null, input.embedding_dim ?? null,
       now, now, input.source_hash, input.evidence ?? null, input.valid_from ?? now, input.valid_to ?? null,
       input.scope ?? 'private', input.capture_source ?? null, input.validity_extracted ? 1 : 0,
+      input.speaker_label ?? null,
       input.consent_disclosed === undefined || input.consent_disclosed === null ? null : (input.consent_disclosed ? 1 : 0),
     );
     return id;

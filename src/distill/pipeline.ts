@@ -73,13 +73,15 @@ export interface PipelineContext {
    * epoch) behavior — see runPipeline's `sessionDateIso` local. */
   capturedAtLocalDate?: string | null;
   /** FEAT-455 / ADR-012 decision 4, widened 2026-07-12, widened again
-   *  FEAT-458 S3 (ADR-013) and FEAT-489 (Slice A): provenance tag plumbed
-   *  from the transcripts row via distillHandler — see
+   *  FEAT-458 S3 (ADR-013), FEAT-489 (Slice A), and FEAT-491: provenance tag
+   *  plumbed from the transcripts row via distillHandler — see
    *  EmbedIndexContext.captureSource. */
-  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | null;
-  /** FEAT-489 (ADR-017 decision 6): plumbed from `transcripts.consent_disclosed`
-   *  via distillHandler the same way captureSource is above — see
-   *  EmbedIndexContext.consentDisclosed. `null`/omitted for every envelope
+  captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | 'meeting_captions' | null;
+  /** FEAT-489/FEAT-491 (ADR-017 decision 6): plumbed from
+   *  `transcripts.consent_disclosed` via distillHandler, the same "flows
+   *  straight through" pattern `captureSource` above already uses —
+   *  stamped onto every atom this transcript produces
+   *  (EmbedIndexContext.consentDisclosed). `null`/omitted for every envelope
    *  whose source transcript has no `consent_disclosed` value. */
   consentDisclosed?: boolean | null;
   /** FEAT-479 (D3 §3.2) AC-3: per-transcript extraction profile override,
@@ -463,6 +465,14 @@ export async function runPipeline(
     durabilityGateMode: ctx.durabilityGateMode,
     redactConfig: ctx.config,
     gatedOutCounter,
+    // FEAT-491: the flattened transcript text this run's atoms were
+    // extracted from (this function's own `transcript` parameter) — stage 8
+    // uses it to recover per-atom speaker attribution from the
+    // `role: [Speaker] text` markers flatten-turns.ts embeds (see
+    // attribute-speaker.ts). `null` for every atom whose evidence doesn't
+    // match a labeled turn, including every transcript with no speaker
+    // labels at all (the overwhelming majority).
+    sourceText: transcript,
   });
 
   const created = indexResults.filter(r => r.created).length;

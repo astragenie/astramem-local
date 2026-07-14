@@ -21,6 +21,22 @@ export type CaptureEnvelopeV1 = {
    * Provenance — no default, record what the adapter sends.
    */
   tool?: string;
+  /**
+   * FEAT-491, 2026-07-14: first appearance of this field in the published contract — astramem-local's server-side envelope parser (CanonicalIngestSchema, src/server/routes/ingest.ts) already accepted 'auto_capture' | 'hook_close' | 'proxy' internally; this schema is widened to match AND to add 'meeting_captions' for FEAT-491's browser-extension caption-scraping capture source (astramem-plugin repo owns the scraping; this daemon owns acceptance). Closed enum deliberately (mirrors the daemon's own rationale) — an unrecognized value is a client bug worth a 400, not a silent coercion to null.
+   */
+  capture_source?: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions';
+  /**
+   * FEAT-491: which meeting platform the captions were scraped from (e.g. 'google_meet', 'teams', 'zoom'). Deliberately an open string, not a closed enum — the daemon contract stays platform-agnostic (extension scraping fragility/platform coverage is the plugin repo's problem, per FEAT-491's own notes); only meaningful when capture_source='meeting_captions', but not schema-enforced as such since a future capture source may also want it. Describes the CAPTURE SESSION, not a single evidence span or atom — deliberately NOT added to atom.v2.schema.json's provenance (see contracts/README.md FEAT-496 section).
+   */
+  platform?: string;
+  /**
+   * FEAT-491: platform-native meeting/call identifier for the captured session, when the extension can read one. Same session-vs-atom scoping note as 'platform' above — atoms distilled from this envelope correlate back to it via the existing provenance.session_id bridge (envelope session_id -> transcripts.session_id -> memories.session_id), not a duplicated per-atom field.
+   */
+  meeting_id?: string;
+  /**
+   * ADR-017 decision 6: whether the operator completed the required third-party-speaker disclosure/opt-in (ADR-017 decision 3/5) before this envelope was captured. Optional in general (every non-third-party-speaker capture source omits it, byte-identical to today), but REQUIRED and must be `true` when capture_source='meeting_captions' — see the allOf conditional below. This is the server-side backstop for the client-side consent gate; a missing or false value on a meeting-captions envelope is a hard reject, not a silent accept.
+   */
+  consent_disclosed?: boolean;
   client_scrub_applied: boolean;
   client_scrub_hits: number;
   client_version: string;
@@ -43,11 +59,19 @@ export type CaptureEnvelopeV1 = {
       role: 'user' | 'assistant';
       text: string;
       ts?: string;
+      /**
+       * FEAT-491: optional display-name/label for who actually said this turn, as surfaced by a diarized or caption-labeled source (e.g. meeting captions naming each participant). Distinct from and additive to 'role' — role stays the closed user|assistant discriminator the pipeline's turn-flattening already relies on (a caption transcript with N third-party participants cannot be losslessly collapsed into that binary, so 'speaker' carries the real identity alongside it rather than replacing it). Flows to the stored atom's evidence[].speaker_label (contracts/schemas/atom.v2.schema.json, FEAT-496) via astramem-local's distill pipeline.
+       */
+      speaker?: string;
     },
     ...{
       role: 'user' | 'assistant';
       text: string;
       ts?: string;
+      /**
+       * FEAT-491: optional display-name/label for who actually said this turn, as surfaced by a diarized or caption-labeled source (e.g. meeting captions naming each participant). Distinct from and additive to 'role' — role stays the closed user|assistant discriminator the pipeline's turn-flattening already relies on (a caption transcript with N third-party participants cannot be losslessly collapsed into that binary, so 'speaker' carries the real identity alongside it rather than replacing it). Flows to the stored atom's evidence[].speaker_label (contracts/schemas/atom.v2.schema.json, FEAT-496) via astramem-local's distill pipeline.
+       */
+      speaker?: string;
     }[]
   ];
   /**

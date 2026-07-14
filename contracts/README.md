@@ -314,6 +314,63 @@ evidence fields) and `atom-v2-provenance-triple.json` (valid, exercises the
 reserved provenance triple plus `consent_disclosed: true`) added under
 `fixtures/valid/`.
 
+### capture-envelope@1 additive extension — meeting-caption capture (FEAT-491, 2026-07-14)
+
+Same `capture-envelope.v1.schema.json` file, no version bump — new optional
+fields plus one conditional requirement, per the "Additive change" rule
+below. This is the schema-widen the FEAT-496 section above deliberately left
+for FEAT-491 to own (`platform`/`meeting_id` describe the *capture session*,
+not a single atom or evidence span).
+
+- **`capture_source`** (optional string enum: `auto_capture | hook_close |
+  proxy | meeting_captions`) — first appearance of this field in the
+  *published* contract. astramem-local's server-side envelope parser
+  (`CanonicalIngestSchema`, `src/server/routes/ingest.ts`) already accepted
+  the first three values; this is the widen to match plus the new
+  `meeting_captions` value for FEAT-491's browser-extension caption-scraping
+  source (astramem-plugin owns the scraping; this daemon owns acceptance).
+  Closed enum deliberately, same rationale the daemon's own code comment
+  gives: an unrecognized value is a client bug worth a 400, not a silent
+  coercion to null.
+- **`platform`** (optional string, open — not an enum) and **`meeting_id`**
+  (optional string) — describe the meeting/call the transcript was captured
+  from (e.g. `platform: "google_meet"`). Deliberately kept off
+  `atom.v2.schema.json`'s `provenance` (see the FEAT-496 section above);
+  atoms distilled from a captured session correlate back to it via the
+  existing `provenance.session_id` bridge, the same way `session_id` already
+  connects a capture envelope to every atom it produces.
+- **`consent_disclosed`** (optional boolean) — ADR-017 decision 6's
+  server-side consent marker, set by the capturing adapter once the operator
+  completes the required third-party-speaker disclosure/opt-in. Optional in
+  general (every capture source with no third-party speaker omits it,
+  byte-identical to today), but the new `allOf` conditional below makes it
+  **required and `true`** whenever `capture_source: "meeting_captions"` is
+  present — a missing or `false` value on a meeting-captions envelope fails
+  schema validation, the contract-level backstop for ADR-017's client-side
+  opt-in gate.
+- **`turns[].speaker`** (optional string, `minLength: 1`) — display
+  name/label for who actually said this turn, additive alongside (not a
+  replacement for) `role`. `role` stays the closed `user|assistant`
+  discriminator astramem-local's turn-flattening already depends on — a
+  multi-participant caption transcript can't be losslessly collapsed into
+  that binary, so `speaker` carries the real per-turn identity. Flows to the
+  stored atom's `evidence[].speaker_label` (FEAT-496, above) via
+  astramem-local's distill pipeline.
+
+New `allOf` branch: `capture_source == "meeting_captions"` (when present)
+requires `consent_disclosed` to be present and `true`. This mirrors the
+existing `kind`-based conditional requirements already in this schema
+(`kind: "events"` requires `events`; otherwise requires `turns`) — same
+pattern, new predicate.
+
+Fixtures added: `capture-envelope-v1-meeting-captions.json` (valid, a
+realistic 3-speaker meeting transcript exercising every new field) under
+`fixtures/valid/`; `capture-envelope-v1-meeting-captions-missing-consent.json`
+(invalid — `capture_source: "meeting_captions"` present, `consent_disclosed`
+omitted) and `capture-envelope-v1-unknown-top-level-field.json` (invalid —
+confirms `additionalProperties: false` still rejects an unmodeled top-level
+field after this widen) under `fixtures/invalid/`.
+
 ## Fixture naming convention (load-bearing)
 
 `validate.mjs` and `tests/contracts/conformance.test.ts` both route fixtures

@@ -110,14 +110,20 @@ export interface Memory {
    *  `'proxy'` from the LLM proxy relay's capture fork (ADR-013). Widened
    *  again FEAT-489 (Slice A): `'audio_transcribe'` from the on-device
    *  audio-file transcription pipeline (src/pipeline/handlers/transcribe.ts).
-   *  See InsertInput.capture_source. */
-  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | null;
-  /** FEAT-489 (ADR-017 decision 6): tri-state — `null` means "not applicable
-   *  or not recorded" (every non-audio-transcribe atom), `true`/`false` means
-   *  an explicit disclosure determination was made at capture time. Plumbed
-   *  straight through from `transcripts.consent_disclosed` the same way
-   *  `capture_source` already flows (distillHandler -> PipelineContext ->
-   *  EmbedIndexContext -> this INSERT). See InsertInput.consent_disclosed. */
+   *  Widened again FEAT-491: `'meeting_captions'` from caption-sourced
+   *  transcripts scraped by the astramem-plugin browser extension. See
+   *  InsertInput.capture_source. */
+  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | 'meeting_captions' | null;
+  /** FEAT-491: display-name/label this atom's `evidence` excerpt was traced
+   *  back to (src/distill/attribute-speaker.ts) — see InsertInput.speaker_label. */
+  speaker_label: string | null;
+  /** FEAT-489/FEAT-491 (ADR-017 decision 6): tri-state — `null` means "not
+   *  applicable or not recorded" (every atom without a third-party-speaker
+   *  capture source), `true`/`false` means an explicit disclosure
+   *  determination was made at capture time. Plumbed straight through from
+   *  `transcripts.consent_disclosed` the same way `capture_source` already
+   *  flows (distillHandler -> PipelineContext -> EmbedIndexContext -> this
+   *  INSERT). See InsertInput.consent_disclosed. */
   consent_disclosed: boolean | null;
   /** Issue #205 provenance flag — `false` (default, every pre-fix row) means
    *  "extraction never considered this atom's validity"; `true` means

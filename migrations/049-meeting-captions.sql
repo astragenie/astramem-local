@@ -1,0 +1,81 @@
+-- 049: meeting-caption capture (FEAT-491, ADR-017).
+--
+-- Numbering history (all in git log, not repeated in full here): started at
+-- 044 (contiguous with this branch's original base), renumbered to 048 after
+-- merging origin/main (044-047 landed there via #318 + L1-4/PR #322), then
+-- renumbered AGAIN to 049 (this cut) because lane L1-1 claimed 048 first
+-- (048-audio-transcribe-consent.sql, wave/l1-1-audio) per the team's
+-- explicit convention: L1-1 takes the first free number, L1-2 (this lane)
+-- takes the next one after.
+--
+-- KNOWN EXPECTED-RED: tests/storage/migration-renumber.test.ts enforces
+-- strict local contiguity (no gaps) and WILL FAIL in this worktree today,
+-- because 048 does not exist here yet -- L1-1's migration lives on a
+-- sibling branch, not this one. This is intentional, not a regression: the
+-- gap closes and the suite goes green the moment L1-1's PR merges first
+-- (enforced merge order: L1-1 before L1-2). Do not "fix" this by
+-- renumbering to 048 again -- that would re-collide with L1-1.
+--
+-- CORRECTED at merge time (2026-07-14, L1-2 merge into main): this file
+-- originally also re-added `transcripts.consent_disclosed` and
+-- `memories.consent_disclosed`. Both lanes threaded ADR-017 decision 6's
+-- consent marker onto the SAME two columns independently, and migration 048
+-- (L1-1, `048-audio-transcribe-consent.sql`) already adds them. Running this
+-- file unmodified after 048 would throw "duplicate column name" on the very
+-- first `migrate()` call post-merge -- SQLite ALTER TABLE ADD COLUMN has no
+-- IF NOT EXISTS form. Removed the two duplicate ADD COLUMN statements below;
+-- this migration now only adds the three columns unique to the
+-- meeting-captions surface (`transcripts.platform`, `transcripts.meeting_id`,
+-- `memories.speaker_label`) and the `idx_memories_consent_disclosed` index,
+-- which is still created here (it targets a column 048 already created, and
+-- indexing doesn't care which migration added the underlying column).
+--
+-- Four additive nullable columns (was five before the above correction), no
+-- table rewrite (same ALTER TABLE ADD COLUMN pattern migration 024/028/043
+-- used) -- NULL on every existing row and on every future row from a write
+-- path that isn't the meeting-captions capture source (/remember,
+-- Codex/Claude capture, the LLM proxy, audio-transcribe, the distill
+-- pipeline's other producers). Byte-identical to today for all of those --
+-- no existing INSERT statement changes shape or gains a new required value.
+--
+-- `transcripts.platform` / `transcripts.meeting_id` carry the capture-session
+-- metadata from ingest time (see ingestCanonicalTranscript,
+-- src/server/routes/ingest.ts) through to the distill job, mirroring how
+-- `capture_source` already flows transcripts row -> distillHandler ->
+-- EmbedIndexContext (migration 024). `transcripts.consent_disclosed`
+-- (added by migration 048, shared with the audio-transcribe surface) carries
+-- ADR-017 decision 6's server-side consent marker the same way, stored as
+-- 0/1/NULL (SQLite has no native boolean) -- NULL means "this envelope never
+-- claimed a value" (every source without a third-party-speaker capture
+-- source), 1 means "the ingest schema's superRefine + runtime config gate
+-- already confirmed this was true" (a meeting-captions transcript can never
+-- reach this table with 0 or NULL here -- both are hard-rejected before
+-- insert).
+--
+-- `memories.speaker_label` is the atom-evidence-level attribution FEAT-491
+-- adds: which turn's speaker (contracts capture-envelope.v1.schema.json
+-- turns[].speaker) the distilled atom's evidence excerpt was traced back to
+-- (src/distill/attribute-speaker.ts, wired at 08-embed-index.ts). NULL for
+-- every atom whose evidence didn't match a labeled turn (including every
+-- atom from a source with no speaker labels at all -- the overwhelming
+-- majority of rows). This is the storage-side half of contracts'
+-- atom.v2.schema.json evidence[].speaker_label (FEAT-496) -- there is no
+-- local wire serializer for the structured evidence array yet (evidence
+-- stays a flat string column, see contracts/README.md "Evidence
+-- reconciliation"), so this column is the durable value a future wire
+-- mapper reads, not a live JSON-emission path today.
+--
+-- `memories.consent_disclosed` (added by migration 048, shared with the
+-- audio-transcribe surface) mirrors `transcripts.consent_disclosed` onto
+-- every atom that transcript produces (same "flows straight through" pattern
+-- `capture_source` already uses) -- ADR-017's "consent_disclosed stamped on
+-- atoms from this source" requirement.
+ALTER TABLE transcripts ADD COLUMN platform TEXT;
+ALTER TABLE transcripts ADD COLUMN meeting_id TEXT;
+ALTER TABLE memories ADD COLUMN speaker_label TEXT;
+
+-- Partial indexes keep both columns cheap to query without indexing the
+-- entire table for values that are NULL on every pre-FEAT-491 row (same
+-- rationale migration 024's partial index documents).
+CREATE INDEX idx_memories_speaker_label ON memories(speaker_label) WHERE speaker_label IS NOT NULL;
+CREATE INDEX idx_memories_consent_disclosed ON memories(consent_disclosed) WHERE consent_disclosed IS NOT NULL;
