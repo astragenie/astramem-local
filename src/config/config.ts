@@ -596,21 +596,39 @@ export function defaultConfig(): Config {
     network: { host: '127.0.0.1' },
     auth: { devNoAuth: false },
     llm: {
-      // qwen3:8b (5896 MB resident) + the mxbai-embed-large embedder (590 MB)
-      // exceed this hardware class's 8 GB VRAM ceiling before any KV cache is
-      // added; Ollama then spills layers to CPU, calls that should take
-      // seconds take 9-35s, and distill jobs time out and poison (see
-      // "Ollama 8GB VRAM ceiling" in CLAUDE.md). qwen3.5:4b (3292 MB) fits
-      // with headroom and is the strongest local model in the extraction
-      // bench on BOTH measured axes (F1 68% vs 65%, recall 54% vs 48% for
-      // qwen3:8b) — see PR body for the caveat: that number measures
-      // extraction, not compaction, quality; this is a safety +
-      // measured-extraction case, not a measured-compaction-quality case.
+      // v0.18.0: shipped default switched from local-ollama qwen to
+      // codex-subscription (gpt-5.4-mini, the DEFAULT_MODEL cheap tier —
+      // see src/providers/llm/codex-subscription.ts). Every local-ollama
+      // qwen default tried here has broken in production at least once:
+      // qwen3:8b returned empty output under thinking mode + format:json
+      // (see "qwen3:8b breaks distill extract" in CLAUDE.md) and also blew
+      // this hardware class's 8 GB VRAM ceiling once the mxbai-embed-large
+      // embedder (590 MB) was resident alongside it, spilling layers to CPU
+      // and timing distill jobs out into poison; qwen3.5:4b fit VRAM but
+      // was still the weaker of two measured-broken options. codex-
+      // subscription runs off-box against the operator's own ChatGPT plan,
+      // so it is immune to this box's VRAM ceiling entirely.
+      //
+      // Tradeoff the operator must accept: this requires `codex login`
+      // (a paid ChatGPT plan) before compaction/extraction will work at
+      // all — there is no anonymous/free path. Cost is metered by the
+      // ChatGPT subscription's own quota, NOT by `budget.daily_usd` above:
+      // every shipped LLM provider (including this one) hardcodes
+      // `usage.usd: 0`, so the daily-dollar budget guard can never see or
+      // cap codex-subscription spend (see the FEAT-482 dollar-cap-guard
+      // retraction in CLAUDE.md for why that guard was tried and reverted
+      // instead of relied on here).
+      //
+      // Embedding is untouched — codex-subscription has no embeddings
+      // endpoint, so embedding stays on ollama/mxbai-embed-large below.
       // Same value for both roles — mirrors src/cli/init.ts's
-      // DEFAULT_OLLAMA_LLM_MODEL, which the `init` wizard writes into both
-      // this compaction key and the extraction key below from one tier pick.
-      compaction: { provider: 'ollama', model: 'qwen3.5:4b' },
-      extraction: { provider: 'ollama', model: 'qwen3.5:4b' }
+      // codex-subscription default, which the `init` wizard writes into
+      // both this compaction key and the extraction key below from one
+      // provider pick. Users who explicitly pick ollama in the wizard still
+      // get DEFAULT_OLLAMA_LLM_MODEL (qwen3.5:4b) as that provider's
+      // sub-default.
+      compaction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
+      extraction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' }
     },
     embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
     vector: { store: 'sqlite-vec' },

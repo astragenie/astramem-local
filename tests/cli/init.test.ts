@@ -284,12 +284,15 @@ describe('init wizard — non-TTY mode', () => {
 
   // ─── Ollama on-demand overrides (item 2 model tier + item 1 base URL) ───────
 
-  // 2026-07-13: no existing test asserted the SHIPPED default model tag
-  // reaches config.yaml when the operator doesn't override it — a shipped
-  // default with no test is how it silently drifts (see the ASTRA_MEMORY_
-  // INIT_OLLAMA_MODEL_TAG test right below, which only covers the override
-  // path).
-  it('non-TTY init with no model-tag override writes the shipped default (qwen3.5:4b) to config.yaml', async () => {
+  // 2026-07-13: no existing test asserted the SHIPPED ollama sub-default
+  // model tag reaches config.yaml when the operator explicitly picks
+  // ollama but doesn't override the tier — a shipped default with no test
+  // is how it silently drifts (see the ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG
+  // test right below, which only covers the override path). This test
+  // pins ASTRA_MEMORY_INIT_LLM_PROVIDER=ollama explicitly, so it is
+  // unaffected by the v0.18.0 shipped-PROVIDER default flip (see the
+  // "codex-subscription" test directly below for that).
+  it('non-TTY init with ollama provider + no model-tag override writes the ollama sub-default (qwen3.5:4b) to config.yaml', async () => {
     const dataDir = makeTmpDir();
     const cfgDir = makeTmpDir();
 
@@ -312,6 +315,39 @@ describe('init wizard — non-TTY mode', () => {
     expect(configPath, 'config.yaml must exist').toBeDefined();
     const content = readFileSync(configPath!, 'utf8');
     expect(content).toContain("model: 'qwen3.5:4b'");
+  });
+
+  // v0.18.0: the shipped LLM PROVIDER default (distinct from the ollama
+  // sub-default tested above) flipped to codex-subscription/gpt-5.4-mini.
+  // No env override for ASTRA_MEMORY_INIT_LLM_PROVIDER here — this proves
+  // the non-TTY path's own fallback (gatherNonInteractive in src/cli/init.ts)
+  // picks the new default, not just defaultConfig()'s.
+  it('non-TTY init with no LLM_PROVIDER override writes the shipped default (codex-subscription/gpt-5.4-mini) to config.yaml', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17793',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    await withEnv(envPatch, async () => { await init(); });
+
+    const configPath = findFile(cfgDir, 'config.yaml');
+    expect(configPath, 'config.yaml must exist').toBeDefined();
+    const content = readFileSync(configPath!, 'utf8');
+    expect(content).toContain('provider: codex-subscription');
+    expect(content).toContain('model: gpt-5.4-mini');
+    // Embedding is unaffected by the provider default flip.
+    expect(content).toContain('provider: ollama');
+    expect(content).toContain('model: mxbai-embed-large');
   });
 
   it('ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG overrides compaction/extraction model in config.yaml', async () => {

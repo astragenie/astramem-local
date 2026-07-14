@@ -238,10 +238,20 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   // Mutable: the extraction-model tier picker below offers a "BYO cloud"
   // option that pivots this from 'ollama' to whichever cloud provider the
   // user then picks (see promptOllamaModelTier / OLLAMA_TIER_BYO_CLOUD).
+  //
+  // v0.18.0: codex-subscription is the DEFAULT LLM provider selection —
+  // local-ollama qwen defaults have repeatedly broken in production (empty
+  // output under thinking mode, VRAM spill; see CLAUDE.md "qwen3:8b breaks
+  // distill extract" / "Ollama 8GB VRAM ceiling"). codex-subscription is
+  // only ever offered as a *choice* when a Codex CLI login is already
+  // detected (see cloudLlmChoices above), so it can only be the pre-
+  // highlighted default when it's actually selectable — fall back to
+  // ollama as the default pick otherwise. ollama and the other cloud
+  // providers remain fully selectable regardless of the default.
   let llmProvider = (await promptSelect(
     'LLM provider:',
     [{ name: 'ollama (qwen3.5:4b)', value: 'ollama' }, ...cloudLlmChoices],
-    'ollama'
+    codexLoginDetected ? 'codex-subscription' : 'ollama'
   )) as LlmProviderChoice;
 
   const dataDir = await promptInput('Data directory:', defaultDataDir());
@@ -413,7 +423,11 @@ async function confirmOllamaDownload(models: string[]): Promise<boolean> {
 function gatherNonInteractive(): WizardAnswers {
   const vector = (process.env[NON_INTERACTIVE_ENV.vector] ?? 'sqlite-vec') as 'sqlite-vec' | 'lancedb';
   const embedProvider = (process.env[NON_INTERACTIVE_ENV.embedProvider] ?? 'ollama') as 'ollama' | 'azure-openai';
-  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'ollama') as LlmProviderChoice;
+  // v0.18.0: shipped default flipped to codex-subscription (see
+  // gatherInteractive's llmProvider prompt comment for rationale) — the
+  // non-TTY path has no "codex login detected" concept to gate on, so it
+  // always writes the new default unless the caller overrides via env.
+  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'codex-subscription') as LlmProviderChoice;
   const dataDir = process.env[NON_INTERACTIVE_ENV.dataDir] ?? defaultDataDir();
   const port = parseInt(process.env[NON_INTERACTIVE_ENV.port] ?? '7777', 10) || 7777;
   const budget = parseFloat(process.env[NON_INTERACTIVE_ENV.budget] ?? '10') || 10;
