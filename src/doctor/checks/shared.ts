@@ -123,6 +123,16 @@ export interface DoctorCheckOpts {
    * `defaultConfig().retention` (mode 'off') when not supplied — see
    * `checkRetention`. */
   retentionConfig?: Config['retention'];
+  /** Issue #279: current `llm.compaction`/`llm.extraction` config (provider
+   * + model only — NOT provider instances, unlike `llmProviders` above).
+   * A cheap, config-only derivation, same shape as `codexSubscriptionInUse`
+   * — see `checkModelFitCanary`. Defaults to `defaultConfig().llm` when not
+   * supplied. */
+  llmConfig?: Config['llm'];
+  /** Issue #279: Ollama base URL for `checkModelFitCanary`'s live `/api/ps`
+   * fit measurement. Defaults to `http://127.0.0.1:11434` when not supplied
+   * — mirrors `getGpuChecks`'s `ollamaBaseUrl` option. */
+  ollamaBaseUrl?: string;
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────

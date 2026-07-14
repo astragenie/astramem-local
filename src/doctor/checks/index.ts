@@ -126,6 +126,7 @@ import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
 import { checkMemorySentinel } from './memory-sentinel.js';
 import { checkRetention } from './retention.js';
+import { checkModelFitCanary } from './model-fit.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -217,6 +218,11 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkEmbedCacheHitRate(dataDir, encryptionEnabled),
     checkMemorySentinel(),
     checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
+    // Issue #279: `reinstall` never rewrites an existing operator's pinned
+    // llm.compaction/extraction.model, so a bad pin (qwen3:8b — doesn't fit
+    // an 8 GB VRAM card) survives every upgrade forever. See model-fit.ts's
+    // module doc comment.
+    checkModelFitCanary(opts.llmConfig ?? defaultConfig().llm, { ollamaBaseUrl: opts.ollamaBaseUrl }),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
