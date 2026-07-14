@@ -197,6 +197,47 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
       expect(result.detail).toContain('process start time mismatch');
     });
 
+    it('issue #307: drift + no force -> refuses with a message naming --force', async () => {
+      writeFileSync(lockPath(dir), JSON.stringify({ pid: process.ppid, port: 9020, startedAt: FIXED_STARTED_AT, version: '0.9.0' }));
+      const signaled: number[] = [];
+      const result = await stopLockHolder(dir, 9020, {
+        signal: pid => { signaled.push(pid); },
+        healthProbe: async () => true,
+        processStartTime: async () => new Date(Date.parse(FIXED_STARTED_AT) + 60 * 60 * 1000),
+      });
+      expect(signaled).toEqual([]);
+      expect(result.ok).toBe(false);
+      expect(result.reason).toBe('identity-mismatch');
+      // The library detail itself stays generic (reused by restore.ts/reinstall.ts,
+      // which have their own recovery flags); the CLI layer (service.ts) is what
+      // appends the `--force` pointer for `service stop` specifically. Assert the
+      // reason so the CLI's hint-selection logic has something stable to key off.
+      expect(result.detail).toContain('process start time mismatch');
+    });
+
+    it('issue #307: drift + force=true -> proceeds (signals the pid), logging the drift', async () => {
+      writeFileSync(lockPath(dir), JSON.stringify({ pid: process.ppid, port: 9021, startedAt: FIXED_STARTED_AT, version: '0.9.0' }));
+      const signaled: number[] = [];
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+      const result = await stopLockHolder(dir, 9021, {
+        signal: pid => { signaled.push(pid); },
+        healthProbe: async () => false, // stops answering immediately after signal
+        processStartTime: async () => new Date(Date.parse(FIXED_STARTED_AT) + 60 * 60 * 1000),
+        force: true,
+      });
+      // Read recorded calls BEFORE mockRestore() — vitest's mockRestore also
+      // clears mock.calls (matches Jest semantics), so reading after would
+      // always see an empty array regardless of whether console.error fired.
+      const warned = errSpy.mock.calls.map(c => c.join(' ')).join('\n');
+      errSpy.mockRestore();
+      expect(signaled).toEqual([process.ppid]); // proceeded despite the drift
+      expect(result.ok).toBe(true);
+      // Logged what the drift WAS before overriding.
+      expect(warned).toContain('WARNING');
+      expect(warned).toContain('overriding recycled-PID guard');
+      expect(warned).toContain('drift');
+    });
+
     it('STILL KILLS a genuinely wedged daemon whose start-time matches the lock', async () => {
       writeFileSync(lockPath(dir), JSON.stringify({ pid: process.ppid, port: 9006, startedAt: FIXED_STARTED_AT, version: '0.9.0' }));
       const signaled: number[] = [];
