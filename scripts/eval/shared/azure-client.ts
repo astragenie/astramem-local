@@ -21,7 +21,70 @@ export interface AzureChatOptions {
   deployment: string;
 }
 
-export async function azureChatComplete(cfg: AzureConfig, opts: AzureChatOptions): Promise<string> {
+/**
+ * Azure rate-limit (429) retry policy.
+ *
+ * There was NO retry here at all — not even for the strictly-serial caller. The
+ * full-suite LoCoMo run (n=1986) only ever completed because serial requests
+ * happened to stay under the deployment's limit BY ACCIDENT.
+ *
+ * PR #253 then made the answering phase concurrent (default 8) and handed it
+ * nothing to survive a 429 with. The very next real run died:
+ *
+ *   Azure chat completion failed (HTTP 429) on deployment gpt-5-mini:
+ *     Your requests to gpt-5-mini in centralus have exceeded rate limit.
+ *
+ * #253's tests proved the ORDERING and DETERMINISM of the concurrency were
+ * correct. They said nothing about whether it survives a rate limit — so it
+ * shipped green and broken. A passing test and a working feature are not the
+ * same thing.
+ *
+ * 429 is not an error here. It is FLOW CONTROL, and the server is telling us the
+ * rate it will accept. Respect `Retry-After` when present; otherwise back off
+ * exponentially with jitter (jitter matters: N concurrent workers that all sleep
+ * the SAME duration will retry in lockstep and re-trip the limit together).
+ *
+ * 5xx is also retried — a transient upstream blip should not kill a 90-minute
+ * benchmark run.
+ */
+const MAX_RETRIES = 6;
+const BASE_BACKOFF_MS = 1_000;
+const MAX_BACKOFF_MS = 60_000;
+
+/**
+ * Test seam. Real backoff runs 1s -> 2s -> 4s -> ... -> 60s, so a test that
+ * exercises the give-up path honestly would sit there for a minute. Overriding
+ * the policy is the only way to test EXHAUSTION without either faking timers
+ * (fragile around async/await) or making the test suite slow enough that people
+ * start skipping it.
+ *
+ * Also genuinely useful operationally: a caller who would rather fail fast than
+ * back off for a minute can say so.
+ */
+export interface RetryPolicy {
+  maxRetries?: number;
+  baseBackoffMs?: number;
+}
+
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
+
+/** Honour `Retry-After` (seconds, or an HTTP-date) when the server sends one. */
+function retryAfterMs(res: Response): number | null {
+  const h = res.headers.get('retry-after');
+  if (!h) return null;
+  const secs = Number(h);
+  if (Number.isFinite(secs)) return Math.max(0, secs * 1000);
+  const at = Date.parse(h);
+  return Number.isNaN(at) ? null : Math.max(0, at - Date.now());
+}
+
+export async function azureChatComplete(
+  cfg: AzureConfig,
+  opts: AzureChatOptions,
+  retry: RetryPolicy = {},
+): Promise<string> {
+  const maxRetries = retry.maxRetries ?? MAX_RETRIES;
+  const baseBackoffMs = retry.baseBackoffMs ?? BASE_BACKOFF_MS;
   const url = `${cfg.endpoint.replace(/\/$/, '')}/openai/deployments/${opts.deployment}/chat/completions?api-version=${cfg.apiVersion}`;
   const body: Record<string, unknown> = {
     messages: opts.messages,
@@ -29,22 +92,52 @@ export async function azureChatComplete(cfg: AzureConfig, opts: AzureChatOptions
   };
   if (opts.reasoningEffort) body.reasoning_effort = opts.reasoningEffort;
 
-  const res = await fetch(url, {
-    method: 'POST',
-    headers: { 'api-key': cfg.key, 'content-type': 'application/json' },
-    body: JSON.stringify(body),
-  });
-  const json = (await res.json()) as {
-    choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
-    error?: { message?: string };
-  };
-  if (!res.ok) {
-    throw new Error(`Azure chat completion failed (HTTP ${res.status}) on deployment ${opts.deployment}: ${json.error?.message ?? JSON.stringify(json)}`);
+  let lastStatus = 0;
+  let lastMessage = '';
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'api-key': cfg.key, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (res.ok) {
+      const json = (await res.json()) as {
+        choices?: Array<{ message?: { content?: string }; finish_reason?: string }>;
+      };
+      const choice = json.choices?.[0];
+      const content = choice?.message?.content;
+      if (content === undefined) {
+        throw new Error(
+          `Azure chat completion returned no content (finish_reason=${choice?.finish_reason ?? 'unknown'}) — raw: ${JSON.stringify(json)}`,
+        );
+      }
+      return content;
+    }
+
+    // Retryable: 429 (rate limit — flow control, not an error) and 5xx (transient).
+    const retryable = res.status === 429 || res.status >= 500;
+    const parsed = (await res.json().catch(() => ({}))) as { error?: { message?: string } };
+    lastStatus = res.status;
+    lastMessage = parsed.error?.message ?? '';
+
+    if (!retryable || attempt === maxRetries) break;
+
+    // Exponential backoff with FULL JITTER. The jitter is load-bearing: without
+    // it, every concurrent worker sleeps the identical duration and they all
+    // retry in lockstep, re-tripping the same limit.
+    const exp = Math.min(baseBackoffMs * 2 ** attempt, MAX_BACKOFF_MS);
+    const waitMs = retryAfterMs(res) ?? Math.random() * exp;
+    await sleep(waitMs);
   }
-  const choice = json.choices?.[0];
-  const content = choice?.message?.content;
-  if (content === undefined) {
-    throw new Error(`Azure chat completion returned no content (finish_reason=${choice?.finish_reason ?? 'unknown'}) — raw: ${JSON.stringify(json)}`);
-  }
-  return content;
+
+  throw new Error(
+    `Azure chat completion failed (HTTP ${lastStatus}) on deployment ${opts.deployment} after ${maxRetries + 1} attempts: ${lastMessage}\n\n` +
+      (lastStatus === 429
+        ? `This is a RATE LIMIT, not a bug in the request. Either lower --answer-concurrency ` +
+          `(default 8, see DEFAULT_ANSWER_CONCURRENCY in scripts/eval/locomo/answer.mts) or raise the ` +
+          `deployment's quota. The retry policy already backed off ${maxRetries} times and still could not get through.`
+        : ''),
+  );
 }
