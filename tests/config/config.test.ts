@@ -25,13 +25,16 @@ describe('loadConfig', () => {
     expect(defaultConfig().auth.devNoAuth).toBe(false);
   });
 
-  // 2026-07-13 operator standardization (qwen3:8b, was qwen2.5:7b) — a
-  // shipped default with no assertion is how it silently drifts; see the
-  // CHANGELOG [Unreleased] entry for why this isn't an A/B-benchmarked swap.
-  it('llm.compaction/extraction default to qwen3:8b', () => {
+  // A shipped default with no assertion is how it silently drifts.
+  // 2026-07-13 (#264/PR follow-up, same-day reversal): both compaction and
+  // extraction moved off qwen3:8b to qwen3.5:4b — qwen3:8b spills VRAM and
+  // times out on 8GB-class hardware (see "Ollama 8GB VRAM ceiling" in
+  // CLAUDE.md) AND scores lower in the 3-run extraction bench (F1 65% vs
+  // 68%, recall 48% vs 54%). No remaining case for qwen3:8b as a default.
+  it('llm.compaction/extraction default to qwen3.5:4b', () => {
     const cfg = defaultConfig();
-    expect(cfg.llm.compaction.model).toBe('qwen3:8b');
-    expect(cfg.llm.extraction.model).toBe('qwen3:8b');
+    expect(cfg.llm.compaction.model).toBe('qwen3.5:4b');
+    expect(cfg.llm.extraction.model).toBe('qwen3.5:4b');
   });
 
   it('default config search weights are unchanged by governance (default behavior preserved)', () => {
@@ -167,13 +170,13 @@ describe('applyFusionGovernance', () => {
 describe('applyDurabilityGateGovernance', () => {
   it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
     for (const mode of ['strict', 'lenient', 'off'] as const) {
-      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const };
+      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const };
       expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to off and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const };
+    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const };
     const logs: string[] = [];
     const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -200,13 +203,13 @@ describe('applyDurabilityGateGovernance', () => {
 describe('applyExtractProfileGovernance', () => {
   it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
     for (const profile of ['engineering', 'conversational'] as const) {
-      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile };
+      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const };
       expect(applyExtractProfileGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to engineering and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any };
+    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const };
     const logs: string[] = [];
     const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
 

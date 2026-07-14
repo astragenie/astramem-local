@@ -11,11 +11,42 @@
 /** Approximate chars per token (conservative estimate) */
 const CHARS_PER_TOKEN = 4;
 
-/** Target tokens per chunk */
-const TARGET_TOKENS = 800;
+/**
+ * Target tokens per chunk.
+ *
+ * 800 (3200 chars) was tuned for a cloud model reading an engineering transcript.
+ * It is a poor fit for LOCAL inference on conversational content, in two ways
+ * measured on 2026-07-13 with qwen3.5:4b:
+ *
+ * 1. TIMEOUT. A real 2029-char chunk made the model generate ~1200 tokens and
+ *    take over a minute — past the (then 60s) chat timeout. Every call aborted,
+ *    and the observable was ZERO ATOMS with the job marked completed. A timeout
+ *    produced a zero indistinguishable from "the model found nothing" (ADR-015).
+ *
+ * 2. EXTRACTION DENSITY. Smaller chunks are not merely safer — they are BETTER:
+ *
+ *      483-char chunk  -> 6 atoms  =  1 atom per  80 chars
+ *      2029-char chunk -> 9 atoms  =  1 atom per 225 chars
+ *
+ *    Given less text, the model extracts ~3x more densely. Given more, it skims.
+ *
+ * And halving the chunk is FREE, because stage 4 (compaction) no longer runs for
+ * conversational content (see 04-compact.ts):
+ *
+ *      OLD: chunk 3200 -> compact (1 LLM call) -> extract (1 LLM call) = 2 calls
+ *      NEW: chunk 1600 -> extract (1 LLM call)                          = 2 calls
+ *                                                                        per 3200 chars
+ *
+ * The SAME number of LLM calls — we just spend them all on extraction instead of
+ * half of them on deleting our own facts.
+ *
+ * Override with ASTRA_CHUNK_TARGET_TOKENS. A cloud extractor with a big context
+ * and no latency penalty may legitimately prefer the larger chunk.
+ */
+const TARGET_TOKENS = Number(process.env.ASTRA_CHUNK_TARGET_TOKENS ?? 800);
 
 /** Max chars per chunk before we must split even mid-turn */
-const MAX_CHUNK_CHARS = TARGET_TOKENS * CHARS_PER_TOKEN; // 3200
+const MAX_CHUNK_CHARS = TARGET_TOKENS * CHARS_PER_TOKEN;
 
 /** Turn boundary patterns */
 const TURN_BOUNDARY_RE = /^(user|assistant|system|human|ai)\s*:/i;

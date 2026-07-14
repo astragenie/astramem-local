@@ -3,7 +3,32 @@ import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
 import { parseRetryAfterMs } from './retry-after.js';
 
-const CHAT_TIMEOUT_MS = 60_000;
+/**
+ * Per-chat timeout.
+ *
+ * WAS 60_000 — hardcoded, and TOO SHORT FOR A LOCAL MODEL ON A REAL CHUNK.
+ *
+ * Measured 2026-07-13: qwen3.5:4b extracting from a real 2029-char LoCoMo chunk
+ * generates ~1200 tokens and takes well over a minute on an 8 GB laptop GPU. Every
+ * such call aborted at 60s. The observable was `last_error: "The operation was
+ * aborted due to timeout"` and — far worse — ZERO ATOMS with the job still marked
+ * completed. A timeout produced a zero indistinguishable from "the model found
+ * nothing" (ADR-015, again).
+ *
+ * It had been hidden by stage-4 compaction, which shrank the input enough that the
+ * call squeaked in under 60s. Skipping compaction (which recovers facts — see
+ * 04-compact.ts) made the input bigger and exposed a limit that was always wrong
+ * for local inference.
+ *
+ * 60s is a CLOUD timeout applied to LOCAL hardware. A 4B model on a laptop GPU is
+ * not a network call; it is compute, and it is allowed to take minutes. Cloud
+ * providers have their own timeouts and are unaffected by this constant.
+ *
+ * Override with `ASTRA_OLLAMA_CHAT_TIMEOUT_MS` — a slower box (or a bigger model,
+ * or a CPU-only host) legitimately needs more, and no operator should have to
+ * recompile to get it.
+ */
+const CHAT_TIMEOUT_MS = Number(process.env.ASTRA_OLLAMA_CHAT_TIMEOUT_MS ?? 300_000);
 const HEALTH_TIMEOUT_MS = 10_000;
 
 // FEAT-479 (SLICE-433 review fix, HIGH): mirrors src/distill/stages/03-chunk.ts:12's
@@ -134,7 +159,15 @@ export class OllamaLLMProvider implements LLMProvider {
 
   constructor(config: OllamaLLMConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
-    this.model = config.model ?? 'qwen3:8b';
+    // Defensive fallback only — every real call path (src/providers/index.ts)
+    // passes config.llm.{compaction,extraction}.model explicitly, which
+    // defaultConfig() (src/config/config.ts) always supplies, so this only
+    // fires for direct/ad-hoc instantiation with no model. Keep in sync with
+    // that default by hand (no shared import between this provider and
+    // config/config.ts) — was 'qwen3:8b' until 2026-07-13, which doesn't fit
+    // this hardware class's VRAM ceiling; see CLAUDE.md's "Ollama 8GB VRAM
+    // ceiling" note.
+    this.model = config.model ?? 'qwen3.5:4b';
     // Disable thinking by default for every known thinking model (see
     // OllamaLLMConfig.think and KNOWN_THINKING_MODEL_PREFIXES above) so
     // structured `format:json` extraction gets JSON in message.content instead

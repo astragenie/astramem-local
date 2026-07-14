@@ -65,7 +65,7 @@ function buildFullyPopulatedConfig(): Config {
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: true } },
     ingest: { spoolMaxBytes: 1_048_576 },
-    distill: { durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5 },
+    distill: { durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never' },
     capture: {
       autoCapture: {
         enabled: true,
@@ -139,7 +139,7 @@ describe('configToYaml', () => {
     const yaml = configToYaml(cfg);
     expect(yaml).toContain('compaction:');
     expect(yaml).toContain('extraction:');
-    expect(yaml).toMatch(/model: ['"]?qwen3:8b['"]?/);
+    expect(yaml.match(/model: ['"]?qwen3\.5:4b['"]?/g)).toHaveLength(2);
   });
 
   // FEAT-442: autonomous consolidation auto-accept — default null (OFF) round-trips.

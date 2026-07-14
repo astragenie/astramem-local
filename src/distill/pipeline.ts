@@ -19,6 +19,7 @@ import { chunk } from './stages/03-chunk.js';
 import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
 import { extract, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
 import { reduce } from './stages/06-reduce.js';
+import { groundAtomDates } from './ground-dates.js';
 import { memoryNormalize } from './stages/07-memory-normalize.js';
 import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
@@ -147,9 +148,20 @@ export async function runPipeline(
 
   // Stage 4: Compact (LLM, budget-gated)
   pipeLog.info({ stage: 'compact', chunk_count: chunks.length, chunk_concurrency: chunkConcurrency }, 'stage start');
+  // PROFILE RESOLUTION MOVED UP. It used to be computed AFTER this block — which
+  // is structurally why stage 4 never saw it, and why every conversational
+  // transcript got the coding-agent compressor. The profile has to exist before
+  // the first stage that needs it, not before the stage that happened to be
+  // written first.
+  const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
+  const compactionMode = ctx.config?.distill.compaction ?? 'auto';
+
   let compactedChunks: Array<{ index: number; text: string }>;
   try {
-    const compactResults = await compact(chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey);
+    const compactResults = await compact(
+      chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey,
+      { profile: resolvedExtractProfile, mode: compactionMode },
+    );
     compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
     pipeLog.info({ stage: 'compact', chunks_compacted: compactedChunks.length }, 'stage complete');
   } catch (err) {
@@ -170,7 +182,6 @@ export async function runPipeline(
   // extract_profile envelope field > config distill.extractProfile > the
   // 'engineering' default. With neither set anywhere, this resolves to
   // 'engineering' — the byte-identical pre-FEAT-479 default (AC-2).
-  const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
   // Temporal-grounding fix (2026-07-13), timezone-offset fix (2026-07-13,
   // same day): thread an ISO calendar date one call deeper, into extraction,
   // so the model can resolve relative time expressions ("yesterday") to
@@ -267,9 +278,36 @@ export async function runPipeline(
   const reducedAtoms = reduce(allAtoms);
   pipeLog.info({ stage: 'reduce', atoms_out: reducedAtoms.length }, 'stage complete');
 
+  // Date-grounding retry (2026-07-13): a second, narrow LLM call for atoms
+  // whose text still carries an unresolved relative-date expression after
+  // stage 5's own resolve-in-place instruction — see ground-dates.ts's doc
+  // comment (graphiti's pattern; NOT PR #257's regex rewrite, which
+  // fabricated dates and was closed unmerged). Runs AFTER reduce (not
+  // between 5 and 6) so a phrase repeated across chunks is only ever
+  // resolved once, not once per chunk occurrence. `sessionDateIso` absent is
+  // a total no-op inside groundAtomDates — byte-identical to pre-retry
+  // behavior for every caller with no real anchor (legacy v0.0 envelopes,
+  // direct /remember calls). Reuses ctx.llmExtraction — same posture as
+  // contradiction-judge.ts (no new provider config surface). Never throws:
+  // any call/parse failure inside groundAtomDates is its own no-op fallback,
+  // so this can never turn a successful extraction into a failed pipeline
+  // run.
+  pipeLog.info({ stage: 'ground-dates', atoms_in: reducedAtoms.length }, 'stage start');
+  const groundResult = await groundAtomDates(reducedAtoms, sessionDateIso, ctx.llmExtraction);
+  pipeLog.info(
+    {
+      stage: 'ground-dates',
+      atoms_in: groundResult.totalAtoms,
+      fired: groundResult.fired,
+      resolved: groundResult.resolved,
+      errors: groundResult.errors,
+    },
+    'stage complete',
+  );
+
   // Stage 7: Memory-normalize
   pipeLog.info({ stage: 'memory-normalize' }, 'stage start');
-  const normalizedMemories = memoryNormalize(reducedAtoms);
+  const normalizedMemories = memoryNormalize(groundResult.atoms);
   pipeLog.info({ stage: 'memory-normalize', memories: normalizedMemories.length }, 'stage complete');
 
   // Stage 8: Embed + index
