@@ -15,7 +15,7 @@
 
 import { cleanup } from './stages/01-cleanup.js';
 import { normalize } from './stages/02-normalize.js';
-import { chunk } from './stages/03-chunk.js';
+import { chunk, resolveMaxChunkChars } from './stages/03-chunk.js';
 import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
 import { extract, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
 import { reduce } from './stages/06-reduce.js';
@@ -124,8 +124,12 @@ export async function runPipeline(
   pipeLog.info({ stage: 'normalize' }, 'stage complete');
 
   // Stage 3: Chunk
-  pipeLog.info({ stage: 'chunk' }, 'stage start');
-  const chunks = chunk(normalized);
+  // #273 (WS7): maxChunkChars resolved from config the same way stage 4/5's
+  // chunkConcurrency is below — falls back to defaultConfig() (byte-
+  // identical to pre-#273) when ctx.config is omitted.
+  const maxChunkChars = resolveMaxChunkChars(ctx.config ?? defaultConfig());
+  pipeLog.info({ stage: 'chunk', max_chunk_chars: maxChunkChars }, 'stage start');
+  const chunks = chunk(normalized, maxChunkChars);
   pipeLog.info({ stage: 'chunk', chunk_count: chunks.length }, 'stage complete');
 
   const budget = new BudgetTracker(ctx.db);

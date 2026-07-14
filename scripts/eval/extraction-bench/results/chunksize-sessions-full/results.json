@@ -1,0 +1,749 @@
+[
+  {
+    "sampleId": "conv-26",
+    "session": 10,
+    "label": "conv-26/s10 (flagship: beach-frequency, meteor-shower)",
+    "maxChunkChars": 3200,
+    "chunksProcessed": 2,
+    "atomCount": 0,
+    "wallMs": 15504,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {
+      "beach-frequency (\"once or twice a year\")": false,
+      "meteor-shower awe (\"tiny\", \"awe of the universe\")": false
+    }
+  },
+  {
+    "sampleId": "conv-44",
+    "session": 18,
+    "label": "conv-44/s18 (flagship: dog-bed quote, hiking sunset)",
+    "maxChunkChars": 3200,
+    "chunksProcessed": 2,
+    "atomCount": 0,
+    "wallMs": 10890,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {
+      "dog-bed quote (\"Super cozy and comfy\")": false,
+      "hiking sunset photo": false,
+      "daily self-care habit": false
+    }
+  },
+  {
+    "sampleId": "conv-47",
+    "session": 22,
+    "label": "conv-47/s22 (19 turns, 3196c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 3200,
+    "chunksProcessed": 1,
+    "atomCount": 4,
+    "wallMs": 19691,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "James finished a Unity strategy game."
+      },
+      {
+        "type": "fact",
+        "text": "James drew inspiration for the game from Civilization and Total War."
+      },
+      {
+        "type": "lesson",
+        "text": "Game development for James's Unity strategy game required balancing mechanics and fairness through trial and error, and the durable takeaway was that perseverance and patience matter. The reason this matters is that even a finished game still needed iterative tuning before it felt right, and the tradeoff was spending more time on refinement to get the desired experience. This lesson is anchored to the game's balancing and fairness work, not a generic motivational claim."
+      },
+      {
+        "type": "lesson",
+        "text": "James's finished Unity strategy game benefited from feedback and collaboration, because help from other people improved the result and made the game better. The tradeoff is that the project was no longer purely solo work, but the payoff was better design quality and a stronger final outcome. This lesson is about the game's development process, not a generic preference for teamwork."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-30",
+    "session": 13,
+    "label": "conv-30/s13 (23 turns, 3122c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 3200,
+    "chunksProcessed": 1,
+    "atomCount": 2,
+    "wallMs": 15991,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Jon is opening a dance studio."
+      },
+      {
+        "type": "fact",
+        "text": "Jon's dance studio will offer dance classes, workshops, one-on-one mentoring, and training."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-48",
+    "session": 20,
+    "label": "conv-48/s20 (26 turns, 3114c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 3200,
+    "chunksProcessed": 1,
+    "atomCount": 6,
+    "wallMs": 12473,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "Deborah visited a memory-filled place, sat on a bench she and Jolene used to chat on, and brought flowers there."
+      },
+      {
+        "type": "fact",
+        "text": "Deborah associates that visit with nostalgia, longing, gratitude, and her mother's love of flowers and simple things."
+      },
+      {
+        "type": "fact",
+        "text": "Jolene has practiced yoga for 3 years."
+      },
+      {
+        "type": "fact",
+        "text": "Jolene's favorite restorative yoga pose is savasana, the corpse pose."
+      },
+      {
+        "type": "fact",
+        "text": "Deborah uses yoga, meditation, walks, mindfulness, and taking similar photos on walks to stay calm."
+      },
+      {
+        "type": "fact",
+        "text": "Jolene uses yoga and meditation to stay balanced and to escape studying and work stress."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-43",
+    "session": 2,
+    "label": "conv-43/s2 (19 turns, 3080c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 3200,
+    "chunksProcessed": 1,
+    "atomCount": 6,
+    "wallMs": 13652,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "Tim joined a fantasy literature forum and had a great discussion about his favorite books."
+      },
+      {
+        "type": "fact",
+        "text": "Tim likes MinaLima's Harry Potter film props work and said the shelf picture was from MinaLima."
+      },
+      {
+        "type": "fact",
+        "text": "Tim said Harry Potter-related reminders help him escape reality and that he may visit more Harry Potter-related places in the future."
+      },
+      {
+        "type": "fact",
+        "text": "John is exploring endorsement opportunities and is considering Nike and Under Armour, while staying open to brands that fit his values."
+      },
+      {
+        "type": "event",
+        "text": "John shared a photo from a recent basketball game and said he had played in it."
+      },
+      {
+        "type": "fact",
+        "text": "John said he gives it his all every time he is on the court."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-26",
+    "session": 10,
+    "label": "conv-26/s10 (flagship: beach-frequency, meteor-shower)",
+    "maxChunkChars": 2400,
+    "chunksProcessed": 2,
+    "atomCount": 0,
+    "wallMs": 14202,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {
+      "beach-frequency (\"once or twice a year\")": false,
+      "meteor-shower awe (\"tiny\", \"awe of the universe\")": false
+    }
+  },
+  {
+    "sampleId": "conv-44",
+    "session": 18,
+    "label": "conv-44/s18 (flagship: dog-bed quote, hiking sunset)",
+    "maxChunkChars": 2400,
+    "chunksProcessed": 2,
+    "atomCount": 0,
+    "wallMs": 22205,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {
+      "dog-bed quote (\"Super cozy and comfy\")": false,
+      "hiking sunset photo": false,
+      "daily self-care habit": false
+    }
+  },
+  {
+    "sampleId": "conv-47",
+    "session": 22,
+    "label": "conv-47/s22 (19 turns, 3196c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 2400,
+    "chunksProcessed": 2,
+    "atomCount": 5,
+    "wallMs": 19947,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "James finished his Unity strategy game."
+      },
+      {
+        "type": "fact",
+        "text": "James said his Unity strategy game was inspired by Civilization and Total War."
+      },
+      {
+        "type": "lesson",
+        "text": "In James's Unity strategy game, balancing mechanics and fairness was difficult, and he found that trial and error helped work through it. The takeaway he gave was that perseverance, patience, feedback, and collaboration were key to finishing the project. This matters because strategy-game design tends to surface tuning problems that are hard to solve analytically, so iterative testing and outside input become part of the development process rather than optional polish."
+      },
+      {
+        "type": "fact",
+        "text": "John said he has been teaching his siblings coding, and they are making basic games and stories."
+      },
+      {
+        "type": "note",
+        "text": "James expects John's siblings to create more complex projects soon."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-30",
+    "session": 13,
+    "label": "conv-30/s13 (23 turns, 3122c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 2400,
+    "chunksProcessed": 2,
+    "atomCount": 6,
+    "wallMs": 28597,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Jon is preparing for his dance studio more than ever."
+      },
+      {
+        "type": "fact",
+        "text": "The dance studio is intended to be a place of support and encouragement for young dancers."
+      },
+      {
+        "type": "fact",
+        "text": "Jon offers dance classes, workshops, one-on-one mentoring, and training to help dancers reach their full potential."
+      },
+      {
+        "type": "fact",
+        "text": "Jon uses a clipboard and notebook system to stay organized, set goals, track achievements, and identify areas to improve."
+      },
+      {
+        "type": "fact",
+        "text": "Jon uses a whiteboard with different colors to visualize goals, stay on track, and color-code achievements."
+      },
+      {
+        "type": "fact",
+        "text": "Gina has developed a video presentation to teach how to style her fashion pieces."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-48",
+    "session": 20,
+    "label": "conv-48/s20 (26 turns, 3114c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 2400,
+    "chunksProcessed": 2,
+    "atomCount": 4,
+    "wallMs": 17343,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Jolene's favorite yoga pose for rest is savasana (corpse pose)."
+      },
+      {
+        "type": "fact",
+        "text": "Jolene has been doing yoga for 3 years."
+      },
+      {
+        "type": "fact",
+        "text": "Jolene says yoga helps her escape studying and work stress."
+      },
+      {
+        "type": "note",
+        "text": "Jolene describes yoga as calming and as helping her let go and surrender."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-43",
+    "session": 2,
+    "label": "conv-43/s2 (19 turns, 3080c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 2400,
+    "chunksProcessed": 2,
+    "atomCount": 0,
+    "wallMs": 11930,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-26",
+    "session": 10,
+    "label": "conv-26/s10 (flagship: beach-frequency, meteor-shower)",
+    "maxChunkChars": 1600,
+    "chunksProcessed": 3,
+    "atomCount": 5,
+    "wallMs": 30215,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "Caroline joined a new LGBTQ activist group last Tuesday."
+      },
+      {
+        "type": "fact",
+        "text": "The group is named “Connected LGBTQ Activists”."
+      },
+      {
+        "type": "fact",
+        "text": "Connected LGBTQ Activists holds regular meetings, events, and campaigns and emphasizes mutual support."
+      },
+      {
+        "type": "event",
+        "text": "The city had a pride parade last weekend."
+      },
+      {
+        "type": "lesson",
+        "text": "The city’s pride parade was a reminder, even to Caroline after missing it, that visible public events can reinforce solidarity in equality work: seeing people march, wave flags, hold signs, and celebrate love and diversity helps participants feel they are not alone and that change is possible. The practical value of the parade is not just celebration; it also sustains motivation for ongoing activism and community support around LGBTQ rights."
+      }
+    ],
+    "factHits": {
+      "beach-frequency (\"once or twice a year\")": false,
+      "meteor-shower awe (\"tiny\", \"awe of the universe\")": false
+    }
+  },
+  {
+    "sampleId": "conv-44",
+    "session": 18,
+    "label": "conv-44/s18 (flagship: dog-bed quote, hiking sunset)",
+    "maxChunkChars": 1600,
+    "chunksProcessed": 3,
+    "atomCount": 0,
+    "wallMs": 22105,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {
+      "dog-bed quote (\"Super cozy and comfy\")": false,
+      "hiking sunset photo": false,
+      "daily self-care habit": false
+    }
+  },
+  {
+    "sampleId": "conv-47",
+    "session": 22,
+    "label": "conv-47/s22 (19 turns, 3196c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1600,
+    "chunksProcessed": 3,
+    "atomCount": 5,
+    "wallMs": 29453,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "James said his Unity strategy game is finished after a long development effort."
+      },
+      {
+        "type": "fact",
+        "text": "James said the game was inspired by Civilization and Total War."
+      },
+      {
+        "type": "lesson",
+        "text": "In James's Unity strategy game development, balancing mechanics and ensuring fairness were the hardest parts, and he relied on trial and error to reach the result he wanted. The takeaway is that strategy games need repeated tuning to stay enjoyable, because mechanical balance and perceived fairness are tightly coupled and are difficult to judge correctly from first principles alone. The relevant provenance anchor is the Unity strategy game development effort James described."
+      },
+      {
+        "type": "lesson",
+        "text": "For the game, perseverance, patience, feedback, and collaboration were key to finishing it and making it better. The takeaway is that shipping and improving a creative project can depend as much on steady iteration and working well together as on raw technical skill. The tradeoff is slower progress in the moment, but the result is a more complete and higher-quality game."
+      },
+      {
+        "type": "fact",
+        "text": "John has been teaching his siblings coding, and they are already creating their own programs."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-30",
+    "session": 13,
+    "label": "conv-30/s13 (23 turns, 3122c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1600,
+    "chunksProcessed": 2,
+    "atomCount": 0,
+    "wallMs": 14426,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-48",
+    "session": 20,
+    "label": "conv-48/s20 (26 turns, 3114c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1600,
+    "chunksProcessed": 3,
+    "atomCount": 2,
+    "wallMs": 30291,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Deborah's mother loved flowers and appreciated simple things in life."
+      },
+      {
+        "type": "lesson",
+        "text": "Deborah and Jolene both framed the conversation around slowing down and noticing small things that matter, using the flowers at the remembered bench and the vase of flowers in the street as the concrete anchor for that takeaway. The point was that everyday busyness can crowd out appreciation of ordinary beauty and shared memories, so intentionally pausing to notice them becomes the desired habit. The tradeoff is spending time on reflection instead of staying task-focused."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-43",
+    "session": 2,
+    "label": "conv-43/s2 (19 turns, 3080c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1600,
+    "chunksProcessed": 2,
+    "atomCount": 1,
+    "wallMs": 17257,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "MinaLima is the company behind props for the Harry Potter films."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-26",
+    "session": 10,
+    "label": "conv-26/s10 (flagship: beach-frequency, meteor-shower)",
+    "maxChunkChars": 1200,
+    "chunksProcessed": 4,
+    "atomCount": 8,
+    "wallMs": 57568,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "Caroline recently joined Connected LGBTQ Activists last Tuesday."
+      },
+      {
+        "type": "fact",
+        "text": "Connected LGBTQ Activists is a group of people invested in positive change, with regular meetings, events, and campaigns to support each other."
+      },
+      {
+        "type": "fact",
+        "text": "Caroline finds it fulfilling to have a platform to be herself and support others’ rights through Connected LGBTQ Activists."
+      },
+      {
+        "type": "event",
+        "text": "Caroline's city held a pride parade last weekend."
+      },
+      {
+        "type": "fact",
+        "text": "Melanie's family goes to the beach once or twice a year."
+      },
+      {
+        "type": "fact",
+        "text": "Melanie's family has a camping-trip tradition that includes roasting marshmallows, telling stories around the campfire, and spending time together."
+      },
+      {
+        "type": "event",
+        "text": "Last year's camping trip included watching the Perseid meteor shower."
+      },
+      {
+        "type": "fact",
+        "text": "Melanie described the camping-night sky as clear and full of stars and the meteor shower as huge and awe-inspiring."
+      }
+    ],
+    "factHits": {
+      "beach-frequency (\"once or twice a year\")": true,
+      "meteor-shower awe (\"tiny\", \"awe of the universe\")": true
+    }
+  },
+  {
+    "sampleId": "conv-44",
+    "session": 18,
+    "label": "conv-44/s18 (flagship: dog-bed quote, hiking sunset)",
+    "maxChunkChars": 1200,
+    "chunksProcessed": 4,
+    "atomCount": 2,
+    "wallMs": 34285,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Andrew is still working on finding a dog-friendly place to live, and the search has been challenging."
+      },
+      {
+        "type": "fact",
+        "text": "Toby is still very young."
+      }
+    ],
+    "factHits": {
+      "dog-bed quote (\"Super cozy and comfy\")": false,
+      "hiking sunset photo": false,
+      "daily self-care habit": false
+    }
+  },
+  {
+    "sampleId": "conv-47",
+    "session": 22,
+    "label": "conv-47/s22 (19 turns, 3196c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1200,
+    "chunksProcessed": 3,
+    "atomCount": 6,
+    "wallMs": 34562,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "James said his Unity strategy game was finally finished after a lot of time and effort."
+      },
+      {
+        "type": "fact",
+        "text": "James said he has always loved strategy games like Civilization and Total War."
+      },
+      {
+        "type": "fact",
+        "text": "James said he challenged himself to make his own strategy game because he loves games like Civilization and Total War."
+      },
+      {
+        "type": "event",
+        "text": "John congratulated James and said the game looked amazing."
+      },
+      {
+        "type": "lesson",
+        "text": "Balancing mechanics and fairness in the game was difficult, but James reached the desired result through trial and error; the key takeaway he emphasized was that game improvement depended on perseverance, patience, feedback, and collaboration. The durable point is about the game-development process itself: iterative testing can resolve design tension, and outside feedback materially improves fairness and mechanics. This applies to the game James discussed, not a generic abstract claim."
+      },
+      {
+        "type": "fact",
+        "text": "John is teaching his siblings coding, starting with basic games and stories."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-30",
+    "session": 13,
+    "label": "conv-30/s13 (23 turns, 3122c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1200,
+    "chunksProcessed": 3,
+    "atomCount": 3,
+    "wallMs": 24429,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Jon offers one-on-one mentoring and training in addition to dance classes and workshops."
+      },
+      {
+        "type": "fact",
+        "text": "Jon uses a clipboard to stay organized and motivated by setting goals, tracking achievements, and identifying areas to improve."
+      },
+      {
+        "type": "fact",
+        "text": "Jon uses a whiteboard to stay on track, visualize goals, and tokenize successes."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-48",
+    "session": 20,
+    "label": "conv-48/s20 (26 turns, 3114c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1200,
+    "chunksProcessed": 3,
+    "atomCount": 0,
+    "wallMs": 22840,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-43",
+    "session": 2,
+    "label": "conv-43/s2 (19 turns, 3080c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 1200,
+    "chunksProcessed": 3,
+    "atomCount": 1,
+    "wallMs": 20802,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "MinaLima created the props for the Harry Potter films."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-26",
+    "session": 10,
+    "label": "conv-26/s10 (flagship: beach-frequency, meteor-shower)",
+    "maxChunkChars": 800,
+    "chunksProcessed": 7,
+    "atomCount": 2,
+    "wallMs": 62744,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Connected LGBTQ Activists is a group of diverse people that holds regular meetings and plans events and campaigns to support one another."
+      },
+      {
+        "type": "event",
+        "text": "The city held a pride parade last weekend."
+      }
+    ],
+    "factHits": {
+      "beach-frequency (\"once or twice a year\")": false,
+      "meteor-shower awe (\"tiny\", \"awe of the universe\")": false
+    }
+  },
+  {
+    "sampleId": "conv-44",
+    "session": 18,
+    "label": "conv-44/s18 (flagship: dog-bed quote, hiking sunset)",
+    "maxChunkChars": 800,
+    "chunksProcessed": 5,
+    "atomCount": 0,
+    "wallMs": 25881,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {
+      "dog-bed quote (\"Super cozy and comfy\")": false,
+      "hiking sunset photo": false,
+      "daily self-care habit": false
+    }
+  },
+  {
+    "sampleId": "conv-47",
+    "session": 22,
+    "label": "conv-47/s22 (19 turns, 3196c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 800,
+    "chunksProcessed": 5,
+    "atomCount": 6,
+    "wallMs": 39710,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "event",
+        "text": "James said his Unity strategy game is finished."
+      },
+      {
+        "type": "note",
+        "text": "John asked James for more screenshots of the game."
+      },
+      {
+        "type": "note",
+        "text": "John asked James what inspired him to create the game."
+      },
+      {
+        "type": "lesson",
+        "text": "James described the game as a learning experience and said perseverance, patience, feedback, and collaboration mattered because help from other people improved the game. The point is that the project got better through iteration with outside input, not just solo effort. The tradeoff is that progress depended on slower, social feedback loops, but that also raised the quality of the result."
+      },
+      {
+        "type": "fact",
+        "text": "John has been teaching his siblings coding, and he said the experience has been fulfilling because they are already making their own programs."
+      },
+      {
+        "type": "fact",
+        "text": "John's siblings are starting with basic games and stories and are learning quickly."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-30",
+    "session": 13,
+    "label": "conv-30/s13 (23 turns, 3122c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 800,
+    "chunksProcessed": 5,
+    "atomCount": 6,
+    "wallMs": 40931,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "fact",
+        "text": "Jon has started his own dance studio business."
+      },
+      {
+        "type": "fact",
+        "text": "Gina has developed a video presentation to teach how to style her fashion pieces."
+      },
+      {
+        "type": "fact",
+        "text": "The studio is meant to be more than a business and to help dancers grow."
+      },
+      {
+        "type": "fact",
+        "text": "Jon is offering dance classes, workshops, one-on-one mentoring, and training to help dancers reach their full potential."
+      },
+      {
+        "type": "event",
+        "text": "Gina shared a photo of a skeleton and a trophy on a black cloth."
+      },
+      {
+        "type": "note",
+        "text": "Jon uses a whiteboard and color-codes achievements to stay on track, visualize goals, track progress, and stay motivated."
+      }
+    ],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-48",
+    "session": 20,
+    "label": "conv-48/s20 (26 turns, 3114c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 800,
+    "chunksProcessed": 5,
+    "atomCount": 0,
+    "wallMs": 27533,
+    "usageUsd": 0,
+    "atoms": [],
+    "factHits": {}
+  },
+  {
+    "sampleId": "conv-43",
+    "session": 2,
+    "label": "conv-43/s2 (19 turns, 3080c, genuinely 1 chunk @3200)",
+    "maxChunkChars": 800,
+    "chunksProcessed": 5,
+    "atomCount": 3,
+    "wallMs": 32318,
+    "usageUsd": 0,
+    "atoms": [
+      {
+        "type": "todo",
+        "text": "John will update others on which sports brands he chooses."
+      },
+      {
+        "type": "fact",
+        "text": "The picture on Tim's bookshelf is from MinaLima."
+      },
+      {
+        "type": "fact",
+        "text": "MinaLima created all the props for the Harry Potter films."
+      }
+    ],
+    "factHits": {}
+  }
+]
