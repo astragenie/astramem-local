@@ -28,6 +28,11 @@ Config-gated per repo convention, sane default retention window, sanity ceiling 
 - Distilled memories are never deleted by Media/Lean tiers.
 - Doctor stat: disk usage by category + last sweep result.
 
+- Boundary vs the existing sibling (arch review 2026-07-14): `src/storage/archival.ts`
+  (FEAT-404) already owns the MEMORY-ROW axis (non-destructive valid_to+archived flag, age +
+  trailing-usefulness, cleanup-handler cadence). FEAT-493 owns the DISK-ARTIFACT axis only —
+  never touch memory rows; do not duplicate or entangle with archival.ts.
+
 ## Notes
 
 Cheap (mode enum + scoped deletes). Decide which local artifacts count as "heavy derived

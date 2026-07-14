@@ -21,16 +21,22 @@ Four small, independent hardening items from the 2026-07-14 research (Screenpipe
    (pragma_table_info) and `ALTER TABLE ADD COLUMN` any a partially-applied earlier migration
    missed — SQLite has no ADD COLUMN IF NOT EXISTS; a partially-applied migration in the field is
    otherwise unrecoverable without support intervention.
-2. **Cursor-inits-to-now audit**: verify every capture source's cursor initializes to "now" on
-   first sight, never to "beginning" — enabling a new source must never replay historical backlog.
-   Audit existing sources (claude/codex/proxy) + make it the documented convention for FEAT-489/491.
-3. **json_valid guards**: any JSON column read by shared query paths and fed by BOTH local writes
-   and the sync path gets a `json_valid(...) ELSE '[]'` style guard so one malformed row cannot
-   break a shared endpoint for everything.
-4. **Per-run observability for pipeline handlers**: a run-log (handler, status, duration,
-   error_type/message) queryable by doctor — makes "built, wired, never invoked" and "silently
-   failing every run" both visible. Include a local dormant-seams sweep: grep `enabled:` flags and
-   stub branches, disposition each (sibling of cloud FEAT-523).
+2. **Cursor-inits-to-now CONVENTION** (reworded per arch review 2026-07-14: existing sources
+   claude/codex/proxy have NO cursor concept — they are hook-fired synchronous reads; audit
+   outcome for them is N/A by construction). The item's real value: document the convention —
+   any future watched-directory or event-stream capture mode (FEAT-489's possible watched-folder
+   mode, FEAT-491) initializes its watermark to "now" on first sight, never to "beginning";
+   enabling a source must never replay historical backlog.
+3. **json_valid guards**: enumerate the JSON columns read by shared query paths and fed by
+   BOTH local writes and the sync path FIRST (arch review: the enumeration is real scoping work,
+   the FEAT names none today), then guard each with a `json_valid(...) ELSE '[]'` style read so
+   one malformed row cannot break a shared endpoint.
+4a. **Per-run observability for pipeline handlers** (schema+code): a run-log (handler, status,
+   duration, error_type/message) queryable by doctor — makes "built, wired, never invoked" and
+   "silently failing every run" both visible.
+4b. **Dormant-seams sweep** (one-time manual audit, SEPARATE deliverable per arch review — its
+   output is a disposition list someone must actually read, not an absorbed "done"): grep
+   `enabled:` flags and stub branches, disposition each (sibling of cloud FEAT-523).
 
 ## Acceptance hints
 

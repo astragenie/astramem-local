@@ -29,7 +29,10 @@ only.
 
 - Re-running distill/reembed over unchanged content issues zero Ollama embed calls (verified by
   counter).
-- Cache keyed by (content hash, model, embed-role); TTL or size cap decided and documented.
+- Cache scoped to DOCUMENT-role embeds only (arch review 2026-07-14: role prefix is already
+  resolved centrally at `src/providers/index.ts:90-113` before provider construction; query
+  embeds don't repeat, so role-keyed generality buys nothing and adds a correctness dimension).
+  Key = (content hash, model); TTL or size cap decided and documented.
 - Doctor stat: hit rate visible.
 
 ## Notes

@@ -6,7 +6,7 @@ category: capture
 target_release: null
 created: 2026-07-14
 updated: 2026-07-14
-depends_on: []
+depends_on: [FEAT-496, FEAT-497]
 slices: []
 derived_from: memory repo docs/research/2026-07-14-final-report-transcription-memory-2week-plan.md
 ---
@@ -24,6 +24,18 @@ Packaging: whisper.cpp binding + model download ship as an OPTIONAL add-on packa
 (`@astragenie/astramem-audio` or similar), NOT in base `astramem-local` — keeps base install
 light and creates the future paid-add-on seam. Config-gated per repo convention:
 `audio.enabled: false` default, dry-run mode first.
+
+> **Arch review 2026-07-14 (applied):** (1) contract fields now owned by FEAT-496 —
+> `evidence[].transcript_id/span` already exist in atom@2; only `speaker_label` +
+> `segment_start_ms` are missing (additive/minor). (2) Consent/disclosure ADR (FEAT-497) gates
+> slice 1 — recording non-user speakers has no ADR-009 coverage today; ADR-012 precedent applies.
+> (3) Packaging needs a short design pass BEFORE build: no second-published-package precedent in
+> this repo (no workspaces/optionalDependencies; `better-sqlite3-multiple-ciphers` +
+> `trustedDependencies` at `package.json:54-57` is the native-module precedent to follow). Decide:
+> add-on presence probe (dynamic import + try/catch), base<->add-on version pinning, second
+> publish pipeline (release runbook is single-package today). (4) **v1 ships CPU-only whisper.cpp
+> build — pinned constraint, not preference**: a CUDA/Metal build would silently reintroduce the
+> exact GPU/VRAM failure class `src/doctor/gpu-checks.ts` exists to catch.
 
 ## Acceptance hints
 
