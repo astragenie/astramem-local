@@ -292,7 +292,7 @@ describe('init wizard — non-TTY mode', () => {
   // pins ASTRA_MEMORY_INIT_LLM_PROVIDER=ollama explicitly, so it is
   // unaffected by the v0.18.0 shipped-PROVIDER default flip (see the
   // "codex-subscription" test directly below for that).
-  it('non-TTY init with ollama provider + no model-tag override writes the ollama sub-default (qwen3.5:4b) to config.yaml', async () => {
+  it('non-TTY init with ollama provider + no model-tag override writes the ollama sub-default (qwen2.5:7b) to config.yaml', async () => {
     const dataDir = makeTmpDir();
     const cfgDir = makeTmpDir();
 
@@ -314,7 +314,7 @@ describe('init wizard — non-TTY mode', () => {
     const configPath = findFile(cfgDir, 'config.yaml');
     expect(configPath, 'config.yaml must exist').toBeDefined();
     const content = readFileSync(configPath!, 'utf8');
-    expect(content).toContain("model: 'qwen3.5:4b'");
+    expect(content).toContain("model: 'qwen2.5:7b'");
   });
 
   // v0.18.0: the shipped LLM PROVIDER default (distinct from the ollama
