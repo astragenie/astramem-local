@@ -1,0 +1,21 @@
+-- 044: consolidation_judge_runs.judge_calls_near_threshold (FEAT-499 stage 1,
+-- instrument-first).
+--
+-- The contradiction judge (src/consolidate/contradiction-judge.ts) is
+-- already gated to pairs with cosine similarity in
+-- [minSimilarity 0.6, mergeThreshold 0.92) (config.ts defaultConfig) -- see
+-- migrations/031-consolidation-judge-runs.sql for the full judge-cost
+-- background. Mnemon (internal/search/diff.go, Apache-2.0) proves a cheap
+-- deterministic short-circuit is possible above cosine 0.90: pairs that
+-- similar are almost always the same fact restated, not a real
+-- contradiction candidate. Before adding that skip (stage 2, gated on
+-- measured evidence -- see runConsolidation's FEAT-499 comments), this
+-- column makes the evidence itself visible: how many of a run's REAL judge
+-- calls (calls that actually dispatched to the LLM, not calls skipped by
+-- maxPerRun/maxWallClockMs) had a pair similarity in the near-threshold
+-- band [0.90, mergeThreshold). No behavior change -- purely additive
+-- counter, written by recordConsolidationJudgeRun
+-- (src/storage/consolidation-judge-log.ts) alongside judge_calls/
+-- judge_errors, surfaced by doctor's "Consolidation judge" check
+-- (src/doctor/checks/consolidation-judge.ts).
+ALTER TABLE consolidation_judge_runs ADD COLUMN judge_calls_near_threshold INTEGER NOT NULL DEFAULT 0;
