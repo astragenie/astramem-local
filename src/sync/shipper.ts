@@ -119,8 +119,12 @@ export async function readErrorBody(res: Response): Promise<string> {
     const text = await res.text();
     if (!text) return '';
     return text.length > MAX_ERROR_BODY_LEN ? `${text.slice(0, MAX_ERROR_BODY_LEN)}…` : text;
-  } catch {
-    return '';
+  } catch (err) {
+    // A truly empty body and a body we FAILED to read (connection reset after
+    // headers, decode error) are diagnostically different — the first points at
+    // a Kestrel/gateway-level reject with no payload, the second at a bodied
+    // app response we lost. Distinguish them instead of collapsing both to ''.
+    return `<unreadable body: ${err instanceof Error ? err.message : String(err)}>`;
   }
 }
 
@@ -411,7 +415,21 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
   });
   if (!res.ok) {
     const bodyText = await readErrorBody(res);
-    throw new Error(`sync ship failed: HTTP ${res.status}${bodyText ? ` ${bodyText}` : ''}`);
+    // DIAG (sync-400-visibility): an empty-body 400 hides whether the reject is
+    // auth, model-binding, or an upstream gateway — surface status-line headers
+    // + token presence so the cause is diagnosable from the daemon log alone.
+    // Optional-chain every header read: this block exists to make the HTTP
+    // failure diagnosable, so it must never itself throw and REPLACE the real
+    // `HTTP <status>` error with a `TypeError: cannot read 'get'` (which is
+    // exactly what a non-standard/headers-less Response would otherwise cause).
+    const ct = res.headers?.get('content-type') ?? '';
+    const wa = res.headers?.get('www-authenticate') ?? '';
+    const srv = res.headers?.get('server') ?? '';
+    const reqId = res.headers?.get('x-request-id') ?? res.headers?.get('request-id') ?? '';
+    const diag = `ct='${ct}' www-auth='${wa}' server='${srv}' reqId='${reqId}' tokenLen=${opts.token?.length ?? 0} batch=${rows.length}`;
+    throw new Error(
+      `sync ship failed: HTTP ${res.status}${bodyText ? ` body=${bodyText}` : ' (empty body)'} [${diag}]`,
+    );
   }
   const body = (await res.json()) as { acked_seq?: number; rejected_seqs?: unknown };
   const ackedSeq = typeof body.acked_seq === 'number' ? body.acked_seq : -1;

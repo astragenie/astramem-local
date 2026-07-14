@@ -230,6 +230,7 @@ describe('shipOnce — ack cursor semantics', () => {
       return {
         ok: (response.status ?? 200) < 400,
         status: response.status ?? 200,
+        headers: new Headers(),
         json: async () => response.body ?? {},
         text: async () => bodyText,
       } as Response;
@@ -278,16 +279,18 @@ describe('shipOnce — ack cursor semantics', () => {
   // in the daemon log without extra instrumentation.
   it('HTTP failure includes the response body in the thrown error', async () => {
     const { impl } = fakeFetch({ status: 403, bodyText: '{"error":"sync_disabled"}' });
-    await expect(shipOnce(baseOpts(impl))).rejects.toThrow('sync ship failed: HTTP 403 {"error":"sync_disabled"}');
+    await expect(shipOnce(baseOpts(impl))).rejects.toThrow('sync ship failed: HTTP 403 body={"error":"sync_disabled"}');
   });
 
   it('bounds an oversized error body to ~500 chars', async () => {
     const huge = 'x'.repeat(2000);
     const { impl } = fakeFetch({ status: 500, bodyText: huge });
-    await expect(shipOnce(baseOpts(impl))).rejects.toThrow(/x{500}…$/);
+    // Truncated body + ellipsis still present; a diagnostics suffix ([...]) now
+    // follows the body, so this no longer anchors at end-of-string.
+    await expect(shipOnce(baseOpts(impl))).rejects.toThrow(/body=x{500}…/);
   });
 
-  it('omits the trailing space when the failure response has no body', async () => {
+  it('marks an empty failure body as "(empty body)" rather than a bare status', async () => {
     const { impl } = fakeFetch({ status: 500, bodyText: '' });
     let caught: Error | undefined;
     try {
@@ -295,7 +298,9 @@ describe('shipOnce — ack cursor semantics', () => {
     } catch (err) {
       caught = err as Error;
     }
-    expect(caught?.message).toBe('sync ship failed: HTTP 500');
+    // sync-400-visibility: an empty-body reject is exactly the case we could
+    // not diagnose before — it must read "(empty body)", not omit the marker.
+    expect(caught?.message).toContain('sync ship failed: HTTP 500 (empty body)');
   });
 
   it('network failure leaves everything unsynced', async () => {
@@ -449,9 +454,14 @@ describe('readErrorBody', () => {
     expect(out).toBe(`${'y'.repeat(500)}…`);
   });
 
-  it('never throws — a body-read failure resolves to empty string', async () => {
+  it('never throws — a body-read failure surfaces as a distinct "<unreadable body>" marker', async () => {
     const res = { text: async () => { throw new Error('stream already consumed'); } } as unknown as Response;
-    expect(await readErrorBody(res)).toBe('');
+    // sync-400-visibility: a body we FAILED to read is diagnostically distinct
+    // from a truly empty body — it must not collapse to '' (which reads as
+    // "gateway rejected with no payload") but carry the read error.
+    const out = await readErrorBody(res);
+    expect(out).toMatch(/^<unreadable body: /);
+    expect(out).toContain('stream already consumed');
   });
 });
 
