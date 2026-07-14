@@ -217,6 +217,31 @@ describe('HttpCrossEncoderProvider', () => {
 
     expect(result).toEqual(hits);
   });
+
+  // Issue #261: proves HttpCrossEncoderProvider.score() actually wires a
+  // caller-supplied signal into the outgoing fetch, combined with (not
+  // replacing) its own internal AbortSignal.timeout ceiling. The provider's
+  // own ceiling here is a generous 60s — only the caller's controller can
+  // explain a cancellation this fast.
+  it('issue #261: combines a caller signal with its own timeout — caller abort cancels the underlying fetch', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    const fetchImpl = vi.fn((_url: unknown, init?: RequestInit) => {
+      capturedSignal = init?.signal ?? undefined;
+      return new Promise<Response>((_, reject) => {
+        capturedSignal?.addEventListener('abort', () => {
+          reject(new DOMException('The operation was aborted', 'AbortError'));
+        });
+      });
+    }) as unknown as typeof fetch;
+    const provider = new HttpCrossEncoderProvider({ url: 'http://sidecar/rerank', timeoutMs: 60_000, fetchImpl });
+
+    const controller = new AbortController();
+    const scorePromise = provider.score('query', candidates, controller.signal);
+    controller.abort();
+
+    await expect(scorePromise).rejects.toThrow();
+    expect(capturedSignal?.aborted).toBe(true);
+  });
 });
 
 describe('applyRerank', () => {
@@ -286,6 +311,48 @@ describe('applyRerank', () => {
     const opts: RerankOpts = { topK: 10, timeoutMs: 300, provider: throwingProvider };
     const result = await applyRerank('query', hits, opts);
     expect(result).toEqual(hits);
+  });
+
+  // Issue #261 (Bug 1): the pre-fix `withTimeout` raced a promise against a
+  // timer and, on timeout, simply ABANDONED the losing promise — the
+  // provider's "work" (here, a background timer standing in for a real HTTP
+  // cross-encoder call) kept running to completion after applyRerank had
+  // already fallen back to the un-reranked order. This test fails against
+  // the unfixed code: the old `score(query, candidates)` call site passed no
+  // signal at all, so `signal` below would be `undefined`, `sawAbort` would
+  // never become `true`, and the background timer would complete normally
+  // 250ms later.
+  it('issue #261: a timeout actually CANCELS the provider call (fires its signal) instead of abandoning it', async () => {
+    let sawAbort = false;
+    let completed = false;
+    const slowProvider: CrossEncoderProvider = {
+      name: 'mock',
+      score: (_query, _candidates, signal) =>
+        new Promise<Map<string, number>>((resolve) => {
+          const t = setTimeout(() => {
+            completed = true;
+            resolve(new Map([['a', 1]]));
+          }, 200);
+          signal?.addEventListener('abort', () => {
+            sawAbort = true;
+            clearTimeout(t);
+          });
+        }),
+    };
+    const hits: Hit[] = [
+      { id: 'a', text: 'a', score: 0.1 },
+      { id: 'b', text: 'b', score: 0.9 },
+    ];
+    const opts: RerankOpts = { topK: 10, timeoutMs: 20, provider: slowProvider };
+
+    const result = await applyRerank('query', hits, opts);
+    expect(result).toEqual(hits);
+    expect(sawAbort).toBe(true);
+
+    // Give the (should-be-cancelled) background timer a chance to fire if it
+    // was only abandoned rather than truly cancelled.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(completed).toBe(false);
   });
 
   it('clamps out-of-range provider scores into [0,1] rather than propagating them raw', async () => {

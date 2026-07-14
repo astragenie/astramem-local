@@ -112,6 +112,42 @@ describe('getSubQueries', () => {
     const result = await getSubQueries('a sufficiently long multi word query here', opts(decomposer, { maxSubQueries: 2 }));
     expect(result.length).toBe(2);
   });
+
+  // Issue #261 (Bug 1): the pre-fix `withTimeout` raced a promise against a
+  // timer and, on timeout, simply ABANDONED the losing promise — the
+  // decomposer's "work" (here, a background timer standing in for a real
+  // Ollama generation) kept running to completion after getSubQueries had
+  // already returned []. This test fails against the unfixed code: the old
+  // `decompose(query)` call site passed no signal at all, so `signal` below
+  // would be `undefined`, `sawAbort` would never become `true`, and the
+  // background timer would complete normally 250ms later.
+  it('issue #261: a timeout actually CANCELS the decomposer (fires its signal) instead of abandoning it', async () => {
+    let sawAbort = false;
+    let completed = false;
+    const decomposer: QueryDecomposer = {
+      name: 'mock',
+      decompose: (_query, signal) =>
+        new Promise<string[]>((resolve) => {
+          const t = setTimeout(() => {
+            completed = true;
+            resolve(['too late']);
+          }, 200);
+          signal?.addEventListener('abort', () => {
+            sawAbort = true;
+            clearTimeout(t);
+          });
+        }),
+    };
+
+    const result = await getSubQueries('a sufficiently long multi word query here', opts(decomposer, { timeoutMs: 20 }));
+    expect(result).toEqual([]);
+    expect(sawAbort).toBe(true);
+
+    // Give the (should-be-cancelled) background timer a chance to fire if it
+    // was only abandoned rather than truly cancelled.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(completed).toBe(false);
+  });
 });
 
 describe('resolveDecomposeOpts', () => {
@@ -181,10 +217,56 @@ describe('LlmQueryDecomposer', () => {
     expect(await decomposer.decompose('anything')).toEqual([]);
   });
 
-  it('returns [] for valid JSON that is not a string array', async () => {
-    const provider = providerReturning('{"sub_queries": ["a", "b"]}');
+  it('returns [] for JSON that is neither an array nor an object (a bare scalar)', async () => {
+    const provider = providerReturning('"just a string"');
     const decomposer = new LlmQueryDecomposer(provider, 3);
     expect(await decomposer.decompose('anything')).toEqual([]);
+  });
+
+  // Issue #261 (Bug 2): Ollama's `format: json` guarantees valid JSON, not a
+  // JSON *array* — measured live against real multi-hop questions, both
+  // qwen3:8b and qwen2.5-coder:7b reliably returned a JSON OBJECT instead
+  // (e.g. `{"Who gave Melanie the painting?": "...", ...}`), and the old
+  // strict `Array.isArray` check discarded every one of them: 0/48 usable
+  // decompositions. This asserts the tolerant fallback that replaced it —
+  // take the object's KEYS (the sub-questions, per the live evidence), not
+  // its values (answers/prose).
+  it('issue #261: tolerates a JSON OBJECT response by taking its keys as sub-queries', async () => {
+    const provider = providerReturning(
+      '{"Who gave Melanie the painting?": "unknown", "What does that person do for work?": "unknown"}',
+    );
+    const decomposer = new LlmQueryDecomposer(provider, 3);
+    expect(await decomposer.decompose('anything')).toEqual([
+      'Who gave Melanie the painting?',
+      'What does that person do for work?',
+    ]);
+  });
+
+  it('issue #261: an object response is capped at maxSubQueries just like an array response', async () => {
+    const provider = providerReturning('{"a": 1, "b": 2, "c": 3, "d": 4}');
+    const decomposer = new LlmQueryDecomposer(provider, 2);
+    expect(await decomposer.decompose('anything')).toEqual(['a', 'b']);
+  });
+
+  it('issue #261: requests a JSON-Schema-constrained array shape via jsonSchema, not just json:true', async () => {
+    const provider = providerReturning('[]');
+    const decomposer = new LlmQueryDecomposer(provider, 3);
+    await decomposer.decompose('anything');
+    expect(provider.chat).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ jsonSchema: { type: 'array', items: { type: 'string' } } }),
+    );
+  });
+
+  it('issue #261: forwards a caller-supplied AbortSignal through to provider.chat', async () => {
+    const provider = providerReturning('[]');
+    const decomposer = new LlmQueryDecomposer(provider, 3);
+    const controller = new AbortController();
+    await decomposer.decompose('anything', controller.signal);
+    expect(provider.chat).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ signal: controller.signal }),
+    );
   });
 
   it('caps its own output at maxSubQueries', async () => {

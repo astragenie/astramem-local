@@ -167,6 +167,46 @@ describe('azure-embed', () => {
       expect(callCount).toBe(2);
     });
 
+    // Issue #261: proves embed() actually wires a caller-supplied signal
+    // into the outgoing fetch, combined with (not replacing) its own
+    // internal EMBED_TIMEOUT_MS ceiling.
+    it('issue #261: a caller-supplied AbortSignal cancels the underlying fetch', async () => {
+      let capturedSignal: AbortSignal | undefined;
+      let handlerRanToCompletion = false;
+      globalThis.fetch = vi.fn((_url: unknown, init?: RequestInit) => {
+        capturedSignal = init?.signal ?? undefined;
+        return new Promise<Response>((resolve, reject) => {
+          const abortErr = () => new DOMException('The operation was aborted', 'AbortError');
+          // fetchWithRetry retries once on any rejected attempt (including an
+          // abort), re-invoking fetch with an ALREADY-aborted combined
+          // signal — mirror real fetch() (synchronous rejection for an
+          // already-aborted signal) instead of waiting for an 'abort' event
+          // that already fired.
+          if (capturedSignal?.aborted) {
+            reject(abortErr());
+            return;
+          }
+          const t = setTimeout(() => {
+            handlerRanToCompletion = true;
+            resolve(new Response(JSON.stringify(azureEmbedResponse([makeVec(1024)]).body), { status: 200 }));
+          }, 5_000);
+          capturedSignal?.addEventListener('abort', () => {
+            clearTimeout(t);
+            reject(abortErr());
+          });
+        });
+      }) as unknown as typeof fetch;
+
+      const p = new AzureOpenAIEmbedProvider({ ...FAKE_CREDS });
+      const controller = new AbortController();
+      const embedPromise = p.embed(['x'], controller.signal);
+      controller.abort();
+
+      await expect(embedPromise).rejects.toThrow();
+      expect(capturedSignal?.aborted).toBe(true);
+      expect(handlerRanToCompletion).toBe(false);
+    });
+
     it('preserves input order via index sort', async () => {
       // Return items out-of-order from Azure
       globalThis.fetch = vi.fn(async () => {
