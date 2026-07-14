@@ -715,25 +715,49 @@ export interface Config {
    *  `capture.autoCapture`'s ADR-012 gate, which only ever captures the
    *  operator's own agent sessions. Default OFF + explicit per-surface
    *  opt-in (this field is its own toggle, never bundled with any other
-   *  capture surface) + a doctor WARN row for as long as it stays non-'off'
-   *  (src/doctor/checks/audio-addon.ts, mirroring checkDevNoAuth's
-   *  "genuine every-run reminder while active" pattern, not a one-shot
-   *  wiring canary) are this repo's ADR-017 decision-3 gate. Known gap,
-   *  stated plainly rather than silently skipped: unlike ADR-012's
-   *  auto-capture, `audio.mode` is NOT collected by the `init` interactive
-   *  wizard (gatherInteractive) — no other mode-enum toggle in this file
-   *  (durabilityGate, contradictionDetection) has an interactive wizard
-   *  gate either, so hand-editing config.yaml is this repo's existing
-   *  opt-in mechanism for this whole class of toggle, and the doctor
-   *  WARN-while-active row is the enforcement point this slice ships. A
-   *  live interactive consent prompt at first-enable is a legitimate
-   *  follow-up if product wants a stronger gate than config-edit +
-   *  doctor-WARN, not built here. */
+   *  capture surface) are this repo's ADR-017 decision-3 gate, PLUS the
+   *  `disclosureAcknowledged` enforcement gate documented below.
+   *
+   *  **v1 disclosure surface, revised post-review (2026-07-14):** an earlier
+   *  draft of this comment argued the doctor WARN row alone satisfied
+   *  decision 3 (reasoning by analogy to durabilityGate/contradictionDetection,
+   *  neither of which has a wizard prompt). Review (needs_fix,
+   *  20260714T190303Z-review-result-l1-1-audio-slice-a.md) correctly rejected
+   *  that: ADR-017's whole premise is that third-party consent is NOT the
+   *  same trust class as those toggles, and decision 3's "shown at the
+   *  moment of consent" bar is materially stronger than "visible on the next
+   *  `doctor` run, if the operator happens to run it." Rather than retrofit
+   *  surgery onto `gatherInteractive` (a large, well-tested function that
+   *  doesn't otherwise collect `audio.mode` at all — real regression risk for
+   *  a setting that isn't part of its flow), this ships an ENFORCEABLE
+   *  acknowledgment gate instead: `disclosureAcknowledged` (below) defaults
+   *  `false`; the transcribe handler (src/pipeline/handlers/transcribe.ts)
+   *  REFUSES to process — with the full canonical disclosure copy
+   *  (`THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE`, this file) in the error — for
+   *  as long as `mode !== 'off' && !disclosureAcknowledged`. This makes the
+   *  disclosure unavoidable at the moment capture would actually happen (you
+   *  cannot successfully transcribe anything without having set this to
+   *  `true`), which is a stronger property than a one-time wizard prompt the
+   *  operator could in principle click through without reading — it satisfies
+   *  the ADR's INTENT (disclosure is seen and acted on before capture) via a
+   *  mechanism this repo can ship today. The interactive `init` wizard prompt
+   *  ADR-017 literally asks for remains the v2 upgrade path (nicer UX, same
+   *  underlying gate) — tracked as a follow-up, not built here. The doctor
+   *  WARN row (src/doctor/checks/audio-addon.ts) is unchanged as the ongoing
+   *  every-run reminder while the surface stays active; it now also tells the
+   *  operator exactly which config key to set when unacknowledged. */
   audio: {
     mode: 'off' | 'dry-run' | 'enabled';
     /** Optional override for the downloaded whisper.cpp model path; unset
      *  uses the `astramem-audio` add-on's own default download location. */
     modelPath?: string;
+    /** ADR-017 decision 3 enforcement gate — see the `audio` block's own doc
+     *  comment above for the full "why not a wizard prompt" reasoning.
+     *  Default `false`. The operator sets this to `true` in config.yaml only
+     *  after reading `THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE` (this file) —
+     *  the transcribe handler refuses to run at all while `mode !== 'off'`
+     *  and this is `false`, regardless of add-on presence. */
+    disclosureAcknowledged?: boolean;
   };
   /** LLM proxy / auto-capture Tier 3 (FEAT-458, ADR-013). `enabled: false`
    *  (default, and the field's ABSENCE on an existing config.yaml) means no
@@ -950,12 +974,13 @@ export function defaultConfig(): Config {
       },
       purge: { restoreWindowDays: 30 },
     },
-    // audio.mode: 'off' — ADR-017-required default; audio.enabled: false is
-    // the shipped disposition, no interactive wizard prompt exists to flip
-    // it (see Config['audio'] doc comment for why config.yaml hand-edit is
-    // this repo's existing opt-in mechanism for this class of toggle).
+    // audio.mode: 'off' — ADR-017-required default; disclosureAcknowledged:
+    // false is the shipped disposition — see Config['audio'] doc comment for
+    // why this is an enforceable acknowledgment gate rather than a wizard
+    // prompt in v1.
     audio: {
       mode: 'off',
+      disclosureAcknowledged: false,
     },
     proxy: {
       enabled: false,
@@ -1064,6 +1089,27 @@ export function applyDurabilityGateGovernance(
   }
   return distill;
 }
+
+/**
+ * ADR-017 decision 3: canonical disclosure copy, shared verbatim across the
+ * astramem-local `init` wizard (audio, FEAT-489 — v2 upgrade path, see
+ * Config['audio']'s doc comment) and the astramem-plugin opt-in UI (meeting
+ * captions, FEAT-491) — so an operator who has seen one recognizes the same
+ * posture in the other. Exported (not inlined at the one call site) so the
+ * transcribe handler's refusal error and the doctor WARN row
+ * (src/doctor/checks/audio-addon.ts) read the exact same string rather than
+ * two hand-copied near-duplicates drifting apart. Functional draft per
+ * ADR-017's own acceptance checklist item 2 — not yet legal/marketing-
+ * reviewed language. NAME AND TEXT MUST STAY IN SYNC with FEAT-491's own
+ * copy of this same constant (wave/l1-2-captions, not yet merged at the time
+ * this was written) — same string, same name, so a later merge is a no-op
+ * rather than two divergent disclosure texts.
+ */
+export const THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE =
+  'This will capture what other people say in your meetings/calls, not just your own words. ' +
+  'Recording or transcribing someone without their knowledge is restricted or illegal in many ' +
+  'places. Turning this on does not make it legal — you are responsible for informing other ' +
+  'participants and getting consent where required.';
 
 /**
  * FEAT-489 Slice A: `audio.mode` is a closed 3-value enum, same governance

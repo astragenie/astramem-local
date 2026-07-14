@@ -1,15 +1,15 @@
 /**
  * tests/doctor/audio-addon-check.test.ts
  *
- * FEAT-489 Slice A / ADR-017. Two things this check reports, tested
- * separately: (1) the presence/version probe (packaging design pass
- * decisions 1-2), exercised end-to-end via getChecks() since no real
- * `astramem-audio` package is installed in this test environment — the
- * probe's real absent-branch fires naturally; (2) the ADR-017
- * every-run-while-active disclosure WARN, which needs an injected importer
- * to simulate a present, version-matched add-on (checkAudioAddon called
- * directly, mirroring how other checks with an injection seam are unit
- * tested outside getChecks()).
+ * FEAT-489 Slice A / ADR-017. Three things this check reports, tested in
+ * the same priority order the check itself uses: (1) the disclosure-
+ * acknowledgment gate (ADR-017 decision 3 v1 enforcement surface — needs_fix
+ * review follow-up), checked before anything about the add-on; (2) the
+ * presence/version probe (packaging design pass decisions 1-2), exercised
+ * end-to-end via getChecks() since no real `astramem-audio` package is
+ * installed in this test environment; (3) the ADR-017 every-run-while-
+ * active disclosure WARN, which needs an injected importer to simulate a
+ * present, version-matched add-on (checkAudioAddon called directly).
  */
 import { describe, it, expect } from 'vitest';
 import { getChecks } from '../../src/doctor/checks.js';
@@ -31,25 +31,42 @@ describe('doctor "Audio add-on" check', () => {
     expect(result.message).toContain('off');
   });
 
-  it('audioMode: off — ok:true regardless of add-on presence', async () => {
+  it('audioMode: off — ok:true regardless of disclosure-acknowledgment or add-on presence', async () => {
     const result = await findCheck(getChecks({ audioMode: 'off' }), CHECK_NAME).run();
     expect(result.ok).toBe(true);
   });
 
-  it('audioMode: enabled, add-on genuinely absent — ok:false with install instruction', async () => {
+  it('audioMode: enabled, disclosureAcknowledged omitted (defaults false) — ok:false naming the exact config key to set, checked BEFORE the probe', async () => {
     const result = await findCheck(getChecks({ audioMode: 'enabled' }), CHECK_NAME).run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('audio.disclosureAcknowledged');
+    expect(result.fix).toContain('disclosureAcknowledged: true');
+    // Must not fall through to the probe-absent message — the disclosure
+    // gate is unconditional and checked first.
+    expect(result.message.toLowerCase()).not.toContain('not installed');
+  });
+
+  it('audioMode: dry-run, disclosureAcknowledged false — same gate fires', async () => {
+    const result = await findCheck(getChecks({ audioMode: 'dry-run', audioDisclosureAcknowledged: false }), CHECK_NAME).run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('audio.disclosureAcknowledged');
+  });
+
+  it('audioMode: enabled, disclosureAcknowledged true, add-on genuinely absent — ok:false with install instruction', async () => {
+    const result = await findCheck(getChecks({ audioMode: 'enabled', audioDisclosureAcknowledged: true }), CHECK_NAME).run();
     expect(result.ok).toBe(false);
     expect(result.message.toLowerCase()).toContain('not installed');
     expect(result.fix).toContain('npm install astramem-audio');
   });
 
-  it('audioMode: dry-run, add-on absent — still ok:false (same probe failure)', async () => {
-    const result = await findCheck(getChecks({ audioMode: 'dry-run' }), CHECK_NAME).run();
+  it('audioMode: dry-run, disclosureAcknowledged true, add-on absent — still ok:false (same probe failure)', async () => {
+    const result = await findCheck(getChecks({ audioMode: 'dry-run', audioDisclosureAcknowledged: true }), CHECK_NAME).run();
     expect(result.ok).toBe(false);
+    expect(result.message.toLowerCase()).toContain('not installed');
   });
 
-  it('add-on present + version mismatch — ok:false with a distinct message from "not installed"', async () => {
-    const check = checkAudioAddon('enabled', async () => ({
+  it('add-on present + version mismatch (acknowledged) — ok:false with a distinct message from "not installed"', async () => {
+    const check = checkAudioAddon('enabled', true, async () => ({
       ASTRAMEM_AUDIO_ADDON_API_VERSION: 999,
       transcribe: async () => [],
     }));
@@ -59,8 +76,8 @@ describe('doctor "Audio add-on" check', () => {
     expect(result.message).not.toContain('not installed');
   });
 
-  it('add-on present + version OK, mode enabled — genuine every-run WARN (ADR-017 disclosure), not a health failure', async () => {
-    const check = checkAudioAddon('enabled', async () => ({
+  it('add-on present + version OK + acknowledged, mode enabled — genuine every-run WARN (ADR-017 disclosure), not a health failure', async () => {
+    const check = checkAudioAddon('enabled', true, async () => ({
       ASTRAMEM_AUDIO_ADDON_API_VERSION: AUDIO_ADDON_API_VERSION,
       transcribe: async () => [],
     }));
@@ -71,8 +88,8 @@ describe('doctor "Audio add-on" check', () => {
     expect(result.message.toLowerCase()).not.toContain('unsupported');
   });
 
-  it('add-on present + version OK, mode dry-run — same disclosure WARN fires', async () => {
-    const check = checkAudioAddon('dry-run', async () => ({
+  it('add-on present + version OK + acknowledged, mode dry-run — same disclosure WARN fires', async () => {
+    const check = checkAudioAddon('dry-run', true, async () => ({
       ASTRAMEM_AUDIO_ADDON_API_VERSION: AUDIO_ADDON_API_VERSION,
       transcribe: async () => [],
     }));

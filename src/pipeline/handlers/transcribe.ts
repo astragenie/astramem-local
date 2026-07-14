@@ -19,6 +19,13 @@
  * visible failure in `queue`/doctor rather than a silent skip (ADR-015: no
  * silent success-shaped failure).
  *
+ * ADR-017 decision 3 disclosure enforcement (v1 surface — see
+ * Config['audio']'s doc comment): also refuses whenever
+ * `audio.disclosureAcknowledged !== true`, embedding the full canonical
+ * disclosure copy in the thrown error. Checked before the add-on probe so
+ * the consent gate is unconditional, never merely one more precondition an
+ * operator could satisfy without ever reading the disclosure.
+ *
  * Add-on absence/version-mismatch (packaging design pass decisions 1-2):
  * throws a specific, actionable Error — caught by the worker's normal
  * handler-failure path (JobRepo.fail -> retry/poison), same as every other
@@ -34,6 +41,7 @@ import { AUDIO_ADDON_API_VERSION } from '../../audio/addon-contract.js';
 import { filterLowConfidenceSegments } from '../../audio/confidence-filter.js';
 import { recordTranscriptionGuardDrops } from '../../storage/transcription-guard-log.js';
 import { redactIfEnabled } from '../../redact/index.js';
+import { THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE } from '../../config/config.js';
 import { randomUUID } from 'node:crypto';
 
 const TranscribePayloadFlexSchema = z.object({
@@ -64,6 +72,20 @@ export const transcribeHandler: JobHandler = {
         'transcribe job dequeued while audio.mode is \'off\' — refusing to process a stale/stray job rather ' +
         'than silently transcribing audio the operator no longer consents to capturing (ADR-017). If audio ' +
         'capture is genuinely wanted, set audio.mode to \'dry-run\' or \'enabled\' in config.yaml and re-enqueue.',
+      );
+    }
+
+    // ADR-017 decision 3 enforcement gate (v1 disclosure surface — see
+    // Config['audio']'s doc comment for why this replaces an init-wizard
+    // prompt in this slice). Checked BEFORE the add-on probe: an operator
+    // who hasn't acknowledged the disclosure must never learn "add-on
+    // missing" first and "you need to acknowledge consent" second — the
+    // consent gate is unconditional, not merely one more precondition.
+    if (!ctx.config.audio.disclosureAcknowledged) {
+      throw new Error(
+        `audio.mode is '${mode}' but audio.disclosureAcknowledged is not true — refusing to transcribe. ` +
+        `${THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE} Set audio.disclosureAcknowledged: true in config.yaml ` +
+        'after reading and understanding this, then re-enqueue.',
       );
     }
 

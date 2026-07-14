@@ -346,6 +346,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     // cli/doctor.ts's on-demand construction of this option).
     devNoAuthActive: cfg.auth.devNoAuth === true && isLoopbackHost(cfg.network.host),
     audioMode: cfg.audio.mode,
+    audioDisclosureAcknowledged: cfg.audio.disclosureAcknowledged ?? false,
   };
   // Full-tier opts add the real providers — used ONLY on the 24h piggyback
   // below, never on the frequent tick. Safe under ASTRA_MEMORY_MOCK_PROVIDERS

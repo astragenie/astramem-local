@@ -12,6 +12,7 @@ import { randomUUID } from 'node:crypto';
 import { openRuntimeDb } from './open-runtime-db.js';
 import { JobRepo } from '../pipeline/job-repo.js';
 import { deriveProject } from '../pipeline/derive-project.js';
+import { THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE } from '../config/config.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -41,6 +42,21 @@ export async function ingestAudioCommand(args: string[]): Promise<void> {
       '\'dry-run\' or \'enabled\' in config.yaml before running this command. See ADR-017: enabling this ' +
       'captures OTHER people\'s voices too, not just your own — you are responsible for informing/obtaining ' +
       'consent from other participants where required.',
+    );
+    process.exitCode = 1;
+    db.close();
+    return;
+  }
+
+  // ADR-017 decision 3 enforcement gate — same check transcribeHandler
+  // makes at dequeue time; failing fast HERE too means an operator who
+  // hasn't acknowledged the disclosure gets the message immediately, not
+  // after a job round-trips through the queue.
+  if (!cfg.audio.disclosureAcknowledged) {
+    console.error(
+      `ingest-audio: audio.mode is '${cfg.audio.mode}' but audio.disclosureAcknowledged is not true. ` +
+      `${THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE} Set audio.disclosureAcknowledged: true in config.yaml ` +
+      'after reading and understanding this, then re-run.',
     );
     process.exitCode = 1;
     db.close();

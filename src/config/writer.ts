@@ -418,6 +418,10 @@ export function configToYaml(cfg: Config): string {
     // retention.artifactsDir's conditional-emit pattern above.
     line(0, 'audio'),
     line(1, 'mode', (cfg.audio ?? EMIT_DEFAULTS.audio).mode),
+    // ADR-017 decision 3 enforcement gate (v1 disclosure surface) — see
+    // Config['audio'] doc comment. Always emitted (not conditional) so an
+    // operator hand-editing config.yaml sees the key exists at all.
+    line(1, 'disclosureAcknowledged', (cfg.audio ?? EMIT_DEFAULTS.audio).disclosureAcknowledged ?? false),
     ...((cfg.audio ?? EMIT_DEFAULTS.audio).modelPath
       ? [line(1, 'modelPath', (cfg.audio ?? EMIT_DEFAULTS.audio).modelPath as string)]
       : []),

@@ -222,7 +222,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkMigrationSelfHeal(dataDir, encryptionEnabled),
     checkHandlerRunLog(dataDir, encryptionEnabled),
     checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
-    checkAudioAddon(opts.audioMode ?? 'off'),
+    checkAudioAddon(opts.audioMode ?? 'off', opts.audioDisclosureAcknowledged ?? false),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

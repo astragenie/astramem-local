@@ -127,6 +127,11 @@ export interface DoctorCheckOpts {
    * (the shipped, ADR-017-required default) when not supplied — see
    * `checkAudioAddon`. */
   audioMode?: Config['audio']['mode'];
+  /** FEAT-489 Slice A / ADR-017 decision 3: current
+   * `audio.disclosureAcknowledged`. Defaults to `false` (the shipped
+   * default — nothing is acknowledged until the operator explicitly sets
+   * this) when not supplied — see `checkAudioAddon`. */
+  audioDisclosureAcknowledged?: boolean;
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────
