@@ -8,7 +8,7 @@ export type JobState =
   | 'poison'
   | 'paused';
 
-export type JobKind = 'distill' | 'reembed' | 'cleanup' | 'distill-events' | 'consolidate';
+export type JobKind = 'distill' | 'reembed' | 'cleanup' | 'distill-events' | 'consolidate' | 'transcribe';
 
 export const DistillPayloadSchema = z.object({
   kind: z.literal('distill'),
@@ -38,17 +38,34 @@ export const CleanupPayloadSchema = z.object({
   older_than_days: z.number().int().min(1).default(30)
 });
 
+/**
+ * FEAT-489 Slice A — audio file ingest. `audio_path` is an absolute path to
+ * a local audio file (wav/mp3/m4a); `session_id` mirrors distill's own
+ * requirement so the resulting transcript/memories carry normal session
+ * provenance. Enqueued only when `config.audio.mode !== 'off'` (see
+ * src/cli/audio.ts / src/pipeline/handlers/transcribe.ts) — the handler
+ * itself defensively re-checks mode and refuses a stray 'off'-mode job
+ * rather than silently processing it (ADR-015: no silent success path).
+ */
+export const TranscribePayloadSchema = z.object({
+  kind: z.literal('transcribe'),
+  audio_path: z.string().min(1),
+  session_id: z.string().min(1)
+});
+
 export const JobPayloadSchema = z.discriminatedUnion('kind', [
   DistillPayloadSchema,
   ReembedPayloadSchema,
   CleanupPayloadSchema,
-  DistillEventsPayloadSchema
+  DistillEventsPayloadSchema,
+  TranscribePayloadSchema
 ]);
 
 export type DistillPayload = z.infer<typeof DistillPayloadSchema>;
 export type ReembedPayload = z.infer<typeof ReembedPayloadSchema>;
 export type CleanupPayload = z.infer<typeof CleanupPayloadSchema>;
 export type DistillEventsPayload = z.infer<typeof DistillEventsPayloadSchema>;
+export type TranscribePayload = z.infer<typeof TranscribePayloadSchema>;
 export type JobPayload = z.infer<typeof JobPayloadSchema>;
 
 export interface Job {

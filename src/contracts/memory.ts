@@ -107,16 +107,23 @@ export interface Memory {
    *  ordinary astramem-plugin close-capture hook, `null` for every other
    *  write path (`/remember`, manual hook capture predating FEAT-449, Codex
    *  capture — the vast majority of rows). Widened again FEAT-458 S3:
-   *  `'proxy'` from the LLM proxy relay's capture fork (ADR-013). See
+   *  `'proxy'` from the LLM proxy relay's capture fork (ADR-013). Widened
+   *  again FEAT-489 (Slice A): `'audio_transcribe'` from the on-device
+   *  audio-file transcription pipeline (src/pipeline/handlers/transcribe.ts).
+   *  Widened again FEAT-491: `'meeting_captions'` from caption-sourced
+   *  transcripts scraped by the astramem-plugin browser extension. See
    *  InsertInput.capture_source. */
-  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions' | null;
+  capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | 'meeting_captions' | null;
   /** FEAT-491: display-name/label this atom's `evidence` excerpt was traced
    *  back to (src/distill/attribute-speaker.ts) — see InsertInput.speaker_label. */
   speaker_label: string | null;
-  /** FEAT-491 (ADR-017 decision 6): tri-state — `null` means "not applicable
-   *  or not recorded" (every non-meeting-captions atom), `true`/`false` means
-   *  an explicit disclosure determination was made at capture time. See
-   *  InsertInput.consent_disclosed. */
+  /** FEAT-489/FEAT-491 (ADR-017 decision 6): tri-state — `null` means "not
+   *  applicable or not recorded" (every atom without a third-party-speaker
+   *  capture source), `true`/`false` means an explicit disclosure
+   *  determination was made at capture time. Plumbed straight through from
+   *  `transcripts.consent_disclosed` the same way `capture_source` already
+   *  flows (distillHandler -> PipelineContext -> EmbedIndexContext -> this
+   *  INSERT). See InsertInput.consent_disclosed. */
   consent_disclosed: boolean | null;
   /** Issue #205 provenance flag — `false` (default, every pre-fix row) means
    *  "extraction never considered this atom's validity"; `true` means

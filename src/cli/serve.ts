@@ -22,6 +22,7 @@ import { distillEventsHandler } from '../pipeline/handlers/distill-events.js';
 import { cleanupHandler } from '../pipeline/handlers/cleanup.js';
 import { consolidateHandler } from '../pipeline/handlers/consolidate.js';
 import { reembedHandler } from '../pipeline/handlers/reembed.js';
+import { transcribeHandler } from '../pipeline/handlers/transcribe.js';
 import { makeMockProviders, type MockProviderSet } from '../pipeline/mock-providers.js';
 import type { ProviderSet } from '../providers/index.js';
 import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
@@ -219,6 +220,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   registry.register(cleanupHandler);
   registry.register(consolidateHandler);
   registry.register(reembedHandler);
+  registry.register(transcribeHandler);
 
   // FEAT-492: content-hash embedding cache, DOCUMENT-role only. The worker's
   // extended context gets its OWN `providers` object with `embed` swapped for
@@ -343,6 +345,8 @@ export async function serve(opts: ServeOpts): Promise<void> {
     // rather than reporting the raw config value (same reasoning as
     // cli/doctor.ts's on-demand construction of this option).
     devNoAuthActive: cfg.auth.devNoAuth === true && isLoopbackHost(cfg.network.host),
+    audioMode: cfg.audio.mode,
+    audioDisclosureAcknowledged: cfg.audio.disclosureAcknowledged ?? false,
   };
   // Full-tier opts add the real providers — used ONLY on the 24h piggyback
   // below, never on the frequent tick. Safe under ASTRA_MEMORY_MOCK_PROVIDERS

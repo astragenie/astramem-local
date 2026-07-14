@@ -91,8 +91,14 @@ export interface InsertInput {
    * (`capture proxy disable`, `runProxyCaptureDisable`) scoped to
    * `'proxy'` ONLY — the two provenance values are isolated from each other
    * in both directions by construction, not by a shared runtime check.
+   *
+   * Widened again FEAT-489 (Slice A): `'audio_transcribe'` from the
+   * on-device audio-file transcription pipeline
+   * (src/pipeline/handlers/transcribe.ts) — its own doctor row
+   * (`checkAudioAddon`) and its own disable/purge story (ADR-017 decision 3),
+   * isolated from the other provenance values the same way.
    */
-  capture_source?: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions' | null;
+  capture_source?: 'auto_capture' | 'hook_close' | 'proxy' | 'audio_transcribe' | 'meeting_captions' | null;
   /**
    * FEAT-491: display-name/label this atom's `evidence` excerpt was traced
    * back to (src/distill/attribute-speaker.ts), when the source transcript
@@ -106,11 +112,13 @@ export interface InsertInput {
    */
   speaker_label?: string | null;
   /**
-   * FEAT-491 (ADR-017 decision 6): whether the operator disclosure/opt-in
-   * required for capturing a non-user speaker was satisfied at capture time,
-   * plumbed straight through from `transcripts.consent_disclosed` the same
-   * way `capture_source` already flows. `null`/undefined for every atom from
-   * a non-meeting-captions source.
+   * FEAT-489/FEAT-491 (ADR-017 decision 6): whether the operator
+   * disclosure/opt-in required for capturing a non-user speaker (everyone
+   * in a recorded audio file or meeting-caption session, not just the
+   * operator) was satisfied at capture time, plumbed straight through from
+   * `transcripts.consent_disclosed` the same way `capture_source` already
+   * flows. `null`/undefined for every atom from a source without a
+   * third-party-speaker capture source.
    */
   consent_disclosed?: boolean | null;
 }

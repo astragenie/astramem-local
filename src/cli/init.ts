@@ -78,7 +78,7 @@ function defaultCodexAuthPath(): string {
  * This is a safety + measured-extraction-quality case, not a
  * measured-compaction-quality case — nobody has benchmarked either model as
  * a compactor specifically; see scripts/eval/extraction-bench. */
-const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5:7b';
+export const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5:7b';
 
 /** Default Ollama embedding model (fixed — the wizard doesn't offer a tier
  * picker for embeddings, only for the extraction/compaction LLM). */

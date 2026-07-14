@@ -16,25 +16,41 @@
 -- (enforced merge order: L1-1 before L1-2). Do not "fix" this by
 -- renumbering to 048 again -- that would re-collide with L1-1.
 --
--- Five additive nullable columns, no table rewrite (same ALTER TABLE ADD
--- COLUMN pattern migration 024/028/043 used) -- NULL on every existing row
--- and on every future row from a write path that isn't the meeting-captions
--- capture source (/remember, Codex/Claude capture, the LLM proxy, the
--- distill pipeline's other producers). Byte-identical to today for all of
--- those -- no existing INSERT statement changes shape or gains a new
--- required value.
+-- CORRECTED at merge time (2026-07-14, L1-2 merge into main): this file
+-- originally also re-added `transcripts.consent_disclosed` and
+-- `memories.consent_disclosed`. Both lanes threaded ADR-017 decision 6's
+-- consent marker onto the SAME two columns independently, and migration 048
+-- (L1-1, `048-audio-transcribe-consent.sql`) already adds them. Running this
+-- file unmodified after 048 would throw "duplicate column name" on the very
+-- first `migrate()` call post-merge -- SQLite ALTER TABLE ADD COLUMN has no
+-- IF NOT EXISTS form. Removed the two duplicate ADD COLUMN statements below;
+-- this migration now only adds the three columns unique to the
+-- meeting-captions surface (`transcripts.platform`, `transcripts.meeting_id`,
+-- `memories.speaker_label`) and the `idx_memories_consent_disclosed` index,
+-- which is still created here (it targets a column 048 already created, and
+-- indexing doesn't care which migration added the underlying column).
+--
+-- Four additive nullable columns (was five before the above correction), no
+-- table rewrite (same ALTER TABLE ADD COLUMN pattern migration 024/028/043
+-- used) -- NULL on every existing row and on every future row from a write
+-- path that isn't the meeting-captions capture source (/remember,
+-- Codex/Claude capture, the LLM proxy, audio-transcribe, the distill
+-- pipeline's other producers). Byte-identical to today for all of those --
+-- no existing INSERT statement changes shape or gains a new required value.
 --
 -- `transcripts.platform` / `transcripts.meeting_id` carry the capture-session
 -- metadata from ingest time (see ingestCanonicalTranscript,
 -- src/server/routes/ingest.ts) through to the distill job, mirroring how
 -- `capture_source` already flows transcripts row -> distillHandler ->
--- EmbedIndexContext (migration 024). `transcripts.consent_disclosed` carries
+-- EmbedIndexContext (migration 024). `transcripts.consent_disclosed`
+-- (added by migration 048, shared with the audio-transcribe surface) carries
 -- ADR-017 decision 6's server-side consent marker the same way, stored as
 -- 0/1/NULL (SQLite has no native boolean) -- NULL means "this envelope never
--- claimed a value" (every non-meeting-captions source), 1 means "the ingest
--- schema's superRefine + runtime config gate already confirmed this was
--- true" (a meeting-captions transcript can never reach this table with 0 or
--- NULL here -- both are hard-rejected before insert).
+-- claimed a value" (every source without a third-party-speaker capture
+-- source), 1 means "the ingest schema's superRefine + runtime config gate
+-- already confirmed this was true" (a meeting-captions transcript can never
+-- reach this table with 0 or NULL here -- both are hard-rejected before
+-- insert).
 --
 -- `memories.speaker_label` is the atom-evidence-level attribution FEAT-491
 -- adds: which turn's speaker (contracts capture-envelope.v1.schema.json
@@ -49,15 +65,14 @@
 -- reconciliation"), so this column is the durable value a future wire
 -- mapper reads, not a live JSON-emission path today.
 --
--- `memories.consent_disclosed` mirrors `transcripts.consent_disclosed` onto
+-- `memories.consent_disclosed` (added by migration 048, shared with the
+-- audio-transcribe surface) mirrors `transcripts.consent_disclosed` onto
 -- every atom that transcript produces (same "flows straight through" pattern
 -- `capture_source` already uses) -- ADR-017's "consent_disclosed stamped on
 -- atoms from this source" requirement.
 ALTER TABLE transcripts ADD COLUMN platform TEXT;
 ALTER TABLE transcripts ADD COLUMN meeting_id TEXT;
-ALTER TABLE transcripts ADD COLUMN consent_disclosed INTEGER;
 ALTER TABLE memories ADD COLUMN speaker_label TEXT;
-ALTER TABLE memories ADD COLUMN consent_disclosed INTEGER;
 
 -- Partial indexes keep both columns cheap to query without indexing the
 -- entire table for values that are NULL on every pre-FEAT-491 row (same

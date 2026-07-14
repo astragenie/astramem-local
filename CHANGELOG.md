@@ -9,8 +9,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
-
 - **Meeting-caption capture, daemon-side acceptance (FEAT-491, contracts
   2.3.0 -> 2.4.0).** Accepts caption-sourced transcripts scraped by the
   astramem-plugin browser extension (Meet/Teams native live captions —
@@ -30,6 +28,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (mirrors `checkProxyCaptureReminder`) and `capture meeting-captions disable
   [--purge|--keep]` CLI, scoped to `capture_source = 'meeting_captions'`
   only, reusing the existing generic `/capture/purge` route.
+
+## [0.19.0-beta.0] - 2026-07-14
+
+First hardened-beta cut. Published under the `beta` npm dist-tag — `npm i -g astramem-local`
+still installs the last stable (0.18.0). Install this beta with `npm i -g astramem-local@beta`.
+
+### Retrieval quality
+- Score stack W1+W2: relative-date regex widening + opt-in dual-pass extraction
+  (`distill.extractionPasses: 2`, default `1` = byte-identical). LoCoMo full-suite
+  0.4610 → 0.5549 (#309). W4/W5 measured and declined (regressed on isolation A/B).
+
+### Silent-failure canaries (ADR-015)
+- Zero-atom-yield canary: a well-formed `{"atoms":[]}` success is no longer invisible (#300, #303).
+- `llmChatProbe` now exercises `format:json` — a green probe on empty output was a lie (#299).
+- Evidence-provenance guard + doctor canary (#291); memory-leak sentinel via RSS growth fit (#314).
+
+### Release-safety hard gates
+- Sync experimental hard-gate — off until explicit opt-in, not just default-disabled (#301).
+- Proxy experimental hard-gate — `proxy serve` refuses to start without `proxy.experimental: true` (#302).
+- Opt-in LLM cost cap (call-count + wall-clock), disabled by default (#297).
+
+### Install / upgrade robustness
+- `reinstall`: resolve a runnable bun or fall back to `npm install --omit=dev` — fixes
+  `spawnSync bun ENOENT` where `bun` on PATH is an npm shim (#305).
+- Schema-drift: a datadir migrated by a newer daemon prints "run `reinstall`" guidance
+  instead of crash-looping on a cryptic dev message (#306).
+- `service stop --force` to recover a daemon the recycled-PID guard refuses to stop (#307).
+- Model-fit doctor canary + guided `config upgrade-model` — surfaces a stranded, VRAM-unfit,
+  or known-bad pinned model instead of silently poisoning distill jobs (#279).
+- `--version` prints the resolved binary path; doctor WARNs on PATH-shadowed installs (#308).
+- Healthy already-running re-run exits 0 — was false-flagging crash-loop and muting health probes (#304).
+
+### Defaults & providers
+- Ollama sub-default model qwen3.5:4b → qwen2.5:7b (better atom extraction) (#296).
+- Document-role embedding cache (FEAT-492, below); bge-m3 vs mxbai embed A/B tooling —
+  **inconclusive, no default change** (#320).
+
+### Contracts & docs
+- `atom@2`: speaker/segment provenance + `consent_disclosed` (#312); ADR-017 third-party
+  speaker consent model, accepted (#313, #321).
+
+### CI
+- Nightly Live Provider CI moved live generation off the GPU-less runner (#298).
+
+### Added
 - **Content-hash embedding cache (FEAT-492), document-role only.** Ports cloud's
   `CachingEmbeddingProvider.cs` pattern: a SQLite table (migration 043) keyed
   `(content_hash, model, dim)` caches document-side embeddings so re-running
