@@ -14,12 +14,23 @@
  *
  * Confirmed empirically (this worktree, better-sqlite3-multiple-ciphers):
  * `json_extract('not json', '$.x')` THROWS `"malformed JSON"` rather than
- * returning NULL. SQLite also does not guarantee AND-predicate evaluation
- * order matches source order, so a query that also filters
- * `event_type = 'usefulness'` can still evaluate `json_extract` against an
- * unrelated row of a different type when there's no index to filter first
- * (several of usefulness.ts's queries are documented as full scans) — the
- * throw is not reliably contained by an adjacent WHERE clause.
+ * returning NULL.
+ *
+ * Corrected 2026-07-14 (per review): SQLite DOES short-circuit an AND on a
+ * false leading operand, both in a read query's WHERE clause and in a
+ * partial index's own WHERE expression (which is evaluated on every INSERT
+ * to decide index membership — see migration 044's header for that half of
+ * the story). A malformed-payload row whose `event_type` does NOT match an
+ * adjacent `event_type = 'usefulness'` equality predicate does NOT throw —
+ * confirmed directly, including through `dedupInsertEvent`'s real
+ * INSERT…SELECT…WHERE NOT EXISTS shape. The throw only fires when the
+ * malformed row's own `event_type` DOES match that predicate (forcing
+ * `json_extract` to actually evaluate the bad payload) — i.e. a malformed
+ * `'usefulness'`-typed event, which is exactly the realistic case a
+ * corrupted or buggy remote device would produce via sync pull. Guarding
+ * unconditionally (not just for that one case) is still correct: it's
+ * harmless for event_types that were never at risk, and it protects any
+ * query that lacks an index to short-circuit against at all.
  */
 
 /**

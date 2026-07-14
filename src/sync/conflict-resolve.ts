@@ -62,6 +62,17 @@ function hardDeleteAtom(db: DB, atomId: string): boolean {
  * back every event in that round and re-fetched the same batch forever.
  * Callers filter out `null` results and proceed with whatever supersede
  * events DID resolve, rather than resolving none of them.
+ *
+ * TODO(review 20260714T174617Z-review-l1-4-hardening-feat-495.md, item 4,
+ * non-blocking): this exclusion only ever surfaces via `logger.warn` — no
+ * counter or doctor check tracks how often it fires, unlike migration
+ * self-heal (migration_self_heal_log + its doctor check) or handler runs
+ * (handler_runs + its doctor check), both added in this same bundle. A
+ * systemic issue (e.g. one misbehaving remote device always sending
+ * supersede events with no `superseded_by`) would only be visible today by
+ * grepping raw logs. Add a small guard-drop-style table + doctor check
+ * (same shape as relation_guard_drops / entity_name_drops /
+ * validity_guard_drops) if this ever needs to be a fast-follow.
  */
 function supersedeTarget(e: AtomEventRow): string | null {
   const payload = safeParseEventPayload(e.payload_json, err =>

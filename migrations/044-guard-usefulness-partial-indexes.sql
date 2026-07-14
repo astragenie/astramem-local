@@ -5,22 +5,35 @@
 -- 021/025's table rebuilds) added two partial indexes on memory_events whose
 -- WHERE clause calls json_extract(payload_json, '$.family') directly. A
 -- partial index's WHERE expression is evaluated on EVERY INSERT/UPDATE to
--- the table (to decide index membership), not just on matching SELECTs --
--- confirmed empirically in this worktree (better-sqlite3-multiple-ciphers):
--- inserting ANY row with malformed payload_json into memory_events throws
--- `"malformed JSON"` at the storage engine level, regardless of that row's
--- own event_type. json_extract() does not short-circuit behind the
--- `event_type = 'usefulness'` half of the AND.
+-- the table (to decide index membership), not just on matching SELECTs.
+--
+-- Precise condition (corrected 2026-07-14 per review -- the original wording
+-- here overstated this as "any event_type"; it is not): SQLite DOES
+-- short-circuit the AND on the leading `event_type = 'usefulness'` operand --
+-- confirmed empirically (better-sqlite3-multiple-ciphers, both a bare INSERT
+-- and dedupInsertEvent's real INSERT...SELECT...WHERE NOT EXISTS shape,
+-- across empty/50-healthy/50-unrelated-row table states): a malformed-
+-- payload row whose event_type is 'create', 'promote_scope', etc. does NOT
+-- throw. The throw fires ONLY when the malformed row's own event_type
+-- equals the index's own equality predicate ('usefulness', for both indexes
+-- below) -- the first operand is then true, forcing json_extract to
+-- actually evaluate the malformed payload_json.
 --
 -- memory_events.payload_json is fed by BOTH local writers
 -- (MemoryEventRepo.append) and the sync pull path (src/sync/puller.ts's
 -- dedupInsertEvent, which inserts a remote device's payload_json verbatim,
 -- unvalidated -- see src/storage/json-guard.ts's file header). Before this
--- fix, a single malformed event of ANY type arriving in a pull batch would
--- make its plain INSERT throw, which happens inside the SAME transaction as
--- the entire pull round (src/sync/puller.ts's pullOnce) -- rolling back
--- every other event in that batch and leaving the watermark stuck, so the
--- next pull re-fetches and re-fails on the same batch forever.
+-- fix, a malformed 'usefulness'-typed event arriving in a pull batch (a
+-- realistic scenario for a buggy/corrupted remote device -- usefulness
+-- events are the most numerous synced type) would make its plain INSERT
+-- throw, which happens inside the SAME transaction as the entire pull round
+-- (src/sync/puller.ts's pullOnce) -- rolling back every OTHER event in that
+-- batch too (regardless of THEIR event_type) and leaving the watermark
+-- stuck, so the next pull re-fetches and re-fails on the same batch forever.
+-- Guarding unconditionally below (not just for the 'usefulness' case) is
+-- still correct and harmless for the event_types that were never at risk --
+-- it costs nothing and closes the gap for good if a future migration ever
+-- changes these indexes' leading predicate.
 --
 -- Fix: same `CASE WHEN json_valid(x) THEN x ELSE '[]' END` guard used at the
 -- read call sites (src/storage/json-guard.ts's safeJsonColumn), applied to
