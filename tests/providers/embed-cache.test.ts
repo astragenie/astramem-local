@@ -31,6 +31,32 @@ function makeCountingInner(dim = 4): EmbedProvider & { calls: string[][] } {
   };
 }
 
+/**
+ * Wraps a real DB in a Proxy that throws on any `prepare()` call whose SQL
+ * text contains `throwOnSqlSubstring` — everything else delegates to the
+ * real connection unchanged. Lets a test force exactly ONE of
+ * getCachedEmbeddings' SELECT / putCachedEmbeddings' INSERT to fail without
+ * corrupting the whole database (a closed/corrupt DB would fail both read
+ * and write, which can't isolate the two failure modes the review asked
+ * for).
+ */
+function makeThrowingDb(realDb: DB, throwOnSqlSubstring: string, errorMessage: string): DB {
+  return new Proxy(realDb, {
+    get(target, prop, receiver) {
+      if (prop === 'prepare') {
+        return (sql: string) => {
+          if (sql.includes(throwOnSqlSubstring)) {
+            throw new Error(errorMessage);
+          }
+          return (target.prepare as (s: string) => unknown)(sql);
+        };
+      }
+      const value = Reflect.get(target, prop, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
 describe('CachingEmbedProvider', () => {
   let db: DB;
 
@@ -142,5 +168,43 @@ describe('CachingEmbedProvider', () => {
     expect(cache.name).toBe(inner.name);
     expect(cache.model).toBe(inner.model);
     expect(cache.dim).toBe(inner.dim);
+  });
+
+  it('degrades to a full miss and still returns real vectors when the cache READ throws', async () => {
+    const inner = makeCountingInner();
+    const throwingDb = makeThrowingDb(db, 'SELECT content_hash AS contentHash', 'simulated disk-full on cache read');
+    const cache = new CachingEmbedProvider(inner, throwingDb);
+
+    const texts = ['alpha memory text', 'beta memory text'];
+    const results = await cache.embed(texts);
+
+    // Real embed provider still gets called for everything — a broken cache
+    // read must never block vector production.
+    expect(inner.calls.length).toBe(1);
+    expect(inner.calls[0]).toEqual(texts);
+    expect(results).toHaveLength(2);
+    expect(results[0]).toEqual(makeVec(texts[0]!.length));
+    expect(results[1]).toEqual(makeVec(texts[1]!.length));
+  });
+
+  it('still returns freshly-computed vectors when the cache WRITE throws', async () => {
+    const inner = makeCountingInner();
+    const throwingDb = makeThrowingDb(db, 'INSERT OR REPLACE INTO embed_cache', 'simulated disk-full on cache write');
+    const cache = new CachingEmbedProvider(inner, throwingDb);
+
+    const texts = ['gamma memory text'];
+    const results = await cache.embed(texts);
+
+    expect(inner.calls.length).toBe(1);
+    expect(results).toHaveLength(1);
+    expect(results[0]).toEqual(makeVec(texts[0]!.length));
+
+    // The failed write means nothing was actually cached — re-embedding the
+    // SAME text is a real miss again (proves the caller got real vectors
+    // back rather than the call silently succeeding via a stale/partial
+    // cache row).
+    const again = await cache.embed(texts);
+    expect(inner.calls.length).toBe(2);
+    expect(again[0]).toEqual(results[0]);
   });
 });

@@ -35,6 +35,7 @@
 import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
 import type { DB } from '../../storage/db.js';
 import { contentHash } from '../../storage/content-hash.js';
+import { childLogger } from '../../log/logger.js';
 import {
   getCachedEmbeddings,
   putCachedEmbeddings,
@@ -79,8 +80,21 @@ export class CachingEmbedProvider implements EmbedProvider {
   async embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]> {
     if (texts.length === 0) return [];
 
+    const log = childLogger({ provider: this.name, model: this.model, component: 'embed-cache' });
     const hashes = texts.map((t) => contentHash(t));
-    const cached = getCachedEmbeddings(this.db, hashes, this.model, this.dim);
+
+    // Cache-read failure (disk full, DB locked, corrupt BLOB row, ...) must
+    // never block a distill/reembed job from producing vectors — Ollama may
+    // be perfectly healthy even though the cache table is not. Degrade to a
+    // full miss (empty map) and fall through to inner.embed() for everything
+    // rather than letting the exception propagate and lose the whole batch.
+    let cached: Map<string, Float32Array>;
+    try {
+      cached = getCachedEmbeddings(this.db, hashes, this.model, this.dim);
+    } catch (err) {
+      log.error({ err, text_count: texts.length }, 'embed cache read failed — degrading to full miss (real embed call for all texts)');
+      cached = new Map();
+    }
 
     // Preserve input order in the result while embedding only the miss set
     // in ONE inner call (batch-on-miss, AC: "one real call for the miss
@@ -129,17 +143,31 @@ export class CachingEmbedProvider implements EmbedProvider {
         results[i] = vec;
       }
 
-      const newEntries: EmbedCacheEntry[] = [];
-      for (const [hash, idx] of missHashSeen) {
-        const vec = missVectors[idx];
-        if (vec) newEntries.push({ contentHash: hash, vector: vec });
+      // Cache-write failure here must never fail the caller: the vectors in
+      // `results` are already correctly computed by the (successful) inner
+      // embed() call above. Losing the cache write only costs a repeat
+      // Ollama call next run — a performance regression, not a correctness
+      // one — so log loudly and keep going rather than discarding already-
+      // computed work.
+      try {
+        const newEntries: EmbedCacheEntry[] = [];
+        for (const [hash, idx] of missHashSeen) {
+          const vec = missVectors[idx];
+          if (vec) newEntries.push({ contentHash: hash, vector: vec });
+        }
+        putCachedEmbeddings(this.db, this.model, this.dim, newEntries);
+        evictExcess(this.db, this.maxEntries);
+      } catch (err) {
+        log.error({ err, miss_count: missHashSeen.size }, 'embed cache write failed — returning freshly-computed vectors uncached');
       }
-      putCachedEmbeddings(this.db, this.model, this.dim, newEntries);
-      evictExcess(this.db, this.maxEntries);
     }
 
-    const hitCount = texts.length - missHashSeen.size;
-    recordCacheStats(this.db, hitCount, missHashSeen.size);
+    try {
+      const hitCount = texts.length - missHashSeen.size;
+      recordCacheStats(this.db, hitCount, missHashSeen.size);
+    } catch (err) {
+      log.error({ err }, 'embed cache stats update failed (non-fatal)');
+    }
 
     return results as Float32Array[];
   }
