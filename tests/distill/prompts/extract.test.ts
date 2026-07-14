@@ -352,6 +352,31 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Sentiment padding/);
   });
 
+  // WS3 (LoCoMo score plan, astramemory-local#269) — the sentiment-padding
+  // carve-out's OPERATIVE test must be encoded in the rule itself, not just
+  // demonstrated in an example. A prior draft of this fix wrote the rule as
+  // "skip a mood with no named cause", which reads as "any mood WITH a named
+  // cause survives" — a reviewer caught that this would let "the user was
+  // frustrated with the build" (own mood, named cause) back in. The fix
+  // makes the dividing line explicit: whose life the reaction is about, not
+  // whether a cause is named. This test checks the PROMPT TEXT for that
+  // exact boundary, not just the "Sentiment padding" label's presence —
+  // the label-only check above passes whether the carve-out is narrow,
+  // broad, or fully reverted, so it caught nothing about the boundary
+  // itself. Live model-behavior coverage for this same boundary lives in
+  // fx45 (scripts/eval/extraction-bench/fixtures-conversational/), run via
+  // the extraction bench — this test can only check the instruction text,
+  // not whether a model actually follows it.
+  it('encodes "whose life" (not "named cause") as the sentiment-padding operative test, and gives an own-mood-with-named-cause counter-example', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/is NOT ["']does this mood have a named cause/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/frustrated with the build/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/whose life the reaction is about/);
+    // The old wording is a strict prefix of "no named cause" alone with
+    // nothing narrowing it further inline — assert the rule doesn't ship
+    // with ONLY that phrase and no "whose life" framing anywhere near it.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/skip a standalone mood observation with no named cause \(a person's own passing feeling, unattached to any specific event\)\. This does NOT cover/);
+  });
+
   it('explicitly does NOT apply the engineering profile\'s 300-800-char richness rule — conversational atoms stay atomic/short regardless of type', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/do NOT apply the engineering profile/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/300-800 characters/);
