@@ -10,6 +10,11 @@
  * server ever attempts to listen — there is no v1 remote-bind mode and no
  * shared-secret escape hatch.
  *
+ * Release no-go hard gate (release scoping decision): the proxy is
+ * EXPERIMENTAL and not production-ready for the first release. `proxyCommand`
+ * refuses to start the listener at all unless `cfg.proxy.experimental` is
+ * explicitly `true` in config.yaml — no CLI flag, no wizard prompt.
+ *
  * Deliberately has NO HTTP control-plane routes (no /status, no /config) —
  * status/config introspection for the proxy is CLI/file-level only; a
  * Bearer-gated control-plane surface (ADR-013 Decision 4) is deferred to
@@ -59,6 +64,22 @@ export async function proxyCommand(rest: string[]): Promise<void> {
   // is a breaking-contract change, not a wording tweak.
   if (!isLoopbackHost(host)) {
     console.error(`proxy: refusing non-loopback bind (${host}) — v1 is loopback-only per ADR-013`);
+    process.exitCode = 1;
+    return;
+  }
+
+  // Release no-go hard gate: the proxy is EXPERIMENTAL and not enabled for
+  // this release. Checked BEFORE upstream is even parsed and BEFORE the
+  // listener is ever started — same "fail before touching the network"
+  // posture as the loopback check above. `cfg.proxy.enabled` alone was never
+  // a start gate for this subcommand (see this file's module doc comment —
+  // the proxy is only ever invoked via its own explicit subcommand), so this
+  // is the ONE check standing between an operator and a running proxy
+  // process; it must require an explicit `true`, not just a falsy check.
+  if (cfg.proxy.experimental !== true) {
+    console.error(
+      'proxy: the LLM proxy is EXPERIMENTAL and not enabled for this release — set proxy.experimental: true in config.yaml to opt in.',
+    );
     process.exitCode = 1;
     return;
   }
