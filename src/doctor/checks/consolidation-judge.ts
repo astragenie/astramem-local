@@ -73,11 +73,21 @@ export function checkConsolidationJudgeTelemetry(dataDir: string, encryptionEnab
         }
 
         const errorNote = latest.judgeErrors > 0 ? `, ${latest.judgeErrors} fell back on error` : '';
+        // FEAT-499 stage 1 (instrument-first): surface what fraction of real
+        // judge calls fell in the near-merge-threshold band
+        // [0.90, mergeThreshold) — the evidence a future stage-2 short-
+        // circuit skip would be gated on (>= 20% of calls). No filter exists
+        // yet; this is visibility only.
+        const nearThresholdNote =
+          latest.judgeCalls > 0
+            ? `, ${latest.judgeCallsNearThreshold}/${latest.judgeCalls} near-threshold ` +
+              `(${((latest.judgeCallsNearThreshold / latest.judgeCalls) * 100).toFixed(1)}%)`
+            : '';
         return {
           ok: true,
           message:
             `consolidation judge: last run ${ageH}h ago (mode: ${latest.mode}) — ` +
-            `${latest.judgeCalls} judge call(s)${errorNote}, ${elapsedS}s elapsed${caps}`,
+            `${latest.judgeCalls} judge call(s)${errorNote}, ${elapsedS}s elapsed${caps}${nearThresholdNote}`,
         };
       } catch (err) {
         // The query itself failed — did NOT verify judge telemetry is healthy.
