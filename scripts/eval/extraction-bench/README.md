@@ -5,8 +5,9 @@ Extraction-quality + speed benchmark for astramemory-local's distill pipeline
 only needs stages 1-7, since atom quality is fully decided before stage 8's
 embed+index). Answers: **which local Ollama extraction model (or the Azure
 API reference) produces the best typed-atom extraction**, given the current
-production default is `qwen3:8b` (2026-07-13 operator standardization — no
-F1 evidence for this model yet; see "What it measures" below).
+production default is `qwen3.5:4b` (2026-07-14 — it beats `qwen3:8b` on F1
+68 vs 65 and recall 54 vs 48, and unlike `qwen3:8b` it actually fits an 8 GB
+card: 3292 MB vs 5896 MB resident; see "What it measures" below).
 
 ## What it measures
 
