@@ -78,9 +78,42 @@ describe('llmChatProbe', () => {
     const chatFn = vi.fn().mockResolvedValue({ text: 'ok', usage: { in: 1, out: 1, usd: 0 } });
     const provider = makeLLMProvider({ chat: chatFn });
     await llmChatProbe(provider, 5000);
+    // Issue #261: a `signal` is now also passed (see the AbortSignal
+    // cancellation test below) — objectContaining rather than an exact
+    // match so this test doesn't churn every time a new ChatOpts field is
+    // threaded through.
     expect(chatFn).toHaveBeenCalledWith(
       [{ role: 'user', content: '1' }],
-      { maxTokens: 1, temperature: 0 },
+      expect.objectContaining({ maxTokens: 1, temperature: 0 }),
     );
+  });
+
+  // Issue #261: proves the probe actually CANCELS a slow/hung provider call
+  // on timeout rather than merely abandoning its promise — the underlying
+  // "request" (here, a background timer standing in for a real Ollama
+  // generation) must never run to completion once the probe has timed out.
+  it('issue #261: on timeout, cancels the in-flight chat() call (fires its signal) instead of abandoning it', async () => {
+    let sawAbort = false;
+    let completed = false;
+    const provider = makeLLMProvider({
+      chat: vi.fn((_messages, opts) => new Promise<Awaited<ReturnType<LLMProvider['chat']>>>((resolve) => {
+        const t = setTimeout(() => {
+          completed = true;
+          resolve({ text: 'too late', usage: { in: 1, out: 1, usd: 0 } });
+        }, 200);
+        opts?.signal?.addEventListener('abort', () => {
+          sawAbort = true;
+          clearTimeout(t);
+        });
+      })),
+    });
+
+    const result = await llmChatProbe(provider, 20);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('timeout');
+    expect(sawAbort).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 250));
+    expect(completed).toBe(false);
   });
 });

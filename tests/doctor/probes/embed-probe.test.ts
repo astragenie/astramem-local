@@ -84,7 +84,38 @@ describe('embedProbe', () => {
     const embedFn = vi.fn().mockResolvedValue([new Float32Array(1024).fill(0.1)]);
     const provider = makeEmbedProvider({ embed: embedFn });
     await embedProbe(provider, 5000);
-    expect(embedFn).toHaveBeenCalledWith(['ping']);
+    // Issue #261: a second `signal` argument is now also passed (see the
+    // AbortSignal cancellation test below).
+    expect(embedFn).toHaveBeenCalledWith(['ping'], expect.anything());
+  });
+
+  // Issue #261: proves the probe actually CANCELS a slow/hung embed call on
+  // timeout rather than merely abandoning its promise — the underlying
+  // "request" (here, a background timer standing in for a real embed call)
+  // must never run to completion once the probe has timed out.
+  it('issue #261: on timeout, cancels the in-flight embed() call (fires its signal) instead of abandoning it', async () => {
+    let sawAbort = false;
+    let completed = false;
+    const provider = makeEmbedProvider({
+      embed: vi.fn((_texts, signal?: AbortSignal) => new Promise<Float32Array[]>((resolve) => {
+        const t = setTimeout(() => {
+          completed = true;
+          resolve([new Float32Array(1024).fill(0.1)]);
+        }, 200);
+        signal?.addEventListener('abort', () => {
+          sawAbort = true;
+          clearTimeout(t);
+        });
+      })),
+    });
+
+    const result = await embedProbe(provider, 20);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('timeout');
+    expect(sawAbort).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 250));
+    expect(completed).toBe(false);
   });
 
   it('includes latency in success message', async () => {

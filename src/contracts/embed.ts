@@ -62,7 +62,13 @@ export interface EmbedProvider {
    * prefixing both sides would cancel the benefit).
    */
   readonly queryPrefix?: string;
-  embed(texts: string[]): Promise<Float32Array[]>;
+  /**
+   * `signal` (issue #261): caller-supplied cancellation, combined with (not
+   * replacing) the provider's own internal timeout — same contract as
+   * `ChatOpts.signal` in contracts/llm.ts. Optional so existing callers that
+   * don't need a caller-scoped budget are unaffected.
+   */
+  embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]>;
   health(): Promise<EmbedHealth>;
 }
 

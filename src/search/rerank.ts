@@ -31,6 +31,7 @@
 
 import type { Config } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
+import { withAbortableTimeout } from '../util/abortable-timeout.js';
 
 /** One post-fusion candidate handed to the reranker. */
 export interface CrossEncoderCandidate {
@@ -42,11 +43,19 @@ export interface CrossEncoderCandidate {
 
 export interface CrossEncoderProvider {
   readonly name: 'mock' | 'http';
-  /** Score every candidate against `query`. Returned map need not cover every
+  /**
+   * Score every candidate against `query`. Returned map need not cover every
    * id — a missing id falls back to its original fused score (see
    * `applyRerank`). Scores need not be pre-clamped to [0,1]; the stage clamps
-   * defensively before use. */
-  score(query: string, candidates: CrossEncoderCandidate[]): Promise<Map<string, number>>;
+   * defensively before use.
+   *
+   * `signal` (issue #261): fires when `applyRerank`'s timeout budget
+   * elapses. `HttpCrossEncoderProvider` must combine it with its own
+   * internal `AbortSignal.timeout` (never replace it) so a timeout actually
+   * cancels the in-flight HTTP request instead of abandoning it.
+   * `MockCrossEncoderProvider` ignores it — it never does I/O.
+   */
+  score(query: string, candidates: CrossEncoderCandidate[], signal?: AbortSignal): Promise<Map<string, number>>;
 }
 
 /**
@@ -143,7 +152,7 @@ export class HttpCrossEncoderProvider implements CrossEncoderProvider {
     this.fetchImpl = config.fetchImpl ?? fetch;
   }
 
-  async score(query: string, candidates: CrossEncoderCandidate[]): Promise<Map<string, number>> {
+  async score(query: string, candidates: CrossEncoderCandidate[], signal?: AbortSignal): Promise<Map<string, number>> {
     if (candidates.length === 0) return new Map();
 
     const log = childLogger({ provider: this.name, url: this.url });
@@ -154,13 +163,19 @@ export class HttpCrossEncoderProvider implements CrossEncoderProvider {
     };
     if (this.model) body['model'] = this.model;
 
+    // Issue #261: combine the caller's signal (applyRerank's timeout) with
+    // this provider's own internal ceiling via AbortSignal.any — whichever
+    // fires first wins, and neither is dropped in favor of the other.
+    const ownSignal = AbortSignal.timeout(this.timeoutMs);
+    const combinedSignal = signal ? AbortSignal.any([signal, ownSignal]) : ownSignal;
+
     let res: Response;
     try {
       res = await this.fetchImpl(this.url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.timeoutMs),
+        signal: combinedSignal,
       });
     } catch (err) {
       const latency_ms = Date.now() - t0;
@@ -243,20 +258,10 @@ export function resolveRerankOpts(config: Config): RerankOpts | undefined {
   };
 }
 
-/** Thrown by `withTimeout` — distinguished from a provider-thrown `Error` so
- * the outcome-tagged observability log below (FEAT-452) can tell "sidecar
- * too slow" (`timeout`) apart from "sidecar errored" (`error`). */
+/** Thrown by `withAbortableTimeout` — distinguished from a provider-thrown
+ * `Error` so the outcome-tagged observability log below (FEAT-452) can tell
+ * "sidecar too slow" (`timeout`) apart from "sidecar errored" (`error`). */
 class RerankTimeoutError extends Error {}
-
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new RerankTimeoutError(`cross-encoder rerank timed out after ${ms}ms`)), ms);
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
 
 /**
  * ADR-005 `ScoreExplanation.signals[name]` shape
@@ -324,7 +329,11 @@ export async function applyRerank<T extends { id: string; text: string; score: n
 
   try {
     const candidates: CrossEncoderCandidate[] = head.map(h => ({ id: h.id, text: h.text, fusedScore: h.score }));
-    const scored = await withTimeout(opts.provider.score(query, candidates), opts.timeoutMs);
+    const scored = await withAbortableTimeout(
+      (signal) => opts.provider.score(query, candidates, signal),
+      opts.timeoutMs,
+      () => new RerankTimeoutError(`cross-encoder rerank timed out after ${opts.timeoutMs}ms`),
+    );
 
     const reranked = head
       .map(h => {

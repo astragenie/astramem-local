@@ -452,12 +452,20 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
     return headers;
   }
 
-  private callResponses(body: Record<string, unknown>): Promise<Response> {
+  /**
+   * `externalSignal` (issue #261): caller-supplied cancellation, combined
+   * with — never replacing — the provider's own CHAT_TIMEOUT_MS ceiling via
+   * `AbortSignal.any`, same contract as the other three providers'
+   * `fetchWithRetry`.
+   */
+  private callResponses(body: Record<string, unknown>, externalSignal?: AbortSignal): Promise<Response> {
+    const ownSignal = AbortSignal.timeout(CHAT_TIMEOUT_MS);
+    const signal = externalSignal ? AbortSignal.any([externalSignal, ownSignal]) : ownSignal;
     return fetch(CODEX_RESPONSES_URL, {
       method: 'POST',
       headers: this.headers(),
       body: JSON.stringify(body),
-      signal: AbortSignal.timeout(CHAT_TIMEOUT_MS),
+      signal,
     });
   }
 
@@ -527,11 +535,11 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
       ...(opts?.json ? { text: { format: { type: 'json_object' } } } : {}),
     };
 
-    let res = await this.callResponses(body);
+    let res = await this.callResponses(body, opts?.signal);
     if (res.status === 401) {
       log.warn('codex-subscription received 401 — attempting token refresh');
       await this.refresh();
-      res = await this.callResponses(body);
+      res = await this.callResponses(body, opts?.signal);
     }
 
     if (!res.ok) {

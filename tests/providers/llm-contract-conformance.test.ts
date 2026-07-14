@@ -141,6 +141,53 @@ describe.each(ALL_LLM_ADAPTERS)('LLM provider contract conformance — $name', (
     const provider = adapter.createProvider(() => adapter.errorResponse(400, 'bad request'));
     await expect(provider.chat([{ role: 'user', content: 'x' }])).rejects.toBeInstanceOf(DeterministicError);
   });
+
+  // ── 6. issue #261: caller-signal cancellation ────────────────────────
+  //
+  // Before the fix, `ChatOpts.signal` didn't exist — a caller's own timeout
+  // budget (e.g. decompose's 800ms, rerank's 300ms) could only ABANDON its
+  // promise, never cancel the real HTTP request, which kept running to
+  // completion in the background holding the provider's execution slot.
+  // This proves each provider actually wires a caller-supplied signal into
+  // its outgoing request, combined with (not replacing) its own internal
+  // timeout: `capturedSignal` is the signal the mocked `fetch` actually
+  // received, and it must become aborted the instant the CALLER's
+  // controller aborts — nothing else in this test ever touches it.
+  it('issue #261: a caller-supplied AbortSignal cancels the underlying HTTP request', async () => {
+    let capturedSignal: AbortSignal | undefined;
+    let handlerRanToCompletion = false;
+    const provider = adapter.createProvider((req) => {
+      capturedSignal = (req.init.signal ?? undefined) as AbortSignal | undefined;
+      return new Promise<Response>((resolve, reject) => {
+        const abortErr = () => new DOMException('The operation was aborted', 'AbortError');
+        // Some providers' fetchWithRetry retries once on any rejected
+        // attempt (including an abort), which re-invokes this responder with
+        // an ALREADY-aborted combined signal — mirror real fetch() here
+        // (which rejects synchronously for an already-aborted signal) rather
+        // than adding a listener for an 'abort' event that already fired.
+        if (capturedSignal?.aborted) {
+          reject(abortErr());
+          return;
+        }
+        const t = setTimeout(() => {
+          handlerRanToCompletion = true;
+          resolve(adapter.successResponse('too late'));
+        }, 5_000);
+        capturedSignal?.addEventListener('abort', () => {
+          clearTimeout(t);
+          reject(abortErr());
+        });
+      });
+    });
+
+    const controller = new AbortController();
+    const chatPromise = provider.chat([{ role: 'user', content: 'hi' }], { signal: controller.signal });
+    controller.abort();
+
+    await expect(chatPromise).rejects.toThrow();
+    expect(capturedSignal?.aborted).toBe(true);
+    expect(handlerRanToCompletion).toBe(false);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
