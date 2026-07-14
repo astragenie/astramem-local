@@ -24,10 +24,16 @@ import { openProductionDbReadonly } from './shared.js';
  * whatever it's sent to `upstream`, so a doctor-side fetch would either hit
  * a real (possibly billed) upstream or hang on an unreachable one. This
  * check is config-state-only by design.
+ *
+ * Release no-go hard gate: leads with `proxy.experimental` state, ahead of
+ * `proxy.enabled` — `experimental !== true` is what actually determines
+ * whether `astramem-local proxy serve` will start at all (src/cli/proxy.ts),
+ * independent of whatever `proxy.enabled` says.
  */
 export function checkProxyCapture(
   dataDir: string,
   proxyEnabled: boolean,
+  proxyExperimental: boolean,
   captureEnabled: boolean,
   encryptionEnabled: boolean,
 ): Check {
@@ -37,6 +43,18 @@ export function checkProxyCapture(
     // 024) — an index range scan bounded by proxy-captured row count.
     tier: 'cheap',
     async run(): Promise<CheckResult> {
+      // Release no-go hard gate (src/cli/proxy.ts): `proxy.experimental` is
+      // what actually decides whether `proxy serve` will run at all — it is
+      // checked FIRST and independently of `proxy.enabled`, which the CLI
+      // subcommand never reads as a start gate (see that file's module doc
+      // comment). Never `ok: false` — being gated is the shipped default,
+      // not a misconfiguration.
+      if (!proxyExperimental) {
+        return {
+          ok: true,
+          message: 'proxy: experimental (not for production) — set proxy.experimental: true to opt in; `proxy serve` refuses to start otherwise',
+        };
+      }
       if (!proxyEnabled) {
         return { ok: true, message: 'proxy: off (default)' };
       }

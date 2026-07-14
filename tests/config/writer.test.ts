@@ -78,6 +78,7 @@ function buildFullyPopulatedConfig(): Config {
     },
     proxy: {
       enabled: true,
+      experimental: true,
       port: 9001,
       upstream: 'https://api.openai.com/v1',
       upstreamTimeoutMs: 45_000,
