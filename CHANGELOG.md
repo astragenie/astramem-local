@@ -9,7 +9,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-07-14
+
 ### Changed
+
+- **Default LLM provider (compaction AND extraction): `ollama` (qwen3.5:4b) -> `codex-subscription` (`gpt-5.4-mini`).**
+  Every local-ollama qwen default tried here has broken shipped installs at
+  least once — `qwen3:8b` returned empty output under thinking mode +
+  `format:json` (distill poison), and separately blew this hardware class's
+  8 GB VRAM ceiling once the `mxbai-embed-large` embedder was resident
+  alongside it (see "Ollama 8GB VRAM ceiling" / "qwen3:8b breaks distill
+  extract" in CLAUDE.md); `qwen3.5:4b` fixed the VRAM fit but is still a weak
+  local model relative to a cloud-tier LLM. `codex-subscription` runs off-box
+  against the operator's own ChatGPT plan and is immune to this box's VRAM
+  ceiling entirely. **Requires `codex login` (a paid ChatGPT plan)** before
+  compaction/extraction will work — there is no anonymous/free path. Cost is
+  metered by the ChatGPT subscription's own quota, not by `budget.daily_usd`
+  (every shipped LLM provider, including this one, hardcodes `usage.usd: 0`).
+  Embedding is unchanged — stays on `ollama`/`mxbai-embed-large`; codex has
+  no embeddings endpoint. Changed in `defaultConfig()`
+  (`src/config/config.ts`) and the `init` wizard's default LLM provider pick
+  (`src/cli/init.ts`, both the interactive `promptSelect` default and the
+  non-TTY `gatherNonInteractive` fallback). `ollama` and the other cloud
+  providers (`azure-openai`, `openai-compatible`) remain fully selectable —
+  only the default choice changed.
+
+### Changed (carried from Unreleased)
 
 - **Default Ollama model (compaction AND extraction): `qwen3:8b` -> `qwen3.5:4b`.**
   `qwen3:8b` (5896 MB resident) plus the `mxbai-embed-large` embedder (590 MB)

@@ -139,7 +139,8 @@ describe('configToYaml', () => {
     const yaml = configToYaml(cfg);
     expect(yaml).toContain('compaction:');
     expect(yaml).toContain('extraction:');
-    expect(yaml.match(/model: ['"]?qwen3\.5:4b['"]?/g)).toHaveLength(2);
+    expect(yaml.match(/provider: ['"]?codex-subscription['"]?/g)).toHaveLength(2);
+    expect(yaml.match(/model: ['"]?gpt-5\.4-mini['"]?/g)).toHaveLength(2);
   });
 
   // FEAT-442: autonomous consolidation auto-accept — default null (OFF) round-trips.
