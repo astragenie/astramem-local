@@ -43,6 +43,59 @@ export interface MergeDualPassResult {
 }
 
 /**
+ * Deterministic junk gate for Pass B ("specifics sweeper") atoms ONLY — Pass
+ * A is never filtered. Motivation: dual-pass stacking regressed the
+ * adversarial LoCoMo category (0.8085 -> 0.7660) because Pass B inflates the
+ * candidate pool with generic narrative atoms Pass A already covers; the
+ * frozen answerer then abstains less on unanswerable questions (binary
+ * adversarial losses), and fuse.ts's min-max normalization re-ranks good
+ * atoms against the junk.
+ *
+ * The sweeper's own prompt category list (dates, durations, quantities,
+ * prices, names, quotes, one-off events) implies every legitimate Pass B
+ * atom carries at least one concrete signal. An atom with none of them is
+ * assumed to be generic narrative Pass A already extracted — pool
+ * pollution — and is dropped before merge.
+ *
+ * A Pass B atom survives iff it has:
+ *   (a) a non-empty entities[], OR
+ *   (b) a digit in its text, OR
+ *   (c) a quoted phrase ("..." or '...') in its text, OR
+ *   (d) a month-name/weekday/absolute-date word in its text.
+ *
+ * Pure, deterministic, no LLM call — intrinsic to passes=2, no config knob
+ * in v1.
+ */
+export interface GatePassBResult {
+  kept: Atom[];
+  dropped: Atom[];
+}
+
+const DIGIT_RE = /\d/;
+// Matching quote pair — a lone apostrophe (e.g. "Caroline's dog") must NOT
+// count, only an actual quoted phrase.
+const QUOTED_PHRASE_RE = /"[^"]+"|'[^']+'/;
+const DATE_WORD_RE =
+  /\b(january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
+
+/** Filter Pass B's atoms down to the ones carrying a concrete signal. See
+ *  module doc comment above for the exact predicate. */
+export function gatePassBAtoms(atoms: Atom[]): GatePassBResult {
+  const kept: Atom[] = [];
+  const dropped: Atom[] = [];
+
+  for (const atom of atoms) {
+    const hasEntities = Array.isArray(atom.entities) && atom.entities.length > 0;
+    const hasSignal =
+      hasEntities || DIGIT_RE.test(atom.text) || QUOTED_PHRASE_RE.test(atom.text) || DATE_WORD_RE.test(atom.text);
+
+    (hasSignal ? kept : dropped).push(atom);
+  }
+
+  return { kept, dropped };
+}
+
+/**
  * Merge Pass A's and Pass B's atoms for one chunk. See module doc comment
  * for the exact-duplicate / substring-duplicate / keep-longer / keep-disjoint
  * rules.

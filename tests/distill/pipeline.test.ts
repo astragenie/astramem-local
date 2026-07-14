@@ -458,7 +458,10 @@ describe('dual-pass extraction (distill.extractionPasses)', () => {
 
   // Deliberately overlaps EXTRACTION_RESPONSE's port-7777 fact (same words,
   // different case/punctuation — an exact-normalized duplicate the merge
-  // step must drop) plus ONE genuinely new, disjoint fact.
+  // step must drop) plus ONE genuinely new, disjoint fact. Both carry a
+  // concrete signal (digit / entities) so they survive gatePassBAtoms —
+  // this fixture is testing the merge step, not the gate; the gate itself
+  // has its own describe block below.
   const SPECIFICS_RESPONSE = JSON.stringify({
     atoms: [
       {
@@ -472,6 +475,10 @@ describe('dual-pass extraction (distill.extractionPasses)', () => {
         text: 'The team evaluated pgvector before choosing sqlite-vec.',
         importance: 0.5,
         confidence: 0.8,
+        entities: [
+          { name: 'pgvector', kind: 'tech' },
+          { name: 'sqlite-vec', kind: 'tech' },
+        ],
       },
     ],
   });
@@ -537,5 +544,84 @@ describe('dual-pass extraction (distill.extractionPasses)', () => {
     expect(portMemories.length).toBe(1);
     // 3 pass-A atoms + 1 disjoint pass-B atom (the duplicate was deduped away).
     expect(result.memoriesCreated).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pass-B junk gate (gatePassBAtoms, src/distill/dedup-merge.ts) wired into
+// the pipeline ahead of mergeDualPassAtoms — dual-pass stacking regressed
+// the adversarial LoCoMo category because Pass B inflates the candidate
+// pool with generic narrative atoms. Pure-function predicate coverage lives
+// in tests/distill/dedup-merge.test.ts; this describe block only checks the
+// pipeline wiring: pass A is never filtered, and the job completes even
+// when every pass-B atom is gated away.
+// ---------------------------------------------------------------------------
+
+describe('Pass-B junk gate wired into the pipeline (distill.extractionPasses: 2)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  // Two pass-B atoms, both fully generic — no entities, no digit, no quoted
+  // phrase, no month/weekday word. The gate should drop both.
+  const SPECIFICS_RESPONSE_ALL_GENERIC = JSON.stringify({
+    atoms: [
+      {
+        type: 'note',
+        text: 'Melanie enjoyed the conversation and felt supported.',
+        importance: 0.4,
+        confidence: 0.8,
+      },
+      {
+        type: 'note',
+        text: 'Caroline seemed relieved after talking things through.',
+        importance: 0.4,
+        confidence: 0.8,
+      },
+    ],
+  });
+
+  it('gates away every generic pass-B atom, never gates pass A (even a generic pass-A atom), and completes the job on pass A alone', async () => {
+    let extractionCalls = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (!opts?.json) {
+          return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+        }
+        extractionCalls++;
+        const system = msgs.find((m) => m.role === 'system')?.content ?? '';
+        const reply =
+          system === EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER ? SPECIFICS_RESPONSE_ALL_GENERIC : EXTRACTION_RESPONSE;
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    expect(extractionCalls).toBe(2); // pass A + pass B both ran
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    // Neither generic pass-B atom made it through the gate.
+    expect(texts.some((t: string) => t.includes('felt supported'))).toBe(false);
+    expect(texts.some((t: string) => t.includes('relieved after talking'))).toBe(false);
+    // Pass A's own generic atom (no entities/digit/quote/date either) is
+    // NEVER gated — the gate only ever runs over pass B's atoms.
+    expect(texts.some((t: string) => t.includes('better-sqlite3'))).toBe(true);
+    // All-dropped edge case: the job completes on pass A alone, exactly its
+    // 3 atoms — no failure, no partial state.
+    expect(result.memoriesCreated).toBe(3);
   });
 });

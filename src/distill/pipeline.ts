@@ -18,7 +18,7 @@ import { normalize } from './stages/02-normalize.js';
 import { chunk, resolveMaxChunkChars } from './stages/03-chunk.js';
 import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
 import { extract, extractSpecifics, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
-import { mergeDualPassAtoms } from './dedup-merge.js';
+import { mergeDualPassAtoms, gatePassBAtoms } from './dedup-merge.js';
 import { reduce } from './stages/06-reduce.js';
 import { groundAtomDates } from './ground-dates.js';
 import { memoryNormalize } from './stages/07-memory-normalize.js';
@@ -317,14 +317,21 @@ export async function runPipeline(
     for (const passAResult of extractResults) {
       const passBResult = specificsByChunk.get(passAResult.chunkIndex);
       const passAAtoms = passAResult.atoms;
-      const passBAtoms = passBResult?.atoms ?? [];
+      const passBAtomsRaw = passBResult?.atoms ?? [];
+      // Junk gate: Pass A is never filtered — only Pass B's atoms, before
+      // they ever reach the merge step (see gatePassBAtoms's doc comment in
+      // dedup-merge.ts for why: Pass B pool pollution regressed the
+      // adversarial LoCoMo category by inflating the answerer's candidate
+      // pool with generic narrative atoms Pass A already covers).
+      const { kept: passBAtoms, dropped: passBGatedAway } = gatePassBAtoms(passBAtomsRaw);
       const { merged, dedupedAway } = mergeDualPassAtoms(passAAtoms, passBAtoms);
       pipeLog.info(
         {
           stage: 'extract-dual-pass-merge',
           chunk_index: passAResult.chunkIndex,
           passA_atoms: passAAtoms.length,
-          passB_atoms: passBAtoms.length,
+          passB_atoms: passBAtomsRaw.length,
+          passB_gated_away: passBGatedAway.length,
           merged: merged.length,
           deduped_away: dedupedAway,
         },

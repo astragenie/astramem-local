@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { normalizeAtomText, mergeDualPassAtoms } from '../../src/distill/dedup-merge.js';
+import { normalizeAtomText, mergeDualPassAtoms, gatePassBAtoms } from '../../src/distill/dedup-merge.js';
 import type { Atom } from '../../src/distill/prompts/extract.js';
 
 function atom(text: string, type: Atom['type'] = 'fact'): Atom {
@@ -106,5 +106,76 @@ describe('mergeDualPassAtoms', () => {
     const { merged, dedupedAway } = mergeDualPassAtoms(passA, []);
     expect(merged).toEqual(passA);
     expect(dedupedAway).toBe(0);
+  });
+});
+
+describe('gatePassBAtoms', () => {
+  function atomWithEntities(text: string, entities: Atom['entities']): Atom {
+    return { ...atom(text), entities };
+  }
+
+  it('keeps an atom with a non-empty entities[]', () => {
+    const a = atomWithEntities('Caroline talked about her plans.', [{ name: 'Caroline', kind: 'actor', subtype: 'human' }]);
+    const { kept, dropped } = gatePassBAtoms([a]);
+    expect(kept).toEqual([a]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('keeps an atom whose text contains a digit', () => {
+    const a1 = atom('Caroline saved $200 for the trip.');
+    const a2 = atom('Melanie has been riding for 7 years.');
+    const { kept, dropped } = gatePassBAtoms([a1, a2]);
+    expect(kept).toEqual([a1, a2]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('keeps an atom whose text contains a quoted phrase', () => {
+    const a1 = atom('Melanie said "I finally feel ready" about the adoption.');
+    const a2 = atom("Caroline described it as 'the best decision' she made.");
+    const { kept, dropped } = gatePassBAtoms([a1, a2]);
+    expect(kept).toEqual([a1, a2]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('does not treat a lone possessive apostrophe as a quoted phrase', () => {
+    const a = atom("Caroline's dog is named Max and likes to run around the yard a lot.");
+    const { kept, dropped } = gatePassBAtoms([a]);
+    expect(dropped).toEqual([a]);
+    expect(kept).toEqual([]);
+  });
+
+  it('keeps an atom whose text contains a month name or weekday (no digits present)', () => {
+    const a1 = atom("Melanie's son visited during July for the holidays.");
+    const a2 = atom('Caroline is going hiking last Friday with her sister.');
+    const { kept, dropped } = gatePassBAtoms([a1, a2]);
+    expect(kept).toEqual([a1, a2]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('drops a fully generic narrative atom with no entities, digits, quotes, or date words', () => {
+    const a = atom('Melanie enjoyed the conversation and felt supported.');
+    const { kept, dropped } = gatePassBAtoms([a]);
+    expect(kept).toEqual([]);
+    expect(dropped).toEqual([a]);
+  });
+
+  it('filters a mixed list, preserving kept-atom order', () => {
+    const keepsEntities = atomWithEntities('Priya talked about her job search.', [
+      { name: 'Priya', kind: 'actor', subtype: 'human' },
+    ]);
+    const keepsDigit = atom('The trip lasted 7 years.');
+    const dropsGeneric = atom('Everyone had a nice time and felt relaxed.');
+    const keepsQuote = atom('She said "it changed everything" about the move.');
+
+    const { kept, dropped } = gatePassBAtoms([keepsEntities, keepsDigit, dropsGeneric, keepsQuote]);
+
+    expect(kept).toEqual([keepsEntities, keepsDigit, keepsQuote]);
+    expect(dropped).toEqual([dropsGeneric]);
+  });
+
+  it('returns an empty gate result for an empty input', () => {
+    const { kept, dropped } = gatePassBAtoms([]);
+    expect(kept).toEqual([]);
+    expect(dropped).toEqual([]);
   });
 });
