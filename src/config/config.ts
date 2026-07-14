@@ -226,6 +226,17 @@ export interface Config {
     workspaceId: string | null;
     batchSize: number;
     intervalMs: number;
+    /** Hard gate on top of `enabled` (astramem-local, sync-experimental-gate
+     * slice): sync-to-astramem-cloud is currently broken (8868 events
+     * failing HTTP 400, not yet root-caused). `astramem-local pair` sets
+     * `enabled: true` in sync.json on a successful redeem — by itself that
+     * used to be enough to start shipping to the broken path. Both `enabled`
+     * (sync.json, pairing-owned) AND `experimental` (config.yaml, hand-edit
+     * only — `pair` never touches this field) must be true for the shipper
+     * to start. Default false so pairing alone can never ship broken data;
+     * see cli/serve.ts's shipper-start gate and shouldStartShipper() in
+     * sync/shipper.ts. */
+    experimental: boolean;
   };
   security: {
     redaction: {
@@ -701,7 +712,7 @@ export function defaultConfig(): Config {
       budgetTokens: 1500,
       policy: { enabled: true, minScore: 0.15, minPromptChars: 12 },
     },
-    sync: { enabled: false, url: '', workspaceId: null, batchSize: 200, intervalMs: 30_000 },
+    sync: { enabled: false, url: '', workspaceId: null, batchSize: 200, intervalMs: 30_000, experimental: false },
     security: {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
       encryption: { enabled: true }

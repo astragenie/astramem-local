@@ -46,6 +46,8 @@ export async function doctorCommand(args: string[]): Promise<void> {
       autoCaptureEnabled: cfg.capture.autoCapture.enabled,
       proxyEnabled: cfg.proxy.enabled,
       proxyCaptureEnabled: cfg.proxy.capture.enabled,
+      syncEnabled: cfg.sync.enabled,
+      syncExperimental: cfg.sync.experimental,
       // Mirrors buildApp's devNoAuthActive (src/server/app.ts) — a
       // non-loopback bind refuses devNoAuth at boot, so doctor must apply
       // the same gate rather than reporting the raw config value.
