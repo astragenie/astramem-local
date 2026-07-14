@@ -5,7 +5,9 @@
  * Respects turn boundaries — does not split mid role: block.
  *
  * Turn detection: lines starting with "user:", "assistant:", "system:",
- * "human:", "ai:" (case-insensitive) are treated as turn boundaries.
+ * "human:", "ai:" (case-insensitive), OR a named-speaker label ("Caroline:",
+ * "Nate:") are treated as turn boundaries — see NAMED_SPEAKER_CANDIDATE_RE
+ * below for the #271/#273 fix and its false-positive tradeoff.
  */
 
 /** Approximate chars per token (conservative estimate) */
@@ -70,8 +72,44 @@ export const MIN_CHUNK_CHARS = 400;
  * may ASK for; the default remains DEFAULT_MAX_CHUNK_CHARS. */
 export const MAX_CHUNK_CHARS_CEILING = 16000;
 
-/** Turn boundary patterns */
-const TURN_BOUNDARY_RE = /^(user|assistant|system|human|ai)\s*:/i;
+/** Fixed-role turn boundary — always a boundary, no ambiguity. */
+const ROLE_BOUNDARY_RE = /^(user|assistant|system|human|ai)\s*:/i;
+
+/**
+ * Candidate named-speaker label at line start: 1-2 Title-Case words
+ * followed by a colon ("Caroline:", "Nate:", "Mary Jane:"). #271/#273 (see
+ * their issue text for the full investigation): the original ROLE_BOUNDARY_RE
+ * only recognized the fixed "user:"/"assistant:"/etc. prefixes, so a raw
+ * named-speaker transcript (a plain chat log pasted by a real user, or any
+ * legacy v0.0 envelope content that isn't wrapped in a binary role) never
+ * produced a single turn boundary — the whole transcript collapsed into one
+ * undifferentiated block before packTurns()'s turn-aware packing ever ran.
+ *
+ * Deliberately Title Case only (`[A-Z][a-z]*`), not `[A-Z][a-zA-Z]*` — this
+ * excludes ALL-CAPS labels like "TODO:"/"NOTE:" (real names are essentially
+ * never all-caps) but still lets a single capital letter through ("Q:").
+ * It does NOT exclude ordinary capitalized sentence starts that happen to
+ * look like a label ("Note:", "Warning:", "However:") — that's what the
+ * recurrence gate below is for.
+ *
+ * Tradeoff, stated plainly: a false-positive boundary here (splitting mid-
+ * paragraph on a one-off "Note:") is far less harmful than the status quo
+ * false negative (never splitting a real named-speaker transcript at all) —
+ * packTurns() just repacks extra turns back together under MAX_CHUNK_CHARS,
+ * so an over-split turn costs nothing when the chunk stays under the cap.
+ */
+const NAMED_SPEAKER_CANDIDATE_RE = /^([A-Z][a-z]*(?:\s[A-Z][a-z]*)?)\s*:/;
+
+/**
+ * Minimum number of times a candidate named-speaker label must recur in the
+ * same transcript before it's trusted as a real turn boundary. This is the
+ * actual false-positive guard: a genuine speaker label appears repeatedly
+ * across a conversation; a one-off capitalized sentence opener ("Note:",
+ * "Warning:", "However:") almost never does. Two-line transcripts (or a
+ * label that truly appears only once) fall back to being treated as normal
+ * content — see isTurnBoundary below.
+ */
+const NAMED_SPEAKER_MIN_RECURRENCE = 2;
 
 export interface Chunk {
   index: number;
@@ -113,11 +151,30 @@ interface Turn {
 
 function splitIntoTurns(text: string): Turn[] {
   const lines = text.split('\n');
+
+  // First pass: count how many times each candidate named-speaker label
+  // recurs across the whole transcript — see NAMED_SPEAKER_MIN_RECURRENCE.
+  const labelCounts = new Map<string, number>();
+  for (const line of lines) {
+    const m = NAMED_SPEAKER_CANDIDATE_RE.exec(line);
+    if (m) {
+      const label = m[1]!;
+      labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+    }
+  }
+
+  const isTurnBoundary = (line: string): boolean => {
+    if (ROLE_BOUNDARY_RE.test(line)) return true;
+    const m = NAMED_SPEAKER_CANDIDATE_RE.exec(line);
+    if (!m) return false;
+    return (labelCounts.get(m[1]!) ?? 0) >= NAMED_SPEAKER_MIN_RECURRENCE;
+  };
+
   const turns: Turn[] = [];
   let current: string[] = [];
 
   for (const line of lines) {
-    if (TURN_BOUNDARY_RE.test(line) && current.length > 0) {
+    if (isTurnBoundary(line) && current.length > 0) {
       turns.push({ text: current.join('\n') });
       current = [line];
     } else {
