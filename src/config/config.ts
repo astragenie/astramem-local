@@ -605,9 +605,10 @@ export function defaultConfig(): Config {
       // this hardware class's 8 GB VRAM ceiling once the mxbai-embed-large
       // embedder (590 MB) was resident alongside it, spilling layers to CPU
       // and timing distill jobs out into poison; qwen3.5:4b fit VRAM but
-      // was still the weaker of two measured-broken options. codex-
-      // subscription runs off-box against the operator's own ChatGPT plan,
-      // so it is immune to this box's VRAM ceiling entirely.
+      // under-extracted atoms from real conversational transcripts (retired
+      // 2026-07-14, see src/cli/init.ts's DEFAULT_OLLAMA_LLM_MODEL comment).
+      // codex-subscription runs off-box against the operator's own ChatGPT
+      // plan, so it is immune to this box's VRAM ceiling entirely.
       //
       // Tradeoff the operator must accept: this requires `codex login`
       // (a paid ChatGPT plan) before compaction/extraction will work at
@@ -625,7 +626,7 @@ export function defaultConfig(): Config {
       // codex-subscription default, which the `init` wizard writes into
       // both this compaction key and the extraction key below from one
       // provider pick. Users who explicitly pick ollama in the wizard still
-      // get DEFAULT_OLLAMA_LLM_MODEL (qwen3.5:4b) as that provider's
+      // get DEFAULT_OLLAMA_LLM_MODEL (qwen2.5:7b) as that provider's
       // sub-default.
       compaction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
       extraction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' }
