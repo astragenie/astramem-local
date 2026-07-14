@@ -45,6 +45,14 @@
  * it) and compare judge.mts scores between the two run dirs. Omitted:
  * byte-identical to before this flag existed.
  *
+ * ANSWERER_SIGNALS=1 (env, not a flag; FEAT-500 A/B prep, additive): includes
+ * each retrieved hit's `top_signal` + a compact per-signal breakdown in the
+ * answerer prompt (see answer.mts's formatSignalBreakdown). Unset (the
+ * default): the prompt is byte-identical to every prior recorded score. Run
+ * the same sample twice (once unset, once with it) and diff judge.mts scores
+ * between the two run dirs — see the FEAT-500 backlog file for the exact A/B
+ * command.
+ *
  * --diagnose (WS2 diagnostic, same doc, additive): runs the not-in-db/
  * rank-miss/rank-ok retrieval diagnosis (see diagnose-retrieval.mts) against
  * each shard's daemon right after the answer step, before it's torn down,
@@ -81,14 +89,14 @@ import {
 import { ingestConversations, type IngestManifest } from './ingest.mts';
 import { waitForSamplesDistilled, type DistillWaitResult } from './distill-wait.mts';
 import { answerConversations, writeHypothesesJsonl, type AnswerOutcome } from './answer.mts';
-import { diagnoseRetrieval, computeBreakdown, printBreakdown, writeDiagnosisReport, type DiagnosisReport, type DiagnosisRecord } from './diagnose-retrieval.mts';
+import { diagnoseRetrieval, computeBreakdown, printBreakdown, writeDiagnosisReport, type DiagnosisReport, type DiagnosisRecord, type JudgeSummary } from './diagnose-retrieval.mts';
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance } from '../shared/ollama-tuning.js';
 import { ledgerCompletedMap } from '../shared/resume-ledger.js';
 import { hashDatasetFile, evaluateResumeGuard, type RunParams } from '../shared/run-params.js';
 import { evaluateDetachDecision, isDetachedChild, buildDetachedChildArgs, spawnDetached } from '../shared/detach.js';
-import { patchRunStatus, printRunStatus, shouldFlushProgress } from '../shared/run-status.js';
+import { patchRunStatus, printRunStatus, shouldFlushProgress, readRunStatus, type RunStatus } from '../shared/run-status.js';
 import { writeDaemonManifest, type DaemonManifestEntry } from '../shared/daemon-manifest.js';
 
 const args = process.argv.slice(2);
@@ -101,6 +109,15 @@ const has = (flag: string): boolean => args.includes(flag);
 const datasetPath = get('--dataset') ?? '.eval-data/locomo/locomo10.json';
 const seed = Number(get('--seed') ?? '42');
 const k = Number(get('--k') ?? '10');
+// How many QA pairs are answered at once. Purely a scheduling knob — the prompt,
+// deployment, token budget and k are untouched, so the hypotheses (and therefore
+// the score) are identical to the old strictly-serial loop. See
+// DEFAULT_ANSWER_CONCURRENCY in answer.mts.
+const answerConcurrency = Number(get('--answer-concurrency') ?? '8');
+// FEAT-500 A/B prep: env, not a flag, so it composes with --resume unchanged
+// and default runs (unset) stay byte-identical to every prior recorded
+// score. See answer.mts's buildAnswerPrompt/formatSignalBreakdown.
+const answererIncludeSignals = process.env.ANSWERER_SIGNALS === '1';
 const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
@@ -125,6 +142,12 @@ const modelOverrides: EvalModelOverrides | undefined =
 // FEAT-479 D3 §3.2: additive — omit to inherit the shipped 'engineering'
 // default exactly as before this flag existed.
 const extractProfileFlag = get('--extract-profile') as 'engineering' | 'conversational' | undefined;
+const extractionPassesRaw = get('--extraction-passes');
+const extractionPassesFlag = extractionPassesRaw !== undefined ? (Number(extractionPassesRaw) as 1 | 2) : undefined;
+if (extractionPassesFlag !== undefined && extractionPassesFlag !== 1 && extractionPassesFlag !== 2) {
+  console.error(`--extraction-passes must be 1 or 2, got: ${extractionPassesRaw}`);
+  process.exit(1);
+}
 // WS2 rerank-flip experiment (docs/specs/20260713-locomo-architect-design.md
 // workstream 2): `--cross-encoder` flips the isolated eval daemon's
 // crossEncoder.enabled via config only (src/search/rerank.ts's own logic is
@@ -190,6 +213,8 @@ async function runShard(opts: {
   /** Additive (FEAT-479 D3 §3.2) — undefined reproduces the shipped
    *  'engineering' default exactly. */
   extractProfile?: 'engineering' | 'conversational';
+  /** Additive (W2 dual-pass A/B) — undefined inherits the shipped default (1). */
+  extractionPasses?: 1 | 2;
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -207,7 +232,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -218,7 +243,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -265,10 +290,43 @@ async function runShard(opts: {
     console.log(`${tag}ingest done in ${timings.ingest_ms}ms: ${ingestManifest.ok_count} ok, ${ingestManifest.failed_count} failed.`);
 
     t = Date.now();
+    // run-status must track the phases that TAKE THE TIME, not just the ones that
+    // are quick to describe. Before this, `phase` was stamped 'ingesting' once and
+    // then not written again until 'completed' — so the two longest phases
+    // (distill-wait, answering) were invisible. On 2026-07-14 a run sat at
+    // `{phase: "ingesting", sessions_done: 1}` for 90 minutes while its ingest was
+    // in fact complete (272/272, 2521 atoms) and its wait loop was wedged. The
+    // status file was not merely unhelpful, it was actively misleading: it named
+    // the wrong phase and a session count off by 271.
+    // Only the single-shard path owns run-status.json. In multi-shard mode every
+    // shard shares one runDir, so N shards patching one file would race and the
+    // last writer would win — a status that flickers between shards is no better
+    // than one that lies. The parent aggregates shard progress separately.
+    const ownsStatus = label === undefined;
+    const startedAt = readRunStatus(runDir)?.started_at ?? new Date().toISOString();
+    const statusBase = { orchestrator_pid: process.pid, started_at: startedAt };
+    const patchStatus = (patch: Partial<RunStatus>): void => {
+      if (ownsStatus) patchRunStatus(runDir, { ...statusBase, ...patch });
+    };
+
+    patchStatus({ phase: 'distill_wait', sessions_done: ingestManifest.ok_count });
+    let lastFlushMs = Date.now();
     const distillResult = await waitForSamplesDistilled(
       { baseUrl: daemon.baseUrl, token },
       ingestManifest.by_sample,
-      { timeoutMs: distillTimeoutMs, onProgress: (r, total) => { checkDaemonAlive(); process.stdout.write(`\r  ${tag}${r}/${total} conversations distilled`); } },
+      {
+        timeoutMs: distillTimeoutMs,
+        onProgress: (r, total) => {
+          checkDaemonAlive();
+          process.stdout.write(`\r  ${tag}${r}/${total} conversations distilled`);
+          // Throttled so a 5s poll loop doesn't rewrite the file every round.
+          const now = Date.now();
+          if (shouldFlushProgress(lastFlushMs, now)) {
+            lastFlushMs = now;
+            patchStatus({ phase: 'distill_wait', conversations_ready: r, conversations_total: total });
+          }
+        },
+      },
     );
     process.stdout.write('\n');
     timings.distill_wait_ms = Date.now() - t;
@@ -278,11 +336,16 @@ async function runShard(opts: {
     let outcomes: AnswerOutcome[] | null = null;
     if (azureCfg) {
       t = Date.now();
+      patchStatus({
+        phase: 'answering',
+        conversations_ready: distillResult.ready_sample_ids.length,
+        conversations_timed_out: distillResult.timed_out_sample_ids.length,
+      });
       outcomes = await answerConversations(
         { baseUrl: daemon.baseUrl, token },
         azureCfg,
         samples,
-        { k, readySampleIds: new Set(distillResult.ready_sample_ids) },
+        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency, includeSignals: answererIncludeSignals },
       );
       timings.answer_ms = Date.now() - t;
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);
@@ -480,7 +543,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -541,7 +604,20 @@ async function runFull(): Promise<void> {
   let diagnosisPath: string | null = null;
   if (diagnoseRequested) {
     const breakdown = computeBreakdown(allDiagnosisRecords);
-    const diagnosisReport: DiagnosisReport = { records: allDiagnosisRecords, ...breakdown };
+    // run.mts never threads an --llm-judge flag through diagnoseRetrieval
+    // (that's diagnose-retrieval.mts's own CLI-only opt-in, see its file
+    // header's #267 section) -- this is a plain merge of each shard's
+    // per-record judge accounting (issue #267 fix), not a fresh judge run,
+    // so it's derived from allDiagnosisRecords rather than any shard's own
+    // per-shard judge_summary (which computeBreakdown/writeDiagnosisReport
+    // never see across the shard boundary anyway).
+    const judge_summary: JudgeSummary = {
+      enabled: allDiagnosisRecords.some(r => r.judged),
+      total_calls: allDiagnosisRecords.reduce((n, r) => n + r.judge_calls, 0),
+      total_failures: allDiagnosisRecords.reduce((n, r) => n + r.judge_failures, 0),
+      capped_records: allDiagnosisRecords.filter(r => r.judge_capped).length,
+    };
+    const diagnosisReport: DiagnosisReport = { records: allDiagnosisRecords, ...breakdown, judge_summary };
     diagnosisPath = join(runDir, 'diagnosis.json');
     writeDiagnosisReport(diagnosisReport, diagnosisPath);
     printBreakdown(diagnosisReport);

@@ -67,8 +67,11 @@ const LLAMA_SERVER_RE = /^llama-server(\.exe)?$/i;
 const OLLAMA_RE = /^ollama(\.exe)?$/i;
 
 /** Below this fraction of a loaded model's bytes resident in VRAM, doctor
- *  WARNs — this is the exact 2026-07-13 signature (0.59/4.99 ≈ 0.12). */
-const CPU_OFFLOAD_RATIO_FLOOR = 0.9;
+ *  WARNs — this is the exact 2026-07-13 signature (0.59/4.99 ≈ 0.12).
+ *  Exported so `src/doctor/checks/model-fit.ts` (issue #279) can apply the
+ *  SAME live-offload floor to a specific config-pinned model instead of
+ *  duplicating the constant. */
+export const CPU_OFFLOAD_RATIO_FLOOR = 0.9;
 
 const TUNING_VARS = [
   'OLLAMA_NUM_PARALLEL',
@@ -234,7 +237,17 @@ function checkSilentCpuOffload(opts: {
       }
 
       if (models === null) {
-        return { ok: true, message: 'Ollama /api/ps unreachable — CPU offload check skipped (is Ollama running?)' };
+        // The fetch either threw or the probe's own null-sentinel fired —
+        // both mean this check never actually observed Ollama's loaded
+        // models, so it must not render as a confirmed "nothing offloaded"
+        // (same ambiguity checkOrphanedLlamaServer's listProcesses===null
+        // branch documents above: a probe failure and a genuinely absent
+        // Ollama are indistinguishable from here).
+        return {
+          ok: true,
+          inconclusive: true,
+          message: 'Ollama /api/ps unreachable — CPU offload check did not run (is Ollama running?)',
+        };
       }
       if (models.length === 0) {
         return { ok: true, message: 'no models currently loaded in Ollama' };
@@ -296,6 +309,7 @@ function checkOllamaTuningEnvVars(opts: {
         const doctorEnvHint = TUNING_VARS.map((v) => `${v}=${opts.env[v] ?? '(unset in doctor process)'}`).join(', ');
         return {
           ok: true,
+          inconclusive: true,
           message:
             `cannot determine Ollama's actual tuning env vars from here — persisted-environment lookup is ` +
             `unavailable on this platform (or failed), and this doctor process's own environment is NOT ` +

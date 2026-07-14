@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import type { DB } from '../storage/db.js';
 import type { MemoryScope } from '../contracts/index.js';
 import { logger } from '../log/logger.js';
+import { safeJsonColumn, safeParseEventPayload } from '../storage/json-guard.js';
 
 export const SYNC_PROTOCOL = 'astramem-sync@1' as const;
 
@@ -73,6 +74,34 @@ export interface ShipperHandle {
   stop(): Promise<void>;
 }
 
+export interface ShipperGateInput {
+  /** `cfg.sync.enabled` — merged from sync.json pairing state at boot
+   * (resolve-runtime.ts). Pairing-owned; `astramem-local pair` flips this to
+   * true on a successful redeem. */
+  enabled: boolean;
+  /** `cfg.sync.experimental` — config.yaml, hand-edit only. `pair` never
+   * touches this field. */
+  experimental: boolean;
+  dataDir: string;
+  /** True under ASTRA_MEMORY_ISOLATED=1 (see resolve-runtime.ts). */
+  isolated: boolean;
+}
+
+/**
+ * Hard gate on top of `enabled` (astramem-local sync-experimental-gate
+ * slice): sync-to-astramem-cloud is currently broken (8868 events failing
+ * HTTP 400, not yet root-caused). Before this gate, `astramem-local pair
+ * <code>` alone set `sync.json`'s `enabled: true` and that was sufficient to
+ * start shipping — anyone who paired hit the broken path. Both `enabled`
+ * (sync.json, pairing-owned) AND `experimental` (config.yaml, hand-edit
+ * only) must now be true, on top of the pre-existing dataDir/isolated
+ * guards `cli/serve.ts` already enforced. Pure/exported so the gate is
+ * unit-testable without spawning a daemon.
+ */
+export function shouldStartShipper(input: ShipperGateInput): boolean {
+  return input.enabled && input.experimental && input.dataDir !== ':memory:' && !input.isolated;
+}
+
 const DEFAULT_BATCH = 200;
 const DEFAULT_INTERVAL_MS = 30_000;
 const BACKOFF_CAP_MS = 15 * 60_000;
@@ -91,8 +120,12 @@ export async function readErrorBody(res: Response): Promise<string> {
     const text = await res.text();
     if (!text) return '';
     return text.length > MAX_ERROR_BODY_LEN ? `${text.slice(0, MAX_ERROR_BODY_LEN)}…` : text;
-  } catch {
-    return '';
+  } catch (err) {
+    // A truly empty body and a body we FAILED to read (connection reset after
+    // headers, decode error) are diagnostically different — the first points at
+    // a Kestrel/gateway-level reject with no payload, the second at a bodied
+    // app response we lost. Distinguish them instead of collapsing both to ''.
+    return `<unreadable body: ${err instanceof Error ? err.message : String(err)}>`;
   }
 }
 
@@ -181,7 +214,7 @@ export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
           m.scope IN ('team', 'org')
           OR (
             e.event_type = 'erase_request'
-            AND json_extract(e.payload_json, '$.scope') IN ('team', 'org')
+            AND json_extract(${safeJsonColumn('e.payload_json')}, '$.scope') IN ('team', 'org')
           )
         )
       ORDER BY e.seq ASC
@@ -229,7 +262,7 @@ export function countUnsynced(db: DB): number {
           m.scope IN ('team', 'org')
           OR (
             e.event_type = 'erase_request'
-            AND json_extract(e.payload_json, '$.scope') IN ('team', 'org')
+            AND json_extract(${safeJsonColumn('e.payload_json')}, '$.scope') IN ('team', 'org')
           )
         )
     `)
@@ -334,7 +367,15 @@ export function buildEnvelope(
       event_id: r.event_id,
       event_type: r.event_type,
       atom_id: r.atom_id,
-      payload_json: withCurrentScope(r, r.payload_json !== null ? (JSON.parse(r.payload_json) as Record<string, unknown>) : null),
+      payload_json: withCurrentScope(
+        r,
+        safeParseEventPayload(r.payload_json, err =>
+          logger.warn(
+            { event_id: r.event_id, seq: r.seq, atom_id: r.atom_id, error_message: String(err) },
+            'sync: event has malformed payload_json — shipping with null payload rather than failing the whole batch',
+          ),
+        ),
+      ),
       content_hash: r.content_hash,
       created_at: r.created_at,
     })),
@@ -383,7 +424,21 @@ export async function shipOnce(opts: ShipperOpts): Promise<ShipOnceResult> {
   });
   if (!res.ok) {
     const bodyText = await readErrorBody(res);
-    throw new Error(`sync ship failed: HTTP ${res.status}${bodyText ? ` ${bodyText}` : ''}`);
+    // DIAG (sync-400-visibility): an empty-body 400 hides whether the reject is
+    // auth, model-binding, or an upstream gateway — surface status-line headers
+    // + token presence so the cause is diagnosable from the daemon log alone.
+    // Optional-chain every header read: this block exists to make the HTTP
+    // failure diagnosable, so it must never itself throw and REPLACE the real
+    // `HTTP <status>` error with a `TypeError: cannot read 'get'` (which is
+    // exactly what a non-standard/headers-less Response would otherwise cause).
+    const ct = res.headers?.get('content-type') ?? '';
+    const wa = res.headers?.get('www-authenticate') ?? '';
+    const srv = res.headers?.get('server') ?? '';
+    const reqId = res.headers?.get('x-request-id') ?? res.headers?.get('request-id') ?? '';
+    const diag = `ct='${ct}' www-auth='${wa}' server='${srv}' reqId='${reqId}' tokenLen=${opts.token?.length ?? 0} batch=${rows.length}`;
+    throw new Error(
+      `sync ship failed: HTTP ${res.status}${bodyText ? ` body=${bodyText}` : ' (empty body)'} [${diag}]`,
+    );
   }
   const body = (await res.json()) as { acked_seq?: number; rejected_seqs?: unknown };
   const ackedSeq = typeof body.acked_seq === 'number' ? body.acked_seq : -1;

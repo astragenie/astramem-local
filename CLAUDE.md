@@ -268,10 +268,16 @@ Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answ
   genuinely empty transcript are indistinguishable at every layer — not the Zod gate, not
   the job queue, not the poison counter (which only increments on failure, and a zero-atom
   success never fails). This is the headline finding of the teardown; see ADR-015.
-- **Four tables have zero writers:** day-one `messages`, `artifacts`, `provider_state`
-  (never written in this repo's history), plus in-flight `evidence_guard_drops`.
-  `provider_state` is the worst — nothing writes it, but `src/server/queries/dashboard.ts:245`
-  reads it, so it's an always-empty dashboard widget shipping to users, not just dead code.
+- **Corrected 2026-07-14 (caught by FEAT-493's build):** this bullet used to claim the
+  `artifacts` SQL table was a live zero-writer table. Wrong — `messages`, `artifacts`, and
+  `provider_state` were all **dropped, irreversibly**, by `migrations/040-drop-dead-tables.sql`
+  (none had ever been written; `provider_state` also had a dead reader,
+  `src/server/queries/dashboard.ts`, repointed at live `HealthState` in the same migration's
+  paired dashboard change). FEAT-493's first retention design targeted the `artifacts` table and
+  failed at runtime against it — exactly the stale-doc-read-as-authoritative class this repo
+  otherwise documents. Only `evidence_guard_drops` (migration 030) remains an actual zero-writer,
+  in-flight table. Disk artifacts (the thing FEAT-489/493 actually govern) live under
+  `<dataDir>/artifacts/<kind>/` on the filesystem, not in SQLite — see `src/storage/retention.ts`.
 - **LLM-proxy transcripts spool to disk plaintext, unredacted** (redaction happens at the
   daemon's stage-0 ingest, not at proxy capture). Files that fail JSON-parse or
   schema-validate quarantine to `.quarantine/` **before** ever reaching redaction — no TTL,
@@ -375,6 +381,18 @@ temperature control and a truncated context — treat those numbers as invalid.
 - Do NOT kill processes machine-wide by image name (`taskkill /F /IM node.exe`, `/IM bun.exe`, `Stop-Process -Name node`). This box runs the production daemon, eval shard daemons, Ollama, and sibling agents' processes — an image-name kill murders all of them (2026-07-10: killed a 40-min LongMemEval run + prod daemon). Kill only PIDs you spawned (track them; use process-tree kill on your own root PID). If stray vitest daemons pile up, find YOUR strays via their listen ports / datadir paths and kill those PIDs.
 - Do NOT `git stash` in worktrees — the stash stack is repo-global across all worktrees; a `stash pop` in one worktree can eat a sibling agent's stash (caused a 2026-07-09 work-loss race). Use `git diff > x.patch` + `git checkout` + `git apply` instead.
 - Do NOT hand-edit `memories_vec FLOAT[N]` in a migration file directly. Since FEAT-409 (merged) the dim is single-sourced from `DEFAULT_EMBED_DIM` (`src/contracts/embed.ts`) — config default, embed providers, `SqliteVecStore`, mock providers, the `__EMBED_DIM__` migration placeholder, and the boot-time preflight (`src/doctor/probes/embed-probe.ts`) all derive from it or from `getVecSchemaDim()`. Changing the *default* is a one-constant edit for fresh DBs; migrating an *existing* DB's live vectors to a new dim requires `astramem-local reembed-dim` (migration 011, `docs/embed-dim-migration.md`) — there is no ALTER for a sqlite-vec vec0 table. FEAT-436 (2026-07-05) re-audited this and confirmed it is resolved, not an open coordinated-change hazard.
+- Do NOT construct a month-arithmetic `Date` via `setUTCMonth`/`setMonth` on a `Date`
+  still carrying the anchor's own day-of-month. It silently overflows forward whenever
+  that day doesn't exist in the target month (`2023-07-31` + 1 month lands on the
+  nonexistent Aug 31, which JS normalizes into September instead of throwing) — bit
+  `src/distill/temporal-grounding.ts`'s `addMonthsUtc` and shipped behind 307 green tests
+  because the whole suite anchored on the 15th, the one day-of-month that can never
+  trigger it (fixed same day; see `docs/research/20260713-temporal-grounding-regex-postmortem.md`).
+  When only month/year granularity is needed, construct fresh via
+  `new Date(Date.UTC(year, month, 1))` instead — no day value left to overflow. Any
+  future month-arithmetic helper needs an explicit month-end-anchor test (29th/30th/31st),
+  not just mid-month ones.
+- During a `git rebase`, `--ours` is the UPSTREAM side, not your commits — the inverse of a normal merge. Resolving a rebase conflict with `git checkout --ours` therefore keeps *main's* version and **discards your work**. Read the conflict markers; never pick a side by name. This already bit the repo once: PR #229's rebase resolved six test-file conflicts with `--ours`, silently reverting them back to their pre-fix hardcoded-literal state — and the suite stayed **green the entire time**, because the reverted literal happened to numerically equal the correctly-derived value at each point in the rebase (a test passing for the wrong reason). It took a human re-deriving the claim against `origin/main` to notice. Fixed in PR #233. See ADR-016 §3 Instance 1 and §5 rule 6.
 
 <!-- crew:start -->
 <!-- Crew framework memory. Run /crew:install after plugin updates that change framework memory. -->

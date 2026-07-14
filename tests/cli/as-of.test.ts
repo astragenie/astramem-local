@@ -29,7 +29,7 @@ describe('FEAT-401 AC-4: CLI --as-of forwards the same as_of value the API consu
     await cliSearch('postgres decision', { asOf: '2026-06-10T00:00:00.000Z' });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.pathname).toBe('/search');
     // Same key + same value the GET /search route reads via `params.as_of`
     // and hands to parseAsOf — one shared parser, one shared search() call.
@@ -42,7 +42,7 @@ describe('FEAT-401 AC-4: CLI --as-of forwards the same as_of value the API consu
 
     await cliSearch('postgres decision', {});
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.has('as_of')).toBe(false);
   });
 

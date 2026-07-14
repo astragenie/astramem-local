@@ -591,7 +591,7 @@ describe('POST /remember', () => {
       db,
       token: 'tok',
       embed: buildMockEmbed(),
-      config: { ...defaultConfig(), distill: { durabilityGate: 'strict', extractProfile: 'engineering' } },
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, durabilityGate: 'strict', extractProfile: 'engineering' } },
     });
 
     const lowDurabilityBodies: Array<{ text: string; type: string }> = [

@@ -49,6 +49,12 @@ const PEM_BLOCK =
   'MIIEowIBAAKCAQEAx8y2f3z9q8v7u6t5s4r3q2p1o0n9m8l7k6j5i4h3g2f1e0d\n' +
   '-----END RSA PRIVATE KEY-----';
 const HIGH_ENTROPY_BLOB = 'zT9kQ2vXmN4pR8wL1sYbF6cH3jD0eAgi'; // 32 unique chars, entropy 5.0
+// FEAT-498: Stripe live-mode keys + bare (unlabeled) OpenAI/Anthropic keys.
+const STRIPE_SK_LIVE = 'sk_live_AbCdEfGhIjKlMnOpQrStUvWxYz012345';
+const STRIPE_PK_LIVE = 'pk_live_AbCdEfGhIjKlMnOpQrStUvWxYz012345';
+const STRIPE_RK_LIVE = 'rk_live_AbCdEfGhIjKlMnOpQrStUvWxYz012345';
+const OPENAI_BARE_KEY = 'sk-proj-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789';
+const ANTHROPIC_BARE_KEY = 'sk-ant-api03-AbCdEfGhIjKlMnOpQrStUvWxYz0123456789-AbCdEfGh';
 
 const TRUE_POSITIVES: TruePositiveCase[] = [
   { name: 'AWS access key', input: `key is ${AWS_KEY} in the env`, type: 'aws_access_key', secret: AWS_KEY },
@@ -425,6 +431,37 @@ const TRUE_POSITIVES: TruePositiveCase[] = [
     type: 'numeric_secret',
     secret: '99887766554433221100998877',
   },
+  // FEAT-498: Stripe live-mode keys + bare (unlabeled) OpenAI/Anthropic keys.
+  {
+    name: 'Stripe live secret key (sk_live_)',
+    input: `curl -H "Authorization: Bearer ${STRIPE_SK_LIVE}" https://api.stripe.com/v1/charges`,
+    type: 'stripe_key',
+    secret: STRIPE_SK_LIVE,
+  },
+  {
+    name: 'Stripe live publishable key (pk_live_)',
+    input: `Stripe.js init with ${STRIPE_PK_LIVE} on the checkout page`,
+    type: 'stripe_key',
+    secret: STRIPE_PK_LIVE,
+  },
+  {
+    name: 'Stripe live restricted key (rk_live_)',
+    input: `restricted key ${STRIPE_RK_LIVE} scoped to read-only charges`,
+    type: 'stripe_key',
+    secret: STRIPE_RK_LIVE,
+  },
+  {
+    name: 'bare unlabeled OpenAI key (sk-...)',
+    input: `export OPENAI_API_KEY_RAW=${OPENAI_BARE_KEY} # no label recognized here`,
+    type: 'openai_key',
+    secret: OPENAI_BARE_KEY,
+  },
+  {
+    name: 'bare unlabeled Anthropic key (sk-ant-...)',
+    input: `pasted from terminal: ${ANTHROPIC_BARE_KEY}`,
+    type: 'anthropic_key',
+    secret: ANTHROPIC_BARE_KEY,
+  },
 ];
 
 describe('redactText — true positives (table-driven)', () => {
@@ -710,6 +747,45 @@ describe('redactText — false-positive guards', () => {
     const placeholderCount = (text.match(/\[REDACTED:/g) ?? []).length;
     expect(placeholderCount).toBe(1);
     expect(events.length).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FEAT-498: Stripe / bare OpenAI-Anthropic detectors — near-miss negatives.
+// ---------------------------------------------------------------------------
+
+describe('redactText — FEAT-498 Stripe/OpenAI/Anthropic near-miss negatives', () => {
+  it('does not tag a Stripe TEST-mode key (sk_test_) as stripe_key — live-mode only, by design', () => {
+    const input = `test key sk_test_AbCdEfGhIjKlMnOpQrStUvWxYz012345 in a fixture`;
+    const { events } = redactText(input);
+    expect(events.some(e => e.type === 'stripe_key')).toBe(false);
+  });
+
+  it('does not tag a short "sk-" token (below the 20-char body floor) as openai_key', () => {
+    const input = 'run sk-8 to launch the dev shortcut';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not tag "sk-todo" (short, ordinary hyphenated identifier) as openai_key', () => {
+    const input = 'the sk-todo branch still needs a rebase';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('does not match "sk-" appearing mid-word (no word boundary) — "ask-forgiveness" style prose', () => {
+    const input = 'better to ask-forgiveness-later than ask-permission-first, the saying goes';
+    const { text, events } = redactText(input);
+    expect(text).toBe(input);
+    expect(events.length).toBe(0);
+  });
+
+  it('a labeled OpenAI key keeps the generic_credential type — bare openai_key entry never wins the overlap', () => {
+    const { events } = redactText(`OPENAI_API_KEY=${OPENAI_BARE_KEY}`);
+    expect(events.length).toBe(1);
+    expect(events[0]?.type).toBe('generic_credential');
   });
 });
 

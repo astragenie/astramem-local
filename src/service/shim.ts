@@ -242,15 +242,15 @@ try {
   console.error(ts() + ' [astramemd-shim] run: astramem-local reinstall');
   process.exit(1);
 }
-if (!ptr.nodeBin || !ptr.entryJs) {
-  console.error(ts() + ' [astramemd-shim] current.json missing nodeBin/entryJs — run: astramem-local reinstall');
+if (typeof ptr.nodeBin !== 'string' || !ptr.nodeBin || typeof ptr.entryJs !== 'string' || !ptr.entryJs) {
+  console.error(ts() + ' [astramemd-shim] current.json missing/invalid nodeBin/entryJs — run: astramem-local reinstall');
   process.exit(1);
 }
 const env = { ...process.env };
 if (ptr.logDir) env.ASTRA_LOG_DIR = ptr.logDir; // service mode: rotated file logs
 const args = [ptr.entryJs, 'serve', '--port', String(ptr.port || 7777)];
-// stdout stays inherited (the daemon's own file logger takes over once it
-// opens); stderr is redirected straight to a scratch FILE via a real OS
+// stdin is 'ignore' (see below); stdout stays inherited (the daemon's own
+// file logger takes over once it opens); stderr is redirected straight to a scratch FILE via a real OS
 // file descriptor — NOT Node's 'pipe' stdio — so pre-logger crash output
 // can still be captured to crash.log even though it's ALSO discarded by the
 // scheduler otherwise (FEAT-440 — this is exactly the 2026-07-07 incident's
@@ -285,15 +285,40 @@ const stderrStdio = stderrFd === null ? 'inherit' : stderrFd;
 // meant to be days/weeks under the keepalive architecture — see this
 // file's header). Reviewed as part of the B3 shell-out timeout sweep: not
 // a missed cold-start bug, the intended shape of this specific call.
+//
+// stdin is 'ignore', not 'inherit': the daemon never reads from stdin, and
+// under a headless/non-interactive launch (a Windows Scheduled Task run has
+// no guarantee of a usable console stdio triplet — 'Run whether user is
+// logged on or not', a locked/disconnected session, etc.) an inherited
+// handle that nothing will ever use is pure unnecessary risk surface.
+// 'ignore' needs no valid parent handle at all.
 const startedAt = Date.now();
-const res = spawnSync(ptr.nodeBin, args, { stdio: ['inherit', 'inherit', stderrStdio], env });
-const durationMs = Date.now() - startedAt;
+let exitCode;
+let durationMs;
+try {
+  const res = spawnSync(ptr.nodeBin, args, { stdio: ['ignore', 'inherit', stderrStdio], env });
+  durationMs = Date.now() - startedAt;
+  exitCode = res.status === null ? 1 : res.status;
+} catch (err) {
+  // spawnSync() itself throwing (as opposed to returning a result object
+  // with res.error set — the documented failure shape spawnSync normally
+  // uses) is a genuine launcher-level failure, e.g. an argument type
+  // spawnSync rejects synchronously. This must still exit non-zero (it is
+  // a real failure, not the healthy already-running fast-exit this file
+  // exists to get right) — it must just not fall through UNRECORDED to
+  // Node's bare uncaught-exception handler, which would exit non-zero too
+  // but skip appendExitHistory entirely (this run vanishes from
+  // exit-history.jsonl instead of leaving a diagnosable entry) and print no
+  // actionable message.
+  durationMs = Date.now() - startedAt;
+  exitCode = 1;
+  console.error(ts() + ' [astramemd-shim] failed to spawn daemon: ' + (err && err.message ? err.message : String(err)));
+}
 
 if (stderrFd !== null) {
   try { closeSync(stderrFd); } catch (err) { /* best-effort */ }
 }
 
-const exitCode = res.status === null ? 1 : res.status;
 const exitTs = ts();
 appendExitHistory({ ts: exitTs, exitCode, durationMs });
 if (stderrFd !== null) {

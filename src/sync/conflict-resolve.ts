@@ -18,6 +18,8 @@
 import { randomUUID } from 'node:crypto';
 import type { DB } from '../storage/db.js';
 import type { MemoryEventType } from '../storage/memory-events.js';
+import { safeJsonColumn, safeParseEventPayload } from '../storage/json-guard.js';
+import { logger } from '../log/logger.js';
 
 interface AtomEventRow {
   seq: number;
@@ -48,10 +50,45 @@ function hardDeleteAtom(db: DB, atomId: string): boolean {
   return true;
 }
 
-function supersedeTarget(e: AtomEventRow): string {
-  const payload = e.payload_json !== null ? (JSON.parse(e.payload_json) as { superseded_by?: string }) : {};
-  const target = payload.superseded_by;
-  if (!target) throw new Error(`supersede event ${e.event_id} on atom ${e.atom_id} is missing payload.superseded_by`);
+/**
+ * Resolve a `supersede` event's target atom id from its payload. Returns
+ * `null` — logged, never thrown — for BOTH a malformed `payload_json` (the
+ * event may have arrived via sync pull from another device; see
+ * json-guard.ts's file header) and a well-formed payload missing
+ * `superseded_by` (a pre-existing invariant violation this function already
+ * detected before FEAT-495, just via a thrown Error). Both used to throw
+ * out of {@link recomputeProjection}, which runs inside the SAME transaction
+ * as an entire sync-pull round (src/sync/puller.ts) — one bad event rolled
+ * back every event in that round and re-fetched the same batch forever.
+ * Callers filter out `null` results and proceed with whatever supersede
+ * events DID resolve, rather than resolving none of them.
+ *
+ * TODO(review 20260714T174617Z-review-l1-4-hardening-feat-495.md, item 4,
+ * non-blocking): this exclusion only ever surfaces via `logger.warn` — no
+ * counter or doctor check tracks how often it fires, unlike migration
+ * self-heal (migration_self_heal_log + its doctor check) or handler runs
+ * (handler_runs + its doctor check), both added in this same bundle. A
+ * systemic issue (e.g. one misbehaving remote device always sending
+ * supersede events with no `superseded_by`) would only be visible today by
+ * grepping raw logs. Add a small guard-drop-style table + doctor check
+ * (same shape as relation_guard_drops / entity_name_drops /
+ * validity_guard_drops) if this ever needs to be a fast-follow.
+ */
+function supersedeTarget(e: AtomEventRow): string | null {
+  const payload = safeParseEventPayload(e.payload_json, err =>
+    logger.warn(
+      { event_id: e.event_id, atom_id: e.atom_id, error_message: String(err) },
+      'conflict-resolve: supersede event has malformed payload_json — excluding it from conflict resolution',
+    ),
+  ) as { superseded_by?: string } | null;
+  const target = payload?.superseded_by;
+  if (!target) {
+    logger.warn(
+      { event_id: e.event_id, atom_id: e.atom_id },
+      'conflict-resolve: supersede event is missing payload.superseded_by — excluding it from conflict resolution',
+    );
+    return null;
+  }
   return target;
 }
 
@@ -77,8 +114,8 @@ function chainLoserToWinner(db: DB, loserAtomId: string, winnerAtomId: string, a
     .prepare(
       `SELECT 1 FROM memory_events
        WHERE atom_id = ? AND event_type = 'supersede'
-         AND json_extract(payload_json, '$.superseded_by') = ?
-         AND json_extract(payload_json, '$.reason') = 'conflict_merge'`,
+         AND json_extract(${safeJsonColumn('payload_json')}, '$.superseded_by') = ?
+         AND json_extract(${safeJsonColumn('payload_json')}, '$.reason') = 'conflict_merge'`,
     )
     .get(loserAtomId, winnerAtomId);
   if (!already) {
@@ -140,18 +177,37 @@ export function recomputeProjection(db: DB, atomId: string): void {
       // tie-break): resolve the fork first, then supersede wins regardless
       // of any concurrent invalidate — so invalidates are simply not
       // consulted once any supersede event exists.
-      const winner = maxByTieBreak(supersedes);
-      const winnerTarget = supersedeTarget(winner);
+      //
+      // FEAT-495: a supersede event whose target can't be resolved
+      // (malformed or missing payload.superseded_by — see supersedeTarget's
+      // doc comment) is excluded from tie-break rather than crashing this
+      // whole recompute. `validTo` still derives from ALL supersede events
+      // regardless of resolvability — an unresolvable event still means
+      // "this device believes the atom stopped being current at this time",
+      // even if WHO it was superseded by can't be determined.
+      const resolvable = supersedes
+        .map(e => ({ event: e, target: supersedeTarget(e) }))
+        .filter((x): x is { event: AtomEventRow; target: string } => x.target !== null);
+
+      if (resolvable.length === 0) {
+        logger.warn(
+          { atom_id: atomId, supersede_event_count: supersedes.length },
+          'conflict-resolve: every supersede event for this atom has an unresolvable target — leaving projection unchanged this round',
+        );
+        return;
+      }
+
+      const winner = maxByTieBreak(resolvable.map(r => r.event));
+      const winnerTarget = resolvable.find(r => r.event === winner)!.target;
       const validTo = Math.min(...supersedes.map(e => e.created_at));
 
       db.prepare('UPDATE memories SET valid_to = ?, superseded_by = ?, updated_at = ? WHERE id = ?')
         .run(validTo, winnerTarget, now, atomId);
 
-      for (const loser of supersedes) {
-        if (loser === winner) continue;
-        const loserTarget = supersedeTarget(loser);
-        if (loserTarget === winnerTarget) continue; // two devices happened to pick the same successor — nothing to chain
-        chainLoserToWinner(db, loserTarget, winnerTarget, Math.max(loser.created_at, now));
+      for (const loser of resolvable) {
+        if (loser.event === winner) continue;
+        if (loser.target === winnerTarget) continue; // two devices happened to pick the same successor — nothing to chain
+        chainLoserToWinner(db, loser.target, winnerTarget, Math.max(loser.event.created_at, now));
       }
     } else {
       // Rule A, invalidate-vs-invalidate: order-independent, first-invalidated-wins.

@@ -43,6 +43,14 @@ jobs:
       - name: Type-check eval harness (tsc --noEmit)
         run: bun run typecheck:eval
 
+      # tsconfig.json's include is src/** only, so neither step above ever
+      # type-checks tests/** — issue #235: `bun run typecheck:tests` had
+      # never run in CI, so every @ts-expect-error / satisfies / type-only
+      # fixture in the test tree was decoration that passed once locally and
+      # never ran again. Wired in here, same pattern as typecheck:eval above.
+      - name: Type-check tests (tsc --noEmit)
+        run: bun run typecheck:tests
+
       # contracts/ is the cross-repo technical constitution (ADR-001/003/005)
       # — cheap, fast, no build step. Cloud repo CI runs the same
       # `node contracts/validate.mjs` invocation against these same files.

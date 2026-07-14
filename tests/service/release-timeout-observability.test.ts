@@ -67,8 +67,22 @@ describe('release.ts runCaptured — timeout observability (B3 review fix)', () 
     rmSync(releasesRoot, { recursive: true, force: true });
   });
 
+  /** Issue #305: materializeRelease now resolves the package manager first,
+   *  probing candidate bun binaries with `<bun> --version` (via bunRuns). Make
+   *  those probes SUCCEED so a bun install is chosen, and time out only the
+   *  actual `install` call — preserving this suite's original intent (verify
+   *  the BUN-install timeout is observable), not the probe. */
+  function mockProbeOkInstallTimeout() {
+    spawnSyncMock.mockImplementation((_cmd: string, args: string[]) => {
+      if (Array.isArray(args) && args.includes('--version')) {
+        return { status: 0, signal: null, stdout: '1.3.0', stderr: '', error: undefined, pid: 1, output: [null, '1.3.0', ''] };
+      }
+      return timeoutKillResult();
+    });
+  }
+
   it('a bun-install timeout-kill throws a DISTINGUISHABLE error naming both ETIMEDOUT and the timeout, not a bare/silent failure', () => {
-    spawnSyncMock.mockReturnValue(timeoutKillResult());
+    mockProbeOkInstallTimeout();
 
     let caught: Error | undefined;
     try {
@@ -88,13 +102,21 @@ describe('release.ts runCaptured — timeout observability (B3 review fix)', () 
   });
 
   it('spawnSync is actually invoked with the bun-install timeout, not left at a default', () => {
-    spawnSyncMock.mockReturnValue(timeoutKillResult());
+    mockProbeOkInstallTimeout();
 
     expect(() => materializeRelease({ checkoutDir, releasesRoot })).toThrow();
 
     expect(spawnSyncMock).toHaveBeenCalled();
-    const [cmd, args, opts] = spawnSyncMock.mock.calls[0]! as [string, string[], { timeout?: number }];
-    expect(cmd).toBe('bun');
+    // The resolver probes candidates with `--version` first (issue #305); the
+    // call under test is the `install` one, not necessarily calls[0].
+    const installCall = spawnSyncMock.mock.calls.find(
+      (c) => Array.isArray(c[1]) && (c[1] as string[]).includes('install'),
+    ) as [string, string[], { timeout?: number }] | undefined;
+    expect(installCall).toBeDefined();
+    const [cmd, args, opts] = installCall!;
+    // A verified bun was chosen (probe returned 0); cmd is 'bun' or a resolved
+    // bun path — assert it's the bun install, not the npm fallback.
+    expect(cmd).toMatch(/bun/);
     expect(args).toContain('install');
     // bun install is I/O-bound (network/cache), not the cold-shell class —
     // it gets minutes, not the 15s git/boot-verify bound.

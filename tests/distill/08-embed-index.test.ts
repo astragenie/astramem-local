@@ -6,6 +6,7 @@ import type { NormalizedMemory } from '../../src/distill/stages/07-memory-normal
 import type { EmbedProvider, EmbedHealth } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
 import { EntityRepo } from '../../src/storage/entities.js';
+import { MemoryRepo } from '../../src/storage/memories.js';
 import { defaultConfig } from '../../src/config/config.js';
 
 // AC-7: capture what the gate actually logs (via a mocked childLogger)
@@ -66,6 +67,34 @@ function normalizedMem(
   };
 }
 
+/**
+ * Issue #209: a real, DB-level vec-upsert failure — an embed provider whose
+ * declared dim (999) matches its own vector length (so the earlier "embed
+ * provider invariant violation" guard and SqliteVecStore's own length check
+ * both pass) but MISMATCHES the memories_vec table's actual schema dim
+ * (FLOAT[1024], the DEFAULT_EMBED_DIM baked in by migrate() with no dim
+ * argument). The INSERT INTO memories_vec itself then throws a real
+ * dimension-mismatch error from the sqlite-vec extension — the same shape of
+ * failure a provider swap mid-fleet would produce, not a mocked exception.
+ */
+function makeMismatchedDimEmbed(): EmbedProvider {
+  return {
+    name: 'ollama' as const,
+    model: 'bad-dim-model',
+    dim: 999 as const,
+    async embed(texts: string[]): Promise<Float32Array[]> {
+      return texts.map((_, i) => {
+        const v = new Float32Array(999);
+        for (let j = 0; j < 999; j++) v[j] = Math.sin(i + j * 0.01);
+        return v;
+      });
+    },
+    async health(): Promise<EmbedHealth> {
+      return { ok: true, model: 'bad-dim-model', dim: 999 };
+    },
+  };
+}
+
 describe('embedAndIndex stage', () => {
   let db: DB;
 
@@ -90,18 +119,18 @@ describe('embedAndIndex stage', () => {
     });
 
     expect(results.length).toBe(1);
-    expect(results[0].created).toBe(true);
-    expect(typeof results[0].memoryId).toBe('string');
+    expect(results[0]!.created).toBe(true);
+    expect(typeof results[0]!.memoryId).toBe('string');
 
     // Verify row in memories table
-    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0].memoryId) as any;
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
     expect(row).toBeTruthy();
     expect(row.embedding_provider).toBe('ollama');
     expect(row.embedding_model).toBe('test-embed-model');
     expect(row.embedding_dim).toBe(1024);
 
     // Verify vec row exists
-    const vecRow = db.prepare('SELECT rowid FROM memories_vec WHERE rowid = (SELECT rowid FROM memories WHERE id = ?)').get(results[0].memoryId) as any;
+    const vecRow = db.prepare('SELECT rowid FROM memories_vec WHERE rowid = (SELECT rowid FROM memories WHERE id = ?)').get(results[0]!.memoryId) as any;
     expect(vecRow).toBeTruthy();
   });
 
@@ -112,9 +141,9 @@ describe('embedAndIndex stage', () => {
     const r1 = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
     const r2 = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    expect(r1[0].created).toBe(true);
-    expect(r2[0].created).toBe(false);
-    expect(r1[0].memoryId).toBe(r2[0].memoryId);
+    expect(r1[0]!.created).toBe(true);
+    expect(r2[0]!.created).toBe(false);
+    expect(r1[0]!.memoryId).toBe(r2[0]!.memoryId);
   });
 
   it('handles multiple memories in a batch', async () => {
@@ -140,6 +169,65 @@ describe('embedAndIndex stage', () => {
     expect(results).toEqual([]);
   });
 
+  // Issue #209: "a failed vec-upsert returns ok:true and is never retried" —
+  // 13 production memories were unrecallable by vector search, permanently,
+  // with a green write. This proves the fix at the data-path level: the
+  // memory still persists (the atom is never lost over an indexing failure),
+  // the failure is durably recorded (not just an ephemeral response field),
+  // and a retry is actually queued (not just an alarm).
+  describe('vec upsert failure (issue #209)', () => {
+    it('a vec-upsert failure does not fail embedAndIndex — the memory persists, needs_vec_index is set, a reembed job is enqueued', async () => {
+      const embed = makeMismatchedDimEmbed();
+      const mems = [normalizedMem('a memory whose vec upsert will fail', 'vecfail'.repeat(8).slice(0, 64))];
+
+      const results = await embedAndIndex(mems, {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      });
+
+      // The memory itself is NOT lost — a vec-index failure must never
+      // reject content the caller asked to save.
+      expect(results).toHaveLength(1);
+      expect(results[0]!.created).toBe(true);
+
+      const memRepo = new MemoryRepo(db);
+      const memory = memRepo.get(results[0]!.memoryId);
+      expect(memory).toBeTruthy();
+      // Durable retry marker — the previous behavior had NOTHING durable
+      // here; the failure lived only in a log line.
+      expect(memory!.needs_vec_index).toBe(true);
+
+      // No memories_vec row exists for this memory (the upsert genuinely failed).
+      const vecRow = db.prepare(
+        'SELECT rowid FROM memories_vec WHERE rowid = (SELECT rowid FROM memories WHERE id = ?)',
+      ).get(results[0]!.memoryId);
+      expect(vecRow).toBeUndefined();
+
+      // A retry, not just an alarm: a `reembed` job was actually enqueued.
+      const jobs = db.prepare("SELECT payload_json FROM jobs WHERE kind = 'reembed'").all() as { payload_json: string }[];
+      expect(jobs).toHaveLength(1);
+      expect(JSON.parse(jobs[0]!.payload_json)).toMatchObject({ kind: 'reembed', memory_id: results[0]!.memoryId });
+    });
+
+    it('one atom failing vec upsert does not abort the rest of the batch', async () => {
+      const embed = makeMismatchedDimEmbed();
+      const mems = [
+        normalizedMem('first atom, vec upsert will fail', 'vf1'.repeat(22).slice(0, 64)),
+        normalizedMem('second atom, vec upsert will also fail', 'vf2'.repeat(22).slice(0, 64)),
+      ];
+
+      const results = await embedAndIndex(mems, {
+        db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      });
+
+      // Both atoms persisted — before this fix, the second atom's insert
+      // would never even run because the first atom's vec upsert threw
+      // straight out of the loop.
+      expect(results).toHaveLength(2);
+      const count = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n;
+      expect(count).toBe(2);
+    });
+  });
+
   it('attaches session and repo metadata', async () => {
     const embed = makeMockEmbed();
     // Need a session row first for FK
@@ -156,7 +244,7 @@ describe('embedAndIndex stage', () => {
       sourceHash: 'src123',
     });
 
-    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0].memoryId) as any;
+    const row = db.prepare('SELECT * FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
     expect(row.session_id).toBe('sess-1');
     expect(row.repo).toBe('my-repo');
     expect(row.agent).toBe('claude-code');
@@ -171,7 +259,7 @@ describe('embedAndIndex stage', () => {
       sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
       captureSource: 'auto_capture',
     });
-    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0].memoryId) as { capture_source: string | null };
+    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0]!.memoryId) as { capture_source: string | null };
     expect(row.capture_source).toBe('auto_capture');
   });
 
@@ -182,7 +270,7 @@ describe('embedAndIndex stage', () => {
       db, embed,
       sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
     });
-    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0].memoryId) as { capture_source: string | null };
+    const row = db.prepare('SELECT capture_source FROM memories WHERE id = ?').get(results[0]!.memoryId) as { capture_source: string | null };
     expect(row.capture_source).toBeNull();
   });
 
@@ -197,10 +285,10 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const linked = new EntityRepo(db).listForMemory(results[0].memoryId);
+    const linked = new EntityRepo(db).listForMemory(results[0]!.memoryId);
     expect(linked).toHaveLength(1);
-    expect(linked[0].name).toBe('postgres'); // AC-9 normalized
-    expect(linked[0].kind).toBe('tech');
+    expect(linked[0]!.name).toBe('postgres'); // AC-9 normalized
+    expect(linked[0]!.kind).toBe('tech');
   });
 
   it('a memory with no entities creates no memory_entities rows', async () => {
@@ -209,7 +297,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const linked = new EntityRepo(db).listForMemory(results[0].memoryId);
+    const linked = new EntityRepo(db).listForMemory(results[0]!.memoryId);
     expect(linked).toEqual([]);
   });
 
@@ -238,7 +326,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0]!.memoryId) as
       { valid_at: number | null; invalid_at: number | null };
     expect(row.valid_at).toBe(Date.parse('2026-01-01T00:00:00.000Z'));
     expect(row.invalid_at).toBe(Date.parse('2026-03-01T00:00:00.000Z'));
@@ -257,7 +345,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0]!.memoryId) as
       { valid_at: number | null; invalid_at: number | null };
     expect(row.valid_at).toBeNull();
     expect(row.invalid_at).toBeNull();
@@ -273,7 +361,7 @@ describe('embedAndIndex stage', () => {
 
     const results = await embedAndIndex(mems, { db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null });
 
-    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0].memoryId) as
+    const row = db.prepare('SELECT valid_at, invalid_at FROM memory_entities WHERE memory_id = ?').get(results[0]!.memoryId) as
       { valid_at: number | null; invalid_at: number | null };
     expect(row.valid_at).toBeNull();
     expect(row.invalid_at).toBeNull();
@@ -317,9 +405,9 @@ describe('embedAndIndex stage', () => {
 
       expect(gatedOutCounter.count).toBe(6);
       expect(results).toHaveLength(1);
-      expect(typeof results[0].memoryId).toBe('string');
+      expect(typeof results[0]!.memoryId).toBe('string');
 
-      const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(results[0].memoryId) as any;
+      const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
       expect(row.text).toContain('Chose PostgreSQL over MongoDB');
 
       // Every gated atom's row must be absent from the store entirely.
@@ -374,7 +462,7 @@ describe('embedAndIndex stage', () => {
         db: dbOff, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
         durabilityGateMode: 'off',
       });
-      const offRow = dbOff.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(offResults[0].memoryId) as any;
+      const offRow = dbOff.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(offResults[0]!.memoryId) as any;
 
       const dbStrict = openDb(':memory:');
       migrate(dbStrict);
@@ -382,7 +470,7 @@ describe('embedAndIndex stage', () => {
         db: dbStrict, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
         durabilityGateMode: 'strict',
       });
-      const strictRow = dbStrict.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(strictResults[0].memoryId) as any;
+      const strictRow = dbStrict.prepare('SELECT normalized_text, hash FROM memories WHERE id = ?').get(strictResults[0]!.memoryId) as any;
 
       expect(strictRow.normalized_text).toBe(offRow.normalized_text);
       expect(strictRow.hash).toBe(offRow.hash);
@@ -415,8 +503,8 @@ describe('embedAndIndex stage', () => {
 
       expect(results).toHaveLength(0); // gated, never persisted
       expect(warnCalls).toHaveLength(1);
-      expect(warnCalls[0].fields.gatedReason).toBe('bare_todo');
-      const loggedText = warnCalls[0].fields.text as string;
+      expect(warnCalls[0]!.fields.gatedReason).toBe('bare_todo');
+      const loggedText = warnCalls[0]!.fields.text as string;
       expect(loggedText).not.toContain('TESTSECRET-99999');
       expect(loggedText).toContain('[REDACTED:custom:');
     });
@@ -433,7 +521,7 @@ describe('embedAndIndex stage', () => {
       });
 
       expect(warnCalls).toHaveLength(1);
-      expect(warnCalls[0].fields.gatedReason).toBe('bare_todo');
+      expect(warnCalls[0]!.fields.gatedReason).toBe('bare_todo');
     });
 
     // AC-4: gatedOutCounter is the observability out-param the caller

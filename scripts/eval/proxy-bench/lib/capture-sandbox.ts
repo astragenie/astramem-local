@@ -98,7 +98,12 @@ export function makeProxySandbox(prefix: string, captureEnabled: boolean): Proxy
   mkdirSync(configDir, { recursive: true });
   writeFileSync(
     join(configDir, 'config.yaml'),
-    `security:\n  encryption:\n    enabled: false\nproxy:\n  capture:\n    enabled: ${captureEnabled ? 'true' : 'false'}\n`,
+    // proxy.experimental: true — release no-go hard gate (src/cli/proxy.ts,
+    // src/config/config.ts): `astramem-local proxy serve` refuses to start
+    // the listener at all unless this is explicitly true. This harness
+    // legitimately spawns the real proxy for a benchmark/e2e run, so it must
+    // opt in here, same as any other real operator would in config.yaml.
+    `security:\n  encryption:\n    enabled: false\nproxy:\n  experimental: true\n  capture:\n    enabled: ${captureEnabled ? 'true' : 'false'}\n`,
     'utf8',
   );
 

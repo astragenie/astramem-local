@@ -154,7 +154,7 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
   });
 
   describe('Silent CPU offload', () => {
-    it('ok:true when Ollama /api/ps is unreachable (daemon not running)', async () => {
+    it('ok:true but inconclusive when Ollama /api/ps is unreachable (daemon not running) — the check did not run, not a confirmed clean bill of health', async () => {
       const checks = getGpuChecks({
         listProcesses: async () => [],
         queryGpuMemory: async () => null,
@@ -162,6 +162,7 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
       });
       const result = await findCheck(checks, 'Silent CPU offload').run();
       expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
       expect(result.message.toLowerCase()).toContain('unreachable');
     });
 
@@ -233,7 +234,7 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
     // when it can be read, and say so honestly (never claim "(unset)") when
     // it can't.
 
-    it('is always informational (ok:true) whether persisted lookup succeeds or not', async () => {
+    it('ok:true but inconclusive when the persisted lookup itself returns null (could not determine anything)', async () => {
       const checks = getGpuChecks({
         listProcesses: async () => [],
         queryGpuMemory: async () => null,
@@ -242,6 +243,7 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
       });
       const result = await findCheck(checks, 'Ollama tuning env vars').run();
       expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
     });
 
     it('reports persisted values with their scope when the registry lookup succeeds', async () => {
@@ -310,11 +312,12 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
       });
       const result = await findCheck(checks, 'Ollama tuning env vars').run();
       expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
       expect(result.message).not.toMatch(/OLLAMA_\w+=\(unset\)/);
       expect(result.message.toLowerCase()).toMatch(/cannot determine|unavailable|unknown/);
     });
 
-    it('degrades gracefully (ok:true, honest) when readPersistedEnvVars itself throws', async () => {
+    it('degrades gracefully (ok:true, inconclusive, honest) when readPersistedEnvVars itself throws', async () => {
       const checks = getGpuChecks({
         listProcesses: async () => [],
         queryGpuMemory: async () => null,
@@ -325,6 +328,7 @@ describe('doctor GPU/VRAM checks (FEAT-485)', () => {
       });
       const result = await findCheck(checks, 'Ollama tuning env vars').run();
       expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
       expect(result.message).not.toMatch(/OLLAMA_\w+=\(unset\)/);
     });
   });

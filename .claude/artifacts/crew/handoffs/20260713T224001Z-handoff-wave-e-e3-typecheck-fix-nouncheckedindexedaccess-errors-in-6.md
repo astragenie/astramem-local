@@ -1,0 +1,34 @@
+# Task Handoff: wave-e/e3-typecheck: fix noUncheckedIndexedAccess errors in 6 test files
+
+- Created: 2026-07-13T22:40:01.219Z
+- From: test-automator
+- To: dispatcher
+- Objective: Added non-null assertions (!) at 19 indexed-access sites across 6 test files to satisfy tsconfig.tests.json's noUncheckedIndexedAccess; zero behavior change, no product code touched. tsc -p tsconfig.tests.json now shows zero errors for these 6 files; targeted vitest run is 31/31 green (24.09s), zero skips.
+- Allowed Scope:
+  - tests/cli/as-of.test.ts(32
+  - 45); tests/cli/entity.test.ts(27
+  - 38
+  - 68
+  - 79
+  - 91); tests/cli/project-filter.test.ts(31
+  - 42
+  - 75); tests/entity/backfill.test.ts(63
+  - 117); tests/integration/embed-dim-e2e.test.ts(99
+  - 101); tests/vector/sqlite-vec.test.ts(31
+  - 32
+  - 47
+  - 48
+  - 49)
+- Forbidden Scope: -
+- Deliverable: 6 test files edited with mechanical ! non-null assertions at the exact TS2532 sites; no src/** or tsconfig changes; see final assistant message for full before/after diff list
+- Changed Files:
+  - tests/cli/as-of.test.ts
+  - tests/cli/entity.test.ts
+  - tests/cli/project-filter.test.ts
+  - tests/entity/backfill.test.ts
+  - tests/integration/embed-dim-e2e.test.ts
+  - tests/vector/sqlite-vec.test.ts
+- Confidence: medium
+- Risks: 13 of 19 fixes (all of tests/cli/*.test.ts's fetchMock.mock.calls[0][0] sites, and all 5 of tests/vector/sqlite-vec.test.ts's hits[N] sites) have NO literal in-test length/count assertion preceding them — I verified the guarantee by reading the SUT source (src/cli/search.ts, src/vector/sqlite-vec.ts) instead, per the brief's 'loop bound provably in range' allowance. Flagged explicitly for dispatcher review in case a stricter assert-only reading of the hard rule is wanted; none looked like a genuine product bug.
+- Suggested Next Handoff: If the 13 source-verified (non-assertion-guarded) fixes are not acceptable under a strict reading, revert them and instead add explicit toHaveBeenCalledTimes(1)/toHaveLength(n) assertions to those tests first, then re-add the ! assertions
+

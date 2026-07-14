@@ -509,6 +509,39 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     expect(payload.hits.length).toBeGreaterThan(0);
   });
 
+  it('FEAT-500: tools/call search_memory hits carry explanation.top_signal, a real key of explanation.signals', async () => {
+    await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'remember',
+        arguments: { text: 'top_signal must survive the MCP wire response', type: 'lesson' },
+      },
+      id: 12,
+    });
+
+    const resp = await mcpPost(baseUrl, {
+      jsonrpc: '2.0',
+      method: 'tools/call',
+      params: {
+        name: 'search_memory',
+        arguments: { query: 'top_signal MCP wire response', limit: 5 },
+      },
+      id: 13,
+    }) as { result?: { content?: Array<{ type: string; text: string }> } };
+
+    expect(resp).toHaveProperty('result');
+    const text2 = resp.result?.content?.[0]?.text ?? '';
+    const payload = JSON.parse(text2) as {
+      hits: Array<{ explanation: { final: number; signals: Record<string, { final: number }>; top_signal?: string } }>;
+    };
+    expect(payload.hits.length).toBeGreaterThan(0);
+    for (const hit of payload.hits) {
+      expect(typeof hit.explanation.top_signal).toBe('string');
+      expect(hit.explanation.signals).toHaveProperty(hit.explanation.top_signal!);
+    }
+  });
+
   // -------------------------------------------------------------------------
   // recall_memory
   // -------------------------------------------------------------------------

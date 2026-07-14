@@ -214,18 +214,21 @@ describe('memory-health: EXPLAIN QUERY PLAN — cheap tier rides existing indexe
     // function's actual SQL shape (created_at >= ? is required for the
     // planner to pick the partial index; omitting it falls back to
     // idx_memory_events_atom_seq instead, verified by hand while writing
-    // this test).
+    // this test). Both the query and the index's own WHERE clause (migration
+    // 044, FEAT-495 item 3) now wrap payload_json in the same
+    // json_valid(...) ELSE '[]' guard — SQLite's partial-index matching
+    // requires the expressions to match, so the query text below must too.
     const servedPlan = db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
-      WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'recall_served' AND created_at >= ?
+      WHERE event_type = 'usefulness' AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served' AND created_at >= ?
     `).all(0) as { detail: string }[];
     expect(servedPlan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);
 
     const usedPlan = db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
-      WHERE event_type = 'usefulness' AND json_extract(payload_json, '$.family') = 'recall_used' AND created_at >= ?
+      WHERE event_type = 'usefulness' AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_used' AND created_at >= ?
     `).all(0) as { detail: string }[];
     expect(usedPlan.some(p => p.detail.includes('idx_memory_events_usefulness_used'))).toBe(true);
   });

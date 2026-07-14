@@ -267,6 +267,43 @@ export type ExtractProfile = 'engineering' | 'conversational';
  * when no sessionDateIso was available (legacy v0.0 envelopes, direct
  * /remember calls) — those callers see byte-identical behavior to before
  * this fix.
+ *
+ * UPDATE (LoCoMo WS3, 2026-07-13): narrowed the "sentiment padding"
+ * banned-abstraction. It used to exclude ANY standalone reaction, which
+ * meant the model was correctly following instructions when it dropped
+ * things like "Melanie thinks Caroline will be an awesome mom" — a real,
+ * durable fact about the two people's relationship, not conversational
+ * filler. Root-caused via a direct root-cause trace on questions from
+ * `docs/research/20260713-locomo-retrieval-diagnosis.md`'s not-in-db
+ * bucket: real production extraction, run twice (once pre-fix, once
+ * post-fix) on the same source session, showed the fix adds exactly the
+ * missing atom and nothing else (see PR discussion for the before/after).
+ * DO NOT widen this back to "any reaction with a named cause survives" —
+ * an early draft of this fix used exactly that wording and a reviewer
+ * caught that it would let "the user was frustrated with the build" back
+ * in (a named cause, but still the user's own mood, still padding). The
+ * test that actually holds, verbatim, so a future "cleanup" doesn't
+ * re-break it: the dividing line is WHOSE LIFE the reaction is about, not
+ * whether a cause is named — a reaction to your own circumstances is
+ * banned even with a named cause; a reaction to another specifically
+ * named person's specific event is a keeper.
+ * Known limitation, not yet fixed: when a session has BOTH people
+ * reacting to each other repeatedly, extraction still shows a lopsided
+ * capture rate — it tends to keep the reactions belonging to whichever
+ * person's event is the subject and drop the other person's commentary,
+ * even after this fix (measured ~77% capture on one dense two-way session,
+ * both losses on the same side). Same shape as the pre-existing
+ * Caroline/Melanie 58/42 extraction asymmetry flagged in the WS2
+ * root-cause research's "A secondary, correlated signal: speaker
+ * asymmetry" section (as of this writing that doc is an uncommitted
+ * local research artifact, not yet merged to origin/main — anchor on the
+ * section title, not a file:line, until it lands; see ADR-015's citation
+ * policy) — likely one mechanism, not confirmed. A dedicated
+ * reactions-extraction pass (giving reactions their own call instead of
+ * competing with headline facts for one call's attention) is the
+ * candidate fix if this turns out not to be good enough on its own; not
+ * built yet, gated on measuring whether the prompt fix alone is sufficient
+ * at full-sample scale.
  */
 export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL = `You extract durable PERSONAL knowledge from conversational transcripts — chats, journals, voice-note transcripts, casual check-ins between a person and an assistant — not engineering or coding sessions.
 
@@ -288,17 +325,25 @@ Output STRICT JSON matching:
 
 Liberal extraction (mem0 pattern) — a DIFFERENT posture from engineering transcripts: capture EVERY durable personal fact, preference, relationship, plan, or event mentioned, not only the highest-value few. A stated preference, a named relationship, or a planned date is cheap to keep and expensive to lose — bias toward extracting whenever a candidate is genuinely durable, rather than filtering it out because it seems minor.
 
+EXHAUSTIVENESS CHECKLIST — run this before you emit. These are checks, not encouragement:
+1. COUNT CHECK. A chunk of 10+ conversational turns normally yields 5-15 atoms. If you are about to emit FEWER THAN 3 from a chunk that size, you have almost certainly missed things — go back and re-read the transcript from the top before answering.
+2. NO FIRST-TOPIC DOMINANCE. Do not spend all your attention on whatever the conversation opened with. A conversation that starts with a job change and later mentions a sister's wedding, a new apartment, and a dog's name must yield atoms for ALL FOUR — not four atoms about the job. Walk the transcript end to end and ask what is durable at EACH turn, not just the ones that felt important.
+3. BOTH SPEAKERS. Extract facts stated by EITHER participant about EITHER participant. A fact one person states about the other is still a durable fact.
+4. SWEEP THE CATEGORIES. Before finishing, ask explicitly: did anyone mention a NAMED PERSON, a PLACE, a DATE or timeframe, a JOB or school, a possession or pet, a plan, a preference, or a health/life event? Each "yes" that is not already in your output is a fact you dropped.
+
+Quantity over timidity: a marginal-but-durable fact you keep costs almost nothing. A real fact you drop is gone forever — nothing downstream can recover it. When genuinely torn, EXTRACT.
+
 Self-containment — every atom must read as ONE complete, standalone sentence of roughly 15-80 words, true on its own without the rest of the conversation:
 - Resolve every pronoun to the actual named person before writing the atom. Never emit "she started her new job", "his sister called him", or "they're moving in June" — write the real names: "Priya started her new job", "Marcus's sister called him", "the Nguyen family is moving in June".
 - Preserve proper nouns EXACTLY as given — people's names, place names, employer and school names, product and brand names. Never substitute a generic noun ("her employer", "the city") for a name you were actually told.
 - Possessor qualification (Graphiti pattern): whenever a fact belongs to a specific person, name that owner inside the sentence itself. Write "Sergey's daughter Alice starts kindergarten in September, moving up from the preschool she has attended the past two years", never a bare "daughter starts kindergarten in September" or "starts school in the fall" — a reader must never have to guess whose fact this is.
 
-Date grounding: if a line reading "Observation date: <YYYY-MM-DD>" appears immediately before the transcript chunk below, treat that as the authoritative anchor and resolve every relative date expression ("yesterday", "last week", "next month", "three years ago") against it — write the resolved absolute date in ISO-8601 form (YYYY-MM-DD) directly into the atom's text in place of the relative phrase, not alongside it. Otherwise, if the transcript states or implies an explicit observation/capture date (a timestamp, a line like "today is 2026-07-13", a dated header), resolve relative dates against that anchor instead. If no anchor exists at all — no Observation date line and no in-transcript date — keep the original relative phrasing rather than inventing an absolute date you were not given — a guessed date is worse than an honest relative one.
+Date grounding: if a line reading "Observation date: <YYYY-MM-DD>" appears immediately before the transcript chunk below, treat that as the authoritative anchor and resolve every relative date expression ("yesterday", "last week", "next month", "three years ago") against it — write the resolved absolute date in natural-language form (e.g. "14 May 2023", NOT "2023-05-14") directly into the atom's text in place of the relative phrase, not alongside it. Use natural-language dates in "text" specifically — this is prose a person or another model reads later, not a machine-parsed field; "valid_at"/"invalid_at" below are the separate ISO-8601 fields for that. Otherwise, if the transcript states or implies an explicit observation/capture date (a timestamp, a line like "today is 2026-07-13", a dated header), resolve relative dates against that anchor instead, still in natural-language form. If no anchor exists at all — no Observation date line and no in-transcript date — keep the original relative phrasing rather than inventing an absolute date you were not given — a guessed date is worse than an honest relative one.
 
 Banned abstractions — NEVER emit these shapes, even when a summary version is technically accurate:
 - Vague summaries: "discussed plans for the weekend", "talked about work stuff", "had a conversation about the move" — these describe the CONVERSATION itself, not a fact about the person's life; extract the actual plan, fact, or decision underneath instead, or emit nothing if there genuinely isn't one.
 - Meta-commentary: "the user shared an update", "mentioned something about the family" — never describe that a topic came up; state plainly what was actually said.
-- Sentiment padding: "seemed happy about it", "expressed some excitement" — skip a standalone mood observation unless the feeling itself is the durable, recurring fact (an ongoing preference or aversion belongs in "note", not a one-off reaction).
+- Sentiment padding: "seemed happy about it", "expressed some excitement" — the test is NOT "does this mood have a named cause." A person's reaction to their OWN circumstances is banned even with a specific named cause: "the user was frustrated with the build", "the user was thrilled after the workout", "the user was annoyed about the delayed flight" are all sentiment padding — skip them, cause or no cause. What is NOT banned, and must be kept as its own atom: one person's stated reaction or opinion about ANOTHER specifically named person's specific event, decision, or plan. That reaction is a fact about their relationship, not a mood — e.g. "Melanie told Caroline she thinks Caroline is doing something amazing by pursuing adoption and will be an awesome mom" is a keeper: it names who is reacting, who the reaction is about, and the specific thing that prompted it. The dividing line is whose life the reaction is about, not whether a cause is named — a reaction to your own life is still banned; a reaction to someone else's specific, named event is a keeper.
 
 Type-conditioned shape: conversational content maps mostly onto fact, note, event, and decision (a settled plan or choice); command and todo apply only when the source is literally a task, chore, or reminder, and lesson only when the person explicitly names something they personally learned. Regardless of type, every atom here stays atomic, single-valued, and roughly 15-80 words — do NOT apply the engineering profile's 300-800-character rich-shape rule (claim + rationale + consequence + provenance). Personal facts — a job, a relationship status, an address, a due date — are frequently corrected or superseded as life moves on, so keep each one a single clean, independently replaceable statement rather than a multi-clause paragraph.
 
@@ -365,7 +410,18 @@ WRONG (vague summary + unresolved possessor + meta-commentary about the conversa
 RIGHT (self-contained, possessor-qualified, states the actual fact instead of describing the conversation):
 {"type":"fact","text":"Sergey's sister Priya is currently going through a divorce, and has been having a difficult time with it lately.","importance":0.7,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}
 
-6. Input (issue #205 — atom-level validity, a genuine life-timeline, not a same-conversation correction): "I lived in Denver for about three years, then moved to Austin last year for a new job. Loving it here so far." ->
+6. Input: "Priya: I finally handed in my notice at the old job! -- Sergey: That's amazing, Priya! You've been wanting this for months, I'm so proud of you." ->
+{"atoms":[
+  {"type":"event","text":"Priya handed in her notice at her old job.","importance":0.7,"confidence":0.9,"entities":[{"name":"Priya","kind":"actor","subtype":"human"}]},
+  {"type":"note","text":"Sergey told Priya he is proud of her for handing in her notice, noting she had been wanting to make this move for months.","importance":0.5,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}
+]}
+(Sergey's reaction is kept as its own atom, NOT skipped as sentiment padding — it names who reacted, who it's about, and the specific event that prompted it.)
+
+7. Input: "Ugh, I'm so frustrated with the build today, it's been failing all afternoon." ->
+{"atoms":[]}
+(Sentiment padding, still — even though a cause is named ("the build"). The test is whose life the reaction is about, not whether a cause is named: this is Sergey reacting to his OWN circumstances, not to another named person's specific event. Compare to example 6 above, where the reaction is about Priya's stated event — that one is a keeper, this one is not.)
+
+8. Input (issue #205 — atom-level validity, a genuine life-timeline, not a same-conversation correction): "I lived in Denver for about three years, then moved to Austin last year for a new job. Loving it here so far." ->
 {"atoms":[
   {"type":"fact","text":"Sergey lived in Denver for about three years before moving away last year.","importance":0.6,"confidence":0.8,"invalid_at":"2025-07-13","entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Denver","kind":"other"}]},
   {"type":"fact","text":"Sergey moved to Austin last year for a new job, and has been enjoying it there so far.","importance":0.7,"confidence":0.85,"valid_at":"2025-07-13","entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]}
@@ -636,12 +692,13 @@ Self-containment — every atom must stand alone without the transcript (mem0-pa
   ("SQLITE_NOTADB", not "a database error").
 - Ground relative dates against an anchor. If a line reading "Observation date: <YYYY-MM-DD>"
   appears immediately before the transcript chunk below, treat it as the authoritative anchor and
-  resolve "yesterday" / "last week" / "this morning" / "three years ago" to an absolute ISO-8601
-  date (YYYY-MM-DD) against it, replacing the relative phrase rather than appending to it.
-  Otherwise, ground against an anchor stated in the transcript itself (a log timestamp, an
-  explicit "as of 2026-07-10") when one exists. If no date anchor exists anywhere — no Observation
-  date line and no in-transcript anchor — keep the original relative phrasing rather than
-  inventing a date.
+  resolve "yesterday" / "last week" / "this morning" / "three years ago" to a natural-language
+  absolute date (e.g. "10 July 2026", NOT "2026-07-10") against it, replacing the relative phrase
+  rather than appending to it — "text" is prose, not the machine-parsed "valid_at"/"invalid_at"
+  fields above, which stay ISO-8601. Otherwise, ground against an anchor stated in the transcript
+  itself (a log timestamp, an explicit "as of 2026-07-10") when one exists, still in
+  natural-language form. If no date anchor exists anywhere — no Observation date line and no
+  in-transcript anchor — keep the original relative phrasing rather than inventing a date.
 
 For each candidate item, pick type in this order — stop at the first match:
 1. command: a shell/CLI incantation worth REUSING (e.g. a specific \`git bisect\` run, a
@@ -804,3 +861,128 @@ RIGHT (self-contained — names the exact fix and states why the check matters; 
 NEGATIVE COUNTER-EXAMPLE — do NOT invent a bound the text never stated. Input: "We use Postgres for the event store." (no migration, no end mentioned) ->
 WRONG: {"type":"fact","text":"The event store uses Postgres.","invalid_at":"2026-07-13", ...} — there is nothing in the source bounding this fact; a guessed invalid_at would silently expire a still-true fact.
 RIGHT: {"type":"fact","text":"The event store uses Postgres.","importance":0.5,"confidence":0.85,"entities":[{"name":"Postgres","kind":"tech"}]} — valid_at/invalid_at both omitted, exactly as the "omit by default" rule above requires.`;
+
+// ---------------------------------------------------------------------------
+// Dual-pass extraction (opt-in, `distill.extractionPasses: 2`) — "specifics
+// sweeper", Pass B.
+//
+// Motivation (measured, not speculative): the single-hop root-cause
+// investigation (docs/research/20260713-single-hop-root-cause.md) found
+// 36-47% of gold single-hop facts across two independent eval runs were
+// NEVER captured as an atom anywhere in the store — and every spot-checked
+// "missing" fact was present verbatim in the source transcript. The missing
+// facts clustered in a recognizable shape: exact durations ("once or twice a
+// year"), quantities, verbatim quotes, one-off events (an accident, a
+// purchase, a trip), and the less narratively-central speaker's own facts
+// and advice — precisely the kind of detail a single summarization-oriented
+// extraction pass deprioritizes in favor of headline facts. The hypothesis
+// ledger (docs/research/20260714-locomo-hypothesis-ledger.md §2.11) never
+// killed multi-pass/ensemble extraction as a lever — it measured 31-46%
+// complementary recovery between models and left it explicitly untested,
+// not rejected.
+//
+// This is a SECOND, narrow extraction call over the SAME chunk pass A
+// already processed, deliberately NOT a general-purpose second opinion —
+// widening its scope back out would just re-run pass A a second time at
+// double the cost for no new recall. It is intentionally permissive about
+// re-extracting something pass A already caught ("duplicating pass A is
+// fine — dedup handles it"): asking the model to also guess what pass A
+// kept or skipped would cost accuracy on the one job this pass actually
+// has, for no benefit — src/distill/dedup-merge.ts reconciles the two
+// outputs deterministically, string-only, with no extra provider call.
+//
+// Reuses AtomSchema/the same wire schema as pass A — no new atom shape, no
+// new provider config (runs on the SAME ctx.llmExtraction instance, see
+// pipeline.ts's dual-pass wiring). Wired into 05-extract.ts's
+// extractSpecifics(); never referenced by resolveExtractionPrompt (that
+// resolver is pass-A-only) — a caller who wants this prompt asks for it by
+// name, on purpose, so pass A's profile/env-override precedence chain can
+// never accidentally select it.
+// ---------------------------------------------------------------------------
+export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER = `You are the SECOND of two independent extraction passes over the same transcript chunk. The FIRST pass already ran a broader extraction prompt and captured the main facts, decisions, and events. Your job is narrower and different: sweep the SAME chunk for concrete SPECIFICS the first pass is prone to skip because they read as minor details rather than headline facts.
+
+Measured finding this pass exists to fix: in production runs, 36-47% of gold single-hop facts were never captured as ANY atom — and every one spot-checked was present verbatim in the source transcript. The missing facts were disproportionately: exact durations, frequencies, quantities, one-off events, verbatim quotes, and the less narratively-central speaker's own facts and advice. That is exactly what you are looking for.
+
+Output STRICT JSON matching the SAME schema the first pass uses:
+{
+  "atoms": [
+    {
+      "type": "decision" | "fact" | "lesson" | "command" | "todo" | "note" | "event",
+      "text": "<one self-contained sentence, roughly 10-80 words>",
+      "importance": 0.0-1.0,
+      "confidence": 0.0-1.0,
+      "evidence": "<optional, short excerpt from source>",
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }],
+      "valid_at": "<ISO-8601 date-time, only if the source text states when THIS fact started>",
+      "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS fact stopped>"
+    }
+  ]
+}
+
+Extract ONLY items in these categories — this pass is deliberately narrow, not a second general-purpose pass:
+1. DATES/TIMES — any specific date, day, month, year, or time mentioned, even in passing.
+2. DURATIONS — how long something lasted or has been going on ("about three years", "for six months").
+3. FREQUENCIES — how often something happens ("once or twice a year", "every Sunday morning", "twice a week").
+4. QUANTITIES AND PRICES — counts, amounts, ages, prices, measurements ("three kids", "$40", "7 years old").
+5. NAMES — the specific, exact name of a person, place, pet, product, or thing mentioned, even a passing one.
+6. VERBATIM QUOTES — a phrase or sentence someone actually said, worth preserving word-for-word rather than paraphrased.
+7. ONE-OFF EVENTS — a single, non-recurring happening: an accident, a purchase, a trip, an injury, a specific incident — as opposed to an ongoing state or a recurring habit.
+8. ADVICE / COUNSEL — a specific recommendation, tip, or piece of guidance one speaker GIVES to the other. Attribute it to the speaker who GAVE it, not the one who received it.
+
+Cover BOTH speakers with EQUAL attention. Do not let whichever speaker's storyline feels more central crowd out the other speaker's specifics — a routine detail from the quieter speaker (an outing, a quantity, a one-off event) is exactly as valuable to this pass as a dramatic detail from the more prominent one.
+
+Self-containment: resolve every pronoun to the actual named person. Never emit "she went twice a year" — write "Melanie goes horseback riding once or twice a year". Preserve proper nouns exactly as given.
+
+Ground relative dates against an anchor. If a line reading "Observation date: <YYYY-MM-DD>"
+appears immediately before the transcript chunk below, treat it as the authoritative anchor and
+resolve "yesterday" / "last week" / "this morning" / "three years ago" to a natural-language
+absolute date (e.g. "10 July 2026", NOT "2026-07-10") against it, replacing the relative phrase
+rather than appending to it — "text" is prose, not the machine-parsed "valid_at"/"invalid_at"
+fields above, which stay ISO-8601. Otherwise, ground against an anchor stated in the transcript
+itself (a log timestamp, an explicit "as of 2026-07-10") when one exists, still in
+natural-language form. If no date anchor exists anywhere — no Observation date line and no
+in-transcript anchor — keep the original relative phrasing rather than inventing a date. This
+matters especially for you: DATES/TIMES is category 1 above and the category most likely to fire,
+so a bare/unresolved date here is not a corner case — it is the common path.
+
+Duplicating something the first pass likely already caught is FINE and expected — a separate merge step deduplicates the two passes' output afterward, so do not spend effort trying to guess what the first pass kept or skipped. Your only job is to sweep for the eight specific categories above, exhaustively, from BOTH speakers.
+
+Skip noise: greetings, small talk with no durable specific, filler acknowledgments.
+Skip secrets: passwords, tokens, financial account numbers, government ID numbers.
+Confidence reflects how clearly and directly the specific was stated: an explicit, unambiguous statement = 0.9; a hedge or approximation = 0.5.
+Importance reflects how durable and specific the detail is: a precise duration/frequency/quantity/quote/one-off event/piece of advice = 0.6-0.8; nothing here should score below 0.4, since if it doesn't fit one of the eight categories above it should not be extracted at all.
+
+Empty is valid: if the chunk truly contains none of the eight categories above, output "atoms": [] — do not invent one to have output.
+
+Examples (illustrative only, not exhaustive):
+
+1. Input: "Caroline: We don't go often, usually only once or twice a year. Melanie: Makes sense, it's a long drive." ->
+{"atoms":[
+  {"type":"fact","text":"Caroline said they don't go often — usually only once or twice a year.","importance":0.6,"confidence":0.85,"evidence":"usually only once or twice a year"}
+]}
+
+2. Input: "Observation date: 2026-07-10\n\nMelanie: My son got into an accident last week, but he's okay, thank god." ->
+{"atoms":[
+  {"type":"event","text":"Melanie's son got into an accident on 3 July 2026 and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+]}
+(The Observation date anchor resolves "last week" to a natural-language absolute date IN "text" —
+never a bare ISO date like "2026-07-03", and never left as the unresolved relative phrase.)
+
+3. Input: "Caroline: I saw a sign that said 'Trans Lives Matter' at the rally and took a photo of it." ->
+{"atoms":[
+  {"type":"fact","text":"Caroline saw and photographed a sign reading \\"Trans Lives Matter\\" at a rally she attended.","importance":0.6,"confidence":0.9,"evidence":"a sign that said 'Trans Lives Matter'"}
+]}
+
+4. Input: "Melanie: Honestly, if you're thinking about adopting, my advice is to start the home study early — it took us almost 7 months just for that part." ->
+{"atoms":[
+  {"type":"note","text":"Melanie advised starting the adoption home study early, noting it took her family almost 7 months to complete that part alone.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+]}
+
+5. Input: "Caroline: I used to go horseback riding with my dad when I was a kid." ->
+{"atoms":[
+  {"type":"fact","text":"Caroline used to go horseback riding with her dad when she was a kid.","importance":0.5,"confidence":0.85,"entities":[{"name":"Caroline","kind":"actor","subtype":"human"}]}
+]}
+
+6. Input: "Caroline: hey how's it going? Melanie: good, just tired, work's been busy." ->
+{"atoms":[]}
+(No date, duration, frequency, quantity, name, quote, one-off event, or advice — plain small talk, nothing in this pass's eight categories.)`;

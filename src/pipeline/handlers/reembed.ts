@@ -5,7 +5,11 @@ import { isExtendedCtx } from '../handler-ctx-ext.js';
 
 /**
  * Reembed handler — recompute + upsert the embedding for one memory
- * (`rebuild` CLI enqueues one job per memory; model swaps re-index this way).
+ * (`rebuild` CLI enqueues one job per memory; model swaps re-index this way.
+ * Issue #209: also the retry mechanism for a memory whose inline vec upsert
+ * failed at write time — see 08-embed-index.ts / POST /remember / MCP
+ * remember, which all enqueue this same job kind on failure instead of
+ * inventing a separate retry path).
  *
  * A missing memory is a success, not a failure: the memory may have been
  * erased (ADR-006) or superseded-and-cleaned between enqueue and execution,
@@ -37,5 +41,11 @@ export const reembedHandler: JobHandler = {
     ctx.db.prepare(
       'UPDATE memories SET embedding_provider = ?, embedding_model = ?, embedding_dim = ?, updated_at = ? WHERE id = ?',
     ).run(ctx.providers.embed.name, ctx.providers.embed.model, ctx.providers.embed.dim, Date.now(), memory_id);
+
+    // Issue #209: this upsert succeeded, so the retry marker (if this job
+    // was enqueued because a prior attempt failed) is stale — clear it. A
+    // no-op for the pre-existing `rebuild` CLI path, where the row was
+    // never flagged in the first place.
+    ctx.memoryRepo.clearNeedsVecIndex(memory_id);
   }
 };

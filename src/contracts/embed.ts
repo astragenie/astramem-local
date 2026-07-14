@@ -62,7 +62,13 @@ export interface EmbedProvider {
    * prefixing both sides would cancel the benefit).
    */
   readonly queryPrefix?: string;
-  embed(texts: string[]): Promise<Float32Array[]>;
+  /**
+   * `signal` (issue #261): caller-supplied cancellation, combined with (not
+   * replacing) the provider's own internal timeout — same contract as
+   * `ChatOpts.signal` in contracts/llm.ts. Optional so existing callers that
+   * don't need a caller-scoped budget are unaffected.
+   */
+  embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]>;
   health(): Promise<EmbedHealth>;
 }
 
@@ -78,9 +84,21 @@ export interface EmbedProvider {
  * on Hugging Face), queries must be prefixed with this exact string for
  * retrieval tasks; documents/passages take no prompt at all — confirmed
  * query-side-only is correct, no document re-embed is implied by this fix.
+ *
+ * `bge-m3`: FEAT-501 stage 1 verification (2026-07-14) — explicit empty
+ * entry, NOT an absence relying on the map's default fallback, so the
+ * determination is auditable rather than indistinguishable from "nobody
+ * checked yet." Confirmed via the model's own HuggingFace card FAQ
+ * (huggingface.co/BAAI/bge-m3): "The only difference is that the BGE-M3
+ * model no longer requires adding instructions to the queries" — i.e.
+ * unlike bge-v1.5 (which DOES need "Represent this sentence for searching
+ * relevant passages:"), bge-m3 dense retrieval takes queries and passages
+ * with no instruction prefix on either side. Do not add one without a
+ * re-verified source. See docs/research/20260714-feat-501-embed-model-ab.md.
  */
 export const QUERY_PREFIX_BY_MODEL: Readonly<Record<string, string>> = {
   'mxbai-embed-large': 'Represent this sentence for searching relevant passages: ',
+  'bge-m3': '',
 };
 
 /**

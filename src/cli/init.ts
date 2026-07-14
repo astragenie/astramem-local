@@ -65,15 +65,20 @@ function defaultCodexAuthPath(): string {
 }
 
 /** Default Ollama extraction/compaction model — used when no tier is chosen.
- * Swapped from qwen2.5:7b to qwen3:8b (2026-07-13, operator standardization —
- * see CHANGELOG). NOTE: this swap has NO F1 benchmark evidence yet — the
- * 2026-07-08 A/B run only compared qwen2.5:7b vs qwen2.5-coder:7b, and its
- * one qwen3:8b row is invalid (predates the `think:false` fix in commit
- * 1915521; qwen3 ran with thinking on + format:json and returned empty
- * bodies). A fresh benchmark against qwen3:8b is pending — see
- * scripts/eval/extraction-bench. Do not cite the old F1 numbers for this
- * model. */
-const DEFAULT_OLLAMA_LLM_MODEL = 'qwen3:8b';
+ * Swapped from qwen3.5:4b to qwen2.5:7b (2026-07-14) — qwen3.5:4b was
+ * RETIRED because it under-extracts atoms in real conversational sessions
+ * (see the LoCoMo conversational-profile A/B in CLAUDE.md); a fast, VRAM-safe
+ * model that finds too little is not actually a safe default. qwen2.5:7b is
+ * the recommended local model instead: F1 67%/precision 99% in the
+ * 2026-07-08 extraction-bench A/B (beats qwen2.5-coder:7b's F1 59%). It is
+ * ~4.7 GB and fits an 8 GB VRAM card with real headroom alongside the
+ * mxbai-embed-large embedder's ~0.59 GB — unlike qwen3:8b (5.76 GB
+ * resident), which exceeded the ceiling, spilled layers to CPU, and poisoned
+ * distill jobs via timeout (see "Ollama 8GB VRAM ceiling" in CLAUDE.md).
+ * This is a safety + measured-extraction-quality case, not a
+ * measured-compaction-quality case — nobody has benchmarked either model as
+ * a compactor specifically; see scripts/eval/extraction-bench. */
+export const DEFAULT_OLLAMA_LLM_MODEL = 'qwen2.5:7b';
 
 /** Default Ollama embedding model (fixed — the wizard doesn't offer a tier
  * picker for embeddings, only for the extraction/compaction LLM). */
@@ -85,20 +90,22 @@ const DEFAULT_OLLAMA_EMBED_MODEL = 'mxbai-embed-large';
  * guidance surfaced to the user before any pull happens (see
  * `confirmOllamaDownload` below) — not enforced, just informative.
  *
- * Only one curated tier as of 2026-07-13: the operator standardized on
- * qwen3:8b for compaction/extraction, retiring both prior candidates
- * (qwen2.5:7b, the former "RECOMMENDED" default with F1 67%/precision 99%
- * from the 2026-07-08 A/B benchmark, and qwen2.5-coder:7b, the former
- * "fastest" tier at F1 59%). There is NO F1 benchmark yet for qwen3:8b — see
- * DEFAULT_OLLAMA_LLM_MODEL's comment above for why the old numbers can't be
- * carried over. `stats` intentionally points at the pending benchmark rather
- * than a number. `qwen2.5-coder:14b` remains dropped (20% permanent-failure/
- * poison rate, 72.7s/session in the same benchmark); `llama3.1:8b` remains
- * dropped per operator decision (~3x latency). Any of these, or another
- * model, is still reachable via the "custom" tier below.
+ * Only one curated tier as of 2026-07-14: qwen2.5:7b, restored as
+ * RECOMMENDED/default (2026-07-14) after qwen3.5:4b — the brief same-day-
+ * reversal pick from 2026-07-13 — proved to under-extract atoms from real
+ * conversational transcripts (see DEFAULT_OLLAMA_LLM_MODEL's comment above).
+ * qwen2.5:7b scores F1 67%/precision 99% in the 2026-07-08 A/B benchmark —
+ * the strongest local model measured on actual atom extraction — and fits
+ * this hardware class (~4.7 GB resident vs qwen3:8b's 5.76 GB, which spills
+ * VRAM and poisons distill jobs). `qwen2.5-coder:7b` remains dropped (the
+ * former "fastest" tier at F1 59%); `qwen2.5-coder:14b` remains dropped (20%
+ * permanent-failure/poison rate, 72.7s/session in the same benchmark);
+ * `llama3.1:8b` remains dropped per operator decision (~3x latency vs
+ * qwen2.5:7b at comparable F1). Any of these, or another model, is still
+ * reachable via the "custom" tier below.
  */
 const OLLAMA_EXTRACTION_TIERS: { value: string; label: string; size: string; ram: string; stats: string }[] = [
-  { value: 'qwen3:8b', label: 'RECOMMENDED (default)', size: '~5.2 GB', ram: '16 GB', stats: 'benchmark pending (see scripts/eval/extraction-bench)' },
+  { value: 'qwen2.5:7b', label: 'RECOMMENDED (default)', size: '~4.7 GB', ram: '8 GB', stats: 'F1 67%, precision 99% (extraction-bench, 2026-07-08 A/B)' },
 ];
 
 /** Sentinel values for the non-model tier-picker choices (item 3/4). One of
@@ -232,10 +239,20 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   // Mutable: the extraction-model tier picker below offers a "BYO cloud"
   // option that pivots this from 'ollama' to whichever cloud provider the
   // user then picks (see promptOllamaModelTier / OLLAMA_TIER_BYO_CLOUD).
+  //
+  // v0.18.0: codex-subscription is the DEFAULT LLM provider selection —
+  // local-ollama qwen defaults have repeatedly broken in production (empty
+  // output under thinking mode, VRAM spill; see CLAUDE.md "qwen3:8b breaks
+  // distill extract" / "Ollama 8GB VRAM ceiling"). codex-subscription is
+  // only ever offered as a *choice* when a Codex CLI login is already
+  // detected (see cloudLlmChoices above), so it can only be the pre-
+  // highlighted default when it's actually selectable — fall back to
+  // ollama as the default pick otherwise. ollama and the other cloud
+  // providers remain fully selectable regardless of the default.
   let llmProvider = (await promptSelect(
     'LLM provider:',
-    [{ name: 'ollama (qwen3:8b)', value: 'ollama' }, ...cloudLlmChoices],
-    'ollama'
+    [{ name: 'ollama (qwen2.5:7b)', value: 'ollama' }, ...cloudLlmChoices],
+    codexLoginDetected ? 'codex-subscription' : 'ollama'
   )) as LlmProviderChoice;
 
   const dataDir = await promptInput('Data directory:', defaultDataDir());
@@ -407,7 +424,11 @@ async function confirmOllamaDownload(models: string[]): Promise<boolean> {
 function gatherNonInteractive(): WizardAnswers {
   const vector = (process.env[NON_INTERACTIVE_ENV.vector] ?? 'sqlite-vec') as 'sqlite-vec' | 'lancedb';
   const embedProvider = (process.env[NON_INTERACTIVE_ENV.embedProvider] ?? 'ollama') as 'ollama' | 'azure-openai';
-  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'ollama') as LlmProviderChoice;
+  // v0.18.0: shipped default flipped to codex-subscription (see
+  // gatherInteractive's llmProvider prompt comment for rationale) — the
+  // non-TTY path has no "codex login detected" concept to gate on, so it
+  // always writes the new default unless the caller overrides via env.
+  const llmProvider = (process.env[NON_INTERACTIVE_ENV.llmProvider] ?? 'codex-subscription') as LlmProviderChoice;
   const dataDir = process.env[NON_INTERACTIVE_ENV.dataDir] ?? defaultDataDir();
   const port = parseInt(process.env[NON_INTERACTIVE_ENV.port] ?? '7777', 10) || 7777;
   const budget = parseFloat(process.env[NON_INTERACTIVE_ENV.budget] ?? '10') || 10;
@@ -606,7 +627,7 @@ function defaultLlmModelFor(provider: LlmProviderChoice): string {
     case 'azure-openai': return 'gpt-4.1';
     case 'openai-compatible': return 'gpt-4o-mini';
     case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
-    case 'ollama': default: return 'qwen3:8b';
+    case 'ollama': default: return DEFAULT_OLLAMA_LLM_MODEL;
   }
 }
 

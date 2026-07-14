@@ -80,7 +80,8 @@ describe('memoryNormalize', () => {
 
   it('applies SQLite entity canonicalization', () => {
     const result = memoryNormalize([reducedAtom('use sqlite for storage')]);
-    expect(result[0].normalizedText).toContain('SQLite');
+    expect(result.length).toBe(1);
+    expect(result[0]!.normalizedText).toContain('SQLite');
   });
 
   it('handles empty array', () => {
@@ -90,14 +91,17 @@ describe('memoryNormalize', () => {
   it('produces stable hashes across calls', () => {
     const a1 = memoryNormalize([reducedAtom('identical text')]);
     const a2 = memoryNormalize([reducedAtom('identical text')]);
-    expect(a1[0].finalHash).toBe(a2[0].finalHash);
+    expect(a1.length).toBe(1);
+    expect(a2.length).toBe(1);
+    expect(a1[0]!.finalHash).toBe(a2[0]!.finalHash);
   });
 
   it('preserves original atom fields', () => {
     const a = reducedAtom('some text', 0.9);
     a.type = 'decision';
     const result = memoryNormalize([a]);
-    expect(result[0].importance).toBe(0.9);
-    expect(result[0].type).toBe('decision');
+    expect(result.length).toBe(1);
+    expect(result[0]!.importance).toBe(0.9);
+    expect(result[0]!.type).toBe('decision');
   });
 });

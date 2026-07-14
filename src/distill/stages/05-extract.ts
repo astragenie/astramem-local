@@ -16,6 +16,7 @@ import {
   EntityKindSchema,
   RELATION_PREDICATES,
   resolveExtractionPrompt,
+  EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
   type Atom,
   type ExtractProfile,
 } from '../prompts/extract.js';
@@ -25,6 +26,7 @@ import { mapWithConcurrency } from '../concurrency.js';
 import { chunkCheckpoints } from '../chunk-checkpoint.js';
 import { normalizeEntityName } from '../../entity/normalize.js';
 import { childLogger } from '../../log/logger.js';
+import type { DistillCostCapTracker } from '../cost-cap.js';
 
 export type { ExtractProfile };
 
@@ -78,6 +80,16 @@ export interface ExtractResult {
    * src/storage/entity-guard-log.ts for why this is persisted.
    */
   entityDropCounts: Record<string, number>;
+  /**
+   * FEAT-485: count of whole ATOMS dropped by requireEvidenceForRichTypes
+   * (below) because they were type `lesson`/`decision` with no non-empty
+   * `evidence` string -- keyed 'lesson' | 'decision'. Empty object when
+   * nothing was dropped. See src/storage/evidence-guard-log.ts for why this
+   * is persisted (same "distinguish never-emitted from dropped" rationale as
+   * relationDropCounts/entityDropCounts, one level up: a whole atom, not a
+   * relation triple or an entity).
+   */
+  evidenceDropCounts: Record<string, number>;
 }
 
 /**
@@ -118,18 +130,40 @@ export async function extractChunk(
    * caller that has no real anchor (legacy v0.0 envelopes, direct
    * `/remember` calls) sees no change. */
   sessionDateIso?: string,
+  /** Dual-pass extraction (opt-in): when present, this REPLACES the profile/
+   * env-resolved prompt entirely — `extractProfile` is still accepted (so
+   * checkpoint variant keying and call signatures stay uniform) but plays no
+   * role in prompt selection once this is set. Used by extractSpecifics()
+   * below to run the "specifics sweeper" prompt without going through
+   * resolveExtractionPrompt's profile/env precedence chain, which is pass-A
+   * only by design. `undefined` (the default) is byte-identical to pre-
+   * dual-pass behavior for every existing caller. */
+  promptOverride?: string,
+  /** Opt-in call-count/wall-clock cap (`config.distill.costCap`, see
+   *  `src/distill/cost-cap.ts`) — `undefined`/disabled is a pure no-op.
+   *  Shares the SAME tracker instance compactChunk() checks, so the budget
+   *  is one combined compact()+extract() total per job. Checked BEFORE the
+   *  LLM call; when it trips, this chunk contributes zero atoms (same
+   *  shape as the empty-text case above) and no `provider.chat()` call is
+   *  made. */
+  costCap?: DistillCostCapTracker,
 ): Promise<ExtractResult> {
   if (!text.trim()) {
-    return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {} };
+    return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {}, evidenceDropCounts: {} };
   }
 
-  const activePrompt = resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
+  if (costCap?.shouldStop()) {
+    return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {}, evidenceDropCounts: {} };
+  }
+
+  const activePrompt = promptOverride ?? resolveExtractionPrompt(extractProfile, process.env.ASTRA_EXTRACT_PROMPT);
   const promptChars = activePrompt.length + text.length + (sessionDateIso ? sessionDateIso.length + 20 : 0);
   const estimateUsd = BudgetTracker.estimateUsd(promptChars, 0.000002, 0.000002);
 
   budget.assertCanSpend(estimateUsd, capUsd);
 
   const result = await callExtract(text, activePrompt, provider, sessionDateIso);
+  costCap?.recordCall();
   budget.record(result.usageUsd);
 
   const parsed = tryParseAtoms(result.text);
@@ -141,6 +175,7 @@ export async function extractChunk(
       retried: false,
       relationDropCounts: parsed.relationDropCounts,
       entityDropCounts: parsed.entityDropCounts,
+      evidenceDropCounts: parsed.evidenceDropCounts,
     };
   }
 
@@ -426,6 +461,48 @@ function filterAtomRelations(raw: unknown, dropCounts: Record<string, number>): 
   return { ...atom, relations };
 }
 
+/** Atom types FEAT-485 requires a non-empty `evidence` excerpt for — the
+ * types whose entire value IS the reasoning (lesson/decision). An uncitable
+ * lesson/decision is close to worthless (2026-07-13 live-store audit: 1/10
+ * sampled memories carried any evidence at all). fact/command/todo/event/note
+ * stay untouched — they're atomic and frequently superseded, so requiring a
+ * verbatim quote for them would only shrink coverage without adding value
+ * (see FEAT-485's own scope note). */
+const EVIDENCE_REQUIRED_TYPES = new Set(['lesson', 'decision']);
+
+/**
+ * Drop (not fail) an atom whose type requires evidence but has none — same
+ * "log at debug, don't fail the atom/extraction" idiom as filterAtomRelations
+ * above, one level up (a whole atom, not one relation triple). Runs AFTER
+ * `AtomSchema.safeParse` has already validated shape, so `atom` here is
+ * guaranteed a valid `Atom` — this is a POLICY gate, not a schema-shape
+ * check (`AtomSchema.evidence` stays optional in the zod shape itself, so the
+ * type keeps working for every atom type where evidence is genuinely
+ * optional).
+ *
+ * `dropCounts` (FEAT-485) is mutated in place, keyed by atom type ('lesson' |
+ * 'decision') — the doctor "Evidence provenance" canary (src/doctor/
+ * checks/evidence-provenance.ts) reads the persisted total to distinguish
+ * "the model never emits evidence for this type" (0 drops here, because the
+ * pre-FEAT-485 optional field just let the atom through with `evidence:
+ * undefined`) from "the model emits atoms of this type without evidence and
+ * they get dropped here" (drops > 0) — both would otherwise look identical
+ * as a plain evidence-population-rate number computed from `memories` alone.
+ * Mirrors `relation-guard-log.ts`'s rationale for `relation_guard_drops` one
+ * level up.
+ */
+function requireEvidenceForRichTypes(atom: Atom, dropCounts: Record<string, number>): boolean {
+  if (!EVIDENCE_REQUIRED_TYPES.has(atom.type)) return true;
+  if (typeof atom.evidence === 'string' && atom.evidence.trim().length > 0) return true;
+
+  childLogger({ stage: 'extract' }).debug(
+    { atom_type: atom.type, text: atom.text.slice(0, 200) },
+    'atom dropped — evidence is required for this type but none was provided',
+  );
+  dropCounts[atom.type] = (dropCounts[atom.type] ?? 0) + 1;
+  return false;
+}
+
 /**
  * Try to parse the LLM response into an Atom[].
  * Strips markdown fences if present.
@@ -449,11 +526,18 @@ function filterAtomRelations(raw: unknown, dropCounts: Record<string, number>): 
  * filterAtomEntities, applied BEFORE filterAtomRelations so a relation
  * naming an already-dropped junk entity is caught by the relation guard's
  * existing no-hallucination check.
+ *
+ * `evidenceDropCounts` (FEAT-485) is the same accumulation one level up:
+ * whole lesson/decision atoms dropped by requireEvidenceForRichTypes for
+ * carrying no evidence — see that function's doc comment. Runs LAST, after
+ * AtomSchema.safeParse has already validated shape, since it's a policy gate
+ * on an already-valid Atom rather than a pre-parse shape repair.
  */
 function tryParseAtoms(raw: string): {
   atoms: Atom[];
   relationDropCounts: Record<string, number>;
   entityDropCounts: Record<string, number>;
+  evidenceDropCounts: Record<string, number>;
 } | null {
   try {
     let text = raw.trim();
@@ -479,12 +563,14 @@ function tryParseAtoms(raw: string): {
     // take the whole atom down with it.
     const relationDropCounts: Record<string, number> = {};
     const entityDropCounts: Record<string, number> = {};
-    const atoms = wrapper.data.atoms
+    const evidenceDropCounts: Record<string, number> = {};
+    const shapeValidAtoms = wrapper.data.atoms
       .map(coerceEntityKinds)
       .map((atom) => filterAtomEntities(atom, entityDropCounts))
       .map((atom) => filterAtomRelations(atom, relationDropCounts))
       .filter((a) => AtomSchema.safeParse(a).success) as Atom[];
-    return { atoms, relationDropCounts, entityDropCounts };
+    const atoms = shapeValidAtoms.filter((a) => requireEvidenceForRichTypes(a, evidenceDropCounts));
+    return { atoms, relationDropCounts, entityDropCounts, evidenceDropCounts };
   } catch {
     return null;
   }
@@ -524,10 +610,14 @@ export async function extract(
   concurrency = 1,
   jobKey?: string,
   sessionDateIso?: string,
+  /** Opt-in call-count/wall-clock cap — see `extractChunk`'s param doc and
+   *  `src/distill/cost-cap.ts`. Pass the SAME tracker instance given to
+   *  compact() so the two stages share one per-job budget. */
+  costCap?: DistillCostCapTracker,
 ): Promise<ExtractResult[]> {
   if (!jobKey) {
     return mapWithConcurrency(chunks, concurrency, (chk) =>
-      extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso),
+      extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso, undefined, costCap),
     );
   }
 
@@ -545,8 +635,67 @@ export async function extract(
   }
 
   const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
-    const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso);
+    const result = await extractChunk(chk.index, chk.text, provider, budget, capUsd, extractProfile, sessionDateIso, undefined, costCap);
     chunkCheckpoints.set(jobKey, 'extract', chk.index, result, extractProfile);
+    return result;
+  });
+
+  return [...cached, ...fresh].sort((a, b) => a.chunkIndex - b.chunkIndex);
+}
+
+/**
+ * Dual-pass extraction, Pass B ("specifics sweeper") — opt-in via
+ * `distill.extractionPasses: 2` (src/config/config.ts). Runs
+ * EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER (prompts/extract.ts) over the
+ * SAME compacted chunks pass A already processed, on the SAME provider
+ * instance — no new provider config, no new budget surface.
+ *
+ * Mirrors extract()'s chunk-checkpoint contract exactly (same jobKey, same
+ * chunk indices) but under its OWN checkpoint variant (`'specifics-sweeper'`)
+ * so a collision with pass A's cached results under the same jobKey/index is
+ * impossible — see chunk-checkpoint.ts's own doc comment on why `variant`
+ * disambiguation is load-bearing, not decoration.
+ *
+ * Caller contract (pipeline.ts): only invoke this AFTER pass A's `extract()`
+ * call has returned successfully for the run — never on a failed/aborted
+ * pass A. This is enforced by the CALLER's control flow (pass A's own
+ * try/catch already re-throws before this would be reached), not by this
+ * function itself.
+ */
+export async function extractSpecifics(
+  chunks: Array<{ index: number; text: string }>,
+  provider: LLMProvider,
+  budget: BudgetTracker,
+  capUsd: number,
+  concurrency = 1,
+  jobKey?: string,
+  sessionDateIso?: string,
+): Promise<ExtractResult[]> {
+  const variant = 'specifics-sweeper';
+
+  if (!jobKey) {
+    return mapWithConcurrency(chunks, concurrency, (chk) =>
+      extractChunk(
+        chk.index, chk.text, provider, budget, capUsd,
+        'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+      ),
+    );
+  }
+
+  const pending: Array<{ index: number; text: string }> = [];
+  const cached: ExtractResult[] = [];
+  for (const chk of chunks) {
+    const hit = chunkCheckpoints.get<ExtractResult>(jobKey, 'extract', chk.index, variant);
+    if (hit !== undefined) cached.push(hit);
+    else pending.push(chk);
+  }
+
+  const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
+    const result = await extractChunk(
+      chk.index, chk.text, provider, budget, capUsd,
+      'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+    );
+    chunkCheckpoints.set(jobKey, 'extract', chk.index, result, variant);
     return result;
   });
 

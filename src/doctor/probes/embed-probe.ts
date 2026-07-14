@@ -1,5 +1,8 @@
 import type { EmbedProvider } from '../../contracts/embed.js';
 import type { CheckResult } from '../types.js';
+import { withAbortableTimeout } from '../../util/abortable-timeout.js';
+
+class EmbedProbeTimeoutError extends Error {}
 
 /**
  * Embed probe: sends a real embedding call to the configured provider.
@@ -16,6 +19,15 @@ import type { CheckResult } from '../types.js';
  * through explicitly. Pass it explicitly to check against a DIFFERENT
  * expectation (e.g. the schema dim of a DB the provider hasn't been
  * pointed at yet).
+ *
+ * Issue #261: a bare Promise.race abandoned the losing promise rather than
+ * cancelling it — a slow/hung embed call kept running to completion in the
+ * background after this probe already "timed out", invisibly holding the
+ * provider's execution slot. `withAbortableTimeout` both cancels the
+ * in-flight request via EmbedProvider.embed's `signal` param (combined
+ * with, not replacing, the provider's own internal timeout) AND still races
+ * a timer so a provider that ignores the signal degrades to the old
+ * bounded-wait behavior rather than hanging this probe forever.
  */
 export async function embedProbe(
   provider: EmbedProvider,
@@ -24,12 +36,11 @@ export async function embedProbe(
 ): Promise<CheckResult> {
   try {
     const start = Date.now();
-    const vecs = await Promise.race([
-      provider.embed(['ping']),
-      new Promise<never>((_, rej) =>
-        setTimeout(() => rej(new Error('timeout')), timeoutMs),
-      ),
-    ]);
+    const vecs = await withAbortableTimeout(
+      (signal) => provider.embed(['ping'], signal),
+      timeoutMs,
+      () => new EmbedProbeTimeoutError('timeout'),
+    );
     const latency = Date.now() - start;
 
     const vec = vecs[0];

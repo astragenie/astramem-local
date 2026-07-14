@@ -15,15 +15,19 @@
 
 import { cleanup } from './stages/01-cleanup.js';
 import { normalize } from './stages/02-normalize.js';
-import { chunk } from './stages/03-chunk.js';
+import { chunk, resolveMaxChunkChars } from './stages/03-chunk.js';
 import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
-import { extract, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
+import { extract, extractSpecifics, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
+import { mergeDualPassAtoms } from './dedup-merge.js';
 import { reduce } from './stages/06-reduce.js';
+import { groundAtomDates } from './ground-dates.js';
 import { memoryNormalize } from './stages/07-memory-normalize.js';
 import { embedAndIndex } from './stages/08-embed-index.js';
 import { BudgetTracker } from '../budget/tracker.js';
 import { resolveChunkConcurrency } from './concurrency.js';
+import { DistillCostCapTracker, resolveDistillCostCap } from './cost-cap.js';
 import { chunkCheckpoints } from './chunk-checkpoint.js';
+import type { Atom } from './prompts/extract.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -31,6 +35,8 @@ import type { DurabilityGateMode } from './durability-gate.js';
 import { childLogger } from '../log/logger.js';
 import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
 import { recordEntityGuardDrops } from '../storage/entity-guard-log.js';
+import { recordEvidenceGuardDrops } from '../storage/evidence-guard-log.js';
+import { recordExtractionYield } from '../storage/extraction-yield-log.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
 
@@ -123,11 +129,26 @@ export async function runPipeline(
   pipeLog.info({ stage: 'normalize' }, 'stage complete');
 
   // Stage 3: Chunk
-  pipeLog.info({ stage: 'chunk' }, 'stage start');
-  const chunks = chunk(normalized);
+  // #273 (WS7): maxChunkChars resolved from config the same way stage 4/5's
+  // chunkConcurrency is below — falls back to defaultConfig() (byte-
+  // identical to pre-#273) when ctx.config is omitted.
+  const maxChunkChars = resolveMaxChunkChars(ctx.config ?? defaultConfig());
+  pipeLog.info({ stage: 'chunk', max_chunk_chars: maxChunkChars }, 'stage start');
+  const chunks = chunk(normalized, maxChunkChars);
   pipeLog.info({ stage: 'chunk', chunk_count: chunks.length }, 'stage complete');
 
   const budget = new BudgetTracker(ctx.db);
+
+  // Opt-in call-count/wall-clock cap on compact()+extract() LLM calls,
+  // combined, for THIS job — disabled by default (config.distill.costCap,
+  // see src/distill/cost-cap.ts's doc comment for why this is separate
+  // from BudgetTracker's dollar cap above). ONE tracker instance shared by
+  // both stages below so maxCallsPerJob bounds the two stages together, not
+  // independently.
+  const costCap = new DistillCostCapTracker(
+    resolveDistillCostCap(ctx.config ?? defaultConfig()),
+    (message) => pipeLog.warn({ stage: 'cost-cap' }, message),
+  );
 
   // FEAT-487: chunk-level fan-out width for stages 4/5, resolved once per
   // run from config (falls back to defaultConfig() when ctx.config is
@@ -147,9 +168,26 @@ export async function runPipeline(
 
   // Stage 4: Compact (LLM, budget-gated)
   pipeLog.info({ stage: 'compact', chunk_count: chunks.length, chunk_concurrency: chunkConcurrency }, 'stage start');
+  // PROFILE RESOLUTION MOVED UP. It used to be computed AFTER this block — which
+  // is structurally why stage 4 never saw it, and why every conversational
+  // transcript got the coding-agent compressor. The profile has to exist before
+  // the first stage that needs it, not before the stage that happened to be
+  // written first.
+  const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
+  const compactionMode = ctx.config?.distill.compaction ?? 'auto';
+  // Dual-pass extraction (opt-in): `1` (no ctx.config, or an unset/explicit
+  // 1) is BYTE-IDENTICAL to pre-dual-pass behavior — see
+  // Config['distill']['extractionPasses']'s own doc comment for the full
+  // design. No per-transcript envelope override (unlike extractProfile) —
+  // this is a config-only knob.
+  const resolvedExtractionPasses = ctx.config?.distill.extractionPasses ?? 1;
+
   let compactedChunks: Array<{ index: number; text: string }>;
   try {
-    const compactResults = await compact(chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey);
+    const compactResults = await compact(
+      chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey,
+      { profile: resolvedExtractProfile, mode: compactionMode, costCap },
+    );
     compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
     pipeLog.info({ stage: 'compact', chunks_compacted: compactedChunks.length }, 'stage complete');
   } catch (err) {
@@ -170,7 +208,6 @@ export async function runPipeline(
   // extract_profile envelope field > config distill.extractProfile > the
   // 'engineering' default. With neither set anywhere, this resolves to
   // 'engineering' — the byte-identical pre-FEAT-479 default (AC-2).
-  const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
   // Temporal-grounding fix (2026-07-13), timezone-offset fix (2026-07-13,
   // same day): thread an ISO calendar date one call deeper, into extraction,
   // so the model can resolve relative time expressions ("yesterday") to
@@ -193,7 +230,7 @@ export async function runPipeline(
   pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile, chunk_concurrency: chunkConcurrency }, 'stage start');
   let extractResults;
   try {
-    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso);
+    extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso, costCap);
     const atomsExtracted = extractResults.reduce((sum, r) => sum + r.atoms.length, 0);
     pipeLog.info({ stage: 'extract', atoms_extracted: atomsExtracted }, 'stage complete');
   } catch (err) {
@@ -203,6 +240,29 @@ export async function runPipeline(
     }
     pipeLog.warn({ stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200), error_kind: err instanceof Error ? err.name : 'Unknown' }, 'stage failed');
     throw err;
+  }
+
+  // Stage 5b: Extract, Pass B ("specifics sweeper") — opt-in
+  // (distill.extractionPasses: 2). Cost guard: only reached once pass A above
+  // has ALREADY returned successfully (the try/catch above re-throws on any
+  // pass-A failure before this line is ever reached) — never doubles a
+  // retry storm on a failing/paused pass A. Same provider instance
+  // (ctx.llmExtraction), same chunks, same budget tracker.
+  let extractResultsSpecifics: typeof extractResults | undefined;
+  if (resolvedExtractionPasses === 2) {
+    pipeLog.info({ stage: 'extract-specifics', chunk_count: compactedChunks.length, chunk_concurrency: chunkConcurrency }, 'stage start');
+    try {
+      extractResultsSpecifics = await extractSpecifics(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso);
+      const specificsAtoms = extractResultsSpecifics.reduce((sum, r) => sum + r.atoms.length, 0);
+      pipeLog.info({ stage: 'extract-specifics', atoms_extracted: specificsAtoms }, 'stage complete');
+    } catch (err) {
+      if (err instanceof ExtractBudgetExceeded) {
+        pipeLog.warn({ stage: 'extract-specifics', error_kind: 'BudgetExceeded' }, 'stage aborted — budget exceeded');
+        throw err;
+      }
+      pipeLog.warn({ stage: 'extract-specifics', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200), error_kind: err instanceof Error ? err.name : 'Unknown' }, 'stage failed');
+      throw err;
+    }
   }
 
   // FEAT-481 SLICE-430: persist filterAtomRelations' per-reason drop counts
@@ -218,7 +278,7 @@ export async function runPipeline(
   // an already-successful extraction (review finding, this slice).
   try {
     const relationDropTotals: Record<string, number> = {};
-    for (const r of extractResults) {
+    for (const r of [...extractResults, ...(extractResultsSpecifics ?? [])]) {
       for (const [reason, count] of Object.entries(r.relationDropCounts)) {
         relationDropTotals[reason] = (relationDropTotals[reason] ?? 0) + count;
       }
@@ -242,7 +302,7 @@ export async function runPipeline(
   // extract stage itself failing.
   try {
     const entityDropTotals: Record<string, number> = {};
-    for (const r of extractResults) {
+    for (const r of [...extractResults, ...(extractResultsSpecifics ?? [])]) {
       for (const [reason, count] of Object.entries(r.entityDropCounts)) {
         entityDropTotals[reason] = (entityDropTotals[reason] ?? 0) + count;
       }
@@ -259,17 +319,124 @@ export async function runPipeline(
     );
   }
 
-  // Flatten all atoms
-  const allAtoms = extractResults.flatMap(r => r.atoms);
+  // FEAT-485: same diagnostic-write pattern one level up — persist
+  // requireEvidenceForRichTypes' per-reason (atom type) drop counts so the
+  // doctor "Evidence provenance" canary can tell "model never emits evidence"
+  // apart from "model emits lesson/decision atoms without evidence and the
+  // guard drops every one". Its own try/catch, never re-thrown — a write
+  // failure here must never be reinterpreted as an extract-stage failure.
+  // Aggregated across BOTH extraction passes (pass A + the dual-pass specifics
+  // sweeper), same as the relation/entity guard-drop counters above.
+  try {
+    const evidenceDropTotals: Record<string, number> = {};
+    for (const r of [...extractResults, ...(extractResultsSpecifics ?? [])]) {
+      for (const [reason, count] of Object.entries(r.evidenceDropCounts)) {
+        evidenceDropTotals[reason] = (evidenceDropTotals[reason] ?? 0) + count;
+      }
+    }
+    recordEvidenceGuardDrops(
+      ctx.db,
+      Object.entries(evidenceDropTotals).map(([reason, count]) => ({ reason, count })),
+      ctx.sessionId,
+    );
+  } catch (err) {
+    pipeLog.warn(
+      { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'evidence guard-drop counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
+    );
+  }
+
+  // Flatten all atoms. Dual-pass (extractResultsSpecifics present): merge
+  // pass A + pass B per chunk BEFORE reduce (design constraint — dedup must
+  // run before stage 6, which merges by content hash, not by the
+  // normalized-substring rules dual-pass needs). Single-pass (the default):
+  // byte-identical to pre-dual-pass behavior — just pass A's atoms flattened.
+  let allAtoms: Atom[];
+  if (extractResultsSpecifics) {
+    const specificsByChunk = new Map(extractResultsSpecifics.map(r => [r.chunkIndex, r]));
+    const mergedAtoms: Atom[] = [];
+    for (const passAResult of extractResults) {
+      const passBResult = specificsByChunk.get(passAResult.chunkIndex);
+      const passAAtoms = passAResult.atoms;
+      const passBAtoms = passBResult?.atoms ?? [];
+      const { merged, dedupedAway } = mergeDualPassAtoms(passAAtoms, passBAtoms);
+      pipeLog.info(
+        {
+          stage: 'extract-dual-pass-merge',
+          chunk_index: passAResult.chunkIndex,
+          passA_atoms: passAAtoms.length,
+          passB_atoms: passBAtoms.length,
+          merged: merged.length,
+          deduped_away: dedupedAway,
+        },
+        'chunk merged',
+      );
+      mergedAtoms.push(...merged);
+    }
+    allAtoms = mergedAtoms;
+  } else {
+    allAtoms = extractResults.flatMap(r => r.atoms);
+  }
+
+  // ADR-015 headline finding: a well-formed `{"atoms":[]}` extraction
+  // completes as SUCCESS at every other layer -- not the Zod gate, not the
+  // job queue, not the poison counter (which only increments on failure).
+  // A broken model and a genuinely empty transcript are indistinguishable
+  // anywhere else. Record chunks-in vs atoms-out for every run (including
+  // zero-atom ones -- that IS the signal) so the doctor "Extraction yield"
+  // canary can compute a zero-yield RATE over a recent window instead of
+  // an existence check. Same diagnostic-only posture as the relation/
+  // entity guard-drop writes immediately above: its own try/catch, never
+  // re-thrown, so a counter-write failure can never be mistaken for the
+  // extract stage itself failing.
+  try {
+    recordExtractionYield(ctx.db, {
+      sessionId: ctx.sessionId,
+      chunksIn: chunks.length,
+      atomsOut: allAtoms.length,
+    });
+  } catch (err) {
+    pipeLog.warn(
+      { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'extraction-yield counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
+    );
+  }
 
   // Stage 6: Reduce (merge by content hash)
   pipeLog.info({ stage: 'reduce', atoms_in: allAtoms.length }, 'stage start');
   const reducedAtoms = reduce(allAtoms);
   pipeLog.info({ stage: 'reduce', atoms_out: reducedAtoms.length }, 'stage complete');
 
+  // Date-grounding retry (2026-07-13): a second, narrow LLM call for atoms
+  // whose text still carries an unresolved relative-date expression after
+  // stage 5's own resolve-in-place instruction — see ground-dates.ts's doc
+  // comment (graphiti's pattern; NOT PR #257's regex rewrite, which
+  // fabricated dates and was closed unmerged). Runs AFTER reduce (not
+  // between 5 and 6) so a phrase repeated across chunks is only ever
+  // resolved once, not once per chunk occurrence. `sessionDateIso` absent is
+  // a total no-op inside groundAtomDates — byte-identical to pre-retry
+  // behavior for every caller with no real anchor (legacy v0.0 envelopes,
+  // direct /remember calls). Reuses ctx.llmExtraction — same posture as
+  // contradiction-judge.ts (no new provider config surface). Never throws:
+  // any call/parse failure inside groundAtomDates is its own no-op fallback,
+  // so this can never turn a successful extraction into a failed pipeline
+  // run.
+  pipeLog.info({ stage: 'ground-dates', atoms_in: reducedAtoms.length }, 'stage start');
+  const groundResult = await groundAtomDates(reducedAtoms, sessionDateIso, ctx.llmExtraction);
+  pipeLog.info(
+    {
+      stage: 'ground-dates',
+      atoms_in: groundResult.totalAtoms,
+      fired: groundResult.fired,
+      resolved: groundResult.resolved,
+      errors: groundResult.errors,
+    },
+    'stage complete',
+  );
+
   // Stage 7: Memory-normalize
   pipeLog.info({ stage: 'memory-normalize' }, 'stage start');
-  const normalizedMemories = memoryNormalize(reducedAtoms);
+  const normalizedMemories = memoryNormalize(groundResult.atoms);
   pipeLog.info({ stage: 'memory-normalize', memories: normalizedMemories.length }, 'stage complete');
 
   // Stage 8: Embed + index

@@ -1,0 +1,16 @@
+{
+  "id": "fx45-conversational-sentiment-padding-carveout",
+  "title": "Sentiment-padding carve-out — interpersonal reaction (keep) vs. own-mood-with-named-cause (drop)",
+  "difficulty": "conversational",
+  "notes": "Pins the exact behavior the WS3 LoCoMo prompt fix (astramemory-local#269) targets: EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL's 'sentiment padding' banned-abstraction was rewritten so the operative test is WHOSE LIFE a reaction is about, not whether a cause is named. This fixture is the reviewer-requested persisted regression coverage for that boundary (05-extract.test.ts mocks the LLM so it can't test instruction-following; this fixture, run live via run-bench.mts --fixtures-dir scripts/eval/extraction-bench/fixtures-conversational --extract-profile conversational, actually exercises it). Three cases in one short conversation: (1) Priya's notice + Sergey's reaction to it — a reaction to ANOTHER named person's specific stated event — MUST be kept as its own atom (both atoms are in gold_atoms). (2) 'just been an ordinary week' — vague filler, no durable content — correctly yields nothing. (3) Sergey frustrated with 'this build' — HIS OWN mood, WITH a named cause ('the build') — deliberately EXCLUDED from gold_atoms: this is the exact case an earlier draft of the fix got wrong (the rule read as 'skip a mood with no named cause', which a model could reasonably read as 'any mood WITH a named cause survives' — see astramemory-local#269 review). Extracting an atom for case (3) is the regression this fixture exists to catch; the judge's precision score (not just recall) is the signal — a broken prompt keeps the same 2 gold atoms (recall unaffected) but ALSO extracts the build-frustration atom (precision drops).",
+  "turns": [
+    { "role": "user", "text": "Hey, how's your week been?" },
+    { "role": "assistant", "text": "Pretty good! Priya finally handed in her notice at her old job today — she's been wanting to make this move for months." },
+    { "role": "user", "text": "Whoa, that's huge! How do you feel about it?" },
+    { "role": "assistant", "text": "Really proud of her, honestly. Otherwise it's just been an ordinary week I guess. Ugh, I'm also super frustrated with this build though, it's been failing all afternoon for no clear reason." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "Priya handed in her notice at her old job, after wanting to make this move for months." },
+    { "type": "note", "text": "Sergey is proud of Priya for handing in her notice at her old job." }
+  ]
+}

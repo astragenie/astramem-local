@@ -38,18 +38,23 @@ const SECOND_ATTEMPT_VALID = JSON.stringify({
       type: 'lesson',
       text: 'Bun does not support better-sqlite3 on Windows without special flags',
       importance: 0.8,
-      confidence: 0.85
+      confidence: 0.85,
+      // FEAT-485: lesson/decision atoms are dropped without a non-empty
+      // evidence excerpt (requireEvidenceForRichTypes) — this fixture tests
+      // the retry path, not evidence policy, so it supplies one.
+      evidence: 'Bun does not support better-sqlite3 on Windows without special flags'
     }
   ]
 });
 
 function makeMockLLM(responses: string[], usdCost = 0): LLMProvider {
+  if (responses.length === 0) throw new Error('makeMockLLM requires at least one response');
   let call = 0;
   return {
     name: 'ollama' as const,
     model: 'test-model',
     async chat(_msgs: ChatMsg[], _opts?: ChatOpts): Promise<ChatResult> {
-      const text = responses[call] ?? responses[responses.length - 1];
+      const text = responses[call] ?? responses[responses.length - 1]!;
       call++;
       return { text, usage: { in: 100, out: 50, usd: usdCost } };
     },
@@ -70,8 +75,8 @@ describe('extract stage', () => {
 
     expect(result.chunkIndex).toBe(0);
     expect(result.atoms.length).toBe(2);
-    expect(result.atoms[0].type).toBe('decision');
-    expect(result.atoms[0].text).toContain('sqlite-vec');
+    expect(result.atoms[0]!.type).toBe('decision');
+    expect(result.atoms[0]!.text).toContain('sqlite-vec');
     expect(result.retried).toBe(false);
   });
 
@@ -117,8 +122,8 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].type).toBe('lesson');
-    expect(result.atoms[0].text).toContain('better-sqlite3');
+    expect(result.atoms[0]!.type).toBe('lesson');
+    expect(result.atoms[0]!.text).toContain('better-sqlite3');
   });
 
   it('returns empty atoms without LLM call for empty chunk', async () => {
@@ -187,8 +192,8 @@ describe('extract stage', () => {
     );
 
     expect(results.length).toBe(2);
-    expect(results[0].atoms.length).toBe(2);
-    expect(results[1].atoms.length).toBe(2);
+    expect(results[0]!.atoms.length).toBe(2);
+    expect(results[1]!.atoms.length).toBe(2);
   });
 
   it('rejects atoms with text shorter than 5 chars', async () => {
@@ -217,6 +222,9 @@ describe('extract stage', () => {
           text: 'use Postgres for the analytics store',
           importance: 0.8,
           confidence: 0.9,
+          // FEAT-485: decision atoms require non-empty evidence — this
+          // fixture tests entity parsing, not evidence policy.
+          evidence: 'We decided to use Postgres for the analytics store',
           entities: [{ name: 'Postgres', kind: 'tech' }],
         },
       ],
@@ -225,7 +233,7 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+    expect(result.atoms[0]!.entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
   });
 
   it('atom with no named entity omits/empties entities without failing validation', async () => {
@@ -235,7 +243,7 @@ describe('extract stage', () => {
     const llm = makeMockLLM([VALID_EXTRACTION_JSON]); // no entities field on either atom
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(2);
-    expect(result.atoms[0].entities).toBeUndefined();
+    expect(result.atoms[0]!.entities).toBeUndefined();
   });
 
   it('coerces an out-of-enum entity kind to "other" instead of dropping the whole atom', async () => {
@@ -260,8 +268,8 @@ describe('extract stage', () => {
     // data loss) — it is safe-narrowed to 'other', matching the cloud-side
     // EntityKinds.Normalize() pattern (AstraMemory.Domain/EntityKinds.cs).
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].text).toBe('some fact about a thing');
-    expect(result.atoms[0].entities).toEqual([{ name: 'Whatever', kind: 'other' }]);
+    expect(result.atoms[0]!.text).toBe('some fact about a thing');
+    expect(result.atoms[0]!.entities).toEqual([{ name: 'Whatever', kind: 'other' }]);
   });
 
   it('coerces only the bad entity, leaving valid entities on the same atom untouched', async () => {
@@ -286,7 +294,7 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities).toEqual([
+    expect(result.atoms[0]!.entities).toEqual([
       { name: 'Postgres', kind: 'tech' },
       { name: 'Alice', kind: 'other' },
     ]);
@@ -337,7 +345,7 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities).toEqual([{
+    expect(result.atoms[0]!.entities).toEqual([{
       name: 'Alice', kind: 'actor', subtype: 'human',
       valid_at: '2026-01-01T00:00:00.000Z',
       invalid_at: '2026-03-01T00:00:00.000Z',
@@ -365,8 +373,8 @@ describe('extract stage', () => {
 
     const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
     expect(result.atoms.length).toBe(1);
-    expect(result.atoms[0].entities?.[0].valid_at).toBeUndefined();
-    expect(result.atoms[0].entities?.[0].invalid_at).toBeUndefined();
+    expect(result.atoms[0]!.entities?.[0]!.valid_at).toBeUndefined();
+    expect(result.atoms[0]!.entities?.[0]!.invalid_at).toBeUndefined();
   });
 
   // FEAT-481 (SLICE-2/SLICE-435) AC-6/AC-7 — relations[] schema + guard.
@@ -382,6 +390,9 @@ describe('extract stage', () => {
             text: 'astramemory-local uses SQLite for storage',
             importance: 0.8,
             confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relations[] parsing, not evidence policy.
+            evidence: 'astramemory-local uses SQLite for storage',
             entities: [
               { name: 'astramemory-local', kind: 'project' },
               { name: 'SQLite', kind: 'tech' },
@@ -396,7 +407,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
       ]);
     });
@@ -408,8 +419,8 @@ describe('extract stage', () => {
       const llm = makeMockLLM([VALID_EXTRACTION_JSON]); // no relations field anywhere
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(2);
-      expect(result.atoms[0].relations).toBeUndefined();
-      expect(result.atoms[1].relations).toBeUndefined();
+      expect(result.atoms[0]!.relations).toBeUndefined();
+      expect(result.atoms[1]!.relations).toBeUndefined();
     });
 
     it('drops a relation with an unknown predicate — NOT coerced to "other", NOT atom-fatal', async () => {
@@ -439,8 +450,8 @@ describe('extract stage', () => {
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       // The atom itself survives; only the bad relation is dropped.
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].text).toBe('Alice manages the deploy pipeline for the team');
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.text).toBe('Alice manages the deploy pipeline for the team');
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('drops a relation whose subject is not in this atom\'s own entities[] (no-hallucination guard, AC-7)', async () => {
@@ -466,7 +477,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('drops a relation whose object is not in this atom\'s own entities[]', async () => {
@@ -491,7 +502,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('name-matching is case/whitespace-normalized (normalizeEntityName), same seam as entity linking', async () => {
@@ -520,7 +531,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'Astramemory-Local', predicate: 'uses', object: 'sqlite' },
       ]);
     });
@@ -547,7 +558,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('keeps valid relations while dropping only the invalid ones on the same atom', async () => {
@@ -561,6 +572,9 @@ describe('extract stage', () => {
             text: 'astramemory-local uses SQLite instead of Postgres',
             importance: 0.8,
             confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relations[] filtering, not evidence policy.
+            evidence: 'astramemory-local uses SQLite instead of Postgres',
             entities: [
               { name: 'astramemory-local', kind: 'project' },
               { name: 'SQLite', kind: 'tech' },
@@ -581,7 +595,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'astramemory-local', predicate: 'uses', object: 'SQLite', confidence: 0.9 },
         { subject: 'astramemory-local', predicate: 'replaces', object: 'Postgres' },
       ]);
@@ -604,6 +618,9 @@ describe('extract stage', () => {
             text: 'astramemory-local uses SQLite instead of Postgres',
             importance: 0.8,
             confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relationDropCounts tallying, not evidence policy.
+            evidence: 'astramemory-local uses SQLite instead of Postgres',
             entities: [
               { name: 'astramemory-local', kind: 'project' },
               { name: 'SQLite', kind: 'tech' },
@@ -636,6 +653,9 @@ describe('extract stage', () => {
         atoms: [
           {
             type: 'decision', text: 'astramemory-local uses SQLite', importance: 0.8, confidence: 0.9,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests relationDropCounts being empty, not evidence policy.
+            evidence: 'astramemory-local uses SQLite',
             entities: [{ name: 'astramemory-local', kind: 'project' }, { name: 'SQLite', kind: 'tech' }],
             relations: [{ subject: 'astramemory-local', predicate: 'uses', object: 'SQLite' }],
           },
@@ -667,7 +687,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].relations).toEqual([
+      expect(result.atoms[0]!.relations).toEqual([
         { subject: 'Alice', predicate: 'other', object: 'Bob' },
       ]);
     });
@@ -701,7 +721,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
     });
 
     it('drops a bare number ("123") entity name', async () => {
@@ -723,7 +743,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([]);
+      expect(result.atoms[0]!.entities).toEqual([]);
     });
 
     it('drops a single-character entity name ("x") — below the length floor', async () => {
@@ -745,7 +765,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([]);
+      expect(result.atoms[0]!.entities).toEqual([]);
     });
 
     it('keeps a legitimate 2-char entity name ("Go") — the length floor must not reject real short words', async () => {
@@ -767,7 +787,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'Go', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Go', kind: 'tech' }]);
     });
 
     // The length floor was `< 2 -> too_short`, which silently destroyed "C" and
@@ -792,7 +812,7 @@ describe('extract stage', () => {
       });
       const result = await extractChunk(0, 'chunk text', makeMockLLM([legit]), budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'C', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'C', kind: 'tech' }]);
     });
 
     it('keeps a SINGLE-CHARACTER tech name ("R") — the statistics language', async () => {
@@ -812,7 +832,7 @@ describe('extract stage', () => {
       });
       const result = await extractChunk(0, 'chunk text', makeMockLLM([legit]), budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'R', kind: 'tech' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'R', kind: 'tech' }]);
     });
 
     // The junk actually observed in production: single letters tagged `repo`.
@@ -835,7 +855,7 @@ describe('extract stage', () => {
       });
       const result = await extractChunk(0, 'chunk text', makeMockLLM([junk]), budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([]);
+      expect(result.atoms[0]!.entities).toEqual([]);
     });
 
     it('keeps legitimate multi-char entity names unaffected ("Postgres", "astramem-local")', async () => {
@@ -849,6 +869,9 @@ describe('extract stage', () => {
             text: 'astramem-local uses Postgres',
             importance: 0.7,
             confidence: 0.8,
+            // FEAT-485: decision atoms require non-empty evidence — this
+            // fixture tests entity-name-quality filtering, not evidence policy.
+            evidence: 'astramem-local uses Postgres',
             entities: [
               { name: 'astramem-local', kind: 'project' },
               { name: 'Postgres', kind: 'tech' },
@@ -860,7 +883,7 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([
+      expect(result.atoms[0]!.entities).toEqual([
         { name: 'astramem-local', kind: 'project' },
         { name: 'Postgres', kind: 'tech' },
       ]);
@@ -891,12 +914,12 @@ describe('extract stage', () => {
 
       const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
       expect(result.atoms.length).toBe(1);
-      expect(result.atoms[0].entities).toEqual([{ name: 'Alice', kind: 'actor' }]);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Alice', kind: 'actor' }]);
       // The relation's object ("#110") no longer exists in entities[] once
       // filterAtomEntities drops it, so filterAtomRelations' pre-existing
       // no-hallucination guard drops the relation too — no separate check
       // needed for this cascade.
-      expect(result.atoms[0].relations).toEqual([]);
+      expect(result.atoms[0]!.relations).toEqual([]);
     });
 
     it('entityDropCounts tallies one entry per drop reason', async () => {
@@ -927,7 +950,8 @@ describe('extract stage', () => {
         bare_number: 1,
         too_short: 1,
       });
-      expect(result.atoms[0].entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
+      expect(result.atoms.length).toBe(1);
+      expect(result.atoms[0]!.entities).toEqual([{ name: 'Postgres', kind: 'tech' }]);
     });
 
     it('entityDropCounts is {} when every entity name in the chunk survives filtering', async () => {
@@ -1234,29 +1258,51 @@ describe('extract() retry checkpointing (chunk-retry-amplification fix)', () => 
 // isolation — and (c) the negative case: with no anchor available, the user
 // message is byte-identical to pre-fix (no injected line, relative phrasing
 // left untouched) — no hallucinated date.
+//
+// WS4 correction (2026-07-13): the mock below originally had the "correctly
+// following" model resolve dates to ISO-8601 ("2023-05-14"). That was wrong,
+// proven against the real full-sample LoCoMo run and the real scorer, not
+// asserted on faith: 115/321 temporal answers in that run were bare ISO
+// dates, 93% of which scored EXACTLY 0 — including cases where the date was
+// exactly right (`"2023-05-07"` vs gold `"7 May 2023"` = 0.0) — because
+// scripts/eval/locomo/judge/metrics.mts's normalizeAnswer strips ALL
+// punctuation including hyphens, collapsing "2023-05-14" into one glued
+// token ("20230514") that shares nothing with a gold answer's word tokens.
+// `text` is prose a person or another model reads later, not the
+// machine-parsed `valid_at`/`invalid_at` columns (which correctly stay
+// ISO-8601, untouched by this fix) — natural-language dates in `text` score
+// correctly AND read better independent of any benchmark. The extraction
+// prompt (src/distill/prompts/extract.ts) now says so explicitly; this mock
+// is updated to match what a compliant model should now produce.
 describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
   /**
    * A mock LLM that plays the role of a model correctly following the
    * date-grounding rule: it reads the "Observation date: <date>" line (if
    * present) out of the user message, and if the chunk text contains one of
    * a few known relative-date phrases, emits an atom whose text has that
-   * phrase replaced by the resolved absolute ISO date. This is deliberately
-   * NOT testing the real LLM's ability to do the date arithmetic (that's
-   * prompt-engineering territory, validated by the full-sample LoCoMo
-   * rerun) — it's testing that our plumbing (a) actually delivers the
-   * anchor to the call and (b) does not corrupt/drop a correctly-resolved
-   * atom on the way back out.
+   * phrase replaced by the resolved absolute date IN NATURAL-LANGUAGE FORM
+   * (e.g. "14 May 2023", not "2023-05-14" — see the WS4 correction note
+   * above this describe block for why ISO-8601 in `text` is wrong, not just
+   * a style choice). This is deliberately NOT testing the real LLM's
+   * ability to do the date arithmetic (that's prompt-engineering territory,
+   * validated by the full-sample LoCoMo rerun) — it's testing that our
+   * plumbing (a) actually delivers the anchor to the call and (b) does not
+   * corrupt/drop a correctly-resolved atom on the way back out.
    */
   function makeDateGroundingLLM(): { llm: LLMProvider; userMessages: string[] } {
     const userMessages: string[] = [];
     const RELATIVE_PHRASES: Record<string, (anchor: Date) => string> = {
-      yesterday: (anchor) => isoDate(new Date(anchor.getTime() - 24 * 60 * 60 * 1000)),
-      'last week': (anchor) => isoDate(new Date(anchor.getTime() - 7 * 24 * 60 * 60 * 1000)),
+      yesterday: (anchor) => naturalDate(new Date(anchor.getTime() - 24 * 60 * 60 * 1000)),
+      'last week': (anchor) => naturalDate(new Date(anchor.getTime() - 7 * 24 * 60 * 60 * 1000)),
       'last year': (anchor) => `${anchor.getUTCFullYear() - 1}`,
       'three years ago': (anchor) => `${anchor.getUTCFullYear() - 3}`,
     };
-    function isoDate(d: Date): string {
-      return d.toISOString().slice(0, 10);
+    const MONTH_NAMES = [
+      'January', 'February', 'March', 'April', 'May', 'June',
+      'July', 'August', 'September', 'October', 'November', 'December',
+    ];
+    function naturalDate(d: Date): string {
+      return `${d.getUTCDate()} ${MONTH_NAMES[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
     }
     const llm: LLMProvider = {
       name: 'ollama' as const,
@@ -1301,7 +1347,7 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     expect(userMessages[0]).toMatch(/^Observation date: 2023-05-15\n\n/);
   });
 
-  it('anchor 2023-05-15 + "yesterday" → resolved atom text contains 2023-05-14', async () => {
+  it('anchor 2023-05-15 + "yesterday" → resolved atom text contains "14 May 2023" (natural-language, not ISO)', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
@@ -1311,10 +1357,12 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'Caroline went to a support group yesterday.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2023-05-14');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('14 May 2023');
+    expect(result.atoms[0]!.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
-  it('anchor 2023-05-15 + "last week" → resolved atom text contains 2023-05-08', async () => {
+  it('anchor 2023-05-15 + "last week" → resolved atom text contains "8 May 2023" (natural-language, not ISO)', async () => {
     const db = openDb(':memory:');
     migrate(db);
     const budget = new BudgetTracker(db);
@@ -1324,7 +1372,9 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'Caroline went last week.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2023-05-08');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('8 May 2023');
+    expect(result.atoms[0]!.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
   it('anchor 2023-05-15 + "last year" → resolved atom text contains 2022', async () => {
@@ -1337,7 +1387,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'Melanie painted it last year.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2022');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('2022');
   });
 
   it('anchor 2023-05-15 + "three years ago" → resolved atom text contains 2020', async () => {
@@ -1350,7 +1401,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
       0, 'It happened three years ago.', llm, budget, 10.0, 'conversational', '2023-05-15',
     );
 
-    expect(result.atoms[0].text).toContain('2020');
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('2020');
   });
 
   // Negative case (AC-6): with no anchor available, behavior is unchanged —
@@ -1370,8 +1422,9 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     expect(userMessages[0]).toBe(
       'Extract knowledge atoms from this transcript chunk:\n\nCaroline went to a support group yesterday.',
     );
-    expect(result.atoms[0].text).toContain('yesterday');
-    expect(result.atoms[0].text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
+    expect(result.atoms.length).toBe(1);
+    expect(result.atoms[0]!.text).toContain('yesterday');
+    expect(result.atoms[0]!.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
   });
 
   it('extract() threads sessionDateIso through to every chunk, same as extractProfile', async () => {
@@ -1424,8 +1477,8 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     );
 
     expect(result.atoms).toHaveLength(2);
-    expect(result.atoms[0].text).toBe('use sqlite-vec for vector storage in v1');
-    expect(result.atoms[1].text).toBe('port 7777 is the default daemon port');
+    expect(result.atoms[0]!.text).toBe('use sqlite-vec for vector storage in v1');
+    expect(result.atoms[1]!.text).toBe('port 7777 is the default daemon port');
     for (const atom of result.atoms) {
       expect(atom.text).not.toMatch(/\d{4}-\d{2}-\d{2}/);
     }

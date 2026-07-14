@@ -6,6 +6,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT_V2,
   EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
+  EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
 } from '../../../src/distill/prompts/extract.js';
 
 /** chars/4 token estimate — mirrors src/providers/llm/ollama.ts's
@@ -159,6 +160,21 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
   it('states date grounding against the injected "Observation date" line first', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/Observation date/);
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/keep the original relative phrasing/);
+  });
+
+  // WS4 (2026-07-13, LoCoMo score plan): the full-sample run proved a
+  // resolved date written as ISO-8601 into `text` scores ~0 on the LoCoMo
+  // scorer even when exactly correct (normalizeAnswer strips hyphens,
+  // collapsing "2023-05-14" into one glued token) — 93% of the 115 ISO-dated
+  // temporal answers in that run scored EXACTLY 0. `text` is prose read by
+  // people/other models later, not the machine-parsed `valid_at`/
+  // `invalid_at` fields, which correctly stay ISO-8601 (see the schema
+  // description tests above/below — untouched by this fix). This test pins
+  // the natural-language instruction so a future edit can't silently
+  // reintroduce the ISO-8601 wording into the `text` grounding rule.
+  it('instructs natural-language dates (not ISO-8601) for the grounded text field', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/natural-language\s+absolute date/);
+    expect(EXTRACTION_SYSTEM_PROMPT_V3).not.toMatch(/resolve "yesterday".*to an absolute ISO-8601/s);
   });
 
   it('carries over the 7-type taxonomy and priority order unchanged from v1/v2', () => {
@@ -320,11 +336,46 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/keep the original relative phrasing/);
   });
 
+  // WS4 (2026-07-13, LoCoMo score plan) — same fix and same rationale as the
+  // EXTRACTION_SYSTEM_PROMPT_V3 test above: this is the profile actually
+  // used by the LoCoMo eval, and the full-sample run's own stored atoms
+  // (241/2488, 9.7%) had an ISO-shaped date baked into `text` as a direct
+  // result of this instruction's old "ISO-8601 form (YYYY-MM-DD)" wording.
+  it('instructs natural-language dates (not ISO-8601) for the grounded text field', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/natural-language form/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/ISO-8601 form \(YYYY-MM-DD\) directly into the atom's text/);
+  });
+
   it('states the banned-abstractions negative list (vague summaries, meta-commentary, sentiment padding)', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Banned abstractions/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Vague summaries/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Meta-commentary/);
     expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Sentiment padding/);
+  });
+
+  // WS3 (LoCoMo score plan, astramemory-local#269) — the sentiment-padding
+  // carve-out's OPERATIVE test must be encoded in the rule itself, not just
+  // demonstrated in an example. A prior draft of this fix wrote the rule as
+  // "skip a mood with no named cause", which reads as "any mood WITH a named
+  // cause survives" — a reviewer caught that this would let "the user was
+  // frustrated with the build" (own mood, named cause) back in. The fix
+  // makes the dividing line explicit: whose life the reaction is about, not
+  // whether a cause is named. This test checks the PROMPT TEXT for that
+  // exact boundary, not just the "Sentiment padding" label's presence —
+  // the label-only check above passes whether the carve-out is narrow,
+  // broad, or fully reverted, so it caught nothing about the boundary
+  // itself. Live model-behavior coverage for this same boundary lives in
+  // fx45 (scripts/eval/extraction-bench/fixtures-conversational/), run via
+  // the extraction bench — this test can only check the instruction text,
+  // not whether a model actually follows it.
+  it('encodes "whose life" (not "named cause") as the sentiment-padding operative test, and gives an own-mood-with-named-cause counter-example', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/is NOT ["']does this mood have a named cause/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/frustrated with the build/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/whose life the reaction is about/);
+    // The old wording is a strict prefix of "no named cause" alone with
+    // nothing narrowing it further inline — assert the rule doesn't ship
+    // with ONLY that phrase and no "whose life" framing anywhere near it.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/skip a standalone mood observation with no named cause \(a person's own passing feeling, unattached to any specific event\)\. This does NOT cover/);
   });
 
   it('explicitly does NOT apply the engineering profile\'s 300-800-char richness rule — conversational atoms stay atomic/short regardless of type', () => {
@@ -362,5 +413,101 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
     const estimatedTotal = promptTokens + CHUNK_TOKENS + MAX_TOKENS + SLACK_TOKENS;
 
     expect(estimatedTotal).toBeLessThanOrEqual(NUM_CTX_CAP);
+  });
+});
+
+describe('conversational prompt — the exhaustiveness checklist is MECHANICAL, not an exhortation', () => {
+  // WHY THIS TEST EXISTS.
+  //
+  // The prompt already said "capture EVERY durable personal fact... bias toward
+  // extracting". A frontier model can act on that. A 4B model measurably cannot:
+  // on the SAME prompt and the SAME LoCoMo conversations, codex extracted 7.7
+  // atoms/session and qwen3.5:4b extracted 2.2 — a 3.5x deficit, with 93%
+  // precision. It was not hallucinating. It simply was not finding things.
+  //
+  // "Bias toward extracting" is a vibe. "If you have fewer than 3, re-read" is a
+  // check the model can actually execute. mem0 (prompts.py:907-915) and cognee
+  // ("every single verb is an event") independently converged on the same trick:
+  // convert exhaustiveness into a MECHANICAL RULE the model cannot quietly skip.
+  //
+  // This test exists so nobody later "tidies" these lines back into encouragement.
+  // The specificity IS the feature.
+
+  it('gives an EXPECTED COUNT, not an aspiration', () => {
+    // A model can check itself against a number. It cannot check itself against
+    // "be thorough".
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/5-15 atoms/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/FEWER THAN 3/);
+  });
+
+  it('gives a RE-READ trigger — a concrete action, not a feeling', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/re-read the transcript/i);
+  });
+
+  it('names first-topic-dominance and forbids it', () => {
+    // The specific failure mode: the model spends all its attention on whatever
+    // the conversation opened with. Naming an anti-pattern beats praising the
+    // virtue it violates.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/FIRST-TOPIC DOMINANCE/i);
+  });
+
+  it('sweeps the categories explicitly — each "yes" is a dropped fact', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/SWEEP THE CATEGORIES/i);
+  });
+
+  it('states the ASYMMETRY that justifies erring toward extraction', () => {
+    // A marginal fact kept costs almost nothing. A real fact dropped is gone
+    // forever — nothing downstream can recover it. That asymmetry is the whole
+    // argument, and the model should be told it, not left to infer it.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/gone forever/i);
+  });
+
+  it('does NOT weaken the existing anti-junk guards — recall must not cost precision', () => {
+    // Pushing recall is only safe because precision was 93%. If a future edit
+    // trades these away for more atoms, the pool fills with junk — and because
+    // fuse.ts normalises over the candidate pool, junk actively perturbs ranking
+    // rather than merely wasting space.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Banned abstractions/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Vague summaries/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Meta-commentary/);
+  });
+});
+
+// Dual-pass extraction (opt-in, distill.extractionPasses: 2) — review fix
+// (2026-07-14): the sweeper's #1 extraction category is DATES/TIMES, so it
+// must carry the SAME date-grounding rule V3/CONVERSATIONAL both have.
+// callExtract prepends the "Observation date: ..." line to pass B's user
+// message exactly like pass A (05-extract.ts's promptOverride path is
+// prompt-agnostic) — a sweeper that doesn't know what that line means would
+// emit unresolved relative dates or bare ISO dates straight into `text`,
+// which scores 0 on the LoCoMo temporal category (see the WS4 test above,
+// same underlying finding).
+describe('EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER content (dual-pass extraction)', () => {
+  it('states the same date-grounding rule V3/CONVERSATIONAL carry', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Ground relative dates/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Observation date/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/keep the original relative phrasing/);
+  });
+
+  it('instructs natural-language dates (not ISO-8601) for the grounded text field, mirroring V3', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/natural-language\s+absolute date/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).not.toMatch(/resolve "yesterday".*to an absolute ISO-8601/s);
+  });
+
+  it('its own few-shot example demonstrates a relative-date resolution, not an echoed-back relative phrase', () => {
+    // The worked example resolves "last week" (given "Observation date:
+    // 2026-07-10" prepended to the input, same shape callExtract produces)
+    // into a natural-language absolute date INSIDE the atom's own text.
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Observation date: 2026-07-10/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/accident on 3 July 2026/);
+    // The OUTPUT atom text must not simply echo the unresolved relative
+    // phrase back (the exact anti-pattern flagged in review).
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).not.toMatch(
+      /"text":"Melanie's son got into an accident last week/,
+    );
+  });
+
+  it('still names DATES/TIMES as its own category 1 — the rule above is not decoration', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/1\. DATES\/TIMES/);
   });
 });

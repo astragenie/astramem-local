@@ -170,6 +170,15 @@ export interface ConsolidateSummary {
    * same `judgeSweepStartedAt` the `maxWallClockMs` cap checks against.
    */
   judgeSweepElapsedMs: number;
+  /**
+   * FEAT-499 stage 1: of `judgeCallsExecuted` REAL judge dispatches this
+   * run, how many had a pair cosine similarity in
+   * [NEAR_MERGE_THRESHOLD_MIN, mergeThreshold) — see that constant's doc
+   * comment. Always 0 when contradiction detection was off/disabled. Purely
+   * observational (no behavior change); this is the evidence a future
+   * stage-2 short-circuit would be gated on.
+   */
+  judgeCallsNearThreshold: number;
 }
 
 interface AtomRow {
@@ -402,6 +411,22 @@ function resolveContradictionDetection(
   };
 }
 
+/**
+ * FEAT-499 stage 1 (instrument-first, competitive-teardown steal #2, Mnemon
+ * internal/search/diff.go, Apache-2.0). The judge is already gated to pairs
+ * in [minSimilarity, mergeThreshold) — see `resolveContradictionDetection`
+ * above. Mnemon's insight is that cosine similarity ABOVE this band's own
+ * 0.90 boundary is almost always the same fact restated, not a genuine
+ * contradiction candidate, and could in principle skip the judge entirely
+ * via a cheap deterministic short-circuit. This constant marks that
+ * boundary for INSTRUMENTATION only — counting how many real judge calls
+ * fall in [NEAR_MERGE_THRESHOLD_MIN, mergeThreshold) — so a stage-2 filter
+ * (only added later, gated on this measurement showing >= 20% of calls in
+ * that band) has real evidence instead of a guess. No skip/filter exists
+ * yet; this never changes which pairs get judged.
+ */
+export const NEAR_MERGE_THRESHOLD_MIN = 0.90;
+
 const EXCERPT_MAX_CHARS = 280;
 
 function excerpt(text: string): string {
@@ -459,6 +484,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   );
   let judgeCallsThisRun = 0;
   let judgeErrorsThisRun = 0;
+  let judgeCallsNearThresholdThisRun = 0;
   const judgeSweepStartedAt = Date.now();
 
   const summary: ConsolidateSummary = {
@@ -466,6 +492,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
     contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
     contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
+    judgeCallsNearThreshold: 0,
   };
 
   if (autoMergeContained) {
@@ -544,6 +571,12 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
             summary.contradictionWallClockCapReached = true;
           } else {
             judgeCallsThisRun++;
+            // FEAT-499 stage 1 (instrument-first): count real judge
+            // dispatches whose pair similarity falls in the near-merge-
+            // threshold band — a call skipped by either cap above never
+            // reaches here, so this only ever counts calls that actually
+            // hit the LLM.
+            if (sim >= NEAR_MERGE_THRESHOLD_MIN) judgeCallsNearThresholdThisRun++;
             const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, {
               log,
               onFallback: () => { judgeErrorsThisRun++; },
@@ -649,10 +682,12 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   if (contradictionDetection) {
     summary.judgeCallsExecuted = judgeCallsThisRun;
     summary.judgeSweepElapsedMs = Date.now() - judgeSweepStartedAt;
+    summary.judgeCallsNearThreshold = judgeCallsNearThresholdThisRun;
     log(
       `[consolidate] judge sweep: mode=${contradictionDetection.mode} calls=${summary.judgeCallsExecuted} ` +
       `elapsedMs=${summary.judgeSweepElapsedMs} capReached=${summary.contradictionCapReached} ` +
-      `wallClockCapReached=${summary.contradictionWallClockCapReached} errors=${judgeErrorsThisRun}`,
+      `wallClockCapReached=${summary.contradictionWallClockCapReached} errors=${judgeErrorsThisRun} ` +
+      `nearThreshold=${summary.judgeCallsNearThreshold}/${summary.judgeCallsExecuted}`,
     );
     recordConsolidationJudgeRun(db, {
       mode: contradictionDetection.mode,
@@ -661,6 +696,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       capReached: summary.contradictionCapReached,
       wallClockCapReached: summary.contradictionWallClockCapReached,
       judgeErrors: judgeErrorsThisRun,
+      judgeCallsNearThreshold: judgeCallsNearThresholdThisRun,
     });
   }
 

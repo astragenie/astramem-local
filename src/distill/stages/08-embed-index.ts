@@ -14,6 +14,7 @@ import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { EntityRepo } from '../../storage/entities.js';
 import { EntityRelationRepo } from '../../storage/entity-relations.js';
+import { JobRepo } from '../../pipeline/job-repo.js';
 import { normalizeEntityName } from '../../entity/normalize.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import type { DB } from '../../storage/db.js';
@@ -107,6 +108,7 @@ export async function embedAndIndex(
   const entityRepo = new EntityRepo(ctx.db);
   const relationRepo = new EntityRelationRepo(ctx.db);
   const vecStore = new SqliteVecStore(ctx.db, ctx.embed.dim);
+  const jobRepo = new JobRepo(ctx.db);
 
   // Batch embed all texts at once for efficiency
   const texts = memories.map(m => m.normalizedText);
@@ -131,6 +133,13 @@ export async function embedAndIndex(
   // "the model emitted entities but a write attempt failed" (a broken zero
   // — this counter is > 0), same shape as unresolvableRelationDrops above.
   let entityLinkWriteDrops = 0;
+  // Issue #209: counts a vec-upsert attempt that threw for this batch — see
+  // the try/catch around vecStore.upsert below. Logged (not written to a
+  // guard-drop table — needs_vec_index on the memories row is already the
+  // durable REAL-zero/BROKEN-zero marker; a doctor canary reading it is
+  // Lane 1 / E1b, deliberately out of scope here to avoid colliding with
+  // PR #231's checks.ts split).
+  let vecUpsertDrops = 0;
 
   for (let i = 0; i < memories.length; i++) {
     const mem = memories[i];
@@ -337,17 +346,49 @@ export async function embedAndIndex(
       });
     }
 
-    // Always upsert vec (may update if the memory already existed but had no vec)
-    await vecStore.upsert(memoryId, vec);
-
-    // Update embedding metadata on the memories row (in case it pre-existed without it)
-    ctx.db
-      .prepare(`
-        UPDATE memories
-        SET embedding_provider = ?, embedding_model = ?, embedding_dim = ?, updated_at = ?
-        WHERE id = ?
-      `)
-      .run(ctx.embed.name, ctx.embed.model, ctx.embed.dim, Date.now(), memoryId);
+    // Always upsert vec (may update if the memory already existed but had no vec).
+    // Issue #209: this used to be unguarded — one atom's vec-write failure
+    // (e.g. a dim mismatch mid provider-swap, SQLITE_BUSY, disk pressure)
+    // threw straight out of the loop, aborting every atom after it in this
+    // same batch even though their inserts had already committed. Now a
+    // failure here is caught, durably recorded on the memory row
+    // (needs_vec_index = 1 — ADR-015 REAL-zero/BROKEN-zero marker, not just
+    // an in-memory flag), and a `reembed` job is enqueued so the worker
+    // retries it independently of this job's own outcome — never let one
+    // atom's vec failure sink the rest of the batch, same posture as the
+    // entity/relation write loops above.
+    try {
+      await vecStore.upsert(memoryId, vec);
+      // Update embedding metadata on the memories row (in case it pre-existed
+      // without it) — only once the vec write actually succeeded; on failure
+      // this would claim an embedding_provider/model/dim that isn't backed by
+      // a real memories_vec row.
+      ctx.db
+        .prepare(`
+          UPDATE memories
+          SET embedding_provider = ?, embedding_model = ?, embedding_dim = ?, updated_at = ?
+          WHERE id = ?
+        `)
+        .run(ctx.embed.name, ctx.embed.model, ctx.embed.dim, Date.now(), memoryId);
+    } catch (err) {
+      vecUpsertDrops++;
+      memRepo.markNeedsVecIndex(memoryId);
+      try {
+        jobRepo.enqueue('reembed', { kind: 'reembed', memory_id: memoryId });
+      } catch (enqueueErr) {
+        // Best-effort — the `cleanup` job's 24h sweep (src/pipeline/handlers/
+        // cleanup.ts) also drains every still-flagged needs_vec_index row, so
+        // a failed enqueue here does not strand the memory permanently.
+        childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+          { error_message: enqueueErr instanceof Error ? enqueueErr.message : String(enqueueErr), memory_id: memoryId },
+          'vec index: retry-job enqueue failed after vec upsert failure — needs_vec_index still set, cleanup sweep will catch it',
+        );
+      }
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err), memory_id: memoryId },
+        'vec index: upsert failed — memory persisted but NOT vector-indexed; needs_vec_index set, reembed job enqueued',
+      );
+    }
 
     results.push({ memoryId, created });
   }
@@ -408,6 +449,18 @@ export async function embedAndIndex(
         'entity link-drop counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
       );
     }
+  }
+
+  // Issue #209: this batch's vec-upsert failures are already durably
+  // recorded per-row (needs_vec_index) and retried (reembed job enqueued)
+  // above — this is purely a summary log line, same "never let a diagnostic
+  // fail the batch" posture as the counters above, just with nothing to
+  // write since there's no separate guard-drop table for this one.
+  if (vecUpsertDrops > 0) {
+    childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+      { vecUpsertDrops },
+      'vec index: one or more atoms in this batch failed vec upsert — flagged needs_vec_index, reembed jobs enqueued',
+    );
   }
 
   return results;

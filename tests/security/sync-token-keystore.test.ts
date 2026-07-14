@@ -191,7 +191,7 @@ describe('FEAT-472: two-configDir scoping — no cross-clobber', () => {
 
     // The prod entry is unchanged, and the sandbox write landed under its
     // own independent scoped identity rather than overwriting it.
-    expect(store.get([...before.keys()][0])).toBe('prod-sync-token');
+    expect(store.get([...before.keys()][0]!)).toBe('prod-sync-token');
     expect(store.size).toBe(2);
     expect(readSyncToken(prodConfigDir)).toBe('prod-sync-token');
     expect(readSyncToken(sandboxConfigDir)).toBe('sandbox-sync-token');

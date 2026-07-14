@@ -418,7 +418,7 @@ describe('MemoryEventRepo.purgeBatch / restorePurgeBatch / finalizePurgeBatch', 
     events = new MemoryEventRepo(db);
   });
 
-  function insertMem(hash: string, opts: { captureSource?: string | null; text?: string } = {}): string {
+  function insertMem(hash: string, opts: { captureSource?: 'auto_capture' | 'hook_close' | 'proxy' | null; text?: string } = {}): string {
     const text = opts.text ?? `purge test ${hash}`;
     return repo.insert({
       type: 'fact', text, normalized_text: text,

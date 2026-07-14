@@ -27,13 +27,20 @@ describe('makeProxySandbox — config.yaml contents and isolation', () => {
   it('writes proxy.capture.enabled: true into the sandboxed config dir when requested', () => {
     sandbox = makeProxySandbox('capture-sandbox-test', true);
     const yaml = readFileSync(join(sandbox.configDir, 'config.yaml'), 'utf8');
-    expect(yaml).toMatch(/proxy:\s*\n\s*capture:\s*\n\s*enabled: true/);
+    // Release no-go hard gate: proxy.experimental: true is also emitted
+    // (the harness legitimately spawns the real proxy, so it must opt in) —
+    // allow it to sit between `proxy:` and `capture:` rather than anchoring
+    // them adjacent.
+    expect(yaml).toMatch(/proxy:[\s\S]*capture:\s*\n\s*enabled: true/);
+    expect(yaml).toContain('experimental: true');
   });
 
   it('writes proxy.capture.enabled: false (matching the shipped default) when not requested', () => {
     sandbox = makeProxySandbox('capture-sandbox-test', false);
     const yaml = readFileSync(join(sandbox.configDir, 'config.yaml'), 'utf8');
-    expect(yaml).toMatch(/proxy:\s*\n\s*capture:\s*\n\s*enabled: false/);
+    expect(yaml).toMatch(/proxy:[\s\S]*capture:\s*\n\s*enabled: false/);
+    // The gate opt-in is unconditional — independent of captureEnabled.
+    expect(yaml).toContain('experimental: true');
   });
 
   it('every sandbox gets a fresh, distinct root/configDir/dataDir (no cross-run leakage)', () => {

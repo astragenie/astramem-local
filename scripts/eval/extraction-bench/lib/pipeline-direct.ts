@@ -35,7 +35,7 @@ import { redactIfEnabled } from '../../../../src/redact/index.js';
 import { flattenTranscriptContent } from '../../../../src/distill/flatten-turns.js';
 import { cleanup } from '../../../../src/distill/stages/01-cleanup.js';
 import { normalize } from '../../../../src/distill/stages/02-normalize.js';
-import { chunk } from '../../../../src/distill/stages/03-chunk.js';
+import { chunk, resolveMaxChunkChars } from '../../../../src/distill/stages/03-chunk.js';
 import { compact } from '../../../../src/distill/stages/04-compact.js';
 import { extract } from '../../../../src/distill/stages/05-extract.js';
 import { reduce } from '../../../../src/distill/stages/06-reduce.js';
@@ -58,6 +58,14 @@ export interface DirectRunResult {
     text: string;
     importance: number;
     confidence: number;
+    /** FEAT-485: pass-through of the atom's own `evidence` excerpt (verbatim
+     * source quote per src/distill/prompts/extract.ts's AtomSchema), when the
+     * extractor emitted one — same "survives via spread, this mapper just
+     * needs to read it" story as `relations` below. Optional and additive —
+     * existing callers reading only `.type`/`.text` are unaffected. Added so
+     * scripts/eval/extraction-bench/measure-evidence.mts can measure
+     * evidence-population rate per profile/model on the real pipeline. */
+    evidence?: string;
     /** FEAT-479 AC-481: pass-through of the atom's own entity-relation
      * triples (subject/predicate/object/confidence), when the extractor
      * emitted any — `ReducedAtom`/`NormalizedMemory` both extend `Atom`, so
@@ -79,7 +87,16 @@ export interface DirectRunResult {
  */
 export async function runDirectPipeline(
   turns: FixtureTurn[],
-  opts: { llmCompaction: LLMProvider; llmExtraction: LLMProvider; capUsd?: number; config?: Config },
+  opts: {
+    llmCompaction: LLMProvider;
+    llmExtraction: LLMProvider;
+    capUsd?: number;
+    config?: Config;
+    /** FEAT-485: which extraction prompt profile to resolve — mirrors
+     * PipelineContext.extractProfile / distillHandler's precedence. Defaults
+     * to 'engineering' (byte-identical prior behavior) when omitted. */
+    extractProfile?: 'engineering' | 'conversational';
+  },
 ): Promise<DirectRunResult> {
   const config = opts.config ?? defaultConfig();
   const capUsd = opts.capUsd ?? 50; // generous — this bench tracks real Azure spend separately, never wants a mid-run BudgetExceeded to silently zero out a fixture's atoms.
@@ -96,7 +113,10 @@ export async function runDirectPipeline(
 
   const cleaned = cleanup(transcriptText);
   const normalized = normalize(cleaned);
-  const chunks = chunk(normalized);
+  // #273 (WS7): resolved from opts.config.distill.maxChunkChars so a sweep
+  // caller can vary chunk size per run — falls back to the stage-3 default
+  // when the caller passes no override.
+  const chunks = chunk(normalized, resolveMaxChunkChars(config));
 
   const budgetDb = makeBudgetDb();
   try {
@@ -105,7 +125,7 @@ export async function runDirectPipeline(
     const compactResults = await compact(chunks, opts.llmCompaction, budget, capUsd);
     const compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
 
-    const extractResults = await extract(compactedChunks, opts.llmExtraction, budget, capUsd);
+    const extractResults = await extract(compactedChunks, opts.llmExtraction, budget, capUsd, opts.extractProfile ?? 'engineering');
     const allAtoms = extractResults.flatMap(r => r.atoms);
     const usageUsd = compactResults.reduce((s, r) => s + r.usageUsd, 0) + extractResults.reduce((s, r) => s + r.usageUsd, 0);
 
@@ -118,6 +138,7 @@ export async function runDirectPipeline(
         text: m.normalizedText,
         importance: m.importance,
         confidence: m.confidence,
+        evidence: m.evidence,
         relations: m.relations,
       })),
       chunksProcessed: chunks.length,

@@ -120,4 +120,12 @@ export interface Memory {
    *  query-path input: `valid_to`/`validityFilterClause()` semantics are
    *  unchanged by this field. */
   validity_extracted: boolean;
+  /** Issue #209 (ADR-015 REAL-zero/BROKEN-zero marker): `false` (default)
+   *  means the vec-index upsert either succeeded inline or has never been
+   *  attempted; `true` means an upsert attempt failed and this row is
+   *  vector-search-blind until the `reembed` retry drain (write-time
+   *  enqueue + the `cleanup` job's 24h sweep, see migrations/041-vec-index-
+   *  retry.sql) picks it back up. See MemoryRepo.markNeedsVecIndex /
+   *  clearNeedsVecIndex. */
+  needs_vec_index: boolean;
 }

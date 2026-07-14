@@ -301,6 +301,54 @@ export const PATTERN_DETECTORS: PatternDetector[] = [
     valueGroup: 1,
     valueFilter: rejectNumericOrBooleanLiteral,
   },
+  // ---------------------------------------------------------------------------
+  // FEAT-498: Stripe live-mode keys + bare (unlabeled) OpenAI/Anthropic API
+  // keys. Vendor coverage informed by a competitive teardown cross-check
+  // against PROJECTMEM's `redaction.py` (MIT license) — token-format regexes
+  // are public knowledge (each vendor documents its own key prefix in its own
+  // docs); only the SET of which vendors to add was informed by that review.
+  // Same failure-open posture as every other entry in this file (SEC-9): a
+  // detector that never fires never blocks ingest.
+  //
+  // Listed AFTER every `generic_credential`/`generic_credential_quoted` entry
+  // above, deliberately: when a labeled match (`api_key: sk-...`) and one of
+  // these bare entries both match the exact same span, `dedupeOverlaps`
+  // (src/redact/index.ts) keeps whichever was pushed into the batch first on
+  // a start-position tie, and detector order IS batch-push order. Listing
+  // these last means a labeled hit always wins and keeps its
+  // `generic_credential`/`generic_credential_quoted` type — these entries
+  // only ever fire on a key that has NO recognized label at all.
+  // ---------------------------------------------------------------------------
+  // Live-mode only (`_live_`) — deliberately does not match `sk_test_...`/
+  // `pk_test_...`: test-mode keys are routinely pasted into transcripts
+  // during development and carry no real financial/account risk, so
+  // flagging them would just be alert noise for a non-secret.
+  {
+    type: 'stripe_key',
+    source: '\\b(?:sk|pk|rk)_live_[A-Za-z0-9]{24,}\\b',
+    flags: '',
+  },
+  // Bare (unlabeled) OpenAI/Anthropic API keys — e.g. a raw curl command, a
+  // shell export, a stray line copied from a terminal, with no `api_key:`/
+  // `token=` label anywhere nearby. Anchored with `\b` plus a 20-char
+  // minimum on the token body (after the prefix) so an ordinary short
+  // hyphenated word that happens to start with the same two letters
+  // (`sk-8`, `sk-todo`) can never match — real OpenAI/Anthropic keys are
+  // always well over that length — and `\b` itself already rejects the
+  // prefix appearing mid-word (`ask-forgiveness`, `desk-top`: no word
+  // boundary immediately before the `s`). The Anthropic entry is listed
+  // first and the OpenAI entry's negative lookahead (`(?!ant-)`) excludes
+  // it, so a `sk-ant-...` key is never double-matched by both.
+  {
+    type: 'anthropic_key',
+    source: '\\bsk-ant-[A-Za-z0-9_-]{20,}\\b',
+    flags: '',
+  },
+  {
+    type: 'openai_key',
+    source: '\\bsk-(?!ant-)[A-Za-z0-9_-]{20,}\\b',
+    flags: '',
+  },
   {
     type: 'jwt',
     source: '\\bey[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\.[A-Za-z0-9_-]{10,}\\b',

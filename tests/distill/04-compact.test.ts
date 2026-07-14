@@ -91,8 +91,8 @@ describe('compact stage', () => {
 
     expect(results.length).toBe(3);
     expect(callCount).toBe(3);
-    expect(results[0].text).toBe('compacted-1');
-    expect(results[1].text).toBe('compacted-2');
+    expect(results[0]!.text).toBe('compacted-1');
+    expect(results[1]!.text).toBe('compacted-2');
   });
 
   it('records actual USD cost in budget after each call', async () => {

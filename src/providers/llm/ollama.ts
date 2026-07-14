@@ -3,7 +3,32 @@ import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
 import { parseRetryAfterMs } from './retry-after.js';
 
-const CHAT_TIMEOUT_MS = 60_000;
+/**
+ * Per-chat timeout.
+ *
+ * WAS 60_000 — hardcoded, and TOO SHORT FOR A LOCAL MODEL ON A REAL CHUNK.
+ *
+ * Measured 2026-07-13: qwen3.5:4b extracting from a real 2029-char LoCoMo chunk
+ * generates ~1200 tokens and takes well over a minute on an 8 GB laptop GPU. Every
+ * such call aborted at 60s. The observable was `last_error: "The operation was
+ * aborted due to timeout"` and — far worse — ZERO ATOMS with the job still marked
+ * completed. A timeout produced a zero indistinguishable from "the model found
+ * nothing" (ADR-015, again).
+ *
+ * It had been hidden by stage-4 compaction, which shrank the input enough that the
+ * call squeaked in under 60s. Skipping compaction (which recovers facts — see
+ * 04-compact.ts) made the input bigger and exposed a limit that was always wrong
+ * for local inference.
+ *
+ * 60s is a CLOUD timeout applied to LOCAL hardware. A 4B model on a laptop GPU is
+ * not a network call; it is compute, and it is allowed to take minutes. Cloud
+ * providers have their own timeouts and are unaffected by this constant.
+ *
+ * Override with `ASTRA_OLLAMA_CHAT_TIMEOUT_MS` — a slower box (or a bigger model,
+ * or a CPU-only host) legitimately needs more, and no operator should have to
+ * recompile to get it.
+ */
+const CHAT_TIMEOUT_MS = Number(process.env.ASTRA_OLLAMA_CHAT_TIMEOUT_MS ?? 300_000);
 const HEALTH_TIMEOUT_MS = 10_000;
 
 // FEAT-479 (SLICE-433 review fix, HIGH): mirrors src/distill/stages/03-chunk.ts:12's
@@ -29,12 +54,45 @@ export interface OllamaLLMConfig {
   baseUrl?: string;
   model?: string;
   /** Ollama `think` flag for hybrid reasoning models (qwen3, deepseek-r1, …).
-   *  Left undefined -> ollama's per-model default (thinking ON for qwen3),
-   *  which conflicts with `format:json` extraction (reasoning consumes the
-   *  turn and `message.content` comes back empty -> parse fail/poison). We
-   *  therefore default it to `false` for qwen3* below. Set explicitly to
-   *  override. */
+   *  Left undefined -> ollama's per-model default (thinking ON for these
+   *  models), which conflicts with `format:json` extraction (reasoning
+   *  consumes the turn and `message.content` comes back empty -> parse
+   *  fail/poison). We therefore default it to `false` for every model in
+   *  KNOWN_THINKING_MODEL_PREFIXES below. Set explicitly to override.
+   *
+   *  Capability detection was investigated (issue #206 follow-up) before
+   *  writing this list: Ollama's `/api/show` returns a `capabilities` array
+   *  (see https://github.com/ollama/ollama/blob/main/docs/api.md), but every
+   *  documented example shows only entries like `["completion", "vision"]`
+   *  — "thinking" is not confirmed as a value that array ever contains, and
+   *  https://github.com/ollama/ollama/issues/10966 is an OPEN, unresolved
+   *  upstream issue from a user asking for exactly this signal, as of
+   *  2026-07-13. There is no reliable capability signal to query today, so
+   *  this is a hand-maintained, explicitly-sourced name list, not a regex —
+   *  each entry below is a real Ollama-documented thinking model, not a
+   *  guessed pattern. If ollama/ollama#10966 ever closes with a real
+   *  answer, prefer it over this list.
+   *
+   *  A list can only ever cover models we already know about. The name list
+   *  is the belt; `chat()`'s empty-content-under-format:json guard below is
+   *  the suspenders — it catches every thinking model we HAVEN'T met yet,
+   *  by making the failure loud and diagnosable instead of a silent parse
+   *  failure indistinguishable from "nothing to extract". */
   think?: boolean;
+}
+
+/** Ollama model-name prefixes documented as hybrid-reasoning ("thinking")
+ * capable, sourced from https://docs.ollama.com/capabilities/thinking
+ * (checked 2026-07-13): Qwen 3, DeepSeek R1, DeepSeek V3.1, GPT-OSS. Matched
+ * case-insensitively against the configured model name's prefix (tags like
+ * `qwen3:8b` or `deepseek-r1:32b` still match). See OllamaLLMConfig.think
+ * above for why this is an explicit list, not a regex or a capability query.
+ */
+const KNOWN_THINKING_MODEL_PREFIXES = ['qwen3', 'deepseek-r1', 'deepseek-v3.1', 'gpt-oss'];
+
+function isKnownThinkingModel(model: string): boolean {
+  const lower = model.toLowerCase();
+  return KNOWN_THINKING_MODEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
 
 interface OllamaChatResponse {
@@ -47,13 +105,26 @@ interface OllamaTagsResponse {
   models?: Array<{ name: string }>;
 }
 
+/**
+ * Combines a caller-supplied cancellation signal with a fixed-duration
+ * internal ceiling (issue #261): whichever fires first wins, and the
+ * caller's signal is never dropped in favor of the internal one. When no
+ * caller signal is passed, behaves exactly like the pre-fix
+ * `AbortSignal.timeout(timeoutMs)`.
+ */
+function combineSignals(timeoutMs: number, externalSignal?: AbortSignal): AbortSignal {
+  const ownSignal = AbortSignal.timeout(timeoutMs);
+  return externalSignal ? AbortSignal.any([externalSignal, ownSignal]) : ownSignal;
+}
+
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
   const attempt = async (): Promise<Response> => {
-    return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+    return fetch(url, { ...init, signal: combineSignals(timeoutMs, externalSignal) });
   };
 
   let lastError: unknown;
@@ -88,11 +159,22 @@ export class OllamaLLMProvider implements LLMProvider {
 
   constructor(config: OllamaLLMConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
-    this.model = config.model ?? 'qwen3:8b';
-    // Disable thinking for qwen3* by default (see OllamaLLMConfig.think) so
+    // Defensive fallback only — every real call path (src/providers/index.ts)
+    // passes config.llm.{compaction,extraction}.model explicitly, which
+    // defaultConfig() (src/config/config.ts) always supplies, so this only
+    // fires for direct/ad-hoc instantiation with no model. Keep in sync with
+    // that default by hand (no shared import between this provider and
+    // config/config.ts) — was 'qwen3.5:4b' until 2026-07-14, retired for
+    // under-extracting atoms (see src/cli/init.ts's DEFAULT_OLLAMA_LLM_MODEL
+    // comment); before that 'qwen3:8b' until 2026-07-13, which doesn't fit
+    // this hardware class's VRAM ceiling; see CLAUDE.md's "Ollama 8GB VRAM
+    // ceiling" note.
+    this.model = config.model ?? 'qwen2.5:7b';
+    // Disable thinking by default for every known thinking model (see
+    // OllamaLLMConfig.think and KNOWN_THINKING_MODEL_PREFIXES above) so
     // structured `format:json` extraction gets JSON in message.content instead
     // of an empty body. Explicit config.think wins.
-    this.think = config.think ?? (/^qwen3/i.test(this.model) ? false : undefined);
+    this.think = config.think ?? (isKnownThinkingModel(this.model) ? false : undefined);
   }
 
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
@@ -152,11 +234,14 @@ export class OllamaLLMProvider implements LLMProvider {
     if (opts?.temperature !== undefined) options.temperature = opts.temperature;
     if (opts?.maxTokens !== undefined) options.num_predict = opts.maxTokens;
 
+    // FEAT-261: a schema, when supplied, constrains the actual JSON shape —
+    // `format: 'json'` alone only guarantees valid JSON, not a particular
+    // top-level type (see ChatOpts.jsonSchema doc comment).
     const body = {
       model: this.model,
       messages,
       stream: false,
-      ...(useJson ? { format: 'json' } : {}),
+      ...(useJson ? { format: opts?.jsonSchema ?? 'json' } : {}),
       ...(this.think !== undefined ? { think: this.think } : {}),
       options,
     };
@@ -169,6 +254,7 @@ export class OllamaLLMProvider implements LLMProvider {
         body: JSON.stringify(body),
       },
       CHAT_TIMEOUT_MS,
+      opts?.signal,
     );
 
     if (!res.ok) {
@@ -194,6 +280,34 @@ export class OllamaLLMProvider implements LLMProvider {
     const inTokens = data.prompt_eval_count ?? 0;
     const outTokens = data.eval_count ?? 0;
     const latency_ms = Date.now() - t0;
+
+    // Loud-failure guard (see OllamaLLMConfig.think doc comment above): under
+    // format:json, an empty message.content is NEVER a legitimate answer —
+    // the shortest possible valid JSON is 2 characters ("{}"), so a
+    // zero-length content string can only mean the model produced nothing
+    // parseable. The most common cause is a hybrid-reasoning model that
+    // consumed its whole output budget on message.thinking and left none for
+    // message.content (the qwen3 incident KNOWN_THINKING_MODEL_PREFIXES
+    // exists to prevent) — but that name list can only cover models we
+    // already know about. This check fires for ANY model, known or not, so
+    // an unnamed thinking model fails loud on its very first call instead of
+    // falling through to 05-extract.ts's generic "Zod/JSON parse failed —
+    // raw: " (empty, since raw IS empty) — a message with zero diagnostic
+    // content that is indistinguishable from a stochastic one-off glitch.
+    if (useJson && text.trim().length === 0) {
+      const thinkingChars = data.message?.thinking?.length ?? 0;
+      const detail = thinkingChars > 0
+        ? `message.thinking held ${thinkingChars} chars while message.content was empty — the classic hybrid-reasoning/format:json conflict`
+        : 'message.thinking was also empty, so this is not that known signature — but an empty format:json response is never legitimate either way';
+      log.warn(
+        { latency_ms, model: this.model, thinking_chars: thinkingChars, think_option: this.think },
+        'ollama chat: empty content under format:json',
+      );
+      throw new TransientError(
+        `Ollama returned empty message.content under format:json for model "${this.model}" (${detail}). ` +
+        `If this model has a hybrid-reasoning ("thinking") mode, add it to KNOWN_THINKING_MODEL_PREFIXES in src/providers/llm/ollama.ts, or pass think:false explicitly.`,
+      );
+    }
 
     log.info({ latency_ms, tokens_in: inTokens, tokens_out: outTokens, usd: 0 }, 'ollama chat ok');
 

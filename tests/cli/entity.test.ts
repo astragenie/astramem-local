@@ -24,7 +24,7 @@ describe('CLI --entity forwards to the same filter key the server routes consume
 
     await cliSearch('postgres decision', { entity: 'postgres' });
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.pathname).toBe('/search');
     expect(calledUrl.searchParams.get('entity')).toBe('postgres');
   });
@@ -35,7 +35,7 @@ describe('CLI --entity forwards to the same filter key the server routes consume
 
     await cliSearch('postgres decision', {});
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.has('entity')).toBe(false);
   });
 
@@ -65,7 +65,7 @@ describe('CLI entities list|show (AC-5)', () => {
 
     await cliEntitiesList('post', {});
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.pathname).toBe('/entities');
     expect(calledUrl.searchParams.get('q')).toBe('post');
   });
@@ -76,7 +76,7 @@ describe('CLI entities list|show (AC-5)', () => {
 
     await cliEntitiesList('', {});
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.searchParams.has('q')).toBe(false);
   });
 
@@ -88,7 +88,7 @@ describe('CLI entities list|show (AC-5)', () => {
 
     await cliEntitiesShow('e1');
 
-    const calledUrl = new URL(fetchMock.mock.calls[0][0] as string);
+    const calledUrl = new URL(fetchMock.mock.calls[0]![0] as string);
     expect(calledUrl.pathname).toBe('/entities/e1/memories');
   });
 });

@@ -28,15 +28,28 @@ interface OllamaTagsResponse {
   models?: Array<{ name: string }>;
 }
 
+/**
+ * Combines a caller-supplied cancellation signal with a fixed-duration
+ * internal ceiling (issue #261): whichever fires first wins, and the
+ * caller's signal is never dropped in favor of the internal one. When no
+ * caller signal is passed, behaves exactly like the pre-fix
+ * `AbortSignal.timeout(timeoutMs)`.
+ */
+function combineSignals(timeoutMs: number, externalSignal?: AbortSignal): AbortSignal {
+  const ownSignal = AbortSignal.timeout(timeoutMs);
+  return externalSignal ? AbortSignal.any([externalSignal, ownSignal]) : ownSignal;
+}
+
 async function fetchWithRetry(
   url: string,
   init: RequestInit,
   timeoutMs: number,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
   let lastError: unknown;
   for (let i = 0; i < 2; i++) {
     try {
-      const res = await fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+      const res = await fetch(url, { ...init, signal: combineSignals(timeoutMs, externalSignal) });
       if (res.status >= 400 && res.status < 500) return res;
       if (res.status >= 500 && i === 0) {
         lastError = new Error(`HTTP ${res.status} from Ollama embed`);
@@ -68,7 +81,7 @@ export class OllamaEmbedProvider implements EmbedProvider {
     this.queryPrefix = config.queryPrefix ?? '';
   }
 
-  async embed(texts: string[]): Promise<Float32Array[]> {
+  async embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]> {
     const log = childLogger({ provider: this.name, model: this.model });
     const results: Float32Array[] = [];
 
@@ -82,6 +95,7 @@ export class OllamaEmbedProvider implements EmbedProvider {
           body: JSON.stringify({ model: this.model, prompt: text }),
         },
         EMBED_TIMEOUT_MS,
+        signal,
       );
 
       if (!res.ok) {

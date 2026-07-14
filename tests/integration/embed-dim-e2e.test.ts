@@ -96,9 +96,9 @@ describe('FEAT-409 AC-2 — fresh DB at non-1024 dim, ingest + search end-to-end
     });
 
     expect(results.length).toBe(1);
-    expect(results[0].created).toBe(true);
+    expect(results[0]!.created).toBe(true);
 
-    const row = db.prepare('SELECT embedding_dim FROM memories WHERE id = ?').get(results[0].memoryId) as { embedding_dim: number };
+    const row = db.prepare('SELECT embedding_dim FROM memories WHERE id = ?').get(results[0]!.memoryId) as { embedding_dim: number };
     expect(row.embedding_dim).toBe(NON_DEFAULT_DIM);
   });
 

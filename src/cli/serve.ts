@@ -3,10 +3,10 @@ import { mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { ts } from '../log/logger.js';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
-import { migrate, getVecSchemaDim } from '../storage/migrate.js';
+import { migrate, getVecSchemaDim, SchemaNewerThanDaemonError } from '../storage/migrate.js';
 import { getOrCreateKey, readSyncToken } from '../storage/keystore.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
-import { startShipper, getOrCreateDeviceId, type ShipperHandle } from '../sync/shipper.js';
+import { startShipper, getOrCreateDeviceId, shouldStartShipper, type ShipperHandle } from '../sync/shipper.js';
 import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
 import { defaultConfigDir } from '../config/datadir.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
@@ -116,7 +116,21 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // FEAT-409: dim only matters for a genuinely fresh DB — migrate() skips
   // already-applied migrations regardless, so this stays correct across
   // upgrades and restarts of an existing (already at some dim) DB.
-  migrate(db, cfg.embedding.dim);
+  try {
+    migrate(db, cfg.embedding.dim);
+  } catch (err) {
+    if (err instanceof SchemaNewerThanDaemonError) {
+      // Issue #306: the datadir was migrated by a newer astramem-local than
+      // this pinned release. Print ONE actionable line (not a stack trace)
+      // and exit — the operator fix is `reinstall`, not a bug report. Release
+      // the lock/db first so a subsequent reinstall+restart isn't blocked.
+      console.error(`${ts()} [astramem-local] ${err.message}`);
+      try { lock?.release(); } catch { /* best-effort */ }
+      try { db.close(); } catch { /* best-effort */ }
+      process.exit(1);
+    }
+    throw err;
+  }
 
   // FEAT-409 AC-3: the dim the embed preflight checks against is the
   // PERSISTED schema dim (what memories_vec was actually created with),
@@ -206,10 +220,22 @@ export async function serve(opts: ServeOpts): Promise<void> {
   registry.register(consolidateHandler);
   registry.register(reembedHandler);
 
+  // FEAT-492: content-hash embedding cache, DOCUMENT-role only. The worker's
+  // extended context gets its OWN `providers` object with `embed` swapped for
+  // a caching wrapper — `providers.embed` above (already handed to buildApp
+  // for the query-role search routes, and used unchanged for the preflight/
+  // doctor probes below) stays raw. See src/providers/embed/cache.ts's doc
+  // comment for why the two must not share one wrapped instance.
+  const { CachingEmbedProvider } = await import('../providers/embed/cache.js');
+  const workerProviders: ProviderSet | MockProviderSet = {
+    ...providers,
+    embed: new CachingEmbedProvider(providers.embed, db),
+  };
+
   const extCtx: ExtendedHandlerCtx = {
     db,
     config: cfg,
-    providers,
+    providers: workerProviders,
     memoryRepo: new MemoryRepo(db),
     vecStore: new SqliteVecStore(db, cfg.embedding.dim),
   };
@@ -231,8 +257,22 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // already forcing cfg.sync.enabled=false under ASTRA_MEMORY_ISOLATED=1 — a
   // synthetic/eval daemon must never start the shipper even if some future
   // code path re-derives cfg.sync from elsewhere.
+  //
+  // EXPERIMENTAL HARD GATE (sync-experimental-gate slice): sync-to-cloud is
+  // currently broken against astramem-cloud (8868 events failing HTTP 400,
+  // not yet root-caused). `sync.enabled` alone (set by `astramem-local pair`
+  // on a successful redeem) is NOT sufficient to start the shipper — see
+  // shouldStartShipper() in sync/shipper.ts. `cfg.sync.experimental` is a
+  // separate, config.yaml-only, hand-edit opt-in that `pair` never touches.
   let shipper: ShipperHandle | null = null;
-  if (cfg.sync.enabled && dataDir !== ':memory:' && !isolated) {
+  if (cfg.sync.enabled && dataDir !== ':memory:' && !isolated && !cfg.sync.experimental) {
+    console.warn(
+      `${ts()} [astramem-local] sync is EXPERIMENTAL — sync.enabled=true but sync.experimental=false; ` +
+      `the cloud sync shipper was NOT started. Sync-to-cloud is not yet stable. Set sync.experimental: ` +
+      `true in config.yaml to opt in once you understand the risk.`,
+    );
+  }
+  if (shouldStartShipper({ enabled: cfg.sync.enabled, experimental: cfg.sync.experimental, dataDir, isolated })) {
     const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken(defaultConfigDir());
     if (!cfg.sync.url || !cfg.sync.workspaceId || !syncToken) {
       console.warn(
@@ -296,6 +336,8 @@ export async function serve(opts: ServeOpts): Promise<void> {
     autoCaptureEnabled: cfg.capture.autoCapture.enabled,
     proxyEnabled: cfg.proxy.enabled,
     proxyCaptureEnabled: cfg.proxy.capture.enabled,
+    syncEnabled: cfg.sync.enabled,
+    syncExperimental: cfg.sync.experimental,
     // Mirrors buildApp's devNoAuthActive — a non-loopback bind refuses
     // devNoAuth at boot, so the scheduled run must apply the same gate
     // rather than reporting the raw config value (same reasoning as

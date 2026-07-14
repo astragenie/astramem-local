@@ -8,15 +8,15 @@ function makeLLMProvider(
   return {
     name: overrides.name ?? 'ollama',
     model: overrides.model ?? 'qwen2.5-coder:7b',
-    chat: overrides.chat ?? vi.fn().mockResolvedValue({ text: '1', usage: { in: 1, out: 1, usd: 0 } }),
+    chat: overrides.chat ?? vi.fn().mockResolvedValue({ text: '{"ok":true}', usage: { in: 1, out: 1, usd: 0 } }),
     health: overrides.health ?? vi.fn().mockResolvedValue({ ok: true, model: 'qwen2.5-coder:7b', latency_ms: 10 }),
   };
 }
 
 describe('llmChatProbe', () => {
-  it('returns ok:true when provider returns non-empty response', async () => {
+  it('returns ok:true when provider returns non-empty, valid-JSON response', async () => {
     const provider = makeLLMProvider({
-      chat: vi.fn().mockResolvedValue({ text: '1', usage: { in: 1, out: 1, usd: 0 } }),
+      chat: vi.fn().mockResolvedValue({ text: '{"ok":true}', usage: { in: 1, out: 1, usd: 0 } }),
     });
     const result = await llmChatProbe(provider, 5000);
     expect(result.ok).toBe(true);
@@ -41,6 +41,20 @@ describe('llmChatProbe', () => {
     const result = await llmChatProbe(provider, 5000);
     expect(result.ok).toBe(false);
     expect(result.message).toContain('empty response');
+  });
+
+  // This is the regression the fix targets: qwen3 under Ollama's format:json
+  // + thinking mode returned empty output on a real chat call while a plain
+  // (non-JSON) probe read as healthy. Non-empty-but-not-JSON is the sibling
+  // failure mode — a model that ignores format:json and echoes prose back.
+  it('returns ok:false when provider returns non-empty text that is not valid JSON', async () => {
+    const provider = makeLLMProvider({
+      chat: vi.fn().mockResolvedValue({ text: 'Sure, here you go: ok', usage: { in: 1, out: 1, usd: 0 } }),
+    });
+    const result = await llmChatProbe(provider, 5000);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('not valid JSON');
+    expect(result.fix).toContain('format:json');
   });
 
   it('returns ok:false when provider throws', async () => {
@@ -74,13 +88,48 @@ describe('llmChatProbe', () => {
     expect(result.message).toContain('azure-openai/gpt-4o');
   });
 
-  it('passes {maxTokens:1, temperature:0} to provider.chat', async () => {
-    const chatFn = vi.fn().mockResolvedValue({ text: 'ok', usage: { in: 1, out: 1, usd: 0 } });
+  it('passes {json:true, temperature:0} to provider.chat — the format:json shape real extraction uses', async () => {
+    const chatFn = vi.fn().mockResolvedValue({ text: '{"ok":true}', usage: { in: 1, out: 1, usd: 0 } });
     const provider = makeLLMProvider({ chat: chatFn });
     await llmChatProbe(provider, 5000);
+    // Issue #261: a `signal` is now also passed (see the AbortSignal
+    // cancellation test below) — objectContaining rather than an exact
+    // match so this test doesn't churn every time a new ChatOpts field is
+    // threaded through. `json: true` is the load-bearing assertion here —
+    // this is what was missing before the fix, and is the exact opt that
+    // triggers Ollama's `format: json` request shape.
     expect(chatFn).toHaveBeenCalledWith(
-      [{ role: 'user', content: '1' }],
-      { maxTokens: 1, temperature: 0 },
+      [expect.objectContaining({ role: 'user' })],
+      expect.objectContaining({ json: true, temperature: 0 }),
     );
+  });
+
+  // Issue #261: proves the probe actually CANCELS a slow/hung provider call
+  // on timeout rather than merely abandoning its promise — the underlying
+  // "request" (here, a background timer standing in for a real Ollama
+  // generation) must never run to completion once the probe has timed out.
+  it('issue #261: on timeout, cancels the in-flight chat() call (fires its signal) instead of abandoning it', async () => {
+    let sawAbort = false;
+    let completed = false;
+    const provider = makeLLMProvider({
+      chat: vi.fn((_messages, opts) => new Promise<Awaited<ReturnType<LLMProvider['chat']>>>((resolve) => {
+        const t = setTimeout(() => {
+          completed = true;
+          resolve({ text: 'too late', usage: { in: 1, out: 1, usd: 0 } });
+        }, 200);
+        opts?.signal?.addEventListener('abort', () => {
+          sawAbort = true;
+          clearTimeout(t);
+        });
+      })),
+    });
+
+    const result = await llmChatProbe(provider, 20);
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('timeout');
+    expect(sawAbort).toBe(true);
+
+    await new Promise((r) => setTimeout(r, 250));
+    expect(completed).toBe(false);
   });
 });

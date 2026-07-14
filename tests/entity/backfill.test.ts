@@ -60,7 +60,7 @@ describe('runEntityBackfill', () => {
 
     const linked = new EntityRepo(db).listForMemory(id);
     expect(linked).toHaveLength(1);
-    expect(linked[0].name).toBe('postgres');
+    expect(linked[0]!.name).toBe('postgres');
   });
 
   it('is idempotent — a fully-linked corpus is a pure no-op scan on re-run', async () => {
@@ -114,7 +114,7 @@ describe('runEntityBackfill', () => {
     expect(result.scanned).toBe(1); // only the unlinked memory
     const linked = new EntityRepo(db).listForMemory(unlinkedId);
     expect(linked).toHaveLength(1);
-    expect(linked[0].name).toBe('typescript');
+    expect(linked[0]!.name).toBe('typescript');
   });
 
   it('respects --limit', async () => {

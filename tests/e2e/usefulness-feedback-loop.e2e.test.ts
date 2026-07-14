@@ -131,7 +131,8 @@ describe('ADR-010 usefulness feedback loop — e2e proof it actually moves the n
     const beforeFacts = before.standing_facts as Array<{ id: string; usefulness: number }>;
     expect(beforeFacts).toHaveLength(2);
     expect(beforeFacts.every(f => f.usefulness === 0.5)).toBe(true);
-    const [firstBefore, secondBefore] = beforeFacts;
+    const firstBefore = beforeFacts[0]!;
+    const secondBefore = beforeFacts[1]!;
     expect(firstBefore.id).toBe(idA < idB ? idA : idB);
     expect(secondBefore.id).toBe(idA < idB ? idB : idA);
 

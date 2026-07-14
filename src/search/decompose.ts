@@ -43,13 +43,22 @@
 import type { Config } from '../config/config.js';
 import type { LLMProvider } from '../contracts/llm.js';
 import { childLogger } from '../log/logger.js';
+import { withAbortableTimeout } from '../util/abortable-timeout.js';
 
 export interface QueryDecomposer {
   readonly name: 'mock' | 'llm';
-  /** Return 0+ sub-queries. An empty array means "no decomposition needed"
-   *  (or the decomposer couldn't produce one) — callers treat that exactly
-   *  like the stage being disabled for this call. */
-  decompose(query: string): Promise<string[]>;
+  /**
+   * Return 0+ sub-queries. An empty array means "no decomposition needed"
+   * (or the decomposer couldn't produce one) — callers treat that exactly
+   * like the stage being disabled for this call.
+   *
+   * `signal` (issue #261): fires when `getSubQueries`'s timeout budget
+   * elapses. A real (LLM-backed) implementation must forward it into its
+   * provider call so a timeout actually cancels the in-flight request
+   * instead of abandoning it. `MockQueryDecomposer` ignores it — it never
+   * does I/O, so there is nothing to cancel.
+   */
+  decompose(query: string, signal?: AbortSignal): Promise<string[]>;
 }
 
 /**
@@ -82,12 +91,27 @@ export class MockQueryDecomposer implements QueryDecomposer {
  * to yield `[]` (or one element equal to the input) — either way the
  * caller's `getSubQueries` treats `<2` sub-queries as "nothing to add".
  *
- * Parsing is lenient by design: any non-JSON, non-array, or non-string-array
+ * Parsing is lenient by design: any non-JSON or empty-after-extraction
  * response is treated as "no sub-queries" (empty array), not an error —
  * a decomposer that can't produce a clean split is exactly equivalent to a
  * query that doesn't need decomposing, from the caller's point of view.
  * Genuine provider failures (network error, thrown exception) still
  * propagate so `getSubQueries`'s timeout/error fallback logs them.
+ *
+ * Issue #261: `format: 'json'` (Ollama) / `response_format: json_object`
+ * (Azure/OpenAI-compatible) guarantees the response is SOME valid JSON — not
+ * that it is a JSON *array*. Measured live against real multi-hop questions:
+ * both qwen3:8b and qwen2.5-coder:7b reliably return a JSON *object*
+ * instead (e.g. `{"Who gave Melanie the painting?": "...", ...}`), which a
+ * strict `Array.isArray` check correctly rejects — 0/48 usable
+ * decompositions. `jsonSchema` (passed below) constrains Ollama's output to
+ * an actual array directly (live-verified against Ollama 0.31.2: 3/3 real
+ * multi-hop prompts returned a parseable string array). `extractSubQueries`
+ * is defense-in-depth for providers that ignore the schema hint (Azure,
+ * OpenAI-compatible, or an Ollama version too old to support schema
+ * `format`) — it tolerates the object shape by taking its KEYS, which the
+ * live evidence shows are the sub-questions themselves (the values are
+ * answers/prose, not more queries).
  */
 export class LlmQueryDecomposer implements QueryDecomposer {
   readonly name = 'llm' as const;
@@ -97,7 +121,7 @@ export class LlmQueryDecomposer implements QueryDecomposer {
     private readonly maxSubQueries: number,
   ) {}
 
-  async decompose(query: string): Promise<string[]> {
+  async decompose(query: string, signal?: AbortSignal): Promise<string[]> {
     const result = await this.provider.chat(
       [
         {
@@ -111,21 +135,44 @@ export class LlmQueryDecomposer implements QueryDecomposer {
         },
         { role: 'user', content: query },
       ],
-      { json: true, temperature: 0, maxTokens: 300 },
+      {
+        json: true,
+        jsonSchema: { type: 'array', items: { type: 'string' } },
+        temperature: 0,
+        maxTokens: 300,
+        signal,
+      },
     );
 
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(result.text);
-    } catch {
-      return [];
-    }
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((s): s is string => typeof s === 'string' && s.trim().length > 0)
+    return extractSubQueries(result.text)
       .map(s => s.trim())
+      .filter(s => s.length > 0)
       .slice(0, this.maxSubQueries);
   }
+}
+
+/**
+ * Tolerant extraction of a sub-query list from a decomposer's raw response
+ * text (issue #261). A clean JSON array is the expected/primary shape; a
+ * JSON object is accepted as a fallback (its keys, not values — see the
+ * class doc comment above for the live evidence). Anything else (unparsable
+ * JSON, a JSON scalar) yields an empty array, matching the pre-existing
+ * "can't produce a clean split -> no sub-queries" contract.
+ */
+function extractSubQueries(raw: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (Array.isArray(parsed)) {
+    return parsed.filter((s): s is string => typeof s === 'string');
+  }
+  if (parsed !== null && typeof parsed === 'object') {
+    return Object.keys(parsed as Record<string, unknown>);
+  }
+  return [];
 }
 
 /** Resolved multi-hop decompose options as consumed by `getSubQueries` / `SearchOpts.decompose`. */
@@ -189,16 +236,6 @@ export function resolveDecomposeOpts(
 
 class DecomposeTimeoutError extends Error {}
 
-function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new DecomposeTimeoutError(`query decomposition timed out after ${ms}ms`)), ms);
-    promise.then(
-      (v) => { clearTimeout(timer); resolve(v); },
-      (e) => { clearTimeout(timer); reject(e); },
-    );
-  });
-}
-
 /**
  * Cheap, network-free gate (AC-4): a query shorter than `minQueryWords`
  * never reaches the decomposer. Exported so search.ts and tests can reason
@@ -224,7 +261,11 @@ export async function getSubQueries(query: string, opts: DecomposeOpts): Promise
   const log = childLogger({ stage: 'decompose', provider: opts.decomposer.name });
   const t0 = Date.now();
   try {
-    const raw = await withTimeout(opts.decomposer.decompose(query), opts.timeoutMs);
+    const raw = await withAbortableTimeout(
+      (signal) => opts.decomposer.decompose(query, signal),
+      opts.timeoutMs,
+      () => new DecomposeTimeoutError(`query decomposition timed out after ${opts.timeoutMs}ms`),
+    );
     // De-dup (case-insensitive) and drop anything identical to the original
     // query — a decomposer that echoes the input back adds gather/fuse cost
     // for zero new candidates.

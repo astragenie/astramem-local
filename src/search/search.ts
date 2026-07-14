@@ -116,6 +116,41 @@ export interface ScoreSignal {
 export interface ScoreExplanation {
   final: number;
   signals: Record<string, ScoreSignal>;
+  /**
+   * FEAT-500: argmax of `signals` by `.final` — the single signal that
+   * contributed the most to this hit's fused score (Mnemon's `via`
+   * equivalent). Deterministic tie-break: alphabetical by signal name, so
+   * two equal `.final` values always resolve to the same winner regardless
+   * of `Object.keys` iteration order. `undefined` only when `signals` is
+   * empty (never happens in practice — `importance`/`freshness`/
+   * `usefulness` are always present — but the type stays honest for a
+   * hypothetical empty-signals caller). Computed fresh wherever `signals`
+   * is finalized (base fusion in `buildExplanation`, and again after the
+   * rerank merge below) so it always reflects the actual signals present
+   * on this explanation, not a stale pre-merge winner. OPTIONAL on the wire
+   * schema (contracts/schemas/retrieval-result.v1.schema.json), same
+   * additive-field posture as `reason`.
+   */
+  top_signal?: string;
+}
+
+/**
+ * Argmax of `signals` by `.final`, alphabetical-by-name tie-break (FEAT-500).
+ * Pure function — no dependency on where `signals` came from, so it is safe
+ * to call both on the base fusion breakdown and again after a later stage
+ * (e.g. rerank) merges an additional signal in.
+ */
+export function computeTopSignal(signals: Record<string, ScoreSignal>): string | undefined {
+  let winner: string | undefined;
+  let winnerFinal = -Infinity;
+  for (const name of Object.keys(signals).sort()) {
+    const final = signals[name]!.final;
+    if (final > winnerFinal) {
+      winner = name;
+      winnerFinal = final;
+    }
+  }
+  return winner;
 }
 
 export interface SearchHit {
@@ -828,7 +863,7 @@ export async function search(
     // final MUST equal the hit's top-level score (CONTRACT-FREEZE §2), even
     // though usefulness/entity_bonus/agent_bonus above already account for
     // it — this is not a re-derivation, `score` is the source of truth.
-    return { final: score, signals };
+    return { final: score, signals, top_signal: computeTopSignal(signals) };
   }
 
   const results: SearchHit[] = [];
@@ -865,11 +900,15 @@ export async function search(
       if (!hit.reranked) return hit;
       const crossEncoder = hit.explanation!.signals.cross_encoder!;
       const base = results.find(r => r.id === hit.id)!;
+      const signals = { ...base.explanation.signals, cross_encoder: crossEncoder };
       return {
         ...hit,
         explanation: {
           final: hit.score,
-          signals: { ...base.explanation.signals, cross_encoder: crossEncoder },
+          signals,
+          // Recomputed post-merge (not carried over from `base`) — the
+          // cross-encoder signal just added can itself be the argmax.
+          top_signal: computeTopSignal(signals),
         },
       };
     });
