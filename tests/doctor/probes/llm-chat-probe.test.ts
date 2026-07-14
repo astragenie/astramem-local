@@ -96,7 +96,7 @@ describe('llmChatProbe', () => {
     let sawAbort = false;
     let completed = false;
     const provider = makeLLMProvider({
-      chat: vi.fn((_messages, opts) => new Promise((resolve) => {
+      chat: vi.fn((_messages, opts) => new Promise<Awaited<ReturnType<LLMProvider['chat']>>>((resolve) => {
         const t = setTimeout(() => {
           completed = true;
           resolve({ text: 'too late', usage: { in: 1, out: 1, usd: 0 } });

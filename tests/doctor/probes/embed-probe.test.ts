@@ -97,7 +97,7 @@ describe('embedProbe', () => {
     let sawAbort = false;
     let completed = false;
     const provider = makeEmbedProvider({
-      embed: vi.fn((_texts, signal?: AbortSignal) => new Promise((resolve) => {
+      embed: vi.fn((_texts, signal?: AbortSignal) => new Promise<Float32Array[]>((resolve) => {
         const t = setTimeout(() => {
           completed = true;
           resolve([new Float32Array(1024).fill(0.1)]);
