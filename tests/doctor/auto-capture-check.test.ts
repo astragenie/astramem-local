@@ -5,10 +5,19 @@
  * never itself a warning (ok:true, see checkAutoCapture's doc comment for
  * why this deliberately does NOT mirror checkServicePointer's ok:false
  * dev-pinned pattern) — but since the 2026-07-12 "wired, never fired" bug
- * class, the check now WARNs (ok:false) when ON + the daemon has real
- * content (>= MEANINGFUL_USAGE_THRESHOLD active memories) yet 0 of them ever
- * came through auto-capture. Uses a real on-disk memory.sqlite (same pattern
- * as tests/doctor/memory-health-check.test.ts) since the check opens
+ * class, the check now WARNs (ok:false) when ON + the daemon has real recent
+ * content (>= MEANINGFUL_USAGE_THRESHOLD active memories in the trailing 7
+ * days) yet 0 of them came through auto-capture.
+ *
+ * issue #217 (2026-07-13): the ORIGINAL version of this check counted
+ * ALL-TIME, so once capture had EVER succeeded even once, the row stayed
+ * green forever regardless of whether capture later broke. The tests in the
+ * "recency window (#217)" describe block below exist specifically to prove
+ * the fix: old capture history must NOT mask a live regression, and a
+ * genuinely quiet recent window must NOT false-alarm.
+ *
+ * Uses a real on-disk memory.sqlite (same pattern as
+ * tests/doctor/memory-health-check.test.ts) since the check opens
  * `join(dataDir, 'memory.sqlite')` via openProductionDbReadonly.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -21,11 +30,19 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
+import { SEVEN_DAYS_MS } from '../../src/doctor/checks/shared.js';
 
 function findCheck(checks: ReturnType<typeof getChecks>, name: string) {
   const c = checks.find(c => c.name === name);
   if (!c) throw new Error(`check not found: ${name}`);
   return c;
+}
+
+/** Backdate a row's created_at past the check's 7-day window — InsertInput
+ *  has no created_at override (it's always wall-clock at insert time), so
+ *  tests that need "old" activity update it directly after the fact. */
+function backdate(db: ReturnType<typeof openDb>, id: string, msAgo: number): void {
+  db.prepare('UPDATE memories SET created_at = ? WHERE id = ?').run(Date.now() - msAgo, id);
 }
 
 describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
@@ -80,7 +97,7 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
     expect(result.message).toContain('0');
   });
 
-  it('enabled, DB exists with zero auto-captured memories — ok:true, 0 count', async () => {
+  it('enabled, DB exists but recent activity is below the floor — ok:true, real-zero (quiet, not broken)', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -93,10 +110,11 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
-    expect(result.message).toContain('0');
+    expect(result.inconclusive).toBe(true);
+    expect(result.message).toContain('not enough recent activity');
   });
 
-  it('enabled, populated store — reports the auto-captured count, ignoring manual atoms (ok:true, deliberate — an intentional opt-in, not a misconfiguration)', async () => {
+  it('enabled, >= threshold recent memories with a healthy capture rate — ok:true, reports K of N', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -111,16 +129,18 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
       repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
       hash: randomUUID(), source_hash: null, capture_source: 'auto_capture',
     });
-    repo.insert({
-      type: 'fact', text: 'manual atom', normalized_text: 'manual atom',
-      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
-      hash: randomUUID(), source_hash: null,
-    });
+    for (let i = 0; i < 18; i++) {
+      repo.insert({
+        type: 'fact', text: `manual atom ${i}`, normalized_text: `manual atom ${i}`,
+        repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+        hash: randomUUID(), source_hash: null,
+      });
+    }
     db.close();
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
-    expect(result.message).toContain('2 auto-captured memories');
+    expect(result.message).toContain('2 of 20');
   });
 
   // 2026-07-12 provenance-mismatch fix: 'hook_close' (the ordinary
@@ -128,7 +148,7 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
   // toward the same total as 'auto_capture', or a user who enables
   // auto-capture but relies solely on ordinary close-capture would see a
   // permanent false-positive WARN below despite capture working perfectly.
-  it('enabled, populated store with ONLY hook_close atoms (no auto_capture atoms) — ok:true, counted', async () => {
+  it('enabled, >= threshold recent memories with ONLY hook_close atoms (no auto_capture atoms) — ok:true, counted', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -138,19 +158,21 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
       repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
       hash: randomUUID(), source_hash: null, capture_source: 'hook_close',
     });
-    repo.insert({
-      type: 'fact', text: 'manual atom', normalized_text: 'manual atom',
-      repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
-      hash: randomUUID(), source_hash: null,
-    });
+    for (let i = 0; i < 19; i++) {
+      repo.insert({
+        type: 'fact', text: `manual atom ${i}`, normalized_text: `manual atom ${i}`,
+        repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+        hash: randomUUID(), source_hash: null,
+      });
+    }
     db.close();
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
-    expect(result.message).toContain('1 auto-captured memory');
+    expect(result.message).toContain('1 of 20');
   });
 
-  it('enabled, >= threshold active memories from other sources but 0 auto-captured — WARN (wired, never fired)', async () => {
+  it('enabled, >= threshold recent memories from other sources but 0 recent capture — WARN (wired, never fired)', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -167,11 +189,11 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
     const result = await checkFor(true).run();
     expect(result.ok).toBe(false);
     expect(result.message).toContain('never firing');
-    expect(result.message).toContain('20 active');
+    expect(result.message).toContain('0 of the 20');
     expect(result.fix).toBeDefined();
   });
 
-  it('enabled, just below the threshold (19 active memories), 0 auto-captured — stays ok:true (no false alarm)', async () => {
+  it('enabled, just below the threshold (19 recent memories), 0 recent capture — stays ok:true but inconclusive (no false alarm, not a confirmed pass either)', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -187,9 +209,10 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
+    expect(result.inconclusive).toBe(true);
   });
 
-  it('enabled — an invalidated (valid_to set) auto-captured atom is excluded from the count', async () => {
+  it('enabled — an invalidated (valid_to set) auto-captured atom is excluded from the recent count', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -205,6 +228,65 @@ describe('doctor "Auto-capture" check (FEAT-455 / ADR-012 decision 4)', () => {
 
     const result = await checkFor(true).run();
     expect(result.ok).toBe(true);
-    expect(result.message).toContain('0 auto-captured memories');
+    expect(result.inconclusive).toBe(true);
+    // Invalidated -> valid_to set -> excluded from totalRecent too -> falls
+    // through to the "not enough recent activity" real-zero branch, not a
+    // reported rate.
+    expect(result.message).toContain('not enough recent activity');
+  });
+
+  // ─── issue #217: recency window, not an all-time count ──────────────────
+  describe('recency window (#217) — old capture history must not mask a live regression', () => {
+    it('RED: capture worked 10 days ago, but the last 7 days show real activity with ZERO capture — WARNs', async () => {
+      const dbPath = join(dir, 'memory.sqlite');
+      const db = openDb(dbPath);
+      migrate(db);
+      const repo = new MemoryRepo(db);
+
+      // Old, healthy capture history — this is exactly the state that made
+      // the pre-fix all-time count stay green forever.
+      const oldId = repo.insert({
+        type: 'fact', text: 'old captured atom', normalized_text: 'old captured atom',
+        repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+        hash: randomUUID(), source_hash: null, capture_source: 'auto_capture',
+      });
+      backdate(db, oldId, SEVEN_DAYS_MS + 3 * 24 * 60 * 60 * 1000); // 10 days ago
+
+      // Real recent activity (this week), crossing the floor, but every
+      // single one is a manual atom — capture has silently stopped firing.
+      for (let i = 0; i < 20; i++) {
+        repo.insert({
+          type: 'fact', text: `recent manual atom ${i}`, normalized_text: `recent manual atom ${i}`,
+          repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+          hash: randomUUID(), source_hash: null,
+        });
+      }
+      db.close();
+
+      const result = await checkFor(true).run();
+      expect(result.ok).toBe(false);
+      expect(result.message).toContain('0 of the 20');
+      expect(result.message).toContain('issue #217');
+    });
+
+    it('GREEN: capture worked 10 days ago, and the last 7 days are genuinely quiet — stays green (real-zero, not broken-zero)', async () => {
+      const dbPath = join(dir, 'memory.sqlite');
+      const db = openDb(dbPath);
+      migrate(db);
+      const repo = new MemoryRepo(db);
+
+      const oldId = repo.insert({
+        type: 'fact', text: 'old captured atom', normalized_text: 'old captured atom',
+        repo: 'r1', project: null, branch: null, agent: 'claude-code', session_id: null,
+        hash: randomUUID(), source_hash: null, capture_source: 'auto_capture',
+      });
+      backdate(db, oldId, SEVEN_DAYS_MS + 3 * 24 * 60 * 60 * 1000); // 10 days ago
+      db.close();
+
+      const result = await checkFor(true).run();
+      expect(result.ok).toBe(true);
+      expect(result.inconclusive).toBe(true);
+      expect(result.message).toContain('not enough recent activity');
+    });
   });
 });
