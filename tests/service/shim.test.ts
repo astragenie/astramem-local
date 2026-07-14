@@ -47,6 +47,21 @@ describe('service shim', () => {
     expect(res.stderr).toContain('reinstall');
   });
 
+  it('launcher exits 1 with actionable message when nodeBin/entryJs are present but not strings (type-safety hardening)', () => {
+    // Truthiness alone ("!ptr.nodeBin") lets a non-string value (e.g. a
+    // corrupted/malformed current.json) slip past the guard and reach
+    // spawnSync(), which then throws synchronously and uncaught — the exact
+    // "thrown error caught late" shape that used to skip appendExitHistory
+    // entirely and exit via Node's bare uncaught-exception handler.
+    const paths = shimPaths(dir);
+    writeShim({ nodeBin: 'x', entryJs: 'y', port: 1 }, paths);
+    writeFileSync(paths.pointerPath, JSON.stringify({ nodeBin: 12345, entryJs: 'y', port: 1 }), 'utf8');
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(1);
+    expect(res.stderr).toContain('missing/invalid');
+    expect(res.stderr).toContain('reinstall');
+  });
+
   it('launcher execs the pointed-at entry with serve --port', () => {
     const paths = shimPaths(dir);
     // Fake daemon entry: prints its argv and exits 0.
@@ -298,6 +313,73 @@ describe('service shim — crash-loop visibility (FEAT-440)', () => {
     expect(lines.some(l => l.includes('"seed-0"'))).toBe(false);
     const newest = JSON.parse(lines[lines.length - 1]!);
     expect(newest.exitCode).toBe(0);
+  });
+
+  it('records the healthy instance-lock fast-exit (exit 0, short duration) and never counts it as a crash — AC-5 regression', () => {
+    // Mirrors the real shape of serve.ts's AlreadyRunningError branch: a
+    // fast, clean process.exit(0) with no stdout/stderr noise. This is the
+    // exact re-run the scheduled-task keepalive/watchdog produces when it
+    // finds the daemon already holding daemon.lock — it MUST land in
+    // exit-history.jsonl as exitCode 0, never as a non-zero "crash".
+    const paths = shimPaths(dir);
+    const { historyPath } = exitHistoryPaths(dir);
+    const fakeEntry = join(dir, 'lock-held-entry.cjs');
+    writeFileSync(fakeEntry, "console.log('already running (single-instance) — exiting'); process.exit(0);");
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(0);
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    const last = JSON.parse(lines[lines.length - 1]!);
+    expect(last.exitCode).toBe(0);
+  });
+
+  it('a spawnSync() throw (not a returned res.error) still exits non-zero and still records the run, instead of vanishing into Node\'s bare uncaught-exception handler', () => {
+    // spawnSync() normally reports failures via res.error/res.status rather
+    // than throwing — but it DOES throw synchronously for a handful of
+    // argument-validation cases (e.g. a command string containing an
+    // embedded NUL byte). Before this fix, that throw was completely
+    // unguarded: the launcher would exit via Node's default
+    // uncaught-exception path (non-zero, but with NO exit-history entry and
+    // no actionable message — this run would simply vanish from
+    // diagnostics). The type guard above already rejects most malformed
+    // pointers, so this exercises the remaining case: a syntactically valid
+    // non-empty string that spawnSync itself refuses.
+    const paths = shimPaths(dir);
+    const { historyPath } = exitHistoryPaths(dir);
+    writeShim({ nodeBin: process.execPath, entryJs: 'y', port: 1 }, paths);
+    const poisoned = { nodeBin: 'node' + String.fromCharCode(0) + 'evil', entryJs: 'y', port: 1 };
+    writeFileSync(paths.pointerPath, JSON.stringify(poisoned), 'utf8');
+
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    // Must still be a genuine failure — non-zero, never coerced to 0.
+    expect(res.status).not.toBe(0);
+    expect(res.status).not.toBeNull();
+    expect(res.stderr).toContain('failed to spawn daemon');
+
+    const lines = readFileSync(historyPath, 'utf8').split('\n').filter(Boolean);
+    expect(lines.length).toBe(1);
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.exitCode).not.toBe(0);
+    expect(typeof entry.durationMs).toBe('number');
+  });
+
+  it('spawns the daemon with stdin ignored (never inherited) — a headless/non-interactive scheduled-task launch has no guaranteed valid stdio triplet', () => {
+    const paths = shimPaths(dir);
+    const fakeEntry = join(dir, 'stdin-check-entry.cjs');
+    // process.stdin.fd is only meaningful once something touches stdin; the
+    // reliable cross-platform signal that stdio[0] was 'ignore' rather than
+    // 'inherit' is that reading it immediately yields EOF with zero bytes,
+    // which we can observe via isTTY being false and a synchronous read
+    // returning nothing. Simplest robust check: assert the generated
+    // launcher source itself requests 'ignore' for stdio[0], since that is
+    // the actual contract under test (spawnSync's own stdio wiring is
+    // exercised by every other test in this file already).
+    writeFileSync(fakeEntry, 'process.exit(0);');
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
+    const launcherSrc = readFileSync(paths.launcherPath, 'utf8');
+    expect(launcherSrc).toContain("stdio: ['ignore', 'inherit', stderrStdio]");
   });
 
   it('never throws when the logs dir cannot be created — daemon spawn proceeds unaffected (AC-4)', () => {
