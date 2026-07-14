@@ -41,6 +41,26 @@
  *   doc comment): codex-subscription always reports `usage.usd: 0`, so a
  *   dollar cap here could never trip. `maxCalls` bounds CALL COUNT instead —
  *   the real scarce resource for a metered subscription endpoint.
+ *
+ * GRANULARITY BUG (found in review, 2026-07-13, before this PR's first
+ * merge attempt): an early version of the system prompt let the model
+ * resolve "last week" all the way down to a specific day ("8 July 2023").
+ * The source text never said WHICH day within that week — a specific day is
+ * an invented fact, not a grounded one, even though it isn't the #257
+ * class of fabrication (wrong noun/referent). Proof it was real: run twice
+ * against the same anchor, the model returned two DIFFERENT days for the
+ * identical input ("3 July 2023" vs "8 July 2023") — non-determinism on a
+ * fixed anchor is itself the signal that the value wasn't derivable and the
+ * model was guessing. Fixed by the GRANULARITY RULE in SYSTEM_PROMPT below:
+ * a week/month/year-granularity source expression must resolve to a
+ * week/month/year-granularity output (e.g. "the week before 15 July 2023"),
+ * never collapsed to a specific day. Only genuinely day-determining source
+ * expressions (yesterday/today/tomorrow, a named weekday, "N days ago")
+ * resolve to a specific day. Regression coverage:
+ * tests/distill/ground-dates.test.ts's granularity block, and
+ * scripts/eval/date-grounding-retry-adversarial.mts's determinism check
+ * (same input run 3+ times against the real provider, output must be
+ * byte-identical every time).
  */
 
 import { z } from 'zod';
@@ -59,7 +79,7 @@ const SYSTEM_PROMPT = `${DATE_GROUNDING_RETRY_MARKER}. You resolve AT MOST one r
 
 Respond with a single JSON object: {"resolved_text": "<the sentence>"}.
 
-If — and only if — a phrase in the sentence is a free-standing reference to the session's own timeline (e.g. "I saw her last week" said BY the session, ABOUT the session's own recent past), replace that phrase with an absolute date in natural-language prose form (e.g. "14 May 2023", "July 2023", "2022" — never ISO-8601, never a bare number) and return the rest of the sentence unchanged.
+If — and only if — a phrase in the sentence is a free-standing reference to the session's own timeline (e.g. "I saw her last week" said BY the session, ABOUT the session's own recent past), replace that phrase per the GRANULARITY RULE below and return the rest of the sentence unchanged.
 
 Many relative-looking phrases are NOT about the session's own timeline at all — they describe a DIFFERENT subject's own timeline, or the phrase is a modifier bound inside a noun phrase rather than a free adverbial:
 - "the project's last week" describes the PROJECT's own final week, not the session's recent past.
@@ -69,7 +89,23 @@ Many relative-looking phrases are NOT about the session's own timeline at all �
 
 Deciding this requires reading the WHOLE sentence and understanding what the phrase grammatically attaches to — not just pattern-matching the phrase in isolation.
 
-If the expression is not clearly and unambiguously about the session's own timeline, or you are not confident, or the sentence has no relative time expression at all, return the sentence in "resolved_text" COMPLETELY UNCHANGED, character for character. An honest, vague sentence is always better than a confident, wrong date. Never guess. Never invent a date beyond what the session date and the expression directly imply.`;
+If the expression is not clearly and unambiguously about the session's own timeline, or you are not confident, or the sentence has no relative time expression at all, return the sentence in "resolved_text" COMPLETELY UNCHANGED, character for character.
+
+GRANULARITY RULE (critical — the resolved date must carry EXACTLY the same granularity as the source expression; never invent precision the source does not contain):
+- "yesterday" / "today" / "tomorrow" determine a SPECIFIC DAY — resolve to "<D Month YYYY>" (1/-1/0 days from the session date).
+- a NAMED weekday ("last Friday", "next Monday") or a bare weekday with no qualifier ("on Friday", meaning the nearest such day at or before the session date) also determines a SPECIFIC DAY — resolve to "<D Month YYYY>".
+- "N days ago" determines a SPECIFIC DAY — resolve to "<D Month YYYY>", exactly N days before the session date.
+- "last week" does NOT determine a specific day — resolve to "the week before <session date as D Month YYYY>". Example: session date 15 July 2023 -> "the week before 15 July 2023". NEVER resolve to a specific day like "8 July 2023" — the source does not say which day within that week, and naming one is a fabricated fact even if it happens to fall in the right week.
+- "this week" -> "the week of <session date as D Month YYYY>". "next week" -> "the week after <session date as D Month YYYY>".
+- "last weekend" -> "the weekend before <session date as D Month YYYY>". "next weekend" -> "the weekend after <session date as D Month YYYY>".
+- "N weeks ago" / "a few weeks ago" / "several weeks ago" do NOT determine a specific day — resolve to "N weeks before <session date as D Month YYYY>" (or "a few weeks before ...", matching the source's own quantifier).
+- "last month" does NOT determine a specific day — resolve to "<Month> <YYYY>" of the calendar month immediately before the session date's month (no day). "this month" -> the session date's own "<Month> <YYYY>" (no day). "next month" -> the calendar month immediately after (no day).
+- "N months ago" / "a few months ago" do NOT determine a specific day — resolve to "<Month> <YYYY>" of the calendar month N months before the session date's month (no day).
+- "last year" / "this year" / "next year" / "N years ago" do NOT determine a month or day — resolve to the bare year only, e.g. "2022" (never "March 2022", never a specific day).
+- "earlier this week/month/year" matches the granularity of whichever unit is named, using the templates above.
+- "recently" or any other marker with no derivable granularity at all — leave the sentence UNCHANGED. A distance-free word has no anchor-relative arithmetic that recovers it without guessing.
+
+The overriding principle: a WEEK/MONTH/YEAR-granularity source expression must resolve to a WEEK/MONTH/YEAR-granularity output — never collapsed to a specific day. An honest, less-precise-but-true phrase ("the week before 15 July 2023") is always better than a confident, more-precise-but-possibly-wrong one ("8 July 2023") — the source never said which day. Never guess. Never invent precision beyond what the session date and the expression directly imply.`;
 
 const RetryResponseSchema = z.object({ resolved_text: z.string().min(1) });
 

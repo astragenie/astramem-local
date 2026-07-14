@@ -334,24 +334,77 @@ describe('groundAtomDates — pinned adversarial cases (mocked "well-behaved mod
     expect(result.atoms[0]!.text).toBe(text);
   });
 
-  it('MUST RESOLVE — genuinely session-relative ("I saw her last week") — must change', async () => {
-    const { llm } = makeRetryLLM({ 'last week': '8 July 2023' });
+  it('MUST RESOLVE — genuinely session-relative ("I saw her last week") — must change to WEEK granularity, not a specific day', async () => {
+    // GRANULARITY BUG (found in review, 2026-07-13): a live run against this
+    // exact sentence returned a DIFFERENT specific day on each of two runs
+    // ("3 July 2023" then "8 July 2023") — proof the model was guessing a
+    // day the source text never specified. The correct resolution is
+    // week-granularity, matching the source phrase's own granularity.
+    const { llm } = makeRetryLLM({ 'last week': 'the week before 15 July 2023' });
     const text = 'I saw her last week.';
     const result = await groundAtomDates([atom(text)], '2023-07-15', llm);
     expect(result.fired).toBe(1);
     expect(result.resolved).toBe(1);
-    expect(result.atoms[0]!.text).toBe('I saw her 8 July 2023.');
+    expect(result.atoms[0]!.text).toBe('I saw her the week before 15 July 2023.');
     expect(result.atoms[0]!.text).not.toBe(text);
+    // Must NOT contain a bare day-of-month date shape (D Month YYYY without
+    // "week"/"month"/"weekend" context) — the granularity regression guard.
+    expect(result.atoms[0]!.text).not.toMatch(/^I saw her \d{1,2} \w+ \d{4}\.$/);
   });
 
   it('evidence is untouched across all six pinned cases', async () => {
     const evidenceText = 'verbatim transcript quote — must never be rewritten';
-    const { llm } = makeRetryLLM({ 'last week': '8 July 2023' });
+    const { llm } = makeRetryLLM({ 'last week': 'the week before 15 July 2023' });
     const result = await groundAtomDates(
       [atom('I saw her last week.', { evidence: evidenceText })],
       '2023-07-15',
       llm,
     );
     expect(result.atoms[0]!.evidence).toBe(evidenceText);
+  });
+});
+
+/**
+ * GRANULARITY regression coverage (2026-07-13, found in review — see
+ * ground-dates.ts's module doc comment "GRANULARITY BUG"). A
+ * week/month/year-granularity source expression must resolve to a
+ * week/month/year-granularity output, never collapsed to a specific day.
+ * Only genuinely day-determining expressions (yesterday/today/tomorrow, a
+ * named weekday, "N days ago") may resolve to a specific day. These mocks
+ * again play a "well-behaved model" — they pin the plumbing/contract, not
+ * the real model's arithmetic, which was verified live (see
+ * scripts/eval/date-grounding-retry-adversarial.mts).
+ */
+describe('groundAtomDates — granularity preservation (week/month/year must not collapse to a day)', () => {
+  it('"last week" resolves to a week-reference phrase, never a specific day', async () => {
+    const { llm } = makeRetryLLM({ 'last week': 'the week before 15 July 2023' });
+    const result = await groundAtomDates([atom('It happened last week.')], '2023-07-15', llm);
+    expect(result.atoms[0]!.text).toBe('It happened the week before 15 July 2023.');
+    expect(result.atoms[0]!.text).toContain('week');
+  });
+
+  it('"last month" resolves to Month + Year only, never a day', async () => {
+    const { llm } = makeRetryLLM({ 'last month': 'June 2023' });
+    const result = await groundAtomDates([atom('It happened last month.')], '2023-07-15', llm);
+    expect(result.atoms[0]!.text).toBe('It happened June 2023.');
+    expect(result.atoms[0]!.text).not.toMatch(/\b\d{1,2} \w+ \d{4}\b/); // no "D Month YYYY" shape
+  });
+
+  it('"last year" resolves to the bare year only, never a month or day', async () => {
+    const { llm } = makeRetryLLM({ 'last year': '2022' });
+    const result = await groundAtomDates([atom('It happened last year.')], '2023-07-15', llm);
+    expect(result.atoms[0]!.text).toBe('It happened 2022.');
+  });
+
+  it('"yesterday" (genuinely day-determining) IS allowed to resolve to a specific day', async () => {
+    const { llm } = makeRetryLLM({ yesterday: '14 July 2023' });
+    const result = await groundAtomDates([atom('It happened yesterday.')], '2023-07-15', llm);
+    expect(result.atoms[0]!.text).toBe('It happened 14 July 2023.');
+  });
+
+  it('"last Friday" (named weekday, genuinely day-determining) IS allowed to resolve to a specific day', async () => {
+    const { llm } = makeRetryLLM({ 'last Friday': '14 July 2023' });
+    const result = await groundAtomDates([atom('It happened last Friday.')], '2023-07-15', llm);
+    expect(result.atoms[0]!.text).toBe('It happened 14 July 2023.');
   });
 });

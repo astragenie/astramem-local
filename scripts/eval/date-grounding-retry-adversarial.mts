@@ -23,13 +23,36 @@ function atom(text: string): ReducedAtom {
   return { type: 'fact', text, importance: 0.5, confidence: 0.8, contentHash: 'x' };
 }
 
+/**
+ * GRANULARITY GUARD (added after review found a real bug, 2026-07-13): a
+ * week/month/year-granularity source expression must resolve to a
+ * week/month/year-granularity output — never a specific day the source
+ * never named. Detects a "<D Month YYYY>" shape NOT immediately preceded by
+ * "week before/of/after " or "weekend before/after " (the only templates
+ * allowed to carry a day-precision date, since there it's the ANCHOR being
+ * quoted, not a claimed occurrence day).
+ */
+function hasBareDayClaim(text: string): boolean {
+  const dayDatePattern =
+    /\d{1,2} (?:January|February|March|April|May|June|July|August|September|October|November|December) \d{4}/g;
+  let m: RegExpExecArray | null;
+  while ((m = dayDatePattern.exec(text))) {
+    const prefix = text.slice(Math.max(0, m.index - 20), m.index);
+    if (!/\b(?:week|weekend)\s+(?:before|of|after)\s+$/i.test(prefix)) return true;
+  }
+  return false;
+}
+
 // The three PR #257 fabrication classes (round 1: "of <noun>" continuation;
 // round 2: Saxon genitive / "before" / "for" re-anchoring — folded together
 // here since round 1's cases are a strict subset of what round 2's allowlist
 // also had to hold), plus round 3's pronoun-possessive class, plus the two
-// extra adversarial shapes the team-lead handoff specified, plus one
-// genuinely session-relative case that MUST resolve.
-const CASES: Array<{ label: string; text: string; mustResolve: boolean }> = [
+// extra adversarial shapes the team-lead handoff specified, plus TWO
+// genuinely session-relative cases that MUST resolve — one week-granularity,
+// one month-granularity, neither of which may collapse to a specific day
+// (the granularity bug found in review — see ground-dates.ts's module doc
+// comment "GRANULARITY BUG").
+const CASES: Array<{ label: string; text: string; mustResolve: boolean; forbidDayGranularity?: boolean }> = [
   {
     label: 'FABRICATION CLASS 1 (round 1, "of <noun>")',
     text: 'Caroline described the last week of the project as extremely stressful.',
@@ -56,11 +79,24 @@ const CASES: Array<{ label: string; text: string; mustResolve: boolean }> = [
     mustResolve: false,
   },
   {
-    label: 'MUST RESOLVE — genuinely session-relative',
+    label: 'MUST RESOLVE — genuinely session-relative, WEEK granularity',
     text: 'I saw her last week.',
     mustResolve: true,
+    forbidDayGranularity: true,
+  },
+  {
+    label: 'MUST RESOLVE (7th pinned case) — genuinely session-relative, MONTH granularity',
+    text: 'Melanie signed up for a pottery class last month.',
+    mustResolve: true,
+    forbidDayGranularity: true,
   },
 ];
+
+/** Number of repeat calls for the determinism check — non-determinism on a
+ * fixed anchor is itself the bug signal (see the "GRANULARITY BUG" note):
+ * if the resolution were genuinely derivable from the anchor alone, it
+ * would come back byte-identical every time. */
+const DETERMINISM_RUNS = 3;
 
 // A sample of atoms approximating a realistic mixed batch, to state a fire
 // rate with a real denominator (team-lead ask: "measure the fire rate; it
@@ -135,6 +171,7 @@ async function main(): Promise<void> {
   console.log('='.repeat(100));
 
   let fabricationCount = 0;
+  let granularityFailureCount = 0;
   for (const c of CASES) {
     const atoms = [atom(c.text)];
     const result = await groundAtomDates(atoms, SESSION_DATE, llm, {
@@ -144,25 +181,59 @@ async function main(): Promise<void> {
     const changed = outputText !== c.text;
     const isFabrication = c.mustResolve ? false : changed;
     if (isFabrication) fabricationCount++;
+    const granularityOk = !c.forbidDayGranularity || !hasBareDayClaim(outputText);
+    if (c.forbidDayGranularity && !granularityOk) granularityFailureCount++;
 
     console.log(`\n--- ${c.label} ---`);
     console.log(`INPUT:    ${c.text}`);
     console.log(`OUTPUT:   ${outputText}`);
     console.log(`fired=${result.fired} resolved=${result.resolved} errors=${result.errors} changed=${changed}`);
-    console.log(
-      c.mustResolve
-        ? changed
-          ? 'PASS — resolved as expected'
-          : 'FAIL — did NOT resolve a genuinely session-relative case'
-        : changed
-          ? 'FAIL — FABRICATED A DATE'
-          : 'PASS — correctly left unchanged',
-    );
+    if (c.mustResolve) {
+      console.log(
+        !changed
+          ? 'FAIL — did NOT resolve a genuinely session-relative case'
+          : !granularityOk
+            ? 'FAIL — GRANULARITY VIOLATION: resolved to a specific day the source never named'
+            : 'PASS — resolved to the correct granularity',
+      );
+    } else {
+      console.log(changed ? 'FAIL — FABRICATED A DATE' : 'PASS — correctly left unchanged');
+    }
   }
 
   console.log('\n' + '='.repeat(100));
-  console.log(`ADVERSARIAL SUMMARY: ${fabricationCount}/5 fabrication cases fabricated (must be 0/5 to pass)`);
+  console.log(
+    `ADVERSARIAL SUMMARY: ${fabricationCount}/5 fabrication cases fabricated (must be 0/5), ` +
+      `${granularityFailureCount}/2 must-resolve cases violated granularity (must be 0/2)`,
+  );
   console.log('='.repeat(100));
+
+  console.log('\n' + '='.repeat(100));
+  console.log(`PART 1B — DETERMINISM CHECK (${DETERMINISM_RUNS} runs each on the two must-resolve cases)`);
+  console.log('='.repeat(100));
+
+  let determinismFailureCount = 0;
+  for (const c of CASES.filter((x) => x.mustResolve)) {
+    const outputs: string[] = [];
+    for (let i = 0; i < DETERMINISM_RUNS; i++) {
+      const result = await groundAtomDates([atom(c.text)], SESSION_DATE, llm, { log: () => {} });
+      outputs.push(result.atoms[0]!.text);
+    }
+    const allIdentical = outputs.every((o) => o === outputs[0]);
+    if (!allIdentical) determinismFailureCount++;
+
+    console.log(`\n--- ${c.label} — ${DETERMINISM_RUNS} runs ---`);
+    outputs.forEach((o, i) => console.log(`  run ${i + 1}: ${o}`));
+    console.log(
+      allIdentical
+        ? 'PASS — identical output every run (derivable, not guessed)'
+        : 'FAIL — output DIFFERED across runs on a FIXED anchor (the model is guessing)',
+    );
+  }
+
+  console.log(
+    `\nDETERMINISM SUMMARY: ${determinismFailureCount}/2 must-resolve cases were non-deterministic (must be 0/2)`,
+  );
 
   console.log('\n' + '='.repeat(100));
   console.log('PART 2 — FIRE RATE on a realistic mixed batch');
