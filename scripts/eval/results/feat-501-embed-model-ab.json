@@ -1,0 +1,353 @@
+{
+  "schema": "astramem-feat-501-embed-model-ab@2",
+  "ranAt": "2026-07-14T17:36:26.564Z",
+  "corpusFixture": "contracts/fixtures/eval/corpus.json+queries.json (ADR-005 seed set, NOT the full LoCoMo corpus — see script header)",
+  "corpusSize": 12,
+  "querySetSize": 11,
+  "weightProfiles": [
+    {
+      "label": "production-default",
+      "weights": {
+        "alpha": 0.4,
+        "beta": 0.4,
+        "gamma": 0.1,
+        "delta": 0.1,
+        "epsilon": 0.1,
+        "zeta": 0,
+        "eta": 0,
+        "governance": {
+          "maxComponentWeight": 1
+        }
+      }
+    },
+    {
+      "label": "vector-only",
+      "weights": {
+        "alpha": 0,
+        "beta": 1,
+        "gamma": 0,
+        "delta": 0,
+        "epsilon": 0,
+        "zeta": 0
+      }
+    }
+  ],
+  "results": [
+    {
+      "weightsLabel": "production-default",
+      "model": "mxbai-embed-large",
+      "queryPrefix": "Represent this sentence for searching relevant passages: ",
+      "health": {
+        "ok": true,
+        "dim": 1024
+      },
+      "meanRecallAt10": 0.9545454545454546,
+      "meanNdcgAt10": 0.9924835829739052,
+      "perQuery": [
+        {
+          "id": "q1",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q2",
+          "mode": "semantic",
+          "recall": 0.5,
+          "ndcg": 0.9173194127129571
+        },
+        {
+          "id": "q3",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q4",
+          "mode": "semantic",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q5",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q6",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q7",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q8",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q9",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q10",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q11",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        }
+      ]
+    },
+    {
+      "weightsLabel": "production-default",
+      "model": "bge-m3",
+      "queryPrefix": "",
+      "health": {
+        "ok": true,
+        "dim": 1024
+      },
+      "meanRecallAt10": 0.9545454545454546,
+      "meanNdcgAt10": 0.9924835829739052,
+      "perQuery": [
+        {
+          "id": "q1",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q2",
+          "mode": "semantic",
+          "recall": 0.5,
+          "ndcg": 0.9173194127129571
+        },
+        {
+          "id": "q3",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q4",
+          "mode": "semantic",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q5",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q6",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q7",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q8",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q9",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q10",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q11",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        }
+      ]
+    },
+    {
+      "weightsLabel": "vector-only",
+      "model": "mxbai-embed-large",
+      "queryPrefix": "Represent this sentence for searching relevant passages: ",
+      "health": {
+        "ok": true,
+        "dim": 1024
+      },
+      "meanRecallAt10": 0.9545454545454546,
+      "meanNdcgAt10": 0.9924835829739052,
+      "perQuery": [
+        {
+          "id": "q1",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q2",
+          "mode": "semantic",
+          "recall": 0.5,
+          "ndcg": 0.9173194127129571
+        },
+        {
+          "id": "q3",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q4",
+          "mode": "semantic",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q5",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q6",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q7",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q8",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q9",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q10",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q11",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        }
+      ]
+    },
+    {
+      "weightsLabel": "vector-only",
+      "model": "bge-m3",
+      "queryPrefix": "",
+      "health": {
+        "ok": true,
+        "dim": 1024
+      },
+      "meanRecallAt10": 0.9545454545454546,
+      "meanNdcgAt10": 0.9924835829739052,
+      "perQuery": [
+        {
+          "id": "q1",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q2",
+          "mode": "semantic",
+          "recall": 0.5,
+          "ndcg": 0.9173194127129571
+        },
+        {
+          "id": "q3",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q4",
+          "mode": "semantic",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q5",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q6",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q7",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q8",
+          "mode": "keyword",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q9",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q10",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        },
+        {
+          "id": "q11",
+          "mode": "hybrid",
+          "recall": 1,
+          "ndcg": 1
+        }
+      ]
+    }
+  ]
+}

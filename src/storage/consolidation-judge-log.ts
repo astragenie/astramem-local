@@ -29,6 +29,17 @@ export interface ConsolidationJudgeRunStats {
    * doesn't distinguish real signal from every call silently failing).
    */
   judgeErrors?: number;
+  /**
+   * FEAT-499 stage 1 (instrument-first, migration 044): of `judgeCalls`
+   * REAL judge dispatches this run, how many had a pair cosine similarity
+   * in the near-merge-threshold band [0.90, mergeThreshold) — see
+   * src/consolidate/consolidate.ts's `NEAR_MERGE_THRESHOLD_MIN` constant
+   * and the FEAT-499 comments around the judge-call site. Purely
+   * observational; no skip/filter behavior exists yet — this number is the
+   * evidence a stage-2 short-circuit would later be gated on (>= 20% of
+   * calls). Optional/defaults to 0 for callers that predate this field.
+   */
+  judgeCallsNearThreshold?: number;
 }
 
 /** Append one row. Called once per `runConsolidation()` invocation where
@@ -37,11 +48,12 @@ export interface ConsolidationJudgeRunStats {
 export function recordConsolidationJudgeRun(db: DB, stats: ConsolidationJudgeRunStats): void {
   db.prepare(`
     INSERT INTO consolidation_judge_runs
-      (mode, judge_calls, elapsed_ms, cap_reached, wall_clock_cap_reached, judge_errors, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+      (mode, judge_calls, elapsed_ms, cap_reached, wall_clock_cap_reached, judge_errors, judge_calls_near_threshold, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     stats.mode, stats.judgeCalls, stats.elapsedMs,
-    stats.capReached ? 1 : 0, stats.wallClockCapReached ? 1 : 0, stats.judgeErrors ?? 0, Date.now(),
+    stats.capReached ? 1 : 0, stats.wallClockCapReached ? 1 : 0, stats.judgeErrors ?? 0,
+    stats.judgeCallsNearThreshold ?? 0, Date.now(),
   );
 }
 
@@ -52,12 +64,16 @@ export interface ConsolidationJudgeRunRow extends Required<ConsolidationJudgeRun
 /** Most recent row, or `null` if contradiction detection has never run. */
 export function latestConsolidationJudgeRun(db: DB): ConsolidationJudgeRunRow | null {
   const row = db.prepare(`
-    SELECT mode, judge_calls, elapsed_ms, cap_reached, wall_clock_cap_reached, judge_errors, created_at
+    SELECT mode, judge_calls, elapsed_ms, cap_reached, wall_clock_cap_reached, judge_errors,
+           judge_calls_near_threshold, created_at
     FROM consolidation_judge_runs
     ORDER BY id DESC
     LIMIT 1
   `).get() as
-    | { mode: string; judge_calls: number; elapsed_ms: number; cap_reached: number; wall_clock_cap_reached: number; judge_errors: number; created_at: number }
+    | {
+        mode: string; judge_calls: number; elapsed_ms: number; cap_reached: number; wall_clock_cap_reached: number;
+        judge_errors: number; judge_calls_near_threshold: number; created_at: number;
+      }
     | undefined;
   if (!row) return null;
   return {
@@ -67,6 +83,7 @@ export function latestConsolidationJudgeRun(db: DB): ConsolidationJudgeRunRow | 
     capReached: row.cap_reached === 1,
     wallClockCapReached: row.wall_clock_cap_reached === 1,
     judgeErrors: row.judge_errors,
+    judgeCallsNearThreshold: row.judge_calls_near_threshold,
     createdAt: row.created_at,
   };
 }

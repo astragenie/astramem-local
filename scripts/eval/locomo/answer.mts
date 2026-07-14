@@ -35,9 +35,33 @@ import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 
 const ANSWER_MAX_COMPLETION_TOKENS = 150;
 
-function buildAnswerPrompt(question: string, hits: SearchHit[]): string {
+/**
+ * FEAT-500 answerer-prompt A/B prep. `hit.explanation` (per-signal scores +
+ * `top_signal` argmax) has been on the wire since 2026-07-13 but never
+ * reached the answerer -- 46% of measured LoCoMo losses are answerer-side,
+ * and this is the cheapest way to test whether surfacing WHY a note was
+ * retrieved (strong keyword match vs. semantic vs. recency) changes the
+ * answerer's judgment calls. Compact by design: one line per hit, not the
+ * full raw/weight/final triple -- burning the answerer's already-tight
+ * 150-token completion budget on JSON would be counterproductive.
+ */
+export function formatSignalBreakdown(hit: SearchHit): string {
+  const explanation = hit.explanation;
+  if (!explanation) return '(no signal breakdown available)';
+  const top = explanation.top_signal ?? '?';
+  const breakdown = Object.entries(explanation.signals)
+    .sort(([, a], [, b]) => b.final - a.final)
+    .map(([name, s]) => `${name}=${s.final.toFixed(2)}`)
+    .join(', ');
+  return `[top signal: ${top} | ${breakdown}]`;
+}
+
+export function buildAnswerPrompt(question: string, hits: SearchHit[], opts: { includeSignals?: boolean } = {}): string {
   const notes = hits.length > 0
-    ? hits.map((h, i) => `${i + 1}. ${h.text}`).join('\n')
+    ? hits.map((h, i) => opts.includeSignals
+        ? `${i + 1}. ${h.text} ${formatSignalBreakdown(h)}`
+        : `${i + 1}. ${h.text}`)
+      .join('\n')
     : '(no memories were retrieved for this question)';
   return [
     'You are answering a question using ONLY the memory notes below, taken from a personal memory assistant.',
@@ -106,10 +130,15 @@ export async function answerConversations(
   daemonClient: DaemonClientOpts,
   azureCfg: AzureConfig,
   samples: LoCoMoSample[],
-  opts: { k?: number; readySampleIds?: Set<string>; concurrency?: number } = {},
+  opts: { k?: number; readySampleIds?: Set<string>; concurrency?: number; includeSignals?: boolean } = {},
 ): Promise<AnswerOutcome[]> {
   const k = opts.k ?? 10;
   const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_ANSWER_CONCURRENCY);
+  // FEAT-500: opt-in only, default off (ANSWERER_SIGNALS unset at the CLI
+  // entry point below maps to includeSignals:undefined here) -- zero effect
+  // on the prompt or the fixed cheap answerer when unset, so an ordinary run
+  // is byte-identical to before this flag existed.
+  const includeSignals = opts.includeSignals ?? false;
 
   // Flatten to a single work list first. The previous nested loop answered
   // strictly one question at a time — 1986 questions x ~1.5-2s each = ~55
@@ -139,7 +168,7 @@ export async function answerConversations(
     // IDENTICAL to the serial version: same recall, same k, same project filter,
     // same prompt, same deployment, same token budget, same reasoning effort.
     const hits = await recall(daemonClient, { text: t.qa.question, limit: k, filters: { project: projectIdFor(t.sampleId) } });
-    const prompt = buildAnswerPrompt(t.qa.question, hits);
+    const prompt = buildAnswerPrompt(t.qa.question, hits, { includeSignals });
     const hypothesis = await azureChatComplete(azureCfg, {
       deployment: azureCfg.answererDeployment,
       messages: [{ role: 'user', content: prompt }],
@@ -250,6 +279,12 @@ if (isMain) {
   const outPath = get('--out') ?? 'hypotheses.jsonl';
   const readyPath = get('--ready');
   const answerConcurrency = Number(get('--answer-concurrency') ?? String(DEFAULT_ANSWER_CONCURRENCY));
+  // FEAT-500 A/B prep: opt-in only, env not a flag -- keeps the default CLI
+  // invocation (and every existing script/CI caller) byte-identical. Set
+  // ANSWERER_SIGNALS=1 to include each hit's top_signal + signal breakdown
+  // in the answerer prompt; see scripts/eval/locomo/answer.mts's
+  // formatSignalBreakdown for the exact line shape.
+  const includeSignals = process.env.ANSWERER_SIGNALS === '1';
 
   if (!samplePath || !daemonUrl || !token) {
     console.error('Usage: bun answer.mts --sample <path> --daemon-url <url> --token <token> [--k 10] [--out hypotheses.jsonl] [--ready <distill-wait-result.json>] [--answer-concurrency 8]');
@@ -265,9 +300,9 @@ if (isMain) {
 
   const azureCfg = resolveAzureConfig();
   const totalQa = samples.reduce((n, s) => n + s.qa.length, 0);
-  console.log(`Answering ${totalQa} QA pairs across ${samples.length} conversations via Azure deployment "${azureCfg.answererDeployment}" (k=${k})...`);
+  console.log(`Answering ${totalQa} QA pairs across ${samples.length} conversations via Azure deployment "${azureCfg.answererDeployment}" (k=${k}${includeSignals ? ', signals=on' : ''})...`);
 
-  const outcomes = await answerConversations({ baseUrl: daemonUrl, token }, azureCfg, samples, { k, readySampleIds, concurrency: answerConcurrency });
+  const outcomes = await answerConversations({ baseUrl: daemonUrl, token }, azureCfg, samples, { k, readySampleIds, concurrency: answerConcurrency, includeSignals });
   writeHypothesesJsonl(outcomes, outPath);
 
   const abstained = outcomes.filter(o => o.hypothesis.startsWith('(skipped')).length;

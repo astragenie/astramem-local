@@ -1,8 +1,13 @@
 # ADR-017: Third-Party Speaker Consent Model — non-user voices and captions (FEAT-489, FEAT-491)
 
-**Status:** Proposed — ratification (proposed → accepted) is the product owner's call, per the
-ADR-012 precedent of an explicit human sign-off closing the gate before slice 1 opens (see
-"Acceptance checklist" below).
+**Status:** Accepted — 2026-07-14, product-owner sign-off (operator, via orchestrator session;
+architecture ratification: .claude/artifacts/crew/reviews/20260714T163515Z-review-result-adr-017-consent-model-ratification.md).
+**Acceptance note:** the "Acceptance checklist" and "Open questions for ratification" sections
+below record the judgment calls this ADR flagged for the product owner at proposal time; the
+2026-07-14 sign-off accepts the ADR's own default positions on all of them (same tier for audio
+and captions, no counsel-review prerequisite for a default-OFF single-operator v1, no hard
+requirement on a jurisdiction-guidance link) rather than overriding any — see those sections for
+the reasoning being accepted.
 **Date:** 2026-07-14 · **Confidence:** High on the gating requirement and default posture; Medium
 on the caption-vs-audio disposition (reasoned from statute text, not counsel-reviewed); Low on any
 specific jurisdiction's current law (see "Jurisdiction posture" — verify before GA, this ADR is
