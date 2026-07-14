@@ -414,3 +414,60 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
     expect(estimatedTotal).toBeLessThanOrEqual(NUM_CTX_CAP);
   });
 });
+
+describe('conversational prompt — the exhaustiveness checklist is MECHANICAL, not an exhortation', () => {
+  // WHY THIS TEST EXISTS.
+  //
+  // The prompt already said "capture EVERY durable personal fact... bias toward
+  // extracting". A frontier model can act on that. A 4B model measurably cannot:
+  // on the SAME prompt and the SAME LoCoMo conversations, codex extracted 7.7
+  // atoms/session and qwen3.5:4b extracted 2.2 — a 3.5x deficit, with 93%
+  // precision. It was not hallucinating. It simply was not finding things.
+  //
+  // "Bias toward extracting" is a vibe. "If you have fewer than 3, re-read" is a
+  // check the model can actually execute. mem0 (prompts.py:907-915) and cognee
+  // ("every single verb is an event") independently converged on the same trick:
+  // convert exhaustiveness into a MECHANICAL RULE the model cannot quietly skip.
+  //
+  // This test exists so nobody later "tidies" these lines back into encouragement.
+  // The specificity IS the feature.
+
+  it('gives an EXPECTED COUNT, not an aspiration', () => {
+    // A model can check itself against a number. It cannot check itself against
+    // "be thorough".
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/5-15 atoms/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/FEWER THAN 3/);
+  });
+
+  it('gives a RE-READ trigger — a concrete action, not a feeling', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/re-read the transcript/i);
+  });
+
+  it('names first-topic-dominance and forbids it', () => {
+    // The specific failure mode: the model spends all its attention on whatever
+    // the conversation opened with. Naming an anti-pattern beats praising the
+    // virtue it violates.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/FIRST-TOPIC DOMINANCE/i);
+  });
+
+  it('sweeps the categories explicitly — each "yes" is a dropped fact', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/SWEEP THE CATEGORIES/i);
+  });
+
+  it('states the ASYMMETRY that justifies erring toward extraction', () => {
+    // A marginal fact kept costs almost nothing. A real fact dropped is gone
+    // forever — nothing downstream can recover it. That asymmetry is the whole
+    // argument, and the model should be told it, not left to infer it.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/gone forever/i);
+  });
+
+  it('does NOT weaken the existing anti-junk guards — recall must not cost precision', () => {
+    // Pushing recall is only safe because precision was 93%. If a future edit
+    // trades these away for more atoms, the pool fills with junk — and because
+    // fuse.ts normalises over the candidate pool, junk actively perturbs ranking
+    // rather than merely wasting space.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Banned abstractions/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Vague summaries/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Meta-commentary/);
+  });
+});

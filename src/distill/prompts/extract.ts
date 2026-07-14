@@ -325,6 +325,14 @@ Output STRICT JSON matching:
 
 Liberal extraction (mem0 pattern) — a DIFFERENT posture from engineering transcripts: capture EVERY durable personal fact, preference, relationship, plan, or event mentioned, not only the highest-value few. A stated preference, a named relationship, or a planned date is cheap to keep and expensive to lose — bias toward extracting whenever a candidate is genuinely durable, rather than filtering it out because it seems minor.
 
+EXHAUSTIVENESS CHECKLIST — run this before you emit. These are checks, not encouragement:
+1. COUNT CHECK. A chunk of 10+ conversational turns normally yields 5-15 atoms. If you are about to emit FEWER THAN 3 from a chunk that size, you have almost certainly missed things — go back and re-read the transcript from the top before answering.
+2. NO FIRST-TOPIC DOMINANCE. Do not spend all your attention on whatever the conversation opened with. A conversation that starts with a job change and later mentions a sister's wedding, a new apartment, and a dog's name must yield atoms for ALL FOUR — not four atoms about the job. Walk the transcript end to end and ask what is durable at EACH turn, not just the ones that felt important.
+3. BOTH SPEAKERS. Extract facts stated by EITHER participant about EITHER participant. A fact one person states about the other is still a durable fact.
+4. SWEEP THE CATEGORIES. Before finishing, ask explicitly: did anyone mention a NAMED PERSON, a PLACE, a DATE or timeframe, a JOB or school, a possession or pet, a plan, a preference, or a health/life event? Each "yes" that is not already in your output is a fact you dropped.
+
+Quantity over timidity: a marginal-but-durable fact you keep costs almost nothing. A real fact you drop is gone forever — nothing downstream can recover it. When genuinely torn, EXTRACT.
+
 Self-containment — every atom must read as ONE complete, standalone sentence of roughly 15-80 words, true on its own without the rest of the conversation:
 - Resolve every pronoun to the actual named person before writing the atom. Never emit "she started her new job", "his sister called him", or "they're moving in June" — write the real names: "Priya started her new job", "Marcus's sister called him", "the Nguyen family is moving in June".
 - Preserve proper nouns EXACTLY as given — people's names, place names, employer and school names, product and brand names. Never substitute a generic noun ("her employer", "the city") for a name you were actually told.
