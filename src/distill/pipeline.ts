@@ -473,7 +473,6 @@ export async function runPipeline(
     // match a labeled turn, including every transcript with no speaker
     // labels at all (the overwhelming majority).
     sourceText: transcript,
-    consentDisclosed: ctx.consentDisclosed,
   });
 
   const created = indexResults.filter(r => r.created).length;

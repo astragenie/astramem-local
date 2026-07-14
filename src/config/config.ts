@@ -1021,23 +1021,6 @@ export function defaultConfig(): Config {
 }
 
 /**
- * ADR-017 decision 3: canonical disclosure copy, shared verbatim across the
- * astramem-local `init` wizard (audio, FEAT-489) and the astramem-plugin
- * opt-in UI (meeting captions, FEAT-491) — so an operator who has seen one
- * recognizes the same posture in the other. Exported (not inlined at the
- * one call site) so both this daemon's future wizard prompt and the doctor
- * WARN row (src/doctor/checks/meeting-captions-reminder.ts) read the exact
- * same string rather than two hand-copied near-duplicates drifting apart.
- * Functional draft per ADR-017's own acceptance checklist item 2 — not yet
- * legal/marketing-reviewed language.
- */
-export const THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE =
-  'This will capture what other people say in your meetings/calls, not just your own words. ' +
-  'Recording or transcribing someone without their knowledge is restricted or illegal in many ' +
-  'places. Turning this on does not make it legal — you are responsible for informing other ' +
-  'participants and getting consent where required.';
-
-/**
  * FEAT-428: fusion-model governance guard (arch-review of FEAT-426 findings
  * 1+3 — no ceiling on additive fusion weights, no eval evidence gating any
  * of them). Applied once here, at config-load time, so every caller that
@@ -1139,15 +1122,16 @@ export function applyDurabilityGateGovernance(
  * astramem-local `init` wizard (audio, FEAT-489 — v2 upgrade path, see
  * Config['audio']'s doc comment) and the astramem-plugin opt-in UI (meeting
  * captions, FEAT-491) — so an operator who has seen one recognizes the same
- * posture in the other. Exported (not inlined at the one call site) so the
- * transcribe handler's refusal error and the doctor WARN row
- * (src/doctor/checks/audio-addon.ts) read the exact same string rather than
- * two hand-copied near-duplicates drifting apart. Functional draft per
- * ADR-017's own acceptance checklist item 2 — not yet legal/marketing-
- * reviewed language. NAME AND TEXT MUST STAY IN SYNC with FEAT-491's own
- * copy of this same constant (wave/l1-2-captions, not yet merged at the time
- * this was written) — same string, same name, so a later merge is a no-op
- * rather than two divergent disclosure texts.
+ * posture in the other. Exported (not inlined at either call site) so the
+ * transcribe handler's refusal error, the "Audio add-on" doctor WARN row
+ * (src/doctor/checks/audio-addon.ts), and the "Meeting-captions capture
+ * reminder" doctor WARN row (src/doctor/checks/meeting-captions-reminder.ts)
+ * all read the exact same string rather than hand-copied near-duplicates
+ * drifting apart. Functional draft per ADR-017's own acceptance checklist
+ * item 2 — not yet legal/marketing-reviewed language. FEAT-489 and FEAT-491
+ * authored byte-identical copies of this constant independently before
+ * either merged; this is the single surviving declaration post-merge — keep
+ * NAME AND TEXT in sync across both consumers.
  */
 export const THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE =
   'This will capture what other people say in your meetings/calls, not just your own words. ' +
