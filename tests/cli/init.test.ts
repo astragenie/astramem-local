@@ -14,7 +14,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { readFileSync, statSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, statSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { platform } from 'node:os';
 
@@ -348,6 +348,84 @@ describe('init wizard — non-TTY mode', () => {
     // Embedding is unaffected by the provider default flip.
     expect(content).toContain('provider: ollama');
     expect(content).toContain('model: mxbai-embed-large');
+  });
+
+  // Codex first-run guard (2026-07-14): the non-TTY path has no interactive
+  // "codex login detected" gate (see gatherInteractive's codexLoginDetected
+  // check) — it always resolves to the codex-subscription default. Point
+  // ASTRA_MEMORY_INIT_CODEX_AUTH_PATH at a path that provably doesn't exist
+  // so this test is deterministic regardless of whether the machine running
+  // it happens to have a real ~/.codex/auth.json.
+  it('warns (but does not block) when codex-subscription is selected non-interactively with no login present', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+    const missingAuthPath = join(tmpdir(), `astra-init-codex-guard-${randomUUID()}`, 'auth.json');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'codex-subscription',
+      ASTRA_MEMORY_INIT_CODEX_AUTH_PATH: missingAuthPath,
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17794',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    try {
+      await withEnv(envPatch, async () => { await init(); });
+
+      expect(warnSpy).toHaveBeenCalled();
+      const warned = warnSpy.mock.calls.map((c) => String(c[0])).join('\n');
+      expect(warned).toMatch(/codex-subscription.*no Codex CLI login/is);
+      expect(warned).toContain('codex login');
+      expect(warned).toContain(missingAuthPath);
+
+      // Non-blocking: config.yaml is still written with the requested provider.
+      const configPath = findFile(cfgDir, 'config.yaml');
+      expect(configPath, 'config.yaml must exist').toBeDefined();
+      const content = readFileSync(configPath!, 'utf8');
+      expect(content).toContain('provider: codex-subscription');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('does not warn when codex-subscription is selected and a login file is present', async () => {
+    const dataDir = makeTmpDir();
+    const cfgDir = makeTmpDir();
+    const authDir = makeTmpDir();
+    const presentAuthPath = join(authDir, 'auth.json');
+    writeFileSync(presentAuthPath, JSON.stringify({ tokens: { access_token: 'a', refresh_token: 'r' } }), 'utf8');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const envPatch: Record<string, string> = {
+      ASTRA_MEMORY_INIT_NONINTERACTIVE: '1',
+      ASTRA_MEMORY_INIT_VECTOR: 'sqlite-vec',
+      ASTRA_MEMORY_INIT_EMBED_PROVIDER: 'ollama',
+      ASTRA_MEMORY_INIT_LLM_PROVIDER: 'codex-subscription',
+      ASTRA_MEMORY_INIT_CODEX_AUTH_PATH: presentAuthPath,
+      ASTRA_MEMORY_INIT_DATADIR: dataDir,
+      ASTRA_MEMORY_INIT_PORT: '17795',
+      ASTRA_MEMORY_INIT_BUDGET: '10',
+      ASTRA_MEMORY_INIT_INSTALL_SERVICE: 'false',
+    };
+    if (platform() === 'win32') envPatch['APPDATA'] = cfgDir;
+    else envPatch['XDG_CONFIG_HOME'] = cfgDir;
+
+    try {
+      await withEnv(envPatch, async () => { await init(); });
+      const codexWarnings = warnSpy.mock.calls.filter((c) => /codex-subscription.*no Codex CLI login/is.test(String(c[0])));
+      expect(codexWarnings).toHaveLength(0);
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 
   it('ASTRA_MEMORY_INIT_OLLAMA_MODEL_TAG overrides compaction/extraction model in config.yaml', async () => {

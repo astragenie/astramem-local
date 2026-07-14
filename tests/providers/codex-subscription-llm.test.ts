@@ -3,7 +3,11 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
-import { CodexSubscriptionLLMProvider } from '../../src/providers/llm/codex-subscription.js';
+import {
+  CodexSubscriptionLLMProvider,
+  defaultAuthPath,
+  hasCodexLogin,
+} from '../../src/providers/llm/codex-subscription.js';
 import { TransientError } from '../../src/pipeline/errors.js';
 import { runLLMContractSuite } from './_contract-suite.js';
 
@@ -142,6 +146,35 @@ describe('codex-subscription-llm', () => {
       writeFileSync(authPath, JSON.stringify({ auth_mode: 'chatgpt' }), 'utf8');
       const p = new CodexSubscriptionLLMProvider({ authPath });
       await expect(p.chat([{ role: 'user', content: 'hi' }])).rejects.toThrow(/tokens/i);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // hasCodexLogin / defaultAuthPath (codex first-run guard shared helper —
+  // used by the doctor probe, the src/cli/init.ts wizard, and the
+  // src/cli/serve.ts boot-time guard, so all three answer "is codex logged
+  // in" from one definition instead of re-deriving the path independently).
+  // ---------------------------------------------------------------------------
+  describe('hasCodexLogin / defaultAuthPath', () => {
+    it('defaultAuthPath resolves under the home directory as ~/.codex/auth.json', () => {
+      expect(defaultAuthPath()).toMatch(/\.codex[\\/]+auth\.json$/);
+    });
+
+    it('returns false when no file exists at the given path', () => {
+      const authPath = join(tmpdir(), `astra-codex-guard-missing-${randomUUID()}`, 'auth.json');
+      expect(hasCodexLogin(authPath)).toBe(false);
+    });
+
+    it('returns true when a file exists at the given path (presence-only — content is not validated)', () => {
+      const authPath = tmpAuthPath();
+      writeFileSync(authPath, 'not even valid json', 'utf8');
+      expect(hasCodexLogin(authPath)).toBe(true);
+    });
+
+    it('returns true for a real, well-formed auth.json', () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath);
+      expect(hasCodexLogin(authPath)).toBe(true);
     });
   });
 
