@@ -442,6 +442,44 @@ export interface Config {
      *  extractProfile, plumbed from the transcripts row via distillHandler
      *  the same way captureSource is) > this config default > 'engineering'. */
     extractProfile: 'engineering' | 'conversational';
+    /** Whether stage 4 (compaction) runs at all.
+     *
+     *  `'auto'` (the default) means: **run for engineering, SKIP for
+     *  conversational.** That is not a taste call — it is a measurement.
+     *
+     *  WHY COMPACTION IS A NET LOSS ON CONVERSATIONAL CONTENT:
+     *
+     *  Compaction exists to shrink a payload. That is a BANDWIDTH concern —
+     *  it made sense when the design assumed transcripts were being shipped to
+     *  a SaaS backend. **Locally there is no payload.**
+     *
+     *  And it is compressing something already small: stage 3 caps chunks at
+     *  `MAX_CHUNK_CHARS = 3200` (~800 tokens), while extraction's `num_ctx` is
+     *  sized up to 16384. Compaction saves a few hundred tokens out of a budget
+     *  twenty times larger — while costing **one LLM call per chunk** (a
+     *  17-chunk session pays 17 extra calls, roughly half of distill's wall
+     *  clock).
+     *
+     *  And it DESTROYS FACTS. Until this flag existed, stage 4 ran the
+     *  CODING-AGENT compressor over personal conversations — a prompt whose
+     *  entire PRESERVE list is "file paths, commands, error messages, stderr"
+     *  (none of which exist in a chat between two people) and whose REMOVE list
+     *  ("thinking-out-loud", "acknowledgment phrases", "false starts")
+     *  describes most of what a personal conversation IS. Measured on five real
+     *  turns, it deleted: a named person (Alice), a relationship (the sister), a
+     *  place (Portland), a life event (the move), a dated plan (summer camp in
+     *  June) — **and every speaker name.** Extraction is REQUIRED to attribute
+     *  each fact to a named person; compaction had already deleted the names, so
+     *  extraction could only drop the atom or guess. It guessed wrong.
+     *
+     *  Nothing errored. Fewer atoms is not a failure, so the compactor
+     *  "succeeded" on every call (ADR-015: success and failure indistinguishable).
+     *
+     *  `'always'` / `'never'` force it either way. `'never'` is safe locally and
+     *  roughly halves distill wall-clock; `'always'` restores the pre-fix
+     *  behavior for anyone who needs it (e.g. a genuinely long engineering
+     *  session with heavy repeated tool output, where compaction earns its keep). */
+    compaction: 'auto' | 'always' | 'never';
   };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
@@ -648,7 +686,7 @@ export function defaultConfig(): Config {
     // gates 4 of the 5 reasons and holds back only `git_derivable`, which carries
     // the highest false-positive risk (a terse commit reference can still be
     // meaningful in a way a bare imperative cannot).
-    distill: { durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2 },
+    distill: { durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto' },
     capture: {
       autoCapture: {
         enabled: false,
