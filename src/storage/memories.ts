@@ -101,7 +101,7 @@ export interface InsertInput {
    * the overwhelming majority of rows, byte-identical to pre-FEAT-491
    * behavior. This is the storage-side half of contracts'
    * `atom.v2.schema.json` `evidence[].speaker_label` (FEAT-496) — see
-   * migrations/050-meeting-captions.sql's doc comment for why there is no
+   * migrations/048-meeting-captions.sql's doc comment for why there is no
    * live JSON-emission path yet.
    */
   speaker_label?: string | null;

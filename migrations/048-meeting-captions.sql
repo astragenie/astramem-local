@@ -1,10 +1,14 @@
--- 050: meeting-caption capture (FEAT-491, ADR-017).
+-- 048: meeting-caption capture (FEAT-491, ADR-017).
 --
--- Number provisional at authoring time (2026-07-14): origin/main had 044-047
--- already claimed (044 by #318, 045-047 by L1-4/PR #322) when this was
--- written; L1-1 has first claim on 048+ by convention and hadn't merged yet.
--- 050 leaves a two-slot buffer for L1-1 — re-verify against `ls migrations/`
--- on origin/main at merge time and renumber if it collides.
+-- Number claimed 2026-07-14 after merging origin/main (044-047 taken by
+-- #318 and L1-4/PR #322). Team lead's convention is "L1-1 has first claim
+-- on 048+" — but this repo's tests/storage/migration-renumber.test.ts
+-- enforces STRICT LOCAL CONTIGUITY (no gaps), so 048 is the only number
+-- that passes that gate in THIS worktree today. If L1-1 also claims 048
+-- independently, whichever branch merges second must renumber at that
+-- point (same resolution this file itself just went through — see git
+-- history). Re-verify against `ls migrations/` on origin/main before
+-- merging and renumber if it collides.
 --
 -- Five additive nullable columns, no table rewrite (same ALTER TABLE ADD
 -- COLUMN pattern migration 024/028/043 used) -- NULL on every existing row

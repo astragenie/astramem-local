@@ -41,7 +41,7 @@ interface TranscriptRow {
    *  when it came from the LLM proxy relay's capture fork. */
   capture_source: 'auto_capture' | 'hook_close' | 'proxy' | 'meeting_captions' | null;
   /** FEAT-491 (ADR-017 decision 6): raw SQLite INTEGER 0/1/NULL — see
-   *  migrations/050-meeting-captions.sql. Hydrated to boolean|null below
+   *  migrations/048-meeting-captions.sql. Hydrated to boolean|null below
    *  before threading onto PipelineContext.consentDisclosed. */
   consent_disclosed: number | null;
   /** FEAT-479 (D3 §3.2) AC-3: the optional per-ingest `extract_profile`
