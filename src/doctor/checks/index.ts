@@ -123,12 +123,14 @@ import { checkEmbed } from './embed.js';
 import { checkEmbedCacheHitRate } from './embed-cache.js';
 import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-supplementary.js';
 import { checkPluginCoexistence } from './plugin-coexistence.js';
+import { checkPathShadow } from './path-shadow.js';
 import { checkBackupRecency } from './backup-recency.js';
 import { checkMemorySentinel } from './memory-sentinel.js';
 import { checkMigrationSelfHeal } from './migration-self-heal.js';
 import { checkHandlerRunLog } from './handler-run-log.js';
 import { checkRetention } from './retention.js';
 import { checkAudioAddon } from './audio-addon.js';
+import { checkModelFitCanary } from './model-fit.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -180,6 +182,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkBudget(dataDir, dailyBudgetUsd, encryptionEnabled),
     checkBudgetCapCodexBlind(dailyBudgetUsd, opts.codexSubscriptionInUse ?? false),
     checkConfigDirDivergence(),
+    checkPathShadow(),
     checkRedaction(
       dataDir, opts.redactionEnabled ?? true, encryptionEnabled,
       // FEAT-498: same enablement signals checkProxyCapture/checkAutoCapture
@@ -223,6 +226,11 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkHandlerRunLog(dataDir, encryptionEnabled),
     checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
     checkAudioAddon(opts.audioMode ?? 'off', opts.audioDisclosureAcknowledged ?? false),
+    // Issue #279: `reinstall` never rewrites an existing operator's pinned
+    // llm.compaction/extraction.model, so a bad pin (qwen3:8b — doesn't fit
+    // an 8 GB VRAM card) survives every upgrade forever. See model-fit.ts's
+    // module doc comment.
+    checkModelFitCanary(opts.llmConfig ?? defaultConfig().llm, { ollamaBaseUrl: opts.ollamaBaseUrl }),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

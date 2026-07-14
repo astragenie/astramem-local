@@ -1,6 +1,6 @@
 {
   "name": "astramem-local",
-  "version": "0.18.0",
+  "version": "0.19.0-beta.0",
   "description": "Local-first, encrypted memory daemon for AI coding agents — hybrid retrieval, provenance receipts, MCP tools, SQLCipher at rest",
   "keywords": [
     "mcp",

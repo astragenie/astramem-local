@@ -28,6 +28,7 @@ import { mcpInstallCommand } from './mcp-install.js';
 import { demoCommand } from './demo.js';
 import { proxyCommand } from './proxy.js';
 import { ingestAudioCommand } from './audio.js';
+import { configCommand } from './config.js';
 import { installCliCrashHandlers } from './crash-handlers.js';
 
 const PKG_VERSION: string = (() => {
@@ -40,6 +41,13 @@ const PKG_VERSION: string = (() => {
     return 'unknown';
   }
 })();
+
+// The resolved path of the entry module actually executing this process —
+// printed alongside PKG_VERSION on `--version` so a shadowed install
+// (issue #308: a stale PATH entry resolving to an old binary with no hint
+// a newer install exists elsewhere) is visible at a glance instead of
+// silently running whichever binary the shell found first.
+const ENTRY_PATH: string = fileURLToPath(import.meta.url);
 
 function parseArg(args: string[], flag: string): string | undefined {
   const i = args.indexOf(flag);
@@ -290,6 +298,12 @@ async function main() {
       break;
     }
 
+    case 'config': {
+      // astramem-local config upgrade-model [--yes] [--json]
+      await configCommand(rest);
+      break;
+    }
+
     case 'demo': {
       // astramem-local demo — 30s zero-dependency trial: in-memory daemon,
       // mock embed/LLM providers (no Ollama), seeded example memories, one
@@ -300,7 +314,11 @@ async function main() {
 
     case '--version':
     case '-v':
-      console.log(PKG_VERSION);
+      // Version stays the leading token so existing exact/startsWith
+      // consumers (src/service/release.ts's materializeRelease boot-verify)
+      // keep working unmodified-in-spirit; the path is appended for human
+      // diagnosis of PATH-shadowing installs (issue #308).
+      console.log(`${PKG_VERSION} (${ENTRY_PATH})`);
       break;
 
     case undefined:
@@ -394,6 +412,11 @@ Commands:
                                          SAME rule as the guard and the doctor canary.
                                          PREVIEWS by default — --yes to actually delete.
                                          Never deletes a MEMORY, only entity rows.
+  config upgrade-model [--yes] [--json]  Detect a config-pinned Ollama LLM model that is
+                                         known-bad or no longer fits local VRAM (issue #279,
+                                         see doctor's "Model fit canary") and print the exact
+                                         recommended config.yaml edit. PREVIEW by default —
+                                         --yes required to actually write config.yaml.
   providers [--json]                     Show configured providers + live health probes
   capture codex [--sessions-dir D] [--dry-run] [--json] [--watch [sec]]
                                          Ingest new Codex CLI sessions (ADR-008);

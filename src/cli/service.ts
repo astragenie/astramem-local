@@ -80,6 +80,12 @@ export async function serviceCommand(args: string[]): Promise<void> {
     }
 
     case 'stop': {
+      // --force (issue #307): bypasses stopLockHolder's start-time drift
+      // guard, which otherwise refuses to signal a PID whose OS-reported
+      // start time no longer matches the lock (a "recycled PID" — but also
+      // the only guard standing between an operator and a crash-looped
+      // daemon that can't be stopped any other way via the CLI).
+      const force = rest.includes('--force');
       console.log('Stopping AstraMemory service...');
       // Best-effort: end the scheduler's own task/unit first so its
       // keepalive repetition trigger doesn't relaunch what we're about to
@@ -96,9 +102,15 @@ export async function serviceCommand(args: string[]): Promise<void> {
       // answering /health — after the task is reported "ended". Terminate
       // whatever is actually holding daemon.lock, directly.
       const { port, dataDir } = resolveRuntimeConfig();
-      const stopResult = await stopLockHolder(dataDir, port);
+      const stopResult = await stopLockHolder(dataDir, port, { force });
       if (!stopResult.ok) {
-        console.error(`Service stop failed: ${stopResult.detail}`);
+        // Plain (non-forced) drift refusal: point the operator at the
+        // documented recovery instead of leaving them stuck with no path
+        // forward.
+        const hint = stopResult.reason === 'identity-mismatch'
+          ? ' — run `astramem-local service stop --force` to override'
+          : '';
+        console.error(`Service stop failed: ${stopResult.detail}${hint}`);
         process.exit(1);
       }
       console.log(`Service stopped. (${stopResult.detail})`);
@@ -157,7 +169,11 @@ Subcommands:
   uninstall            Remove OS service (also removes backup timer + hang-watchdog
                        probe timer, if present)
   start                Start service via OS init
-  stop                 Stop service via OS init
+  stop [--force]       Stop service via OS init
+                       --force  bypass the recycled-PID start-time drift
+                                guard when stopLockHolder refuses to signal
+                                (see the CLI error's own hint); logs the
+                                drift it overrode
   status               Show service status
   watchdog-probe [--port N]
                        Hang-detection probe (FEAT-443 SLICE-2 + issue #206;
