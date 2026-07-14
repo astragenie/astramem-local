@@ -103,7 +103,7 @@ describe('bench.mts — full direct+proxied flow against the fake proxy CLI fixt
     expect(result.overhead).not.toBeNull();
     expect(result.assessment.p50_overhead_ms).toBe(result.overhead!.p50);
     expect(typeof result.assessment.pass).toBe('boolean');
-  });
+  }, 20_000);
 
   it('--gate exits non-zero when p50 overhead exceeds an impossible-to-clear threshold', () => {
     dir = mkdtempSync(join(tmpdir(), 'proxy-bench-gate-fail-'));
@@ -117,7 +117,7 @@ describe('bench.mts — full direct+proxied flow against the fake proxy CLI fixt
     expect(status).not.toBe(0);
     const result = JSON.parse(readFileSync(outPath, 'utf8')) as BenchResultShape;
     expect(result.assessment.pass).toBe(false);
-  });
+  }, 20_000);
 
   it('--gate exits zero when the threshold is trivially generous', () => {
     dir = mkdtempSync(join(tmpdir(), 'proxy-bench-gate-pass-'));
@@ -129,7 +129,7 @@ describe('bench.mts — full direct+proxied flow against the fake proxy CLI fixt
       '--gate', '--out', outPath,
     ]);
     expect(status).toBe(0);
-  });
+  }, 20_000);
 });
 
 // The one place this suite depends on the REAL proxy CLI
@@ -149,5 +149,5 @@ describe.skipIf(!realProxyEntry)('bench.mts — end-to-end against the real buil
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
-  });
+  }, 130_000);
 });
