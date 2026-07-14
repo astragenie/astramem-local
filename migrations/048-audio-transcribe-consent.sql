@@ -21,16 +21,29 @@
 -- ADR-017 decision 6: the wire contract's `provenance.consent_disclosed`
 -- (contracts/schemas/atom.v2.schema.json, FEAT-496, additive/minor, already
 -- shipped at contracts v2.3.0) is set by the capturing adapter at the point
--- the operator opted in. astramem-local has no separate live "consent
--- flow" UI gate today (config.yaml hand-edit is this repo's existing
--- opt-in mechanism for every other mode-enum toggle — durabilityGate,
--- contradictionDetection — none of which have an interactive wizard prompt
--- either); the transcribe handler stamps consent_disclosed = 1 on every
--- transcript/memory it produces specifically BECAUSE `audio.mode !== 'off'`
--- is itself the one-and-only opt-in signal this daemon can observe
--- (single-user, local-first — there is no second party's config to
--- distinguish). NULL for every pre-existing row and every other capture
--- source, exactly like capture_source's own NULL default.
+-- the operator opted in. The transcribe handler stamps consent_disclosed = 1
+-- on every transcript AND memory it produces (memories threading fixed
+-- post-review 2026-07-14 -- an earlier version of this migration promised
+-- this for memories but the handler never actually wrote the column; see
+-- src/distill/pipeline.ts / src/distill/stages/08-embed-index.ts /
+-- src/pipeline/handlers/distill.ts for the fix). NULL for every pre-existing
+-- row and every other capture source, exactly like capture_source's own
+-- NULL default.
+--
+-- v1 disclosure surface (also post-review 2026-07-14, see
+-- Config['audio']'s doc comment for the full reasoning): ADR-017 decision 3
+-- asks for the disclosure copy to live in astramem-local's `init` wizard.
+-- `audio.mode`/`audio.disclosureAcknowledged` are NOT collected by
+-- `gatherInteractive` -- config.yaml hand-edit is this repo's opt-in
+-- mechanism for this toggle, same as every other mode-enum field
+-- (durabilityGate, contradictionDetection). Rather than a wizard prompt, the
+-- transcribe handler REFUSES to run at all (embedding the full canonical
+-- disclosure copy in the error) unless `audio.disclosureAcknowledged` is
+-- explicitly `true` -- so `consent_disclosed = 1` above is stamped only once
+-- that enforceable gate has already passed, not merely because `mode` is
+-- non-'off'. The interactive wizard prompt ADR-017 literally describes
+-- remains a valid v2 upgrade (nicer UX over the same underlying gate), not
+-- built in this migration.
 --
 -- `transcription_guard_drops` mirrors `evidence_guard_drops` (migration 030)
 -- field-for-field: counts + a reason label only, never raw segment text.
