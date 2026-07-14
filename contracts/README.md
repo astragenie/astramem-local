@@ -258,6 +258,51 @@ conformant hit from a real cloud response used to fail this schema. Per the
 "Memory atom `type` registry" section above, widening an already-open
 registry enum is additive, not breaking.
 
+### atom@2 additive extension — transcript speaker/segment provenance (FEAT-496, 2026-07-14)
+
+Same `atom.v2.schema.json` file, no version bump — new optional fields only,
+per the "Additive change" rule below. Motivated by FEAT-491 (meeting-caption
+capture) and cloud's WS-B/FEAT-516, both of which need per-evidence speaker
+identity and timing to reach stored atom provenance, not just the wire.
+
+- **`evidence[].speaker_label`** (optional string) and
+  **`evidence[].segment_start_ms`** (optional non-negative integer) — added
+  to the structured-receipt branch of `evidence`'s `anyOf` (the
+  `{ transcript_id, span }` object shape). `speaker_label` is a display
+  name/label as surfaced by a diarized or caption-labeled source (e.g.
+  "Alice", "Speaker 2"). `segment_start_ms` is a millisecond offset into the
+  source recording/transcript, complementing `span` (a character offset into
+  the transcript *text*, not a time offset) — the two are independent axes
+  and a source may populate either, both, or neither.
+- **`provenance.worker` / `provenance.model` / `provenance.attestation`**
+  (all optional, nullable strings) — the Screenpipe-inspired provenance
+  triple, reserved now because `provenance` has `additionalProperties: false`
+  (line 68) and every field needs an explicit schema edit; reserving the slot
+  in this pass is nearly free and avoids a second breaking-adjacent PR later.
+  **None of these three are written by any producer yet** — this is a
+  forward-reserve, not a shipped capability. `worker` names the compute tier
+  that ran extraction (e.g. `local-cpu`/`local-gpu`/`cloud-worker`); `model`
+  is `name@version` of the underlying LLM/ASR model (distinct from
+  `provenance.extractor`, which names the *pipeline*, not the model);
+  `attestation` is an opaque signature/hash for future tamper-evidence use.
+  No enum on any of the three — freeform strings, since the value sets don't
+  exist yet.
+
+**Deliberately NOT added here: `platform` / `meeting_id`.** FEAT-491's
+meeting-caption capture source needs these, but they describe the *capture
+session* (which meeting, which platform), not a single evidence span or a
+single atom's provenance — many atoms can be distilled from one captured
+session. They belong on `capture-envelope.v1.schema.json` (FEAT-491's own
+schema widen: `capture_source` enum + envelope fields), and flow into stored
+atoms via the existing `provenance.session_id` correlation, the same way
+`session_id` already bridges capture envelope and atom today. Coordinated
+with FEAT-491 so its speaker labels land in `evidence[].speaker_label`
+above rather than a competing shape.
+
+Fixtures: `atom-v2-speaker-segment-evidence.json` (valid, exercises both new
+evidence fields) and `atom-v2-provenance-triple.json` (valid, exercises the
+reserved provenance triple) added under `fixtures/valid/`.
+
 ## Fixture naming convention (load-bearing)
 
 `validate.mjs` and `tests/contracts/conformance.test.ts` both route fixtures

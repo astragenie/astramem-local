@@ -5,7 +5,7 @@
  */
 
 /**
- * Canonical Memory Atom v2 (ADR-001 amendment, 2026-07-09). Breaking major bump from atom@1 — zero-customers window used to fix three warts in one cut rather than carry additive debt: (1) entities is now a typed object array instead of string[]; (2) provenance.repo is deleted (project is the single canonical field); (3) the 'personal' scope alias is dropped (private|team|org only). Shipped alongside atom.v1.schema.json for a time-boxed dual-read window on the cloud reader (see contracts/README.md 'Versioning rules' and the ADR-001 amendment) — atom@1 is NOT deleted by this change.
+ * Canonical Memory Atom v2 (ADR-001 amendment, 2026-07-09). Breaking major bump from atom@1 — zero-customers window used to fix three warts in one cut rather than carry additive debt: (1) entities is now a typed object array instead of string[]; (2) provenance.repo is deleted (project is the single canonical field); (3) the 'personal' scope alias is dropped (private|team|org only). Shipped alongside atom.v1.schema.json for a time-boxed dual-read window on the cloud reader (see contracts/README.md 'Versioning rules' and the ADR-001 amendment) — atom@1 is NOT deleted by this change. FEAT-496 (2026-07-14) additively extended this same @2 schema — new optional evidence[].speaker_label/segment_start_ms and provenance.worker/model/attestation — per the additive-minor rule in 'Versioning rules' below; no version bump, atom@2 stays atom@2. See 'Memory atom v2' below for the full field list.
  */
 export interface AtomV2 {
   schema: 'astramem/atom@2';
@@ -32,6 +32,14 @@ export interface AtomV2 {
            * @maxItems 2
            */
           span?: [number, number];
+          /**
+           * FEAT-496: optional speaker display name/label for this evidence span, as surfaced by a diarized or caption-labeled transcript source (e.g. meeting captions, ASR diarization). Distinct from provenance.tool/extractor — this identifies WHO spoke within the transcript, not what produced the atom. Meeting-level envelope fields (platform, meeting_id) do NOT belong here — they are FEAT-491's concern on capture-envelope.v1.schema.json, since they describe the capture session, not a single evidence span.
+           */
+          speaker_label?: string;
+          /**
+           * FEAT-496: optional segment-level start offset in milliseconds from the start of the source recording/transcript, complementing 'span' (which is a character offset into the transcript text). Present when the source has timing granularity (audio ASR, timestamped captions); absent for plain-text transcripts with no timing data.
+           */
+          segment_start_ms?: number;
         },
         ...{
           transcript_id: string;
@@ -40,6 +48,14 @@ export interface AtomV2 {
            * @maxItems 2
            */
           span?: [number, number];
+          /**
+           * FEAT-496: optional speaker display name/label for this evidence span, as surfaced by a diarized or caption-labeled transcript source (e.g. meeting captions, ASR diarization). Distinct from provenance.tool/extractor — this identifies WHO spoke within the transcript, not what produced the atom. Meeting-level envelope fields (platform, meeting_id) do NOT belong here — they are FEAT-491's concern on capture-envelope.v1.schema.json, since they describe the capture session, not a single evidence span.
+           */
+          speaker_label?: string;
+          /**
+           * FEAT-496: optional segment-level start offset in milliseconds from the start of the source recording/transcript, complementing 'span' (which is a character offset into the transcript text). Present when the source has timing granularity (audio ASR, timestamped captions); absent for plain-text transcripts with no timing data.
+           */
+          segment_start_ms?: number;
         }[]
       ];
   /**
@@ -61,6 +77,18 @@ export interface AtomV2 {
      * name@version of the extractor that produced this atom.
      */
     extractor?: string | null;
+    /**
+     * FEAT-496: reserved, currently unwritten by any producer. Compute-tier/worker identity that ran the extraction (e.g. local-cpu | local-gpu | cloud-worker), Screenpipe-inspired provenance triple alongside model/attestation. Freeform string, no enum yet — reserved now because it is additive-cheap and the alternative (adding it in a later @2 minor bump) is strictly more expensive than reserving the slot today.
+     */
+    worker?: string | null;
+    /**
+     * FEAT-496: reserved, currently unwritten by any producer. name@version of the LLM/ASR model that ran the extraction (distinct from provenance.extractor, which names the pipeline/tool, not the underlying model). Freeform string, no enum.
+     */
+    model?: string | null;
+    /**
+     * FEAT-496: reserved, currently unwritten by any producer. Opaque attestation/signature string for the extraction (e.g. a hash or signed claim proving which worker/model ran), for future tamper-evidence use cases. Freeform string, no enum.
+     */
+    attestation?: string | null;
   };
   /**
    * Bitemporal valid-time start.
