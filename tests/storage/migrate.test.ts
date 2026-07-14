@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createHash } from 'node:crypto';
 import { openDb } from '../../src/storage/db.js';
-import { migrate, getVecSchemaDim } from '../../src/storage/migrate.js';
+import { migrate, getVecSchemaDim, SchemaNewerThanDaemonError } from '../../src/storage/migrate.js';
 import { embedProbe } from '../../src/doctor/probes/embed-probe.js';
 import { SCHEMA_VERSION } from '../../src/server/lib/wire-meta.js';
 import type { EmbedProvider, EmbedHealth } from '../../src/contracts/embed.js';
@@ -746,12 +746,16 @@ describe('migration 019-health-agent-profile-indexes', () => {
     expect(names).toContain('idx_memory_events_usefulness_served');
     expect(names).toContain('idx_memory_events_usefulness_used');
 
+    // FEAT-495 item 3 (migration 045) re-guarded both predicates with
+    // json_valid(...) ELSE '[]' so a malformed payload_json can't throw at
+    // INSERT time (partial-index WHERE clauses are evaluated on every write)
+    // — see json-guard.ts's file header and migration 045's own comment.
     const served = idx.find(i => i.name === 'idx_memory_events_usefulness_served')!;
-    expect(served.sql).toContain("json_extract(payload_json, '$.family') = 'recall_served'");
+    expect(served.sql).toContain("json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served'");
     expect(served.sql).toContain("event_type = 'usefulness'");
 
     const used = idx.find(i => i.name === 'idx_memory_events_usefulness_used')!;
-    expect(used.sql).toContain("json_extract(payload_json, '$.family') = 'recall_used'");
+    expect(used.sql).toContain("json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_used'");
     expect(used.sql).toContain("event_type = 'usefulness'");
   });
 
@@ -785,12 +789,15 @@ describe('migration 019-health-agent-profile-indexes', () => {
       "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
     ).run('m1', JSON.stringify({ family: 'recall_used', surface: 'rest' }), 200);
 
+    // Query text must match the index's guarded predicate (migration 045)
+    // expression-for-expression for SQLite's partial-index matching to ride
+    // it — same guarded shape src/storage/usefulness.ts's real queries use.
     const plan = db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT COUNT(DISTINCT atom_id) AS n
       FROM memory_events
       WHERE event_type = 'usefulness'
-        AND json_extract(payload_json, '$.family') = 'recall_served'
+        AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served'
         AND created_at >= ?
     `).all(0) as { detail: string }[];
     expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);
@@ -1248,4 +1255,40 @@ describe('boot preflight against the persisted schema dim (AC-3)', () => {
     const result = await embedProbe(provider, 5000, schemaDim ?? provider.dim);
     expect(result.ok).toBe(true);
   });
+});
+
+describe('schema-version drift guard — direction split (issue #306)', () => {
+  it('DB schema NEWER than daemon throws SchemaNewerThanDaemonError with reinstall guidance', () => {
+    const db = openDb(':memory:');
+    migrate(db); // brings DB to SCHEMA_VERSION
+
+    // Simulate a datadir migrated by a newer astramem-local: a schema_version
+    // row one past this daemon's SCHEMA_VERSION.
+    db.prepare('INSERT INTO schema_version (version, applied_at) VALUES (?, ?)').run(
+      SCHEMA_VERSION + 1,
+      Date.now(),
+    );
+
+    let caught: unknown;
+    try {
+      migrate(db);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(SchemaNewerThanDaemonError);
+    const e = caught as SchemaNewerThanDaemonError;
+    expect(e.dbSchema).toBe(SCHEMA_VERSION + 1);
+    expect(e.daemonSchema).toBe(SCHEMA_VERSION);
+    expect(e.message).toContain('reinstall');
+    // Must NOT be the dev-facing "bump the constant" text.
+    expect(e.message).not.toContain('Bump wire-meta.SCHEMA_VERSION');
+  });
+
+  // NOTE: the dbMax < SCHEMA_VERSION direction (genuine dev drift — a bumped
+  // constant with no matching applied migration) keeps its original
+  // "Bump wire-meta.SCHEMA_VERSION" message unchanged. It is not unit-tested
+  // here because it can only arise from a REMOVED migration FILE (re-running
+  // migrate() on a DB with a deleted schema_version row simply re-applies that
+  // file), which a unit test can't cleanly simulate without filesystem
+  // surgery. That branch's behavior is byte-identical to pre-#306.
 });

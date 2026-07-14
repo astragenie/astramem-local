@@ -5,6 +5,32 @@ import { SCHEMA_VERSION } from '../server/lib/wire-meta.js';
 import { MIGRATIONS_DIR } from './schema-version.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { contentHash } from './content-hash.js';
+import { selfHealMissingColumns, recordSelfHealActions } from './migration-self-heal.js';
+import { logger } from '../log/logger.js';
+
+/**
+ * Thrown by migrate() when the DB's applied schema is NEWER than this daemon's
+ * SCHEMA_VERSION (issue #306) — a running service pinned to an older release
+ * than the CLI that last migrated the datadir. Distinct from the generic
+ * dev-facing "constant drift" Error so serve.ts can print one-line operator
+ * guidance (run `reinstall`) instead of a stack trace, and so it can be told
+ * apart programmatically from a genuine developer bump-the-constant mistake.
+ */
+export class SchemaNewerThanDaemonError extends Error {
+  readonly dbSchema: number;
+  readonly daemonSchema: number;
+  constructor(dbSchema: number, daemonSchema: number) {
+    super(
+      `This datadir was migrated by a NEWER astramem-local (DB schema ${dbSchema}) ` +
+      `than the one now running (daemon schema ${daemonSchema}). The service is pinned ` +
+      `to an older release. Run \`astramem-local reinstall\` to repoint the service at ` +
+      `the current release, then restart it.`,
+    );
+    this.name = 'SchemaNewerThanDaemonError';
+    this.dbSchema = dbSchema;
+    this.daemonSchema = daemonSchema;
+  }
+}
 
 /** Placeholder substituted into migration SQL for the vec schema dim
  * (FEAT-409). Only migrations/001-init.sql uses it today; substitution is
@@ -260,6 +286,20 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
   });
   verifyAndBackfill();
 
+  // FEAT-495 item 1: schema_version recording a migration as applied does
+  // not prove its DDL actually landed — see migration-self-heal.ts's file
+  // header. Runs on every boot (migrate() is the one DDL entrypoint every
+  // caller already goes through), not gated behind doctor, which never runs
+  // unattended.
+  const selfHealActions = selfHealMissingColumns(db);
+  if (selfHealActions.length > 0) {
+    logger.warn(
+      { actions: selfHealActions },
+      `migrate: self-healed ${selfHealActions.length} missing column(s) from partially-applied migrations`,
+    );
+    recordSelfHealActions(db, selfHealActions);
+  }
+
   // Boot-time schema-version drift guard: the SCHEMA_VERSION constant in
   // wire-meta.ts MUST match the highest migration applied to the DB.
   // If they diverge a migration was added without bumping the constant (or
@@ -268,7 +308,21 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
     .prepare('SELECT MAX(version) AS max_version FROM schema_version')
     .get() as { max_version: number | null };
   const dbMax = dbMaxRow.max_version ?? 0;
-  if (dbMax !== SCHEMA_VERSION) {
+  if (dbMax > SCHEMA_VERSION) {
+    // The DB was migrated by a NEWER astramem-local than the one now running
+    // (issue #306). This is the upgrade footgun: `npm i -g` bumped the CLI, the
+    // new CLI opened + migrated the datadir, but the schtasks/systemd service is
+    // still pinned to an OLDER materialized release that cannot serve the newer
+    // schema. This is an OPERATOR condition with a known fix — not the dev-facing
+    // "you forgot to bump the constant" case below — so it gets its own error
+    // type and an actionable message. serve.ts catches this to print one-line
+    // guidance instead of a stack trace + crash-loop.
+    throw new SchemaNewerThanDaemonError(dbMax, SCHEMA_VERSION);
+  }
+  if (dbMax < SCHEMA_VERSION) {
+    // Genuine developer drift: the SCHEMA_VERSION constant was bumped (or a
+    // migration file was removed) without a matching applied migration in this
+    // DB. Keep the original dev-facing message.
     throw new Error(
       `Schema-version constant drift: wire-meta says ${SCHEMA_VERSION}, DB says ${dbMax}. ` +
       `Bump wire-meta.SCHEMA_VERSION when adding a migration.`,

@@ -125,6 +125,8 @@ import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-suppl
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
 import { checkMemorySentinel } from './memory-sentinel.js';
+import { checkMigrationSelfHeal } from './migration-self-heal.js';
+import { checkHandlerRunLog } from './handler-run-log.js';
 import { checkRetention } from './retention.js';
 import { checkAudioAddon } from './audio-addon.js';
 
@@ -178,7 +180,13 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkBudget(dataDir, dailyBudgetUsd, encryptionEnabled),
     checkBudgetCapCodexBlind(dailyBudgetUsd, opts.codexSubscriptionInUse ?? false),
     checkConfigDirDivergence(),
-    checkRedaction(dataDir, opts.redactionEnabled ?? true, encryptionEnabled),
+    checkRedaction(
+      dataDir, opts.redactionEnabled ?? true, encryptionEnabled,
+      // FEAT-498: same enablement signals checkProxyCapture/checkAutoCapture
+      // read below — computed once here so "what counts as active capture"
+      // has one definition.
+      (opts.autoCaptureEnabled ?? false) || ((opts.proxyEnabled ?? false) && (opts.proxyCaptureEnabled ?? false)),
+    ),
     checkEncryption(dataDir, encryptionEnabled),
     checkBearerLocation(),
     checkSyncTokenLocation(),
@@ -211,6 +219,8 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkSpoolQuarantine(dataDir),
     checkEmbedCacheHitRate(dataDir, encryptionEnabled),
     checkMemorySentinel(),
+    checkMigrationSelfHeal(dataDir, encryptionEnabled),
+    checkHandlerRunLog(dataDir, encryptionEnabled),
     checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
     checkAudioAddon(opts.audioMode ?? 'off'),
   ];

@@ -3,7 +3,7 @@ import { mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { ts } from '../log/logger.js';
 import { buildApp } from '../server/app.js';
 import { openDb } from '../storage/db.js';
-import { migrate, getVecSchemaDim } from '../storage/migrate.js';
+import { migrate, getVecSchemaDim, SchemaNewerThanDaemonError } from '../storage/migrate.js';
 import { getOrCreateKey, readSyncToken } from '../storage/keystore.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
 import { startShipper, getOrCreateDeviceId, shouldStartShipper, type ShipperHandle } from '../sync/shipper.js';
@@ -117,7 +117,21 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // FEAT-409: dim only matters for a genuinely fresh DB — migrate() skips
   // already-applied migrations regardless, so this stays correct across
   // upgrades and restarts of an existing (already at some dim) DB.
-  migrate(db, cfg.embedding.dim);
+  try {
+    migrate(db, cfg.embedding.dim);
+  } catch (err) {
+    if (err instanceof SchemaNewerThanDaemonError) {
+      // Issue #306: the datadir was migrated by a newer astramem-local than
+      // this pinned release. Print ONE actionable line (not a stack trace)
+      // and exit — the operator fix is `reinstall`, not a bug report. Release
+      // the lock/db first so a subsequent reinstall+restart isn't blocked.
+      console.error(`${ts()} [astramem-local] ${err.message}`);
+      try { lock?.release(); } catch { /* best-effort */ }
+      try { db.close(); } catch { /* best-effort */ }
+      process.exit(1);
+    }
+    throw err;
+  }
 
   // FEAT-409 AC-3: the dim the embed preflight checks against is the
   // PERSISTED schema dim (what memories_vec was actually created with),
