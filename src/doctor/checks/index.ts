@@ -76,6 +76,7 @@ import { tmpdir } from 'node:os';
 import type { Check, CheckResult } from '../types.js';
 import { OpenAICompatibleLLMProvider } from '../../providers/llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from '../../providers/llm/codex-subscription.js';
+import { defaultConfig } from '../../config/config.js';
 import type { DoctorCheckOpts } from './shared.js';
 
 import { checkDatadirWritable } from './datadir-writable.js';
@@ -122,6 +123,7 @@ import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-suppl
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
 import { checkMemorySentinel } from './memory-sentinel.js';
+import { checkRetention } from './retention.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -198,6 +200,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkSpoolQuarantine(dataDir),
     checkEmbedCacheHitRate(dataDir, encryptionEnabled),
     checkMemorySentinel(),
+    checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
