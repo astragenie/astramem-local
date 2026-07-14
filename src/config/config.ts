@@ -480,6 +480,19 @@ export interface Config {
      *  behavior for anyone who needs it (e.g. a genuinely long engineering
      *  session with heavy repeated tool output, where compaction earns its keep). */
     compaction: 'auto' | 'always' | 'never';
+    /** #273 (WS7): stage 3's (`03-chunk.ts`) per-chunk character cap, as an
+     *  operator-facing knob instead of a hardcoded constant. Root-caused
+     *  finding: a long single chunk approaching the cap systematically loses
+     *  content from its first ~80% (recency bias) — measured on real
+     *  conv-26/conv-44 sessions, both flagged facts sat in turns the model
+     *  never attended to. Default 3200 matches stage 3's own
+     *  DEFAULT_MAX_CHUNK_CHARS. Clamped to [400, 8000] at resolution time
+     *  (`resolveMaxChunkChars`, `03-chunk.ts`) — a bad/hand-edited value
+     *  never blocks a run. Lowering this raises extraction-call count
+     *  roughly proportionally (halving the cap roughly doubles compact()/
+     *  extract() calls per session) — a real latency/cost tradeoff, not a
+     *  free win; see the #273 sweep evidence before changing the default. */
+    maxChunkChars: number;
   };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
@@ -699,7 +712,7 @@ export function defaultConfig(): Config {
     // gates 4 of the 5 reasons and holds back only `git_derivable`, which carries
     // the highest false-positive risk (a terse commit reference can still be
     // meaningful in a way a bare imperative cannot).
-    distill: { durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto' },
+    distill: { durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto', maxChunkChars: 3200 },
     capture: {
       autoCapture: {
         enabled: false,

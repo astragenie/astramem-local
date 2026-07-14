@@ -329,6 +329,9 @@ export function configToYaml(cfg: Config): string {
     // FEAT-487 — chunk-level compact()/extract() fan-out width. Default 2 is
     // NOT byte-identical to pre-FEAT-487 (sequential); set to 1 for that.
     line(1, 'chunkConcurrency', (cfg.distill ?? EMIT_DEFAULTS.distill).chunkConcurrency),
+    // #273 (WS7) — stage 3's per-chunk character cap. Default 3200 matches
+    // 03-chunk.ts's DEFAULT_MAX_CHUNK_CHARS.
+    line(1, 'maxChunkChars', (cfg.distill ?? EMIT_DEFAULTS.distill).maxChunkChars),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes
