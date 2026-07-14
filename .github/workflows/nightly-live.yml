@@ -26,10 +26,20 @@
 # bump a model tag here and the cache key changes automatically, forcing a
 # fresh pull instead of silently serving a stale blob.
 #
-# Model policy: the live blocks name the PRODUCTION defaults (config.ts), never
-# pinned legacy tags. A stale pin means this lane exercises a model no user has
-# while real drift in the actual default goes unnoticed — the exact failure the
-# lane exists to prevent.
+# Model policy: the embed block still names the PRODUCTION default (config.ts),
+# never a pinned legacy tag — a stale pin there means this lane exercises a
+# model no user has while real embed-dim drift in the actual default goes
+# unnoticed. The LLM block is a DELIBERATE exception (2026-07-14, Option A /
+# CPU-runner fix): this self-hosted runner has no GPU/VRAM, real generation
+# is CPU-only and slow, so the LLM live test was narrowed to call only
+# `.health()` (GET /api/tags — no inference). That check needs *some* model
+# present in the tags list, not the production default specifically, so it
+# is pinned to a tiny CPU-friendly model (qwen2.5:0.5b) instead of the real
+# (large) production LLM default. This trades away one narrow drift signal
+# (did the production default's exact tag get renamed/removed from the
+# registry) in exchange for a lane that reliably finishes on CPU-only
+# hardware; production LLM *generation* drift is covered by the
+# extraction-bench on a GPU box, not here.
 
 name: Nightly Live Provider CI
 
@@ -51,7 +61,11 @@ env:
   # Single source of truth for the models this lane needs. Space-separated;
   # also drives the actions/cache key below (OLLAMA_CACHE_VERSION-bump or a
   # model-tag change here invalidates the cache automatically).
-  OLLAMA_MODELS: "mxbai-embed-large qwen3:8b"
+  # qwen2.5:0.5b (not the production LLM default) — the LLM live test only
+  # needs a model present in `/api/tags` for its `.health()` check, never
+  # runs generation; see "Model policy" above. Keep this in sync with the
+  # hardcoded model tag in tests/providers/ollama-llm.test.ts's live block.
+  OLLAMA_MODELS: "mxbai-embed-large qwen2.5:0.5b"
   OLLAMA_CACHE_VERSION: v1
   OLLAMA_CONTAINER: ollama-nightly-live
 
@@ -175,6 +189,18 @@ jobs:
           key: ollama-models-${{ env.OLLAMA_CACHE_VERSION }}-${{ env.OLLAMA_MODELS }}
 
       - name: Run INTEGRATION_LIVE=ollama test subset
+        # tests/e2e/plugin-flow.test.ts is deliberately NOT in this subset —
+        # see the "Run E2E pipeline (mock mode)" step below. This runner has
+        # no GPU/VRAM, so real Ollama generation is CPU-only; that test's
+        # live mode drives a full ingest->distill->search pipeline through
+        # several real LLM calls (compaction + extraction), which is slow on
+        # CPU and previously timed out here (nightly-live run 28793332627,
+        # documented in .github/workflows/README.md "Known risks" #2). The
+        # two tests that remain are cheap drift checks: ollama-llm.test.ts's
+        # live block only calls `.health()` (GET /api/tags, no inference),
+        # and ollama-embed.test.ts's live block checks real embed dims — both
+        # fast on CPU. Generation-quality drift is the extraction-bench's job
+        # on a GPU box, not this lane's.
         id: live-tests
         continue-on-error: true
         env:
@@ -183,9 +209,24 @@ jobs:
           bun run test -- \
             tests/providers/ollama-llm.test.ts \
             tests/providers/ollama-embed.test.ts \
-            tests/e2e/plugin-flow.test.ts \
             --testTimeout=60000 \
             --reporter=default --reporter=json --outputFile=live-test-results.json
+
+      - name: Run E2E pipeline (mock mode)
+        # Exercises the full ingest->distill->search pipeline that
+        # plugin-flow.test.ts's "full pipeline" test drives — deliberately
+        # WITHOUT INTEGRATION_LIVE set, so it runs against the mock LLM/embed
+        # providers (ASTRA_MEMORY_MOCK_PROVIDERS=1, see IS_MOCK in that test
+        # file) instead of real Ollama generation. Deterministic, ~4s, and
+        # still catches wiring regressions in the pipeline itself; it just
+        # doesn't exercise real-model drift (that's live-tests' job above,
+        # narrowed to health/embed-dim checks only on this CPU-only runner).
+        id: e2e-mock-tests
+        continue-on-error: true
+        run: |
+          bun run test -- \
+            tests/e2e/plugin-flow.test.ts \
+            --reporter=default --reporter=json --outputFile=e2e-mock-test-results.json
 
       - name: Run smoke suite
         id: smoke-tests
@@ -200,7 +241,7 @@ jobs:
           node -e "
             const fs = require('fs');
             const names = [];
-            for (const f of ['live-test-results.json', 'smoke-test-results.json']) {
+            for (const f of ['live-test-results.json', 'e2e-mock-test-results.json', 'smoke-test-results.json']) {
               if (!fs.existsSync(f)) continue;
               let data;
               try { data = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { continue; }
@@ -218,7 +259,7 @@ jobs:
         id: result
         if: always()
         run: |
-          if [ "${{ steps.live-tests.outcome }}" = "success" ] && [ "${{ steps.smoke-tests.outcome }}" = "success" ]; then
+          if [ "${{ steps.live-tests.outcome }}" = "success" ] && [ "${{ steps.e2e-mock-tests.outcome }}" = "success" ] && [ "${{ steps.smoke-tests.outcome }}" = "success" ]; then
             echo "status=green" >> "$GITHUB_OUTPUT"
           else
             echo "status=red" >> "$GITHUB_OUTPUT"

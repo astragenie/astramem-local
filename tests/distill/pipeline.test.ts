@@ -277,6 +277,60 @@ describe('runPipeline', () => {
     expect(relations.some(r => r.predicate === 'uses' && r.object_entity_id)).toBe(true);
   });
 
+  // ADR-015 headline finding: a well-formed `{"atoms":[]}` extraction
+  // completes as SUCCESS at every other layer, so a broken model and a
+  // genuinely empty transcript are indistinguishable anywhere else. This
+  // exercises the real end-to-end write into extraction_yield (migration
+  // 042) for both a healthy run and a zero-atom run, through the real
+  // pipeline — not just the storage-layer unit test.
+  it('records extraction_yield for a healthy run (chunks_in > 0, atoms_out > 0)', async () => {
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    const rows = db.prepare('SELECT session_id, chunks_in, atoms_out FROM extraction_yield').all() as any[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].chunks_in).toBeGreaterThanOrEqual(1);
+    expect(rows[0].atoms_out).toBeGreaterThanOrEqual(1);
+  });
+
+  it('records a zero atoms_out row when the model returns {"atoms":[]} — the exact ADR-015 silent-failure shape', async () => {
+    const llm = makeMockLLM('compressed', JSON.stringify({ atoms: [] }));
+    const embed = makeMockEmbed();
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    const rows = db.prepare('SELECT session_id, chunks_in, atoms_out FROM extraction_yield').all() as any[];
+    expect(rows.length).toBe(1);
+    expect(rows[0].chunks_in).toBeGreaterThanOrEqual(1);
+    expect(rows[0].atoms_out).toBe(0);
+  });
+
+  // Same diagnostic-write-must-never-fail-the-pipeline posture as the
+  // relation_guard_drops test above — DROP the table, force
+  // recordExtractionYield to throw a real SqliteError, and confirm the run
+  // still completes with the memory persisted.
+  it('an extraction_yield write failure does not fail the pipeline — memories still persist', async () => {
+    db.exec('DROP TABLE extraction_yield');
+
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    expect(result.memoriesCreated).toBeGreaterThanOrEqual(1);
+  });
+
   // FEAT-481 SLICE-430 AC-13 fixture (2): as_of-excluded relation, at the
   // fixture level — a real memory produced by the real distillation pipeline
   // (not hand-inserted via the repo, unlike the SLICE-1/SLICE-3-era unit and

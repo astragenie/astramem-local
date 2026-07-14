@@ -35,6 +35,7 @@ export async function doctorCommand(args: string[]): Promise<void> {
       encryptionEnabled: cfg.security.encryption.enabled,
       durabilityGateMode: cfg.distill.durabilityGate,
       extractProfile: cfg.distill.extractProfile,
+      distillCostCap: cfg.distill.costCap,
       // FEAT-479 AC-15 (SLICE-436): real configured cap (previously this
       // call site never passed one, so checkBudget silently always assumed
       // the getChecks() default of 10 regardless of the operator's actual
@@ -45,6 +46,8 @@ export async function doctorCommand(args: string[]): Promise<void> {
       autoCaptureEnabled: cfg.capture.autoCapture.enabled,
       proxyEnabled: cfg.proxy.enabled,
       proxyCaptureEnabled: cfg.proxy.capture.enabled,
+      syncEnabled: cfg.sync.enabled,
+      syncExperimental: cfg.sync.experimental,
       // Mirrors buildApp's devNoAuthActive (src/server/app.ts) — a
       // non-loopback bind refuses devNoAuth at boot, so doctor must apply
       // the same gate rather than reporting the raw config value.

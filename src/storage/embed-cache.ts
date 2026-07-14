@@ -1,6 +1,6 @@
 /**
  * Persistence for the content-hash embedding cache (FEAT-492, migration
- * 042). Backs `CachingEmbedProvider` (src/providers/embed/cache.ts) — this
+ * 043). Backs `CachingEmbedProvider` (src/providers/embed/cache.ts) — this
  * module is pure SQLite access (batched lookup/insert/evict + cumulative
  * hit/miss counters), no provider or hashing logic of its own.
  *

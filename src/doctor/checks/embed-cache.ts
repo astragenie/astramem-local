@@ -9,7 +9,7 @@ import { openProductionDbReadonly, MEANINGFUL_USAGE_THRESHOLD } from './shared.j
 
 /**
  * Purely informational — surfaces `embed_cache_stats`' cumulative hit/miss
- * counters (migration 042, src/storage/embed-cache.ts) so an operator can
+ * counters (migration 043, src/storage/embed-cache.ts) so an operator can
  * SEE the cache doing its job (or not) instead of taking "it's wired" on
  * faith. Never fails doctor (`ok` is always `true` once it can run): a low
  * hit rate is expected and correct on a fresh install or right after a

@@ -1,7 +1,7 @@
 /**
  * Content-hash embedding cache (FEAT-492) — decorator over an inner
  * `EmbedProvider`, ported from cloud's `CachingEmbeddingProvider.cs`
- * pattern. Local flavor: plain SQLite table (migration 042,
+ * pattern. Local flavor: plain SQLite table (migration 043,
  * src/storage/embed-cache.ts) instead of an external cache dependency —
  * Ollama's cost here is wall-clock time on the user's own machine, not
  * money, but re-embedding unchanged content on every distill/reembed run is

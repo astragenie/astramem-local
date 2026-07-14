@@ -73,6 +73,34 @@ export interface ShipperHandle {
   stop(): Promise<void>;
 }
 
+export interface ShipperGateInput {
+  /** `cfg.sync.enabled` — merged from sync.json pairing state at boot
+   * (resolve-runtime.ts). Pairing-owned; `astramem-local pair` flips this to
+   * true on a successful redeem. */
+  enabled: boolean;
+  /** `cfg.sync.experimental` — config.yaml, hand-edit only. `pair` never
+   * touches this field. */
+  experimental: boolean;
+  dataDir: string;
+  /** True under ASTRA_MEMORY_ISOLATED=1 (see resolve-runtime.ts). */
+  isolated: boolean;
+}
+
+/**
+ * Hard gate on top of `enabled` (astramem-local sync-experimental-gate
+ * slice): sync-to-astramem-cloud is currently broken (8868 events failing
+ * HTTP 400, not yet root-caused). Before this gate, `astramem-local pair
+ * <code>` alone set `sync.json`'s `enabled: true` and that was sufficient to
+ * start shipping — anyone who paired hit the broken path. Both `enabled`
+ * (sync.json, pairing-owned) AND `experimental` (config.yaml, hand-edit
+ * only) must now be true, on top of the pre-existing dataDir/isolated
+ * guards `cli/serve.ts` already enforced. Pure/exported so the gate is
+ * unit-testable without spawning a daemon.
+ */
+export function shouldStartShipper(input: ShipperGateInput): boolean {
+  return input.enabled && input.experimental && input.dataDir !== ':memory:' && !input.isolated;
+}
+
 const DEFAULT_BATCH = 200;
 const DEFAULT_INTERVAL_MS = 30_000;
 const BACKOFF_CAP_MS = 15 * 60_000;

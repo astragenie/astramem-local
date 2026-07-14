@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **Content-hash embedding cache (FEAT-492), document-role only.** Ports cloud's
-  `CachingEmbeddingProvider.cs` pattern: a SQLite table (migration 042) keyed
+  `CachingEmbeddingProvider.cs` pattern: a SQLite table (migration 043) keyed
   `(content_hash, model, dim)` caches document-side embeddings so re-running
   distill/reembed over unchanged content issues zero Ollama embed calls.
   `dim` rides in the key alongside `model` (not inferred from it) so a

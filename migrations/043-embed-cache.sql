@@ -1,4 +1,4 @@
--- 042: content-hash embedding cache (FEAT-492).
+-- 043: content-hash embedding cache (FEAT-492).
 --
 -- Local re-embeds identical content from scratch on every distill/reembed
 -- run — Ollama has zero request cost (it's the user's own GPU/CPU), but it
