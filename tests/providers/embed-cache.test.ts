@@ -111,14 +111,14 @@ describe('CachingEmbedProvider', () => {
     const cacheB = new CachingEmbedProvider(innerB, db);
 
     const [vecA] = await cacheA.embed(['same content, different dim']);
-    expect(vecA.length).toBe(4);
+    expect(vecA?.length).toBe(4);
     expect(innerA.calls.length).toBe(1);
 
     // Same model name, same text, but a DIFFERENT configured dim — must be a
     // real miss (a fresh inner.embed call), never a 4-length hit served back
     // as if it were 8-length.
     const [vecB] = await cacheB.embed(['same content, different dim']);
-    expect(vecB.length).toBe(8);
+    expect(vecB?.length).toBe(8);
     expect(innerB.calls.length).toBe(1);
   });
 
