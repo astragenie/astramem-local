@@ -1,6 +1,6 @@
 ---
 id: FEAT-487
-status: pending
+status: declined
 priority: null
 category: retrieval
 target_release: null
@@ -13,7 +13,38 @@ cross_product: [astramem-local]
 tags: ["concern:retrieval", "stack:typescript", "surface:search"]
 ---
 
-# FEAT-487: Turn on the ranking signals that ship at zero
+# FEAT-487: Turn on the ranking signals that ship at zero — **CLOSED, DO NOT BUILD**
+
+> ## VERDICT: KILLED BY ITS OWN GATE (2026-07-13, same day it was written)
+>
+> SLICE-0 (the retrieval diagnostic) ran. It says the misses are **not-in-DB**,
+> not **rank-miss** — by 3:1. And **83% of the rank-misses are UNVERIFIED**.
+>
+> ```
+> single-hop  n=841
+>   rank-ok    386  (46%)   retrieved in top-10, STILL answered wrong  -> answerer/metric, NOT US
+>   not-in-db  344  (41%)   never extracted                            -> EXTRACTION
+>   rank-miss  111  (13%)   ...only 19 VERIFIED                        -> ranking
+> ```
+>
+> **Perfect reranking buys ~+0.96 points** (19 verified questions of 1986). This
+> FEAT budgeted **12-18 hours** and estimated **+7 to +11**. Both were wrong.
+>
+> This FEAT wrote its own kill condition — *"if not-in-DB dominates single-hop
+> misses, CLOSE this FEAT and put the effort into extraction"* — and then met it.
+> A 1-hour gate killed 12-18h of work worth about one point. **That asymmetry was
+> the whole design, and it paid for itself on first use.**
+>
+> **Go do extraction instead.** 344 facts never reached the store: **+17.3 points
+> of ceiling**, vs ranking's ~1.
+>
+> Full analysis: `docs/research/20260713-locomo-retrieval-diagnosis.md`
+> Per-question detail: `docs/research/20260713-locomo-retrieval-diagnosis-singlehop.json`
+>
+> **The one thing still worth doing from this FEAT:** flip ζ and measure it. Entity
+> linkage went from 87%-broken to 99.6%, so there is real data under that weight for
+> the first time. But it is a **cheap flip-and-measure**, not a week — its ceiling is
+> now known to be about a point.
 
 ## The measurement this comes from
 
