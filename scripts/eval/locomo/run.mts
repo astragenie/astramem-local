@@ -81,7 +81,7 @@ import {
 import { ingestConversations, type IngestManifest } from './ingest.mts';
 import { waitForSamplesDistilled, type DistillWaitResult } from './distill-wait.mts';
 import { answerConversations, writeHypothesesJsonl, type AnswerOutcome } from './answer.mts';
-import { diagnoseRetrieval, computeBreakdown, printBreakdown, writeDiagnosisReport, type DiagnosisReport, type DiagnosisRecord } from './diagnose-retrieval.mts';
+import { diagnoseRetrieval, computeBreakdown, printBreakdown, writeDiagnosisReport, type DiagnosisReport, type DiagnosisRecord, type JudgeSummary } from './diagnose-retrieval.mts';
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { partitionRoundRobin } from '../shared/shard.js';
 import { resolveOllamaBaseUrl, queryOllamaStatus, printOllamaTuningGuidance } from '../shared/ollama-tuning.js';
@@ -584,7 +584,20 @@ async function runFull(): Promise<void> {
   let diagnosisPath: string | null = null;
   if (diagnoseRequested) {
     const breakdown = computeBreakdown(allDiagnosisRecords);
-    const diagnosisReport: DiagnosisReport = { records: allDiagnosisRecords, ...breakdown };
+    // run.mts never threads an --llm-judge flag through diagnoseRetrieval
+    // (that's diagnose-retrieval.mts's own CLI-only opt-in, see its file
+    // header's #267 section) -- this is a plain merge of each shard's
+    // per-record judge accounting (issue #267 fix), not a fresh judge run,
+    // so it's derived from allDiagnosisRecords rather than any shard's own
+    // per-shard judge_summary (which computeBreakdown/writeDiagnosisReport
+    // never see across the shard boundary anyway).
+    const judge_summary: JudgeSummary = {
+      enabled: allDiagnosisRecords.some(r => r.judged),
+      total_calls: allDiagnosisRecords.reduce((n, r) => n + r.judge_calls, 0),
+      total_failures: allDiagnosisRecords.reduce((n, r) => n + r.judge_failures, 0),
+      capped_records: allDiagnosisRecords.filter(r => r.judge_capped).length,
+    };
+    const diagnosisReport: DiagnosisReport = { records: allDiagnosisRecords, ...breakdown, judge_summary };
     diagnosisPath = join(runDir, 'diagnosis.json');
     writeDiagnosisReport(diagnosisReport, diagnosisPath);
     printBreakdown(diagnosisReport);

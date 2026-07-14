@@ -127,19 +127,83 @@
  * so a reviewer can spot-check that bucket specifically rather than trust
  * it silently folded into the aggregate.
  *
+ * ── LLM-judge classifier, fixing #267 ───────────────────────────────────
+ *
+ * Issue #267: pure token containment (above) shares the exact bias of the
+ * thing it measures. A hand-verified sample (WS3, n=50, deterministic
+ * across all 10 conversations) found a **42% false-negative rate** in the
+ * `not-in-db` bucket -- facts that WERE correctly stored, worded
+ * differently from gold (`"LGBTQ+ folks"` vs gold's `"LGBTQ+ individuals"`
+ * scores containment 0.5, just under the 0.6 threshold, because LoCoMo's
+ * own `normalizeAnswer` -- faithfully reproduced here, see
+ * `judge/metrics.mts` -- only strips "a/an/the/and", not real stopwords
+ * like "of"/"their"/"for", which dilute recall on any answer phrased as a
+ * full clause). The mirror-image defect also exists: WS6 hand-verified 2/50
+ * `rank-ok` records as coincidental token overlap that should have been
+ * `not-in-db`. Tuning the threshold cannot fix both directions at once --
+ * the fix is a semantic check, not a better cutoff on the same metric.
+ *
+ * `--llm-judge` (opt-in; omitted reproduces the pre-#267 pure-containment
+ * path byte-for-byte, exactly like every other flag in this file) replaces
+ * containment as the DECISION with an LLM yes/no judge
+ * (`judgeContainsFact`), while keeping containment as a cheap, LOCAL
+ * candidate-shortlist step (mirrors WS3's own hand-verification method:
+ * "top-3 candidates by [token] overlap, hand-verified against the real
+ * text" -- see the issue-267 comment). For each pool (matched, then wide
+ * fallback), the top `--judge-top-n` (default 3) hits by containment score
+ * are judged in PRODUCTION RANK order (not containment order) so the first
+ * judge-confirmed match is still the earliest-ranked one a real answerer
+ * would see -- the first "yes" wins, exactly like `firstQualifyingHit`'s
+ * "first hit clearing threshold" semantics, just with a smarter yes/no.
+ *
+ * This single mechanism fixes BOTH directions at once: a `not-in-db`
+ * candidate the judge confirms gets promoted (fixes #267's headline false
+ * negatives); a `rank-ok` candidate the judge REJECTS falls through to the
+ * next candidate / next pool / `not-in-db` (fixes WS6's false positives) --
+ * because every record's top containment candidate is judged regardless of
+ * whether it already clears the old 0.6 threshold.
+ *
+ * Cost control (FEAT-482 lesson: an uncapped LLM judge loop already wedged
+ * this daemon once at ~245 calls -- see CLAUDE.md's "Contradiction
+ * detection ships enabled" section): a single `JudgeBudgetTracker` shared
+ * across the WHOLE run enforces `--judge-max-calls` (default 1200) and
+ * `--judge-wall-clock-ms` (default 900000 = 15min) hard caps. Tripping
+ * either cap does not corrupt results -- remaining un-judged records fall
+ * back to the exact pre-#267 pure-containment classification (flagged
+ * `judge_capped: true` in their record) rather than being silently
+ * mislabeled `not-in-db`. A judge call that errors or returns unparsable
+ * JSON is the SAME non-fatal fallback shape as `contradiction-judge.ts`'s
+ * `onFallback` -- falls back to the old containment+precision decision for
+ * that one candidate (flagged via `judge_calls`/`judge_failures` in the
+ * per-record accounting), never silently drops the candidate.
+ *
+ * `--judge-provider` defaults to `codex-subscription` (cloud, metered
+ * against the operator's ChatGPT quota, does NOT contend for the local
+ * GPU) -- deliberately NOT `ollama`, because this diagnostic is meant to
+ * run WHILE an extraction/eval bench may already hold the GPU's single
+ * execution queue (see CLAUDE.md's Ollama 8GB VRAM ceiling note). Pass
+ * `--judge-provider ollama` only when the GPU is confirmed idle
+ * (`curl localhost:11434/api/ps`).
+ *
  * CLI: bun scripts/eval/locomo/diagnose-retrieval.mts --sample <sample.json>
  *        --daemon-url <url> --token <token>
  *        [--production-k 10] [--wide-limit 500] [--threshold 0.6]
  *        [--short-answer-min-precision 0.12]
  *        [--category 1,2,3,4] [--out diagnosis.json]
  *        [--ready <distill-wait-result.json>]
+ *        [--llm-judge] [--judge-provider codex-subscription] [--judge-model <model>]
+ *        [--judge-top-n 3] [--judge-max-calls 1200] [--judge-wall-clock-ms 900000]
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
+import { z } from 'zod';
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, isAdversarial, qaId, type LoCoMoCategory, type LoCoMoQA, type LoCoMoSample } from './lib/types.js';
 import { projectIdFor } from './lib/envelope.js';
 import { recall, type DaemonClientOpts, type SearchHit } from '../shared/daemon-client.js';
 import { stemmedTokens } from './judge/metrics.mts';
+import { OllamaLLMProvider } from '../../../src/providers/llm/ollama.js';
+import { CodexSubscriptionLLMProvider } from '../../../src/providers/llm/codex-subscription.js';
+import type { LLMProvider } from '../../../src/contracts/llm.js';
 
 export type Classification = 'not-in-db' | 'rank-miss' | 'rank-ok';
 
@@ -183,6 +247,26 @@ export interface DiagnosisRecord {
    *  record's classification -- the production-matched pool when found
    *  there, otherwise the wide pool. */
   total_hits: number;
+  /** True when the LLM judge (#267 fix) actually decided this record's
+   *  classification -- false when `--llm-judge` was never passed (pure
+   *  pre-#267 containment path) OR the shared judge budget was already
+   *  exhausted before this record's turn (see `judge_capped`). */
+  judged: boolean;
+  /** Total judge calls spent on this record (both pools combined). 0 when
+   *  `judged` is false. */
+  judge_calls: number;
+  /** Judge calls that errored or returned unparsable JSON for this record
+   *  (each one individually fell back to the old containment+precision
+   *  decision for that one candidate, same non-fatal shape as
+   *  `contradiction-judge.ts`'s `onFallback`) -- always <= `judge_calls`. */
+  judge_failures: number;
+  /** True when the shared run-level judge budget (`--judge-max-calls` /
+   *  `--judge-wall-clock-ms`) was already exhausted before this record could
+   *  be judged, so it fell back to the exact pre-#267 pure-containment
+   *  classification instead. Distinguishes "the judge looked and found
+   *  nothing" from "the judge never got a turn" -- the latter should be
+   *  re-run, not trusted as a judged verdict. */
+  judge_capped: boolean;
 }
 
 export interface CategoryBreakdown {
@@ -206,10 +290,26 @@ export interface CategoryBreakdown {
   unverified_rank_n: number;
 }
 
+/** Run-level accounting for the #267 LLM-judge path -- always present, all
+ *  zero/false when `--llm-judge` was never passed (unjudged run). Lets a
+ *  reader tell "this bucket split is judge-verified" from "this is the old
+ *  pure-containment split" without re-deriving it from every record. */
+export interface JudgeSummary {
+  enabled: boolean;
+  total_calls: number;
+  total_failures: number;
+  /** Records where `judge_capped` is true -- the shared budget ran out
+   *  before every record got a turn. Non-zero means the bucket split below
+   *  is a MIX of judge-verified and old-containment-fallback records; see
+   *  each record's own `judge_capped` flag to tell which is which. */
+  capped_records: number;
+}
+
 export interface DiagnosisReport {
   per_category: CategoryBreakdown[];
   overall: CategoryBreakdown;
   records: DiagnosisRecord[];
+  judge_summary: JudgeSummary;
 }
 
 /** Same answer-string derivation `judge/metrics.mts`'s `scoreHypothesis`
@@ -346,6 +446,146 @@ function firstQualifyingHit(
   return null;
 }
 
+// ── LLM-judge classifier (#267 fix) ─────────────────────────────────────
+
+/** Stable marker so a mock/test LLMProvider can route judge calls to a
+ *  dedicated branch, mirroring `contradiction-judge.ts`'s
+ *  `CONTRADICTION_JUDGE_MARKER` pattern. */
+export const RETRIEVAL_JUDGE_MARKER = 'astramem-retrieval-diagnostic-judge-v1';
+
+const RetrievalJudgeSchema = z.object({ match: z.boolean() });
+
+const JUDGE_SYSTEM_PROMPT = `${RETRIEVAL_JUDGE_MARKER}. You are checking whether a stored memory
+statement already contains the fact a reference answer states -- even if worded completely
+differently (synonyms, paraphrase, a different sentence structure all still count as a match).
+Respond with a single JSON object: {"match": true|false}.
+match=true only if the stored memory asserts the SAME fact as the reference answer, in the
+context of the question asked. match=false if the stored memory is about a different fact, a
+different entity, or only shares incidental words with no real semantic overlap.`;
+
+/** Default top-N containment-ranked candidates judged per pool -- mirrors
+ *  WS3's own hand-verification method (see the file header). Bounds the
+ *  judge to at most `judgeTopN` calls per pool per record regardless of
+ *  pool size (12 or 500), so the wide pool's larger size never translates
+ *  into materially more judge calls. */
+export const DEFAULT_JUDGE_TOP_N = 3;
+/** Default run-level judge call cap (FEAT-482 lesson -- see file header). */
+export const DEFAULT_JUDGE_MAX_CALLS = 1200;
+/** Default run-level judge wall-clock cap, ms (15 minutes). */
+export const DEFAULT_JUDGE_WALL_CLOCK_MS = 900_000;
+
+/** Shared, run-level (not per-record) budget -- construct exactly ONCE per
+ *  `diagnoseRetrieval` call and pass it through every record so the caps
+ *  apply to the WHOLE run, not per-question. */
+export class JudgeBudgetTracker {
+  calls = 0;
+  private readonly startedAt = Date.now();
+  constructor(private readonly maxCalls: number, private readonly maxWallClockMs: number) {}
+  tripped(): boolean {
+    return this.calls >= this.maxCalls || (Date.now() - this.startedAt) >= this.maxWallClockMs;
+  }
+  spend(): void { this.calls++; }
+}
+
+/** Single yes/no judge call. Never throws -- a thrown/rejected `chat()` or
+ *  unparsable JSON response returns `ok: false` (same non-fatal shape as
+ *  `contradiction-judge.ts`'s `onFallback`) so the caller can fall back to
+ *  the old containment+precision decision for that one candidate instead of
+ *  silently dropping it or silently miscounting it as a confirmed "no". */
+export async function judgeContainsFact(
+  llm: LLMProvider,
+  question: string,
+  goldAnswer: string,
+  hitText: string,
+): Promise<{ match: boolean; ok: boolean }> {
+  try {
+    const result = await llm.chat(
+      [
+        { role: 'system', content: JUDGE_SYSTEM_PROMPT },
+        { role: 'user', content: `Question: ${question}\nReference answer: ${goldAnswer}\nStored memory: ${hitText}` },
+      ],
+      { temperature: 0, json: true },
+    );
+    const parsed = RetrievalJudgeSchema.safeParse(JSON.parse(result.text));
+    return parsed.success ? { match: parsed.data.match, ok: true } : { match: false, ok: false };
+  } catch {
+    return { match: false, ok: false };
+  }
+}
+
+export interface JudgeMatchResult {
+  found: { rank: number; overlap: number } | null;
+  judgeCalls: number;
+  judgeFailures: number;
+  /** True iff the shared budget was already tripped before this pool's
+   *  candidates could be judged at all -- caller should fall back to the
+   *  plain `firstQualifyingHit` result for this pool rather than trust
+   *  `found: null` as a judged verdict. */
+  capped: boolean;
+}
+
+/** Judge-augmented version of `firstQualifyingHit`: containment ranks ALL
+ *  hits (cheap, local, unchanged), the top `topN` by containment score are
+ *  then judged in PRODUCTION RANK order (not containment order) so the
+ *  first judge-confirmed candidate is still the earliest-ranked one a real
+ *  answerer would see -- see the file header for the full rationale. Every
+ *  record's top candidate is judged even when it already clears the old
+ *  0.6 threshold, which is what lets this fix WS6's false positives (a
+ *  coincidental-overlap candidate the judge rejects falls through) and not
+ *  just #267's false negatives (a low-overlap candidate the judge accepts
+ *  gets promoted) with one mechanism. */
+async function firstQualifyingHitByJudge(
+  hits: SearchHit[],
+  question: string,
+  goldAnswer: string,
+  gtTokens: string[],
+  threshold: number,
+  shortAnswerMinPrecision: number,
+  llm: LLMProvider,
+  budget: JudgeBudgetTracker,
+  topN: number,
+): Promise<JudgeMatchResult> {
+  if (budget.tripped()) return { found: null, judgeCalls: 0, judgeFailures: 0, capped: true };
+
+  const scored = hits.map((h, i) => ({ rank: i + 1, overlap: containment(gtTokens, h.text), hit: h }));
+  const candidates = [...scored]
+    .sort((a, b) => b.overlap - a.overlap || a.rank - b.rank)
+    .slice(0, topN)
+    .sort((a, b) => a.rank - b.rank); // judge in production rank order among the shortlist
+
+  let judgeCalls = 0;
+  let judgeFailures = 0;
+  const isShort = gtTokens.length <= SHORT_ANSWER_TOKEN_THRESHOLD;
+
+  for (const c of candidates) {
+    if (budget.tripped()) return { found: null, judgeCalls, judgeFailures, capped: true };
+    budget.spend();
+    judgeCalls++;
+    const { match, ok } = await judgeContainsFact(llm, question, goldAnswer, c.hit.text);
+    if (!ok) {
+      judgeFailures++;
+      // Judge call itself failed -- fall back to the old containment+
+      // precision decision for THIS candidate only, rather than silently
+      // discarding it (same non-fatal-fallback spirit as
+      // contradiction-judge.ts, applied per-candidate here).
+      const passesOld = c.overlap >= threshold && (!isShort || precision(gtTokens, c.hit.text) >= shortAnswerMinPrecision);
+      if (passesOld) return { found: { rank: c.rank, overlap: c.overlap }, judgeCalls, judgeFailures, capped: false };
+      continue;
+    }
+    if (match) return { found: { rank: c.rank, overlap: c.overlap }, judgeCalls, judgeFailures, capped: false };
+  }
+  return { found: null, judgeCalls, judgeFailures, capped: false };
+}
+
+/** Builds the real (network-calling) judge provider for the CLI, per
+ *  `--judge-provider`/`--judge-model`. Defaults to `codex-subscription`
+ *  (cloud, does not contend the local GPU) -- see the file header for why
+ *  `ollama` is opt-in, not the default, for this specific script. */
+export function buildJudgeProvider(providerName: 'codex-subscription' | 'ollama', model?: string): LLMProvider {
+  if (providerName === 'ollama') return new OllamaLLMProvider(model ? { model } : {});
+  return new CodexSubscriptionLLMProvider(model ? { model } : {});
+}
+
 /** Single-pool rank-ok/rank-miss/not-in-db boundary decision, exported for
  *  direct unit testing (diagnose-retrieval.test.ts) without having to mock
  *  a daemon HTTP response. `diagnoseRetrieval` does NOT call this directly
@@ -393,6 +633,15 @@ export interface DiagnoseOpts {
    *  finished distilling within the run's timeout instead of misreading an
    *  empty/partial recall as "not-in-db". */
   readySampleIds?: Set<string>;
+  /** #267 fix: when supplied, every record's classification is decided by
+   *  `firstQualifyingHitByJudge` instead of plain `firstQualifyingHit` --
+   *  see the file header. Omit to reproduce the exact pre-#267
+   *  pure-containment behavior byte-for-byte (existing callers, tests, and
+   *  CI are unaffected unless they opt in). */
+  llm?: LLMProvider;
+  judgeTopN?: number;
+  judgeMaxCalls?: number;
+  judgeWallClockMs?: number;
 }
 
 export async function diagnoseRetrieval(
@@ -408,6 +657,15 @@ export async function diagnoseRetrieval(
   const matchedLimit = vecKMatchedLimit(productionK);
   const records: DiagnosisRecord[] = [];
 
+  // #267 fix: ONE budget tracker shared across the entire run (not
+  // per-record) -- see the file header's "Cost control" paragraph. Absent
+  // when opts.llm is not supplied (pure pre-#267 path, zero judge calls
+  // possible so a tracker would be dead weight).
+  const judgeTopN = opts.judgeTopN ?? DEFAULT_JUDGE_TOP_N;
+  const budget = opts.llm
+    ? new JudgeBudgetTracker(opts.judgeMaxCalls ?? DEFAULT_JUDGE_MAX_CALLS, opts.judgeWallClockMs ?? DEFAULT_JUDGE_WALL_CLOCK_MS)
+    : undefined;
+
   for (const sample of samples) {
     if (opts.readySampleIds !== undefined && !opts.readySampleIds.has(sample.sample_id)) continue;
     const project = projectIdFor(sample.sample_id);
@@ -422,11 +680,28 @@ export async function diagnoseRetrieval(
         continue;
       }
 
+      let judge_calls = 0;
+      let judge_failures = 0;
+      let judge_capped = false;
+
       // Call 1: production-matched pool (same vecK as the real k=productionK
       // answerer call). Decides rank-ok/rank-miss with a genuinely
       // apples-to-apples measurement -- see the file header.
       const matchedHits = await recall(client, { text: qa.question, limit: matchedLimit, filters: { project } });
-      const matchedFound = firstQualifyingHit(matchedHits, gtTokens, threshold, shortAnswerMinPrecision);
+      let matchedFound: { rank: number; overlap: number } | null;
+      if (opts.llm && budget) {
+        const r = await firstQualifyingHitByJudge(matchedHits, qa.question, answerStr, gtTokens, threshold, shortAnswerMinPrecision, opts.llm, budget, judgeTopN);
+        matchedFound = r.found;
+        judge_calls += r.judgeCalls;
+        judge_failures += r.judgeFailures;
+        judge_capped = judge_capped || r.capped;
+        // Budget exhausted before this pool was judged at all -- fall back
+        // to the plain pre-#267 decision for this pool rather than trust an
+        // un-judged `found: null` as a real verdict.
+        if (r.capped) matchedFound = firstQualifyingHit(matchedHits, gtTokens, threshold, shortAnswerMinPrecision);
+      } else {
+        matchedFound = firstQualifyingHit(matchedHits, gtTokens, threshold, shortAnswerMinPrecision);
+      }
 
       let classification: Classification;
       let match_rank: number | null;
@@ -448,7 +723,17 @@ export async function diagnoseRetrieval(
         // opposite-remedies bucket), but rank_verified: false flags that
         // its match_rank is exploratory, not comparable to production.
         const wideHits = await recall(client, { text: qa.question, limit: wideLimit, filters: { project } });
-        const wideFound = firstQualifyingHit(wideHits, gtTokens, threshold, shortAnswerMinPrecision);
+        let wideFound: { rank: number; overlap: number } | null;
+        if (opts.llm && budget) {
+          const r = await firstQualifyingHitByJudge(wideHits, qa.question, answerStr, gtTokens, threshold, shortAnswerMinPrecision, opts.llm, budget, judgeTopN);
+          wideFound = r.found;
+          judge_calls += r.judgeCalls;
+          judge_failures += r.judgeFailures;
+          judge_capped = judge_capped || r.capped;
+          if (r.capped) wideFound = firstQualifyingHit(wideHits, gtTokens, threshold, shortAnswerMinPrecision);
+        } else {
+          wideFound = firstQualifyingHit(wideHits, gtTokens, threshold, shortAnswerMinPrecision);
+        }
         total_hits = wideHits.length;
         if (wideFound) {
           classification = 'rank-miss';
@@ -476,11 +761,22 @@ export async function diagnoseRetrieval(
         rank_verified,
         short_answer: gtTokens.length <= SHORT_ANSWER_TOKEN_THRESHOLD,
         total_hits,
+        judged: opts.llm !== undefined && !judge_capped,
+        judge_calls,
+        judge_failures,
+        judge_capped,
       });
     }
   }
 
-  return { records, ...computeBreakdown(records) };
+  const judge_summary: JudgeSummary = {
+    enabled: opts.llm !== undefined,
+    total_calls: budget?.calls ?? 0,
+    total_failures: records.reduce((n, r) => n + r.judge_failures, 0),
+    capped_records: records.filter(r => r.judge_capped).length,
+  };
+
+  return { records, ...computeBreakdown(records), judge_summary };
 }
 
 function pct(n: number, total: number): number {
@@ -512,7 +808,7 @@ export function computeBreakdown(records: DiagnosisRecord[]): { per_category: Ca
   return { per_category: perCategory, overall: breakdownFor('overall', 'overall', records) };
 }
 
-export function printBreakdown(report: Pick<DiagnosisReport, 'per_category' | 'overall'>): void {
+export function printBreakdown(report: Pick<DiagnosisReport, 'per_category' | 'overall' | 'judge_summary'>): void {
   console.log('\nRetrieval diagnosis (not-in-db / rank-miss / rank-ok):');
   const row = (b: CategoryBreakdown): string => {
     const flags: string[] = [];
@@ -531,6 +827,17 @@ export function printBreakdown(report: Pick<DiagnosisReport, 'per_category' | 'o
   };
   for (const b of report.per_category) console.log(row(b));
   console.log(row(report.overall));
+  const js = report.judge_summary;
+  if (js.enabled) {
+    console.log(
+      `\n#267 LLM-judge: ${js.total_calls} calls, ${js.total_failures} failures (fell back to containment per-candidate)` +
+      (js.capped_records > 0
+        ? `, ${js.capped_records} record(s) hit the shared budget cap and fell back to pure containment -- re-run with a higher --judge-max-calls/--judge-wall-clock-ms for a fully judged split.`
+        : ', budget cap never tripped -- every record above was judge-verified.'),
+    );
+  } else {
+    console.log('\n#267 LLM-judge: not used (pass --llm-judge) -- the split above is pure token containment, known to have a ~42% false-negative rate in the not-in-db bucket (see issue #267).');
+  }
 }
 
 export function writeDiagnosisReport(report: DiagnosisReport, path: string): void {
@@ -565,9 +872,15 @@ if (isMain) {
     : undefined;
   const outPath = get('--out') ?? 'diagnosis.json';
   const readyPath = get('--ready');
+  const useLlmJudge = args.includes('--llm-judge');
+  const judgeProvider = (get('--judge-provider') ?? 'codex-subscription') as 'codex-subscription' | 'ollama';
+  const judgeModel = get('--judge-model');
+  const judgeTopN = Number(get('--judge-top-n') ?? String(DEFAULT_JUDGE_TOP_N));
+  const judgeMaxCalls = Number(get('--judge-max-calls') ?? String(DEFAULT_JUDGE_MAX_CALLS));
+  const judgeWallClockMs = Number(get('--judge-wall-clock-ms') ?? String(DEFAULT_JUDGE_WALL_CLOCK_MS));
 
   if (!samplePath || !daemonUrl || !token) {
-    console.error('Usage: bun diagnose-retrieval.mts --sample <path> --daemon-url <url> --token <token> [--production-k 10] [--wide-limit 500] [--threshold 0.6] [--short-answer-min-precision 0.12] [--category 1,2,3,4] [--out diagnosis.json] [--ready <distill-wait-result.json>]');
+    console.error('Usage: bun diagnose-retrieval.mts --sample <path> --daemon-url <url> --token <token> [--production-k 10] [--wide-limit 500] [--threshold 0.6] [--short-answer-min-precision 0.12] [--category 1,2,3,4] [--out diagnosis.json] [--ready <distill-wait-result.json>] [--llm-judge] [--judge-provider codex-subscription] [--judge-model <model>] [--judge-top-n 3] [--judge-max-calls 1200] [--judge-wall-clock-ms 900000]');
     process.exit(1);
   }
 
@@ -580,8 +893,15 @@ if (isMain) {
 
   const totalQa = samples.reduce((n, s) => n + s.qa.filter(q => !isAdversarial(q.category) && (categories ?? DEFAULT_CATEGORIES).includes(q.category)).length, 0);
   console.log(`Diagnosing ${totalQa} QA pairs across ${samples.length} conversation(s) (production-k=${productionK} -> matched-limit=${vecKMatchedLimit(productionK)}, wide-limit=${wideLimit}, threshold=${threshold}, short-answer-min-precision=${shortAnswerMinPrecision})...`);
+  if (useLlmJudge) {
+    console.log(`#267 LLM-judge ENABLED: provider=${judgeProvider}${judgeModel ? ` model=${judgeModel}` : ''}, top-n=${judgeTopN}, max-calls=${judgeMaxCalls}, wall-clock-ms=${judgeWallClockMs}`);
+  }
+  const llm = useLlmJudge ? buildJudgeProvider(judgeProvider, judgeModel) : undefined;
 
-  const report = await diagnoseRetrieval({ baseUrl: daemonUrl, token }, samples, { productionK, wideLimit, threshold, shortAnswerMinPrecision, categories, readySampleIds });
+  const report = await diagnoseRetrieval({ baseUrl: daemonUrl, token }, samples, {
+    productionK, wideLimit, threshold, shortAnswerMinPrecision, categories, readySampleIds,
+    llm, judgeTopN, judgeMaxCalls, judgeWallClockMs,
+  });
   writeDiagnosisReport(report, outPath);
   printBreakdown(report);
   console.log(`\nFull per-question detail -> ${outPath}`);
