@@ -1,5 +1,46 @@
 # Handoff — reranking / retrieval investigation (2026-07-13 late)
 
+> # ⛔ UPDATE — THE GATE RAN. DO NOT BUILD THE RANKING WORK.
+>
+> The retrieval diagnostic completed *after* this handoff was written. It killed
+> FEAT-487. **Read this before anything else in the document below.**
+>
+> ```
+> single-hop  n=841
+>   rank-ok    386  (46%)   retrieved in top-10, STILL answered wrong
+>   not-in-db  344  (41%)   never extracted
+>   rank-miss  111  (13%)   ...but only 19 are VERIFIED (83% unverified)
+> ```
+>
+> **Perfect reranking buys ~+0.96 overall points** — 19 verified questions out of
+> 1986. FEAT-487 budgeted 12-18h and estimated +7 to +11. Both were wrong.
+>
+> | bucket | n | ceiling | owner |
+> |---|---|---|---|
+> | `rank-ok` | 386 | **+19.4** | **nobody — answerer / token-F1** |
+> | `not-in-db` | 344 | **+17.3** | **extraction** |
+> | `rank-miss` (verified) | **19** | **+0.96** | ranking |
+>
+> **`rank-ok` is the LARGEST bucket** — the correct memory was retrieved, in the
+> top-10, and the answer still scored wrong. That is the cheap fixed answerer plus
+> token-F1, **not a memory problem**. ~46% of the single-hop gap is unreachable by
+> anything we build.
+>
+> **Go do extraction.** 344 facts never reached the store. Start by reading the
+> `not-in-db` records in
+> `docs/research/20260713-locomo-retrieval-diagnosis-singlehop.json` (197 are
+> short-answer / weak signal; **147 are solid**) and finding the pattern.
+>
+> Full analysis: `docs/research/20260713-locomo-retrieval-diagnosis.md` (PR #265).
+> FEAT-487 is marked `declined`.
+>
+> **The one thing still worth doing from FEAT-487:** flip ζ and measure it — entity
+> linkage went 87%-broken → 99.6%, so there's real data under that weight for the
+> first time. But it's a **cheap flip-and-measure**, not a week. Ceiling ~1 point.
+>
+> Everything below is still accurate as *context*. Its **recommendation** is not.
+
+
 **Objective:** decide whether ranking work (ζ, cross-encoder rerank, multi-hop
 decomposition) can move the LoCoMo score, and if so, do it.
 
