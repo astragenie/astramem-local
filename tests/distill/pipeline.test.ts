@@ -201,6 +201,9 @@ describe('runPipeline', () => {
           text: 'astramemory-local uses SQLite for storage',
           importance: 0.9,
           confidence: 0.9,
+          // FEAT-485: decision atoms require non-empty evidence — these
+          // fixtures test relations[] aggregation, not evidence policy.
+          evidence: 'astramemory-local uses SQLite for storage',
           entities: [
             { name: 'astramemory-local', kind: 'project' },
             { name: 'SQLite', kind: 'tech' },
@@ -248,6 +251,9 @@ describe('runPipeline', () => {
           text: 'astramemory-local uses SQLite for storage',
           importance: 0.9,
           confidence: 0.9,
+          // FEAT-485: decision atoms require non-empty evidence — these
+          // fixtures test relations[] aggregation, not evidence policy.
+          evidence: 'astramemory-local uses SQLite for storage',
           entities: [
             { name: 'astramemory-local', kind: 'project' },
             { name: 'SQLite', kind: 'tech' },

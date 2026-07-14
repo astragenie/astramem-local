@@ -33,6 +33,7 @@ import type { DurabilityGateMode } from './durability-gate.js';
 import { childLogger } from '../log/logger.js';
 import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
 import { recordEntityGuardDrops } from '../storage/entity-guard-log.js';
+import { recordEvidenceGuardDrops } from '../storage/evidence-guard-log.js';
 import { recordExtractionYield } from '../storage/extraction-yield-log.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
@@ -284,6 +285,31 @@ export async function runPipeline(
     pipeLog.warn(
       { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
       'entity-name guard-drop counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
+    );
+  }
+
+  // FEAT-485: same diagnostic-write pattern one level up — persist
+  // requireEvidenceForRichTypes' per-reason (atom type) drop counts so the
+  // doctor "Evidence provenance" canary can tell "model never emits evidence"
+  // apart from "model emits lesson/decision atoms without evidence and the
+  // guard drops every one". Its own try/catch, never re-thrown — a write
+  // failure here must never be reinterpreted as an extract-stage failure.
+  try {
+    const evidenceDropTotals: Record<string, number> = {};
+    for (const r of extractResults) {
+      for (const [reason, count] of Object.entries(r.evidenceDropCounts)) {
+        evidenceDropTotals[reason] = (evidenceDropTotals[reason] ?? 0) + count;
+      }
+    }
+    recordEvidenceGuardDrops(
+      ctx.db,
+      Object.entries(evidenceDropTotals).map(([reason, count]) => ({ reason, count })),
+      ctx.sessionId,
+    );
+  } catch (err) {
+    pipeLog.warn(
+      { stage: 'extract', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+      'evidence guard-drop counter write failed (non-fatal, diagnostic only — extraction already succeeded)',
     );
   }
 
