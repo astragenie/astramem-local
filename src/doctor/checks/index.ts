@@ -125,6 +125,8 @@ import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-suppl
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkBackupRecency } from './backup-recency.js';
 import { checkMemorySentinel } from './memory-sentinel.js';
+import { checkMigrationSelfHeal } from './migration-self-heal.js';
+import { checkHandlerRunLog } from './handler-run-log.js';
 import { checkRetention } from './retention.js';
 
 export type { Check, CheckResult };
@@ -216,6 +218,8 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkSpoolQuarantine(dataDir),
     checkEmbedCacheHitRate(dataDir, encryptionEnabled),
     checkMemorySentinel(),
+    checkMigrationSelfHeal(dataDir, encryptionEnabled),
+    checkHandlerRunLog(dataDir, encryptionEnabled),
     checkRetention(dataDir, opts.retentionConfig ?? defaultConfig().retention),
   ];
 

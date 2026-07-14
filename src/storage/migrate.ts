@@ -5,6 +5,8 @@ import { SCHEMA_VERSION } from '../server/lib/wire-meta.js';
 import { MIGRATIONS_DIR } from './schema-version.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { contentHash } from './content-hash.js';
+import { selfHealMissingColumns, recordSelfHealActions } from './migration-self-heal.js';
+import { logger } from '../log/logger.js';
 
 /** Placeholder substituted into migration SQL for the vec schema dim
  * (FEAT-409). Only migrations/001-init.sql uses it today; substitution is
@@ -259,6 +261,20 @@ export function migrate(db: DB, dim: number = DEFAULT_EMBED_DIM): void {
     }
   });
   verifyAndBackfill();
+
+  // FEAT-495 item 1: schema_version recording a migration as applied does
+  // not prove its DDL actually landed — see migration-self-heal.ts's file
+  // header. Runs on every boot (migrate() is the one DDL entrypoint every
+  // caller already goes through), not gated behind doctor, which never runs
+  // unattended.
+  const selfHealActions = selfHealMissingColumns(db);
+  if (selfHealActions.length > 0) {
+    logger.warn(
+      { actions: selfHealActions },
+      `migrate: self-healed ${selfHealActions.length} missing column(s) from partially-applied migrations`,
+    );
+    recordSelfHealActions(db, selfHealActions);
+  }
 
   // Boot-time schema-version drift guard: the SCHEMA_VERSION constant in
   // wire-meta.ts MUST match the highest migration applied to the DB.

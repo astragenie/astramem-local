@@ -24,6 +24,7 @@ import { join } from 'node:path';
 import type { DB } from '../storage/db.js';
 import type { MemoryScope } from '../contracts/index.js';
 import { logger } from '../log/logger.js';
+import { safeJsonColumn, safeParseEventPayload } from '../storage/json-guard.js';
 
 export const SYNC_PROTOCOL = 'astramem-sync@1' as const;
 
@@ -213,7 +214,7 @@ export function listUnsynced(db: DB, batchSize: number): UnsyncedRow[] {
           m.scope IN ('team', 'org')
           OR (
             e.event_type = 'erase_request'
-            AND json_extract(e.payload_json, '$.scope') IN ('team', 'org')
+            AND json_extract(${safeJsonColumn('e.payload_json')}, '$.scope') IN ('team', 'org')
           )
         )
       ORDER BY e.seq ASC
@@ -261,7 +262,7 @@ export function countUnsynced(db: DB): number {
           m.scope IN ('team', 'org')
           OR (
             e.event_type = 'erase_request'
-            AND json_extract(e.payload_json, '$.scope') IN ('team', 'org')
+            AND json_extract(${safeJsonColumn('e.payload_json')}, '$.scope') IN ('team', 'org')
           )
         )
     `)
@@ -366,7 +367,15 @@ export function buildEnvelope(
       event_id: r.event_id,
       event_type: r.event_type,
       atom_id: r.atom_id,
-      payload_json: withCurrentScope(r, r.payload_json !== null ? (JSON.parse(r.payload_json) as Record<string, unknown>) : null),
+      payload_json: withCurrentScope(
+        r,
+        safeParseEventPayload(r.payload_json, err =>
+          logger.warn(
+            { event_id: r.event_id, seq: r.seq, atom_id: r.atom_id, error_message: String(err) },
+            'sync: event has malformed payload_json — shipping with null payload rather than failing the whole batch',
+          ),
+        ),
+      ),
       content_hash: r.content_hash,
       created_at: r.created_at,
     })),
