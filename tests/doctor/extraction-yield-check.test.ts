@@ -72,7 +72,7 @@ describe('doctor "Extraction yield" check (ADR-015 zero-atom-yield canary)', () 
     const result = await checkFor(dir).run();
     expect(result.ok).toBe(true);
     expect(result.message).toContain('not enough distill activity');
-    expect(result.message).toContain('5 run(s)');
+    expect(result.message).toContain('5 eligible run(s)');
   });
 
   it('>= threshold runs, healthy yield (below the alarm floor) — stays quiet', async () => {
@@ -110,11 +110,11 @@ describe('doctor "Extraction yield" check (ADR-015 zero-atom-yield canary)', () 
     const result = await checkFor(dir).run();
     expect(result.ok).toBe(false);
     expect(result.message).toContain('produced ZERO atoms');
-    expect(result.message).toContain('20/25 runs');
+    expect(result.message).toContain('20/25 eligible runs');
     expect(result.fix).toBeDefined();
   });
 
-  it('>= threshold runs but all have zero chunks in — nothing eligible to judge, stays ok:true', async () => {
+  it('>= threshold TOTAL rows but all have zero chunks in — 0 eligible, stays ok:true as "not enough activity"', async () => {
     const dbPath = join(dir, 'memory.sqlite');
     const db = openDb(dbPath);
     migrate(db);
@@ -125,6 +125,34 @@ describe('doctor "Extraction yield" check (ADR-015 zero-atom-yield canary)', () 
 
     const result = await checkFor(dir).run();
     expect(result.ok).toBe(true);
-    expect(result.message).toContain('nothing to judge');
+    // 25 total rows but 0 eligible (chunks_in > 0) -- eligible count, not the raw row
+    // count, gates this check, so 0 eligible reads as "not enough activity", not a
+    // separate "nothing to judge" branch (#300 review finding).
+    expect(result.message).toContain('not enough distill activity');
+    expect(result.message).toContain('0 eligible run(s)');
+  });
+
+  it('MIXED window: 25 rows, only 8 eligible (chunks_in > 0), all 8 zero-atom — ' +
+    'must NOT warn (eligible 8 < threshold 20) and the message denominator must read 8, not 25', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    // 17 zero-chunk rows -- not real extraction attempts, must not count toward the floor.
+    for (let i = 0; i < 17; i++) {
+      recordExtractionYield(db, { sessionId: `empty${i}`, chunksIn: 0, atomsOut: 0 });
+    }
+    // 8 eligible rows, all zero-atom -- would be a 100% zero-yield rate IF judged, but
+    // the eligible sample (8) is below the MEANINGFUL_USAGE_THRESHOLD (20) floor.
+    for (let i = 0; i < 8; i++) {
+      recordExtractionYield(db, { sessionId: `zero${i}`, chunksIn: 2, atomsOut: 0 });
+    }
+    db.close();
+
+    const result = await checkFor(dir).run();
+    expect(result.ok).toBe(true);
+    expect(result.message).toContain('not enough distill activity');
+    expect(result.message).toContain('8 eligible run(s)');
+    // The 25-row total must never leak into the message as the denominator.
+    expect(result.message).not.toContain('25');
   });
 });
