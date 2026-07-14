@@ -18,6 +18,30 @@ function makeAtom(text: string) {
   return { type: 'lesson' as const, text, importance: 0.5, confidence: 0.5 };
 }
 
+// W4 review fix (20260714-review-w4-terse-atoms.md, blocking finding): pulls
+// every atom "text" value out of a prompt's few-shot examples block so its
+// word count can be asserted mechanically, instead of only checking the one
+// or two examples a given prompt edit happened to touch. The regex is
+// escaped-quote aware ((?:[^"\\]|\\.)*) so it doesn't truncate at an embedded
+// \" (see the "Trans Lives Matter" sweeper example) — a naive [^"]+ silently
+// clips those texts short and would under-count words.
+function extractExampleAtomTexts(prompt: string): string[] {
+  const exStart = prompt.indexOf('Examples (illustrative');
+  expect(exStart).toBeGreaterThan(-1);
+  const block = prompt.slice(exStart);
+  const re = /"text":"((?:[^"\\]|\\.)*)"/g;
+  const texts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(block))) {
+    texts.push(match[1].replace(/\\"/g, '"'));
+  }
+  return texts;
+}
+
+function wordCount(text: string): number {
+  return text.trim().split(/\s+/).length;
+}
+
 // SLICE-433 AC-7: cap bumped 500 -> 1000 so the v3 300-800 char rich-shape
 // target is never schema-rejected or silently truncated. memories.text is a
 // plain SQLite TEXT column (migrations/001-init.sql) — no migration needed.
@@ -446,8 +470,22 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
     expect(match).not.toBeNull();
     const text = match![1];
     expect(text.startsWith('Sergey')).toBe(true);
-    const wordCount = text.trim().split(/\s+/).length;
-    expect(wordCount).toBeLessThanOrEqual(20);
+    expect(wordCount(text)).toBeLessThanOrEqual(20);
+  });
+
+  // Review fix (20260714-review-w4-terse-atoms.md): the two per-example tests
+  // above only covered the examples this PR happened to rework (Montessori).
+  // Four OTHER examples shipped at 21-24 words, directly contradicting the
+  // terseness rule 50 lines above them, in a block whose own header says
+  // "the shape of these IS the spec" — invisible to every test that existed
+  // at review time. This asserts across the WHOLE examples block so a future
+  // edit can't silently reintroduce an over-length "spec" example again.
+  it('every few-shot example atom text in the examples block is <=20 words (verbosity-tax guard)', () => {
+    const texts = extractExampleAtomTexts(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL);
+    expect(texts.length).toBeGreaterThanOrEqual(10);
+    for (const text of texts) {
+      expect(wordCount(text)).toBeLessThanOrEqual(20);
+    }
   });
 });
 
@@ -577,7 +615,18 @@ describe('EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER content (dual-pass extracti
     expect(match).not.toBeNull();
     const text = match![1];
     expect(text.startsWith('Melanie')).toBe(true);
-    const wordCount = text.trim().split(/\s+/).length;
-    expect(wordCount).toBeLessThanOrEqual(20);
+    expect(wordCount(text)).toBeLessThanOrEqual(20);
+  });
+
+  // Review fix (20260714-review-w4-terse-atoms.md, item 2): lock in that the
+  // sweeper prompt stays compliant — it was already <=20 words across every
+  // example at review time, this just makes that a standing guarantee instead
+  // of a one-time manual audit finding.
+  it('every few-shot example atom text in the examples block is <=20 words (verbosity-tax guard)', () => {
+    const texts = extractExampleAtomTexts(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER);
+    expect(texts.length).toBeGreaterThanOrEqual(5);
+    for (const text of texts) {
+      expect(wordCount(text)).toBeLessThanOrEqual(20);
+    }
   });
 });

@@ -393,20 +393,20 @@ Examples (illustrative only, not exhaustive — the shape of these IS the spec: 
 
 1. Input: "My daughter Alice is starting kindergarten in September, I honestly can't believe it — she's moving up from the same preschool she's been at for two years." ->
 {"atoms":[
-  {"type":"event","text":"Sergey's daughter Alice is starting kindergarten in September, moving up from the same preschool she has attended for the past two years.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
+  {"type":"event","text":"Sergey's daughter Alice starts kindergarten in September, moving up from the preschool she attended for two years.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
 ]}
 
 2. Input: "I moved to Austin last month for a new job at Anthropic. Honestly loving the move so far, way better weather than where I was before." ->
 {"atoms":[
-  {"type":"fact","text":"Sergey moved to Austin last month to start a new job at Anthropic, relocating from where he had been living before.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"},{"name":"Anthropic","kind":"org"}]},
-  {"type":"note","text":"Sergey has been enjoying his recent move to Austin so far, and prefers the weather there over where he lived previously.","importance":0.4,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]}
+  {"type":"fact","text":"Sergey moved to Austin last month to start a new job at Anthropic.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"},{"name":"Anthropic","kind":"org"}]},
+  {"type":"note","text":"Sergey has been enjoying his move to Austin, preferring the weather there.","importance":0.4,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Austin","kind":"other"}]}
 ]}
 
 3. Input: "We ended up going with the Montessori school down the street for Alice instead of the public one, mostly because of the smaller class sizes." ->
 {"atoms":[
-  {"type":"decision","text":"Sergey and his wife chose Montessori over public school for daughter Alice, citing smaller class sizes.","importance":0.7,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
+  {"type":"decision","text":"Sergey and his wife chose Montessori over public school for their daughter Alice, citing smaller class sizes.","importance":0.7,"confidence":0.85,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
 ]}
-(Terse shape: one fact, 16 words, leads with the decision — not "went with the Montessori school down the street... mostly because" framing.)
+(Terse shape: one fact, 17 words, leads with the decision — not "went with the Montessori school down the street... mostly because" framing.)
 
 4. Input: "Yeah we just talked about the weekend and stuff, nothing major, haha." ->
 {"atoms":[]}
@@ -420,7 +420,7 @@ RIGHT (self-contained, possessor-qualified, states the actual fact instead of de
 6. Input: "Priya: I finally handed in my notice at the old job! -- Sergey: That's amazing, Priya! You've been wanting this for months, I'm so proud of you." ->
 {"atoms":[
   {"type":"event","text":"Priya handed in her notice at her old job.","importance":0.7,"confidence":0.9,"entities":[{"name":"Priya","kind":"actor","subtype":"human"}]},
-  {"type":"note","text":"Sergey told Priya he is proud of her for handing in her notice, noting she had been wanting to make this move for months.","importance":0.5,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}
+  {"type":"note","text":"Sergey told Priya he is proud of her for handing in her notice, which she'd wanted for months.","importance":0.5,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Priya","kind":"actor","subtype":"human"}]}
 ]}
 (Sergey's reaction is kept as its own atom, NOT skipped as sentiment padding — it names who reacted, who it's about, and the specific event that prompted it.)
 
