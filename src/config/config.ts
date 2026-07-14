@@ -696,6 +696,45 @@ export interface Config {
       restoreWindowDays: number;
     };
   };
+  /** Audio-file transcription capture (FEAT-489 Slice A, ADR-017). `mode:
+   *  'off'` (default) is BYTE-IDENTICAL to no audio support at all: the
+   *  `transcribe` pipeline handler is never invoked and the optional
+   *  `astramem-audio` add-on is never imported (packaging design pass
+   *  decision 1 — presence probe only fires when mode !== 'off'). Single
+   *  `mode` enum, not a separate `enabled`/`dryRun` boolean pair — mirrors
+   *  `distill.durabilityGate` / `consolidation.contradictionDetection.mode`'s
+   *  own stated rationale (config.ts's own precedent, restated by the
+   *  packaging design doc as the convention-compliant reading of FEAT-489's
+   *  arch-review note): 'dry-run' runs the handler and produces a
+   *  transcript + distill preview without persisting memories; 'enabled'
+   *  persists the full pipeline output.
+   *
+   *  ADR-017 (third-party speaker consent): recording or transcribing a
+   *  meeting captures every OTHER participant's voice too, not just the
+   *  operator's — a materially different consent posture than
+   *  `capture.autoCapture`'s ADR-012 gate, which only ever captures the
+   *  operator's own agent sessions. Default OFF + explicit per-surface
+   *  opt-in (this field is its own toggle, never bundled with any other
+   *  capture surface) + a doctor WARN row for as long as it stays non-'off'
+   *  (src/doctor/checks/audio-addon.ts, mirroring checkDevNoAuth's
+   *  "genuine every-run reminder while active" pattern, not a one-shot
+   *  wiring canary) are this repo's ADR-017 decision-3 gate. Known gap,
+   *  stated plainly rather than silently skipped: unlike ADR-012's
+   *  auto-capture, `audio.mode` is NOT collected by the `init` interactive
+   *  wizard (gatherInteractive) — no other mode-enum toggle in this file
+   *  (durabilityGate, contradictionDetection) has an interactive wizard
+   *  gate either, so hand-editing config.yaml is this repo's existing
+   *  opt-in mechanism for this whole class of toggle, and the doctor
+   *  WARN-while-active row is the enforcement point this slice ships. A
+   *  live interactive consent prompt at first-enable is a legitimate
+   *  follow-up if product wants a stronger gate than config-edit +
+   *  doctor-WARN, not built here. */
+  audio: {
+    mode: 'off' | 'dry-run' | 'enabled';
+    /** Optional override for the downloaded whisper.cpp model path; unset
+     *  uses the `astramem-audio` add-on's own default download location. */
+    modelPath?: string;
+  };
   /** LLM proxy / auto-capture Tier 3 (FEAT-458, ADR-013). `enabled: false`
    *  (default, and the field's ABSENCE on an existing config.yaml) means no
    *  proxy process is ever started implicitly — the daemon's own boot path
@@ -911,6 +950,13 @@ export function defaultConfig(): Config {
       },
       purge: { restoreWindowDays: 30 },
     },
+    // audio.mode: 'off' — ADR-017-required default; audio.enabled: false is
+    // the shipped disposition, no interactive wizard prompt exists to flip
+    // it (see Config['audio'] doc comment for why config.yaml hand-edit is
+    // this repo's existing opt-in mechanism for this class of toggle).
+    audio: {
+      mode: 'off',
+    },
     proxy: {
       enabled: false,
       experimental: false,
@@ -1017,6 +1063,35 @@ export function applyDurabilityGateGovernance(
     return { ...distill, durabilityGate: 'off' };
   }
   return distill;
+}
+
+/**
+ * FEAT-489 Slice A: `audio.mode` is a closed 3-value enum, same governance
+ * concern `applyDurabilityGateGovernance` documents — config.yaml is
+ * hand-parsed scalars with no schema, so a typo'd mode value would
+ * otherwise pass straight through `deepMerge` unchecked. An invalid value
+ * falls back to `'off'` (the documented, most-conservative default — ADR-017
+ * requires default-OFF, so falling back to anything other than 'off' here
+ * would be the one governance function in this file where "degrade to the
+ * default" and "degrade to the SAFEST value" happen to be the same choice,
+ * which is worth stating rather than assuming).
+ */
+const VALID_AUDIO_MODES: ReadonlySet<Config['audio']['mode']> = new Set(['off', 'dry-run', 'enabled']);
+
+export function applyAudioModeGovernance(
+  audio: Config['audio'],
+  opts: { log?: (message: string) => void } = {},
+): Config['audio'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  if (!VALID_AUDIO_MODES.has(audio.mode)) {
+    log(
+      `[audio-mode-governance] audio.mode=${JSON.stringify(audio.mode)} is not one of ` +
+      "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented, ADR-017-required default). " +
+      'See FEAT-489 / src/pipeline/handlers/transcribe.ts.',
+    );
+    return { ...audio, mode: 'off' };
+  }
+  return audio;
 }
 
 /**
@@ -1248,6 +1323,7 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
     search: applyFusionGovernance(merged.search),
     distill: applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill))),
     consolidation: applyContradictionDetectionGovernance(merged.consolidation),
+    audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),
     retention: applyRetentionGovernance(merged.retention),
   };

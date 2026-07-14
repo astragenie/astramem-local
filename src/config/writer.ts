@@ -409,6 +409,19 @@ export function configToYaml(cfg: Config): string {
     line(1, 'purge'),
     line(2, 'restoreWindowDays', (cfg.capture.purge ?? EMIT_DEFAULTS.capture.purge).restoreWindowDays),
     '',
+    // Audio-file transcription capture (FEAT-489 Slice A, ADR-017) —
+    // mode: 'off' (default) means the transcribe handler and the optional
+    // astramem-audio add-on are never invoked. Wired in from day one so it
+    // never joins the FEAT-461 dropped-field list. modelPath is optional
+    // (unset uses the add-on's own default download location) — omitted
+    // entirely rather than emitted as an empty string, same as
+    // retention.artifactsDir's conditional-emit pattern above.
+    line(0, 'audio'),
+    line(1, 'mode', (cfg.audio ?? EMIT_DEFAULTS.audio).mode),
+    ...((cfg.audio ?? EMIT_DEFAULTS.audio).modelPath
+      ? [line(1, 'modelPath', (cfg.audio ?? EMIT_DEFAULTS.audio).modelPath as string)]
+      : []),
+    '',
     // LLM proxy (FEAT-458, ADR-013) — enabled: false (default) means no
     // proxy process starts implicitly; `upstream` is always emitted quoted
     // (yamlScalar quotes the empty-string default too) since a URL value

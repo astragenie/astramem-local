@@ -5,6 +5,7 @@ import {
   applyFusionGovernance,
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
+  applyAudioModeGovernance,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -220,6 +221,42 @@ describe('applyDurabilityGateGovernance', () => {
   it('loadConfig leaves a valid distill.durabilityGate untouched', () => {
     const cfg = loadConfig({ distill: { durabilityGate: 'strict' } } as any);
     expect(cfg.distill.durabilityGate).toBe('strict');
+  });
+});
+
+// FEAT-489 Slice A / ADR-017: audio.mode is a closed 3-value enum, same
+// config.yaml-has-no-schema governance concern as durabilityGate — an
+// invalid/typo value must fall back to the documented, ADR-017-required
+// 'off' default with a WARN, never silently pass through.
+describe('applyAudioModeGovernance', () => {
+  it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
+    for (const mode of ['off', 'dry-run', 'enabled'] as const) {
+      const audio = { mode };
+      expect(applyAudioModeGovernance(audio)).toEqual(audio);
+    }
+  });
+
+  it('falls back to off and logs why on an invalid/typo value', () => {
+    const audio = { mode: 'on' as any };
+    const logs: string[] = [];
+    const governed = applyAudioModeGovernance(audio, { log: (m) => logs.push(m) });
+
+    expect(governed.mode).toBe('off');
+    expect(logs.some(m => m.includes('audio.mode') && m.includes('on'))).toBe(true);
+  });
+
+  it('loadConfig wires applyAudioModeGovernance in: an invalid override comes back "off"', () => {
+    const cfg = loadConfig({ audio: { mode: 'bogus' as any } } as any);
+    expect(cfg.audio.mode).toBe('off');
+  });
+
+  it('loadConfig leaves a valid audio.mode untouched', () => {
+    const cfg = loadConfig({ audio: { mode: 'dry-run' } } as any);
+    expect(cfg.audio.mode).toBe('dry-run');
+  });
+
+  it('defaultConfig ships audio.mode off', () => {
+    expect(defaultConfig().audio.mode).toBe('off');
   });
 });
 
