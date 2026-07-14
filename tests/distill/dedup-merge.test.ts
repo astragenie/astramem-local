@@ -178,4 +178,69 @@ describe('gatePassBAtoms', () => {
     expect(kept).toEqual([]);
     expect(dropped).toEqual([]);
   });
+
+  // Review findings, 2026-07-14 (b4c390d review, NEEDS_FIX) — three
+  // counterexamples confirmed against the shipped predicate, fixed below.
+
+  it('[review #1, HIGH] keeps the sweeper prompt\'s own worked example — a spelled-out frequency with no entity/digit/quote/date', () => {
+    // Verbatim from EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER's few-shot
+    // example 1 output (extract.ts) — the exact atom the review confirmed
+    // the pre-fix predicate silently dropped.
+    const a = atom("Caroline said they don't go often — usually only once or twice a year.");
+    const { kept, dropped } = gatePassBAtoms([a]);
+    expect(kept).toEqual([a]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('keeps other spelled-out cardinal/frequency/duration signals', () => {
+    const cardinal = atom('Melanie has been riding for about seven years now.');
+    const dozen = atom('Caroline baked a dozen cookies for the party.');
+    const quantifier = atom('They have talked about it several times already.');
+    const manyTimes = atom('Melanie brought it up many times during the call.');
+    const cadence = atom('Caroline checks in with her sister weekly.');
+
+    const { kept, dropped } = gatePassBAtoms([cardinal, dozen, quantifier, manyTimes, cadence]);
+
+    expect(kept).toEqual([cardinal, dozen, quantifier, manyTimes, cadence]);
+    expect(dropped).toEqual([]);
+  });
+
+  it('does not treat a bare "many" (without "times") as a signal on its own', () => {
+    const a = atom('Many people feel this way about the topic in general.');
+    const { kept, dropped } = gatePassBAtoms([a]);
+    expect(dropped).toEqual([a]);
+    expect(kept).toEqual([]);
+  });
+
+  it('[review #2, MEDIUM] drops an atom where "may" is used as a modal verb, not the month', () => {
+    const a = atom('She may go to the store tomorrow.');
+    const { kept, dropped } = gatePassBAtoms([a]);
+    expect(dropped).toEqual([a]);
+    expect(kept).toEqual([]);
+  });
+
+  it('drops "march"/"august" used as a non-month verb/adjective, keeps them capitalized as the month', () => {
+    const marchVerb = atom('The team will march forward with the plan regardless.');
+    const augustAdj = atom('The room had an august, dignified feel to it.');
+    const marchMonth = atom('Melanie is due to give birth in March next year.');
+    const augustMonth = atom('Caroline started her new job back in August.');
+
+    const dropped1 = gatePassBAtoms([marchVerb, augustAdj]);
+    expect(dropped1.kept).toEqual([]);
+    expect(dropped1.dropped).toEqual([marchVerb, augustAdj]);
+
+    const kept2 = gatePassBAtoms([marchMonth, augustMonth]);
+    expect(kept2.kept).toEqual([marchMonth, augustMonth]);
+    expect(kept2.dropped).toEqual([]);
+  });
+
+  it('[review #3, LOW] does not treat two independent possessives as a quoted phrase', () => {
+    const a = atom('Caroline\'s dog and Melanie\'s cat are friends and get along great outdoors.');
+    const { kept, dropped } = gatePassBAtoms([a]);
+    // No quote signal, and no other signal (no entities/digit/spelled
+    // number/date word) in this sentence either — dropped on the merits,
+    // not falsely kept via a phantom quoted span between the possessives.
+    expect(dropped).toEqual([a]);
+    expect(kept).toEqual([]);
+  });
 });
