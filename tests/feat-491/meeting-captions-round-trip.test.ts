@@ -35,7 +35,18 @@ import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHeal
 // null or the WRONG speaker, both of which the assertions below catch).
 const BOB_UTTERANCE = "one thing though, we still need the doctor WARN row before this ships.";
 
-function makeMockLLM(): LLMProvider {
+// FEAT-505: a close PARAPHRASE of BOB_UTTERANCE — not a verbatim substring —
+// in the exact style live-reproduced from the real default LLM
+// (codex-subscription/gpt-5.4-mini) despite the extraction prompt demanding
+// verbatim evidence. This is what makes `evidenceMode: 'paraphrased'` below
+// exercise attribute-speaker.ts's tier-2 fuzzy fallback (see
+// tests/distill/attribute-speaker.test.ts for the live-benchmarked threshold
+// rationale) instead of tier-1 exact substring, without needing a real LLM
+// in CI — the FEAT-491 mock's whole reason for existing was hiding exactly
+// this gap (see this file's module doc comment).
+const BOB_UTTERANCE_PARAPHRASED = 'We still need the doctor WARN row before this ships.';
+
+function makeMockLLM(evidenceMode: 'verbatim' | 'paraphrased' = 'verbatim'): LLMProvider {
   return {
     name: 'ollama' as const,
     model: 'test-model',
@@ -51,7 +62,7 @@ function makeMockLLM(): LLMProvider {
               text: 'ship the doctor WARN row before cutting caption capture over to the new consent gate',
               importance: 0.8,
               confidence: 0.9,
-              evidence: BOB_UTTERANCE,
+              evidence: evidenceMode === 'paraphrased' ? BOB_UTTERANCE_PARAPHRASED : BOB_UTTERANCE,
             }]
           : [];
         return { text: JSON.stringify({ atoms }), usage: { in: 10, out: 10, usd: 0 } };
@@ -198,5 +209,45 @@ describe('FEAT-491 meeting-captions round trip', () => {
     // text, or attribution silently failed) and not Alice/Bob (would mean
     // attribution matched the wrong line).
     expect(atom.speaker_label).toBe('Priya Nair');
+  });
+
+  // FEAT-505: same round trip, but the mock LLM returns a PARAPHRASED
+  // evidence excerpt (see BOB_UTTERANCE_PARAPHRASED's doc comment) instead of
+  // a verbatim substring — the exact class of real-LLM output that made
+  // tier-1 exact-substring matching return speaker_label=null 4/4 times in
+  // the live L2 reproduction this FEAT was filed from. Proves the tier-2
+  // fuzzy fallback is wired all the way through ingest -> distill -> stored
+  // atom, not just unit-tested in isolation (attribute-speaker.test.ts).
+  it('ingest -> distill -> stored atom: fuzzy (paraphrased) evidence still attributes the correct speaker', async () => {
+    const sessionId = randomUUID();
+    const envelope = buildMeetingCaptionsEnvelope(sessionId);
+    const parsed = CanonicalIngestSchema.parse(envelope);
+
+    const config = defaultConfig();
+    config.captureSource.meetingCaptions.enabled = true;
+
+    const { transcriptId, jobId } = ingestCanonicalTranscript(db, config, parsed, null);
+    expect(transcriptId).toBeTruthy();
+    expect(jobId).toBeTruthy();
+
+    const ctx: ExtendedHandlerCtx = {
+      db,
+      config,
+      providers: { llm: { compaction: makeMockLLM('paraphrased'), extraction: makeMockLLM('paraphrased') }, embed: makeMockEmbed() },
+      memoryRepo: new MemoryRepo(db),
+      vecStore: new SqliteVecStore(db),
+    };
+
+    await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, ctx);
+
+    const memories = db
+      .prepare('SELECT speaker_label FROM memories')
+      .all() as Array<{ speaker_label: string | null }>;
+
+    expect(memories.length).toBeGreaterThanOrEqual(1);
+    // Not null (tier-1-only would have missed the paraphrase) and not the
+    // wrong speaker (Alice/Bob) — must be Priya, whose turn's text was
+    // paraphrased into the evidence excerpt.
+    expect(memories[0]!.speaker_label).toBe('Priya Nair');
   });
 });
