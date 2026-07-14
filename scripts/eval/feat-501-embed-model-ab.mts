@@ -25,7 +25,7 @@
  * silently reaped a spawned daemon mid-run). This script instead measures
  * the same recall@10/NDCG@10 metrics, on the same ADR-005 seed corpus/query
  * set every CI run already scores, with real embeddings substituted for the
- * fake ones — the fixture is small (20 atoms / 11 queries) but every
+ * fake ones — the fixture is small (12 atoms / 11 queries) but every
  * measurement is a genuine embedding-geometry comparison, not a simulated
  * one. A full LoCoMo-scale rerun (reusing this same swap-in-a-real-provider
  * technique against a freshly, successfully ingested corpus) is the natural

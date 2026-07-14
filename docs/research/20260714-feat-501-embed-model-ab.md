@@ -74,7 +74,7 @@ Built `scripts/eval/feat-501-embed-model-ab.mts` — an in-process script (no
 daemon spawn, no HTTP; a `:memory:` DB + direct library calls, the same
 pattern `tests/eval/retrieval-eval.test.ts` uses) that runs
 `runRetrievalEval` (`src/eval/harness.ts`, the exact ADR-005 harness the FEAT
-names) against `contracts/fixtures/eval/corpus.json`/`queries.json` (20 atoms,
+names) against `contracts/fixtures/eval/corpus.json`/`queries.json` (12 atoms,
 11 graded queries) with a **real** `OllamaEmbedProvider` substituted for the
 deterministic fake embedder — once for `mxbai-embed-large` (with its shipped
 query prefix), once for `bge-m3` (no prefix, per §1). Two weight profiles per
@@ -99,7 +99,7 @@ excluded — same as the fake-embedder baseline in
 
 ### Verdict on this measurement: inconclusive, not "flat = falsified"
 
-The ADR-005 fixture is a small (20-atom), deliberately-unambiguous **CI
+The ADR-005 fixture is a small (12-atom), deliberately-unambiguous **CI
 regression-gate** corpus — every query's correct atom is a clear winner
 regardless of embedding geometry, which is why it stays saturated even under
 `vector-only` weights that remove FTS5's contribution entirely. Both models
