@@ -64,6 +64,21 @@ jobs:
       # environment: self-hosted"), and fleet policy is self-hosted only
       # (devops#64). Provenance would require a github-hosted runner. See #58.
       - name: Publish
-        run: npm publish --access public
+        # Prerelease-safe dist-tag: `npm publish` defaults EVERY version —
+        # including a prerelease like 0.19.0-beta.0 — to the `latest` dist-tag
+        # unless --tag is given. Publishing a beta as `latest` would push a
+        # prerelease onto every `npm i -g astramem-local`. Derive the tag from
+        # the version: a `-beta`/`-rc`/`-next` suffix publishes under that
+        # prerelease id; a plain version publishes `latest`.
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$PKG_VERSION" == *-* ]]; then
+            PRE="${PKG_VERSION#*-}"      # e.g. beta.0
+            DIST_TAG="${PRE%%.*}"        # e.g. beta
+          else
+            DIST_TAG="latest"
+          fi
+          echo "publishing $PKG_VERSION under dist-tag '$DIST_TAG'"
+          npm publish --access public --tag "$DIST_TAG"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
