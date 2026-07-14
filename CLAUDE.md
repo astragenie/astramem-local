@@ -352,8 +352,13 @@ temperature control and a truncated context — treat those numbers as invalid.
 - Do NOT hand-edit `memories_vec FLOAT[N]` in a migration file directly. Since FEAT-409 (merged) the dim is single-sourced from `DEFAULT_EMBED_DIM` (`src/contracts/embed.ts`) — config default, embed providers, `SqliteVecStore`, mock providers, the `__EMBED_DIM__` migration placeholder, and the boot-time preflight (`src/doctor/probes/embed-probe.ts`) all derive from it or from `getVecSchemaDim()`. Changing the *default* is a one-constant edit for fresh DBs; migrating an *existing* DB's live vectors to a new dim requires `astramem-local reembed-dim` (migration 011, `docs/embed-dim-migration.md`) — there is no ALTER for a sqlite-vec vec0 table. FEAT-436 (2026-07-05) re-audited this and confirmed it is resolved, not an open coordinated-change hazard.
 - Do NOT construct a month-arithmetic `Date` via `setUTCMonth`/`setMonth` on a `Date`
   still carrying the anchor's own day-of-month. It silently overflows forward whenever
-  that day doesn't exist in the target month (`2023-07-31` + 1 month lands on the
-  nonexistent Aug 31, which JS normalizes into September instead of throwing) — bit
+  that day doesn't exist in the target month. Verified: `2023-03-31` + 1 month → **May 1**
+  (April 31 doesn't exist, so JS rolls forward and skips April entirely); `2023-01-31` + 1
+  month → **March 3** (skips February outright); `2023-07-31` − 1 month → **July 1** (June 31
+  doesn't exist, so "last month" resolves to *this* month). It never throws — it silently
+  lands on a plausible wrong date. Note `2023-07-31` + 1 month is *fine* (Aug 31 exists):
+  the bug only fires when the anchor's day-of-month is absent from the target month, which
+  is exactly why it hides. This bit
   `src/distill/temporal-grounding.ts`'s `addMonthsUtc` and shipped behind 307 green tests
   because the whole suite anchored on the 15th, the one day-of-month that can never
   trigger it (fixed same day; see `docs/research/20260713-temporal-grounding-regex-postmortem.md`).
