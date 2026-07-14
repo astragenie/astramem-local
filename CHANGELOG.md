@@ -25,7 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   decision 3). Turn speaker labels flow through distill to the stored atom's
   `evidence[].speaker_label` (FEAT-496); `memories.consent_disclosed` and
   `transcripts.platform/meeting_id/consent_disclosed` are new columns
-  (migration 048 — see that file's own header comment on numbering).
+  (migration 049 — see that file's own header comment on numbering).
   New doctor "Meeting-captions capture reminder" WARN row
   (mirrors `checkProxyCaptureReminder`) and `capture meeting-captions disable
   [--purge|--keep]` CLI, scoped to `capture_source = 'meeting_captions'`

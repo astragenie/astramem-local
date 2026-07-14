@@ -1,14 +1,20 @@
--- 048: meeting-caption capture (FEAT-491, ADR-017).
+-- 049: meeting-caption capture (FEAT-491, ADR-017).
 --
--- Number claimed 2026-07-14 after merging origin/main (044-047 taken by
--- #318 and L1-4/PR #322). Team lead's convention is "L1-1 has first claim
--- on 048+" — but this repo's tests/storage/migration-renumber.test.ts
--- enforces STRICT LOCAL CONTIGUITY (no gaps), so 048 is the only number
--- that passes that gate in THIS worktree today. If L1-1 also claims 048
--- independently, whichever branch merges second must renumber at that
--- point (same resolution this file itself just went through — see git
--- history). Re-verify against `ls migrations/` on origin/main before
--- merging and renumber if it collides.
+-- Numbering history (all in git log, not repeated in full here): started at
+-- 044 (contiguous with this branch's original base), renumbered to 048 after
+-- merging origin/main (044-047 landed there via #318 + L1-4/PR #322), then
+-- renumbered AGAIN to 049 (this cut) because lane L1-1 claimed 048 first
+-- (048-audio-transcribe-consent.sql, wave/l1-1-audio) per the team's
+-- explicit convention: L1-1 takes the first free number, L1-2 (this lane)
+-- takes the next one after.
+--
+-- KNOWN EXPECTED-RED: tests/storage/migration-renumber.test.ts enforces
+-- strict local contiguity (no gaps) and WILL FAIL in this worktree today,
+-- because 048 does not exist here yet -- L1-1's migration lives on a
+-- sibling branch, not this one. This is intentional, not a regression: the
+-- gap closes and the suite goes green the moment L1-1's PR merges first
+-- (enforced merge order: L1-1 before L1-2). Do not "fix" this by
+-- renumbering to 048 again -- that would re-collide with L1-1.
 --
 -- Five additive nullable columns, no table rewrite (same ALTER TABLE ADD
 -- COLUMN pattern migration 024/028/043 used) -- NULL on every existing row
