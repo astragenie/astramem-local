@@ -50,6 +50,29 @@ new `src/doctor/checks/audio-addon.ts` both follow the same shape.
   defeating "keeps base install light" and turning an absent add-on into a boot-time concern
   instead of a call-time concern.
 
+**Citation re-verification (2026-07-14, post-review):** the L0-5 review flagged
+`src/doctor/checks/sqlite-vec.ts:11-12` and `src/doctor/checks/fts5.ts:11` as fabricated,
+asserting no `src/doctor/checks/` directory exists and that `checks.ts` is a single 2,572-line
+monolith. Re-checked directly against the live tree: both files exist and both citations are
+exact — `sqlite-vec.ts:11-12` is `const { default: Database } = await import('better-sqlite3-
+multiple-ciphers')` / `const { load } = await import('sqlite-vec')`, `fts5.ts:11` is the same
+`better-sqlite3-multiple-ciphers` import. `checks.ts` at the top level is a 20-line re-export
+shim (`export * from './checks/index.js'`); the one-file-per-check split under `checks/`,
+aggregated by `checks/index.ts`'s core registry, has been the actual layout since PR #231
+(`refactor(doctor): split checks.ts — a 2,167-line shared registry...`), which lands well before
+this doc's own base commit. The review's belief was itself stale — same drift class this doc's
+own opening correction calls out for the FEAT-489 arch-review note. `src/doctor/checks/audio-
+addon.ts`, registered in `checks/index.ts` alongside `checkSqliteVec()`/`checkFts5()`, stands as
+originally proposed.
+
+`src/doctor/gpu-checks.ts` (FEAT-485) was weighed as an alternative precedent per the review's
+recommendation, and rejected: its own doc comment states it is deliberately *not* wired into
+`getChecks()`/`checks/index.ts`'s core registry — `cli/doctor.ts` calls `getGpuChecks()`
+separately, because that check is diagnostic-only (reports PIDs, never auto-kills) and
+intentionally excluded from the standard tiered schedule. The audio add-on presence check is an
+ordinary, always-scheduled health check with no such carve-out, so the `checks/` one-file-per-
+check pattern already cited above is the correct fit, not `gpu-checks.ts`'s special-case wiring.
+
 ---
 
 ## 2. Base ↔ add-on version compatibility
@@ -168,6 +191,33 @@ currently sets up a C/C++ build toolchain (cmake/gcc), so a source-build CI step
 infrastructure this pass hasn't verified the self-hosted fleet supports — flagged as an
 assumption to confirm before the build slice commits to prebuilt-binary CI, not verified here.
 
+**v1 platform-scope fallback (added post-review, 2026-07-14):** the four-platform matrix above
+collides with a confirmed hard constraint, not just the "assumption to confirm" noted above.
+Every workflow in `.github/workflows/` is self-hosted-Linux-only by fleet policy — verified both
+via `docs/research/2026-07-09-packaging-audit.md` N6 and directly in `test.yml:23`, whose
+`matrix.os: [self-hosted]` carries the explicit comment `# linux on dedicated runner (fleet
+policy: no GitHub-hosted runners)`. Worth noting `test.yml` also documents that this repo's
+*existing* native-dependency story already leans on this exact escape hatch: `sqlite-vec` ships
+its own prebuilt binaries for linux-x64/darwin-arm64/darwin-x64/win32-x64 built by sqlite-vec's
+own upstream release CI, not this repo's fleet — so a non-linux-x64 whisper.cpp binary sourced
+from somewhere other than this repo's own CI is not a novel ask, it's the established pattern for
+every other native dep here.
+
+v1 scope, therefore: ship a prebuilt `linux-x64` binary from the existing self-hosted fleet
+(matches current CI capability exactly, zero new infra). Do not commit to win-x64/mac-arm64/
+mac-x64 prebuilts built by *this repo's* CI in v1 — that requires either GitHub-hosted runners or
+a demonstrated self-hosted cross-compile toolchain for cmake/gcc, neither of which exists today,
+and provisioning either is infra work outside this FEAT. Two acceptable v1 paths for non-linux
+platforms, to be chosen at build-slice kickoff: (a) source a prebuilt from whisper.cpp's own
+upstream release artifacts (mirrors the sqlite-vec pattern above) if license/provenance checks
+out, or (b) graceful degradation via the Decision 1 presence probe reporting `"astramem-audio not
+installed for this platform"` — never a crash, never blocking release on unbuilt platforms. Full
+four-platform binaries built by this repo's own CI is explicit future work, gated on GitHub-hosted
+runners being provisioned (separate infra FEAT) or a demonstrated self-hosted cross-compile
+toolchain, whichever lands first. This keeps the platform matrix off the build slice's critical
+path instead of leaving it as an open question the build slice would otherwise have to resolve
+mid-implementation.
+
 ---
 
 ## 5. Config surface sketch
@@ -224,4 +274,24 @@ shape (one enum, not two booleans) and the default (`'off'`), not the full schem
   multi-platform prebuilt binaries, or whether that needs GitHub-hosted runners per target OS
   (this repo's CI is otherwise self-hosted-only by fleet policy per
   `docs/research/2026-07-09-packaging-audit.md` N6 — worth re-checking before committing to a
-  build matrix).
+  build matrix). **Resolved for v1 above** (Decision 4's platform-scope fallback): linux-x64 only
+  from this repo's CI, other platforms via upstream-sourced prebuilt or graceful degradation.
+
+## Slice split recommendation (from review, 2026-07-14)
+
+FEAT-489 as scoped is not a single-builder, single-slice unit even before FEAT-490 is bundled in.
+Split L1-1:
+
+- **Slice A** — handler + doctor check + config + add-on package skeleton + presence/version
+  probe. Covers: the `transcribe` pipeline handler, `src/doctor/checks/audio-addon.ts`
+  (Decisions 1–2), the `audio.mode` config surface (Decision 5), and the `audio-addon/` package
+  skeleton (Decision 3, publish workflow excluded). All implementable today with no CI-infra
+  blocker. FEAT-490 (confidence filter) bundles into this slice — its own notes describe it as
+  "hours of work" that depends on FEAT-489's handler existing.
+- **Slice B** — publish pipeline + prebuilt binary matrix, once the v1 platform scope above is
+  confirmed at build-slice kickoff. Covers: `audio-publish.yml`, the `audio-v*` tag namespace, and
+  the linux-x64 (v1) prebuilt binary CI step.
+
+Also note FEAT-489 lists `depends_on: [FEAT-496, FEAT-497]` — the consent/disclosure ADR
+(FEAT-497) gates slice 1 per the FEAT's own arch-review block; confirm both are resolved before
+dispatching Slice A, independent of this packaging doc.
