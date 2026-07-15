@@ -1,0 +1,177 @@
+{
+  "schema": "astramem-onnx-embedder-benchmark@1",
+  "ranAt": "2026-07-15T06:16:27.619Z",
+  "rows": [
+    {
+      "id": "ollama-mxbai",
+      "model": "mxbai-embed-large",
+      "pooling": "native",
+      "dtype": "—",
+      "health": {
+        "ok": true
+      },
+      "latency": {
+        "singleMsMean": 25.4,
+        "singleMsSamples": [
+          31,
+          25,
+          23,
+          25,
+          23
+        ],
+        "batch32TotalMs": 930,
+        "batch32MsPerEmbed": 29.0625
+      },
+      "englishRetrieval": {
+        "meanRecallAt10": 1,
+        "meanNdcgAt10": 0.9121968998714177,
+        "n": 11
+      }
+    },
+    {
+      "id": "onnx-mxbai-cls-q8",
+      "model": "mxbai-embed-large-v1",
+      "pooling": "cls",
+      "dtype": "q8",
+      "health": {
+        "ok": true
+      },
+      "parity": {
+        "mean": 0.9894432193688849,
+        "min": 0.983062647699876,
+        "p5": 0.9844623913990668,
+        "belowGateCount": 0,
+        "n": 200
+      },
+      "latency": {
+        "singleMsMean": 34.6,
+        "singleMsSamples": [
+          34,
+          39,
+          36,
+          33,
+          31
+        ],
+        "batch32TotalMs": 1313,
+        "batch32MsPerEmbed": 41.03125
+      },
+      "englishRetrieval": {
+        "meanRecallAt10": 1,
+        "meanNdcgAt10": 0.9033389923309566,
+        "n": 11
+      },
+      "chineseRetrieval": {
+        "meanRecallAt10": 0.95,
+        "meanNdcgAt10": 0.799399105059531,
+        "n": 20
+      },
+      "footprint": {
+        "fileBytes": 336983163,
+        "filePath": "C:\\work\\mega\\astramemory-local\\.claude\\worktrees\\agent-aeacd08f70ccb11af\\node_modules\\@huggingface\\transformers\\.cache\\mixedbread-ai\\mxbai-embed-large-v1\\b33106f585b9ce46904ad7443a3b52b7a63e231c\\onnx\\model_quantized.onnx",
+        "rssDeltaBytes": 445763584
+      }
+    },
+    {
+      "id": "onnx-mxbai-mean-q8",
+      "model": "mxbai-embed-large-v1",
+      "pooling": "mean",
+      "dtype": "q8",
+      "health": {
+        "ok": true
+      },
+      "parity": {
+        "mean": 0.9488407477457479,
+        "min": 0.9252672288609477,
+        "p5": 0.933547375109459,
+        "belowGateCount": 200,
+        "n": 200
+      },
+      "latency": {
+        "singleMsMean": 46,
+        "singleMsSamples": [
+          49,
+          45,
+          46,
+          45,
+          45
+        ],
+        "batch32TotalMs": 1234,
+        "batch32MsPerEmbed": 38.5625
+      },
+      "footprint": {
+        "fileBytes": 336983163,
+        "filePath": "C:\\work\\mega\\astramemory-local\\.claude\\worktrees\\agent-aeacd08f70ccb11af\\node_modules\\@huggingface\\transformers\\.cache\\mixedbread-ai\\mxbai-embed-large-v1\\b33106f585b9ce46904ad7443a3b52b7a63e231c\\onnx\\model_quantized.onnx",
+        "rssDeltaBytes": 437747712
+      }
+    },
+    {
+      "id": "onnx-mxbai-cls-fp32",
+      "model": "mxbai-embed-large-v1",
+      "pooling": "cls",
+      "dtype": "fp32",
+      "health": {
+        "ok": true
+      },
+      "parity": {
+        "mean": 0.9999914932512791,
+        "min": 0.9999871951997786,
+        "p5": 0.999988832271077,
+        "belowGateCount": 0,
+        "n": 200
+      },
+      "latency": {
+        "singleMsMean": 88.8,
+        "singleMsSamples": [
+          101,
+          89,
+          89,
+          85,
+          80
+        ],
+        "batch32TotalMs": 3213,
+        "batch32MsPerEmbed": 100.40625
+      },
+      "footprint": {
+        "fileBytes": 1336854282,
+        "filePath": "C:\\work\\mega\\astramemory-local\\.claude\\worktrees\\agent-aeacd08f70ccb11af\\node_modules\\@huggingface\\transformers\\.cache\\mixedbread-ai\\mxbai-embed-large-v1\\b33106f585b9ce46904ad7443a3b52b7a63e231c\\onnx\\model.onnx",
+        "rssDeltaBytes": 1422024704
+      }
+    },
+    {
+      "id": "onnx-bge-m3-cls-q8",
+      "model": "bge-m3",
+      "pooling": "cls",
+      "dtype": "q8",
+      "health": {
+        "ok": true
+      },
+      "latency": {
+        "singleMsMean": 36.2,
+        "singleMsSamples": [
+          36,
+          37,
+          33,
+          40,
+          35
+        ],
+        "batch32TotalMs": 1195,
+        "batch32MsPerEmbed": 37.34375
+      },
+      "englishRetrieval": {
+        "meanRecallAt10": 1,
+        "meanNdcgAt10": 0.9121968998714177,
+        "n": 11
+      },
+      "chineseRetrieval": {
+        "meanRecallAt10": 1,
+        "meanNdcgAt10": 1,
+        "n": 20
+      },
+      "footprint": {
+        "fileBytes": 569694530,
+        "filePath": "C:\\work\\mega\\astramemory-local\\.claude\\worktrees\\agent-aeacd08f70ccb11af\\node_modules\\@huggingface\\transformers\\.cache\\Xenova\\bge-m3\\4de13258303883538bd53b696b452bf8099f0858\\onnx\\model_quantized.onnx",
+        "rssDeltaBytes": 1022451712
+      }
+    }
+  ]
+}

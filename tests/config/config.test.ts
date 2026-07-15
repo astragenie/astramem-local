@@ -12,14 +12,14 @@ describe('loadConfig', () => {
   it('returns defaults when no file present', () => {
     const cfg = loadConfig(undefined);
     expect(cfg.port).toBe(7777);
-    expect(cfg.embedding.provider).toBe('ollama');
+    expect(cfg.embedding.provider).toBe('onnx');
     expect(cfg.budget.daily_usd).toBe(10);
   });
 
   it('overrides defaults from passed object', () => {
     const cfg = loadConfig({ port: 8888 } as any);
     expect(cfg.port).toBe(8888);
-    expect(cfg.embedding.provider).toBe('ollama');
+    expect(cfg.embedding.provider).toBe('onnx');
   });
 
   it('dev no-auth mode defaults to off', () => {
@@ -33,14 +33,17 @@ describe('loadConfig', () => {
   // thinking mode, VRAM spill; see "qwen3:8b breaks distill extract" /
   // "Ollama 8GB VRAM ceiling" in CLAUDE.md). codex-subscription runs off-box
   // against the operator's own ChatGPT plan and requires `codex login`.
-  // Embedding is unaffected — stays on ollama/mxbai-embed-large.
+  // Embedding default flipped to in-process ONNX (ADR-018, 2026-07-15): same
+  // mxbai-embed-large model, 0.989 cosine parity with Ollama-mxbai, no Ollama
+  // process required. Model name is unchanged (registry key); only the runtime
+  // provider changed.
   it('llm.compaction/extraction default to codex-subscription/gpt-5.4-mini', () => {
     const cfg = defaultConfig();
     expect(cfg.llm.compaction.provider).toBe('codex-subscription');
     expect(cfg.llm.compaction.model).toBe('gpt-5.4-mini');
     expect(cfg.llm.extraction.provider).toBe('codex-subscription');
     expect(cfg.llm.extraction.model).toBe('gpt-5.4-mini');
-    expect(cfg.embedding.provider).toBe('ollama');
+    expect(cfg.embedding.provider).toBe('onnx');
     expect(cfg.embedding.model).toBe('mxbai-embed-large');
   });
 

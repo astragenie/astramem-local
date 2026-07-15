@@ -53,9 +53,13 @@
   },
   "trustedDependencies": [
     "@napi-rs/keyring",
-    "better-sqlite3-multiple-ciphers"
+    "better-sqlite3-multiple-ciphers",
+    "onnxruntime-node",
+    "protobufjs",
+    "sharp"
   ],
   "dependencies": {
+    "@huggingface/transformers": "^4.2.0",
     "@inquirer/prompts": "^8.5.2",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@napi-rs/keyring": "^1.3.0",
