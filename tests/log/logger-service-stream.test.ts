@@ -73,12 +73,24 @@ describe('createServiceLogStream', () => {
     await new Promise(r => setTimeout(r, 250));
     const rotated = readdirSync(dir).filter(n => /^daemon\.live\.\d+\.log$/.test(n));
     expect(rotated.length).toBeGreaterThanOrEqual(1);
-    // live file must be recreated and still writable after rotation
+    // live file must be recreated and still writable after rotation.
+    // SonicBoom's reopen() (called by the rotation sweep) is asynchronous: a
+    // write issued while the reopen is in flight is buffered and lands on the
+    // NEW fd slightly later, so a one-shot read here races it (flaked on the
+    // Linux CI runner). Poll bounded instead of reading once.
     log.info({ post: true }, 'after rotation');
-    dest.flushSync();
     const live = join(dir, 'daemon.live.log');
+    let liveContent = '';
+    for (let attempt = 0; attempt < 50; attempt++) {
+      try { dest.flushSync(); } catch { /* reopen in flight — retry */ }
+      if (existsSync(live)) {
+        liveContent = readFileSync(live, 'utf8');
+        if (liveContent.includes('after rotation')) break;
+      }
+      await new Promise(r => setTimeout(r, 40));
+    }
     expect(existsSync(live)).toBe(true);
-    expect(readFileSync(live, 'utf8')).toContain('after rotation');
+    expect(liveContent).toContain('after rotation');
   });
 
   it('prunes rotated copies beyond keep, never touching the live file', async () => {
