@@ -485,6 +485,7 @@ export function renderDashboard(data: DashboardData, config: Config): string {
   <a href="/dashboard/jobs">Jobs</a>
   <a href="/dashboard/consolidation">Consolidation</a>
   <a href="/dashboard/search">Search</a>
+  <a href="/dashboard/logs">Logs</a>
   <a href="/dashboard/api">API</a>
   <span class="asof">as of ${esc(now)}</span>
 </nav>
