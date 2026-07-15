@@ -1,5 +1,5 @@
 import { defaultDataDir } from './datadir.js';
-import { DEFAULT_EMBED_DIM, type OnnxDType } from '../contracts/embed.js';
+import { DEFAULT_EMBED_DIM, type OnnxDType, type OnnxPoolingStrategy } from '../contracts/embed.js';
 import { hasPassingEvalEvidence, type GatedFusionComponent } from '../eval/eval-evidence.js';
 
 export interface Config {
@@ -106,6 +106,16 @@ export interface Config {
      * this union — see that type's doc comment (ADR-018 SLICE-2 cleanup;
      * previously duplicated inline here and in onnx.ts). */
     dtype?: OnnxDType;
+    /** ADR-018 SLICE-5 — pooling strategy override ('mean' | 'cls').
+     * Unset defers to `ONNX_MODEL_REGISTRY[embedding.model]`'s documented
+     * default (`onnx.ts`) — both registered models (mxbai-embed-large-v1,
+     * bge-m3) default to `'cls'` per their own model cards/FlagEmbedding
+     * source; SLICE-1/2 hardcoded `'mean'` for every onnx model, which was
+     * incorrect for mxbai's own documented default. Set explicitly only to
+     * override a registered model's default or to supply a strategy for an
+     * unregistered/custom model. `OnnxPoolingStrategy` (contracts/embed.ts)
+     * is the single source of truth for this union. */
+    pooling?: OnnxPoolingStrategy;
   };
   /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
    * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed

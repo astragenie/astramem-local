@@ -20,6 +20,30 @@ export interface EmbedHealth {
 export type OnnxDType = 'q8' | 'fp16' | 'fp32';
 
 /**
+ * ADR-018 SLICE-5: pooling strategy for the in-process ONNX embedding
+ * provider — hoisted here (same "single source of truth" rationale as
+ * `OnnxDType` above) since `config.ts`'s `onnxEmbed.pooling` field and
+ * `onnx.ts`'s per-model registry both need this union without a second
+ * hand-written copy.
+ *
+ * SLICE-1/2 hardcoded mean pooling (`poolMeanNormalize`) for every ONNX
+ * model. That was corrected in SLICE-5: `mixedbread-ai/mxbai-embed-large-v1`'s
+ * own model card states CLS pooling is its DEFAULT ("works really well with
+ * cls pooling (default) but also with mean pooling") — the opposite of what
+ * ADR-018's text assumed. `bge-m3` (BAAI FlagEmbedding) also uses CLS
+ * pooling (`last_hidden_state[:, 0]`, then L2-normalize) as its documented
+ * dense-retrieval strategy. Both registered models in `onnx.ts`'s
+ * `ONNX_MODEL_REGISTRY` now default to `'cls'`; `'mean'` remains fully
+ * supported (`poolMeanNormalize` is still exported and still the fallback
+ * for any model absent from the registry) — this is a corrected per-model
+ * DEFAULT, not a removal of mean pooling. See
+ * `docs/research/20260715-bge-m3-onnx-model-matrix.md` for the evidence
+ * trail (BAAI FlagEmbedding source + official BGE docs + mxbai's own model
+ * card, all independently confirming CLS).
+ */
+export type OnnxPoolingStrategy = 'mean' | 'cls';
+
+/**
  * Default/legacy embedding dimension (FEAT-409). This is the ONE source of
  * truth every coordinated surface derives from: config default
  * (config.ts), embed providers (ollama.ts / azure-openai.ts `dim` ctor

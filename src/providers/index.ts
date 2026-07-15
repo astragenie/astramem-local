@@ -110,6 +110,9 @@ function buildEmbedProvider(config: Config): EmbedProvider {
       modelPath: config.onnxEmbed?.modelPath,
       numThreads: config.onnxEmbed?.numThreads,
       dtype: config.onnxEmbed?.dtype,
+      // ADR-018 SLICE-5: unset defers to OnnxEmbedProvider's own
+      // ONNX_MODEL_REGISTRY resolution keyed on `model` — see onnx.ts.
+      pooling: config.onnxEmbed?.pooling,
     });
   }
 
