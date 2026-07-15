@@ -11,6 +11,10 @@ import {
   queryEntityLinkage,
   queryDashboard,
   buildDashboardHealth,
+  queryRecentMemories,
+  queryProjectOptions,
+  queryProfileOptions,
+  parseMemoryFilterParam,
 } from '../../../src/server/queries/dashboard.js';
 import type { DB } from '../../../src/storage/db.js';
 
@@ -189,5 +193,191 @@ describe('queryPendingDir deletion (AC-7)', () => {
   it('is not exported from queries/dashboard.ts', async () => {
     const mod = await import('../../../src/server/queries/dashboard.js');
     expect((mod as Record<string, unknown>)['queryPendingDir']).toBeUndefined();
+  });
+});
+
+// Dashboard "project" + "profile" columns/filters — project is a real
+// memories.project column; profile is derived from the memory's session's
+// most recent transcripts.extract_profile row (queryExtractProfilesBySession).
+describe('project + profile columns and filters (dashboard memory-listing surfaces)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  function insertSession(db: DB, id: string): void {
+    db.prepare('INSERT INTO sessions (id, started_at) VALUES (?, ?)').run(id, Date.now());
+  }
+
+  function insertTranscript(db: DB, opts: { id?: string; session_id: string; extract_profile: string | null; ingested_at?: number }): void {
+    const id = opts.id ?? randomUUID();
+    db.prepare(`
+      INSERT INTO transcripts (id, session_id, source, content, ingested_at, extract_profile)
+      VALUES (?, ?, 'test', 'content', ?, ?)
+    `).run(id, opts.session_id, opts.ingested_at ?? Date.now(), opts.extract_profile);
+  }
+
+  function insertMemory(db: DB, opts: { project: string | null; session_id: string | null }): string {
+    return new MemoryRepo(db).insert({
+      type: 'fact', text: `memory for ${opts.project ?? 'no-project'}`, normalized_text: 'x',
+      repo: null, project: opts.project, branch: null, agent: null,
+      session_id: opts.session_id, hash: randomUUID(), source_hash: null,
+    });
+  }
+
+  describe('queryRecentMemories — project column + filter', () => {
+    it('SELECTs the real memories.project column with no extra query', () => {
+      insertMemory(db, { project: 'astramemory-local', session_id: null });
+      const rows = queryRecentMemories(db);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.project).toBe('astramemory-local');
+    });
+
+    it('filters to an exact project match', () => {
+      insertMemory(db, { project: 'repo-a', session_id: null });
+      insertMemory(db, { project: 'repo-b', session_id: null });
+
+      const rows = queryRecentMemories(db, { project: 'repo-a' });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.project).toBe('repo-a');
+    });
+
+    it('the null filter selection matches rows with project IS NULL', () => {
+      insertMemory(db, { project: null, session_id: null });
+      insertMemory(db, { project: 'repo-a', session_id: null });
+
+      const rows = queryRecentMemories(db, { project: null });
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.project).toBeNull();
+    });
+  });
+
+  describe('queryRecentMemories — derived profile column + filter', () => {
+    it('derives profile from the memory session\'s most recent transcript row', () => {
+      insertSession(db, 's1');
+      insertTranscript(db, { session_id: 's1', extract_profile: 'conversational' });
+      const memId = insertMemory(db, { project: null, session_id: 's1' });
+
+      const rows = queryRecentMemories(db);
+      const row = rows.find(r => r.id === memId)!;
+      expect(row.profile).toBe('conversational');
+    });
+
+    it('picks the MOST RECENT transcript\'s extract_profile when a session has more than one', () => {
+      insertSession(db, 's1');
+      const now = Date.now();
+      insertTranscript(db, { session_id: 's1', extract_profile: 'engineering', ingested_at: now - 10_000 });
+      insertTranscript(db, { session_id: 's1', extract_profile: 'conversational', ingested_at: now });
+      const memId = insertMemory(db, { project: null, session_id: 's1' });
+
+      const rows = queryRecentMemories(db);
+      expect(rows.find(r => r.id === memId)!.profile).toBe('conversational');
+    });
+
+    it('profile is null when the memory has no session_id', () => {
+      const memId = insertMemory(db, { project: null, session_id: null });
+      const rows = queryRecentMemories(db);
+      expect(rows.find(r => r.id === memId)!.profile).toBeNull();
+    });
+
+    it('profile is null when the session has no transcript row', () => {
+      insertSession(db, 's-orphan');
+      const memId = insertMemory(db, { project: null, session_id: 's-orphan' });
+      const rows = queryRecentMemories(db);
+      expect(rows.find(r => r.id === memId)!.profile).toBeNull();
+    });
+
+    it('filters to an exact profile match via the transcripts join', () => {
+      insertSession(db, 's1');
+      insertTranscript(db, { session_id: 's1', extract_profile: 'conversational' });
+      const convId = insertMemory(db, { project: null, session_id: 's1' });
+
+      insertSession(db, 's2');
+      insertTranscript(db, { session_id: 's2', extract_profile: 'engineering' });
+      insertMemory(db, { project: null, session_id: 's2' });
+
+      const rows = queryRecentMemories(db, { profile: 'conversational' });
+      expect(rows.map(r => r.id)).toEqual([convId]);
+    });
+
+    it('the null filter selection matches memories with no derivable profile (no session, no transcript, or null extract_profile)', () => {
+      const noSessionId = insertMemory(db, { project: null, session_id: null });
+
+      insertSession(db, 's-orphan');
+      const orphanId = insertMemory(db, { project: null, session_id: 's-orphan' });
+
+      insertSession(db, 's-null-profile');
+      insertTranscript(db, { session_id: 's-null-profile', extract_profile: null });
+      const nullProfileId = insertMemory(db, { project: null, session_id: 's-null-profile' });
+
+      insertSession(db, 's-has-profile');
+      insertTranscript(db, { session_id: 's-has-profile', extract_profile: 'engineering' });
+      insertMemory(db, { project: null, session_id: 's-has-profile' });
+
+      const rows = queryRecentMemories(db, { profile: null });
+      const ids = rows.map(r => r.id).sort();
+      expect(ids).toEqual([noSessionId, nullProfileId, orphanId].sort());
+    });
+  });
+
+  describe('queryProjectOptions / queryProfileOptions', () => {
+    it('returns distinct non-null project values, sorted', () => {
+      insertMemory(db, { project: 'repo-b', session_id: null });
+      insertMemory(db, { project: 'repo-a', session_id: null });
+      insertMemory(db, { project: 'repo-a', session_id: null });
+      insertMemory(db, { project: null, session_id: null });
+
+      expect(queryProjectOptions(db)).toEqual(['repo-a', 'repo-b']);
+    });
+
+    it('returns distinct non-null extract_profile values, sorted, independent of the recentMemories window', () => {
+      insertSession(db, 's1');
+      insertTranscript(db, { session_id: 's1', extract_profile: 'engineering' });
+      insertSession(db, 's2');
+      insertTranscript(db, { session_id: 's2', extract_profile: 'conversational' });
+      insertSession(db, 's3');
+      insertTranscript(db, { session_id: 's3', extract_profile: null });
+
+      expect(queryProfileOptions(db)).toEqual(['conversational', 'engineering']);
+    });
+  });
+
+  describe('parseMemoryFilterParam', () => {
+    it('undefined/blank -> undefined (no filter)', () => {
+      expect(parseMemoryFilterParam(undefined)).toBeUndefined();
+      expect(parseMemoryFilterParam('')).toBeUndefined();
+      expect(parseMemoryFilterParam('   ')).toBeUndefined();
+    });
+
+    it('"none" (case-insensitive) -> null', () => {
+      expect(parseMemoryFilterParam('none')).toBeNull();
+      expect(parseMemoryFilterParam('NONE')).toBeNull();
+      expect(parseMemoryFilterParam(' None ')).toBeNull();
+    });
+
+    it('any other value -> the trimmed literal string', () => {
+      expect(parseMemoryFilterParam('astramemory-local')).toBe('astramemory-local');
+      expect(parseMemoryFilterParam('  engineering  ')).toBe('engineering');
+    });
+  });
+
+  describe('queryDashboard threads memoryFilters through end-to-end', () => {
+    it('applies a project filter and echoes it back on memoryFilters', async () => {
+      insertMemory(db, { project: 'repo-a', session_id: null });
+      insertMemory(db, { project: 'repo-b', session_id: null });
+
+      const data = await queryDashboard(db, undefined, { project: 'repo-a' });
+      expect(data.recentMemories.every(m => m.project === 'repo-a')).toBe(true);
+      expect(data.memoryFilters).toEqual({ project: 'repo-a' });
+    });
+
+    it('defaults to no filter and populates filterOptions from the full dataset', async () => {
+      insertMemory(db, { project: 'repo-a', session_id: null });
+      const data = await queryDashboard(db);
+      expect(data.memoryFilters).toEqual({});
+      expect(data.filterOptions.projects).toContain('repo-a');
+    });
   });
 });

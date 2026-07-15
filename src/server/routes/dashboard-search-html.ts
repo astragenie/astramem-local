@@ -19,6 +19,7 @@ import { search, type SearchDebugHit, type SearchFilters } from '../../search/se
 import { defaultConfig, type Config } from '../../config/config.js';
 import { checkDashboardAuth } from './dashboard-auth.js';
 import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
+import { queryExtractProfilesBySession } from '../queries/dashboard.js';
 
 const RESULT_LIMIT = 20;
 
@@ -37,6 +38,38 @@ function fmtWeight(n: number): string {
 
 function fmtScore(n: number): string {
   return n.toFixed(3);
+}
+
+interface HitContext {
+  project: string | null;
+  profile: string | null;
+}
+
+/** Batched project/profile lookup for the fusion-debug hit list — SearchDebugHit
+ *  only carries `id` + score intermediates (see its doc comment: purely a
+ *  fusion-breakdown projection), so the dashboard's project/profile columns
+ *  are resolved here in exactly two queries total (never per-row): one
+ *  `memories` IN-clause lookup for id -> {project, session_id}, then the
+ *  shared queryExtractProfilesBySession helper (also used by the main
+ *  dashboard's activity feed) for session_id -> profile. */
+function queryHitContext(db: DB, hits: SearchDebugHit[]): Map<string, HitContext> {
+  const result = new Map<string, HitContext>();
+  if (hits.length === 0) return result;
+
+  const ids = hits.map(h => h.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(`
+    SELECT id, project, session_id FROM memories WHERE id IN (${placeholders})
+  `).all(...ids) as Array<{ id: string; project: string | null; session_id: string | null }>;
+
+  const profileBySession = queryExtractProfilesBySession(db, rows.map(r => r.session_id));
+  for (const row of rows) {
+    result.set(row.id, {
+      project: row.project,
+      profile: row.session_id !== null ? profileBySession.get(row.session_id) ?? null : null,
+    });
+  }
+  return result;
 }
 
 export function dashboardSearchRoute(db: DB, embed: EmbedProvider, token: string, devNoAuthActive = false) {
@@ -83,15 +116,17 @@ export function dashboardSearchRoute(db: DB, embed: EmbedProvider, token: string
       // rather than silently looking like the initial load.
       const ranSearch = rawQuery !== undefined;
       let hits: SearchDebugHit[] = [];
+      let hitContext: Map<string, HitContext> = new Map();
       if (ranSearch) {
         hits = await search(rawQuery, filters, RESULT_LIMIT, { db, embed, weights, debug: true });
+        hitContext = queryHitContext(db, hits);
       }
 
       return reply
         .code(200)
         .header('content-type', 'text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(renderPage(rawQuery, weights, ranSearch, hits, filterInputs));
+        .send(renderPage(rawQuery, weights, ranSearch, hits, filterInputs, hitContext));
     });
   };
 }
@@ -103,8 +138,12 @@ function renderWeights(weights: Config['search']): string {
     + `&eta;${fmtWeight(weights.eta)}`;
 }
 
-function renderTable(hits: SearchDebugHit[]): string {
-  const rows = hits.map((h, i) => `
+function renderTable(hits: SearchDebugHit[], hitContext: Map<string, HitContext>): string {
+  const rows = hits.map((h, i) => {
+    const ctx = hitContext.get(h.id);
+    const project = ctx?.project ? esc(ctx.project) : '—';
+    const profile = ctx?.profile ? esc(ctx.profile) : '—';
+    return `
       <tr>
         <td>${esc(h.id.slice(0, 8))}&hellip;</td>
         <td>${esc(h.source)}</td>
@@ -114,13 +153,17 @@ function renderTable(hits: SearchDebugHit[]): string {
         <td>${fmtScore(h.freshness)}</td>
         <td>${fmtScore(h.score)}</td>
         <td>${i + 1}</td>
-      </tr>`).join('');
+        <td>${project}</td>
+        <td>${profile}</td>
+      </tr>`;
+  }).join('');
 
   return `<table>
     <thead>
       <tr>
         <th>id</th><th>source</th><th>bm25(norm)</th><th>cosine(norm)</th>
         <th>importance</th><th>freshness</th><th>fused</th><th>rank</th>
+        <th>project</th><th>profile</th>
       </tr>
     </thead>
     <tbody>${rows}
@@ -128,10 +171,10 @@ function renderTable(hits: SearchDebugHit[]): string {
   </table>`;
 }
 
-function renderResults(ranSearch: boolean, hits: SearchDebugHit[]): string {
+function renderResults(ranSearch: boolean, hits: SearchDebugHit[], hitContext: Map<string, HitContext>): string {
   if (!ranSearch) return '';
   if (hits.length === 0) return '<p class="empty">no results</p>';
-  return renderTable(hits);
+  return renderTable(hits, hitContext);
 }
 
 const CSS = `
@@ -160,7 +203,7 @@ interface FilterInputs {
   since?: string;
 }
 
-function renderPage(rawQuery: string | undefined, weights: Config['search'], ranSearch: boolean, hits: SearchDebugHit[], f: FilterInputs): string {
+function renderPage(rawQuery: string | undefined, weights: Config['search'], ranSearch: boolean, hits: SearchDebugHit[], f: FilterInputs, hitContext: Map<string, HitContext>): string {
   const queryValue = esc(rawQuery ?? '');
   return `<!DOCTYPE html>
 <html lang="en">
@@ -185,7 +228,7 @@ ${renderDashboardNav('search')}
   <p class="hint">modes: hybrid FTS(bm25)+vector fusion always on &middot; entity filter (exact, then substring) &middot; as-of = bitemporal time-travel &middot; since = created_at lower bound &middot; type = comma-separated list</p>
 </form>
 <p class="weights">weights: ${renderWeights(weights)}</p>
-${renderResults(ranSearch, hits)}
+${renderResults(ranSearch, hits, hitContext)}
 </body>
 </html>`;
 }
