@@ -302,6 +302,25 @@ export class MemoryRepo {
     return rows.map(r => r.id);
   }
 
+  /**
+   * FEAT-507: the subset of `listNeedingVecIndex` that is ALSO oversize
+   * (text longer than `maxChars` — the embed model's context budget, see
+   * `src/pipeline/oversize.ts`). Used by the dedicated oversize-repair scan
+   * (`src/pipeline/oversize-scanner.ts`) to find memories the reembed
+   * handler's truncate-before-embed fix can actually repair, on a shorter
+   * cadence than the generic 24h vec-index sweep — production was observed
+   * accumulating oversize poisons at ~16/hr, too fast to wait a full day.
+   * A memory that never got flagged (already vector-indexed) is left alone
+   * even if its text happens to be long, since re-indexing it would just be
+   * wasted embed budget for no observable gain.
+   */
+  listOversizeNeedingVecIndex(maxChars: number, limit: number): string[] {
+    const rows = this.db.prepare(
+      'SELECT id FROM memories WHERE needs_vec_index = 1 AND LENGTH(text) > ? ORDER BY updated_at ASC LIMIT ?',
+    ).all(maxChars, limit) as { id: string }[];
+    return rows.map(r => r.id);
+  }
+
   searchFts(query: string, limit: number): FtsHit[] {
     const rows = this.db.prepare(`
       SELECT m.id, m.text, m.type, bm25(memories_fts) AS bm25

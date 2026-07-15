@@ -8,6 +8,8 @@ import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import { reembedHandler } from '../../src/pipeline/handlers/reembed.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { makeFakeVec } from '../../src/search/search.js';
+import { EMBED_MAX_INPUT_CHARS } from '../../src/pipeline/oversize.js';
+import { DeterministicError, TransientError } from '../../src/pipeline/errors.js';
 import type { ExtendedHandlerCtx } from '../../src/pipeline/handler-ctx-ext.js';
 import type { EmbedProvider, LLMProvider } from '../../src/contracts/index.js';
 
@@ -20,6 +22,34 @@ function makeCtx(db: ReturnType<typeof openDb>): { ctx: ExtendedHandlerCtx; embe
     embed: async (texts: string[]) => {
       embedCalls.push(texts);
       return texts.map(t => makeFakeVec(`v2:${t}`));
+    },
+    health: async () => ({ ok: true, model: 'reembed-test-model', dim: 1024 as const }),
+  };
+  const llm = { name: 'ollama', model: 'x', complete: async () => '' } as unknown as LLMProvider;
+  const ctx: ExtendedHandlerCtx = {
+    db,
+    config: defaultConfig(),
+    providers: { llm: { compaction: llm, extraction: llm }, embed },
+    memoryRepo: new MemoryRepo(db),
+    vecStore: new SqliteVecStore(db),
+  };
+  return { ctx, embedCalls };
+}
+
+/** Same shape as makeCtx, but the embed provider always throws — used by the
+ *  FEAT-507 oversize tests below to exercise the failure/reclassification path. */
+function makeFailingCtx(
+  db: ReturnType<typeof openDb>,
+  failWith: Error,
+): { ctx: ExtendedHandlerCtx; embedCalls: string[][] } {
+  const embedCalls: string[][] = [];
+  const embed: EmbedProvider = {
+    name: 'ollama' as const,
+    model: 'reembed-test-model',
+    dim: 1024 as const,
+    embed: async (texts: string[]) => {
+      embedCalls.push(texts);
+      throw failWith;
     },
     health: async () => ({ ok: true, model: 'reembed-test-model', dim: 1024 as const }),
   };
@@ -106,5 +136,81 @@ describe('reembed handler', () => {
     expect(memRepo.get(id)?.needs_vec_index).toBe(false);
     const hits = await ctx.vecStore.search(makeFakeVec('v2:a memory whose vec upsert failed at write time'), 5);
     expect(hits.some(h => h.id === id)).toBe(true);
+  });
+
+  // FEAT-507: oversize atoms poisoned this handler deterministically —
+  // truncate before embedding, and reclassify a context-length overflow
+  // that still slips through as deterministic (no wasted retries).
+  describe('oversize repair (FEAT-507)', () => {
+    it('truncates oversize text to the embed budget before calling the provider', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const { ctx, embedCalls } = makeCtx(db);
+
+      const oversizeText = 'x'.repeat(EMBED_MAX_INPUT_CHARS + 1000);
+      const id = new MemoryRepo(db).insert({
+        type: 'fact', text: oversizeText, normalized_text: oversizeText,
+        repo: null, project: null, branch: null, agent: null,
+        session_id: null, hash: 'h-re-oversize-1', source_hash: null,
+      });
+
+      await reembedHandler.handle({ kind: 'reembed', memory_id: id }, ctx);
+
+      expect(embedCalls).toHaveLength(1);
+      expect(embedCalls[0]?.[0]).toHaveLength(EMBED_MAX_INPUT_CHARS);
+    });
+
+    it('does not truncate text already within the embed budget', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const { ctx, embedCalls } = makeCtx(db);
+
+      const text = 'a normal-sized memory';
+      const id = new MemoryRepo(db).insert({
+        type: 'fact', text, normalized_text: text,
+        repo: null, project: null, branch: null, agent: null,
+        session_id: null, hash: 'h-re-normal-1', source_hash: null,
+      });
+
+      await reembedHandler.handle({ kind: 'reembed', memory_id: id }, ctx);
+
+      expect(embedCalls).toEqual([[text]]);
+    });
+
+    it('reclassifies a context-length-exceeded 500 as DeterministicError (no wasted retries)', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const failure = new TransientError(
+        'Ollama embed failed: HTTP 500 — {"error":"the input length exceeds the context length"}',
+      );
+      const { ctx } = makeFailingCtx(db, failure);
+
+      const oversizeText = 'x'.repeat(EMBED_MAX_INPUT_CHARS + 1000);
+      const id = new MemoryRepo(db).insert({
+        type: 'fact', text: oversizeText, normalized_text: oversizeText,
+        repo: null, project: null, branch: null, agent: null,
+        session_id: null, hash: 'h-re-oversize-fail-1', source_hash: null,
+      });
+
+      await expect(reembedHandler.handle({ kind: 'reembed', memory_id: id }, ctx))
+        .rejects.toBeInstanceOf(DeterministicError);
+    });
+
+    it('leaves a genuinely transient embed failure classified as transient', async () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const failure = new TransientError('ECONNREFUSED');
+      const { ctx } = makeFailingCtx(db, failure);
+
+      const id = new MemoryRepo(db).insert({
+        type: 'fact', text: 'a normal-sized memory', normalized_text: 'a normal-sized memory',
+        repo: null, project: null, branch: null, agent: null,
+        session_id: null, hash: 'h-re-transient-1', source_hash: null,
+      });
+
+      const promise = reembedHandler.handle({ kind: 'reembed', memory_id: id }, ctx);
+      await expect(promise).rejects.toBeInstanceOf(TransientError);
+      await expect(promise).rejects.not.toBeInstanceOf(DeterministicError);
+    });
   });
 });

@@ -220,5 +220,44 @@ describe('MemoryRepo', () => {
       expect(limited).toHaveLength(1);
       expect([a, b]).toContain(limited[0]);
     });
+
+    // FEAT-507: oversize-atom repair scan uses this to find candidates the
+    // reembed handler's truncate-before-embed fix can actually repair.
+    it('listOversizeNeedingVecIndex returns only flagged rows whose text exceeds maxChars', () => {
+      const insertWithText = (hash: string, text: string): string =>
+        repo.insert({
+          type: 'fact', text, normalized_text: text, hash,
+          repo: null, project: null, branch: null, agent: null, session_id: null, source_hash: null,
+        });
+
+      const oversizeFlagged = insertWithText('oversize-flagged-1', 'x'.repeat(3000));
+      const oversizeUnflagged = insertWithText('oversize-unflagged-1', 'x'.repeat(3000));
+      const smallFlagged = insertWithText('small-flagged-1', 'x'.repeat(10));
+      repo.markNeedsVecIndex(oversizeFlagged);
+      repo.markNeedsVecIndex(smallFlagged);
+      // oversizeUnflagged deliberately never flagged — already vector-indexed,
+      // so it must not appear even though its text is long.
+
+      const candidates = repo.listOversizeNeedingVecIndex(1000, 10);
+      expect(candidates).toEqual([oversizeFlagged]);
+      expect(candidates).not.toContain(oversizeUnflagged);
+      expect(candidates).not.toContain(smallFlagged);
+    });
+
+    it('listOversizeNeedingVecIndex caps at limit', () => {
+      const insertWithText = (hash: string, text: string): string =>
+        repo.insert({
+          type: 'fact', text, normalized_text: text, hash,
+          repo: null, project: null, branch: null, agent: null, session_id: null, source_hash: null,
+        });
+      const a = insertWithText('oversize-cap-a', 'x'.repeat(3000));
+      const b = insertWithText('oversize-cap-b', 'x'.repeat(3000));
+      repo.markNeedsVecIndex(a);
+      repo.markNeedsVecIndex(b);
+
+      const limited = repo.listOversizeNeedingVecIndex(1000, 1);
+      expect(limited).toHaveLength(1);
+      expect([a, b]).toContain(limited[0]);
+    });
   });
 });
