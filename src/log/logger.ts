@@ -121,7 +121,23 @@ export function createServiceLogStream(
   const keep = opts.keep ?? LOG_ROTATE_KEEP;
   const checkMs = opts.checkMs ?? LOG_ROTATE_CHECK_MS;
   const livePath = join(dir, LIVE_LOG_BASENAME);
-  const dest = pino.destination({ dest: livePath, sync: false, mkdir: true });
+  // maxLength caps SonicBoom's in-memory buffer: with the disk stalled
+  // outright (AV lock, dead handle), writes past the cap are DROPPED (counted
+  // below) instead of growing memory without bound — the same "liveness never
+  // depends on the disk draining" principle that removed the worker-thread
+  // transport, applied to the residual memory risk (review MEDIUM on 3762cc8a).
+  // 8MB ≈ minutes of full-rate log burst: ample for any transient stall.
+  const dest = pino.destination({
+    dest: livePath, sync: false, mkdir: true, maxLength: 8 * 1024 * 1024,
+  });
+  let dropped = 0;
+  (dest as unknown as NodeJS.EventEmitter).on('drop', () => {
+    dropped++;
+    // Deliberately console (not pino): the pino path is the thing dropping.
+    if (dropped === 1 || dropped % 1000 === 0) {
+      console.warn(`${ts()} [astramem-local] log stream saturated — dropped ${dropped} line(s) (disk stalled?)`);
+    }
+  });
 
   const rotate = (): void => {
     try {
@@ -141,7 +157,12 @@ export function createServiceLogStream(
       // timer.
     }
   };
-  setInterval(rotate, checkMs).unref();
+  const sweep = setInterval(rotate, checkMs);
+  sweep.unref();
+  // Stop the sweep when the stream closes (review LOW on 3762cc8a): only one
+  // instance exists per daemon process, but tests create many — a destroyed
+  // stream must not leave its housekeeping timer running.
+  (dest as unknown as NodeJS.EventEmitter).once('close', () => clearInterval(sweep));
 
   return dest;
 }
