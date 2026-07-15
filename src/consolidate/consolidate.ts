@@ -542,8 +542,22 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       }
     }
 
+    // Yield to the event loop periodically during the O(n^2) pairwise scan.
+    // Without this a large group blocks the loop for the WHOLE scan — /health,
+    // /version, /search and MCP all freeze, and the hang-watchdog then kills an
+    // otherwise-healthy daemon (2026-07-15 incident: the consolidate
+    // SQL-variable fix let consolidation complete on a 36k-atom corpus and this
+    // loop had no yield points). 256 pairs of cosine(1024-dim) is a few ms of
+    // work, so yielding at that cadence keeps the daemon responsive at
+    // negligible overhead. setImmediate is safe here: the loop is NOT inside a
+    // synchronous better-sqlite3 db.transaction() — each mutation autocommits.
+    let pairsSinceYield = 0;
     for (let i = 0; i < group.length; i++) {
       for (let j = i + 1; j < group.length; j++) {
+        if (++pairsSinceYield >= 256) {
+          pairsSinceYield = 0;
+          await new Promise(r => setImmediate(r));
+        }
         const a = group[i] as AtomRow, b = group[j] as AtomRow;
         if (invalidatedThisRun.has(a.id) || invalidatedThisRun.has(b.id)) continue;
         const va = vecs.get(a.id), vb = vecs.get(b.id);
