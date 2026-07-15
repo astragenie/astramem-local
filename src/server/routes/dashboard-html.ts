@@ -18,7 +18,8 @@
  * Target: < 20 KB gzipped.
  */
 
-import type { DashboardData, DashboardHealth, JobStateByKind } from '../queries/dashboard.js';
+import type { DashboardData, DashboardHealth, JobStateByKind, MemoryListFilters } from '../queries/dashboard.js';
+import { NONE_FILTER_VALUE } from '../queries/dashboard.js';
 import type { Config } from '../../config/config.js';
 import { PKG_VERSION, WIRE_VERSIONS_SUPPORTED, SCHEMA_VERSION } from '../lib/wire-meta.js';
 import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
@@ -123,6 +124,12 @@ details[open]>summary{color:#fff;white-space:normal;overflow:visible;text-overfl
 .pager{margin-top:10px;font-size:12px;display:flex;gap:14px;align-items:center}
 .pager a{color:#3a7bd5;text-decoration:none}
 .pager a:hover{text-decoration:underline}
+.mem-filter{margin-bottom:8px;font-size:12px;display:flex;gap:12px;align-items:center;flex-wrap:wrap}
+.mem-filter select{background:#0f0f0f;color:#e0e0e0;border:1px solid #333;padding:2px 6px;font-family:monospace;font-size:12px}
+.mem-filter button{font-family:monospace;font-size:12px;padding:2px 8px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:3px;cursor:pointer}
+.mem-filter button:hover{background:#333}
+.mem-filter a{color:#3a7bd5;text-decoration:none}
+.mem-filter a:hover{text-decoration:underline}
 `.trim();
 
 // ---------------------------------------------------------------------------
@@ -352,6 +359,46 @@ function renderExpandable(fullText: string): string {
 
 const ACTIVITY_PER_PAGE = 15;
 
+/** True once either the project or profile filter has a value (including
+ *  the '—'/none selection) — used both to decide whether job-failure rows
+ *  stay in the merged feed (they have no project/profile of their own, so a
+ *  filter view drops them rather than showing unfiltered rows a user asked
+ *  to narrow) and to render the active `<select>` option / "clear" link. */
+function isMemoryFilterActive(filters: MemoryListFilters): boolean {
+  return filters.project !== undefined || filters.profile !== undefined;
+}
+
+/** query-param encoding of one filter dimension: `undefined` -> omitted,
+ *  `null` -> the NONE_FILTER_VALUE sentinel, string -> the literal value. */
+function filterQueryValue(v: string | null | undefined): string | undefined {
+  if (v === undefined) return undefined;
+  return v === null ? NONE_FILTER_VALUE : v;
+}
+
+/** Small GET `<form>` (zero JS, matches every other dashboard filter —
+ *  dashboard-logs-html.ts's ?level= links, dashboard-consolidation-html.ts's
+ *  ?status= tabs) with a `<select>` per dimension. Options are drawn from
+ *  `filterOptions`, which is NOT limited to the recent-memories window, so
+ *  an option never disappears just because its rows scrolled off the top 25. */
+function renderMemoryFilterForm(filters: MemoryListFilters, options: DashboardData['filterOptions']): string {
+  const buildOptions = (allLabel: string, noneLabel: string, values: string[], active: string | null | undefined): string => {
+    const opts = [
+      `<option value=""${active === undefined ? ' selected' : ''}>${esc(allLabel)}</option>`,
+      `<option value="${NONE_FILTER_VALUE}"${active === null ? ' selected' : ''}>${esc(noneLabel)}</option>`,
+      ...values.map(v => `<option value="${esc(v)}"${active === v ? ' selected' : ''}>${esc(v)}</option>`),
+    ];
+    return opts.join('');
+  };
+
+  const clearLink = isMemoryFilterActive(filters) ? ' <a href="/dashboard">clear</a>' : '';
+
+  return `<form method="get" action="/dashboard" class="mem-filter">
+  <label>project <select name="project">${buildOptions('(all projects)', '— (no project)', options.projects, filters.project)}</select></label>
+  <label>profile <select name="profile">${buildOptions('(all profiles)', '— (no profile)', options.profiles, filters.profile)}</select></label>
+  <button type="submit">filter</button>${clearLink}
+</form>`;
+}
+
 /** AC-5: replaces the old full 25-row "recent captures" table with a merged
  *  feed of failures (from recentFailedJobs) and memories (from
  *  recentMemories), newest first. Individual consolidation proposals aren't
@@ -366,22 +413,35 @@ const ACTIVITY_PER_PAGE = 15;
  *  way to see the rest. Pagination (below) is what makes using the full
  *  fetched pool safe: page 1 still shows the newest 15 either way, and
  *  paging forward reaches the remaining already-fetched rows instead of
- *  silently dropping them. */
+ *  silently dropping them.
+ *
+ *  When a project/profile filter is active, job-failure rows are left out
+ *  of the merged feed entirely — they carry no project/profile of their
+ *  own, so showing them unfiltered underneath a "filtered to project X"
+ *  view would be confusing (job rows never match the filter, so they'd
+ *  always land at the top with no explanation). `recentMemories` itself is
+ *  already server-side filtered (queryRecentMemories), so this function
+ *  never re-filters it — only decides whether jobs are mixed in. */
 function buildActivityRows(data: DashboardData): FeedRow[] {
   const rows: FeedRow[] = [];
+  const filtering = isMemoryFilterActive(data.memoryFilters);
 
-  for (const job of data.recentFailedJobs) {
-    const stateCls = job.state === 'poison' ? 'err' : 'warn';
-    const err = job.last_error ? renderExpandable(job.last_error) : '<span class="muted">(no error text)</span>';
-    rows.push({
-      ts: job.updated_at,
-      html: `<tr>
+  if (!filtering) {
+    for (const job of data.recentFailedJobs) {
+      const stateCls = job.state === 'poison' ? 'err' : 'warn';
+      const err = job.last_error ? renderExpandable(job.last_error) : '<span class="muted">(no error text)</span>';
+      rows.push({
+        ts: job.updated_at,
+        html: `<tr>
         <td class="muted" style="width:90px">${esc(fmtTime(job.updated_at))}</td>
         <td><span class="badge ${stateCls}">${esc(job.state)}</span></td>
         <td>${esc(job.kind)}</td>
         <td>${err}</td>
+        <td class="muted">—</td>
+        <td class="muted">—</td>
       </tr>`,
-    });
+      });
+    }
   }
 
   for (const mem of data.recentMemories) {
@@ -392,6 +452,8 @@ function buildActivityRows(data: DashboardData): FeedRow[] {
         <td><span class="badge" style="background:#2a2a2a;color:#aaa">memory</span></td>
         <td>${esc(mem.type)}</td>
         <td>${renderExpandable(mem.text)}</td>
+        <td>${mem.project ? esc(mem.project) : '<span class="muted">—</span>'}</td>
+        <td>${mem.profile ? esc(mem.profile) : '<span class="muted">—</span>'}</td>
       </tr>`,
     });
   }
@@ -412,27 +474,37 @@ function resolveActivityPage(raw: string | undefined, totalPages: number): numbe
 }
 
 /** Prev/next + "page N/M — showing X–Y of Z" caption for the activity feed.
- *  Plain query-param `<a>` links, no JS. The main dashboard has no other
- *  query-string filters to preserve (unlike /dashboard/consolidation's
- *  ?status=), so the link target is just `?page=N`. */
-function renderActivityPager(page: number, totalPages: number, offset: number, shownCount: number, total: number): string {
+ *  Plain query-param `<a>` links, no JS — preserves the active
+ *  project/profile filter (if any) across pagination, same pattern
+ *  dashboard-consolidation-html.ts's pager uses for `?status=`. */
+function renderActivityPager(filters: MemoryListFilters, page: number, totalPages: number, offset: number, shownCount: number, total: number): string {
   if (total === 0) return '';
   const start = offset + 1;
   const end = offset + shownCount;
+  const linkFor = (p: number): string => {
+    const params = new URLSearchParams();
+    params.set('page', String(p));
+    const project = filterQueryValue(filters.project);
+    if (project !== undefined) params.set('project', project);
+    const profile = filterQueryValue(filters.profile);
+    if (profile !== undefined) params.set('profile', profile);
+    return `/dashboard?${params.toString()}`;
+  };
   const prev = page > 1
-    ? `<a href="/dashboard?page=${page - 1}">&larr; prev</a>`
+    ? `<a href="${linkFor(page - 1)}">&larr; prev</a>`
     : '<span class="muted">&larr; prev</span>';
   const next = page < totalPages
-    ? `<a href="/dashboard?page=${page + 1}">next &rarr;</a>`
+    ? `<a href="${linkFor(page + 1)}">next &rarr;</a>`
     : '<span class="muted">next &rarr;</span>';
   return `<div class="pager"><span class="muted">page ${page}/${totalPages} — showing ${start}&ndash;${end} of ${total}</span> ${prev} ${next}</div>`;
 }
 
 function renderActivityFeed(data: DashboardData, rawPage: string | undefined): string {
+  const filterForm = renderMemoryFilterForm(data.memoryFilters, data.filterOptions);
   const rows = buildActivityRows(data);
 
   if (rows.length === 0) {
-    return '<p class="muted">No recent activity.</p>';
+    return `${filterForm}<p class="muted">No recent activity.</p>`;
   }
 
   const total = rows.length;
@@ -442,11 +514,11 @@ function renderActivityFeed(data: DashboardData, rawPage: string | undefined): s
   const pageRows = rows.slice(offset, offset + ACTIVITY_PER_PAGE);
   const trs = pageRows.map(r => r.html).join('');
 
-  return `<table>
-  <thead><tr><th>Time</th><th>Kind</th><th>Detail</th><th>Info</th></tr></thead>
+  return `${filterForm}<table>
+  <thead><tr><th>Time</th><th>Kind</th><th>Detail</th><th>Info</th><th>Project</th><th title="derived: extract_profile of the session's most recent transcript — best-effort, can lag the actually-resolved profile">Profile</th></tr></thead>
   <tbody>${trs}</tbody>
 </table>
-${renderActivityPager(page, totalPages, offset, pageRows.length, total)}`;
+${renderActivityPager(data.memoryFilters, page, totalPages, offset, pageRows.length, total)}`;
 }
 
 // ---------------------------------------------------------------------------

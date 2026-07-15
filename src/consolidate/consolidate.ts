@@ -38,11 +38,15 @@ import { randomUUID } from 'node:crypto';
 import type { DB } from '../storage/db.js';
 import type { Config } from '../config/config.js';
 import type { LLMProvider } from '../contracts/llm.js';
+import type { VectorStore } from '../contracts/index.js';
+import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import { MemoryEventRepo, type SupersedeProvenance, type CorrectionSource } from '../storage/memory-events.js';
 import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
 import { judgeContradiction, type JudgeVerdict } from './contradiction-judge.js';
 import { recordConsolidationJudgeRun } from '../storage/consolidation-judge-log.js';
+import { getConsolidationCursor, setConsolidationCursor } from '../storage/consolidation-cursor.js';
+import { recordConsolidationRun } from '../storage/consolidation-run-log.js';
 
 export interface ConsolidateOpts {
   /** Cosine similarity at/above which a pair auto-merges. */
@@ -120,6 +124,39 @@ export interface ConsolidateOpts {
    * timing the event loop. Never set in production.
    */
   onYield?: () => void;
+  /**
+   * P2.1 stabilization: candidate-pair selection strategy — mirrors
+   * `Config['consolidation']['candidateSelection']` exactly (see that
+   * field's doc comment for the full mechanism/rationale). Default
+   * `'full'` is BYTE-IDENTICAL to pre-P2.1 behavior. An invalid value
+   * falls back to `'full'` for THIS run only (logged, never fatal — same
+   * pattern as `resolveAutoAcceptThreshold`).
+   */
+  candidateSelection?: 'full' | 'knn';
+  /** Neighbors queried per atom in `'knn'` mode. Default 30. Ignored in
+   *  `'full'` mode. An invalid value falls back to the default for THIS
+   *  run only (logged, never fatal). */
+  knnK?: number;
+  /**
+   * Ceiling on total candidate pairs processed THIS run, with a persisted
+   * resumable cursor — mirrors
+   * `Config['consolidation']['maxCandidatePairsPerRun']` exactly (see that
+   * field's doc comment). Default `null` = off (unbounded, byte-identical
+   * to pre-P2.1 behavior). An invalid value falls back to `null` for THIS
+   * run only (logged, never fatal).
+   */
+  maxCandidatePairsPerRun?: number | null;
+  /**
+   * Injectable `VectorStore` for the `'knn'` path — defaults to a fresh
+   * `SqliteVecStore(db)` when omitted. Callers with an already-wired
+   * instance (e.g. `ExtendedHandlerCtx.vecStore`) should pass it through
+   * rather than let this call allocate a second one against the same
+   * connection. Ignored in `'full'` mode. `SqliteVecStore.search()`
+   * doesn't validate its own constructor `dim` against the query vector
+   * (only `upsert()` does), so no embedding dimension needs threading
+   * here.
+   */
+  vectorStore?: VectorStore;
 }
 
 export interface ConsolidateSummary {
@@ -201,7 +238,9 @@ export interface ConsolidateSummary {
   judgeCallsNearThreshold: number;
 }
 
-interface AtomRow {
+// Exported (not just for internal use) so buildFullPairs/buildKnnCandidatePairs
+// below can be unit-tested directly against hand-built fixtures.
+export interface AtomRow {
   id: string;
   rowid: number;
   repo: string | null;
@@ -210,6 +249,82 @@ interface AtomRow {
   importance: number;
   created_at: number;
   derived_from: string | null;
+}
+
+/**
+ * All C(n,2) pairs in a group, in the exact i<j nested-loop order the
+ * pre-P2.1 scan always used — `'full'` mode's default (no
+ * `maxCandidatePairsPerRun` ceiling) output stays byte-identical to
+ * pre-P2.1 behavior. Exported for the knn-vs-full recall-parity test.
+ */
+export function buildFullPairs(group: readonly AtomRow[]): Array<[AtomRow, AtomRow]> {
+  const pairs: Array<[AtomRow, AtomRow]> = [];
+  for (let i = 0; i < group.length; i++) {
+    for (let j = i + 1; j < group.length; j++) {
+      pairs.push([group[i] as AtomRow, group[j] as AtomRow]);
+    }
+  }
+  return pairs;
+}
+
+/**
+ * P2.1: per-atom top-`k` nearest-neighbor query via the existing
+ * `VectorStore.search()` abstraction — same infra `/recall` uses, no new
+ * dependency. `Config['consolidation']['candidateSelection']`'s doc
+ * comment explains why this is a JS post-filter rather than a same-query
+ * metadata filter: sqlite-vec's adapter throws on a non-empty `VecFilter`
+ * today (`src/vector/sqlite-vec.ts`'s `search()` — "VecFilter not yet
+ * implemented"), so hits are filtered down to the current (repo,type)
+ * group's own atom ids here instead. Symmetric pairs are deduplicated via
+ * a canonical min/max-id key (same pair-identity convention
+ * `insertContradictionProposal`'s `MIN(winner_id,loser_id)`/
+ * `MAX(winner_id,loser_id)` SQL guard already uses — just an in-memory Set
+ * instead of a DB `WHERE NOT EXISTS`). O(n^2) -> O(n*k).
+ *
+ * Cooperative-yields during the search phase too (ADR-019 Tier 1,
+ * `yieldEveryNPairs` reused as the cadence) — each `vectorStore.search()`
+ * call runs a synchronous better-sqlite3 MATCH query under the hood, so
+ * without a periodic `setImmediate` yield here a large group's
+ * CANDIDATE-GENERATION phase (not just its later pair-processing phase)
+ * could itself become one long uninterrupted stretch.
+ */
+export async function buildKnnCandidatePairs(
+  group: readonly AtomRow[],
+  vecs: ReadonlyMap<string, Float32Array>,
+  vectorStore: VectorStore,
+  k: number,
+  opts: { yieldEveryNPairs?: number; onYield?: () => void } = {},
+): Promise<Array<[AtomRow, AtomRow]>> {
+  const groupIds = new Set(group.map(a => a.id));
+  const byId = new Map(group.map(a => [a.id, a]));
+  const seenPairKeys = new Set<string>();
+  const pairs: Array<[AtomRow, AtomRow]> = [];
+  const yieldEvery = opts.yieldEveryNPairs ?? 200;
+  let sinceYield = 0;
+
+  for (const a of group) {
+    sinceYield++;
+    if (sinceYield >= yieldEvery) {
+      sinceYield = 0;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      opts.onYield?.();
+    }
+
+    const va = vecs.get(a.id);
+    if (!va) continue;
+    const hits = await vectorStore.search(va, k);
+    for (const hit of hits) {
+      if (hit.id === a.id) continue;
+      if (!groupIds.has(hit.id)) continue; // post-filter to this (repo,type) group
+      const b = byId.get(hit.id);
+      if (!b) continue;
+      const key = a.id < b.id ? `${a.id} ${b.id}` : `${b.id} ${a.id}`;
+      if (seenPairKeys.has(key)) continue;
+      seenPairKeys.add(key);
+      pairs.push(a.id < b.id ? [a, b] : [b, a]);
+    }
+  }
+  return pairs;
 }
 
 /**
@@ -373,6 +488,47 @@ function resolveAutoAcceptThreshold(
   return raw;
 }
 
+const DEFAULT_KNN_K = 30;
+
+/** P2.1: never-fatal per-run validation for the three new candidate-
+ *  selection opts — same "log + fall back to the documented default"
+ *  posture as `resolveAutoAcceptThreshold` above and
+ *  `applyCandidateSelectionGovernance` (src/config/config.ts), which this
+ *  mirrors for callers that build `ConsolidateOpts` directly rather than
+ *  going through `loadConfig`. */
+function resolveCandidateSelection(
+  raw: ConsolidateOpts['candidateSelection'],
+  log: (message: string) => void,
+): 'full' | 'knn' {
+  if (raw === undefined) return 'full';
+  if (raw !== 'full' && raw !== 'knn') {
+    log(`[consolidate] candidateSelection=${JSON.stringify(raw)} is invalid (must be 'full' or 'knn') — falling back to 'full' for this run.`);
+    return 'full';
+  }
+  return raw;
+}
+
+function resolveKnnK(raw: number | undefined, log: (message: string) => void): number {
+  if (raw === undefined) return DEFAULT_KNN_K;
+  if (!Number.isInteger(raw) || raw < 1) {
+    log(`[consolidate] knnK=${raw} is invalid (must be a positive integer) — falling back to ${DEFAULT_KNN_K} for this run.`);
+    return DEFAULT_KNN_K;
+  }
+  return raw;
+}
+
+function resolveMaxCandidatePairsPerRun(
+  raw: number | null | undefined,
+  log: (message: string) => void,
+): number | null {
+  if (raw === null || raw === undefined) return null;
+  if (!Number.isInteger(raw) || raw < 1) {
+    log(`[consolidate] maxCandidatePairsPerRun=${raw} is invalid (must be a positive integer or null) — ceiling disabled for this run.`);
+    return null;
+  }
+  return raw;
+}
+
 interface ResolvedContradictionDetection {
   mode: 'dry-run' | 'enabled';
   minSimilarity: number;
@@ -523,6 +679,10 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   const contradictionDetection = resolveContradictionDetection(
     opts.contradictionDetection, opts.judgeProvider, mergeThreshold, log,
   );
+  // P2.1 stabilization — see ConsolidateOpts doc comments above.
+  const candidateSelection = resolveCandidateSelection(opts.candidateSelection, log);
+  const knnK = resolveKnnK(opts.knnK, log);
+  const maxCandidatePairsPerRun = resolveMaxCandidatePairsPerRun(opts.maxCandidatePairsPerRun, log);
   let judgeCallsThisRun = 0;
   let judgeErrorsThisRun = 0;
   let judgeCallsNearThresholdThisRun = 0;
@@ -564,11 +724,209 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   const invalidatedThisRun = new Set<string>();
   const proposalRepo = new ProposalRepo(db);
 
-  for (const group of groups.values()) {
-    if (group.length < 2) continue;
+  // ─── P2.1: shared per-pair classification (identical for 'full'/'knn') ──
+  // Defined as a closure so both candidate-generation strategies below run
+  // the EXACT SAME similarity/containment/judge logic the pre-P2.1 nested
+  // loop always ran, unchanged — only the SOURCE of `[a, b]` pairs differs.
+  async function processPair(a: AtomRow, b: AtomRow, vecs: ReadonlyMap<string, Float32Array>): Promise<void> {
+    // ADR-019 Tier 1 (issue #347): yield to the event loop every
+    // yieldEveryNPairs pairs, counted regardless of early `return`s below —
+    // this bounds the longest uninterrupted synchronous stretch to
+    // ~yieldEveryNPairs iterations no matter which pairs get skipped,
+    // instead of only bounding "fully processed" pairs.
+    pairsScannedSinceYield++;
+    if (pairsScannedSinceYield >= yieldEveryNPairs) {
+      pairsScannedSinceYield = 0;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      onYield?.();
+    }
+
+    if (invalidatedThisRun.has(a.id) || invalidatedThisRun.has(b.id)) return;
+    const va = vecs.get(a.id), vb = vecs.get(b.id);
+    if (!va || !vb) return;
+    const sim = cosine(va, vb);
+
+    // FEAT-456: contradiction judge. Sits AHEAD of the proposeThreshold
+    // guard below so it can also see the lower [minSimilarity,
+    // proposeThreshold) band the merge tier never looks at — two
+    // contradicting facts about the same entity can sit well below the
+    // near-duplicate paraphrase threshold (§1.2). Never judges a pair
+    // sim >= mergeThreshold owns — that tier already treats it as
+    // certain enough to auto-supersede.
+    if (contradictionDetection && sim >= contradictionDetection.minSimilarity && sim < mergeThreshold) {
+      if (judgeCallsThisRun >= contradictionDetection.maxPerRun) {
+        // Cap exhausted — degrade gracefully: fall through to today's
+        // merge-tier classification unchanged (§1.5).
+        summary.contradictionCapReached = true;
+      } else if (Date.now() - judgeSweepStartedAt >= contradictionDetection.maxWallClockMs) {
+        // FEAT-482: wall-clock cap exhausted — same fall-through as the
+        // count cap above. Guards against a slow/rate-limited judge
+        // provider wedging the run indefinitely even though maxPerRun
+        // hasn't been hit yet (the FEAT-482 incident: ~245 calls at
+        // ~13/min against a throttled provider, not a count problem).
+        summary.contradictionWallClockCapReached = true;
+      } else {
+        judgeCallsThisRun++;
+        // FEAT-499 stage 1 (instrument-first): count real judge
+        // dispatches whose pair similarity falls in the near-merge-
+        // threshold band — a call skipped by either cap above never
+        // reaches here, so this only ever counts calls that actually
+        // hit the LLM.
+        if (sim >= NEAR_MERGE_THRESHOLD_MIN) judgeCallsNearThresholdThisRun++;
+        const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, {
+          log,
+          onFallback: () => { judgeErrorsThisRun++; },
+        });
+        if (verdict.verdict === 'contradicts' && verdict.confidence >= contradictionDetection.minConfidence) {
+          // Directional: newer atom is the presumptive correction (§2.2)
+          // — opposite of the merge tier's usefulness-based pick.
+          const [newer, older] = a.created_at >= b.created_at ? [a, b] : [b, a];
+          if (contradictionDetection.mode === 'dry-run') {
+            summary.contradictionsPreviewed.push({ winner: newer.id, loser: older.id, similarity: sim, verdict });
+          } else {
+            const proposalId = insertContradictionProposal(
+              db, newer.id, older.id, newer.text, older.text, sim, verdict,
+            );
+            if (proposalId) {
+              summary.contradictionsProposed.push({ winner: newer.id, loser: older.id, similarity: sim, proposalId });
+            }
+          }
+          return; // pair fully handled either way
+        }
+        if (verdict.verdict === 'unrelated') return; // judge overrides: not actually a candidate
+        // 'agrees' | 'refines' | (unconfident 'contradicts') — fall
+        // through unchanged into the existing merge-tier logic below.
+      }
+    }
+
+    if (sim < proposeThreshold) return;
+
+    // Winner: usefulness, then importance, then recency.
+    const ua = usefulness.get(a.id) ?? 0.5, ub = usefulness.get(b.id) ?? 0.5;
+    let winner = a, loser = b;
+    if (ub > ua || (ub === ua && (b.importance > a.importance ||
+        (b.importance === a.importance && b.created_at > a.created_at)))) {
+      winner = b; loser = a;
+    }
+
+    // Containment rule: one text is the other's normalized subset →
+    // auto-merge with the SUPERSET as winner (overrides the usefulness
+    // pick — keeping the more informative text loses nothing; the
+    // subset variant stays readable in bitemporal history).
+    if (autoMergeContained) {
+      const c = containment(a.text, b.text);
+      if (c !== null) {
+        if (c === 'a-contains-b') { winner = a; loser = b; }
+        else if (c === 'b-contains-a') { winner = b; loser = a; }
+        // 'equal' keeps the usefulness-based pick.
+        // issue #190: this tier merges immediately with no proposal row
+        // and no human step possible — always 'consolidation_auto'.
+        mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
+        invalidatedThisRun.add(loser.id);
+        summary.merged.push({ winner: winner.id, loser: loser.id, similarity: sim, reason: 'contained' });
+        return;
+      }
+    }
+
+    if (sim >= mergeThreshold) {
+      // issue #190: same reasoning as the containment tier above.
+      mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
+      invalidatedThisRun.add(loser.id);
+      summary.merged.push({ winner: winner.id, loser: loser.id, similarity: sim });
+    } else {
+      const proposalId = randomUUID();
+      const inserted = db.prepare(`
+        INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at)
+        SELECT ?, 'merge', ?, ?, ?, 'pending', ?
+        WHERE NOT EXISTS (
+          SELECT 1 FROM consolidation_proposals
+          WHERE status = 'pending'
+            AND MIN(winner_id, loser_id) = MIN(?, ?)
+            AND MAX(winner_id, loser_id) = MAX(?, ?)
+        )
+      `).run(
+        proposalId, winner.id, loser.id, sim, Date.now(),
+        winner.id, loser.id, winner.id, loser.id,
+      );
+      if (inserted.changes > 0) {
+        // FEAT-442: proposal-tier pair that clears the auto-accept bar —
+        // resolve it the same instant via the human-accept code path
+        // (proposal row created THEN accepted, same audit trail as a
+        // manual accept) instead of leaving it pending.
+        if (autoAcceptThreshold !== null && sim >= autoAcceptThreshold) {
+          // issue #190: also automatic, no human step — 'consolidation_auto'.
+          proposalRepo.accept(
+            proposalId, { autoAccepted: true, threshold: autoAcceptThreshold, similarity: sim },
+            { correctionSource: 'consolidation_auto' },
+          );
+          invalidatedThisRun.add(loser.id);
+          summary.autoAccepted.push({ winner: winner.id, loser: loser.id, similarity: sim, proposalId });
+        } else {
+          summary.proposed.push({ winner: winner.id, loser: loser.id, similarity: sim });
+        }
+      }
+    }
+  }
+
+  // ─── P2.1: group ordering ─────────────────────────────────────────────
+  // Default (no ceiling): iterate groups in the exact order they were
+  // inserted into `groups` (repo, type, created_at scan order) — unchanged
+  // from pre-P2.1 behavior, byte-identical output for 'full' mode with no
+  // `maxCandidatePairsPerRun` set. Only when the ceiling is actually
+  // configured do we switch to a deterministic, resumable ordering: a
+  // naive Map-insertion-order truncation would always start from (and stop
+  // at) the same groups every run, permanently starving whichever groups
+  // sort last — the reviewer MEDIUM finding this whole mechanism exists to
+  // close (20260715T1640Z review-stabilization-plan-architect-reviewer.md).
+  interface GroupEntry { key: string; atoms: AtomRow[] }
+  const allGroups: GroupEntry[] = [];
+  for (const [key, groupAtoms] of groups) {
+    if (groupAtoms.length < 2) continue;
+    allGroups.push({ key, atoms: groupAtoms });
+  }
+
+  let groupOrder: GroupEntry[] = allGroups;
+  const ceilingActive = maxCandidatePairsPerRun !== null;
+  if (ceilingActive) {
+    // `atoms` is already created_at ASC per group (SQL ORDER BY), so a
+    // group's own first element is its oldest atom — sort groups by that.
+    const sorted = [...allGroups].sort((x, y) => {
+      const dx = (x.atoms[0] as AtomRow).created_at, dy = (y.atoms[0] as AtomRow).created_at;
+      if (dx !== dy) return dx - dy;
+      return x.key < y.key ? -1 : x.key > y.key ? 1 : 0;
+    });
+    const cursor = getConsolidationCursor(db);
+    const cursorGroupKey = cursor?.groupKey ?? null;
+    const startIdx = cursorGroupKey ? sorted.findIndex(g => g.key === cursorGroupKey) : -1;
+    // Rotate so scanning resumes at the persisted cursor; a missing/stale
+    // cursor (group merged away since, or never persisted) falls back to
+    // the natural oldest-first order rather than skipping anything.
+    groupOrder = startIdx > 0 ? [...sorted.slice(startIdx), ...sorted.slice(0, startIdx)] : sorted;
+  }
+
+  const vectorStore: VectorStore | undefined =
+    candidateSelection === 'knn' ? (opts.vectorStore ?? new SqliteVecStore(db)) : undefined;
+
+  let pairsProcessedThisRun = 0;
+  let ceilingHitAtGroupIndex = -1;
+
+  for (let gi = 0; gi < groupOrder.length; gi++) {
+    const group = (groupOrder[gi] as GroupEntry).atoms;
     const first = group[0] as AtomRow;
-    if (group.length > maxGroupSize) {
+
+    // 'full' mode keeps the binary skip (unchanged), now SURFACED — see
+    // recordConsolidationRun below and the WARN log line (reviewer MEDIUM
+    // finding this closes: groupsSkipped used to be computed and read
+    // nowhere). 'knn' mode never skips: k-NN already bounds the per-atom
+    // cost, so an oversized group is processed instead of dropped.
+    if (candidateSelection === 'full' && group.length > maxGroupSize) {
       summary.groupsSkipped.push({ repo: first.repo, type: first.type, size: group.length });
+      log(
+        `[consolidate] WARN group skipped: repo=${first.repo ?? '(none)'} type=${first.type} ` +
+        `size=${group.length} > maxGroupSize=${maxGroupSize} — this group gets ZERO consolidation ` +
+        "coverage this run. Set consolidation.candidateSelection: 'knn' to process oversized groups " +
+        'instead of dropping them.',
+      );
       continue;
     }
     summary.groupsScanned++;
@@ -583,158 +941,59 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       }
     }
 
-    // Yield to the event loop periodically during the O(n^2) pairwise scan.
-    // Without this a large group blocks the loop for the WHOLE scan — /health,
-    // /version, /search and MCP all freeze, and the hang-watchdog then kills an
-    // otherwise-healthy daemon (2026-07-15 incident: the consolidate
-    // SQL-variable fix let consolidation complete on a 36k-atom corpus and this
-    // loop had no yield points). A couple hundred pairs of cosine(1024-dim) is
-    // a few ms of work, so yielding at that cadence keeps the daemon responsive
-    // at negligible overhead. setImmediate is safe here: the loop is NOT inside
-    // a synchronous better-sqlite3 db.transaction() — each mutation autocommits.
-    for (let i = 0; i < group.length; i++) {
-      for (let j = i + 1; j < group.length; j++) {
-        // ADR-019 Tier 1 (issue #347): yield to the event loop every
-        // yieldEveryNPairs pairs, counted regardless of early `continue`s
-        // below — this bounds the longest uninterrupted synchronous stretch
-        // to ~yieldEveryNPairs iterations no matter which pairs get skipped,
-        // instead of only bounding "fully processed" pairs.
-        pairsScannedSinceYield++;
-        if (pairsScannedSinceYield >= yieldEveryNPairs) {
-          pairsScannedSinceYield = 0;
-          await new Promise<void>(resolve => setImmediate(resolve));
-          onYield?.();
-        }
+    // Candidate-pair generation: O(n^2) nested loop for 'full' (unchanged
+    // semantics, just now built as a list instead of inline), or the k-NN
+    // reduced set for 'knn'. Yielding to the event loop periodically during
+    // the SCAN below (both generation and processing) is what keeps the
+    // daemon responsive on a large corpus — see ADR-019 Tier 1 / the
+    // 2026-07-15 incident this loop's yield points already fixed for 'full'
+    // mode; buildKnnCandidatePairs carries the equivalent yield for its own
+    // generation phase.
+    const pairs: Array<[AtomRow, AtomRow]> = candidateSelection === 'knn'
+      ? await buildKnnCandidatePairs(group, vecs, vectorStore as VectorStore, knnK, { yieldEveryNPairs, onYield })
+      : buildFullPairs(group);
 
-        const a = group[i] as AtomRow, b = group[j] as AtomRow;
-        if (invalidatedThisRun.has(a.id) || invalidatedThisRun.has(b.id)) continue;
-        const va = vecs.get(a.id), vb = vecs.get(b.id);
-        if (!va || !vb) continue;
-        const sim = cosine(va, vb);
+    for (const [a, b] of pairs) {
+      await processPair(a, b, vecs);
+      pairsProcessedThisRun++;
+    }
 
-        // FEAT-456: contradiction judge. Sits AHEAD of the proposeThreshold
-        // guard below so it can also see the lower [minSimilarity,
-        // proposeThreshold) band the merge tier never looks at — two
-        // contradicting facts about the same entity can sit well below the
-        // near-duplicate paraphrase threshold (§1.2). Never judges a pair
-        // sim >= mergeThreshold owns — that tier already treats it as
-        // certain enough to auto-supersede.
-        if (contradictionDetection && sim >= contradictionDetection.minSimilarity && sim < mergeThreshold) {
-          if (judgeCallsThisRun >= contradictionDetection.maxPerRun) {
-            // Cap exhausted — degrade gracefully: fall through to today's
-            // merge-tier classification unchanged (§1.5).
-            summary.contradictionCapReached = true;
-          } else if (Date.now() - judgeSweepStartedAt >= contradictionDetection.maxWallClockMs) {
-            // FEAT-482: wall-clock cap exhausted — same fall-through as the
-            // count cap above. Guards against a slow/rate-limited judge
-            // provider wedging the run indefinitely even though maxPerRun
-            // hasn't been hit yet (the FEAT-482 incident: ~245 calls at
-            // ~13/min against a throttled provider, not a count problem).
-            summary.contradictionWallClockCapReached = true;
-          } else {
-            judgeCallsThisRun++;
-            // FEAT-499 stage 1 (instrument-first): count real judge
-            // dispatches whose pair similarity falls in the near-merge-
-            // threshold band — a call skipped by either cap above never
-            // reaches here, so this only ever counts calls that actually
-            // hit the LLM.
-            if (sim >= NEAR_MERGE_THRESHOLD_MIN) judgeCallsNearThresholdThisRun++;
-            const verdict = await judgeContradiction(contradictionDetection.judgeProvider, a, b, {
-              log,
-              onFallback: () => { judgeErrorsThisRun++; },
-            });
-            if (verdict.verdict === 'contradicts' && verdict.confidence >= contradictionDetection.minConfidence) {
-              // Directional: newer atom is the presumptive correction (§2.2)
-              // — opposite of the merge tier's usefulness-based pick.
-              const [newer, older] = a.created_at >= b.created_at ? [a, b] : [b, a];
-              if (contradictionDetection.mode === 'dry-run') {
-                summary.contradictionsPreviewed.push({ winner: newer.id, loser: older.id, similarity: sim, verdict });
-              } else {
-                const proposalId = insertContradictionProposal(
-                  db, newer.id, older.id, newer.text, older.text, sim, verdict,
-                );
-                if (proposalId) {
-                  summary.contradictionsProposed.push({ winner: newer.id, loser: older.id, similarity: sim, proposalId });
-                }
-              }
-              continue; // pair fully handled either way
-            }
-            if (verdict.verdict === 'unrelated') continue; // judge overrides: not actually a candidate
-            // 'agrees' | 'refines' | (unconfident 'contradicts') — fall
-            // through unchanged into the existing merge-tier logic below.
-          }
-        }
-
-        if (sim < proposeThreshold) continue;
-
-        // Winner: usefulness, then importance, then recency.
-        const ua = usefulness.get(a.id) ?? 0.5, ub = usefulness.get(b.id) ?? 0.5;
-        let winner = a, loser = b;
-        if (ub > ua || (ub === ua && (b.importance > a.importance ||
-            (b.importance === a.importance && b.created_at > a.created_at)))) {
-          winner = b; loser = a;
-        }
-
-        // Containment rule: one text is the other's normalized subset →
-        // auto-merge with the SUPERSET as winner (overrides the usefulness
-        // pick — keeping the more informative text loses nothing; the
-        // subset variant stays readable in bitemporal history).
-        if (autoMergeContained) {
-          const c = containment(a.text, b.text);
-          if (c !== null) {
-            if (c === 'a-contains-b') { winner = a; loser = b; }
-            else if (c === 'b-contains-a') { winner = b; loser = a; }
-            // 'equal' keeps the usefulness-based pick.
-            // issue #190: this tier merges immediately with no proposal row
-            // and no human step possible — always 'consolidation_auto'.
-            mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
-            invalidatedThisRun.add(loser.id);
-            summary.merged.push({ winner: winner.id, loser: loser.id, similarity: sim, reason: 'contained' });
-            continue;
-          }
-        }
-
-        if (sim >= mergeThreshold) {
-          // issue #190: same reasoning as the containment tier above.
-          mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
-          invalidatedThisRun.add(loser.id);
-          summary.merged.push({ winner: winner.id, loser: loser.id, similarity: sim });
-        } else {
-          const proposalId = randomUUID();
-          const inserted = db.prepare(`
-            INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at)
-            SELECT ?, 'merge', ?, ?, ?, 'pending', ?
-            WHERE NOT EXISTS (
-              SELECT 1 FROM consolidation_proposals
-              WHERE status = 'pending'
-                AND MIN(winner_id, loser_id) = MIN(?, ?)
-                AND MAX(winner_id, loser_id) = MAX(?, ?)
-            )
-          `).run(
-            proposalId, winner.id, loser.id, sim, Date.now(),
-            winner.id, loser.id, winner.id, loser.id,
-          );
-          if (inserted.changes > 0) {
-            // FEAT-442: proposal-tier pair that clears the auto-accept bar —
-            // resolve it the same instant via the human-accept code path
-            // (proposal row created THEN accepted, same audit trail as a
-            // manual accept) instead of leaving it pending.
-            if (autoAcceptThreshold !== null && sim >= autoAcceptThreshold) {
-              // issue #190: also automatic, no human step — 'consolidation_auto'.
-              proposalRepo.accept(
-                proposalId, { autoAccepted: true, threshold: autoAcceptThreshold, similarity: sim },
-                { correctionSource: 'consolidation_auto' },
-              );
-              invalidatedThisRun.add(loser.id);
-              summary.autoAccepted.push({ winner: winner.id, loser: loser.id, similarity: sim, proposalId });
-            } else {
-              summary.proposed.push({ winner: winner.id, loser: loser.id, similarity: sim });
-            }
-          }
-        }
-      }
+    if (ceilingActive && pairsProcessedThisRun >= (maxCandidatePairsPerRun as number)) {
+      ceilingHitAtGroupIndex = gi;
+      break;
     }
   }
+
+  if (ceilingActive) {
+    if (ceilingHitAtGroupIndex >= 0) {
+      // Persist where to resume — the NEXT group in this run's rotated
+      // order, or `null` (start from the natural oldest-first order) if we
+      // stopped on the very last group.
+      const nextKey = groupOrder[ceilingHitAtGroupIndex + 1]?.key ?? null;
+      setConsolidationCursor(db, { groupKey: nextKey });
+    } else {
+      // Finished every group in groupOrder within budget this run — a full
+      // sweep cycle completed; reset so the next run starts from the
+      // natural oldest-first order again instead of drifting off a cursor
+      // group that may no longer exist.
+      setConsolidationCursor(db, { groupKey: null });
+    }
+  }
+
+  // P2.1: run-summary telemetry (migration 050,
+  // src/storage/consolidation-run-log.ts) — closes the reviewer MEDIUM
+  // finding (20260715T1640Z): groupsSkipped used to be computed and read
+  // nowhere. Written on every REAL run (ASTRA_SKIP_CONSOLIDATE already
+  // short-circuits before this point with an empty summary and no DB
+  // write, above).
+  recordConsolidationRun(db, {
+    candidateSelection,
+    groupsScanned: summary.groupsScanned,
+    groupsSkippedCount: summary.groupsSkipped.length,
+    groupsSkippedAtoms: summary.groupsSkipped.reduce((sum, g) => sum + g.size, 0),
+    mergedCount: summary.merged.length,
+    proposedCount: summary.proposed.length,
+  });
 
   // FEAT-482: judge cost is invisible to a dollar cap (see
   // contradiction-judge.ts's doc comment) — record what actually happened

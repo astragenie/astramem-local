@@ -96,6 +96,12 @@ export function consolidationRoutes(db: DB, config: Config) {
         // FEAT-442: on-demand runs pick up the configured auto-accept
         // threshold too (default null = OFF), same as the scheduled job.
         autoAcceptThreshold: config.consolidation.autoAcceptThreshold,
+        // P2.1 stabilization: on-demand runs pick up the configured
+        // candidate-selection strategy too (default 'full', byte-identical
+        // to pre-P2.1 behavior), same as the scheduled job.
+        candidateSelection: config.consolidation.candidateSelection,
+        knnK: config.consolidation.knnK,
+        maxCandidatePairsPerRun: config.consolidation.maxCandidatePairsPerRun,
       });
     });
 

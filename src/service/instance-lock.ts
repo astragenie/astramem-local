@@ -79,15 +79,26 @@ const IDENTITY_TOLERANCE_MS = 60_000;
 export async function getProcessStartTime(pid: number): Promise<Date | null> {
   try {
     if (process.platform === 'win32') {
-      // wmic is deprecated/removed on current Windows builds — Get-CimInstance
-      // is the supported replacement. Cold PowerShell + CIM/WMI startup was
-      // measured well over 5s on a loaded box (~5.8s) — a tight timeout here
-      // doesn't make the check faster, it makes it fail closed *every time*,
-      // silently neutering the watchdog this check exists to keep working.
+      // Fast path FIRST: Get-Process .StartTime is a direct Win32 API read
+      // (~2s = PowerShell startup only). Fall back to Get-CimInstance (WMI)
+      // inside the SAME shell only when the fast path can't answer —
+      // .StartTime throws for another user's/elevated process, where WMI can
+      // still see CreationDate. wmic itself is deprecated/removed on current
+      // Windows builds. The old CIM-only version was measured at 15.5–16s on
+      // a loaded box (2026-07-15: over its own 15s timeout, so EVERY identity
+      // check failed closed — reinstall could not stop the daemon, and the
+      // instance-lock test suite flaked the same way). The timeout is
+      // deliberately generous: a tight timeout doesn't make the check faster,
+      // it makes it fail closed every time, silently neutering the
+      // watchdog/reinstall paths this check exists to keep working. The two
+      // sources differ only at sub-microsecond precision — far inside
+      // IDENTITY_TOLERANCE_MS.
       const { stdout } = await execFileAsync('powershell.exe', [
         '-NoProfile', '-NonInteractive', '-Command',
-        `$p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') }`,
-      ], { timeout: 15_000, windowsHide: true });
+        `$t = $null; try { $t = (Get-Process -Id ${pid} -ErrorAction Stop).StartTime } catch {}; ` +
+        `if ($t) { $t.ToUniversalTime().ToString('o') } ` +
+        `else { $p = Get-CimInstance Win32_Process -Filter "ProcessId=${pid}"; if ($p) { $p.CreationDate.ToUniversalTime().ToString('o') } }`,
+      ], { timeout: 45_000, windowsHide: true });
       const trimmed = stdout.trim();
       if (!trimmed) return null;
       const d = new Date(trimmed);

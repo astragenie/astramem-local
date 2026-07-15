@@ -24,7 +24,7 @@
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
 import type { Config } from '../../config/config.js';
-import { queryDashboard } from '../queries/dashboard.js';
+import { queryDashboard, parseMemoryFilterParam, type MemoryListFilters } from '../queries/dashboard.js';
 import { renderDashboard } from './dashboard-html.js';
 import { childLogger } from '../../log/logger.js';
 import type { HealthState } from '../health-state.js';
@@ -72,8 +72,13 @@ export function dashboardRoute(db: DB, config: Config, token: string, healthStat
           .send(authResult.body);
       }
 
-      const rawPage = (req.query as Record<string, string | undefined>)['page'];
-      const data = await queryDashboard(db, healthState);
+      const q = req.query as Record<string, string | undefined>;
+      const rawPage = q['page'];
+      const memoryFilters: MemoryListFilters = {
+        project: parseMemoryFilterParam(q['project']),
+        profile: parseMemoryFilterParam(q['profile']),
+      };
+      const data = await queryDashboard(db, healthState, memoryFilters);
       const html = renderDashboard(data, config, rawPage);
 
       return reply

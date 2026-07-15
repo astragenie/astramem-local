@@ -338,6 +338,12 @@ export function configToYaml(cfg: Config): string {
     line(2, 'minConfidence', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).minConfidence),
     line(2, 'maxPerRun', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxPerRun),
     line(2, 'maxWallClockMs', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxWallClockMs),
+    // P2.1 stabilization — k-NN candidate selection. 'full'/30/null are the
+    // shipped defaults (byte-identical to pre-P2.1 behavior); wired in from
+    // day one so this never joins the FEAT-461 dropped-field list.
+    line(1, 'candidateSelection', (cfg.consolidation.candidateSelection ?? EMIT_DEFAULTS.consolidation.candidateSelection)),
+    line(1, 'knnK', (cfg.consolidation.knnK ?? EMIT_DEFAULTS.consolidation.knnK)),
+    line(1, 'maxCandidatePairsPerRun', cfg.consolidation.maxCandidatePairsPerRun ?? null),
     '',
     // Memory TTL / archival tiers (FEAT-404) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) is OFF.

@@ -83,6 +83,33 @@ describe('GET /dashboard/logs — render internals', () => {
     expect(body).toContain('distill');
   });
 
+  it('renders lines newest-first (descending by time), not the file\'s oldest-first order', async () => {
+    const logsDir = join(dataDir, 'logs');
+    mkdirSync(logsDir, { recursive: true });
+
+    const now = Date.now();
+    // Written oldest-first, as a real append-only log file would be.
+    const oldest = JSON.stringify({ level: 30, time: now - 2000, msg: 'OLDEST_MARKER' });
+    const middle = JSON.stringify({ level: 30, time: now - 1000, msg: 'MIDDLE_MARKER' });
+    const newest = JSON.stringify({ level: 30, time: now, msg: 'NEWEST_MARKER' });
+    writeFileSync(join(logsDir, 'daemon.1.log'), [oldest, middle, newest].join('\n') + '\n');
+
+    const app = await buildTestApp();
+    const res = await app.inject({ method: 'GET', url: '/dashboard/logs', headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    const body = res.body;
+
+    const newestIdx = body.indexOf('NEWEST_MARKER');
+    const middleIdx = body.indexOf('MIDDLE_MARKER');
+    const oldestIdx = body.indexOf('OLDEST_MARKER');
+    expect(newestIdx).toBeGreaterThan(-1);
+    expect(middleIdx).toBeGreaterThan(-1);
+    expect(oldestIdx).toBeGreaterThan(-1);
+    // Newest line appears first in the rendered table, oldest last.
+    expect(newestIdx).toBeLessThan(middleIdx);
+    expect(middleIdx).toBeLessThan(oldestIdx);
+  });
+
   it('falls back to daemon-stdout.log when no daemon.*.log exists', async () => {
     const logsDir = join(dataDir, 'logs');
     mkdirSync(logsDir, { recursive: true });

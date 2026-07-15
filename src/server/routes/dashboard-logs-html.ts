@@ -313,9 +313,14 @@ export function dashboardLogsRoute(dataDir: string, token: string, devNoAuthActi
       // Threshold filter runs BEFORE the tail trim below: filtering first,
       // then taking the last MAX_LINES of the FILTERED set, is what keeps a
       // low-volume error from being buried by 200 chattier info lines that
-      // would otherwise fill the tail window first.
+      // would otherwise fill the tail window first. The file itself is
+      // chronological (oldest line first); `.reverse()` after the trim
+      // orders the KEPT window newest-first for display, matching every
+      // other dashboard feed (activity feed, jobs, consolidation) — an
+      // operator opening /dashboard/logs wants to see what just happened at
+      // the top, not scroll to the bottom.
       const filtered = rawLines.map(parseLine).filter(l => effectiveLevel(l.level) >= threshold);
-      const lines = filtered.slice(-MAX_LINES);
+      const lines = filtered.slice(-MAX_LINES).reverse();
 
       return reply
         .code(200)

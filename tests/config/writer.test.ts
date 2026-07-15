@@ -72,6 +72,9 @@ function buildFullyPopulatedConfig(): Config {
     consolidation: {
       autoAcceptThreshold: 0.95,
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.5, minConfidence: 0.8, maxPerRun: 50, maxWallClockMs: 120_000 },
+      candidateSelection: 'knn',
+      knnK: 50,
+      maxCandidatePairsPerRun: 5000,
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: true } },
     ingest: { spoolMaxBytes: 1_048_576 },
