@@ -16,7 +16,7 @@
  *   - tests/contracts/mcp-tool-manifest-parity.test.ts (full name-level
  *     parity between that manifest and tools/list)
  *   - search_memory      — hybrid FTS + vector search
- *   - recall_memory      — top-K semantic recall (alias of search with k default 5)
+ *   - recall_memory      — top-K semantic recall (alias of search with k default 15)
  *   - remember           — direct memory insert
  *   - get_health         — daemon health probe
  *   - why_memory         — provenance receipt (evidence, session, transcript ref)
@@ -140,7 +140,12 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         'Hybrid FTS + vector search over stored memories. Returns ranked hits.',
       inputSchema: z.object({
         query: z.string().min(1).describe('Search query text'),
-        limit: z.number().int().positive().max(100).default(10).describe('Max results'),
+        // Default 15: full-suite LoCoMo k-sweep (n=1986, dual-pass) showed
+        // recall depth 10->15 lifts overall F1 0.5537->0.5673 (+1.4), the
+        // best value point before diminishing returns/token cost (k=20 only
+        // +0.4 more, k=25 +0.25 with category erosion). See the 2026-07-14
+        // k-sweep handoff under .claude/artifacts/crew/.
+        limit: z.number().int().positive().max(100).default(15).describe('Max results'),
         type: z
           .array(z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']))
           .optional()
@@ -209,7 +214,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       }
       const weights = resolvePresetWeights(preset, baseWeights);
 
-      const hits = await search(args.query, filters, args.limit ?? 10, {
+      const hits = await search(args.query, filters, args.limit ?? 15, {
         db,
         embed,
         weights,
@@ -241,10 +246,12 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
     'recall_memory',
     {
       description:
-        'Top-K semantic recall over stored memories. Alias of search_memory with k default 5.',
+        'Top-K semantic recall over stored memories. Alias of search_memory with k default 15.',
       inputSchema: z.object({
         query: z.string().min(1).describe('Query text for semantic recall'),
-        k: z.number().int().positive().max(100).default(5).describe('Number of results'),
+        // Default 15: see the search_memory `limit` note — LoCoMo full-suite
+        // k-sweep put the value/cost sweet spot at 15 (was 5).
+        k: z.number().int().positive().max(100).default(15).describe('Number of results'),
         type: z
           .array(z.enum(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']))
           .optional()
@@ -313,7 +320,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       }
       const weights = resolvePresetWeights(preset, baseWeights);
 
-      const hits = await search(args.query, filters, args.k ?? 5, {
+      const hits = await search(args.query, filters, args.k ?? 15, {
         db,
         embed,
         weights,
