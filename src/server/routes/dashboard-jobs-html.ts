@@ -22,6 +22,7 @@ import {
   type RecentFailedJob,
 } from '../queries/dashboard.js';
 import { checkDashboardAuth } from './dashboard-auth.js';
+import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
 
 function esc(s: string): string {
   return s
@@ -46,6 +47,7 @@ const CSS = `
 body{background:#1a1a1a;color:#e0e0e0;font-family:monospace;font-size:13px;line-height:1.5;padding:16px}
 h1{font-size:18px;color:#fff;margin-bottom:4px}
 h2{font-size:14px;color:#aaa;margin:20px 0 8px;border-bottom:1px solid #333;padding-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+${DASHBOARD_NAV_CSS}
 section{margin-bottom:24px}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{background:#222;color:#aaa;text-align:left;padding:5px 8px;font-weight:normal;text-transform:uppercase;letter-spacing:.04em}
@@ -156,6 +158,7 @@ function renderPage(jobStatesByKind: JobStateByKind[], failedJobs: RecentFailedJ
 </head>
 <body>
 <h1>AstraMemory Local — Jobs</h1>
+${renderDashboardNav('jobs')}
 <section>
   <h2>Kind &times; state</h2>
   ${renderMatrix(jobStatesByKind)}

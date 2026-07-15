@@ -16,6 +16,7 @@
 
 import type { FastifyInstance } from 'fastify';
 import { checkDashboardAuth } from './dashboard-auth.js';
+import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
 
 function esc(s: string): string {
   return s
@@ -91,10 +92,7 @@ const CSS = `
 *{box-sizing:border-box;margin:0;padding:0}
 body{background:#1a1a1a;color:#e0e0e0;font-family:monospace;font-size:13px;line-height:1.5;padding:16px}
 h1{font-size:18px;color:#fff;margin-bottom:12px}
-nav{display:flex;gap:16px;margin:8px 0 16px;padding-bottom:8px;border-bottom:1px solid #333;font-size:12px}
-nav a{color:#888;text-decoration:none}
-nav a:hover{color:#3a7bd5}
-nav .active{color:#fff;font-weight:bold}
+${DASHBOARD_NAV_CSS}
 table{border-collapse:collapse;width:100%}
 th,td{border-bottom:1px solid #2a2a2a;padding:4px 8px;text-align:left;vertical-align:top}
 th{color:#aaa;text-transform:uppercase;font-size:11px;letter-spacing:.05em}
@@ -119,7 +117,7 @@ function renderPage(): string {
 </head>
 <body>
 <h1>API reference</h1>
-<nav><a href="/dashboard">Mission Control</a> <a href="/dashboard/jobs">Jobs</a> <a href="/dashboard/consolidation">Consolidation</a> <a href="/dashboard/search">Search</a> <span class="active">API</span></nav>
+${renderDashboardNav('api')}
 <p class="note">GET rows without path params are clickable — your dashboard cookie authenticates them, so clicking is the test. For everything else copy the curl ($MEMORY_BEARER is in %APPDATA%\\Astramem\\secrets.env).</p>
 <table>
   <thead><tr><th>method</th><th>path</th><th>auth</th><th>description</th></tr></thead>

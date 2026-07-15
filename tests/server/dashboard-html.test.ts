@@ -254,6 +254,62 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     });
   });
 
+  // Pagination — PER_PAGE=15, in-memory slice over the already-fetched
+  // recentFailedJobs + recentMemories rows (no new SQL). Task 2 already
+  // sized the page at 15 rows; this just lets an operator page beyond it.
+  describe('recent-activity feed pagination (?page=)', () => {
+    function manyMemories(count: number) {
+      return Array.from({ length: count }, (_, i) => ({
+        id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
+        session_id: null, created_at: Date.now() - i * 1000,
+      }));
+    }
+
+    it('page 1 (default, no rawPage arg) shows the newest 15; page 2 shows the rest', () => {
+      const data = baseData({ recentMemories: manyMemories(20) });
+      const page1 = renderDashboard(data, config);
+      const page2 = renderDashboard(data, config, '2');
+
+      expect(page1).toContain('memory 0');
+      expect(page1).toContain('memory 14');
+      expect(page1).not.toContain('memory 15');
+
+      expect(page2).toContain('memory 15');
+      expect(page2).toContain('memory 19');
+      expect(page2).not.toContain('memory 0');
+    });
+
+    it('renders the "page N/M — showing X–Y of Z" caption and a next link', () => {
+      const data = baseData({ recentMemories: manyMemories(20) });
+      const html = renderDashboard(data, config, '1');
+      expect(html).toContain('page 1/2');
+      expect(html).toContain('of 20');
+      expect(html).toContain('href="/dashboard?page=2"');
+      expect(html).not.toContain('href="/dashboard?page=0"');
+    });
+
+    it('next is omitted (inert) on the last page; prev links back', () => {
+      const data = baseData({ recentMemories: manyMemories(20) });
+      const html = renderDashboard(data, config, '2');
+      expect(html).toContain('page 2/2');
+      expect(html).toContain('href="/dashboard?page=1"');
+      expect(html).not.toContain('href="/dashboard?page=3"');
+    });
+
+    it('an out-of-range page clamps to the last valid page', () => {
+      const data = baseData({ recentMemories: manyMemories(20) });
+      const html = renderDashboard(data, config, '999');
+      expect(html).toContain('memory 19');
+      expect(html).toContain('page 2/2');
+    });
+
+    it('keeps the bare <meta refresh content="30"> unconditionally — same-URL reload preserves ?page= without echoing it into the tag', () => {
+      const data = baseData({ recentMemories: manyMemories(20) });
+      const html = renderDashboard(data, config, '2');
+      expect(html).toContain('<meta http-equiv="refresh" content="30">');
+    });
+  });
+
   it('renders the Mission Control nav tab row', () => {
     const html = renderDashboard(baseData(), config);
     expect(html).toContain('Mission Control');

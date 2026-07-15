@@ -93,4 +93,121 @@ describe('GET /dashboard/logs — render internals', () => {
     expect(res.statusCode).toBe(200);
     expect(res.body).toContain('astramem-local daemon booting on port 7777');
   });
+
+  it('renders the shared dashboard nav, linking to the other 5 pages', async () => {
+    const app = await buildTestApp();
+    const res = await app.inject({ method: 'GET', url: '/dashboard/logs', headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain('href="/dashboard"');
+    expect(res.body).toContain('href="/dashboard/jobs"');
+    expect(res.body).toContain('href="/dashboard/consolidation"');
+    expect(res.body).toContain('href="/dashboard/search"');
+    expect(res.body).toContain('href="/dashboard/api"');
+    // The Logs tab itself is the active (non-link) entry.
+    expect(res.body).not.toContain('href="/dashboard/logs"');
+  });
+
+  // ?level= threshold filter (SEVERITY THRESHOLD, not exact match): warn
+  // shows warn+error, error shows error only, the default (no param, or an
+  // invalid value) shows info and above.
+  describe('?level= threshold filter', () => {
+    function seedLevels(dataDirLocal: string): void {
+      const logsDir = join(dataDirLocal, 'logs');
+      mkdirSync(logsDir, { recursive: true });
+      const now = Date.now();
+      const info = JSON.stringify({ level: 30, time: now, msg: 'INFO_MARKER' });
+      const warn = JSON.stringify({ level: 40, time: now, msg: 'WARN_MARKER' });
+      const error = JSON.stringify({ level: 50, time: now, msg: 'ERROR_MARKER' });
+      const unparseable = 'UNPARSEABLE_MARKER not json';
+      writeFileSync(
+        join(logsDir, 'daemon.1.log'),
+        [info, warn, error, unparseable].join('\n') + '\n',
+      );
+    }
+
+    it('default (no ?level) shows info and above — hides nothing here, including the unparseable line (INFO-equivalent rule)', async () => {
+      seedLevels(dataDir);
+      const app = await buildTestApp();
+      const res = await app.inject({ method: 'GET', url: '/dashboard/logs', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('INFO_MARKER');
+      expect(res.body).toContain('WARN_MARKER');
+      expect(res.body).toContain('ERROR_MARKER');
+      expect(res.body).toContain('UNPARSEABLE_MARKER');
+    });
+
+    it('?level=warn hides info (and the unparseable INFO-equivalent line) but shows warn+error', async () => {
+      seedLevels(dataDir);
+      const app = await buildTestApp();
+      const res = await app.inject({ method: 'GET', url: '/dashboard/logs?level=warn', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain('INFO_MARKER');
+      expect(res.body).not.toContain('UNPARSEABLE_MARKER');
+      expect(res.body).toContain('WARN_MARKER');
+      expect(res.body).toContain('ERROR_MARKER');
+    });
+
+    it('?level=error shows error only', async () => {
+      seedLevels(dataDir);
+      const app = await buildTestApp();
+      const res = await app.inject({ method: 'GET', url: '/dashboard/logs?level=error', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).not.toContain('INFO_MARKER');
+      expect(res.body).not.toContain('WARN_MARKER');
+      expect(res.body).not.toContain('UNPARSEABLE_MARKER');
+      expect(res.body).toContain('ERROR_MARKER');
+    });
+
+    it('?level=all (and the ?level=debug alias) shows everything', async () => {
+      seedLevels(dataDir);
+      const app = await buildTestApp();
+      const all = await app.inject({ method: 'GET', url: '/dashboard/logs?level=all', headers: AUTH });
+      expect(all.body).toContain('INFO_MARKER');
+      expect(all.body).toContain('WARN_MARKER');
+      expect(all.body).toContain('ERROR_MARKER');
+      expect(all.body).toContain('UNPARSEABLE_MARKER');
+
+      const debug = await app.inject({ method: 'GET', url: '/dashboard/logs?level=debug', headers: AUTH });
+      expect(debug.body).toContain('INFO_MARKER');
+      expect(debug.body).toContain('UNPARSEABLE_MARKER');
+    });
+
+    it('an invalid ?level= value falls back to the info default rather than erroring', async () => {
+      seedLevels(dataDir);
+      const app = await buildTestApp();
+      const res = await app.inject({ method: 'GET', url: '/dashboard/logs?level=nonsense', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('INFO_MARKER');
+      expect(res.body).toContain('ERROR_MARKER');
+    });
+
+    it('the threshold filters BEFORE the 200-line tail trim: a low-volume error is not buried by a wall of info lines', async () => {
+      const logsDir = join(dataDir, 'logs');
+      mkdirSync(logsDir, { recursive: true });
+      const now = Date.now();
+      const infoFlood = Array.from({ length: 210 }, (_, i) =>
+        JSON.stringify({ level: 30, time: now, msg: `flood-${i}` }));
+      const error = JSON.stringify({ level: 50, time: now, msg: 'BURIED_ERROR_MARKER' });
+      // Error line first, then 210 info lines after it — a naive
+      // "tail 200 raw lines, then filter" implementation would drop it.
+      writeFileSync(join(logsDir, 'daemon.1.log'), [error, ...infoFlood].join('\n') + '\n');
+
+      const app = await buildTestApp();
+      const res = await app.inject({ method: 'GET', url: '/dashboard/logs?level=error', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('BURIED_ERROR_MARKER');
+    });
+
+    it('renders clickable filter links, highlighting the active one, and the <meta refresh> keeps the current ?level=', async () => {
+      seedLevels(dataDir);
+      const app = await buildTestApp();
+      const res = await app.inject({ method: 'GET', url: '/dashboard/logs?level=warn', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('href="/dashboard/logs?level=error"');
+      expect(res.body).toContain('href="/dashboard/logs?level=info"');
+      expect(res.body).toContain('href="/dashboard/logs?level=all"');
+      expect(res.body).toContain('<span class="active">warn+</span>');
+      expect(res.body).toContain('content="5;url=/dashboard/logs?level=warn"');
+    });
+  });
 });

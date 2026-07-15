@@ -33,10 +33,29 @@ import { ProposalRepo, type ConsolidationProposal } from '../../consolidate/prop
 import { MemoryRepo } from '../../storage/memories.js';
 import { checkDashboardAuth } from './dashboard-auth.js';
 import { resolveProposal } from './consolidation.js';
+import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
 
 const RESOLVED_LIMIT = 100;
+const PER_PAGE = 25;
 
 type ProposalStatus = ConsolidationProposal['status'];
+
+interface PageInfo {
+  page: number;
+  totalPages: number;
+  total: number;
+  perPage: number;
+}
+
+/** Clamps a raw `?page=` query value into `[1, totalPages]`. Missing,
+ *  non-numeric, fractional, or out-of-range values all fall back to the
+ *  nearest valid page rather than erroring — a stale bookmark to page 40 of
+ *  a list that has since shrunk to 3 pages just lands on page 3. */
+function resolvePage(raw: string | undefined, totalPages: number): number {
+  const n = Number.parseInt(raw ?? '', 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, totalPages);
+}
 
 // Locally duplicated rather than imported from dashboard-html.ts — that
 // module is module-private by design (see file header + slice scope).
@@ -73,14 +92,14 @@ tr:nth-child(odd) td{background:#1e1e1e}
 .muted{color:#666}
 button{font-family:monospace;font-size:12px;padding:2px 8px;margin-right:4px;background:#2a2a2a;color:#e0e0e0;border:1px solid #444;border-radius:3px;cursor:pointer}
 button:hover{background:#333}
-nav{display:flex;gap:16px;margin:8px 0 16px;padding-bottom:8px;border-bottom:1px solid #333;font-size:12px}
-nav a{color:#888;text-decoration:none}
-nav a:hover{color:#3a7bd5}
-nav .active{color:#fff;font-weight:bold}
+${DASHBOARD_NAV_CSS}
 .tabs{margin:0 0 10px;display:flex;gap:14px}
 .tabs a{color:#3a7bd5;text-decoration:none}
 .tabs .active{color:#fff;font-weight:bold}
 .note{color:#666;font-size:11px;margin-bottom:10px}
+.pager{margin-top:10px;font-size:12px;display:flex;gap:14px;align-items:center}
+.pager a{color:#3a7bd5;text-decoration:none}
+.pager a:hover{text-decoration:underline}
 .kind-badge{display:inline-block;padding:1px 6px;border-radius:3px;font-size:11px;text-transform:uppercase;letter-spacing:.03em}
 .kind-merge{background:#233;color:#7ec8e3}
 .kind-contradiction{background:#3a1f1f;color:#e38a7e}
@@ -122,11 +141,22 @@ export function dashboardConsolidationRoute(db: DB, token: string, devNoAuthActi
           .slice(0, RESOLVED_LIMIT);
       }
 
+      // Pagination is a pure in-memory slice over `rows` (already fetched
+      // above) — no new SQL. `total` reflects the RESOLVED_LIMIT cap for
+      // non-pending statuses (pending has no cap, e.g. 662 proposals in the
+      // wild — pagination is what makes that render cheap and readable).
+      const total = rows.length;
+      const totalPages = Math.max(1, Math.ceil(total / PER_PAGE));
+      const page = resolvePage((req.query as Record<string, string | undefined>).page, totalPages);
+      const offset = (page - 1) * PER_PAGE;
+      const pageRows = rows.slice(offset, offset + PER_PAGE);
+      const pageInfo: PageInfo = { page, totalPages, total, perPage: PER_PAGE };
+
       return reply
         .code(200)
         .header('content-type', 'text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(renderPage(status, counts, rows, memories));
+        .send(renderPage(status, counts, pageRows, memories, pageInfo));
     });
 
     const mutateHandler = (action: 'accept' | 'reject') =>
@@ -205,19 +235,39 @@ function renderTabs(status: ProposalStatus, counts: Record<ProposalStatus, numbe
   return `<div class="tabs">${tab('pending')} ${tab('accepted')} ${tab('rejected')}</div>`;
 }
 
-function renderBody(status: ProposalStatus, rows: ConsolidationProposal[], memories: MemoryRepo): string {
-  if (rows.length === 0) {
+/** Prev/next + "page N/M — showing X–Y of Z" caption. Preserves the current
+ *  `?status=` so paging within e.g. "pending" stays in pending. Prev is
+ *  omitted on page 1, next on the last page — an inert `<span>` instead of
+ *  a dead link, same convention as the consolidation tabs' active entry. */
+function renderPagination(status: ProposalStatus, pageInfo: PageInfo, shownCount: number): string {
+  if (pageInfo.total === 0) return '';
+  const offset = (pageInfo.page - 1) * pageInfo.perPage;
+  const start = offset + 1;
+  const end = offset + shownCount;
+  const link = (page: number): string => `/dashboard/consolidation?status=${esc(status)}&page=${page}`;
+  const prev = pageInfo.page > 1
+    ? `<a href="${link(pageInfo.page - 1)}">&larr; prev</a>`
+    : '<span class="muted">&larr; prev</span>';
+  const next = pageInfo.page < pageInfo.totalPages
+    ? `<a href="${link(pageInfo.page + 1)}">next &rarr;</a>`
+    : '<span class="muted">next &rarr;</span>';
+  return `<div class="pager"><span class="muted">page ${pageInfo.page}/${pageInfo.totalPages} — showing ${start}&ndash;${end} of ${pageInfo.total}</span> ${prev} ${next}</div>`;
+}
+
+function renderBody(status: ProposalStatus, rows: ConsolidationProposal[], memories: MemoryRepo, pageInfo: PageInfo): string {
+  if (pageInfo.total === 0) {
     return `<p class="muted">No ${esc(status)} proposals.</p>`;
   }
   const lastHeader = status === 'pending' ? 'Actions' : 'Resolved';
-  const capNote = rows.length === RESOLVED_LIMIT && status !== 'pending'
-    ? `<p class="muted">showing ${RESOLVED_LIMIT} most recently resolved</p>` : '';
+  const capNote = pageInfo.total === RESOLVED_LIMIT && status !== 'pending'
+    ? `<p class="muted">showing up to ${RESOLVED_LIMIT} most recently resolved</p>` : '';
   return `${capNote}<table>
   <thead><tr>
     <th>ID</th><th>Kind</th><th class="num">Sim</th><th>Winner</th><th>Loser</th><th>Age</th><th>${lastHeader}</th>
   </tr></thead>
   <tbody>${rows.map(p => renderRow(p, memories)).join('')}</tbody>
-</table>`;
+</table>
+${renderPagination(status, pageInfo, rows.length)}`;
 }
 
 function renderPage(
@@ -225,6 +275,7 @@ function renderPage(
   counts: Record<ProposalStatus, number>,
   rows: ConsolidationProposal[],
   memories: MemoryRepo,
+  pageInfo: PageInfo,
 ): string {
   return `<!DOCTYPE html>
 <html lang="en">
@@ -236,10 +287,10 @@ function renderPage(
 </head>
 <body>
 <h1>Consolidation — ${esc(status)}: ${counts[status]}</h1>
-<nav><a href="/dashboard">Mission Control</a> <a href="/dashboard/jobs">Jobs</a> <span class="active">Consolidation</span> <a href="/dashboard/search">Search</a> <a href="/dashboard/api">API</a></nav>
+${renderDashboardNav('consolidation')}
 ${renderTabs(status, counts)}
 <p class="note">accepted = merged (auto containment-sweep or manual). Direct auto-merges at &ge;0.95 similarity or exact-containment never create proposals — they land straight in memory history.</p>
-${renderBody(status, rows, memories)}
+${renderBody(status, rows, memories, pageInfo)}
 </body>
 </html>`;
 }

@@ -72,8 +72,9 @@ export function dashboardRoute(db: DB, config: Config, token: string, healthStat
           .send(authResult.body);
       }
 
+      const rawPage = (req.query as Record<string, string | undefined>)['page'];
       const data = await queryDashboard(db, healthState);
-      const html = renderDashboard(data, config);
+      const html = renderDashboard(data, config, rawPage);
 
       return reply
         .code(200)

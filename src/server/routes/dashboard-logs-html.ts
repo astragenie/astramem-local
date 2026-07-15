@@ -27,6 +27,7 @@ import type { FastifyInstance } from 'fastify';
 import { openSync, closeSync, fstatSync, readSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { checkDashboardAuth } from './dashboard-auth.js';
+import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
 
 function esc(s: string): string {
   return s
@@ -61,6 +62,45 @@ function readTail(filePath: string, maxBytes: number): string {
 
 const TAIL_BYTES = 64 * 1024;
 const MAX_LINES = 200;
+
+/** ?level= is a THRESHOLD, not an exact match: 'warn' shows WARN and
+ *  everything MORE severe (warn + error), matching how pino level numbers
+ *  compare (higher = more severe). 'all' (and its alias 'debug' — this repo
+ *  has no distinct debug-level logging in practice, so both just mean "no
+ *  floor") shows everything. Unknown/missing param defaults to 'info'. */
+type LevelFilter = 'error' | 'warn' | 'info' | 'all';
+
+const LEVEL_THRESHOLDS: Record<LevelFilter, number> = {
+  error: 50,
+  warn: 40,
+  info: 30,
+  all: -Infinity,
+};
+
+const LEVEL_ALIASES: Record<string, LevelFilter> = {
+  error: 'error',
+  warn: 'warn',
+  info: 'info',
+  all: 'all',
+  debug: 'all',
+};
+
+function resolveLevelFilter(raw: string | undefined): LevelFilter {
+  if (raw === undefined) return 'info';
+  return LEVEL_ALIASES[raw.trim().toLowerCase()] ?? 'info';
+}
+
+/** No-level-field rule: a line with no parseable pino `level` (JSON parse
+ *  failure, or a JSON line missing the field) is treated as INFO-equivalent
+ *  — visible at the 'info' and 'all' thresholds, hidden at 'warn'/'error'.
+ *  Rationale: an unparseable line is far more likely to be a boot banner or
+ *  other harmless stdout noise than a smuggled error, so defaulting it to
+ *  "loud" (visible under the strict filters) would make the warn/error
+ *  views noisy with junk; defaulting it to INFO keeps the strict filters
+ *  meaningful while still surfacing the raw line under the default view. */
+function effectiveLevel(level: number | null): number {
+  return level ?? 30;
+}
 
 /** Picks the newest `daemon.*.log` (pino-roll rotation) in logsDir, falling
  *  back to `daemon-stdout.log` (shim-captured stdout), else null. Never
@@ -156,8 +196,14 @@ const CSS = `
 body{background:#1a1a1a;color:#e0e0e0;font-family:monospace;font-size:13px;line-height:1.5;padding:16px}
 h1{font-size:18px;color:#fff;margin-bottom:4px}
 h2{font-size:14px;color:#aaa;margin:20px 0 8px;border-bottom:1px solid #333;padding-bottom:4px;text-transform:uppercase;letter-spacing:.05em}
+${DASHBOARD_NAV_CSS}
 section{margin-bottom:24px}
 .meta{color:#888;font-size:12px;margin-bottom:12px}
+.level-filter{margin-bottom:10px;font-size:12px}
+.level-filter a,.level-filter span{margin-right:12px}
+.level-filter a{color:#888;text-decoration:none}
+.level-filter a:hover{color:#3a7bd5}
+.level-filter .active{color:#fff;font-weight:bold}
 table{width:100%;border-collapse:collapse;font-size:12px}
 th{background:#222;color:#aaa;text-align:left;padding:5px 8px;font-weight:normal;text-transform:uppercase;letter-spacing:.04em}
 td{padding:4px 8px;border-bottom:1px solid #252525;font-variant-numeric:tabular-nums;vertical-align:top}
@@ -185,9 +231,29 @@ function renderRows(lines: ParsedLine[]): string {
   }).join('');
 }
 
-function renderPage(logPath: string | null, lines: ParsedLine[]): string {
+const LEVEL_FILTER_LABELS: Record<LevelFilter, string> = {
+  error: 'error',
+  warn: 'warn+',
+  info: 'info+',
+  all: 'all',
+};
+
+/** Filter links are plain query-param anchors (zero JS, per convention) —
+ *  clicking one just navigates to `?level=<x>`. The active filter is a
+ *  `<span>`, matching the tab pattern already used on
+ *  dashboard-consolidation-html.ts's status tabs. */
+function renderLevelFilter(active: LevelFilter): string {
+  const items = (Object.keys(LEVEL_FILTER_LABELS) as LevelFilter[]).map(level => {
+    const label = esc(LEVEL_FILTER_LABELS[level]);
+    if (level === active) return `<span class="active">${label}</span>`;
+    return `<a href="/dashboard/logs?level=${esc(level)}">${label}</a>`;
+  });
+  return `<div class="level-filter">${items.join('')}</div>`;
+}
+
+function renderPage(logPath: string | null, lines: ParsedLine[], level: LevelFilter): string {
   const meta = logPath !== null
-    ? `<div class="meta">source: ${esc(logPath)} &middot; showing last ${lines.length} line${lines.length === 1 ? '' : 's'} (tail ${TAIL_BYTES / 1024}KB)</div>`
+    ? `<div class="meta">source: ${esc(logPath)} &middot; showing last ${lines.length} line${lines.length === 1 ? '' : 's'} (tail ${TAIL_BYTES / 1024}KB, filtered to ${esc(level)}+ before the tail trim)</div>`
     : '<div class="meta">no log file found</div>';
   const body = lines.length === 0
     ? '<p class="muted">No log lines available yet.</p>'
@@ -196,17 +262,26 @@ function renderPage(logPath: string | null, lines: ParsedLine[]): string {
   <tbody>${renderRows(lines)}</tbody>
 </table>`;
 
+  // Explicit url= keeps the auto-refresh on the SAME filtered view — without
+  // it a bare `content="5"` happens to also reload the current URL (browsers
+  // default the refresh target to the current address), but spelling it out
+  // makes the "refresh must not reset the filter" contract visible in the
+  // markup itself rather than relying on that default.
+  const refreshUrl = `/dashboard/logs?level=${esc(level)}`;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<meta http-equiv="refresh" content="5">
+<meta http-equiv="refresh" content="5;url=${refreshUrl}">
 <title>AstraMemory Dashboard — Logs</title>
 <style>${CSS}</style>
 </head>
 <body>
 <h1>AstraMemory Local — Logs</h1>
+${renderDashboardNav('logs')}
+${renderLevelFilter(level)}
 ${meta}
 <section>
 ${body}
@@ -226,17 +301,25 @@ export function dashboardLogsRoute(dataDir: string, token: string, devNoAuthActi
           .send(authResult.body);
       }
 
+      const level = resolveLevelFilter((req.query as Record<string, string | undefined>).level);
+      const threshold = LEVEL_THRESHOLDS[level];
+
       const logsDir = join(dataDir, 'logs');
       const logPath = resolveLogFile(logsDir);
       const tail = logPath !== null ? readTail(logPath, TAIL_BYTES) : '';
       const rawLines = tail.length > 0 ? tail.split(/\r?\n/).filter(l => l.trim() !== '') : [];
-      const lines = rawLines.slice(-MAX_LINES).map(parseLine);
+      // Threshold filter runs BEFORE the tail trim below: filtering first,
+      // then taking the last MAX_LINES of the FILTERED set, is what keeps a
+      // low-volume error from being buried by 200 chattier info lines that
+      // would otherwise fill the tail window first.
+      const filtered = rawLines.map(parseLine).filter(l => effectiveLevel(l.level) >= threshold);
+      const lines = filtered.slice(-MAX_LINES);
 
       return reply
         .code(200)
         .header('content-type', 'text/html; charset=utf-8')
         .header('cache-control', 'no-store')
-        .send(renderPage(logPath, lines));
+        .send(renderPage(logPath, lines, level));
     });
   };
 }
