@@ -329,6 +329,49 @@ export function clearRejected(db: DB, seqs?: number[]): number {
 }
 
 /**
+ * Strip characters that PostgreSQL's jsonb parser rejects from every string
+ * in a payload, recursively (2026-07-15 sync-wedge incident):
+ *
+ *  - U+0000 (NUL): JSON.stringify emits it as the escape `\u0000`, which is
+ *    VALID JSON — but Postgres text/jsonb storage cannot hold an embedded
+ *    NUL and its parser throws `22P05: unsupported Unicode escape sequence`.
+ *  - Lone UTF-16 surrogates (U+D800–U+DFFF unpaired): serialized as
+ *    `\udXXX` escapes that Postgres likewise rejects (22P05-adjacent).
+ *
+ * Why sanitize HERE (ship time) and not only cloud-side: the cloud's audit
+ * interceptor casts the serialized payload `::jsonb` inside the SAME
+ * transaction as the batch accept — one NUL-bearing memory rolled back the
+ * whole batch, acked_seq never advanced, and the shipper resent the
+ * identical bytes forever (local push_seq 44235 wedge, correlationId
+ * f0ba853a-…). Ship-time sanitization self-heals every already-queued
+ * poison event on the next round with no cloud deploy; the cloud gets its
+ * own defense-in-depth fix separately. NUL/lone-surrogate bytes carry no
+ * meaning in memory text — dropping/replacing them is strictly less lossy
+ * than the current behavior (the event can never sync at all).
+ */
+export function sanitizeJsonbHostile<T>(value: T): T {
+  if (typeof value === 'string') {
+    return value
+      .replace(/\u0000/g, '')
+      // Lone high surrogate (not followed by a low) or lone low surrogate
+      // (not preceded by a high) → U+FFFD replacement character.
+      .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, '�')
+      .replace(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '�') as unknown as T;
+  }
+  if (Array.isArray(value)) {
+    return value.map(v => sanitizeJsonbHostile(v)) as unknown as T;
+  }
+  if (value !== null && typeof value === 'object') {
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      out[sanitizeJsonbHostile(k)] = sanitizeJsonbHostile(v);
+    }
+    return out as unknown as T;
+  }
+  return value;
+}
+
+/**
  * A `create` event's payload_json is frozen at write time (append-only log —
  * MemoryEventRepo never rewrites a past event). `promoteScope` (memory-
  * events.ts) promotes `memories.scope` and appends a NEW `promote_scope`
@@ -373,7 +416,10 @@ export function buildEnvelope(
       event_id: r.event_id,
       event_type: r.event_type,
       atom_id: r.atom_id,
-      payload_json: withCurrentScope(
+      // sanitizeJsonbHostile: see its doc comment — a NUL byte anywhere in a
+      // payload string wedged the cloud batch transaction (and thus the sync
+      // cursor) permanently on 2026-07-15.
+      payload_json: sanitizeJsonbHostile(withCurrentScope(
         r,
         safeParseEventPayload(r.payload_json, err =>
           logger.warn(
@@ -381,7 +427,7 @@ export function buildEnvelope(
             'sync: event has malformed payload_json — shipping with null payload rather than failing the whole batch',
           ),
         ),
-      ),
+      )),
       content_hash: r.content_hash,
       created_at: r.created_at,
     })),
