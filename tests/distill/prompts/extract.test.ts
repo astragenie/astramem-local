@@ -416,6 +416,78 @@ describe('EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL content', () => {
   });
 });
 
+// invalid_at extraction gap (measured 2026-07-15: 0.14-0.5% fire rate,
+// dominant failure mode a genuine prompt gap — see
+// .claude/artifacts/crew/handoffs/20260715T050404Z-handoff-invalid-at-
+// measure-sample-near-zero-rate-is-a-prompt-schema-.md). Real "used to X, no
+// longer Y" cessations (drums, video games, a pet given up) never get
+// invalid_at because the prompt required a literal ISO-8601 date the source
+// text never states. FIX CHOSEN: approach (B), not (A) — the atom's own TEXT
+// carries the cessation instead of the bitemporal field, because (1)
+// invalid_at earns ZERO LoCoMo/retrieval points (the harness never sets
+// as_of; only atom TEXT is read), and (2) approach (A)'s tempting shortcut —
+// anchoring invalid_at to the capture/observation date "since the fact must
+// be false by now" — is explicitly wrong modeling: a dateless cessation
+// became false at an UNKNOWN PAST point, not at capture time, and baking in
+// the capture date would be a subtler form of the exact hallucination class
+// CLAUDE.md already warns against. Approach B has strictly LOWER hallucination
+// surface than A: it touches only prose, never the bitemporal field, so
+// there is no new way for a bound to be wrong.
+describe('conversational prompt — dateless full-stop ("used to X, no longer Y") pattern', () => {
+  it('names the dateless full-stop pattern and instructs writing cessation into text, not a bound', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Dateless full-stop pattern/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/do NOT set\s+invalid_at for them/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/write\s+the\s+cessation directly into the atom's "text"/);
+  });
+
+  // The exact hazard this fix must not reintroduce: treating "the fact must
+  // be false by now, so bound it to today" as conservative. It is not — it
+  // silently claims a precise, false invalidation date for an event whose
+  // real timing is unknown.
+  it('explicitly forbids anchoring invalid_at to the capture/observation date for a dateless cessation', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/do NOT set invalid_at to the\s+observation\/capture date/i);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/an unresolvable past point is not the same as today/);
+  });
+
+  it('distinguishes partial continuation from a full stop, and forbids treating a hedge as cessation', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/PARTIAL continuation/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/no\s+cessation language and no bound at all/);
+  });
+
+  it('includes both unambiguous-cessation few-shots (drums, dog) with invalid_at omitted', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/John used to play the drums/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/has not played them in years/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Joanna used to have a dog named Tilly/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/gave her up after discovering she was allergic/);
+    // Neither few-shot atom sets invalid_at — the point of the fix.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/John used to play the drums[^}]*"invalid_at"/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/Joanna used to have a dog named Tilly[^}]*"invalid_at"/);
+  });
+
+  it('includes the partial-continuation WRONG/RIGHT counter-example (hiking) and its wrong atom has no invalid_at either', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/used to hike a lot when I was younger/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/still hikes when he can/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(
+      /"text":"Sergey used to hike a lot but no longer hikes\."/,
+    );
+  });
+
+  // AtomSchema itself must still validate these text-only atoms (no
+  // valid_at/invalid_at) exactly like any other unbounded fact — this is a
+  // prompt-only fix, no schema or guard change.
+  it('an atom with cessation encoded only in text (no invalid_at) still validates against AtomSchema', () => {
+    const atom = makeAtom(
+      'John used to play the drums all the time back in high school, but has not played them in years.',
+    );
+    const result = AtomSchema.safeParse(atom);
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.valid_at).toBeUndefined();
+      expect(result.data.invalid_at).toBeUndefined();
+    }
+  });
+});
+
 describe('conversational prompt — the exhaustiveness checklist is MECHANICAL, not an exhortation', () => {
   // WHY THIS TEST EXISTS.
   //
