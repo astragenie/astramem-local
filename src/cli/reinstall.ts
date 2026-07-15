@@ -31,7 +31,16 @@ import { legacyDataDir, legacyConfigDir } from '../config/datadir.js';
 import { installServiceFlow, resolveBuild } from '../service/install-flow.js';
 import { getServiceAdapter } from '../service/index.js';
 import { stopLockHolder } from '../service/instance-lock.js';
-import { waitForHealth } from './wait-health.js';
+import { waitForHealth, waitForVersion } from './wait-health.js';
+
+/**
+ * Budget for polling /version AFTER /health is already up. Dedicated (not the
+ * health budget) so a genuine version mismatch — a stale shadow install or a
+ * corrupt release dir that will NEVER report the expected version — still fails
+ * reasonably fast instead of burning the full health budget, while a transient
+ * busy-event-loop window right after boot is ridden out. See waitForVersion.
+ */
+const VERSION_VERIFY_BUDGET_MS = 30_000;
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import {
   materializeRelease,
@@ -313,38 +322,37 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       detail: `/health not responding on port ${port} within ${healthBudgetMs / 1000}s — repoint aborted (${restoreDetail})`,
     });
   } else {
-    try {
-      const res = await fetch(`http://127.0.0.1:${port}/version`, { signal: AbortSignal.timeout(3000) });
-      const body = (await res.json()) as { version?: string };
-      if (body.version === releaseManifest.pkgversion) {
-        steps.push({
-          step: 'verify-version',
-          ok: true,
-          detail: `daemon serving v${body.version} (release ${releaseManifest.id})`,
-        });
-        log(`  ✓ daemon healthy, serving v${body.version} (release ${releaseManifest.id})`);
-      } else {
-        // Served version doesn't match the release we just pointed at — do
-        // NOT leave current.json pinned to an unverified release (AC-2).
-        // Restore the prior pointer (if one existed) so the NEXT boot/
-        // keepalive restart resumes the last known-good release; this repoint
-        // is reported as failed regardless.
-        const restoreDetail = await restoreOnce();
-        steps.push({
-          step: 'verify-version',
-          ok: false,
-          detail:
-            `daemon reports v${body.version} but the materialized release ${releaseManifest.id} expects v${releaseManifest.pkgversion} — ` +
-            `repoint aborted (${restoreDetail}). Most common cause: a stale global install (e.g. 'bun install -g') shadowing this port, ` +
-            `or a corrupted release dir at ${releaseDir}. Investigate before re-running reinstall.`,
-        });
-      }
-    } catch (err) {
+    const versionResult = await waitForVersion(port, releaseManifest.pkgversion, VERSION_VERIFY_BUDGET_MS);
+    if (versionResult.ok) {
+      steps.push({
+        step: 'verify-version',
+        ok: true,
+        detail: `daemon serving v${versionResult.served} (release ${releaseManifest.id})`,
+      });
+      log(`  ✓ daemon healthy, serving v${versionResult.served} (release ${releaseManifest.id})`);
+    } else if (versionResult.responded) {
+      // /version answered, but with the wrong version — a REAL mismatch (not a
+      // busy window): a stale global install shadowing the port, or a corrupt
+      // release dir. Do NOT leave current.json pinned to an unverified release
+      // (AC-2) — restore the prior pointer so the next keepalive restart
+      // resumes the last known-good release.
       const restoreDetail = await restoreOnce();
       steps.push({
         step: 'verify-version',
         ok: false,
-        detail: `${(err as Error).message} — repoint aborted (${restoreDetail})`,
+        detail:
+          `daemon reports v${versionResult.served} but the materialized release ${releaseManifest.id} expects v${releaseManifest.pkgversion} — ` +
+          `repoint aborted (${restoreDetail}). Most common cause: a stale global install (e.g. 'bun install -g') shadowing this port, ` +
+          `or a corrupted release dir at ${releaseDir}. Investigate before re-running reinstall.`,
+      });
+    } else {
+      // /version never answered within the budget despite /health being up —
+      // the daemon is wedged or crashed after binding. Roll back.
+      const restoreDetail = await restoreOnce();
+      steps.push({
+        step: 'verify-version',
+        ok: false,
+        detail: `/version did not respond on port ${port} within ${VERSION_VERIFY_BUDGET_MS / 1000}s (health was up) — repoint aborted (${restoreDetail}).`,
       });
     }
   }
@@ -524,32 +532,29 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
     return steps;
   }
 
-  try {
-    const res = await fetch(`http://127.0.0.1:${port}/version`, { signal: AbortSignal.timeout(3000) });
-    const body = (await res.json()) as { version?: string };
-    if (body.version === expectedVersion) {
-      steps.push({
-        step: 'verify-version',
-        ok: true,
-        detail: `daemon serving v${body.version} (${expectedLabel})`,
-      });
-      log(`  ✓ daemon healthy, serving v${body.version} (${expectedLabel})`);
-    } else {
-      const restoreDetail = await restoreOnce();
-      steps.push({
-        step: 'verify-version',
-        ok: false,
-        detail:
-          `daemon reports v${body.version} but ${expectedLabel} expects v${expectedVersion} — ` +
-          `repoint aborted (${restoreDetail}).`,
-      });
-    }
-  } catch (err) {
+  const versionResult = await waitForVersion(port, expectedVersion, VERSION_VERIFY_BUDGET_MS);
+  if (versionResult.ok) {
+    steps.push({
+      step: 'verify-version',
+      ok: true,
+      detail: `daemon serving v${versionResult.served} (${expectedLabel})`,
+    });
+    log(`  ✓ daemon healthy, serving v${versionResult.served} (${expectedLabel})`);
+  } else if (versionResult.responded) {
     const restoreDetail = await restoreOnce();
     steps.push({
       step: 'verify-version',
       ok: false,
-      detail: `${(err as Error).message} — repoint aborted (${restoreDetail})`,
+      detail:
+        `daemon reports v${versionResult.served} but ${expectedLabel} expects v${expectedVersion} — ` +
+        `repoint aborted (${restoreDetail}).`,
+    });
+  } else {
+    const restoreDetail = await restoreOnce();
+    steps.push({
+      step: 'verify-version',
+      ok: false,
+      detail: `/version did not respond on port ${port} within ${VERSION_VERIFY_BUDGET_MS / 1000}s (health was up) — repoint aborted (${restoreDetail}).`,
     });
   }
 

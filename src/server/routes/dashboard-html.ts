@@ -21,6 +21,7 @@
 import type { DashboardData, DashboardHealth, JobStateByKind } from '../queries/dashboard.js';
 import type { Config } from '../../config/config.js';
 import { PKG_VERSION, WIRE_VERSIONS_SUPPORTED, SCHEMA_VERSION } from '../lib/wire-meta.js';
+import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
 
 // ---------------------------------------------------------------------------
 // Helpers (carried over from the pre-Mission-Control renderer)
@@ -85,11 +86,7 @@ body{background:#1a1a1a;color:#e0e0e0;font-family:monospace;font-size:13px;line-
 h1{font-size:18px;color:#fff;display:inline-block}
 .meta{color:#888;font-size:12px}
 .meta span{color:#ccc}
-nav{display:flex;align-items:center;gap:16px;margin:10px 0 16px;padding-bottom:8px;border-bottom:1px solid #333;font-size:12px}
-nav a{color:#888;text-decoration:none}
-nav a:hover{color:#3a7bd5}
-nav .active{color:#fff;font-weight:bold}
-nav .asof{margin-left:auto;color:#666}
+${DASHBOARD_NAV_CSS}
 section{margin-bottom:20px}
 .banner{padding:8px 12px;border-radius:4px;font-size:13px;display:flex;gap:18px;flex-wrap:wrap;align-items:center}
 .banner.ok{background:#132a1c;border:1px solid #1f5c34}
@@ -123,6 +120,9 @@ details[open]>summary{color:#fff;white-space:normal;overflow:visible;text-overfl
 .warn{color:#f39c12}
 .err{color:#e74c3c}
 .muted{color:#666}
+.pager{margin-top:10px;font-size:12px;display:flex;gap:14px;align-items:center}
+.pager a{color:#3a7bd5;text-decoration:none}
+.pager a:hover{text-decoration:underline}
 `.trim();
 
 // ---------------------------------------------------------------------------
@@ -350,14 +350,24 @@ function renderExpandable(fullText: string): string {
       </details>`;
 }
 
+const ACTIVITY_PER_PAGE = 15;
+
 /** AC-5: replaces the old full 25-row "recent captures" table with a merged
- *  feed of failures (from recentFailedJobs) and a handful of new memories
- *  (from recentMemories), newest first. Individual consolidation proposals
- *  aren't in this feed — queryDashboard only exposes the aggregate
+ *  feed of failures (from recentFailedJobs) and memories (from
+ *  recentMemories), newest first. Individual consolidation proposals aren't
+ *  in this feed — queryDashboard only exposes the aggregate
  *  ConsolidationSummary (count/oldest), which the Consolidation strip above
  *  already surfaces; per-row proposal entries belong to the dedicated
- *  /dashboard/consolidation page. */
-function renderActivityFeed(data: DashboardData): string {
+ *  /dashboard/consolidation page.
+ *
+ *  Pulls from ALL fetched recentMemories (up to the 25-row LIMIT in
+ *  queryRecentMemories), not just the first 8 — the old 8-row cap existed
+ *  only because the feed itself was hard-capped to 15 total rows with no
+ *  way to see the rest. Pagination (below) is what makes using the full
+ *  fetched pool safe: page 1 still shows the newest 15 either way, and
+ *  paging forward reaches the remaining already-fetched rows instead of
+ *  silently dropping them. */
+function buildActivityRows(data: DashboardData): FeedRow[] {
   const rows: FeedRow[] = [];
 
   for (const job of data.recentFailedJobs) {
@@ -374,7 +384,7 @@ function renderActivityFeed(data: DashboardData): string {
     });
   }
 
-  for (const mem of data.recentMemories.slice(0, 8)) {
+  for (const mem of data.recentMemories) {
     rows.push({
       ts: mem.created_at,
       html: `<tr>
@@ -386,17 +396,57 @@ function renderActivityFeed(data: DashboardData): string {
     });
   }
 
+  rows.sort((a, b) => b.ts - a.ts);
+  return rows;
+}
+
+/** Clamps a raw `?page=` query value into `[1, totalPages]` — missing,
+ *  non-numeric, or out-of-range values fall back to the nearest valid page
+ *  rather than erroring. Mirrors dashboard-consolidation-html.ts's
+ *  resolvePage (kept as a local duplicate — same convention this file
+ *  already uses for esc() et al. across the dashboard route files). */
+function resolveActivityPage(raw: string | undefined, totalPages: number): number {
+  const n = Number.parseInt(raw ?? '', 10);
+  if (!Number.isFinite(n) || n < 1) return 1;
+  return Math.min(n, totalPages);
+}
+
+/** Prev/next + "page N/M — showing X–Y of Z" caption for the activity feed.
+ *  Plain query-param `<a>` links, no JS. The main dashboard has no other
+ *  query-string filters to preserve (unlike /dashboard/consolidation's
+ *  ?status=), so the link target is just `?page=N`. */
+function renderActivityPager(page: number, totalPages: number, offset: number, shownCount: number, total: number): string {
+  if (total === 0) return '';
+  const start = offset + 1;
+  const end = offset + shownCount;
+  const prev = page > 1
+    ? `<a href="/dashboard?page=${page - 1}">&larr; prev</a>`
+    : '<span class="muted">&larr; prev</span>';
+  const next = page < totalPages
+    ? `<a href="/dashboard?page=${page + 1}">next &rarr;</a>`
+    : '<span class="muted">next &rarr;</span>';
+  return `<div class="pager"><span class="muted">page ${page}/${totalPages} — showing ${start}&ndash;${end} of ${total}</span> ${prev} ${next}</div>`;
+}
+
+function renderActivityFeed(data: DashboardData, rawPage: string | undefined): string {
+  const rows = buildActivityRows(data);
+
   if (rows.length === 0) {
     return '<p class="muted">No recent activity.</p>';
   }
 
-  rows.sort((a, b) => b.ts - a.ts);
-  const trs = rows.slice(0, 15).map(r => r.html).join('');
+  const total = rows.length;
+  const totalPages = Math.max(1, Math.ceil(total / ACTIVITY_PER_PAGE));
+  const page = resolveActivityPage(rawPage, totalPages);
+  const offset = (page - 1) * ACTIVITY_PER_PAGE;
+  const pageRows = rows.slice(offset, offset + ACTIVITY_PER_PAGE);
+  const trs = pageRows.map(r => r.html).join('');
 
   return `<table>
   <thead><tr><th>Time</th><th>Kind</th><th>Detail</th><th>Info</th></tr></thead>
   <tbody>${trs}</tbody>
-</table>`;
+</table>
+${renderActivityPager(page, totalPages, offset, pageRows.length, total)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,7 +488,7 @@ document.addEventListener('click', function (e) {
 // Main export
 // ---------------------------------------------------------------------------
 
-export function renderDashboard(data: DashboardData, config: Config): string {
+export function renderDashboard(data: DashboardData, config: Config, rawPage?: string): string {
   const now = new Date().toLocaleString(undefined, { hour12: false });
   const dailyCap = config.budget.daily_usd;
   const { label } = bannerStatus(data.health);
@@ -462,6 +512,12 @@ export function renderDashboard(data: DashboardData, config: Config): string {
   // 30s is comfortably above the cold render, so a refresh can never overlap
   // its predecessor. The real fix is to stop doing aggregate scans on the hot
   // path (own ticket) — this removes the amplifier.
+  //
+  // The refresh target below is deliberately bare (`content="30"`, no
+  // `url=`): a `<meta refresh>` with no explicit url reloads the CURRENT
+  // address, query string included, per the HTML spec — so a `?page=2` view
+  // of the activity feed (below) survives the 30s auto-refresh without this
+  // page needing to echo the page number back into the tag itself.
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -478,16 +534,10 @@ export function renderDashboard(data: DashboardData, config: Config): string {
   schema ${SCHEMA_VERSION} &middot;
   wire: ${esc(WIRE_VERSIONS_SUPPORTED.join(', '))} &middot;
   <span style="color:${statusColor}">${label}</span> &#9679;
+  as of ${esc(now)}
 </span>
 
-<nav>
-  <span class="active">Mission Control</span>
-  <a href="/dashboard/jobs">Jobs</a>
-  <a href="/dashboard/consolidation">Consolidation</a>
-  <a href="/dashboard/search">Search</a>
-  <a href="/dashboard/api">API</a>
-  <span class="asof">as of ${esc(now)}</span>
-</nav>
+${renderDashboardNav('main')}
 
 <section>
 ${renderBanner(data.health)}
@@ -510,7 +560,7 @@ ${renderUsefulnessTile(data.usefulness)}
 
 <section>
 <h2 style="font-size:14px;color:#aaa;margin-bottom:8px;text-transform:uppercase;letter-spacing:.05em">Recent activity / errors</h2>
-${renderActivityFeed(data)}
+${renderActivityFeed(data, rawPage)}
 </section>
 <script>${COPY_SCRIPT}</script>
 </body>

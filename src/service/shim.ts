@@ -152,6 +152,22 @@ const crashLogPath = join(logsDir, 'crash.log');
 // launch (see stdio wiring below). Internal to the launcher; never read by
 // anything but readTail() right after the child exits.
 const stderrScratchPath = join(logsDir, 'crash-stderr.tmp');
+// Persistent, operator-tailable capture of THIS run's stdout. The daemon
+// writes its human-readable lines ("serving on ...", "embed preflight ok",
+// etc.) to stdout, NOT to its pino file logger — under a headless service
+// launch those must land somewhere visible or the daemon looks dead even when
+// healthy. Truncated fresh per launch (shows the CURRENT run) and never
+// unlinked, so 'Get-Content -Wait' / 'tail -f' works.
+//
+// KNOWN BOUND (follow-up): this file is capped only ACROSS launches (the 'w'
+// truncate below), not within a single run. Some job handlers still console.log
+// to stdout during normal operation, so under the days/weeks keepalive uptime
+// this file grows unbounded — unlike crash.log (bounded via CRASH_LOG_MAX_BYTES
+// + readTail). A live parent blocked in spawnSync cannot rotate the child's fd
+// mid-run, so the real fix is to route ongoing operational logs through pino
+// (daemon.log, already rotated) instead of stdout, leaving stdout for the boot
+// banner only. Tracked separately; not addressed here to keep this fix scoped.
+const stdoutLogPath = join(logsDir, 'daemon-stdout.log');
 const HISTORY_MAX_ENTRIES = 50;
 const CRASH_LOG_MAX_BYTES = 64 * 1024;
 // Headroom reserved for this entry's own "--- ts exit=N ---" header line
@@ -249,36 +265,57 @@ if (typeof ptr.nodeBin !== 'string' || !ptr.nodeBin || typeof ptr.entryJs !== 's
 const env = { ...process.env };
 if (ptr.logDir) env.ASTRA_LOG_DIR = ptr.logDir; // service mode: rotated file logs
 const args = [ptr.entryJs, 'serve', '--port', String(ptr.port || 7777)];
-// stdin is 'ignore' (see below); stdout stays inherited (the daemon's own
-// file logger takes over once it opens); stderr is redirected straight to a scratch FILE via a real OS
-// file descriptor — NOT Node's 'pipe' stdio — so pre-logger crash output
-// can still be captured to crash.log even though it's ALSO discarded by the
-// scheduler otherwise (FEAT-440 — this is exactly the 2026-07-07 incident's
-// blind spot). 'pipe' would make spawnSync buffer ALL cumulative stderr in
-// this process's memory for the ENTIRE lifetime of a daemon that can run for
-// days/weeks under the keepalive architecture: past Node's default 1MB
-// maxBuffer, spawnSync SIGTERM-kills an otherwise-healthy daemon
-// (res.status === null, res.error.code === 'ENOBUFS') — a false crash that
-// can itself trigger a crash-loop RED alert, directly violating this
-// feature's "the shim must never take the daemon down" promise. Raising
-// maxBuffer isn't a fix either — it just turns the same buffer into an
-// unbounded multi-week memory leak instead of a kill. Handing the child a
-// real fd means the OS writes stderr straight to disk with no in-process
-// buffer at all, so neither failure mode can occur; readTail() below only
-// ever loads the last CRASH_LOG_MAX_BYTES back into memory once the child
-// has already exited.
+// Neither stdout nor stderr may be 'inherit'. stdout was formerly 'inherit',
+// but a Scheduled Task / headless service launch has no guaranteed valid
+// console handle: the daemon's first write to an invalid inherited stdout fd
+// kills it before it can do anything — the exact "the service can't keep the
+// daemon alive" bug this closes. But 'ignore' is wrong too: the daemon writes
+// its human-readable status lines ("serving on ...", "embed preflight ok") to
+// stdout, not to its pino file logger, so discarding stdout makes a perfectly
+// healthy managed daemon look dead to an operator. Both streams are therefore
+// redirected to real OS file descriptors (NOT 'inherit', NOT 'ignore', NOT
+// Node's 'pipe'):
+//   - stdout -> daemon-stdout.log, persistent + tailable (the operator's view).
+//   - stderr -> a scratch file, tailed post-exit into crash.log for FEAT-440
+//     crash-loop visibility (Node uncaught exceptions, console.error, the
+//     migrate.ts schema-drift throw all go to stderr).
+// A real fd needs no valid parent handle at all, so neither the inherit-crash
+// nor the invisibility can occur. 'pipe' is specifically avoided because it
+// would make spawnSync buffer ALL cumulative output in this process's memory
+// for the ENTIRE lifetime of a daemon that can run for days/weeks under the
+// keepalive architecture: past Node's default 1MB maxBuffer, spawnSync
+// SIGTERM-kills an otherwise-healthy daemon (res.status === null,
+// res.error.code === 'ENOBUFS') — a false crash that can itself trigger a
+// crash-loop RED alert, directly violating this feature's "the shim must never
+// take the daemon down" promise. Raising maxBuffer isn't a fix either — it just
+// turns the same buffer into an unbounded multi-week memory leak instead of a
+// kill. Handing the child a real fd means the OS writes straight to disk with
+// no in-process buffer at all; readTail() below only ever loads the last
+// CRASH_LOG_MAX_BYTES back into memory once the child has already exited.
 let stderrFd = null;
+let stdoutFd = null;
 try {
   mkdirSync(logsDir, { recursive: true });
+  stdoutFd = openSync(stdoutLogPath, 'w'); // truncate: fresh per run, kept for tailing
   stderrFd = openSync(stderrScratchPath, 'w'); // truncate: fresh capture per run
 } catch (err) {
-  // Locked/unwritable logs dir — fall back to 'inherit' rather than block
-  // the daemon from starting (AC-4): this run just won't get a crash.log
-  // entry if it dies, same "best-effort observability" tradeoff as every
-  // other write in this file.
+  // Locked/unwritable logs dir — fall back to 'ignore' (NOT 'inherit') rather
+  // than block the daemon from starting (AC-4): this run just won't get a
+  // daemon-stdout.log / crash.log entry, same "best-effort observability"
+  // tradeoff as every other write in this file. 'ignore' (not 'inherit')
+  // because an inherited handle under a headless service launch is the very
+  // crash this wiring exists to avoid; 'ignore' needs no valid parent handle.
+  //
+  // stdout opens FIRST, so if the stderr open is what threw, stdoutFd is a
+  // live handle here. Close it before nulling — otherwise it never reaches
+  // spawnSync or the close block below (both gated on stdoutFd !== null) and
+  // leaks for the daemon's entire multi-week lifetime.
+  try { if (stdoutFd !== null) closeSync(stdoutFd); } catch (e) { /* best-effort */ }
+  stdoutFd = null;
   stderrFd = null;
 }
-const stderrStdio = stderrFd === null ? 'inherit' : stderrFd;
+const stdoutStdio = stdoutFd === null ? 'ignore' : stdoutFd;
+const stderrStdio = stderrFd === null ? 'ignore' : stderrFd;
 
 // Deliberately no timeout option: this spawnSync call IS the daemon's
 // lifetime (the shim blocks here for as long as the daemon runs, which is
@@ -296,7 +333,7 @@ const startedAt = Date.now();
 let exitCode;
 let durationMs;
 try {
-  const res = spawnSync(ptr.nodeBin, args, { stdio: ['ignore', 'inherit', stderrStdio], env });
+  const res = spawnSync(ptr.nodeBin, args, { stdio: ['ignore', stdoutStdio, stderrStdio], env });
   durationMs = Date.now() - startedAt;
   exitCode = res.status === null ? 1 : res.status;
 } catch (err) {
@@ -315,6 +352,9 @@ try {
   console.error(ts() + ' [astramemd-shim] failed to spawn daemon: ' + (err && err.message ? err.message : String(err)));
 }
 
+if (stdoutFd !== null) {
+  try { closeSync(stdoutFd); } catch (err) { /* best-effort */ }
+}
 if (stderrFd !== null) {
   try { closeSync(stderrFd); } catch (err) { /* best-effort */ }
 }

@@ -18,6 +18,7 @@ import type { EmbedProvider } from '../../contracts/index.js';
 import { search, type SearchDebugHit, type SearchFilters } from '../../search/search.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 import { checkDashboardAuth } from './dashboard-auth.js';
+import { renderDashboardNav, DASHBOARD_NAV_CSS } from './dashboard-nav.js';
 
 const RESULT_LIMIT = 20;
 
@@ -141,10 +142,7 @@ form{margin-bottom:8px}
 input[type=text]{background:#0f0f0f;color:#e0e0e0;border:1px solid #333;padding:4px 8px;width:320px}
 button{background:#2a2a2a;color:#e0e0e0;border:1px solid #444;padding:4px 10px;margin-left:4px}
 .weights{color:#888;margin-bottom:16px}
-nav{display:flex;gap:16px;margin:8px 0 16px;padding-bottom:8px;border-bottom:1px solid #333;font-size:12px}
-nav a{color:#888;text-decoration:none}
-nav a:hover{color:#3a7bd5}
-nav .active{color:#fff;font-weight:bold}
+${DASHBOARD_NAV_CSS}
 .filters{margin-top:8px;display:flex;gap:12px;flex-wrap:wrap;color:#888}
 .filters input{width:170px}
 .filters input[type=datetime-local]{width:200px;background:#0f0f0f;color:#e0e0e0;border:1px solid #333;padding:3px 6px}
@@ -174,7 +172,7 @@ function renderPage(rawQuery: string | undefined, weights: Config['search'], ran
 </head>
 <body>
 <h1>Search debug</h1>
-<nav><a href="/dashboard">Mission Control</a> <a href="/dashboard/jobs">Jobs</a> <a href="/dashboard/consolidation">Consolidation</a> <span class="active">Search</span> <a href="/dashboard/api">API</a></nav>
+${renderDashboardNav('search')}
 <form method="get" action="/dashboard/search">
   <input type="text" name="query" value="${queryValue}" placeholder="query...">
   <button type="submit">run</button>
