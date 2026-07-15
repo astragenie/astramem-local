@@ -93,6 +93,23 @@ describe('scanAndEnqueueOversizeRepairs (FEAT-507)', () => {
     expect(reembedJobIds(db)).toEqual([id, id]);
   });
 
+  it('a memory whose existing reembed job is failed (not yet terminal) is not re-enqueued', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const jobRepo = new JobRepo(db);
+
+    const oversizeText = 'x'.repeat(EMBED_MAX_INPUT_CHARS + 500);
+    const id = insertMemory(db, 'scan-failed-job-1', oversizeText, true);
+    const jobId = jobRepo.enqueue('reembed', { kind: 'reembed', memory_id: id });
+    jobRepo.fail(jobId, 'transient error'); // still retryable — self-promotes back to pending on backoff
+
+    const result = scanAndEnqueueOversizeRepairs(db);
+
+    expect(result.enqueued).toBe(0);
+    expect(result.alreadyQueued).toBe(1);
+    expect(reembedJobIds(db)).toEqual([id]);
+  });
+
   it('does nothing when there are no candidates', () => {
     const db = openDb(':memory:');
     migrate(db);

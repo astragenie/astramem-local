@@ -15,12 +15,14 @@
  * up to a day to repair them is too slow. This scanner also gives oversize
  * repairs their own observable counters, separate from the generic sweep.
  *
- * Idempotent by construction (FEAT-507 requirement): `hasPendingOrRunningReembedJob`
- * skips a memory that already has an in-flight repair job, so re-running
- * this scan mid-drain (or on the next timer tick before a prior pass's jobs
- * have finished) never double-enqueues the same atom. A memory that
- * successfully repairs also drops out of the candidate set on the next scan
- * (`needs_vec_index` is cleared on success — see reembedHandler).
+ * Dedup guard (FEAT-507 requirement): `hasPendingOrRunningReembedJob` skips a
+ * memory that already has a job in any non-terminal state (`pending`,
+ * `running`, `failed` awaiting retry, or `paused`), so re-running this scan
+ * mid-drain (or on the next timer tick before a prior pass's jobs have
+ * finished, or within a `failed` job's backoff window before it self-promotes
+ * back to `pending` — see worker.ts) never double-enqueues the same atom. A
+ * memory that successfully repairs also drops out of the candidate set on
+ * the next scan (`needs_vec_index` is cleared on success — see reembedHandler).
  */
 
 import type { DB } from '../storage/db.js';
@@ -67,7 +69,12 @@ export function scanAndEnqueueOversizeRepairs(db: DB, limit: number = OVERSIZE_S
 }
 
 /**
- * True when a `reembed` job for `memoryId` is already pending or running.
+ * True when a `reembed` job for `memoryId` exists in any non-terminal state.
+ * Terminal states are `completed` and `poison` (see job-repo.ts); everything
+ * else (`pending`, `running`, `failed`, `paused`) will still be retried by
+ * the worker, so it counts as "already has a job in flight" for dedup
+ * purposes — a `failed` job sitting in its exponential-backoff window before
+ * self-promoting back to `pending` must not be re-enqueued by this scan.
  * `jobs.payload_json` is always written by this codebase's own `JobRepo.enqueue`
  * (JSON.stringify) — never fed by an external/sync source the way
  * `memory_events.payload_json` is — so this reads it directly with
@@ -79,7 +86,7 @@ function hasPendingOrRunningReembedJob(db: DB, memoryId: string): boolean {
   const row = db.prepare(`
     SELECT 1 FROM jobs
     WHERE kind = 'reembed'
-      AND state IN ('pending', 'running')
+      AND state NOT IN ('completed', 'poison')
       AND json_extract(payload_json, '$.memory_id') = ?
     LIMIT 1
   `).get(memoryId);
