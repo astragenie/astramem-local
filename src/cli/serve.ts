@@ -23,6 +23,7 @@ import { cleanupHandler } from '../pipeline/handlers/cleanup.js';
 import { consolidateHandler } from '../pipeline/handlers/consolidate.js';
 import { reembedHandler } from '../pipeline/handlers/reembed.js';
 import { transcribeHandler } from '../pipeline/handlers/transcribe.js';
+import { scanAndEnqueueOversizeRepairs } from '../pipeline/oversize-scanner.js';
 import { makeMockProviders, type MockProviderSet } from '../pipeline/mock-providers.js';
 import type { ProviderSet } from '../providers/index.js';
 import type { ExtendedHandlerCtx } from '../pipeline/handler-ctx-ext.js';
@@ -469,6 +470,38 @@ export async function serve(opts: ServeOpts): Promise<void> {
     cleanupTimer.unref();
   }
 
+  // Oversize-atom repair sweep (FEAT-507): a dedicated, shorter-cadence
+  // cousin of the vec-index sweep above — same durable needs_vec_index
+  // marker, but filtered to memories whose text also exceeds the embed
+  // model's context budget (src/pipeline/oversize.ts), which is exactly the
+  // set the cleanup sweep's plain reembed re-enqueue could never actually
+  // fix before reembedHandler's truncate-before-embed change (this slice).
+  // Production was observed accumulating these poisons at ~16/hr, too fast
+  // to wait for cleanup's 24h cadence, so this gets its own 1h timer rather
+  // than piggybacking on that tick. Cheap on every (usually empty) tick — a
+  // single bounded SQL scan — and idempotent (oversize-scanner.ts skips a
+  // memory that already has a pending/running reembed job).
+  let oversizeScanTimer: NodeJS.Timeout | null = null;
+  if (dataDir !== ':memory:') {
+    const OVERSIZE_SCAN_INTERVAL_MS = 60 * 60 * 1000; // 1h
+    const runOversizeScan = () => {
+      try {
+        const result = scanAndEnqueueOversizeRepairs(db);
+        if (result.enqueued > 0 || result.alreadyQueued > 0) {
+          console.log(
+            `${ts()} [astramem-local] oversize-atom scan: enqueued ${result.enqueued} reembed job(s) for ` +
+            `oversize memories (${result.alreadyQueued} already queued, ${result.candidates} candidate(s) total)`,
+          );
+        }
+      } catch (err) {
+        console.warn(`${ts()} [astramem-local] oversize-atom scan failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    runOversizeScan(); // boot pass — catches anything a downtime window skipped
+    oversizeScanTimer = setInterval(runOversizeScan, OVERSIZE_SCAN_INTERVAL_MS);
+    oversizeScanTimer.unref();
+  }
+
   // Quarantine redaction sweep (Finding 2, 2026-07-13 fast-follow to #225):
   // one-time-per-boot pass that rewrites any EXISTING `.quarantine/` content
   // through the same redactor new writes already get — content quarantined
@@ -545,6 +578,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       if (walTimer) clearInterval(walTimer);
       if (consolidateTimer) clearInterval(consolidateTimer);
       if (cleanupTimer) clearInterval(cleanupTimer);
+      if (oversizeScanTimer) clearInterval(oversizeScanTimer);
       if (spoolDrainTimer) clearInterval(spoolDrainTimer);
       if (shipper) await shipper.stop();
       await worker.stop();         // drain in-flight tick before closing DB
