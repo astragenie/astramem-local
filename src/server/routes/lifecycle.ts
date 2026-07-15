@@ -50,6 +50,7 @@ import {
 } from '../../storage/memory-events.js';
 import { recordRecallUsed } from '../../storage/usefulness.js';
 import { normalizeScopeAlias } from '../../contracts/index.js';
+import { withDeadline } from '../lib/deadline.js';
 
 const InvalidateBodySchema = z.object({ reason: z.string().optional() });
 const SupersedeBodySchema = z.object({ new_id: z.string().min(1) });
@@ -174,12 +175,20 @@ export function lifecycleRoutes(db: DB) {
 
     // ADR-010 (2e): explicit recall-used signal — the REST twin of the MCP
     // mark_memory_used tool. v1 feeds doctor/dashboard/health only.
+    //
+    // ADR-019 Tier 1 (issue #347) Decision 1b: bound the DB work in a
+    // deadline race so a hang inside THIS handler's own async chain returns
+    // a clean 504 instead of hanging to the client's cap. See
+    // src/server/lib/deadline.ts's doc comment for what this does and does
+    // NOT protect against (it does not close #347 — 1a does).
     app.post('/memory/:id/used', async (req, reply) => {
       const { id } = req.params as { id: string };
-      const memory = new MemoryRepo(db).get(id);
-      if (!memory) return reply.code(404).send({ error: 'not found', id });
-      recordRecallUsed(db, { atomId: id, surface: 'rest', signal: 'explicit' });
-      return { ok: true };
+      return withDeadline('POST /memory/:id/used', reply, async () => {
+        const memory = new MemoryRepo(db).get(id);
+        if (!memory) return reply.code(404).send({ error: 'not found', id });
+        recordRecallUsed(db, { atomId: id, surface: 'rest', signal: 'explicit' });
+        return { ok: true };
+      });
     });
   };
 }

@@ -38,6 +38,7 @@ import { redactIfEnabled } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
 import { contentHash } from '../../storage/content-hash.js';
 import { clampScores } from '../lib/score-contract.js';
+import { withDeadline } from '../lib/deadline.js';
 import { ProjectFilterSchema, AgentFilterSchema, EntityFilterSchema, RepoFilterSchema, SinceFilterSchema } from '../../contracts/recall-filters.js';
 // FEAT-429: project/agent/entity/repo/since parsing for both the GET
 // query-string and the POST JSON body now derives from the shared
@@ -247,18 +248,25 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
       const weights = resolvePresetWeights(preset, baseWeights);
 
-      const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose });
-      // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
-      recordRecallServed(db, {
-        query,
-        atomIds: hits.map(h => h.id),
-        scores: hits.map(h => h.score),
-        surface: 'rest',
-        mode: 'recall',
+      // ADR-019 Tier 1 (issue #347) Decision 1b: bound the actual search/DB
+      // work in a deadline race so a hang inside THIS handler's own async
+      // chain returns a clean 504 instead of hanging to the client's cap.
+      // See src/server/lib/deadline.ts's doc comment for what this does and
+      // does NOT protect against (it does not close #347 — 1a does).
+      return withDeadline('POST /recall', reply, async () => {
+        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose });
+        // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
+        recordRecallServed(db, {
+          query,
+          atomIds: hits.map(h => h.id),
+          scores: hits.map(h => h.score),
+          surface: 'rest',
+          mode: 'recall',
+        });
+        // SLICE-411: enforce the [0,1] wire score contract at serialization,
+        // independent of fuseScores() internal math.
+        return { hits: clampScores(hits, 'POST /recall') };
       });
-      // SLICE-411: enforce the [0,1] wire score contract at serialization,
-      // independent of fuseScores() internal math.
-      return { hits: clampScores(hits, 'POST /recall') };
     });
 
     // POST /remember — direct insert bypassing distillation pipeline
