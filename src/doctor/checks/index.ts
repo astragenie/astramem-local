@@ -122,8 +122,10 @@ import { checkDevNoAuth } from './dev-no-auth.js';
 import { checkSpoolQuarantine } from './spool-quarantine.js';
 import { checkLLMChat } from './llm-chat.js';
 import { checkEmbed } from './embed.js';
+import { checkOnnxEmbedHealth } from './onnx-embed.js';
 import { checkEmbedCacheHitRate } from './embed-cache.js';
 import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-supplementary.js';
+import { OnnxEmbedProvider } from '../../providers/embed/onnx.js';
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkPathShadow } from './path-shadow.js';
 import { checkBackupRecency } from './backup-recency.js';
@@ -266,6 +268,14 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
   // Embed probe — real embed call + config-derived dim assertion (FEAT-409).
   if (opts.embedProvider) {
     checks.push(checkEmbed(opts.embedProvider));
+
+    // ADR-018 SLICE-2: additive, onnx-specific supplementary check — only
+    // when the configured embed provider IS onnx (see onnx-embed.ts's doc
+    // comment for why 'full' tier and why this doesn't duplicate checkEmbed
+    // above).
+    if (opts.embedProvider instanceof OnnxEmbedProvider) {
+      checks.push(checkOnnxEmbedHealth(opts.embedProvider));
+    }
   }
 
   // Plugin coexistence — warn if MEMORY_API_URL or .mcp.json points elsewhere.

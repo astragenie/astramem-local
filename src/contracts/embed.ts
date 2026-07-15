@@ -6,6 +6,20 @@ export interface EmbedHealth {
 }
 
 /**
+ * ADR-018 SLICE-2 cleanup: single source of truth for the ONNX embed
+ * provider's weight-precision knob. Previously declared independently in
+ * BOTH `src/providers/embed/onnx.ts` (`export type OnnxDType`) and
+ * `src/config/config.ts` (`onnxEmbed.dtype`'s inline `'q8' | 'fp16' |
+ * 'fp32'` literal union) — two hand-written copies of the same three-value
+ * union with nothing forcing them to stay in sync (S1 review MEDIUM
+ * finding). Hoisted here since `config.ts` already imports
+ * `DEFAULT_EMBED_DIM` from this file for the same "one coordinated-change
+ * surface" reason (see that constant's own doc comment above `dim`'s
+ * declaration). `onnx.ts` re-exports this for backward-compatible imports.
+ */
+export type OnnxDType = 'q8' | 'fp16' | 'fp32';
+
+/**
  * Default/legacy embedding dimension (FEAT-409). This is the ONE source of
  * truth every coordinated surface derives from: config default
  * (config.ts), embed providers (ollama.ts / azure-openai.ts `dim` ctor

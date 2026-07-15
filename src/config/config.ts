@@ -1,5 +1,5 @@
 import { defaultDataDir } from './datadir.js';
-import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
+import { DEFAULT_EMBED_DIM, type OnnxDType } from '../contracts/embed.js';
 import { hasPassingEvalEvidence, type GatedFusionComponent } from '../eval/eval-evidence.js';
 
 export interface Config {
@@ -101,8 +101,11 @@ export interface Config {
      * NUM_CTX_CAP discipline for background-daemon resource use). Defaults
      * to 4 inside OnnxEmbedProvider when unset. */
     numThreads?: number;
-    /** ORT weight precision — 'q8' (default, ~337MB) | 'fp16' | 'fp32'. */
-    dtype?: 'q8' | 'fp16' | 'fp32';
+    /** ORT weight precision — 'q8' (default, ~337MB) | 'fp16' | 'fp32'.
+     * `OnnxDType` (contracts/embed.ts) is the single source of truth for
+     * this union — see that type's doc comment (ADR-018 SLICE-2 cleanup;
+     * previously duplicated inline here and in onnx.ts). */
+    dtype?: OnnxDType;
   };
   /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
    * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed

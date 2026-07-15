@@ -1,6 +1,12 @@
-import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
+import type { EmbedHealth, EmbedProvider, OnnxDType } from '../../contracts/embed.js';
 import { DEFAULT_EMBED_DIM } from '../../contracts/embed.js';
 import { childLogger } from '../../log/logger.js';
+
+// ADR-018 SLICE-2 cleanup: re-exported for backward-compatible imports —
+// the type itself now lives in contracts/embed.ts (single source of truth,
+// see that file's doc comment) alongside config.ts's `onnxEmbed.dtype`
+// field, closing the S1-review duplicate-declaration MEDIUM finding.
+export type { OnnxDType };
 
 /**
  * ADR-018 SLICE-1 — Risk A resolution (artifact sourcing).
@@ -28,7 +34,6 @@ export const DEFAULT_ONNX_REVISION = 'b33106f585b9ce46904ad7443a3b52b7a63e231c';
  * above) — the default for SLICE-1. Override to `'fp16'`/`'fp32'` via
  * `config.onnxEmbed.dtype` for higher fidelity at the cost of download size;
  * see ADR-018 Risk B (geometry-parity gate, deferred to SLICE-3). */
-export type OnnxDType = 'q8' | 'fp16' | 'fp32';
 export const DEFAULT_ONNX_DTYPE: OnnxDType = 'q8';
 
 const DEFAULT_MODEL_LABEL = 'mxbai-embed-large-v1';
@@ -247,6 +252,27 @@ export class OnnxEmbedProvider implements EmbedProvider {
       });
     }
     return this.backendPromise;
+  }
+
+  /**
+   * ADR-018 SLICE-2 — startup preload. Public, idempotent wrapper around
+   * `getBackend()`: triggers the SAME lazy, memoized session load the first
+   * `embed()`/`health()` call would (no separate code path, no risk of
+   * loading the model twice or diverging from that contract) — it just lets
+   * a caller (serve.ts) trigger the load proactively, in the BACKGROUND, at
+   * boot, so the daemon's first real `embed()` call after startup doesn't
+   * pay the cold session-load / possible first-run weight-download latency
+   * inline. Does not change the class's documented lazy-load posture (see
+   * `getBackend()`'s doc comment above): a `preload()` that is never called
+   * still leaves the provider fully lazy, and `preload()` itself still
+   * never runs at construction time — only when a caller (serve.ts, gated
+   * to `provider: 'onnx'` only) explicitly invokes it. Rejects on failure —
+   * callers must catch and WARN, not let it crash the caller's own boot
+   * path (mirrors every other opt-in preflight in this daemon: cold-start
+   * failure degrades, it never crashes).
+   */
+  async preload(): Promise<void> {
+    await this.getBackend();
   }
 
   /**

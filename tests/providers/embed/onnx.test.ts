@@ -148,6 +148,56 @@ describe('onnx-embed', () => {
     });
   });
 
+  describe('preload() (ADR-018 SLICE-2 — startup preload)', () => {
+    it('triggers the lazy backend load (getBackend) exactly once', async () => {
+      const loadBackend = vi.fn(async () => makeFakeBackend());
+      const p = new OnnxEmbedProvider({ loadBackend });
+      await p.preload();
+      expect(loadBackend).toHaveBeenCalledTimes(1);
+    });
+
+    it('memoizes with embed()/health() — preload() then embed() does not reload', async () => {
+      const loadBackend = vi.fn(async () => makeFakeBackend());
+      const p = new OnnxEmbedProvider({ loadBackend });
+      await p.preload();
+      await p.embed(['a']);
+      await p.health();
+      expect(loadBackend).toHaveBeenCalledTimes(1);
+    });
+
+    it('embed() after a successful preload() does not pay any additional load latency (already warm)', async () => {
+      const loadBackend = vi.fn(async () => makeFakeBackend());
+      const p = new OnnxEmbedProvider({ loadBackend });
+      await p.preload();
+      const results = await p.embed(['warm text']);
+      expect(results).toHaveLength(1);
+      expect(loadBackend).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects when the backend load fails — caller must catch, it is not swallowed', async () => {
+      const p = new OnnxEmbedProvider({
+        loadBackend: async () => {
+          throw new Error('model artifact not found');
+        },
+      });
+      await expect(p.preload()).rejects.toThrow('model artifact not found');
+    });
+
+    it('a failed preload() does not permanently wedge the provider — a later embed() retries', async () => {
+      let attempt = 0;
+      const loadBackend = vi.fn(async () => {
+        attempt++;
+        if (attempt === 1) throw new Error('cold-start network unreachable');
+        return makeFakeBackend();
+      });
+      const p = new OnnxEmbedProvider({ loadBackend });
+      await expect(p.preload()).rejects.toThrow('cold-start network unreachable');
+      const results = await p.embed(['a']);
+      expect(results).toHaveLength(1);
+      expect(loadBackend).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('queryPrefix', () => {
     it('defaults to empty string', () => {
       const p = providerWithFakeBackend();
