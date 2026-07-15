@@ -1,5 +1,44 @@
 # Handoff → Fable takeover — astramem-local beta stabilization
 
+## ✅✅ RESOLVED (2026-07-15 ~16:55Z, Fable) — daemon instability root-caused and fixed; supersedes "OPEN THREADS" items 1 & 3 below
+
+The "/health slow, MCP timeouts, daemon unstable" was **three stacked root causes**
+(each fix alone looked like it "didn't work" — that's why it resisted all day):
+
+1. **pino-roll worker transport (thread-stream)** hard-froze the event loop in
+   `Atomics.wait` when its worker stalled — captured live: 23 min frozen, timers
+   dead, 0.00s CPU, inspector unattachable. Fixed `3762cc8a`: in-process SonicBoom
+   stream + self-rotation (`createServiceLogStream`, src/log/logger.ts) + buffer
+   cap (`541b19af`).
+2. **/health ran usefulnessRate per CALL** — sync json_extract scan over the whole
+   event table; the watchdog/monitoring/dashboard probes amplified their own load
+   until the watchdog killed a healthy daemon (kill-restart churn). Fixed
+   `3c9a81f2`: 60s TTL cache. Liveness endpoints must be O(1).
+3. **Recall's sqlite-vec KNN ran sync on the main thread** (0.7-1.5s @36k atoms,
+   grows with corpus). Fixed `3c9a81f2` (+`6b2e1c31` review fixes): worker-thread
+   offload with own read-only SQLCipher connection
+   (src/vector/vec-search-{worker,host,offload}.ts); loud sync fallback.
+
+**Verified:** identical 12-min soak (5s health probes + recall/remember/distill
+load) that collapsed the old build in ~80s → zero sustained failures, health p50
+~100ms. Both reviews approved (findings fixed). Serving release `6b2e1c31`,
+managed, watchdog re-enabled. **Issue #352 ask A done** (a65c4ff3 invalidated,
+verified hidden; commented on the issue with the ask-B design analysis).
+
+**Residual (bounded, self-recovering, next slice):** distilling multi-MB
+transcripts (this session's auto-capture) still produces occasional ~10-30s
+blocking episodes (~1 per large ingest; recovers to ~100ms; no kills, no
+cascade). Root class: remaining sync native DB slices in the pipeline handlers.
+Designed next step: run pipeline handlers in a worker thread (ADR-019 endgame).
+Full diagnostic method + lessons: memory `daemon-event-loop-saturation-triad`.
+
+`ASTRA_SKIP_CONSOLIDATE=1` (User env) still set — consolidate setup bounding
+remains open (item below stands).
+
+Everything below is the state as of the Opus handoff, kept for history.
+
+---
+
 **Date:** 2026-07-15 · **From:** Opus 4.8 session · **Branch:** `session/beta-stabilization-waves` · **Open PR:** https://github.com/astragenie/astramem-local/pull/351
 
 ## TL;DR
