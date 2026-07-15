@@ -438,9 +438,20 @@ export async function serve(opts: ServeOpts): Promise<void> {
         console.warn(`${ts()} [astramem-local] consolidate enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
-    enqueueConsolidate(); // boot pass — catches anything a downtime window skipped
-    consolidateTimer = setInterval(enqueueConsolidate, CONSOLIDATE_INTERVAL_MS);
-    consolidateTimer.unref();
+    // ASTRA_SKIP_CONSOLIDATE=1 kill-switch: on a large corpus the consolidate
+    // pairwise scan's SETUP (load all valid atoms + group + build per-group
+    // embedding maps) is synchronous and unbounded — it can freeze the event
+    // loop long enough on boot that the daemon looks dead (2026-07-15). The
+    // in-loop yield helps the O(n^2) scan itself but not the setup, so this
+    // switch lets an operator disable consolidation until the setup is also
+    // bounded. Skips both the boot pass and the recurring timer.
+    if (process.env['ASTRA_SKIP_CONSOLIDATE'] === '1') {
+      console.warn(`${ts()} [astramem-local] consolidation disabled via ASTRA_SKIP_CONSOLIDATE=1`);
+    } else {
+      enqueueConsolidate(); // boot pass — catches anything a downtime window skipped
+      consolidateTimer = setInterval(enqueueConsolidate, CONSOLIDATE_INTERVAL_MS);
+      consolidateTimer.unref();
+    }
   }
 
   // Cleanup cadence (FEAT-432): the `cleanup` handler (jobs prune + archival

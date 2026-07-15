@@ -469,6 +469,22 @@ function insertContradictionProposal(
 }
 
 export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Promise<ConsolidateSummary> {
+  // Kill-switch (2026-07-15): even a requeued/orphaned consolidate job must
+  // no-op when disabled — the boot-enqueue gate in serve.ts alone can't cover
+  // a job already sitting in the queue. Returns an empty summary; the job
+  // completes cleanly with no scan and no event-loop-freezing setup.
+  if (process.env['ASTRA_SKIP_CONSOLIDATE'] === '1') {
+    (opts.log ?? ((m: string) => console.warn(m)))(
+      `${new Date().toISOString()} [consolidate] skipped — ASTRA_SKIP_CONSOLIDATE=1`,
+    );
+    return {
+      groupsScanned: 0, groupsSkipped: [], merged: [], proposed: [],
+      autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
+      contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
+      contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
+      judgeCallsNearThreshold: 0,
+    };
+  }
   // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
   // reliably same-fact paraphrases, while 0.90–0.92 still contains
   // distinct facts (e.g. two different env-var names at sim 0.91) —
