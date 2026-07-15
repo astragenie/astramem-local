@@ -125,7 +125,6 @@ import { checkEmbed } from './embed.js';
 import { checkOnnxEmbedHealth } from './onnx-embed.js';
 import { checkEmbedCacheHitRate } from './embed-cache.js';
 import { checkOpenAICompatibleReachable, checkCodexAuth } from './provider-supplementary.js';
-import { OnnxEmbedProvider } from '../../providers/embed/onnx.js';
 import { checkPluginCoexistence } from './plugin-coexistence.js';
 import { checkPathShadow } from './path-shadow.js';
 import { checkBackupRecency } from './backup-recency.js';
@@ -272,8 +271,13 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     // ADR-018 SLICE-2: additive, onnx-specific supplementary check — only
     // when the configured embed provider IS onnx (see onnx-embed.ts's doc
     // comment for why 'full' tier and why this doesn't duplicate checkEmbed
-    // above).
-    if (opts.embedProvider instanceof OnnxEmbedProvider) {
+    // above). Gated on `.name === 'onnx'` rather than `instanceof
+    // OnnxEmbedProvider` (ADR-019 Decision 2(d)): buildEmbedProvider now
+    // returns OnnxWorkerHostProvider — a worker_thread-backed proxy, not an
+    // OnnxEmbedProvider instance — for `provider: 'onnx'`. Both classes set
+    // `readonly name = 'onnx'`, so this keeps the gate correct regardless of
+    // which concrete EmbedProvider implementation is behind the interface.
+    if (opts.embedProvider.name === 'onnx') {
       checks.push(checkOnnxEmbedHealth(opts.embedProvider));
     }
   }

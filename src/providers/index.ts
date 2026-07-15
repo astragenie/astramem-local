@@ -8,7 +8,7 @@ import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from './llm/codex-subscription.js';
 import { OllamaEmbedProvider } from './embed/ollama.js';
 import { AzureOpenAIEmbedProvider } from './embed/azure-openai.js';
-import { OnnxEmbedProvider } from './embed/onnx.js';
+import { OnnxWorkerHostProvider } from './embed/onnx-worker-host.js';
 
 export interface ProviderSet {
   llm: {
@@ -97,12 +97,18 @@ function buildEmbedProvider(config: Config): EmbedProvider {
   }
 
   if (provider === 'onnx') {
-    // ADR-018 SLICE-1: opt-in, in-process ONNX embedder. `model`/`dim`/
-    // `queryPrefix` come from config.embedding same as the other two
-    // providers; the onnx-specific knobs (cache/model path, thread cap,
-    // dtype) come from the separate config.onnxEmbed block since they have
-    // no Ollama/Azure equivalent.
-    return new OnnxEmbedProvider({
+    // ADR-018 SLICE-1 (config shape) + ADR-019 Decision 2(d) (worker
+    // offload): opt-in ONNX embedder. `model`/`dim`/`queryPrefix` come from
+    // config.embedding same as the other two providers; the onnx-specific
+    // knobs (cache/model path, thread cap, dtype) come from the separate
+    // config.onnxEmbed block since they have no Ollama/Azure equivalent.
+    // `OnnxWorkerHostProvider` runs the actual ORT session.run() call on a
+    // dedicated worker_thread instead of the daemon's main event loop — see
+    // onnx-worker-host.ts's doc comment and
+    // .claude/artifacts/crew/validations/20260715T000000Z-validation-onnx-embed-event-loop-block.md
+    // for why this is required, not optional, before onnx can safely be the
+    // default embedding provider.
+    return new OnnxWorkerHostProvider({
       model,
       dim,
       queryPrefix,

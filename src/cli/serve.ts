@@ -578,6 +578,18 @@ export async function serve(opts: ServeOpts): Promise<void> {
       if (cleanupTimer) clearInterval(cleanupTimer);
       if (spoolDrainTimer) clearInterval(spoolDrainTimer);
       if (shipper) await shipper.stop();
+      // ADR-019 Decision 2(d): OnnxWorkerHostProvider owns a live
+      // worker_thread once spawned (preload() above, or a lazy first
+      // embed()) — terminate it on shutdown so the process can exit cleanly
+      // instead of leaving an orphaned OS thread. Duck-typed (mirrors the
+      // preload() check above) since ollama/azure-openai providers have no
+      // such handle and must not be touched.
+      const terminableEmbed = providers.embed as EmbedProvider & { terminate?: () => Promise<void> };
+      if (typeof terminableEmbed.terminate === 'function') {
+        await terminableEmbed.terminate().catch((err: unknown) => {
+          console.warn(`${ts()} [astramem-local] onnx worker terminate failed during shutdown: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
       await worker.stop();         // drain in-flight tick before closing DB
       try {
         if (dataDir !== ':memory:') db.pragma('wal_checkpoint(TRUNCATE)');
