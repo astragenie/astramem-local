@@ -100,6 +100,26 @@ export interface ConsolidateOpts {
   judgeProvider?: LLMProvider;
   /** Injectable logger seam for tests; defaults to `console.warn`. */
   log?: (message: string) => void;
+  /**
+   * ADR-019 Tier 1 (issue #347): the pairwise scan below (`for`/`for` over
+   * each (repo, type) group) yields to the event loop every N pairs via
+   * `await new Promise(r => setImmediate(r))` — a real cooperative yield,
+   * not a timer-family no-op. Without this, a large group (up to
+   * `maxGroupSize`, default 500 → C(500,2) = 124,750 pairs) runs as one
+   * uninterrupted synchronous JS stack across every group, starving the
+   * HTTP/MCP event loop for the whole scan and hanging `/recall` and
+   * `/memory/:id/used` — the confirmed mechanism behind issue #347 (see
+   * ADR-019). Default 200 pairs; tune down if a single group's per-pair
+   * cost (embedding compare + SQLite writes) is unusually heavy, up if
+   * `setImmediate` overhead becomes measurable at very small groups.
+   */
+  yieldEveryNPairs?: number;
+  /**
+   * Test-only observability hook: called once per cooperative yield (see
+   * `yieldEveryNPairs`). Lets tests assert the yield actually fires without
+   * timing the event loop. Never set in production.
+   */
+  onYield?: () => void;
 }
 
 export interface ConsolidateSummary {
@@ -478,6 +498,11 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   const maxGroupSize = opts.maxGroupSize ?? 500;
   const autoMergeContained = opts.autoMergeContained ?? true;
   const log = opts.log ?? ((message: string) => console.warn(message));
+  // ADR-019 Tier 1 (issue #347): cooperative-yield interval — see
+  // ConsolidateOpts.yieldEveryNPairs doc comment.
+  const yieldEveryNPairs = opts.yieldEveryNPairs ?? 200;
+  const onYield = opts.onYield;
+  let pairsScannedSinceYield = 0;
   const autoAcceptThreshold = resolveAutoAcceptThreshold(opts.autoAcceptThreshold, proposeThreshold, log);
   const contradictionDetection = resolveContradictionDetection(
     opts.contradictionDetection, opts.judgeProvider, mergeThreshold, log,
@@ -544,6 +569,18 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
 
     for (let i = 0; i < group.length; i++) {
       for (let j = i + 1; j < group.length; j++) {
+        // ADR-019 Tier 1 (issue #347): yield to the event loop every
+        // yieldEveryNPairs pairs, counted regardless of early `continue`s
+        // below — this bounds the longest uninterrupted synchronous stretch
+        // to ~yieldEveryNPairs iterations no matter which pairs get skipped,
+        // instead of only bounding "fully processed" pairs.
+        pairsScannedSinceYield++;
+        if (pairsScannedSinceYield >= yieldEveryNPairs) {
+          pairsScannedSinceYield = 0;
+          await new Promise<void>(resolve => setImmediate(resolve));
+          onYield?.();
+        }
+
         const a = group[i] as AtomRow, b = group[j] as AtomRow;
         if (invalidatedThisRun.has(a.id) || invalidatedThisRun.has(b.id)) continue;
         const va = vecs.get(a.id), vb = vecs.get(b.id);

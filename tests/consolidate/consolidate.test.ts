@@ -766,3 +766,57 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
     expect(latestConsolidationJudgeRun(db)).toBeNull();
   });
 });
+
+describe('cooperative yield in the pairwise scan (ADR-018 Tier 1, issue #347)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('fires the yield hook every yieldEveryNPairs pairs scanned, counting skipped pairs too', async () => {
+    // 10 orthogonal atoms in one (repo, type) group → C(10,2) = 45 pairs,
+    // every one of them skipped via `sim < proposeThreshold` — this isolates
+    // the yield counter from any merge/propose side effect.
+    for (let k = 0; k < 10; k++) {
+      await seedEmbedded(db, `atom ${k}`, `h-yield-${k}`, vecAt(k));
+    }
+    let yields = 0;
+    const summary = await runConsolidation(db, { yieldEveryNPairs: 5, onYield: () => { yields++; } });
+    expect(yields).toBe(9); // floor(45 / 5) — the counter increments once per pair, before any `continue`
+    expect(summary.merged).toHaveLength(0);
+    expect(summary.proposed).toHaveLength(0);
+  });
+
+  it('never yields when the group has fewer pairs than the interval', async () => {
+    await seedEmbedded(db, 'a', 'h-yield-small-1', vecAt(0));
+    await seedEmbedded(db, 'b', 'h-yield-small-2', vecAt(1));
+    let yields = 0;
+    await runConsolidation(db, { onYield: () => { yields++; } }); // default interval 200, only 1 pair total
+    expect(yields).toBe(0);
+  });
+
+  it('yielding every single pair produces the same merge outcome as the default interval (behavior-preserving)', async () => {
+    const seedNearDuplicatePair = async (database: DB) => {
+      const a = await seedEmbedded(database, 'port is 7777', 'h-yield-eq-1', vecAt(0, 0.01));
+      const b = await seedEmbedded(database, 'the port is 7777', 'h-yield-eq-2', vecAt(0, 0.02));
+      recordRecallUsed(database, { atomId: b, surface: 'rest', signal: 'explicit' }); // b wins on usefulness
+      return { a, b };
+    };
+
+    const { a: aDefault, b: bDefault } = await seedNearDuplicatePair(db);
+    const summaryDefault = await runConsolidation(db);
+
+    const dbFrequentYield = openDb(':memory:');
+    migrate(dbFrequentYield);
+    const { a: aFrequent, b: bFrequent } = await seedNearDuplicatePair(dbFrequentYield);
+    const summaryFrequentYield = await runConsolidation(dbFrequentYield, { yieldEveryNPairs: 1 });
+
+    expect(summaryDefault.merged).toHaveLength(1);
+    expect(summaryFrequentYield.merged).toHaveLength(1);
+    expect(summaryDefault.merged[0]).toMatchObject({ winner: bDefault, loser: aDefault });
+    expect(summaryFrequentYield.merged[0]).toMatchObject({ winner: bFrequent, loser: aFrequent });
+    expect(summaryFrequentYield.merged[0]!.similarity).toBeCloseTo(summaryDefault.merged[0]!.similarity, 10);
+  });
+});

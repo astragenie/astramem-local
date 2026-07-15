@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
@@ -299,6 +299,55 @@ describe('POST /recall', () => {
       payload: { k: 5 }
     });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+// ADR-018 Tier 1 (issue #347) Decision 1b: /recall's async-chain deadline
+// wrapper (src/server/lib/deadline.ts). This is NOT the #347 fix (that's
+// Decision 1a — the consolidate.ts cooperative yield, see
+// tests/consolidate/consolidate.test.ts) — it covers the narrower "hang
+// inside this request's own async chain" case, exercised here via an embed
+// provider whose embed() call never resolves.
+describe('POST /recall — handler deadline wrapper (ADR-018 Tier 1, issue #347 Decision 1b)', () => {
+  let db: DB;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns a clean 504 with an honest, non-#347-claiming error body when the embed call hangs past the deadline', async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    seedMemory(new MemoryRepo(db), 'use sqlite-vec for vector storage');
+    const hangingEmbed: EmbedProvider = {
+      name: 'ollama',
+      model: 'mock',
+      dim: 1024 as const,
+      embed: () => new Promise(() => {}), // never resolves — simulates a stuck async chain
+      health: async () => ({ ok: true, model: 'mock', dim: 1024 as const })
+    };
+    app = await buildApp({ db, token: 'tok', embed: hangingEmbed });
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const resPromise = app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { query: 'vector storage', k: 5 }
+    });
+    await vi.advanceTimersByTimeAsync(30_000); // DEFAULT_HANDLER_DEADLINE_MS
+    const res = await resPromise;
+
+    expect(res.statusCode).toBe(504);
+    const body = res.json();
+    expect(body.error).toBe('handler_deadline_exceeded');
+    expect(body.route).toBe('POST /recall');
+    // Honesty caveat must be present verbatim in the wire response, not just
+    // a code comment — an operator reading this response must not conclude
+    // it closes issue #347.
+    expect(body.message).toMatch(/cannot detect or protect/i);
+    expect(body.message).toMatch(/synchronous event-loop stall/i);
   });
 });
 
