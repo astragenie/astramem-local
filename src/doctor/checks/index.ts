@@ -117,6 +117,7 @@ import { checkAutoCapture } from './auto-capture.js';
 import { checkProxyCapture } from './proxy-capture.js';
 import { checkProxyCaptureReminder } from './proxy-capture-reminder.js';
 import { checkMeetingCaptionsReminder } from './meeting-captions-reminder.js';
+import { checkSpeakerAttributionRate } from './speaker-attribution-rate.js';
 import { checkDevNoAuth } from './dev-no-auth.js';
 import { checkSpoolQuarantine } from './spool-quarantine.js';
 import { checkLLMChat } from './llm-chat.js';
@@ -203,6 +204,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkDistillCostCap(opts.distillCostCap),
     checkEntityRelations(dataDir, opts.extractProfile ?? 'engineering', encryptionEnabled),
     checkEvidenceProvenance(dataDir, encryptionEnabled),
+    checkSpeakerAttributionRate(dataDir, encryptionEnabled),
     checkTranscriptSessionProvenance(dataDir, encryptionEnabled),
     checkExtractionYield(dataDir, encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
