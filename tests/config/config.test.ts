@@ -100,6 +100,26 @@ describe('loadConfig', () => {
     } as any);
     expect(cfg.distill.costCap).toEqual({ enabled: true, maxCallsPerJob: 20, maxWallClockMs: 60_000 });
   });
+
+  // Dual-pass extraction shipped as the default 2026-07-15 (measured LoCoMo
+  // full-suite gain 0.4610 -> 0.5549; see Config['distill']['extractionPasses']'s
+  // doc comment). A shipped default with no assertion is how it silently
+  // drifts back — same rationale as the compaction/extraction provider test
+  // above.
+  it('distill.extractionPasses defaults to 2 (dual-pass, shipped default)', () => {
+    const cfg = loadConfig(undefined);
+    expect(cfg.distill.extractionPasses).toBe(2);
+    expect(defaultConfig().distill.extractionPasses).toBe(2);
+  });
+
+  it('distill.extractionPasses: 1 can be overridden — an explicit single-pass opt-out round-trips', () => {
+    // Same shallow-merge caveat as the costCap override test above: spread
+    // the rest of defaultConfig().distill so sibling fields aren't lost.
+    const cfg = loadConfig({
+      distill: { ...defaultConfig().distill, extractionPasses: 1 },
+    } as any);
+    expect(cfg.distill.extractionPasses).toBe(1);
+  });
 });
 
 // FEAT-428: fusion-model governance — component ceiling + η eval-evidence

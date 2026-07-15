@@ -614,28 +614,36 @@ export interface Config {
      *  extract() calls per session) — a real latency/cost tradeoff, not a
      *  free win; see the #273 sweep evidence before changing the default. */
     maxChunkChars: number;
-    /** Dual-pass extraction (opt-in). `1` (the default) is BYTE-IDENTICAL to
-     *  pre-dual-pass behavior — stage 5 runs the single existing extraction
-     *  prompt (resolveExtractionPrompt) and nothing else. `2` adds a SECOND
-     *  extraction call per chunk, on the SAME provider (ctx.llmExtraction,
-     *  no new provider config), using the narrow "specifics sweeper" prompt
-     *  (EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER, src/distill/prompts/
-     *  extract.ts) — targeting concrete specifics (durations, frequencies,
-     *  quantities, verbatim quotes, one-off events, advice from the giving
-     *  speaker) that the single-hop root-cause investigation found the
-     *  primary prompt systematically drops (36-47% of gold single-hop facts
-     *  never became an atom at all — docs/research/20260713-single-hop-root-
-     *  cause.md). The hypothesis ledger (docs/research/20260714-locomo-
-     *  hypothesis-ledger.md §2.11) never killed multi-pass extraction, only
-     *  left it untested — this is that test.
+    /** Dual-pass extraction. `2` is now the SHIPPED DEFAULT (flipped
+     *  2026-07-15 — was `1` through the initial opt-in beta). `2` adds a
+     *  SECOND extraction call per chunk, on the SAME provider
+     *  (ctx.llmExtraction, no new provider config), using the narrow
+     *  "specifics sweeper" prompt (EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+     *  src/distill/prompts/extract.ts) — targeting concrete specifics
+     *  (durations, frequencies, quantities, verbatim quotes, one-off events,
+     *  advice from the giving speaker) that the single-hop root-cause
+     *  investigation found the primary prompt systematically drops (36-47% of
+     *  gold single-hop facts never became an atom at all —
+     *  docs/research/20260713-single-hop-root-cause.md). The hypothesis
+     *  ledger (docs/research/20260714-locomo-hypothesis-ledger.md §2.11)
+     *  never killed multi-pass extraction, only left it untested — that test
+     *  measured a full-suite LoCoMo gain of 0.4610 (single-pass) -> 0.5549
+     *  (dual-pass), which is why this now ships as the default rather than
+     *  opt-in.
+     *
+     *  Cost/latency tradeoff of the new default: `2` roughly DOUBLES
+     *  extraction LLM calls per session (and, on the single distill worker
+     *  lane, roughly doubles distill wall-clock) versus the old `1` default.
+     *  `1` (BYTE-IDENTICAL to pre-dual-pass behavior — stage 5 runs only the
+     *  single existing extraction prompt, resolveExtractionPrompt, and
+     *  nothing else) remains fully available for cost-sensitive installs —
+     *  set `distill.extractionPasses: 1` explicitly in config.yaml.
      *
      *  Pass B fires ONLY after pass A completes successfully for a run (a
      *  pass-A BudgetExceeded/TransientError aborts the run before pass B is
      *  ever attempted — no doubling of retry storms). The two passes' atoms
      *  are merged/deduped per chunk (src/distill/dedup-merge.ts) BEFORE
-     *  stage 6 (reduce) — string-only, deterministic, no embedding call.
-     *  Doubles extraction LLM calls when on — a real cost tradeoff, not a
-     *  free win. */
+     *  stage 6 (reduce) — string-only, deterministic, no embedding call. */
     extractionPasses: 1 | 2;
     /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
      *  counted TOGETHER as one per-job budget — mirrors
@@ -1041,11 +1049,16 @@ export function defaultConfig(): Config {
     // hottest LLM paths in the pipeline (every distill job) would be
     // friction, not safety, for beta. See Config['distill']['costCap']'s
     // doc comment before flipping this default.
-    // extractionPasses: 1 — dual-pass off by default, byte-identical to
-    // pre-dual-pass behavior.
+    // extractionPasses: 2 — dual-pass is now the shipped default (2026-07-15,
+    // measured LoCoMo full-suite gain 0.4610 -> 0.5549; see
+    // Config['distill']['extractionPasses']'s own doc comment for the cost/
+    // latency tradeoff). Existing installs whose config.yaml already sets
+    // extractionPasses: 1 explicitly keep single-pass — this default only
+    // applies when the key is absent (deepMerge in loader.ts only overrides
+    // keys actually present on disk).
     distill: {
       durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto',
-      maxChunkChars: 3200, extractionPasses: 1, costCap: { enabled: false },
+      maxChunkChars: 3200, extractionPasses: 2, costCap: { enabled: false },
     },
     capture: {
       autoCapture: {
@@ -1395,14 +1408,16 @@ export function applyExtractProfileGovernance(
 }
 
 /**
- * Dual-pass extraction (opt-in): `distill.extractionPasses` is a closed
- * 2-value enum (1|2), same governance concern `applyExtractProfileGovernance`
- * documents just above — config.yaml is hand-parsed scalars with no schema,
- * so a typo'd or out-of-range value (e.g. a hand-edited `3`) would otherwise
+ * Dual-pass extraction: `distill.extractionPasses` is a closed 2-value enum
+ * (1|2), same governance concern `applyExtractProfileGovernance` documents
+ * just above — config.yaml is hand-parsed scalars with no schema, so a
+ * typo'd or out-of-range value (e.g. a hand-edited `3`) would otherwise
  * reach `runPipeline`'s `ctx.config?.distill.extractionPasses ?? 1` read
- * unchecked. Invalid values fall back to `1` (the documented default, BYTE-
- * IDENTICAL to pre-dual-pass behavior) and are logged, never fatal. See
- * src/distill/dedup-merge.ts for what `2` actually does.
+ * unchecked. Invalid values fall back to `2` (the documented default since
+ * 2026-07-15) and are logged, never fatal. See src/distill/dedup-merge.ts
+ * for what `2` actually does; single-pass (`1`, BYTE-IDENTICAL to
+ * pre-dual-pass behavior) remains a valid, deliberate config value — this
+ * fallback only fires on a value outside {1, 2}.
  */
 const VALID_EXTRACTION_PASSES: ReadonlySet<Config['distill']['extractionPasses']> = new Set([1, 2]);
 
@@ -1414,10 +1429,9 @@ export function applyExtractionPassesGovernance(
   if (!VALID_EXTRACTION_PASSES.has(distill.extractionPasses)) {
     log(
       `[extraction-passes-governance] distill.extractionPasses=${JSON.stringify(distill.extractionPasses)} is not ` +
-      "one of 1|2 — falling back to 1 (the documented default, byte-identical to pre-dual-pass behavior). " +
-      'See src/distill/dedup-merge.ts.',
+      "one of 1|2 — falling back to 2 (the documented default). See src/distill/dedup-merge.ts.",
     );
-    return { ...distill, extractionPasses: 1 };
+    return { ...distill, extractionPasses: 2 };
   }
   return distill;
 }
