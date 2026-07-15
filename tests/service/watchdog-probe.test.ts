@@ -306,7 +306,9 @@ describe('restart-storm circuit breaker (P1.1)', () => {
   function makeKillLog(initial: number[] = []) {
     const kills = [...initial];
     return {
-      readKillsInWindowImpl: vi.fn((_dataDir: string, nowMs: number, windowMs: number) =>
+      // Optional params mirror readKillsInWindow's real signature — the
+      // probe always passes both, so the defaults are never exercised here.
+      readKillsInWindowImpl: vi.fn((_dataDir: string, nowMs: number = NOW, windowMs: number = 6 * HOUR) =>
         kills.filter(ms => nowMs - ms <= windowMs && ms <= nowMs)),
       appendKillEventImpl: vi.fn(() => { kills.push(NOW); }),
       kills,

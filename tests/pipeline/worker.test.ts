@@ -749,13 +749,16 @@ describe('Worker + LoadGovernor integration (P1.4/P1.5)', () => {
     expect(governor.laneBudget()).toBe(1);
 
     const seenLanes = new Set<number>();
+    // 'cleanup' with a custom handler: JobKind is a closed union, so tests
+    // reuse a real kind (established pattern in this file) — the handler
+    // body is what's under test, not the kind's production semantics.
     registry.register({
-      kind: 'probe',
+      kind: 'cleanup',
       async handle(payload: unknown): Promise<void> {
         seenLanes.add((payload as { lane?: number }).lane ?? -1);
       },
     });
-    for (let i = 0; i < 6; i++) repo.enqueue('probe', { i });
+    for (let i = 0; i < 6; i++) repo.enqueue('cleanup', { i });
 
     const cfg = defaultConfig();
     cfg.pipeline.concurrency = 4;
@@ -775,13 +778,13 @@ describe('Worker + LoadGovernor integration (P1.4/P1.5)', () => {
 
     let attempts = 0;
     registry.register({
-      kind: 'flaky',
+      kind: 'cleanup',
       async handle(): Promise<void> {
         attempts++;
         if (attempts === 1) throw new TransientError('transient (test)');
       },
     });
-    repo.enqueue('flaky', {});
+    repo.enqueue('cleanup', {});
 
     const cfg = defaultConfig();
     const worker = startWorker({ pollMs: 20, registry, db, config: cfg, governor });
