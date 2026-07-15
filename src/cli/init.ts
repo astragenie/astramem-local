@@ -677,6 +677,10 @@ function buildConfig(answers: WizardAnswers): Config {
       // default until a future non-default-dim onboarding flow is added.
       dim: base.embedding.dim,
     },
+    // Only carry the onnxEmbed defaults into configs that actually use onnx —
+    // an ollama/azure install shouldn't get a spurious onnxEmbed: block written
+    // to its config.yaml (harmless but misleading). Review MEDIUM (2026-07-15).
+    onnxEmbed: answers.embedProvider === 'onnx' ? base.onnxEmbed : undefined,
     vector: { store: answers.vector === 'lancedb' ? 'sqlite-vec' : answers.vector },
     budget: { daily_usd: answers.budget },
     ollama: {

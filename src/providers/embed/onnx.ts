@@ -51,6 +51,16 @@ function defaultOnnxNumThreads(): number {
 }
 const DEFAULT_NUM_THREADS = defaultOnnxNumThreads();
 
+/** Clamp an operator-supplied `config.onnxEmbed.numThreads` override to a sane
+ * bound: at least 1, never more than the physical core count. An unbounded
+ * value (e.g. a hand-edited `numThreads: 999`) would oversubscribe ORT and,
+ * because embedding now runs IN-PROCESS on the daemon's single event loop,
+ * risk starving request handling (the issue #347 class). Mirrors the repo's
+ * NUM_CTX_CAP override-clamp discipline. */
+function clampNumThreads(n: number): number {
+  return Math.max(1, Math.min(cpus().length, Math.floor(n)));
+}
+
 // ---------------------------------------------------------------------------
 // Narrow seam over @huggingface/transformers
 // ---------------------------------------------------------------------------
@@ -296,7 +306,7 @@ export class OnnxEmbedProvider implements EmbedProvider {
 
     this.cacheDir = config.cacheDir;
     this.modelPath = config.modelPath;
-    this.numThreads = config.numThreads ?? DEFAULT_NUM_THREADS;
+    this.numThreads = config.numThreads !== undefined ? clampNumThreads(config.numThreads) : DEFAULT_NUM_THREADS;
     this.loadBackend = config.loadBackend ?? loadTransformersBackend;
   }
 
