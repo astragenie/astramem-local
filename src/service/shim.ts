@@ -158,6 +158,15 @@ const stderrScratchPath = join(logsDir, 'crash-stderr.tmp');
 // launch those must land somewhere visible or the daemon looks dead even when
 // healthy. Truncated fresh per launch (shows the CURRENT run) and never
 // unlinked, so 'Get-Content -Wait' / 'tail -f' works.
+//
+// KNOWN BOUND (follow-up): this file is capped only ACROSS launches (the 'w'
+// truncate below), not within a single run. Some job handlers still console.log
+// to stdout during normal operation, so under the days/weeks keepalive uptime
+// this file grows unbounded — unlike crash.log (bounded via CRASH_LOG_MAX_BYTES
+// + readTail). A live parent blocked in spawnSync cannot rotate the child's fd
+// mid-run, so the real fix is to route ongoing operational logs through pino
+// (daemon.log, already rotated) instead of stdout, leaving stdout for the boot
+// banner only. Tracked separately; not addressed here to keep this fix scoped.
 const stdoutLogPath = join(logsDir, 'daemon-stdout.log');
 const HISTORY_MAX_ENTRIES = 50;
 const CRASH_LOG_MAX_BYTES = 64 * 1024;
@@ -296,6 +305,12 @@ try {
   // tradeoff as every other write in this file. 'ignore' (not 'inherit')
   // because an inherited handle under a headless service launch is the very
   // crash this wiring exists to avoid; 'ignore' needs no valid parent handle.
+  //
+  // stdout opens FIRST, so if the stderr open is what threw, stdoutFd is a
+  // live handle here. Close it before nulling — otherwise it never reaches
+  // spawnSync or the close block below (both gated on stdoutFd !== null) and
+  // leaks for the daemon's entire multi-week lifetime.
+  try { if (stdoutFd !== null) closeSync(stdoutFd); } catch (e) { /* best-effort */ }
   stdoutFd = null;
   stderrFd = null;
 }
