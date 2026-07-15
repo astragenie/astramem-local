@@ -6,6 +6,7 @@ import { OllamaLLMProvider } from './llm/ollama.js';
 import { AzureOpenAILLMProvider } from './llm/azure-openai.js';
 import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from './llm/codex-subscription.js';
+import { rateLimitLLMProvider } from './llm/rate-limited.js';
 import { OllamaEmbedProvider } from './embed/ollama.js';
 import { AzureOpenAIEmbedProvider } from './embed/azure-openai.js';
 
@@ -37,6 +38,20 @@ function resolveAzureApiKey(): string {
 // config.llm.extraction without a second provider-selection surface —
 // see resolveDecomposeOpts's doc comment.
 export function buildLLMProvider(
+  providerName: Config['llm']['compaction']['provider'],
+  model: string,
+  config: Config,
+): LLMProvider {
+  // Apply the optional daemon-side call-rate limiter around whichever concrete
+  // provider we build (token bucket SHARED per provider name — see
+  // rateLimitLLMProvider). Disabled (pass-through) unless llm.rateLimit is set.
+  return rateLimitLLMProvider(
+    buildRawLLMProvider(providerName, model, config),
+    config.llm.rateLimit?.callsPerMinute,
+  );
+}
+
+function buildRawLLMProvider(
   providerName: Config['llm']['compaction']['provider'],
   model: string,
   config: Config,

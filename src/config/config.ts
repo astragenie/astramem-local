@@ -42,6 +42,16 @@ export interface Config {
   llm: {
     compaction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
     extraction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
+    /**
+     * Optional daemon-side call-rate limiter for LLM chat() calls, applied by
+     * buildLLMProvider via a token bucket SHARED across every provider instance
+     * of the same provider name (so compaction + extraction codex-subscription
+     * calls throttle against ONE global budget). Protects a metered endpoint
+     * (codex-subscription counts against a ChatGPT quota; usd is always 0 so a
+     * dollar budget can never cap it — see FEAT-482) and a shared local GPU
+     * from sustained bursts. `callsPerMinute <= 0`/undefined = disabled.
+     */
+    rateLimit?: { callsPerMinute?: number };
   };
   embedding: {
     provider: 'ollama' | 'azure-openai';
