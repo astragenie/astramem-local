@@ -23,6 +23,8 @@ function baseData(overrides: Partial<DashboardData> = {}): DashboardData {
     recentFailedJobs: [],
     entityLinkage: { entityCount: 0, unlinkedMemoryCount: 0 },
     health: null,
+    memoryFilters: {},
+    filterOptions: { projects: [], profiles: [] },
     ...overrides,
   };
 }
@@ -125,7 +127,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       memoryCounts: [{ type: 'fact', count: 10 }],
       recentMemories: Array.from({ length: 25 }, (_, i) => ({
         id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
-        session_id: null, created_at: Date.now() - i * 1000,
+        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null,
       })),
     }), config);
     // Old headers must be gone.
@@ -143,7 +145,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       ],
       recentMemories: Array.from({ length: 25 }, (_, i) => ({
         id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
-        session_id: null, created_at: Date.now() - i * 1000,
+        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null,
       })),
     }), config);
     expect(html).toContain('ollama embed timeout');
@@ -187,7 +189,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: longText, importance: 0.5, confidence: 0.5,
-          session_id: null, created_at: Date.now(),
+          session_id: null, created_at: Date.now(), project: null, profile: null,
         }],
       }), config);
       // Full text appears verbatim (HTML-escaped) inside a <pre>, not just
@@ -203,7 +205,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
       const html = renderDashboard(baseData({
         recentMemories: [{
           id: 'm1', type: 'fact', text: nasty, importance: 0.5, confidence: 0.5,
-          session_id: null, created_at: Date.now(),
+          session_id: null, created_at: Date.now(), project: null, profile: null,
         }],
       }), config);
       expect(html).toContain('&lt;script&gt;');
@@ -234,8 +236,8 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     it('renders one copy button per expandable row, each reading its sibling <pre> rather than an embedded JS string', () => {
       const html = renderDashboard(baseData({
         recentMemories: [
-          { id: 'm1', type: 'fact', text: 'first memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now() },
-          { id: 'm2', type: 'fact', text: 'second memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now() - 1000 },
+          { id: 'm1', type: 'fact', text: 'first memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now(), project: null, profile: null },
+          { id: 'm2', type: 'fact', text: 'second memory text', importance: 0.5, confidence: 0.5, session_id: null, created_at: Date.now() - 1000, project: null, profile: null },
         ],
       }), config);
       const copyButtons = html.match(/class="copy-btn"/g) ?? [];
@@ -261,7 +263,7 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     function manyMemories(count: number) {
       return Array.from({ length: count }, (_, i) => ({
         id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
-        session_id: null, created_at: Date.now() - i * 1000,
+        session_id: null, created_at: Date.now() - i * 1000, project: null, profile: null,
       }));
     }
 
@@ -316,6 +318,154 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     expect(html).toContain('/dashboard/jobs');
     expect(html).toContain('/dashboard/consolidation');
     expect(html).toContain('/dashboard/search');
+  });
+
+  // project + profile columns on the recent-activity feed's memory rows.
+  describe('project + profile columns (memory-listing surface)', () => {
+    it('adds Project and Profile headers to the activity feed table', () => {
+      // Table headers only render when the feed has at least one row —
+      // baseData() alone hits the "No recent activity" empty state.
+      const html = renderDashboard(baseData({
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: 'seed row', importance: 0.5, confidence: 0.5,
+          session_id: null, created_at: Date.now(), project: null, profile: null,
+        }],
+      }), config);
+      expect(html).toContain('<th>Project</th>');
+      // Profile header carries a derived-value tooltip (review LOW): the
+      // column is a best-effort proxy, and the operator should see that.
+      expect(html).toMatch(/<th title="derived:[^"]*">Profile<\/th>/);
+    });
+
+    it('renders memories.project and the derived profile when present', () => {
+      const html = renderDashboard(baseData({
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: 'has project + profile', importance: 0.5, confidence: 0.5,
+          session_id: 's1', created_at: Date.now(), project: 'astramemory-local', profile: 'conversational',
+        }],
+      }), config);
+      expect(html).toContain('astramemory-local');
+      expect(html).toContain('conversational');
+    });
+
+    it('renders — (not blank/null/undefined) for a memory with no project or profile', () => {
+      const html = renderDashboard(baseData({
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: 'no project or profile', importance: 0.5, confidence: 0.5,
+          session_id: null, created_at: Date.now(), project: null, profile: null,
+        }],
+      }), config);
+      // Scoped to this row only — the page's fixed copy-to-clipboard script
+      // comment legitimately contains the word "undefined" elsewhere
+      // (navigator.clipboard doc comment), so a whole-page assertion is too
+      // broad.
+      const rowHtml = html.slice(html.indexOf('no project or profile'), html.indexOf('</tr>', html.indexOf('no project or profile')));
+      expect(rowHtml).not.toContain('null');
+      expect(rowHtml).not.toContain('undefined');
+      // Two muted em-dash cells for this row's project/profile columns.
+      expect(rowHtml).toContain('<span class="muted">—</span>');
+    });
+
+    it('renders — for job-failure rows, which have no project/profile of their own', () => {
+      const html = renderDashboard(baseData({
+        recentFailedJobs: [
+          { id: 'j1', kind: 'distill', state: 'poison', last_error: 'boom', updated_at: Date.now() },
+        ],
+      }), config);
+      const rowHtml = html.slice(html.indexOf('boom'));
+      const emdashes = rowHtml.slice(0, rowHtml.indexOf('</tr>')).match(/<td class="muted">—<\/td>/g) ?? [];
+      expect(emdashes.length).toBe(2);
+    });
+
+    it('escapes project/profile values the same way other memory fields are escaped', () => {
+      const html = renderDashboard(baseData({
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: 'xss check', importance: 0.5, confidence: 0.5,
+          session_id: 's1', created_at: Date.now(), project: '<script>alert(1)</script>', profile: 'engineering',
+        }],
+      }), config);
+      expect(html).not.toContain('<script>alert(1)</script>');
+      expect(html).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
+    });
+  });
+
+  // project/profile filter controls above the activity feed table.
+  describe('project + profile filter controls', () => {
+    it('renders a filter form with project and profile <select> elements', () => {
+      const html = renderDashboard(baseData(), config);
+      expect(html).toContain('<form method="get" action="/dashboard" class="mem-filter">');
+      expect(html).toContain('<select name="project">');
+      expect(html).toContain('<select name="profile">');
+    });
+
+    it('populates <select> options from filterOptions, not just the visible recentMemories rows', () => {
+      const html = renderDashboard(baseData({
+        filterOptions: { projects: ['astramemory-local', 'other-repo'], profiles: ['engineering', 'conversational'] },
+      }), config);
+      expect(html).toContain('<option value="astramemory-local"');
+      expect(html).toContain('<option value="other-repo"');
+      expect(html).toContain('<option value="engineering"');
+      expect(html).toContain('<option value="conversational"');
+    });
+
+    it('marks the active project option selected when a filter is applied', () => {
+      const html = renderDashboard(baseData({
+        memoryFilters: { project: 'astramemory-local' },
+        filterOptions: { projects: ['astramemory-local'], profiles: [] },
+      }), config);
+      expect(html).toContain('<option value="astramemory-local" selected>');
+    });
+
+    it('marks the "none" option selected for the null (—) filter selection', () => {
+      const html = renderDashboard(baseData({
+        memoryFilters: { project: null },
+      }), config);
+      expect(html).toContain('<option value="none" selected>');
+    });
+
+    it('shows a "clear" link only when a filter is active', () => {
+      const unfiltered = renderDashboard(baseData(), config);
+      expect(unfiltered).not.toContain('>clear</a>');
+
+      const filtered = renderDashboard(baseData({ memoryFilters: { project: 'x' } }), config);
+      expect(filtered).toContain('<a href="/dashboard">clear</a>');
+    });
+
+    it('a project filter excludes job-failure rows from the merged feed (they carry no project/profile)', () => {
+      const html = renderDashboard(baseData({
+        memoryFilters: { project: 'astramemory-local' },
+        recentFailedJobs: [
+          { id: 'j1', kind: 'distill', state: 'poison', last_error: 'JOB_MARKER_SHOULD_BE_HIDDEN', updated_at: Date.now() },
+        ],
+        recentMemories: [{
+          id: 'm1', type: 'fact', text: 'MEMORY_MARKER_VISIBLE', importance: 0.5, confidence: 0.5,
+          session_id: 's1', created_at: Date.now(), project: 'astramemory-local', profile: null,
+        }],
+      }), config);
+      expect(html).not.toContain('JOB_MARKER_SHOULD_BE_HIDDEN');
+      expect(html).toContain('MEMORY_MARKER_VISIBLE');
+    });
+
+    it('no filter active (default) keeps job-failure rows in the merged feed', () => {
+      const html = renderDashboard(baseData({
+        recentFailedJobs: [
+          { id: 'j1', kind: 'distill', state: 'poison', last_error: 'JOB_MARKER_VISIBLE', updated_at: Date.now() },
+        ],
+      }), config);
+      expect(html).toContain('JOB_MARKER_VISIBLE');
+    });
+
+    it('pagination links preserve the active project/profile filter', () => {
+      const manyMemories = Array.from({ length: 20 }, (_, i) => ({
+        id: `m${i}`, type: 'fact', text: `memory ${i}`, importance: 0.5, confidence: 0.5,
+        session_id: null, created_at: Date.now() - i * 1000, project: 'astramemory-local', profile: null,
+      }));
+      const html = renderDashboard(baseData({
+        memoryFilters: { project: 'astramemory-local', profile: null },
+        recentMemories: manyMemories,
+      }), config, '1');
+      expect(html).toContain('href="/dashboard?page=2&project=astramemory-local&profile=none"');
+    });
   });
 
   // Migration 040: provider_state (zero writers, ever) is dropped and the

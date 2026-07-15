@@ -30,7 +30,7 @@
  * restarts via the adapter. This closes the exact gap the exit-only restart
  * mechanisms leave open, on all three platforms.
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { stopLockHolder } from './instance-lock.js';
 import type { ServiceAdapter } from './types.js';
@@ -80,6 +80,103 @@ export const DEFAULT_PROBE_TIMEOUT_MS = 10_000;
  */
 export const DEFAULT_FAILURE_THRESHOLD = 2;
 
+/**
+ * Restart-storm circuit breaker (2026-07-15 incident, stabilization plan
+ * P1.1): on that day the watchdog killed a busy-but-alive daemon 5 times in
+ * ~2 hours — each kill re-enqueued the orphaned jobs at boot, re-saturated
+ * the embed path, re-stalled the event loop, and earned the next kill. The
+ * kill mechanism itself became the outage. If the watchdog has already
+ * killed the daemon RESTART_STORM_THRESHOLD times inside a rolling
+ * RESTART_STORM_WINDOW_MS, it stops killing and reports
+ * `action: 'breaker-tripped'` instead; the restart-storm doctor check (RED,
+ * src/doctor/checks/restart-storm.ts) is the operator signal.
+ *
+ * Fail-open direction is deliberate: every observed instance of this class
+ * was busy-misclassified-as-dead, where another kill only makes things
+ * worse. The accepted tradeoff is that a GENUINELY wedged daemon that trips
+ * the breaker stays wedged until a human responds to the doctor RED — that
+ * costs response latency, not correctness, while the old behavior actively
+ * destroyed work in the common case.
+ *
+ * Hardcoded consts (not config.yaml) on the CRASH_LOOP_THRESHOLD precedent:
+ * one more governance-fallback config value is one more place for defaults
+ * to drift (see the DEFAULT_* const trap in CLAUDE.md).
+ *
+ * No explicit reset/trip flag is persisted: the window is recomputed from
+ * the kill log on every tick, so the breaker self-clears once kills age
+ * past the window.
+ */
+export const RESTART_STORM_THRESHOLD = 3;
+export const RESTART_STORM_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/** One line per actual watchdog kill (only the `stopResult.ok === true`
+ *  path — refused/failed stops don't count; nothing died). */
+export interface WatchdogKillEvent {
+  ts: string; // ISO-8601
+}
+
+/** Append-only kill log — same per-dataDir convention as
+ *  watchdog-probe-state.json below. NOT under logs/: the logs dir belongs to
+ *  the daemon's own rotation sweep, and this file must never be rotated away
+ *  from under the breaker's 6h window. */
+export function watchdogKillsPath(dataDir: string): string {
+  return join(dataDir, 'watchdog-kills.jsonl');
+}
+
+/**
+ * Pure parse of kill-log content: timestamps (epoch ms) inside the rolling
+ * window, oldest first. Malformed LINES are skipped (per-line, never fatal);
+ * this function itself never touches the filesystem. Exported separately
+ * from {@link readKillsInWindow} so callers who need to distinguish "file
+ * unreadable" from "no kills" (the doctor check's inconclusive path) can do
+ * their own read and still share this parsing.
+ */
+export function parseKillLog(content: string, nowMs: number, windowMs: number): number[] {
+  return content
+    .split('\n')
+    .filter(Boolean)
+    .map((line): number | null => {
+      try {
+        const parsed = JSON.parse(line) as Partial<WatchdogKillEvent>;
+        const ms = typeof parsed.ts === 'string' ? Date.parse(parsed.ts) : NaN;
+        return Number.isFinite(ms) ? ms : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((ms): ms is number => ms !== null && nowMs - ms <= windowMs && ms <= nowMs);
+}
+
+/**
+ * Kill timestamps (epoch ms) inside the rolling window, oldest first.
+ * Never throws: an unreadable/missing/malformed log degrades to [] — a read
+ * glitch must not trip the breaker (that would silently disable the
+ * watchdog), and equally must not crash the probe. Callers who must NOT
+ * conflate unreadable-with-empty (doctor's restart-storm check) should read
+ * the file themselves and call {@link parseKillLog}.
+ */
+export function readKillsInWindow(
+  dataDir: string,
+  nowMs: number = Date.now(),
+  windowMs: number = RESTART_STORM_WINDOW_MS,
+): number[] {
+  try {
+    return parseKillLog(readFileSync(watchdogKillsPath(dataDir), 'utf8'), nowMs, windowMs);
+  } catch {
+    return [];
+  }
+}
+
+/** Best-effort append — a failed write means this kill is invisible to the
+ *  breaker window, which only delays a future trip, never causes one. */
+function appendKillEvent(dataDir: string): void {
+  try {
+    appendFileSync(watchdogKillsPath(dataDir), `${JSON.stringify({ ts: new Date().toISOString() } satisfies WatchdogKillEvent)}\n`);
+  } catch {
+    /* best-effort, see doc comment above */
+  }
+}
+
 export interface WatchdogTimerAdapter {
   /** Register the periodic hang-probe timer/agent. Idempotent — same
    *  overwrite-in-full discipline as installBackupTimer. */
@@ -121,11 +218,18 @@ export interface WatchdogProbeOptions {
    *  stubs instead of touching disk. Defaults to a JSON file under dataDir. */
   readFailureCountImpl?: (dataDir: string) => number;
   writeFailureCountImpl?: (dataDir: string, count: number) => void;
+  /** Restart-storm breaker knobs/seams (P1.1) — tests substitute in-memory
+   *  kill logs and a fixed clock; production always uses the defaults. */
+  restartStormThreshold?: number;
+  restartStormWindowMs?: number;
+  readKillsInWindowImpl?: typeof readKillsInWindow;
+  appendKillEventImpl?: (dataDir: string) => void;
+  nowMs?: number;
 }
 
 export interface WatchdogProbeResult {
   healthy: boolean;
-  action: 'none' | 'below-threshold' | 'restarted' | 'restart-failed';
+  action: 'none' | 'below-threshold' | 'breaker-tripped' | 'restarted' | 'restart-failed';
   detail: string;
 }
 
@@ -196,6 +300,29 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
     };
   }
 
+  // Restart-storm circuit breaker (see RESTART_STORM_THRESHOLD doc comment):
+  // consult the kill log BEFORE signaling anything. Failure count is kept
+  // (not reset) so the breaker's own state never masks that /health is
+  // still failing — once the window clears, the very next tick acts again.
+  const stormThreshold = opts.restartStormThreshold ?? RESTART_STORM_THRESHOLD;
+  const stormWindowMs = opts.restartStormWindowMs ?? RESTART_STORM_WINDOW_MS;
+  const readKills = opts.readKillsInWindowImpl ?? readKillsInWindow;
+  const appendKill = opts.appendKillEventImpl ?? appendKillEvent;
+  const killsInWindow = readKills(opts.dataDir, opts.nowMs ?? Date.now(), stormWindowMs);
+  if (killsInWindow.length >= stormThreshold) {
+    writeCount(opts.dataDir, consecutiveFailures);
+    return {
+      healthy: false,
+      action: 'breaker-tripped',
+      detail:
+        `hang detected (/health unresponsive within ${timeoutMs}ms) but the restart-storm breaker is OPEN: ` +
+        `${killsInWindow.length} watchdog kill(s) in the last ${Math.round(stormWindowMs / 3_600_000)}h ` +
+        `(threshold ${stormThreshold}) — refusing to kill again; kill/restart cycles are making things worse, ` +
+        `not better. Operator attention needed (doctor: "Watchdog restart storm" is RED). ` +
+        `The breaker self-clears once kills age out of the window.`,
+    };
+  }
+
   try {
     const stopResult = await stopLockHolderFn(opts.dataDir, opts.port);
     if (!stopResult.ok) {
@@ -223,6 +350,10 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
         detail: `hang detected (/health unresponsive within ${timeoutMs}ms) but could not stop the hung process: ${stopResult.detail} — daemon likely still wedged, NOT restarted`,
       };
     }
+    // Record the kill the moment the stop actually succeeded — the daemon
+    // died whether or not the adapter restart below also succeeds, and the
+    // breaker must count exactly the events that destroy in-flight work.
+    appendKill(opts.dataDir);
     await opts.adapter.start();
     writeCount(opts.dataDir, 0);
     return {

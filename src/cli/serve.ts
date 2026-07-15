@@ -183,6 +183,22 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // Resolve providers: mock mode (CI/test) or real providers
   const healthState = createHealthState();
   if (dataDir !== ':memory:') healthState.dataDir = dataDir;
+  // P1.2 (2026-07-15 incident): always-on event-loop-lag histogram. The
+  // WINDOW is owned by the scheduled doctor check (checkEventLoopLag resets
+  // the monitor after each in-process read), NOT by a timer here: an
+  // independent same-period setInterval started moments before the doctor
+  // schedule phase-aligned with it, wiping the histogram right before every
+  // scheduled read — the canary reported "window too fresh" forever
+  // (review finding, feat/p1-2). O(1) native sampling — negligible overhead.
+  const { createEventLoopLagMonitor } = await import('../server/event-loop-lag.js');
+  const eventLoopLag = createEventLoopLagMonitor();
+  healthState.eventLoopLag = eventLoopLag;
+  // P1.3: pre-compute /health's DB-backed block off the request path so the
+  // liveness endpoint never runs SQL per probe (watchdog hits it every 180s;
+  // under DB contention per-request queries queue the probe behind whatever
+  // holds the connection — the 2026-07-15 amplifier class). Refresher keeps
+  // the last good snapshot on error; /health/full stays always-fresh.
+  let healthSnapshotTimer: NodeJS.Timeout | null = null;
   let providers: ProviderSet | MockProviderSet;
   const useMock = process.env.ASTRA_MEMORY_MOCK_PROVIDERS === '1';
   if (useMock) {
@@ -219,6 +235,24 @@ export async function serve(opts: ServeOpts): Promise<void> {
 
   const app = await buildApp({ db, token, embed: providers.embed, config: cfg, healthState });
 
+  // P1.3 refresher (see healthSnapshotTimer declaration above): immediate
+  // first compute so /health carries the block right from boot, then every
+  // 30s. Keep-last-good on failure — a refresh glitch must never blank the
+  // block or crash anything.
+  {
+    const { computeHealthDbSnapshot } = await import('../server/routes/health.js');
+    const refreshHealthSnapshot = (): void => {
+      try {
+        healthState.dbSnapshot = computeHealthDbSnapshot(db, dataDir !== ':memory:' ? dataDir : undefined);
+      } catch (err) {
+        console.warn(`${ts()} [astramem-local] health snapshot refresh failed (kept last good): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    refreshHealthSnapshot();
+    healthSnapshotTimer = setInterval(refreshHealthSnapshot, 30_000);
+    healthSnapshotTimer.unref();
+  }
+
   // Wire up the worker with extended context so distillation runs
   const registry = new HandlerRegistry();
   registry.register(distillHandler);
@@ -248,6 +282,19 @@ export async function serve(opts: ServeOpts): Promise<void> {
     vecStore: new SqliteVecStore(db, cfg.embedding.dim),
   };
 
+  // P1.4/P1.5 load governor: lanes ramp 1 → half → full over 60s steps at
+  // boot ("serve traffic first, catch up second" — a restart re-enqueues
+  // orphans and must not claim them at full concurrency while the daemon is
+  // proving liveness to the watchdog), then the embed-latency EWMA throttles
+  // the budget whenever distill/reembed handler runs slow past 5s/20s.
+  // :memory: (tests, throwaway) skips the ramp — no watchdog, no backlog.
+  const { createLoadGovernor } = await import('../pipeline/backpressure.js');
+  const { resolveWorkerConcurrency } = await import('../pipeline/worker.js');
+  const governor = createLoadGovernor({
+    maxLanes: resolveWorkerConcurrency(cfg),
+    ...(dataDir !== ':memory:' ? { bootRamp: {} } : {}),
+  });
+
   // startWorker takes HandlerCtx but we pass ExtendedHandlerCtx (structural subtype)
   const worker: WorkerHandle = startWorker({
     pollMs: 500,
@@ -256,6 +303,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     config: cfg,
     ctx: extCtx,
     healthState,
+    governor,
   });
 
   // KNN offload (2026-07-15 incident): recall's brute-force vector scan is a
@@ -441,6 +489,8 @@ export async function serve(opts: ServeOpts): Promise<void> {
     devNoAuthActive: cfg.auth.devNoAuth === true && isLoopbackHost(cfg.network.host),
     audioMode: cfg.audio.mode,
     audioDisclosureAcknowledged: cfg.audio.disclosureAcknowledged ?? false,
+    // P1.2: scheduled doctor runs read the live histogram in-process.
+    eventLoopLag,
   };
   // Full-tier opts add the real providers — used ONLY on the 24h piggyback
   // below, never on the frequent tick. Safe under ASTRA_MEMORY_MOCK_PROVIDERS
@@ -491,6 +541,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // Enqueued through the jobs table (not called inline) so it serializes with
   // distills and shows up in `queue` forensics like every other stage.
   let consolidateTimer: NodeJS.Timeout | null = null;
+  let bootConsolidateTimer: NodeJS.Timeout | null = null;
   if (dataDir !== ':memory:') {
     const CONSOLIDATE_INTERVAL_MS = 6 * 60 * 60 * 1000;
     const enqueueConsolidate = () => {
@@ -510,9 +561,22 @@ export async function serve(opts: ServeOpts): Promise<void> {
     if (process.env['ASTRA_SKIP_CONSOLIDATE'] === '1') {
       console.warn(`${ts()} [astramem-local] consolidation disabled via ASTRA_SKIP_CONSOLIDATE=1`);
     } else {
-      enqueueConsolidate(); // boot pass — catches anything a downtime window skipped
-      consolidateTimer = setInterval(enqueueConsolidate, CONSOLIDATE_INTERVAL_MS);
-      consolidateTimer.unref();
+      // P1.5 boot stagger: the boot pass used to fire synchronously here —
+      // a restart re-enqueued consolidate at the exact moment job recovery
+      // had just refilled the queue, at full lane concurrency, while the
+      // watchdog was probing a daemon still proving liveness (2026-07-15
+      // restart-storm input). Delay it past one full watchdog probe cycle
+      // (180s) + margin; the recurring 6h interval starts from the delayed
+      // pass so cadence is unchanged thereafter. unref'd — never holds the
+      // process open; a downtime window's missed pass is only ever delayed
+      // by 5 minutes, not skipped.
+      const BOOT_CONSOLIDATE_DELAY_MS = 5 * 60 * 1000;
+      bootConsolidateTimer = setTimeout(() => {
+        enqueueConsolidate(); // delayed boot pass — catches anything a downtime window skipped
+        consolidateTimer = setInterval(enqueueConsolidate, CONSOLIDATE_INTERVAL_MS);
+        consolidateTimer.unref();
+      }, BOOT_CONSOLIDATE_DELAY_MS);
+      bootConsolidateTimer.unref();
     }
   }
 
@@ -648,8 +712,12 @@ export async function serve(opts: ServeOpts): Promise<void> {
     try {
       stopPreflight?.();
       stopFrequentDoctor?.();
+      eventLoopLag.disable();
+      if (healthSnapshotTimer) clearInterval(healthSnapshotTimer);
       if (walTimer) clearInterval(walTimer);
+      if (bootConsolidateTimer) clearTimeout(bootConsolidateTimer);
       if (consolidateTimer) clearInterval(consolidateTimer);
+      governor.stop();
       if (cleanupTimer) clearInterval(cleanupTimer);
       if (oversizeScanTimer) clearInterval(oversizeScanTimer);
       if (spoolDrainTimer) clearInterval(spoolDrainTimer);

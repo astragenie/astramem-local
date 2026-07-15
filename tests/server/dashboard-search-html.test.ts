@@ -85,6 +85,54 @@ describe('GET /dashboard/search — score table (SLICE-410-6)', () => {
     expect(body).not.toContain('no results');
   });
 
+  it('adds project + profile columns, resolved via a batched memories/transcripts lookup (not per-row)', async () => {
+    const db = setupDb();
+    db.prepare('INSERT INTO sessions (id, started_at) VALUES (?, ?)').run('s1', Date.now());
+    db.prepare(`
+      INSERT INTO transcripts (id, session_id, source, content, ingested_at, extract_profile)
+      VALUES ('t1', 's1', 'test', 'content', ?, 'conversational')
+    `).run(Date.now());
+    const id = new MemoryRepo(db).insert({
+      type: 'fact', text: 'sqlite-vec hybrid search fusion with project', normalized_text: 'x',
+      repo: null, project: 'astramemory-local', branch: null, agent: null,
+      session_id: 's1', hash: 'sh-proj', source_hash: null,
+    });
+    const vecStore = new SqliteVecStore(db, fakeEmbed.dim);
+    const [vec] = await fakeEmbed.embed(['sqlite-vec hybrid search fusion with project']);
+    await vecStore.upsert(id, vec as Float32Array);
+
+    const app = await buildApp({ db, token: TOKEN, embed: fakeEmbed });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/dashboard/search?query=sqlite-vec+hybrid+search+fusion+with+project',
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.body;
+    expect(body.toLowerCase()).toContain('<th>project</th>');
+    // profile header carries a derived-value tooltip (review LOW)
+    expect(body.toLowerCase()).toMatch(/<th title="derived:[^"]*">profile<\/th>/);
+    expect(body).toContain('astramemory-local');
+    expect(body).toContain('conversational');
+  });
+
+  it('renders — for a candidate with no project and no derivable profile', async () => {
+    const db = setupDb();
+    const id = seed(db, 'fts only no project no profile sentinel', 'sh-noproj');
+    const app = await buildApp({ db, token: TOKEN, embed: fakeEmbed });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/dashboard/search?query=fts+only+no+project+no+profile+sentinel',
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(id.slice(0, 8));
+    expect(res.body).toContain('<td>—</td>');
+  });
+
   it('AC-2: no query param shows the form and current fuse.ts weights, no table, not an error', async () => {
     const db = setupDb();
     const app = await buildApp({ db, token: TOKEN, embed: fakeEmbed });
