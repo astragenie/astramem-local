@@ -253,21 +253,38 @@ silently hid still-true facts — any fixture's "now" must be in the PAST.
 
 Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answerer-and-second-llm-call.md`
 
-## Known open gaps (2026-07-13) — this is a working doc, not a clean bill of health
+## Known open gaps — this is a working doc, not a clean bill of health (updated 2026-07-15)
 
-- **Doctor never runs unattended.** `serve.ts` never calls `runChecks` — all three callers
-  (`cli/doctor.ts`, `cli/init.ts`, `cli/providers.ts`) are manual. (`serve.ts` DOES import
-  `doctor/probes/embed-probe.js` directly for the boot-time dim preflight — that's a
-  different, narrower check than the full doctor suite.)
-- **`checkMemoryHealth` (`src/doctor/checks.ts:680-694`) has exactly one return path:
-  `{ok: true}`.** A 100% distill-poison rate still reports "memory health: OK."
-- **`llmChatProbe` (`src/doctor/probes/llm-chat-probe.ts:19-22`) never passes `json:true`**,
-  so it never exercises `format:json` — the exact request shape that broke qwen3 (empty
-  response under thinking mode). A green probe is not evidence extraction works.
-- **A well-formed `{"atoms":[]}` extraction completes successfully.** A broken model and a
-  genuinely empty transcript are indistinguishable at every layer — not the Zod gate, not
-  the job queue, not the poison counter (which only increments on failure, and a zero-atom
-  success never fails). This is the headline finding of the teardown; see ADR-015.
+- **Doctor DOES run unattended — the old "never runs unattended" claim here was WRONG
+  (corrected 2026-07-15 after an agent grepped only for `runChecks` and missed the real
+  wiring).** `serve.ts` (~line 421) calls `startFrequentDoctorSchedule` from
+  `src/doctor/schedule.ts` — a two-tier schedule: a **frequent 15-min** pass runs every
+  check tagged `tier: 'cheap'` (DB-only, no LLM/embed provider), and the metered LLM/embed
+  probes piggyback the **existing 24h cleanup tick** (`runFullDoctorChecks`, `tier: 'full'`)
+  rather than a new interval — a tight interval on a real LLM call is a self-DoS on a shared
+  GPU and, on a metered endpoint, the FEAT-482 incident class. Skipped under `:memory:`.
+  Results land in `healthState.doctor` + a structured warn log on any red (ADR-015). So do
+  NOT "wire doctor into serve" — it is already wired. The one NARROW residual: two DB-only
+  rate canaries, `extraction-yield.ts` and `memory-health.ts` (poison-rate), are tagged
+  `tier: 'full'` (24h cadence), not `'cheap'` — so a broken local model has up to ~24h
+  detection latency on those two, while `spool-quarantine.ts` (`tier: 'cheap'`) fires every
+  15 min. Promoting those two to `'cheap'` is a small optional change (weigh against the
+  `MEANINGFUL_USAGE_THRESHOLD` gating they carry), NOT a headline gap.
+- **RESOLVED 2026-07-15 — `checkMemoryHealth` is no longer a `{ok:true}` stub.** Moved to
+  `src/doctor/checks/memory-health.ts` with 4 real return paths incl a poison-rate alarm
+  (`ok:false` when `distill.poisonRate >= POISON_RATE_ALARM`). The one-return-path bug this
+  bullet used to describe is fixed. (Caveat: only fires under a manual doctor run — see the
+  dormant-canary gap above.)
+- **RESOLVED 2026-07-15 — `llmChatProbe` now passes `json:true`** (#299,
+  `src/doctor/probes/llm-chat-probe.ts`): sends `format:json` and requires the response be
+  non-empty AND `JSON.parse`-able — the exact request shape that broke qwen3. Was a
+  plain-chat probe; no longer.
+- **RESOLVED 2026-07-15 — the `{"atoms":[]}` blind spot has a canary** (#300/#303,
+  `src/doctor/checks/extraction-yield.ts`): "Extraction yield" measures the zero-yield RATE
+  over a rolling window (`ZERO_YIELD_RATE_ALARM = 0.5`), gated behind a meaningful-usage
+  threshold — explicitly framed as closing the ADR-015 headline finding. A broken model and
+  a genuinely-empty transcript are no longer indistinguishable in aggregate. (Same dormant
+  caveat: manual doctor only.)
 - **Corrected 2026-07-14 (caught by FEAT-493's build):** this bullet used to claim the
   `artifacts` SQL table was a live zero-writer table. Wrong — `messages`, `artifacts`, and
   `provider_state` were all **dropped, irreversibly**, by `migrations/040-drop-dead-tables.sql`
@@ -278,15 +295,21 @@ Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answ
   otherwise documents. Only `evidence_guard_drops` (migration 030) remains an actual zero-writer,
   in-flight table. Disk artifacts (the thing FEAT-489/493 actually govern) live under
   `<dataDir>/artifacts/<kind>/` on the filesystem, not in SQLite — see `src/storage/retention.ts`.
-- **LLM-proxy transcripts spool to disk plaintext, unredacted** (redaction happens at the
-  daemon's stage-0 ingest, not at proxy capture). Files that fail JSON-parse or
-  schema-validate quarantine to `.quarantine/` **before** ever reaching redaction — no TTL,
-  no doctor canary. Malformed content disproportionately correlates with secrets/control
-  characters, so the quarantine is a plausible place for a credential to sit indefinitely.
-- **The qwen3 `think:false` guard is a name regex** (`/^qwen3/i`, `src/providers/llm/ollama.ts:95`),
-  not capability detection. The config field's own doc comment (`ollama.ts:31`) names
-  `deepseek-r1` as equally affected by the same thinking-mode/`format:json` conflict — it
-  is not handled. A user picking `deepseek-r1` reproduces the "fixed" incident exactly.
+- **RESOLVED 2026-07-15 — `.quarantine/` now has a TTL sweep + doctor canary**
+  (`src/doctor/checks/spool-quarantine.ts`): the check goes RED when a quarantined file
+  outlives `DEFAULT_QUARANTINE_TTL_MS`, with a `pruneExpiredQuarantine` sweep, and redaction
+  now happens at spool-write time (`spool-schema-guard.ts`) rather than only at stage-0
+  ingest. The "credential sits in quarantine indefinitely, unredacted, no TTL, no canary"
+  hazard this bullet used to describe is closed. (Dormant-canary caveat still applies — the
+  RED gate only evaluates under a manual doctor run until the periodic-doctor gap above is
+  fixed; the TTL prune sweep itself is not doctor-gated.)
+- **RESOLVED 2026-07-15 — the qwen3 thinking-mode guard is now an explicit prefix list, and
+  `deepseek-r1` IS handled.** `src/providers/llm/ollama.ts` uses
+  `KNOWN_THINKING_MODEL_PREFIXES = ['qwen3', 'deepseek-r1', 'deepseek-v3.1', 'gpt-oss']`
+  matched via `.startsWith()` — not the old `/^qwen3/i` regex. A user picking `deepseek-r1`
+  no longer reproduces the incident. (If you add a new thinking-mode model, add its prefix
+  to that list — capability detection is still name-based, so an unlisted thinking model
+  reintroduces the class.)
 
 ## Bump discipline
 

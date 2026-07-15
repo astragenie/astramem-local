@@ -16,7 +16,7 @@
 import { cleanup } from './stages/01-cleanup.js';
 import { normalize } from './stages/02-normalize.js';
 import { chunk, resolveMaxChunkChars } from './stages/03-chunk.js';
-import { compact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
+import { compact, shouldCompact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
 import { extract, extractSpecifics, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
 import { mergeDualPassAtoms } from './dedup-merge.js';
 import { reduce } from './stages/06-reduce.js';
@@ -174,13 +174,11 @@ export async function runPipeline(
   // reproduces pre-fix behavior — see chunk-checkpoint.ts.
   const checkpointJobKey = ctx.sourceHash ?? undefined;
 
-  // Stage 4: Compact (LLM, budget-gated)
-  pipeLog.info({ stage: 'compact', chunk_count: chunks.length, chunk_concurrency: chunkConcurrency }, 'stage start');
-  // PROFILE RESOLUTION MOVED UP. It used to be computed AFTER this block — which
-  // is structurally why stage 4 never saw it, and why every conversational
-  // transcript got the coding-agent compressor. The profile has to exist before
-  // the first stage that needs it, not before the stage that happened to be
-  // written first.
+  // PROFILE RESOLUTION MOVED UP. It used to be computed AFTER the compact()
+  // call below — which is structurally why stage 4 never saw it, and why
+  // every conversational transcript got the coding-agent compressor. The
+  // profile has to exist before the first stage that needs it, not before
+  // the stage that happened to be written first.
   const resolvedExtractProfile = ctx.extractProfile ?? ctx.config?.distill.extractProfile ?? 'engineering';
   const compactionMode = ctx.config?.distill.compaction ?? 'auto';
   // Dual-pass extraction (opt-in): `1` (no ctx.config, or an unset/explicit
@@ -190,6 +188,27 @@ export async function runPipeline(
   // this is a config-only knob.
   const resolvedExtractionPasses = ctx.config?.distill.extractionPasses ?? 1;
 
+  // Stage 4: Compact (LLM, budget-gated)
+  // #284: the gate decision (run vs skip) must be OBSERVABLE. A skipped
+  // stage that logs identically to a run one is the exact ADR-015 footgun
+  // this repo keeps re-discovering — "stage complete" fired either way, so
+  // the log alone couldn't tell you whether an LLM call happened or the
+  // chunk passed through untouched. `willCompact` mirrors compact()'s own
+  // shouldCompact() gate (04-compact.ts) so the log can never drift from
+  // the actual decision the stage makes one line later.
+  const willCompact = shouldCompact({ profile: resolvedExtractProfile, mode: compactionMode });
+  pipeLog.info(
+    {
+      stage: 'compact',
+      chunk_count: chunks.length,
+      chunk_concurrency: chunkConcurrency,
+      extract_profile: resolvedExtractProfile,
+      compaction_mode: compactionMode,
+      compaction_skipped: !willCompact,
+    },
+    willCompact ? 'stage start' : 'stage start — SKIPPED (passthrough, no LLM call)',
+  );
+
   let compactedChunks: Array<{ index: number; text: string }>;
   try {
     const compactResults = await compact(
@@ -197,7 +216,10 @@ export async function runPipeline(
       { profile: resolvedExtractProfile, mode: compactionMode, costCap },
     );
     compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
-    pipeLog.info({ stage: 'compact', chunks_compacted: compactedChunks.length }, 'stage complete');
+    pipeLog.info(
+      { stage: 'compact', chunks_compacted: compactedChunks.length, compaction_skipped: !willCompact },
+      'stage complete',
+    );
   } catch (err) {
     if (err instanceof CompactBudgetExceeded) {
       pipeLog.warn({ stage: 'compact', error_kind: 'BudgetExceeded' }, 'stage aborted — budget exceeded');
