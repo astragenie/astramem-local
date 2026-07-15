@@ -569,6 +569,57 @@ export interface Config {
       maxWallClockMs: number;
       mode: 'off' | 'dry-run' | 'enabled';
     };
+    /**
+     * P2.1 stabilization: candidate-pair selection strategy for the
+     * pairwise scan in `runConsolidation` (src/consolidate/consolidate.ts).
+     * `'full'` (default) is BYTE-IDENTICAL to pre-P2.1 behavior — every
+     * (repo,type) group still runs the O(n^2) nested-loop scan capped by
+     * `maxGroupSize`, and a group over that cap is still skipped entirely
+     * (`ConsolidateSummary.groupsSkipped`).
+     *
+     * `'knn'` replaces the O(n^2) scan with a per-atom top-`knnK`
+     * nearest-neighbor query via the existing `SqliteVecStore.search()`
+     * abstraction (same infra `/recall` uses — no new dependency),
+     * post-filtered in JS to atoms in the same (repo,type) group —
+     * sqlite-vec's adapter has no same-query metadata filter yet (a
+     * non-empty `VecFilter` throws "not yet implemented", see
+     * `src/vector/sqlite-vec.ts`), so this can't push the filter into SQL —
+     * then deduplicated via a canonical min/max-id pair key (same identity
+     * convention the contradiction-proposal insert's
+     * `MIN(winner_id,loser_id)`/`MAX(winner_id,loser_id)` guard already
+     * uses). O(n^2) -> O(n*k). `maxGroupSize` no longer skips groups in
+     * this mode — k-NN already bounds the per-atom cost, so an oversized
+     * group is processed instead of dropped.
+     *
+     * Ship opt-in pending a soak test (P2.1 design memo §6, reviewer
+     * MEDIUM finding 20260715T1640Z). An out-of-range value falls back to
+     * `'full'` for the run, logged, never fatal
+     * (`applyCandidateSelectionGovernance`).
+     */
+    candidateSelection: 'full' | 'knn';
+    /** Neighbors queried per atom in `'knn'` mode
+     *  (`SqliteVecStore.search()`'s `k`). Ignored in `'full'` mode. Must be
+     *  a positive integer; an invalid value falls back to the default
+     *  (30), logged, never fatal. */
+    knnK: number;
+    /**
+     * Optional ceiling on total candidate pairs PROCESSED in a single
+     * `runConsolidation()` call, across every group, in either mode.
+     * `null` (default) = off, unbounded (byte-identical to pre-P2.1
+     * behavior). When set, groups are visited in a deterministic order
+     * (ascending group min(`created_at`) — the group's own oldest atom,
+     * NOT the raw Map-insertion/SQL-scan order) and a persisted cursor
+     * (`consolidation_cursor` table, migration 050,
+     * `src/storage/consolidation-cursor.ts`) records which group to
+     * resume from on the NEXT run once the ceiling is hit mid-sweep —
+     * guaranteeing forward progress across runs instead of a naive
+     * truncation that would always start from (and stop at) the same
+     * groups every run, permanently starving whichever groups sort last.
+     * The ceiling is checked BETWEEN groups, not mid-group — a single
+     * group's own candidate-pair count can still exceed it once. Must be
+     * a positive integer or `null`; any other value falls back to `null`
+     * (off), logged, never fatal. */
+    maxCandidatePairsPerRun: number | null;
   };
   /** Distillation durability quality gate (FEAT-441). `off` (default) is
    * BYTE-IDENTICAL to pre-FEAT-441 behavior — the gate
@@ -1107,6 +1158,15 @@ export function defaultConfig(): Config {
         // per call) never hits it in practice.
         maxWallClockMs: 300_000,
       },
+      // P2.1 stabilization: 'full' stays the shipped default — BYTE-
+      // IDENTICAL to pre-P2.1 behavior, including the binary maxGroupSize
+      // skip. Promote to 'knn' per-install only after the soak test (P2.1
+      // design memo §6) confirms recall parity + the 768-proposal backlog
+      // actually shrinks. knnK=30 / maxCandidatePairsPerRun=null(off) are
+      // the P2.1 design's own defaults.
+      candidateSelection: 'full',
+      knnK: 30,
+      maxCandidatePairsPerRun: null,
     },
     memoryHealth: { llmJudgedJunkSample: { enabled: false } },
     ingest: { spoolMaxBytes: 32 * 1024 * 1024 },
@@ -1384,6 +1444,60 @@ export function applyContradictionDetectionGovernance(
 }
 
 /**
+ * P2.1 stabilization: `consolidation.candidateSelection` is a closed
+ * 2-value enum (same governance concern as
+ * `applyContradictionDetectionGovernance` just above) plus two numeric
+ * fields (`knnK`, `maxCandidatePairsPerRun`) with their own valid ranges.
+ * Never fatal — an invalid value falls back to its documented default and
+ * is logged, matching every other governance function in this file.
+ */
+const VALID_CANDIDATE_SELECTION_MODES:
+  ReadonlySet<Config['consolidation']['candidateSelection']> = new Set(['full', 'knn']);
+
+const DEFAULT_KNN_K = 30;
+
+export function applyCandidateSelectionGovernance(
+  consolidation: Config['consolidation'],
+  opts: { log?: (message: string) => void } = {},
+): Config['consolidation'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  let { candidateSelection, knnK, maxCandidatePairsPerRun } = consolidation;
+
+  if (!VALID_CANDIDATE_SELECTION_MODES.has(candidateSelection)) {
+    log(
+      `[candidate-selection-governance] consolidation.candidateSelection=` +
+      `${JSON.stringify(candidateSelection)} is not one of 'full'|'knn' — falling back to 'full' ` +
+      '(the documented default). See P2.1 / src/consolidate/consolidate.ts.',
+    );
+    candidateSelection = 'full';
+  }
+
+  if (!Number.isInteger(knnK) || knnK < 1) {
+    log(
+      `[candidate-selection-governance] consolidation.knnK=${JSON.stringify(knnK)} is not a positive ` +
+      `integer — falling back to ${DEFAULT_KNN_K}.`,
+    );
+    knnK = DEFAULT_KNN_K;
+  }
+
+  if (maxCandidatePairsPerRun !== null &&
+      (!Number.isInteger(maxCandidatePairsPerRun) || maxCandidatePairsPerRun < 1)) {
+    log(
+      `[candidate-selection-governance] consolidation.maxCandidatePairsPerRun=` +
+      `${JSON.stringify(maxCandidatePairsPerRun)} is not a positive integer or null — falling back to ` +
+      'null (off).',
+    );
+    maxCandidatePairsPerRun = null;
+  }
+
+  if (candidateSelection === consolidation.candidateSelection && knnK === consolidation.knnK
+      && maxCandidatePairsPerRun === consolidation.maxCandidatePairsPerRun) {
+    return consolidation;
+  }
+  return { ...consolidation, candidateSelection, knnK, maxCandidatePairsPerRun };
+}
+
+/**
  * FEAT-493 (scaffolding slice): `retention.mode` is a closed 3-value enum,
  * same governance concern `applyDurabilityGateGovernance` already documents
  * — config.yaml is hand-parsed scalars with no schema, so a typo'd mode
@@ -1567,7 +1681,7 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
     ...merged,
     search: applyFusionGovernance(merged.search),
     distill: applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill))),
-    consolidation: applyContradictionDetectionGovernance(merged.consolidation),
+    consolidation: applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation)),
     audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),
     retention: applyRetentionGovernance(merged.retention),

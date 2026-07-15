@@ -113,6 +113,7 @@ import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
 import { checkEntityLinkRate } from './entity-link-rate.js';
 import { checkVecIndex } from './vec-index.js';
 import { checkConsolidationJudgeTelemetry } from './consolidation-judge.js';
+import { checkConsolidationRunCoverage } from './consolidation-run.js'; // P2.1 stabilization — additive, note for merge
 import { checkAutoCapture } from './auto-capture.js';
 import { checkProxyCapture } from './proxy-capture.js';
 import { checkProxyCaptureReminder } from './proxy-capture-reminder.js';
@@ -213,6 +214,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkEntityLinkRate(dataDir, encryptionEnabled),
     checkVecIndex(dataDir, encryptionEnabled),
     checkConsolidationJudgeTelemetry(dataDir, encryptionEnabled),
+    checkConsolidationRunCoverage(dataDir, encryptionEnabled), // P2.1 stabilization — additive, note for merge
     checkAutoCapture(dataDir, opts.autoCaptureEnabled ?? false, encryptionEnabled),
     checkProxyCapture(
       dataDir,

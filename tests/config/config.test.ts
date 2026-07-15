@@ -6,6 +6,7 @@ import {
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
   applyAudioModeGovernance,
+  applyCandidateSelectionGovernance,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -63,6 +64,25 @@ describe('loadConfig', () => {
   it('consolidation.autoAcceptThreshold can be overridden', () => {
     const cfg = loadConfig({ consolidation: { autoAcceptThreshold: 0.9 } } as any);
     expect(cfg.consolidation.autoAcceptThreshold).toBe(0.9);
+  });
+
+  // P2.1 stabilization: k-NN candidate selection defaults OFF ('full' —
+  // byte-identical to pre-P2.1 behavior).
+  it("consolidation.candidateSelection defaults to 'full', knnK to 30, maxCandidatePairsPerRun to null", () => {
+    const cfg = loadConfig(undefined);
+    expect(cfg.consolidation.candidateSelection).toBe('full');
+    expect(cfg.consolidation.knnK).toBe(30);
+    expect(cfg.consolidation.maxCandidatePairsPerRun).toBeNull();
+    expect(defaultConfig().consolidation.candidateSelection).toBe('full');
+  });
+
+  it('consolidation.candidateSelection/knnK/maxCandidatePairsPerRun can be overridden', () => {
+    const cfg = loadConfig({
+      consolidation: { candidateSelection: 'knn', knnK: 50, maxCandidatePairsPerRun: 5000 },
+    } as any);
+    expect(cfg.consolidation.candidateSelection).toBe('knn');
+    expect(cfg.consolidation.knnK).toBe(50);
+    expect(cfg.consolidation.maxCandidatePairsPerRun).toBe(5000);
   });
 
   // FEAT-455 / ADR-012 decision 4: default OFF, never enabled implicitly.
@@ -304,6 +324,69 @@ describe('applyDurabilityGateGovernance', () => {
   it('loadConfig leaves a valid distill.durabilityGate untouched', () => {
     const cfg = loadConfig({ distill: { durabilityGate: 'strict' } } as any);
     expect(cfg.distill.durabilityGate).toBe('strict');
+  });
+});
+
+// P2.1 stabilization: consolidation.candidateSelection is a closed 2-value
+// enum, same config.yaml-has-no-schema governance concern as
+// durabilityGate/audio.mode — an invalid/typo value (or an out-of-range
+// knnK/maxCandidatePairsPerRun) must fall back to its documented default
+// with a WARN, never silently pass through.
+describe('applyCandidateSelectionGovernance', () => {
+  const base = {
+    autoAcceptThreshold: null,
+    contradictionDetection: { mode: 'off' as const, minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 300_000 },
+    candidateSelection: 'full' as const,
+    knnK: 30,
+    maxCandidatePairsPerRun: null,
+  };
+
+  it('leaves a valid config byte-identical (governance is a guard, not a behavior change)', () => {
+    expect(applyCandidateSelectionGovernance(base)).toEqual(base);
+    const knnCfg = { ...base, candidateSelection: 'knn' as const, knnK: 50, maxCandidatePairsPerRun: 1000 };
+    expect(applyCandidateSelectionGovernance(knnCfg)).toEqual(knnCfg);
+  });
+
+  it("falls back to 'full' and logs why on an invalid/typo candidateSelection", () => {
+    const cfg = { ...base, candidateSelection: 'k-nn' as any };
+    const logs: string[] = [];
+    const governed = applyCandidateSelectionGovernance(cfg, { log: (m) => logs.push(m) });
+
+    expect(governed.candidateSelection).toBe('full');
+    expect(logs.some(m => m.includes('candidateSelection') && m.includes('k-nn'))).toBe(true);
+  });
+
+  it('falls back to knnK=30 on a non-positive-integer knnK', () => {
+    for (const bad of [0, -5, 2.5]) {
+      const cfg = { ...base, knnK: bad };
+      const logs: string[] = [];
+      const governed = applyCandidateSelectionGovernance(cfg, { log: (m) => logs.push(m) });
+      expect(governed.knnK).toBe(30);
+      expect(logs.some(m => m.includes('knnK'))).toBe(true);
+    }
+  });
+
+  it('falls back to maxCandidatePairsPerRun=null on a non-positive-integer value (null itself stays null)', () => {
+    expect(applyCandidateSelectionGovernance(base).maxCandidatePairsPerRun).toBeNull();
+    for (const bad of [0, -1, 2.5]) {
+      const cfg = { ...base, maxCandidatePairsPerRun: bad };
+      const logs: string[] = [];
+      const governed = applyCandidateSelectionGovernance(cfg, { log: (m) => logs.push(m) });
+      expect(governed.maxCandidatePairsPerRun).toBeNull();
+      expect(logs.some(m => m.includes('maxCandidatePairsPerRun'))).toBe(true);
+    }
+  });
+
+  it('loadConfig wires applyCandidateSelectionGovernance in: an invalid override comes back "full"', () => {
+    const cfg = loadConfig({ consolidation: { candidateSelection: 'bogus' as any } } as any);
+    expect(cfg.consolidation.candidateSelection).toBe('full');
+  });
+
+  it('loadConfig leaves a valid consolidation.candidateSelection untouched', () => {
+    const cfg = loadConfig({ consolidation: { candidateSelection: 'knn', knnK: 40, maxCandidatePairsPerRun: 2000 } } as any);
+    expect(cfg.consolidation.candidateSelection).toBe('knn');
+    expect(cfg.consolidation.knnK).toBe(40);
+    expect(cfg.consolidation.maxCandidatePairsPerRun).toBe(2000);
   });
 });
 
