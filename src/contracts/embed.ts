@@ -35,7 +35,7 @@ export const DEFAULT_EMBED_DIM = 1024;
  * configured-vs-actual dim match at startup (embed-probe.ts).
  */
 export interface EmbedProvider {
-  readonly name: 'ollama' | 'azure-openai';
+  readonly name: 'ollama' | 'azure-openai' | 'onnx';
   readonly model: string;
   readonly dim: number;
   /**
@@ -95,9 +95,21 @@ export interface EmbedProvider {
  * relevant passages:"), bge-m3 dense retrieval takes queries and passages
  * with no instruction prefix on either side. Do not add one without a
  * re-verified source. See docs/research/20260714-feat-501-embed-model-ab.md.
+ *
+ * `mxbai-embed-large-v1`: ADR-018 SLICE-1 — the canonical
+ * `config.embedding.model` string for the `onnx` provider
+ * (`OnnxEmbedProvider`'s default `model` label), distinct from the Ollama
+ * entry's tag-style `mxbai-embed-large` key even though both resolve to the
+ * same underlying model weights (Ollama's GGUF vs. this repo's first-party
+ * ONNX export) and therefore the same query-side instruction string per the
+ * same model card. Deliberately an explicit second entry, not a rename of
+ * the Ollama key or a fallback through it — ADR-018 flags this exact
+ * resolution as a blocking SLICE-1 decision so the prefix can never
+ * silently fall through to `''` for the onnx path.
  */
 export const QUERY_PREFIX_BY_MODEL: Readonly<Record<string, string>> = {
   'mxbai-embed-large': 'Represent this sentence for searching relevant passages: ',
+  'mxbai-embed-large-v1': 'Represent this sentence for searching relevant passages: ',
   'bge-m3': '',
 };
 

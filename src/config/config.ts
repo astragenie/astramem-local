@@ -44,7 +44,10 @@ export interface Config {
     extraction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
   };
   embedding: {
-    provider: 'ollama' | 'azure-openai';
+    /** ADR-018 SLICE-1: 'onnx' widened in — an in-process ONNX Runtime
+     * (CPU execution provider) embedder, opt-in only. `defaultConfig()`
+     * below stays `'ollama'`; this ADR does not flip the shipped default. */
+    provider: 'ollama' | 'azure-openai' | 'onnx';
     model: string;
     /** FEAT-409: parameterized — single source of truth is
      * DEFAULT_EMBED_DIM (src/contracts/embed.ts). Changing this for a
@@ -81,6 +84,26 @@ export interface Config {
    * session instead of an API key. See providers/llm/codex-subscription.ts
    * and docs/providers.md for the ToS-gray-zone warning before enabling. */
   codexSubscription: { authPath?: string };
+  /** ADR-018 SLICE-1 — optional block for the `onnx` embedding provider
+   * (`src/providers/embed/onnx.ts`). Absent/undefined is valid: every field
+   * has an in-code default (pinned HF model+revision, dtype 'q8', 4
+   * threads) so `provider: 'onnx'` alone is a complete config. Only
+   * meaningful when `embedding.provider === 'onnx'`; ignored otherwise. */
+  onnxEmbed?: {
+    /** Override the default local weight-cache directory. Unset defers to
+     * `@huggingface/transformers`' own cache resolution (S2 wires this to
+     * `<dataDir>/models/onnx/` per ADR-018 — deferred). */
+    cacheDir?: string;
+    /** Explicit local filesystem override — takes precedence over any
+     * download when set (offline/air-gapped installs). */
+    modelPath?: string;
+    /** ORT intraOpNumThreads cap — never unbounded (mirrors this repo's
+     * NUM_CTX_CAP discipline for background-daemon resource use). Defaults
+     * to 4 inside OnnxEmbedProvider when unset. */
+    numThreads?: number;
+    /** ORT weight precision — 'q8' (default, ~337MB) | 'fp16' | 'fp32'. */
+    dtype?: 'q8' | 'fp16' | 'fp32';
+  };
   /** Fusion weights — α bm25, β cosine, γ importance, δ freshness,
    * ε usefulness (ADR-010 v1.x: recall_used/memory_corrected events feed
    * ranking; atoms with no signal score a neutral 0.5, so ε never reshuffles

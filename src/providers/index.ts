@@ -8,6 +8,7 @@ import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from './llm/codex-subscription.js';
 import { OllamaEmbedProvider } from './embed/ollama.js';
 import { AzureOpenAIEmbedProvider } from './embed/azure-openai.js';
+import { OnnxEmbedProvider } from './embed/onnx.js';
 
 export interface ProviderSet {
   llm: {
@@ -93,6 +94,23 @@ function buildEmbedProvider(config: Config): EmbedProvider {
 
   if (provider === 'ollama') {
     return new OllamaEmbedProvider({ baseUrl: config.ollama.baseUrl, model, dim, queryPrefix });
+  }
+
+  if (provider === 'onnx') {
+    // ADR-018 SLICE-1: opt-in, in-process ONNX embedder. `model`/`dim`/
+    // `queryPrefix` come from config.embedding same as the other two
+    // providers; the onnx-specific knobs (cache/model path, thread cap,
+    // dtype) come from the separate config.onnxEmbed block since they have
+    // no Ollama/Azure equivalent.
+    return new OnnxEmbedProvider({
+      model,
+      dim,
+      queryPrefix,
+      cacheDir: config.onnxEmbed?.cacheDir,
+      modelPath: config.onnxEmbed?.modelPath,
+      numThreads: config.onnxEmbed?.numThreads,
+      dtype: config.onnxEmbed?.dtype,
+    });
   }
 
   const endpoint = config.azure.endpoint ?? process.env.AZURE_OPENAI_ENDPOINT;
