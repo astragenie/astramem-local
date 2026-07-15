@@ -51,8 +51,29 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
   };
 
   return async (app: FastifyInstance) => {
-    app.get('/health', async () => {
+    // Shared response builder. `fresh: false` (GET /health — the liveness
+    // endpoint, watchdog target) prefers the pre-computed snapshot in
+    // healthState.dbSnapshot and NEVER touches the DB when it is present;
+    // `fresh: true` (GET /health/full — dashboard/human use) always
+    // recomputes, byte-compatible with the old per-request behavior.
+    const buildBody = (fresh: boolean) => {
       const rate = cachedUsefulnessRate();
+      const snap = !fresh && healthState?.dbSnapshot ? healthState.dbSnapshot : null;
+      const dbBlock = snap
+        ? {
+            queue: snap.queue,
+            pending_proposals: snap.pending_proposals,
+            memory_health: snap.memory_health,
+            ...(snap.disk_free_bytes !== null ? { disk_free_bytes: snap.disk_free_bytes } : {}),
+            // P1.3: staleness is visible, never silently fresh-looking.
+            snapshot_age_ms: Date.now() - snap.computedAt,
+          }
+        : {
+            ...(db
+              ? { queue: queueCounts(db), pending_proposals: pendingProposals(db), memory_health: memoryHealthBlock(db) }
+              : {}),
+            ...(healthState?.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
+          };
       return {
         ok: true,
         version: PKG_VERSION,
@@ -103,14 +124,34 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
               // A2-lite (ADR-015): last unattended doctor-schedule result —
               // readable without a human present, per the ADR's binding rule.
               doctor: healthState.doctor,
-              ...(db
-                ? { queue: queueCounts(db), pending_proposals: pendingProposals(db), memory_health: memoryHealthBlock(db) }
-                : {}),
-              ...(healthState.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
+              ...dbBlock,
             }
           : {}),
       };
-    });
+    };
+
+    app.get('/health', async () => buildBody(false));
+    // Always-fresh variant for dashboards/humans — identical shape minus
+    // snapshot_age_ms; the liveness endpoint above is the one the watchdog
+    // and monitors must keep hitting.
+    app.get('/health/full', async () => buildBody(true));
+  };
+}
+
+/**
+ * Computes the DB-backed /health block off the request path (P1.3) —
+ * serve.ts calls this on an unref'd 30s interval and stores the result in
+ * healthState.dbSnapshot. Same functions the fresh path uses; each degrades
+ * to a safe default rather than throwing (see their doc comments), so the
+ * refresher can never crash the daemon.
+ */
+export function computeHealthDbSnapshot(db: DB, dataDir?: string): import('../health-state.js').HealthDbSnapshot {
+  return {
+    computedAt: Date.now(),
+    queue: queueCounts(db),
+    pending_proposals: pendingProposals(db),
+    memory_health: memoryHealthBlock(db),
+    disk_free_bytes: dataDir ? diskFree(dataDir) : null,
   };
 }
 

@@ -193,6 +193,12 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const EVENT_LOOP_LAG_WINDOW_MS = 15 * 60 * 1000;
   const eventLoopLagResetTimer = setInterval(() => eventLoopLag.reset(), EVENT_LOOP_LAG_WINDOW_MS);
   eventLoopLagResetTimer.unref();
+  // P1.3: pre-compute /health's DB-backed block off the request path so the
+  // liveness endpoint never runs SQL per probe (watchdog hits it every 180s;
+  // under DB contention per-request queries queue the probe behind whatever
+  // holds the connection — the 2026-07-15 amplifier class). Refresher keeps
+  // the last good snapshot on error; /health/full stays always-fresh.
+  let healthSnapshotTimer: NodeJS.Timeout | null = null;
   let providers: ProviderSet | MockProviderSet;
   const useMock = process.env.ASTRA_MEMORY_MOCK_PROVIDERS === '1';
   if (useMock) {
@@ -228,6 +234,24 @@ export async function serve(opts: ServeOpts): Promise<void> {
   }
 
   const app = await buildApp({ db, token, embed: providers.embed, config: cfg, healthState });
+
+  // P1.3 refresher (see healthSnapshotTimer declaration above): immediate
+  // first compute so /health carries the block right from boot, then every
+  // 30s. Keep-last-good on failure — a refresh glitch must never blank the
+  // block or crash anything.
+  {
+    const { computeHealthDbSnapshot } = await import('../server/routes/health.js');
+    const refreshHealthSnapshot = (): void => {
+      try {
+        healthState.dbSnapshot = computeHealthDbSnapshot(db, dataDir !== ':memory:' ? dataDir : undefined);
+      } catch (err) {
+        console.warn(`${ts()} [astramem-local] health snapshot refresh failed (kept last good): ${err instanceof Error ? err.message : String(err)}`);
+      }
+    };
+    refreshHealthSnapshot();
+    healthSnapshotTimer = setInterval(refreshHealthSnapshot, 30_000);
+    healthSnapshotTimer.unref();
+  }
 
   // Wire up the worker with extended context so distillation runs
   const registry = new HandlerRegistry();
@@ -662,6 +686,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       stopFrequentDoctor?.();
       clearInterval(eventLoopLagResetTimer);
       eventLoopLag.disable();
+      if (healthSnapshotTimer) clearInterval(healthSnapshotTimer);
       if (walTimer) clearInterval(walTimer);
       if (consolidateTimer) clearInterval(consolidateTimer);
       if (cleanupTimer) clearInterval(cleanupTimer);

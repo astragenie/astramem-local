@@ -56,8 +56,28 @@ export interface HealthState {
    * runs. See src/server/event-loop-lag.ts.
    */
   eventLoopLag?: import('./event-loop-lag.js').EventLoopLagMonitor;
+  /**
+   * Pre-computed DB-backed /health fields (stabilization plan P1.3),
+   * refreshed off the request path by serve.ts every 30s. When present,
+   * the /health handler reads this instead of running its four sync SQLite
+   * queries per request — under DB contention those queries queue the
+   * liveness endpoint behind whatever else holds the connection, and the
+   * watchdog probes /health every 180s (2026-07-15 incident amplifier
+   * class). /health/full always computes fresh. `computedAt` is surfaced as
+   * snapshot_age_ms so staleness is visible, never silently fresh-looking.
+   */
+  dbSnapshot?: HealthDbSnapshot;
   status(): DaemonStatus;
   uptimeSeconds(): number;
+}
+
+/** Shape of the pre-computed block — mirrors the /health fields it feeds. */
+export interface HealthDbSnapshot {
+  computedAt: number;
+  queue: Record<string, number>;
+  pending_proposals: number;
+  memory_health: object;
+  disk_free_bytes: number | null;
 }
 
 export function createHealthState(now: () => number = Date.now): HealthState {
