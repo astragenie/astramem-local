@@ -33,6 +33,7 @@ function buildFullyPopulatedConfig(): Config {
     azure: { endpoint: 'https://my.openai.azure.com', deployment: 'gpt41', apiVersion: '2025-01-01' },
     openaiCompatible: { baseUrl: 'https://api.example.com/v1', apiKeyEnv: 'MY_CUSTOM_KEY_ENV' },
     codexSubscription: { authPath: '/home/user/.codex/auth.json' },
+    onnxEmbed: { cacheDir: '/var/cache/onnx', modelPath: '/opt/models/mxbai.onnx', numThreads: 2, dtype: 'fp16', pooling: 'mean' },
     search: {
       alpha: 0.25, beta: 0.35, gamma: 0.15, delta: 0.05, epsilon: 0.2, zeta: 0.05, eta: 0.03,
       governance: { maxComponentWeight: 0.8 },
@@ -126,7 +127,7 @@ describe('configToYaml', () => {
     const yaml = configToYaml(cfg);
     expect(yaml).toContain('port: 7777');
     expect(yaml).toContain('embedding:');
-    expect(yaml).toContain('  provider: ollama');
+    expect(yaml).toContain('  provider: onnx');
     expect(yaml).toContain('vector:');
     expect(yaml).toContain('  store: sqlite-vec');
     expect(yaml).toContain('budget:');
@@ -437,7 +438,7 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     // correctly, unchanged in shape/value by this patch.
     expect(yaml).toContain('port: 7777');
     expect(yaml).toContain("  host: '127.0.0.1'"); // quoted: yamlScalar quotes leading-digit strings
-    expect(yaml).toContain('  provider: ollama');
+    expect(yaml).toContain('  provider: onnx');
     expect(yaml).toContain('  store: sqlite-vec');
     expect(yaml).toContain('  daily_usd: 10');
     expect(yaml).toContain('  alpha: 0.4');

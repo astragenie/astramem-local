@@ -19,7 +19,6 @@ import type { EmbedProvider } from '../../src/contracts/index.js';
 import { QUERY_PREFIX_BY_MODEL, resolveEmbedQueryPrefix } from '../../src/contracts/embed.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { getProviders } from '../../src/providers/index.js';
-import { OllamaEmbedProvider } from '../../src/providers/embed/ollama.js';
 
 const SEARCH_WEIGHTS = { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1 };
 const MXBAI_PREFIX = 'Represent this sentence for searching relevant passages: ';
@@ -242,7 +241,10 @@ describe('RECALL-S1: config wiring end-to-end via getProviders', () => {
     expect(cfg.embedding.queryPrefix).toBeUndefined();
 
     const { embed } = getProviders(cfg);
-    expect(embed).toBeInstanceOf(OllamaEmbedProvider);
+    // ADR-018: the shipped default embed provider is now onnx (was ollama).
+    // The assertion that matters here is the PREFIX resolution, which is
+    // provider-independent (resolveEmbedQueryPrefix keys on the model name).
+    expect(embed.name).toBe('onnx');
     expect(embed.queryPrefix).toBe(MXBAI_PREFIX);
   });
 

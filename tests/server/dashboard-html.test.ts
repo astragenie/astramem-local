@@ -325,7 +325,10 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
     it('renders provider/model/dim from config — never blank, unlike the old provider_state-backed widget', () => {
       const html = renderDashboard(baseData({ health: null }), config);
       expect(html).toContain('<h3>Embedding</h3>');
-      expect(html).toContain('ollama/mxbai-embed-large');
+      // Derived from the config fixture rather than hardcoded so a default
+      // embed-provider flip (ollama -> onnx, ADR-018) can't silently break
+      // the REAL assertion: the strip renders provider/model, never blank.
+      expect(html).toContain(`${config.embedding.provider}/${config.embedding.model}`);
       expect(html).toContain('1024-dim');
       // The old "no providers registered" empty state must be gone entirely
       // — the panel always has something true to show now.

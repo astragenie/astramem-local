@@ -348,6 +348,37 @@ export async function serve(opts: ServeOpts): Promise<void> {
     stopPreflight = startEmbedPreflight(providers.embed as EmbedProvider, healthState, schemaDim);
   }
 
+  // ADR-018 SLICE-2 — ONNX startup preload. `startEmbedPreflight` above
+  // already indirectly warms the ONNX backend for EVERY provider generically
+  // (embedProbe calls provider.embed(['ping'], ...), which triggers
+  // OnnxEmbedProvider's lazy getBackend() load as a side effect) — but that
+  // path is a health probe, gated behind `!opts.strictPreflight`, not a
+  // stated warm-up contract. This is an explicit, onnx-scoped preload so the
+  // FIRST real search/distill embed() call after boot doesn't pay cold
+  // session-load / possible first-run weight-download latency, independent
+  // of the preflight's own gating/backoff cadence. ONLY wired for
+  // `provider: 'onnx'` — never ollama/azure-openai, so an operator who
+  // hasn't opted in never pays for triggering the multi-hundred-MB
+  // `@huggingface/transformers` dependency chain at boot. Runs in the
+  // BACKGROUND (app.listen already resolved above — this never blocks port
+  // bind), same degraded-start philosophy as startEmbedPreflight: a failure
+  // WARNs loudly and lets the next real embed() call retry the lazy load
+  // inline (OnnxEmbedProvider.getBackend() never memoizes a failed load), it
+  // never crashes boot — mirrors CodexSubscriptionLLMProvider's "no
+  // construction-time throw" posture (providers/index.ts).
+  if (!useMock && cfg.embedding.provider === 'onnx' && dataDir !== ':memory:') {
+    const embedProvider = providers.embed as EmbedProvider & { preload?: () => Promise<void> };
+    if (typeof embedProvider.preload === 'function') {
+      void embedProvider.preload().then(
+        () => console.log(`${ts()} [astramem-local] onnx embed preload ok (session warmed at boot)`),
+        (err: unknown) => console.warn(
+          `${ts()} [astramem-local] WARNING: onnx embed preload failed at boot — the first real embed ` +
+          `call will retry the load inline instead: ${err instanceof Error ? err.message : String(err)}`,
+        ),
+      );
+    }
+  }
+
   // Unattended doctor scheduling (A2-lite, ADR-015): src/doctor/schedule.ts's
   // two-tier split — cheap DB-only checks on a frequent cadence; the LLM
   // chat probe + embed probe piggyback the EXISTING 24h cleanup tick below
@@ -625,6 +656,22 @@ export async function serve(opts: ServeOpts): Promise<void> {
       if (shipper) await shipper.stop();
       if (vecSearchHost) await vecSearchHost.stop(); // terminate the KNN worker's read-only connection
       await worker.stop();         // drain in-flight tick before closing DB
+      // ADR-019 Decision 2(d): OnnxWorkerHostProvider owns a live
+      // worker_thread once spawned (preload() above, or a lazy first
+      // embed()) — terminate it on shutdown so the process can exit cleanly
+      // instead of leaving an orphaned OS thread. Duck-typed (mirrors the
+      // preload() check above) since ollama/azure-openai providers have no
+      // such handle and must not be touched.
+      // ORDER MATTERS (review of ab38d7c, MEDIUM): terminate AFTER
+      // worker.stop() — a job handler mid-flight may be awaiting an embed()
+      // through this provider, and terminating first would force-reject it,
+      // turning a graceful drain into a shutdown-induced job failure.
+      const terminableEmbed = providers.embed as EmbedProvider & { terminate?: () => Promise<void> };
+      if (typeof terminableEmbed.terminate === 'function') {
+        await terminableEmbed.terminate().catch((err: unknown) => {
+          console.warn(`${ts()} [astramem-local] onnx worker terminate failed during shutdown: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
       try {
         if (dataDir !== ':memory:') db.pragma('wal_checkpoint(TRUNCATE)');
       } catch { /* close() below still checkpoints on last connection */ }
