@@ -386,19 +386,35 @@ describe('service shim — crash-loop visibility (FEAT-440)', () => {
     //
     // stdout (stdio[1]) must ALSO never be 'inherit': under a Scheduled Task /
     // headless service launch there is no valid parent console handle, so an
-    // inherited stdout fd fails the daemon's first write before its own file
-    // logger opens — the "service can't keep the daemon alive" bug. It is
-    // routed to the same capture fd as stderr (captureStdio), falling back to
-    // 'ignore', never 'inherit'.
+    // inherited stdout fd fails the daemon's first write and kills it — the
+    // "service can't keep the daemon alive" bug. It is routed to its own
+    // persistent stdout-log fd (stdoutStdio), falling back to 'ignore', never
+    // 'inherit'.
     writeFileSync(fakeEntry, 'process.exit(0);');
     writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 1 }, paths);
     const launcherSrc = readFileSync(paths.launcherPath, 'utf8');
-    expect(launcherSrc).toContain("stdio: ['ignore', 'ignore', stderrStdio]");
-    // Regression guard: the stderr fd fallback is 'ignore', never 'inherit'.
-    // Together with the stdio-array assertion above (stdin + stdout both
-    // 'ignore', stderr → capture fd) this proves no 'inherit' reaches the
+    expect(launcherSrc).toContain("stdio: ['ignore', stdoutStdio, stderrStdio]");
+    // Regression guard: both fd fallbacks are 'ignore', never 'inherit'.
+    // Together with the stdio-array assertion above (stdin 'ignore', stdout →
+    // stdout-log fd, stderr → capture fd) this proves no 'inherit' reaches the
     // daemon's stdio triplet under a headless launch.
+    expect(launcherSrc).toContain("stdoutFd === null ? 'ignore' : stdoutFd");
     expect(launcherSrc).toContain("stderrFd === null ? 'ignore' : stderrFd");
+  });
+
+  it('captures the daemon stdout to a persistent, tailable daemon-stdout.log — operator visibility (stdout is redirected to a file, not inherited or discarded)', () => {
+    const paths = shimPaths(dir);
+    const { logsDir } = exitHistoryPaths(dir);
+    // The daemon writes its human-readable status to stdout (not pino). Under
+    // the service the launcher redirects that to daemon-stdout.log so an
+    // operator can still see a healthy daemon's output.
+    const fakeEntry = join(dir, 'stdout-entry.cjs');
+    writeFileSync(fakeEntry, "process.stdout.write('serving on 127.0.0.1:4242\\n'); process.exit(0);");
+    writeShim({ nodeBin: process.execPath, entryJs: fakeEntry, port: 4242 }, paths);
+    const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
+    expect(res.status).toBe(0);
+    const stdoutLog = readFileSync(join(logsDir, 'daemon-stdout.log'), 'utf8');
+    expect(stdoutLog).toContain('serving on 127.0.0.1:4242');
   });
 
   it('never throws when the logs dir cannot be created — daemon spawn proceeds unaffected (AC-4)', () => {
