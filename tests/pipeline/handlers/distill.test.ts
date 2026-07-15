@@ -13,6 +13,7 @@ import type { LLMProvider, EmbedProvider, ChatMsg, ChatOpts, ChatResult, LLMHeal
 import {
   EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
+  EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
 } from '../../../src/distill/prompts/extract.js';
 
 // ---------------------------------------------------------------------------
@@ -381,9 +382,18 @@ describe('distillHandler', () => {
 
     await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, conversationalCtx);
 
+    // Dual-pass extraction is the shipped default (extractionPasses: 2,
+    // #348): pass 1 carries the resolved profile prompt — the thing this
+    // test proves threads through — and pass 2 always sends the fixed
+    // specifics-sweeper prompt regardless of profile. Any other prompt is a
+    // threading regression.
     expect(extractionSystemPrompts.length).toBeGreaterThanOrEqual(1);
+    expect(extractionSystemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL);
     for (const sentPrompt of extractionSystemPrompts) {
-      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL);
+      expect([
+        EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
+        EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+      ]).toContain(sentPrompt);
     }
   });
 
@@ -406,9 +416,15 @@ describe('distillHandler', () => {
 
     await distillHandler.handle({ transcript_id: transcriptId, session_id: sessionId }, engineeringCtx);
 
+    // Same dual-pass caveat as the conversational test above: pass 1 must
+    // carry the v3 engineering prompt; pass 2 is the fixed specifics sweeper.
     expect(extractionSystemPrompts.length).toBeGreaterThanOrEqual(1);
+    expect(extractionSystemPrompts[0]).toBe(EXTRACTION_SYSTEM_PROMPT_V3);
     for (const sentPrompt of extractionSystemPrompts) {
-      expect(sentPrompt).toBe(EXTRACTION_SYSTEM_PROMPT_V3);
+      expect([
+        EXTRACTION_SYSTEM_PROMPT_V3,
+        EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+      ]).toContain(sentPrompt);
     }
   });
 });
