@@ -18,6 +18,8 @@
  */
 
 import pino from 'pino';
+import { statSync, renameSync, readdirSync, unlinkSync } from 'node:fs';
+import { join } from 'node:path';
 import { isSensitiveKey } from './scrub.js';
 
 /**
@@ -69,21 +71,90 @@ function serializeError(err: unknown): Record<string, unknown> {
 
 let transport: pino.TransportSingleOptions | undefined;
 
-// Service mode (ASTRA_LOG_DIR set by the shim launcher): rotate JSON logs to
-// <ASTRA_LOG_DIR>/daemon.log, 10MB per file, 5 files retained. Without this,
-// a scheduler-supervised daemon's stdout either vanishes or grows unbounded
-// under redirection. Foreground runs keep stdout.
-const logDir = process.env['ASTRA_LOG_DIR'];
-if (logDir) {
-  transport = {
-    target: 'pino-roll',
-    options: {
-      file: `${logDir.replace(/[\\/]+$/, '')}/daemon.log`,
-      size: '10m',
-      limit: { count: 5 },
-      mkdir: true,
-    },
+/** Rotation policy for the in-process service-mode log stream (see below). */
+const LOG_ROTATE_MAX_BYTES = 10 * 1024 * 1024;
+const LOG_ROTATE_KEEP = 5;
+const LOG_ROTATE_CHECK_MS = 60_000;
+/** Live file the daemon writes; rotated copies are `daemon.live.<epochMs>.log`.
+ *  Both shapes match the dashboard logs page's `daemon.*.log` discovery (it
+ *  picks newest-by-mtime, which is always the live file). */
+const LIVE_LOG_BASENAME = 'daemon.live.log';
+
+/**
+ * Service-mode log stream: an IN-PROCESS async SonicBoom destination plus a
+ * tiny self-rotation sweep — deliberately NOT pino.transport('pino-roll').
+ *
+ * pino-roll runs in a worker thread connected via thread-stream, whose write
+ * path blocks the MAIN thread in Atomics.wait once the shared ring buffer
+ * fills faster than the worker drains. On this box the worker demonstrably
+ * stalls: a prior `_flushSync took too long (10s)` FATAL, and a live-captured
+ * 2026-07-15 incident — event loop frozen 23+ minutes, 0 CPU, inspector
+ * unattachable (blocked in native code, not JS), onset always right after a
+ * log burst ~80s post-boot. A memory daemon's liveness must never depend on a
+ * log-transport worker draining. SonicBoom with `sync: false` buffers
+ * in-process and flushes on the event loop: a stalled disk grows the buffer,
+ * it never blocks the loop.
+ *
+ * Rotation (pino-roll's job, now ours): every LOG_ROTATE_CHECK_MS, if the live
+ * file exceeds LOG_ROTATE_MAX_BYTES, rename it aside with an epoch stamp,
+ * `reopen()` the destination (SonicBoom re-creates the live file), and prune
+ * rotated copies beyond LOG_ROTATE_KEEP. Every step is best-effort: on
+ * Windows the rename fails with EPERM/EBUSY while another process holds the
+ * file open (a `tail -f`, the dashboard reader) — we keep writing to the
+ * unrotated file and retry next sweep. Rotation failure must never take the
+ * daemon down or block a write.
+ *
+ * Exported for tests.
+ */
+export interface ServiceLogStreamOpts {
+  /** Test seams — production callers use the defaults. */
+  maxBytes?: number;
+  keep?: number;
+  checkMs?: number;
+}
+
+export function createServiceLogStream(
+  dir: string,
+  opts: ServiceLogStreamOpts = {},
+): pino.DestinationStream & { flushSync: () => void; reopen: () => void } {
+  const maxBytes = opts.maxBytes ?? LOG_ROTATE_MAX_BYTES;
+  const keep = opts.keep ?? LOG_ROTATE_KEEP;
+  const checkMs = opts.checkMs ?? LOG_ROTATE_CHECK_MS;
+  const livePath = join(dir, LIVE_LOG_BASENAME);
+  const dest = pino.destination({ dest: livePath, sync: false, mkdir: true });
+
+  const rotate = (): void => {
+    try {
+      if (statSync(livePath).size < maxBytes) return;
+      renameSync(livePath, join(dir, `daemon.live.${Date.now()}.log`));
+      dest.reopen();
+      // Prune old rotated copies (never the live file), oldest first.
+      const rotated = readdirSync(dir)
+        .filter(n => /^daemon\.live\.\d+\.log$/.test(n))
+        .sort();
+      for (const stale of rotated.slice(0, Math.max(0, rotated.length - keep))) {
+        try { unlinkSync(join(dir, stale)); } catch { /* best-effort */ }
+      }
+    } catch {
+      // Missing file / rename blocked by a concurrent reader / transient FS
+      // error — retry on the next sweep. Never throw from a log-housekeeping
+      // timer.
+    }
   };
+  setInterval(rotate, checkMs).unref();
+
+  return dest;
+}
+
+// Service mode (ASTRA_LOG_DIR set by the shim launcher): JSON logs to
+// <ASTRA_LOG_DIR>/daemon.live.log via the in-process stream above, 10MB per
+// file, 5 rotated files retained. Without this, a scheduler-supervised
+// daemon's stdout either vanishes or grows unbounded under redirection.
+// Foreground runs keep stdout.
+const logDir = process.env['ASTRA_LOG_DIR'];
+let serviceStream: pino.DestinationStream | undefined;
+if (logDir) {
+  serviceStream = createServiceLogStream(logDir.replace(/[\\/]+$/, ''));
 } else if (process.env['LOG_PRETTY'] === '1') {
   // pino-pretty transport: activated via LOG_PRETTY=1 (foreground dev mode).
   try {
@@ -114,10 +185,15 @@ const pinoOpts: pino.LoggerOptions = {
 
 /**
  * Root logger instance. Long-lived singleton shared across the process.
+ * Service mode uses the in-process SonicBoom stream (never a worker-thread
+ * transport — see createServiceLogStream); LOG_PRETTY keeps the pino-pretty
+ * transport (dev-only foreground, not a daemon-stability surface).
  */
-export const logger: pino.Logger = transport
-  ? pino(pinoOpts, pino.transport(transport))
-  : pino(pinoOpts);
+export const logger: pino.Logger = serviceStream
+  ? pino(pinoOpts, serviceStream)
+  : transport
+    ? pino(pinoOpts, pino.transport(transport))
+    : pino(pinoOpts);
 
 /**
  * Create a child logger with bound fields.

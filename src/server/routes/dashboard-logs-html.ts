@@ -6,11 +6,13 @@
  * auto-refresh via <meta http-equiv="refresh">, not polling.
  *
  * Log source resolution (CLAUDE.md "MCP transport" / service-mode notes):
- *   - Service mode: ASTRA_LOG_DIR set, pino-roll writes JSON lines to
- *     `<logsDir>/daemon.<N>.log` (numbered rotation — pino-roll v4 always
- *     appends a rotation number, see node_modules/pino-roll/README.md; there
- *     is never a bare `daemon.log` on disk). We pick the NEWEST such file by
- *     mtime.
+ *   - Service mode: ASTRA_LOG_DIR set, the in-process service log stream
+ *     (src/log/logger.ts createServiceLogStream — replaced pino-roll after the
+ *     2026-07-15 thread-stream freeze incident) writes JSON lines to
+ *     `<logsDir>/daemon.live.log`, rotating to `daemon.live.<epochMs>.log`.
+ *     Legacy pino-roll `daemon.<N>.log` files may also remain on disk. All of
+ *     these match the discovery below; we pick the NEWEST by mtime, which is
+ *     always the actively-written live file.
  *   - Foreground / no ASTRA_LOG_DIR: nothing rotated lands here, but the
  *     shim's launcher (service/shim.ts) still captures raw stdout to
  *     `<logsDir>/daemon-stdout.log` when running under the service shim. We
