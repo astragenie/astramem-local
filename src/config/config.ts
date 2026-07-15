@@ -273,15 +273,20 @@ export interface Config {
     batchSize: number;
     intervalMs: number;
     /** Hard gate on top of `enabled` (astramem-local, sync-experimental-gate
-     * slice): sync-to-astramem-cloud is currently broken (8868 events
-     * failing HTTP 400, not yet root-caused). `astramem-local pair` sets
-     * `enabled: true` in sync.json on a successful redeem — by itself that
-     * used to be enough to start shipping to the broken path. Both `enabled`
-     * (sync.json, pairing-owned) AND `experimental` (config.yaml, hand-edit
-     * only — `pair` never touches this field) must be true for the shipper
-     * to start. Default false so pairing alone can never ship broken data;
-     * see cli/serve.ts's shipper-start gate and shouldStartShipper() in
-     * sync/shipper.ts. */
+     * slice). Originally added because sync-to-astramem-cloud was broken
+     * (8868 events failing HTTP 400); that was root-caused to a YARP
+     * stale-pooled-connection bug in the shared gateway (`common` repo,
+     * commit `edf266a`, bounds `PooledConnectionLifetime`), fixed and
+     * deployed to prod 2026-07-14, and re-verified live 2026-07-15 — sync is
+     * no longer known-broken. The gate now stands as a deliberate
+     * staged-rollout safety net, not a "sync is broken" guard.
+     * `astramem-local pair` sets `enabled: true` in sync.json on a
+     * successful redeem — by itself that used to be enough to start shipping
+     * to the (then-broken) path. Both `enabled` (sync.json, pairing-owned)
+     * AND `experimental` (config.yaml, hand-edit only — `pair` never touches
+     * this field) must be true for the shipper to start. Default false so
+     * pairing alone can never ship unreviewed data; see cli/serve.ts's
+     * shipper-start gate and shouldStartShipper() in sync/shipper.ts. */
     experimental: boolean;
   };
   security: {

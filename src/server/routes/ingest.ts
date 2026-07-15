@@ -341,6 +341,19 @@ export function ingestCanonicalTranscript(
     throw new MeetingCaptionsDisabledError();
   }
 
+  // FEAT-506: route-layer default. A meeting-captions envelope that omits
+  // `extract_profile` used to leave the column NULL, which runPipeline
+  // resolves to the 'engineering' default (pipeline.ts:184) — 'engineering'
+  // runs stage-4 LLM compaction BEFORE extraction, and compaction on
+  // conversational content destroys facts including speaker names (FEAT-505
+  // live debugging). Defaulting here, not in the pipeline, protects every
+  // client that omits the field without touching the explicit-override path
+  // below. Same schema instance covers both the HTTP route and spool-drain
+  // (see the capture_source/extract_profile comments further down), so both
+  // paths get this default for free.
+  const resolvedExtractProfile =
+    data.extract_profile ?? (data.capture_source === 'meeting_captions' ? 'conversational' : null);
+
   const stmtSelectIdempotency = db.prepare<[string], { body_hash: string; summary_memory_id: string | null }>(
     'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
   );
@@ -468,7 +481,10 @@ export function ingestCanonicalTranscript(
       data.proxy_usage != null ? JSON.stringify(data.proxy_usage) : null,
       // FEAT-479 (D3 §3.2) AC-3: same "schema instance covers both the HTTP
       // route and spool-drain" note as capture_source above applies here too.
-      data.extract_profile ?? null,
+      // FEAT-506: resolvedExtractProfile applies the meeting_captions ->
+      // 'conversational' route-layer default computed above when the client
+      // omitted the field — an explicit client value always wins.
+      resolvedExtractProfile,
       capturedAtLocalDate,
       // FEAT-491 (ADR-017): platform/meeting_id describe the capture
       // session (null on every non-meeting-captions envelope, byte-identical

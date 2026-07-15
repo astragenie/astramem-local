@@ -260,10 +260,15 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // synthetic/eval daemon must never start the shipper even if some future
   // code path re-derives cfg.sync from elsewhere.
   //
-  // EXPERIMENTAL HARD GATE (sync-experimental-gate slice): sync-to-cloud is
-  // currently broken against astramem-cloud (8868 events failing HTTP 400,
-  // not yet root-caused). `sync.enabled` alone (set by `astramem-local pair`
-  // on a successful redeem) is NOT sufficient to start the shipper — see
+  // EXPERIMENTAL HARD GATE (sync-experimental-gate slice). Originally added
+  // because sync-to-cloud was broken against astramem-cloud (8868 events
+  // failing HTTP 400); that was root-caused to a YARP stale-pooled-connection
+  // bug in the shared gateway (`common` repo, commit `edf266a`, bounds
+  // `PooledConnectionLifetime`), fixed and deployed to prod 2026-07-14, and
+  // re-verified live 2026-07-15 — sync is no longer known-broken. The gate
+  // now stands as a deliberate staged-rollout safety net, not a "sync is
+  // broken" guard. `sync.enabled` alone (set by `astramem-local pair` on a
+  // successful redeem) is NOT sufficient to start the shipper — see
   // shouldStartShipper() in sync/shipper.ts. `cfg.sync.experimental` is a
   // separate, config.yaml-only, hand-edit opt-in that `pair` never touches.
   let shipper: ShipperHandle | null = null;

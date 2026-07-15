@@ -604,11 +604,15 @@ describe('startShipper — records attempt state across rounds (FEAT-434)', () =
   });
 });
 
-// sync-experimental-gate slice: hard gate on top of `enabled` — sync-to-
-// astramem-cloud is currently broken (8868 events failing HTTP 400, not yet
-// root-caused). `astramem-local pair` alone sets sync.json's `enabled: true`
-// and used to be sufficient to start shipping. Both `enabled` (pairing-owned)
-// AND `experimental` (config.yaml, hand-edit only) must now be true.
+// sync-experimental-gate slice: hard gate on top of `enabled`. Originally
+// added because sync-to-astramem-cloud was broken (8868 events failing HTTP
+// 400); root-caused to a YARP stale-pooled-connection bug in the shared
+// gateway (`common` repo, commit `edf266a`), fixed and deployed to prod
+// 2026-07-14, re-verified live 2026-07-15. The gate is now a deliberate
+// staged-rollout safety net, not a "sync is broken" guard. `astramem-local
+// pair` alone sets sync.json's `enabled: true` and used to be sufficient to
+// start shipping. Both `enabled` (pairing-owned) AND `experimental`
+// (config.yaml, hand-edit only) must be true.
 describe('shouldStartShipper — experimental hard gate (sync-experimental-gate)', () => {
   const base = { enabled: true, experimental: true, dataDir: '/tmp/astra-data', isolated: false };
 
