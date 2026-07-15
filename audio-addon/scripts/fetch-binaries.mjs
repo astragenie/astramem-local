@@ -15,6 +15,7 @@
  */
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, copyFileSync, chmodSync, writeFileSync } from 'node:fs';
+import { inflateRawSync } from 'node:zlib';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -72,6 +73,94 @@ async function fetchAndVerify(url, expectedSha256) {
   return buf;
 }
 
+/**
+ * audio-v0.2.0 postmortem: this used to shell out to `tar -xf` for .zip too
+ * (with a Windows-only bsdtar special case), on the assumption that "Linux
+ * CI only ever extracts .tar.gz." That assumption broke the very first
+ * publish run: `--all` (used by prepublishOnly / audio-publish.yml to bundle
+ * BOTH platform binaries into one tarball) fetches the win32-x64 .zip even
+ * when running on the Linux runner, and GNU tar cannot read zip
+ * ("This does not look like a tar archive"). It passed locally on Windows
+ * only because Windows' bsdtar reads zip transparently.
+ *
+ * Fixed by parsing the zip container format directly with Node's built-in
+ * `node:zlib` (DEFLATE/STORE only — whisper.cpp's release zips use one of
+ * these; ZIP64 is explicitly rejected below rather than silently
+ * mis-parsed) instead of shelling out to ANY external archiver for zip.
+ * This is a deliberate zero-new-dependency choice, not just a convenience:
+ * `audio-publish.yml` runs on the bare self-hosted fleet (no `container:`
+ * block, unlike install-smoke.yml's node-slim container job), so it is NOT
+ * running as root and cannot reliably `apt-get install unzip` — and this
+ * package's whole design (see model-manifest.ts / binary-manifest.ts
+ * comments) already treats "no unpinned/unverifiable external tool in the
+ * chain" as load-bearing. One code path now handles zip on every platform;
+ * .tar.gz keeps using the system `tar` (GNU tar and Windows' bsdtar both
+ * handle gzip correctly — that was never the bug).
+ */
+function extractZip(buf, destDir) {
+  const EOCD_SIG = 0x06054b50;
+  const CDFH_SIG = 0x02014b50;
+  const LFH_SIG = 0x04034b50;
+
+  // EOCD is the last fixed 22 bytes plus an optional up-to-64KiB comment —
+  // scan backward from the end for the signature rather than assuming no
+  // comment is present.
+  let eocdOffset = -1;
+  const searchStart = Math.max(0, buf.length - 22 - 65535);
+  for (let i = buf.length - 22; i >= searchStart; i--) {
+    if (buf.readUInt32LE(i) === EOCD_SIG) { eocdOffset = i; break; }
+  }
+  if (eocdOffset === -1) throw new Error('extractZip: End Of Central Directory record not found — not a valid zip file');
+
+  const cdEntryCount = buf.readUInt16LE(eocdOffset + 10);
+  const cdSize = buf.readUInt32LE(eocdOffset + 12);
+  const cdOffset = buf.readUInt32LE(eocdOffset + 16);
+  if (cdEntryCount === 0xffff || cdSize === 0xffffffff || cdOffset === 0xffffffff) {
+    throw new Error('extractZip: ZIP64 sentinel values found — this archive needs ZIP64 support, which is intentionally not implemented (unexpected for whisper.cpp release assets at this size).');
+  }
+
+  let pos = cdOffset;
+  for (let i = 0; i < cdEntryCount; i++) {
+    if (buf.readUInt32LE(pos) !== CDFH_SIG) throw new Error(`extractZip: central directory entry ${i} has a bad signature at offset ${pos}`);
+    const method = buf.readUInt16LE(pos + 10);
+    const compressedSize = buf.readUInt32LE(pos + 20);
+    const uncompressedSize = buf.readUInt32LE(pos + 24);
+    const nameLen = buf.readUInt16LE(pos + 28);
+    const extraLen = buf.readUInt16LE(pos + 30);
+    const commentLen = buf.readUInt16LE(pos + 32);
+    const localHeaderOffset = buf.readUInt32LE(pos + 42);
+    const name = buf.toString('utf8', pos + 46, pos + 46 + nameLen);
+    pos += 46 + nameLen + extraLen + commentLen;
+
+    if (name.endsWith('/')) continue; // directory entry, nothing to write
+
+    // Local file header repeats name/extra with possibly different extra
+    // length than the central directory copy — read its own lengths rather
+    // than assuming they match.
+    if (buf.readUInt32LE(localHeaderOffset) !== LFH_SIG) throw new Error(`extractZip: local file header for '${name}' has a bad signature`);
+    const lfhNameLen = buf.readUInt16LE(localHeaderOffset + 26);
+    const lfhExtraLen = buf.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + lfhNameLen + lfhExtraLen;
+    const compressed = buf.subarray(dataStart, dataStart + compressedSize);
+
+    let data;
+    if (method === 0) {
+      data = compressed; // stored, no compression
+    } else if (method === 8) {
+      data = inflateRawSync(compressed);
+    } else {
+      throw new Error(`extractZip: '${name}' uses unsupported compression method ${method} (only STORE=0 and DEFLATE=8 are handled)`);
+    }
+    if (data.length !== uncompressedSize) {
+      throw new Error(`extractZip: '${name}' decompressed to ${data.length} bytes, expected ${uncompressedSize} — corrupt archive or parser bug`);
+    }
+
+    const outPath = join(destDir, name);
+    mkdirSync(dirname(outPath), { recursive: true });
+    writeFileSync(outPath, data);
+  }
+}
+
 async function extractOne(platformKey, entry) {
   const destDir = join(pkgRoot, 'bin', platformKey);
   const exeDest = join(destDir, entry.exeName);
@@ -85,20 +174,22 @@ async function extractOne(platformKey, entry) {
   const scratch = mkdtempSync(join(tmpdir(), 'astramem-audio-fetch-'));
   try {
     const buf = await fetchAndVerify(entry.url, entry.sha256);
-    const archivePath = join(scratch, entry.archive === 'zip' ? 'archive.zip' : 'archive.tar.gz');
-    writeFileSync(archivePath, buf);
 
     const extractDir = join(scratch, 'extracted');
     mkdirSync(extractDir, { recursive: true });
     if (entry.archive === 'zip') {
-      // Git-for-Windows' MSYS `tar` (commonly first on PATH under Git Bash)
-      // cannot read .zip. Windows itself has shipped a real bsdtar (which
-      // CAN) at this fixed path since 1803 — invoke it directly rather than
-      // relying on PATH order. Linux CI only ever extracts .tar.gz (see the
-      // `else` branch) so this path is Windows-only.
-      const systemTar = process.platform === 'win32' ? 'C:\\Windows\\System32\\tar.exe' : 'tar';
-      execFileSync(systemTar, ['-xf', archivePath, '-C', extractDir]);
+      // See extractZip's doc comment: pure-Node, cross-platform, no
+      // external archiver dependency (this is the audio-v0.2.0 publish fix).
+      // Extracted straight from the verified in-memory buffer — no need to
+      // round-trip through a temp file first.
+      extractZip(buf, extractDir);
     } else {
+      // .tar.gz was never the bug — GNU tar (Linux) and Windows' bsdtar
+      // both handle gzip-compressed tar correctly. `tar` still needs a real
+      // file on disk (no stdin-pipe here, to keep this branch's behavior
+      // unchanged from before the fix).
+      const archivePath = join(scratch, 'archive.tar.gz');
+      writeFileSync(archivePath, buf);
       execFileSync('tar', ['-xzf', archivePath, '-C', extractDir]);
     }
 

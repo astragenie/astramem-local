@@ -1,6 +1,6 @@
 {
   "name": "astramem-audio",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Optional on-device whisper.cpp add-on for astramem-local's audio-file transcription capture (FEAT-489). Wraps the official ggml-org/whisper.cpp CPU-only CLI (bundled per-platform, v1: win32-x64 + linux-x64); GGML model downloaded + checksum-verified on first use. astramem-local's transcribe handler works with this package absent (add-on-not-installed is a handled, non-crashing state).",
   "type": "module",
   "license": "MIT",
