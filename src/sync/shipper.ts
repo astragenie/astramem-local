@@ -89,14 +89,20 @@ export interface ShipperGateInput {
 
 /**
  * Hard gate on top of `enabled` (astramem-local sync-experimental-gate
- * slice): sync-to-astramem-cloud is currently broken (8868 events failing
- * HTTP 400, not yet root-caused). Before this gate, `astramem-local pair
- * <code>` alone set `sync.json`'s `enabled: true` and that was sufficient to
- * start shipping — anyone who paired hit the broken path. Both `enabled`
- * (sync.json, pairing-owned) AND `experimental` (config.yaml, hand-edit
- * only) must now be true, on top of the pre-existing dataDir/isolated
- * guards `cli/serve.ts` already enforced. Pure/exported so the gate is
- * unit-testable without spawning a daemon.
+ * slice). Originally added because sync-to-astramem-cloud was broken (8868
+ * events failing HTTP 400); that was root-caused to a YARP stale-pooled-
+ * connection bug in the shared gateway (`common` repo, commit `edf266a`,
+ * bounds `PooledConnectionLifetime`), fixed and deployed to prod 2026-07-14,
+ * and re-verified live 2026-07-15 — sync is no longer known-broken. The gate
+ * now stands as a deliberate staged-rollout safety net, not a "sync is
+ * broken" guard: relaxing/removing it is a product decision, not a bugfix.
+ * Before this gate, `astramem-local pair <code>` alone set `sync.json`'s
+ * `enabled: true` and that was sufficient to start shipping — anyone who
+ * paired hit the (then-broken) path. Both `enabled` (sync.json,
+ * pairing-owned) AND `experimental` (config.yaml, hand-edit only) must be
+ * true, on top of the pre-existing dataDir/isolated guards `cli/serve.ts`
+ * already enforced. Pure/exported so the gate is unit-testable without
+ * spawning a daemon.
  */
 export function shouldStartShipper(input: ShipperGateInput): boolean {
   return input.enabled && input.experimental && input.dataDir !== ':memory:' && !input.isolated;

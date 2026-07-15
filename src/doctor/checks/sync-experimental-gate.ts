@@ -3,10 +3,15 @@ import type { Check, CheckResult } from '../types.js';
 /**
  * Check: Sync experimental gate (sync-experimental-gate slice).
  *
- * Sync-to-astramem-cloud is currently broken (8868 events failing HTTP 400,
- * not yet root-caused). Before this gate, `astramem-local pair <code>` alone
- * set sync.json's `enabled: true` and that was sufficient to start the
- * shipper — anyone who paired hit the broken path. `sync.experimental` is a
+ * Originally added because sync-to-astramem-cloud was broken (8868 events
+ * failing HTTP 400); that was root-caused to a YARP stale-pooled-connection
+ * bug in the shared gateway (`common` repo, commit `edf266a`, bounds
+ * `PooledConnectionLifetime`), fixed and deployed to prod 2026-07-14, and
+ * re-verified live 2026-07-15 — sync is no longer known-broken. The gate now
+ * stands as a deliberate staged-rollout safety net, not a "sync is broken"
+ * guard. Before this gate, `astramem-local pair <code>` alone set
+ * sync.json's `enabled: true` and that was sufficient to start the shipper —
+ * anyone who paired hit the (then-broken) path. `sync.experimental` is a
  * second, config.yaml-only, hand-edit opt-in `pair` never touches; see
  * `shouldStartShipper` (src/sync/shipper.ts) and its call site in
  * `cli/serve.ts` for the actual gate this check merely reports on.
