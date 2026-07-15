@@ -29,3 +29,19 @@ secrets.env
 
 # Playwright MCP runtime
 .playwright-mcp/
+
+# FEAT-489 Slice B: whisper.cpp CLI binaries (fetched by
+# audio-addon/scripts/fetch-binaries.mjs, bundled into the published npm
+# tarball via audio-addon/package.json's `files`, never committed — same
+# discipline as fixture audio/models below) and any local scratch used
+# while verifying a real-binary transcription run.
+audio-addon/bin/
+audio-addon/.download-test/
+audio-addon/**/*.download
+
+# GGML models (downloaded on first use into the OS-level cache dir by
+# src/model-cache.ts / scripts/fetch-model.mjs, never committed to the repo
+# itself) — this covers any model accidentally staged from a repo-relative
+# path during local testing.
+*.ggml.bin
+ggml-*.bin

@@ -1,0 +1,89 @@
+# audio-publish.yml — publish astramem-audio to npmjs.org (public) on a
+# dedicated tag push. Structurally a copy of contracts-publish.yml (FEAT-489
+# packaging design pass decision 3: "extend the contracts/ pattern
+# directly"), adjusted for this package's own concerns.
+#
+# WHY npmjs.org, NOT GitHub Packages: same reasoning as contracts-publish.yml
+# — astramem-local is a PRIVATE repo, and private GitHub Packages are metered
+# against the org's paid Packages quota behind a $1 hard-stop budget that
+# already blocked a prior publish. npmjs.org is independent of GitHub repo
+# visibility, so the package can be public (free, unlimited) while the
+# source repo stays private. Owner explicitly approved public exposure for
+# contracts/; this package ships no secrets or user data either (whisper.cpp
+# binaries + this package's own TS — no models, no user audio), same call
+# applies here. Unscoped `astramem-audio` name (not `@astragenie/...`) to
+# match the flagship package's own unscoped naming (design doc's "genuinely
+# open, decide at build-slice kickoff" — resolved here to match the
+# precedent that matters more: what a consumer actually types to install
+# the base package).
+#
+# TAG NAMESPACE: `audio-v*`, distinct from both `v*` (daemon,
+# publish.yml) and `contracts-v*` (contracts/, contracts-publish.yml) — see
+# contracts-publish.yml's own comment for why this repo cannot share one tag
+# scheme across independently-versioned packages. Tag format: `audio-v1.2.3`
+# -> audio-addon/package.json version `1.2.3`.
+#
+# BINARY BUNDLING: `prepublishOnly` (audio-addon/package.json) runs
+# `fetch-binaries --all` before `tsc` — downloads + SHA256-verifies both v1
+# platform binaries (win32-x64, linux-x64; see src/binary-manifest.ts) into
+# bin/, which package.json's `files` array bundles into the published
+# tarball. bin/ is gitignored — this workflow (like a local `npm publish`)
+# is what populates it, never a git commit.
+#
+# AUTH: same NPM_TOKEN Automation-type secret contracts-publish.yml already
+# proves has publish rights on this scope/registry — no new token needed.
+#
+# Runs on the self-hosted fleet, consistent with every other workflow here.
+
+name: audio add-on publish
+
+on:
+  push:
+    tags:
+      - 'audio-v*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    name: npm publish (astramem-audio)
+    runs-on: [self-hosted, astragenie, aws]
+    defaults:
+      run:
+        working-directory: audio-addon
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Verify tag matches audio-addon/package.json
+        run: |
+          PKG_VERSION=$(jq -r '.version' package.json)
+          TAG="${GITHUB_REF_NAME#audio-v}"
+          if [ "$PKG_VERSION" != "$TAG" ]; then
+            echo "::error::audio-addon/package.json ($PKG_VERSION) != tag ($TAG) — bump audio-addon/package.json in the release PR"
+            exit 1
+          fi
+
+      # node 22 matches the repo's engines floor; registry-url writes the
+      # npmjs auth line into .npmrc. No `scope:` — publishConfig.registry in
+      # audio-addon/package.json already targets npmjs.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install add-on deps
+        run: bun install --frozen-lockfile
+
+      # Downloads + SHA256-verifies both v1 platform binaries into bin/
+      # (src/binary-manifest.ts is the pinned manifest) and compiles TS.
+      # `npm publish` below runs this again via prepublishOnly, but running
+      # it explicitly here fails the job fast, before an authenticated
+      # publish attempt, if a binary fetch or checksum ever goes wrong.
+      - name: Fetch platform binaries + build
+        run: node scripts/fetch-binaries.mjs --all && npm run build
+
+      - name: Publish
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
