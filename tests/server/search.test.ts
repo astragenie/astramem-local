@@ -8,6 +8,7 @@ import { makeFakeVec } from '../../src/search/search.js';
 import { defaultConfig } from '../../src/config/config.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
+import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 
 function buildMockEmbed(): EmbedProvider {
   return {
@@ -740,5 +741,165 @@ describe('entity filter — GET /search and POST /recall (AC-4)', () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().hits).toEqual([]);
+  });
+});
+
+// FEAT-532 L2: `mode` actually gates which candidate-gathering leg(s)
+// search() runs (src/search/search.ts's gatherCandidates()), not just an
+// accepted-and-ignored field. Proven against the LIVE daemon (app.inject on
+// the real POST /recall route, real FTS5 + real sqlite-vec), not a direct
+// search() call.
+describe('POST /recall — mode (FEAT-532 L2)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  let embed: EmbedProvider;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    embed = buildMockEmbed();
+    app = await buildApp({ db, token: 'tok', embed });
+  });
+
+  it('mode:"keyword" and mode:"hybrid" (default) return measurably different result sets for the same query', async () => {
+    // idA shares the query's terms — reachable via FTS5.
+    const idA = repo.insert({
+      type: 'fact',
+      text: 'FEAT-532 mode test: wombat husbandry notes',
+      normalized_text: 'feat-532 mode test: wombat husbandry notes',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'b1'.repeat(32), source_hash: null,
+    });
+    // idB shares NO terms with the query at all — only reachable via the
+    // vector leg (it is the only row ever upserted into the vec store, so
+    // sqlite-vec's nearest-neighbor search always returns it, independent of
+    // fake-embedding cosine values).
+    const idB = repo.insert({
+      type: 'fact',
+      text: 'completely unrelated banana bread recipe notes',
+      normalized_text: 'completely unrelated banana bread recipe notes',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'b2'.repeat(32), source_hash: null,
+    });
+    const vecStore = new SqliteVecStore(db, embed.dim);
+    const [vecB] = await embed.embed(['completely unrelated banana bread recipe notes']);
+    await vecStore.upsert(idB, vecB as Float32Array);
+
+    const keywordRes = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'wombat husbandry', limit: 10, mode: 'keyword' },
+    });
+    const hybridRes = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'wombat husbandry', limit: 10, mode: 'hybrid' },
+    });
+    expect(keywordRes.statusCode).toBe(200);
+    expect(hybridRes.statusCode).toBe(200);
+    // Envelope sanity (FEAT-532 L1): mode is echoed back on `query.mode`.
+    expect(keywordRes.json().query).toMatchObject({ mode: 'keyword' });
+    expect(hybridRes.json().query).toMatchObject({ mode: 'hybrid' });
+
+    const keywordIds = (keywordRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    const hybridIds = (hybridRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+
+    // mode:'keyword' never gathers the vector leg — idB (FTS-invisible) can't surface.
+    expect(keywordIds).toEqual([idA]);
+    // mode:'hybrid' (default) gathers both legs — idB now surfaces too.
+    expect(hybridIds).toEqual([idA, idB].sort());
+    expect(hybridIds).not.toEqual(keywordIds);
+  });
+
+  it('mode:"semantic" drops the FTS leg entirely — an FTS-only-matching candidate never surfaces', async () => {
+    // idA matches only via FTS (never embedded into the vec store).
+    const idA = repo.insert({
+      type: 'fact',
+      text: 'FEAT-532 semantic-mode test: capybara grooming notes',
+      normalized_text: 'feat-532 semantic-mode test: capybara grooming notes',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'b3'.repeat(32), source_hash: null,
+    });
+    // idB shares no terms with the query but IS embedded — reachable only via the vector leg.
+    const idB = repo.insert({
+      type: 'fact',
+      text: 'a totally different topic: sourdough starter maintenance',
+      normalized_text: 'a totally different topic: sourdough starter maintenance',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'b4'.repeat(32), source_hash: null,
+    });
+    const vecStore = new SqliteVecStore(db, embed.dim);
+    const [vecB] = await embed.embed(['a totally different topic: sourdough starter maintenance']);
+    await vecStore.upsert(idB, vecB as Float32Array);
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'capybara grooming', limit: 10, mode: 'semantic' },
+    });
+    expect(res.statusCode).toBe(200);
+    const ids = (res.json().hits as Array<{ id: string }>).map(h => h.id);
+    expect(ids).toEqual([idB]);
+    expect(ids).not.toContain(idA);
+  });
+});
+
+// FEAT-532 L2: `filters.scope` (ADR-009 private|team|org) hard-filters
+// results, proven against the live route.
+describe('POST /recall — filters.scope (FEAT-532 L2)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    app = await buildApp({ db, token: 'tok', embed: buildMockEmbed() });
+  });
+
+  it('filters.scope=["team"] excludes a matching private-scope memory and includes the team-scope one', async () => {
+    const privateId = repo.insert({
+      type: 'fact',
+      text: 'scope filter test: shared decision text',
+      normalized_text: 'scope filter test: shared decision text',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'c1'.repeat(32), source_hash: null,
+      scope: 'private',
+    });
+    const teamId = repo.insert({
+      type: 'fact',
+      text: 'scope filter test: shared decision text',
+      normalized_text: 'scope filter test: shared decision text',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'c2'.repeat(32), source_hash: null,
+      scope: 'team',
+    });
+
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'scope filter test shared decision', limit: 10, filters: { scope: ['team'] } },
+    });
+    expect(res.statusCode).toBe(200);
+    const ids = (res.json().hits as Array<{ id: string }>).map(h => h.id);
+    expect(ids).toEqual([teamId]);
+    expect(ids).not.toContain(privateId);
+  });
+
+  it('an invalid filters.scope value is a 400 naming the field', async () => {
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'anything', limit: 5, filters: { scope: ['not-a-real-scope'] } },
+    });
+    expect(res.statusCode).toBe(400);
   });
 });

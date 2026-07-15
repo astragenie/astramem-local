@@ -91,6 +91,13 @@ export interface SearchFilters {
    * FEAT-453.
    */
   entity?: string;
+  /**
+   * FEAT-532 L2: hard filter on `memories.scope` (ADR-009 private|team|org).
+   * A non-empty list produces `scope IN (...)` post-fusion, same shape as
+   * `type[]`. Absent or empty = no constraint (all scopes), byte-identical
+   * to pre-FEAT-532 behavior.
+   */
+  scope?: MemoryScope[];
 }
 
 /**
@@ -259,6 +266,17 @@ export interface SearchOpts {
    * fusion breakdown only, same posture as rerank's debug interaction.
    */
   decompose?: DecomposeOpts;
+  /**
+   * FEAT-532 L2 (astramem-retrieval-query@1 `mode`, contracts/schemas/
+   * retrieval-query.v1.schema.json): which candidate-gathering leg(s)
+   * gatherCandidates() runs. `undefined` defaults to `'hybrid'` — byte-
+   * identical to pre-FEAT-532 behavior (both legs always ran). `'keyword'`
+   * skips vector gathering entirely (FTS5 BM25 only); `'semantic'` skips FTS
+   * gathering entirely (vector only). Applies to both the primary query and
+   * every WS6 decompose sub-query, so a caller-selected mode isn't a way to
+   * escape it via decomposition.
+   */
+  mode?: 'keyword' | 'semantic' | 'hybrid';
 }
 
 /**
@@ -471,15 +489,23 @@ function agentBonusForFilter(db: DB, agent: string | string[], candidateIds: Set
  * for each sub-query, with the same RECALL-S1 query-prefix handling and the
  * same FTS-unavailable/embed-unavailable degrade behavior, without
  * duplicating it.
+ *
+ * FEAT-532 L2: `mode` gates which leg(s) actually run — `'keyword'` skips
+ * the vector leg below, `'semantic'` skips the FTS5 leg, `'hybrid'`
+ * (default, and the only mode that existed pre-FEAT-532) runs both, exactly
+ * as before. This is the ONE place mode is enforced — both the primary call
+ * and every decompose sub-query call route through here with the same mode,
+ * so decomposition can never surface a candidate the caller's mode excluded.
  */
 async function gatherCandidates(
   db: DB,
   embed: EmbedProvider,
   query: string,
   vecK: number,
+  mode: 'keyword' | 'semantic' | 'hybrid' = 'hybrid',
 ): Promise<{ ftsHits: Array<{ id: string; bm25: number }>; vecHits: Array<{ id: string; cosine: number }> }> {
   const ftsHits: Array<{ id: string; bm25: number }> = [];
-  if (query.trim()) {
+  if (mode !== 'semantic' && query.trim()) {
     const ftsQuery = escapeFtsQuery(query);
     try {
       const rows = db.prepare(`
@@ -498,16 +524,18 @@ async function gatherCandidates(
   }
 
   const vecHits: Array<{ id: string; cosine: number }> = [];
-  try {
-    const embedInput = embed.queryPrefix ? `${embed.queryPrefix}${query}` : query;
-    const vecs = await embed.embed([embedInput]);
-    const queryVec = vecs[0];
-    if (!queryVec) throw new Error('embed provider returned empty result');
-    const vecStore = new SqliteVecStore(db, embed.dim);
-    const raw = await vecStore.search(queryVec, vecK);
-    vecHits.push(...raw.map(h => ({ id: h.id, cosine: h.score })));
-  } catch {
-    // Vector search unavailable (no rows, no provider) — FTS-only mode
+  if (mode !== 'keyword') {
+    try {
+      const embedInput = embed.queryPrefix ? `${embed.queryPrefix}${query}` : query;
+      const vecs = await embed.embed([embedInput]);
+      const queryVec = vecs[0];
+      if (!queryVec) throw new Error('embed provider returned empty result');
+      const vecStore = new SqliteVecStore(db, embed.dim);
+      const raw = await vecStore.search(queryVec, vecK);
+      vecHits.push(...raw.map(h => ({ id: h.id, cosine: h.score })));
+    } catch {
+      // Vector search unavailable (no rows, no provider) — FTS-only mode
+    }
   }
 
   return { ftsHits, vecHits };
@@ -559,11 +587,14 @@ export async function search(
 ): Promise<SearchHit[] | SearchDebugHit[]> {
   const { db, embed, weights } = opts;
   const vecK = opts.vecK ?? Math.max(limit * 4, 50);
+  // FEAT-532 L2: 'hybrid' when omitted — byte-identical to pre-FEAT-532
+  // behavior (both legs always ran).
+  const mode = opts.mode ?? 'hybrid';
 
   // 1-2. FTS5 BM25 + vector search — see gatherCandidates() above (RECALL-S1
   // query-prefix handling and FTS/embed degrade behavior both live there,
   // unchanged from pre-WS6 inline code).
-  const { ftsHits, vecHits } = await gatherCandidates(db, embed, query, vecK);
+  const { ftsHits, vecHits } = await gatherCandidates(db, embed, query, vecK, mode);
 
   // 2b. Entity filter (FEAT-402 slice 2 AC-4) — resolve `entity` to entity
   // ids (AC-9 normalize seam) and intersect the FTS+vec candidate set BEFORE
@@ -598,7 +629,7 @@ export async function search(
     const subQueries = await getSubQueries(query, opts.decompose);
     const seenIds = new Set(primaryIds);
     for (const sq of subQueries) {
-      const gathered = await gatherCandidates(db, embed, sq, vecK);
+      const gathered = await gatherCandidates(db, embed, sq, vecK, mode);
       const { ftsHits: sFts, vecHits: sVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
       for (const h of sFts) {
         if (seenIds.has(h.id)) continue;
@@ -694,6 +725,13 @@ export async function search(
     const ph = filters.type.map(() => '?').join(',');
     filterClauses.push(`type IN (${ph})`);
     filterParams.push(...filters.type);
+  }
+  // FEAT-532 L2: scope (ADR-009 private|team|org) hard filter — same
+  // single-value/list-IN shape as `type` above.
+  if (filters.scope && filters.scope.length > 0) {
+    const ph = filters.scope.map(() => '?').join(',');
+    filterClauses.push(`scope IN (${ph})`);
+    filterParams.push(...filters.scope);
   }
   // FEAT-429: project/agent hard-column filters (single value -> `col = ?`,
   // list -> `col IN (...)`, OR-semantics like `type[]`, empty list -> no

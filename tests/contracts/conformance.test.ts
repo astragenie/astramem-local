@@ -10,11 +10,12 @@ import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { toAtomWireV1 } from '../../src/contracts/atom-wire.js';
 import { buildApp } from '../../src/server/app.js';
-import { search, makeFakeVec, type SearchHit } from '../../src/search/search.js';
+import { search, makeFakeVec } from '../../src/search/search.js';
 import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import { MockCrossEncoderProvider, type RerankOpts } from '../../src/search/rerank.js';
 import { defaultConfig } from '../../src/config/config.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
+import { toWireHit } from '../../src/contracts/wire-hit.js';
 
 // ---------------------------------------------------------------------------
 // This is the CI gate for contracts/. It runs in the normal vitest suite so
@@ -322,25 +323,14 @@ describe('contracts/ — LIVE conformance (real pipeline paths, not fixtures)', 
   // search() (src/search/search.ts) now populates scope/importance/
   // confidence/created_at/capture_source and a full ScoreExplanation on
   // every hit — this is a REAL local search() call (real FTS5 + real
-  // sqlite-vec), not a fixture. Only wire-mapping is applied inline below:
-  // dropping the internal fusion-leg `source` (fts/vec/both — not part of
-  // the canonical contract, predates it, still consumed by the CLI/
-  // dashboard) and renaming `capture_source` -> the canonical `source`
-  // (CONTRACT-FREEZE §1: "source maps to local's provenance"). That rename
-  // is the one piece of wire-adapter logic the route layer will eventually
-  // own (out of this change's contracts/ + src/search/ scope) — done here
-  // only so this test proves something real, per the "a schema you cannot
-  // validate against a real response is worthless" mandate.
-  // ---------------------------------------------------------------------
-  function toWireHit(hit: SearchHit): unknown {
-    // Drop fields with no place in the canonical (additionalProperties:
-    // false) hit shape: the internal fusion-leg `source`, and `reranked`/
-    // `rerank_score` — both fully recoverable from
-    // `explanation.signals.cross_encoder` presence/`.final` once merged, so
-    // nothing is lost by omitting them from the wire.
-    const { source: _fusionLeg, capture_source, reranked: _reranked, rerank_score: _rerankScore, ...rest } = hit;
-    return { ...rest, ...(capture_source !== undefined ? { source: capture_source } : {}) };
-  }
+  // sqlite-vec), not a fixture. The wire-mapping (dropping the internal
+  // fusion-leg `source`, dropping `reranked`/`rerank_score`, renaming
+  // `capture_source` -> the canonical `source` — CONTRACT-FREEZE §1:
+  // "source maps to local's provenance") lives in src/contracts/wire-hit.ts
+  // (FEAT-532 L1), imported below as `toWireHit` — the same function
+  // src/server/routes/search.ts's POST /recall route now uses to build its
+  // live response, so this test validates the actual production mapping,
+  // not a parallel copy of it.
 
   const conformanceEmbed: EmbedProvider = {
     name: 'ollama' as const,
@@ -467,5 +457,60 @@ describe('contracts/ — LIVE conformance (real pipeline paths, not fixtures)', 
     expect(rerankedHit.explanation.signals.cross_encoder).toBeDefined();
     expect(rerankedHit.explanation.signals.importance).toBeDefined(); // base signals survived the merge
     expect(rerankedHit.explanation.final).toBe(rerankedHit.score);
+  });
+
+  // FEAT-532 L1: the REAL POST /recall route (not a direct search() call —
+  // proves the route's own envelope-building code, not just toWireHit() in
+  // isolation) validates against retrieval-result.v1.
+  it('a real POST /recall response (app.inject against the live route) validates against retrieval-result.v1', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const memories = new MemoryRepo(db);
+    const id = memories.insert({
+      type: 'lesson',
+      text: 'live-conformance: POST /recall route response must validate retrieval-result@1',
+      normalized_text: 'live-conformance: post /recall route response must validate retrieval-result@1',
+      repo: 'astramem-local',
+      project: 'astramem',
+      branch: null,
+      agent: 'claude-code',
+      session_id: null,
+      hash: 'a1'.repeat(32),
+      source_hash: null,
+      importance: 0.6,
+      confidence: 0.9,
+      capture_source: 'hook_close',
+    });
+    const vecStore = new SqliteVecStore(db, conformanceEmbed.dim);
+    const [vec] = await conformanceEmbed.embed([
+      'live-conformance: POST /recall route response must validate retrieval-result@1',
+    ]);
+    await vecStore.upsert(id, vec as Float32Array);
+
+    const app = await buildApp({ db, token: 'tok', embed: conformanceEmbed });
+    const res = await app.inject({
+      method: 'POST',
+      url: '/recall',
+      headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+      payload: { text: 'recall route response validate retrieval result', limit: 10 },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+
+    // Shape sanity BEFORE the schema check, so a failure here reads as "the
+    // envelope isn't even attempting the right shape" rather than an opaque
+    // ajv error.
+    expect(body.schema).toBe('astramem-retrieval-result@1');
+    expect(body.query).toEqual({ text: 'recall route response validate retrieval result', mode: 'hybrid' });
+    expect(Array.isArray(body.hits)).toBe(true);
+    expect(body.hits.length).toBeGreaterThan(0);
+    expect(body.total).toBe(body.hits.length);
+    // The old fusion-leg `source` ('fts'|'vec'|'both') must not leak onto
+    // the wire — only the renamed provenance `source` (capture_source).
+    expect(body.hits[0].source).toBe('hook_close');
+
+    const validateFn = compiled.get('retrieval-result.v1.schema.json')!;
+    const ok = validateFn(body);
+    expect(ok, ajv.errorsText(validateFn.errors)).toBe(true);
   });
 });
