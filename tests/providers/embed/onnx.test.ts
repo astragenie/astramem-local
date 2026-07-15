@@ -13,7 +13,6 @@ import {
   type OnnxTensorLike,
   type OnnxPoolingStrategy,
 } from '../../../src/providers/embed/onnx.js';
-import { QUERY_PREFIX_BY_MODEL } from '../../../src/contracts/embed.js';
 import { runEmbedContractSuite } from '../_contract-suite.js';
 
 // ---------------------------------------------------------------------------
@@ -83,10 +82,9 @@ describe('onnx-embed', () => {
 
   // ---------------------------------------------------------------------------
   // ADR-018 SLICE-5 — model registry. "Add a model = one entry" is the
-  // stated goal; these tests pin the two seeded entries' shape and guard
-  // against the registry's audit-trail `queryPrefix` field silently
-  // drifting from the actual runtime source of truth (QUERY_PREFIX_BY_MODEL,
-  // contracts/embed.ts).
+  // stated goal; these tests pin the two seeded entries' shape against
+  // hardcoded literals (not re-derived from QUERY_PREFIX_BY_MODEL — see the
+  // last test in this block for why that would be tautological).
   // ---------------------------------------------------------------------------
   describe('ONNX_MODEL_REGISTRY (ADR-018 SLICE-5)', () => {
     it('registers mxbai-embed-large-v1 with cls pooling (corrected default)', () => {
@@ -115,10 +113,19 @@ describe('onnx-embed', () => {
       }
     });
 
-    it('every registry entry queryPrefix stays in sync with QUERY_PREFIX_BY_MODEL (no silent drift)', () => {
-      for (const [model, entry] of Object.entries(ONNX_MODEL_REGISTRY)) {
-        expect(entry.queryPrefix, `${model} queryPrefix`).toBe(QUERY_PREFIX_BY_MODEL[model] ?? '');
-      }
+    // Regression-guard, not a drift guard: onnx.ts's registry literal
+    // (`queryPrefix: QUERY_PREFIX_BY_MODEL[key] ?? ''`) computes each entry's
+    // `queryPrefix` FROM `QUERY_PREFIX_BY_MODEL` at module-load time — so a
+    // test that re-derives the same lookup and compares it back can never
+    // fail; it is comparing the value to itself, not to an independent
+    // source of truth (S4 cleanup review finding). Asserting against a
+    // hardcoded literal here is what actually catches a registry entry
+    // silently drifting from its documented prefix.
+    it('registers the documented query-side instruction prefix per model (hardcoded expectation, independent of QUERY_PREFIX_BY_MODEL)', () => {
+      expect(ONNX_MODEL_REGISTRY['mxbai-embed-large-v1']!.queryPrefix).toBe(
+        'Represent this sentence for searching relevant passages: ',
+      );
+      expect(ONNX_MODEL_REGISTRY['bge-m3']!.queryPrefix).toBe('');
     });
 
     it('DEFAULT_ONNX_POOLING (fallback for unregistered models) is mean, not cls', () => {
