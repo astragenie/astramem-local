@@ -249,12 +249,21 @@ if (typeof ptr.nodeBin !== 'string' || !ptr.nodeBin || typeof ptr.entryJs !== 's
 const env = { ...process.env };
 if (ptr.logDir) env.ASTRA_LOG_DIR = ptr.logDir; // service mode: rotated file logs
 const args = [ptr.entryJs, 'serve', '--port', String(ptr.port || 7777)];
-// stdin is 'ignore' (see below); stdout stays inherited (the daemon's own
-// file logger takes over once it opens); stderr is redirected straight to a scratch FILE via a real OS
-// file descriptor — NOT Node's 'pipe' stdio — so pre-logger crash output
-// can still be captured to crash.log even though it's ALSO discarded by the
-// scheduler otherwise (FEAT-440 — this is exactly the 2026-07-07 incident's
-// blind spot). 'pipe' would make spawnSync buffer ALL cumulative stderr in
+// stdin AND stdout are both 'ignore' (see the stdin note below — the same
+// reasoning applies to stdout). stdout was formerly 'inherit', but a Scheduled
+// Task / headless service launch has no guaranteed valid console handle: the
+// daemon's first write to an invalid inherited stdout fd kills it before its
+// own file logger ever opens — the exact "the service can't keep the daemon
+// alive" bug this closes. The daemon's real logs go to its file logger
+// (ASTRA_LOG_DIR / daemon.log in service mode), so a discarded stdout loses
+// nothing; 'ignore' needs no valid parent handle at all. Crash diagnostics
+// live on STDERR (Node uncaught exceptions, console.error, the migrate.ts
+// schema-drift throw all go there), which is redirected straight to a scratch
+// FILE via a real OS file descriptor — NOT Node's 'pipe' stdio — so pre-logger
+// crash output can still be captured to crash.log even though it's ALSO
+// discarded by the scheduler otherwise (FEAT-440 — this is exactly the
+// 2026-07-07 incident's blind spot). 'pipe' would make spawnSync buffer ALL
+// cumulative stderr in
 // this process's memory for the ENTIRE lifetime of a daemon that can run for
 // days/weeks under the keepalive architecture: past Node's default 1MB
 // maxBuffer, spawnSync SIGTERM-kills an otherwise-healthy daemon
@@ -272,13 +281,15 @@ try {
   mkdirSync(logsDir, { recursive: true });
   stderrFd = openSync(stderrScratchPath, 'w'); // truncate: fresh capture per run
 } catch (err) {
-  // Locked/unwritable logs dir — fall back to 'inherit' rather than block
-  // the daemon from starting (AC-4): this run just won't get a crash.log
-  // entry if it dies, same "best-effort observability" tradeoff as every
-  // other write in this file.
+  // Locked/unwritable logs dir — fall back to 'ignore' (NOT 'inherit') rather
+  // than block the daemon from starting (AC-4): this run just won't get a
+  // crash.log entry if it dies, same "best-effort observability" tradeoff as
+  // every other write in this file. 'ignore' (not 'inherit') because an
+  // inherited handle under a headless service launch is the very crash this
+  // wiring exists to avoid; 'ignore' needs no valid parent handle at all.
   stderrFd = null;
 }
-const stderrStdio = stderrFd === null ? 'inherit' : stderrFd;
+const stderrStdio = stderrFd === null ? 'ignore' : stderrFd;
 
 // Deliberately no timeout option: this spawnSync call IS the daemon's
 // lifetime (the shim blocks here for as long as the daemon runs, which is
@@ -296,7 +307,7 @@ const startedAt = Date.now();
 let exitCode;
 let durationMs;
 try {
-  const res = spawnSync(ptr.nodeBin, args, { stdio: ['ignore', 'inherit', stderrStdio], env });
+  const res = spawnSync(ptr.nodeBin, args, { stdio: ['ignore', 'ignore', stderrStdio], env });
   durationMs = Date.now() - startedAt;
   exitCode = res.status === null ? 1 : res.status;
 } catch (err) {
