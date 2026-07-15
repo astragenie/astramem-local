@@ -1,7 +1,12 @@
 # watch-daemon.ps1 — live, readable view of the running daemon's log.
 # Usage:  powershell -ExecutionPolicy Bypass -File scripts\watch-daemon.ps1
-$log = "$env:LOCALAPPDATA\Astramem\logs\daemon-stdout.log"
-if (-not (Test-Path $log)) { Write-Host "No log yet at $log — is the daemon running?" -ForegroundColor Yellow; exit 1 }
+# Follows the newest rotated pino log (daemon.N.log) when the service sets
+# ASTRA_LOG_DIR; falls back to daemon-stdout.log (boot console) otherwise.
+$dir = "$env:LOCALAPPDATA\Astramem\logs"
+$log = Get-ChildItem "$dir\daemon.*.log" -ErrorAction SilentlyContinue |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+if (-not $log) { $log = "$dir\daemon-stdout.log" }
+if (-not (Test-Path $log)) { Write-Host "No log yet in $dir — is the daemon running?" -ForegroundColor Yellow; exit 1 }
 Write-Host "Following $log  (Ctrl+C to stop)" -ForegroundColor Cyan
 Get-Content $log -Wait -Tail 25 | ForEach-Object {
   $line = $_
