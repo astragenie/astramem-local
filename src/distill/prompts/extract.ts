@@ -372,8 +372,30 @@ Austin", "we broke up back in March"). Omit both by default — a still-true fac
 an ongoing relationship) MUST leave invalid_at unset. Never guess a bound from silence: a
 hallucinated invalid_at is worse than none, since it would silently mark a still-true personal
 fact as no longer valid. When a person's life genuinely changed (moved, changed jobs, a
-relationship ended), prefer emitting the OLD fact with invalid_at set to when it changed, plus a
-separate NEW fact for the current state, rather than only keeping the new one.
+relationship ended) AND the source states a date for the change, prefer emitting the OLD fact
+with invalid_at set to when it changed, plus a separate NEW fact for the current state, rather
+than only keeping the new one.
+
+Dateless full-stop pattern ("used to X, no longer Y"): a conversation very often states that
+something ended WITHOUT giving any date at all — "John used to play the drums, hasn't in a
+while", "Deborah used to play video games, it's been a while", "Joanna had a dog Tilly but
+became allergic and gave her up." These are genuine, unambiguous cessations — the person is
+telling you the state changed — but because no literal date anchors WHEN it changed, do NOT set
+invalid_at for them. The fact stopped being true at some unknown point in the past, and the
+atom's own capture/observation time is NOT that point: do NOT set invalid_at to the
+observation/capture date "as if it just became false" — an unresolvable past point is not the
+same as today, and that shortcut would misrepresent an unknown past change as "just became false
+right now," which is its own kind of hallucination, just a subtler one. Instead, write the
+cessation directly into the atom's "text" itself so the fact reads correctly on its own without
+needing a bound at all: "John used to play the drums but has not played in a while." / "Joanna
+used to have a dog named Tilly, but gave her up after discovering she was allergic." Leave
+valid_at/invalid_at both unset for these atoms — retrieval reads "text", not the bitemporal
+fields, so the cessation still surfaces correctly. Contrast with PARTIAL continuation, which is
+NOT a full stop: write it with no cessation language and no bound at all — "I used to hike a
+lot, but it's more challenging now that I'm older" describes an ongoing activity that simply
+became harder (the person still hikes), so preserve that ongoing framing in the text (e.g.
+"still hikes, though it's more challenging now") rather than writing it as though the activity
+stopped.
 
 Skip noise: greetings, small talk with no durable content, filler acknowledgments ("cool", "got it", "haha", "yeah totally").
 Skip secrets: passwords, tokens, financial account numbers, government ID numbers.
@@ -434,7 +456,25 @@ RIGHT: {"type":"fact","text":"Sergey currently lives in Austin and enjoys living
 {"atoms":[
   {"type":"decision","text":"Priya Nair decided the doctor WARN row for meeting captions must ship before the team flips on the new consent gate.","importance":0.7,"confidence":0.85,"evidence":"we will ship the doctor WARN row for meeting captions before flipping on the new consent gate","entities":[{"name":"Priya Nair","kind":"actor","subtype":"human"}]}
 ]}
-"evidence" here is copied verbatim from the ONE turn the decision came from — not the whole line, not a paraphrase — specifically so the exact speaker who said it can be traced back later. Do this for every decision/lesson atom, always.`;
+"evidence" here is copied verbatim from the ONE turn the decision came from — not the whole line, not a paraphrase — specifically so the exact speaker who said it can be traced back later. Do this for every decision/lesson atom, always.
+
+10. Input (dateless full-stop — an unambiguous cessation with no literal date to anchor it): "John used to play the drums all the time back in high school, but he hasn't touched them in years." ->
+{"atoms":[
+  {"type":"fact","text":"John used to play the drums all the time back in high school, but has not played them in years.","importance":0.6,"confidence":0.85,"entities":[{"name":"John","kind":"actor","subtype":"human"}]}
+]}
+(No literal date anchors WHEN this stopped being true, so valid_at/invalid_at are both omitted per the dateless full-stop rule above — the "no longer" state is written directly into the atom's own "text", which is what retrieval actually reads, instead of guessing a bound.)
+
+11. Input (dateless full-stop, a different domain — same rule applies): "Joanna used to have a dog named Tilly, but she found out she was allergic and had to rehome her." ->
+{"atoms":[
+  {"type":"fact","text":"Joanna used to have a dog named Tilly, but gave her up after discovering she was allergic.","importance":0.6,"confidence":0.85,"entities":[{"name":"Joanna","kind":"actor","subtype":"human"},{"name":"Tilly","kind":"other"}]}
+]}
+(Unambiguous cessation, still no date — invalid_at stays unset. Do NOT set invalid_at to the observation/capture date "as if it just became false" — the allergy discovery could have happened years before this conversation; an unresolvable past point is not the same as today.)
+
+12. NEGATIVE COUNTER-EXAMPLE — partial continuation is NOT a full stop. Input: "I used to hike a lot when I was younger. It's more challenging these days, but I still get out there when I can." ->
+WRONG (treats an ongoing-but-harder activity as a cessation — the person explicitly says they still do it):
+{"type":"fact","text":"Sergey used to hike a lot but no longer hikes.","importance":0.5,"confidence":0.7}
+RIGHT (preserves the ongoing framing — ANY hedge like "still", "when I can", "less than before" means the activity continues, not stopped; no bound, no cessation language):
+{"type":"note","text":"Sergey still hikes when he can, though he finds it more physically challenging now than when he was younger and hiked a lot.","importance":0.5,"confidence":0.8,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"}]}`;
 
 /**
  * Resolve the extraction system prompt for one pipeline run. Precedence
