@@ -23,7 +23,13 @@ export interface ModelManifestEntry {
 export const MODEL_MANIFEST: Record<string, ModelManifestEntry> = {
   'tiny.en': {
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
-    sizeBytes: 39_206_912,
+    // 77,704,715 bytes — live-verified via HuggingFace's X-Linked-Size
+    // header (review 20260715T000328Z). A prior value here (39,206,912)
+    // came from a stat read on an early scratch download that turned out to
+    // be wrong by ~2x; the sha256 below was always computed from the
+    // correct full file, so no download was ever mis-verified — only this
+    // displayed size was.
+    sizeBytes: 77_704_715,
     sha256: '921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f',
     filename: 'ggml-tiny.en.bin',
   },

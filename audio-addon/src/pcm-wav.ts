@@ -132,6 +132,13 @@ const WINDOW_SECONDS = 5;
  * of being pinned by one outlier. A window with no signal above the noise
  * floor is left unchanged (see the inner peak===0 check), same reasoning
  * as the whole-file case this replaces.
+ *
+ * KNOWN LIMITATION (review 20260715T000328Z, not fixed here): gain is
+ * computed independently per window with no crossfade, so two adjacent
+ * windows with very different peaks can step sharply right at the boundary
+ * — potentially mid-word. tests/pcm-wav.test.ts pins this down (bounded,
+ * no clipping) but a real-binary A/B has not been run to confirm it never
+ * affects transcription quality. See README.md "Known limitations".
  */
 export function peakNormalize(wav: WavPcm16Mono): WavPcm16Mono {
   const windowSize = Math.max(1, Math.round(wav.sampleRate * WINDOW_SECONDS));

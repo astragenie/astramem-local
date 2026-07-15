@@ -15,10 +15,15 @@ import { join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 
+// Keep this manifest in lockstep with src/model-manifest.ts — duplicated
+// deliberately (no build step), same rationale as fetch-binaries.mjs.
 const MODEL_MANIFEST = {
   'tiny.en': {
     url: 'https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.en.bin',
-    sizeBytes: 39_206_912,
+    // 77,704,715 bytes — live-verified via HuggingFace's X-Linked-Size
+    // header (review 20260715T000328Z); see src/model-manifest.ts's copy
+    // of this comment for how the earlier wrong value got in.
+    sizeBytes: 77_704_715,
     sha256: '921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f',
     filename: 'ggml-tiny.en.bin',
   },

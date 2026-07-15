@@ -75,6 +75,32 @@ describe('deriveNoSpeechProb', () => {
       expect(deriveNoSpeechProb(seg.text)).toBeLessThan(0.6);
     }
   });
+
+  it('is LOW, not fabricated high, for a segment mixing real speech with an inline marker (review 20260715T000328Z fix)', () => {
+    // A documented real whisper.cpp behavior: a marker can appear inline
+    // alongside genuine decoded speech, not just as an entire segment's
+    // text. Before this fix, a substring match here scored this the same
+    // as pure silence (0.95) despite the real content. Semantics now match
+    // isNonSpeechMarkerOnly's exact-match discipline exactly.
+    const mixed = 'the meeting starts now [BLANK_AUDIO] lets begin the design review';
+    expect(deriveNoSpeechProb(mixed)).toBeLessThan(0.6);
+    expect(deriveNoSpeechProb(mixed)).toBe(0.0);
+  });
+
+  it('agrees with isNonSpeechMarkerOnly on every case (same exact-match semantics, no drift)', () => {
+    const cases = [
+      '[BLANK_AUDIO]',
+      '  [MUSIC]  ',
+      'the [BLANK_AUDIO] tag showed up in my notes',
+      'hello world',
+      ...fixture.transcription.map(s => s.text),
+    ];
+    for (const text of cases) {
+      const markerOnly = isNonSpeechMarkerOnly(text);
+      const noSpeechHigh = deriveNoSpeechProb(text) >= 0.6;
+      expect(noSpeechHigh).toBe(markerOnly);
+    }
+  });
 });
 
 describe('isNonSpeechMarkerOnly', () => {

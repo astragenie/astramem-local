@@ -65,4 +65,42 @@ describe('peakNormalize', () => {
     const normalized = peakNormalize(loud);
     expect(Array.from(normalized.samples)).toEqual(Array.from(loud.samples));
   });
+
+  it('documents the known window-boundary gain discontinuity (review 20260715T000328Z, not fixed here)', () => {
+    // Two adjacent 5s windows at 16kHz (window size = 80,000 samples, see
+    // pcm-wav.ts) with very different peaks -- the exact shape the module's
+    // own doc comment describes (a loud moment "near 120s" in an otherwise
+    // quiet real recording). Gain is computed independently per window with
+    // no smoothing, so a quiet window right before a loud one gets a much
+    // bigger gain than the loud window itself -- a real, KNOWN step at the
+    // boundary, not (yet) crossfaded. This test pins that behavior down so
+    // a future smoothing fix shows up as an intentional test change, not a
+    // silent regression either way.
+    const sampleRate = 16000;
+    const windowSamples = sampleRate * 5;
+    const quietWindow = new Array(windowSamples).fill(0).map((_, i) => (i % 100 === 0 ? 20 : 2));
+    const loudWindow = new Array(windowSamples).fill(0).map((_, i) => (i % 100 === 0 ? 16000 : 100));
+    const wav = makeWav([...quietWindow, ...loudWindow], sampleRate);
+
+    const normalized = peakNormalize(wav);
+
+    // Gain actually applied to a representative sample in each window,
+    // inferred from before/after ratio at that sample.
+    const gainAt = (idx: number) => {
+      const before = wav.samples[idx] ?? 0;
+      const after = normalized.samples[idx] ?? 0;
+      return before === 0 ? 0 : after / before;
+    };
+    const gainInQuietWindow = gainAt(0); // peak sample of the quiet window
+    const gainInLoudWindow = gainAt(windowSamples); // peak sample of the loud window
+
+    // The quiet window's peak (20) is amplified far more than the loud
+    // window's peak (16000) -- confirming the two windows do NOT share one
+    // gain, i.e. a step exists at the boundary.
+    expect(gainInQuietWindow).toBeGreaterThan(gainInLoudWindow * 10);
+    // Both windows individually still respect the target-peak/no-clip
+    // contract on their own terms.
+    expect(Math.abs(normalized.samples[0] ?? 0)).toBeLessThanOrEqual(32767);
+    expect(Math.abs(normalized.samples[windowSamples] ?? 0)).toBeLessThanOrEqual(32767);
+  });
 });

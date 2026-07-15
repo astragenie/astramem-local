@@ -23,9 +23,9 @@ npm install astramem-audio
 ```
 
 The binary is bundled into the published package for win32-x64 and linux-x64 — no extra download
-needed for those. The GGML model is **not** bundled (it's ~39-460MB depending on size) — it downloads
-on first use into this add-on's own cache directory, checksum-verified (SHA256) against a pinned
-manifest before being trusted:
+needed for those. The GGML model is **not** bundled (the default, `tiny.en`, is ~78MB; larger models
+in the same family run up to several GB) — it downloads on first use into this add-on's own cache
+directory, checksum-verified (SHA256) against a pinned manifest before being trusted:
 
 ```
 bun run fetch-model          # inside audio-addon/ during local dev, or:
@@ -62,7 +62,13 @@ throws if this platform has no bundled binary (see "Status" above).
 Ran on this machine (Windows, win32-x64) against
 `tests/fixtures/stt-bakeoff/audio/fixture-1-technical-terms-solo.wav` in the memory (cloud) repo — a
 real, unmodified, 10-minute AMI Meeting Corpus recording (CC BY 4.0), with the `tiny.en` model, through
-the exact `transcribe()` function above with no manual pre-processing of the audio file:
+the exact `transcribe()` function above with no manual pre-processing of the audio file. **This is a
+different capture from the checked-in unit-test fixture**
+(`tests/fixtures/real-whisper-cli-output.json`, used by `segment-derive.test.ts`): that fixture is a
+gain-boosted **30-second slice** of the same source file with 4 segments and zero non-speech markers
+(see its own file header comment); the transcript quoted below is from the **full 10-minute, un-boosted
+run** described in this section, which produced 41 raw segments. Same source recording, two different
+runs — do not assume one is a subset of the other.
 
 ```
 transcribe() completed in ~27s -> 41 raw segments -> 5 non-blank segments (36 correctly flagged
@@ -136,6 +142,13 @@ persisted nothing (dry-run contract), logged `5 raw segment(s), 5 kept, 0 droppe
 - macOS (darwin-arm64/darwin-x64) and win32-ia32 have no pinned binary in v1 — `resolveWhisperCli()`
   returns `null` and `transcribe()` throws the design doc's "not installed for this platform" message,
   never a crash.
+- **Per-window peak normalization has an untested-in-production gain discontinuity at window
+  boundaries.** Each 5-second window (`src/pcm-wav.ts`) gets its own independently-computed gain, with
+  no crossfade — two adjacent windows with very different peaks (the exact shape that motivated
+  per-window normalization in the first place) get very different gains, which can step sharply right
+  at the boundary, potentially mid-word. `tests/pcm-wav.test.ts` pins down that this step exists and is
+  bounded (never exceeds the gain cap or clips), but does not verify whisper.cpp's transcription
+  quality is unaffected by it either way — that would need a real-binary A/B run, not yet done.
 
 ## Consent (ADR-017)
 

@@ -100,10 +100,24 @@ export function computeCompressionRatio(text: string): number {
   return compressed === 0 ? 1 : raw / compressed;
 }
 
-/** See module doc comment -- proxy derived from whisper.cpp's own bracketed
- *  non-speech markers, not the native no_speech_prob float (no binding
- *  checked in this slice exposes it). */
+/**
+ * See module doc comment -- proxy derived from whisper.cpp's own bracketed
+ * non-speech markers, not the native no_speech_prob float (no binding
+ * checked in this slice exposes it).
+ *
+ * Deliberately delegates to isNonSpeechMarkerOnly's EXACT-match semantics
+ * (fixed 2026-07-15, review 20260715T000328Z) rather than a substring
+ * match. A substring match would fabricate noSpeechProb=0.95 for a segment
+ * that legitimately mixes real speech with an inline marker (documented
+ * real whisper.cpp behavior) -- e.g. "the meeting starts now [BLANK_AUDIO]
+ * let's begin" contains real content and must not be scored as if it were
+ * silence. whisper-cli.ts already drops marker-ONLY segments entirely via
+ * isNonSpeechMarkerOnly before they become AudioSegment entries, so by the
+ * time a segment reaches this function it has already survived that
+ * filter -- this function stays exported and independently correct anyway,
+ * since it is a pure function other callers may use directly on unfiltered
+ * text.
+ */
 export function deriveNoSpeechProb(text: string): number {
-  const trimmed = text.trim().toUpperCase();
-  return NON_SPEECH_MARKERS.some(marker => trimmed === marker || trimmed.includes(marker)) ? 0.95 : 0.0;
+  return isNonSpeechMarkerOnly(text) ? 0.95 : 0.0;
 }
