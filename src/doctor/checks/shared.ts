@@ -45,6 +45,13 @@ export interface DoctorCheckOpts {
   /** Embed provider to real-embed-probe. */
   embedProvider?: EmbedProvider;
   /**
+   * Live event-loop-lag monitor (P1.2) — supplied only by the daemon's own
+   * scheduled doctor runs (serve.ts), where the check can read the
+   * histogram in-process. CLI doctor omits it; the check then reads the
+   * `event_loop` block off /health instead, or reports inconclusive.
+   */
+  eventLoopLag?: import('../../server/event-loop-lag.js').EventLoopLagMonitor;
+  /**
    * Path to the backups directory. When provided, doctor warns if the newest
    * backup is older than 24h (or if no backups exist at all).
    * Pass undefined (the default) to skip the backup-recency check.

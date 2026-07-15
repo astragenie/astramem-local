@@ -43,6 +43,15 @@ export interface WorkerOpts {
   /** Optional liveness sink — the worker stamps lastTickAt each tick so
    *  /health can report worker.alive. */
   healthState?: { worker: { lastTickAt: number | null } };
+  /**
+   * Optional load governor (P1.4/P1.5, src/pipeline/backpressure.ts).
+   * When present: lanes with laneId >= governor.laneBudget() skip claiming
+   * (poll-sleep instead — the budget is re-read every tick, so lanes wake
+   * back up as it rises), embed-heavy handler durations feed its EWMA, and
+   * retry delays are shaped (storm floor + positive jitter) through it.
+   * Absent (tests, CLI one-shots): byte-identical to pre-P1.4 behavior.
+   */
+  governor?: import('./backpressure.js').LoadGovernor;
 }
 
 export interface WorkerHandle {
@@ -119,6 +128,18 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
       if (stopped) return;
       if (opts.healthState) opts.healthState.worker.lastTickAt = Date.now();
 
+      // P1.4/P1.5: lanes above the current budget don't claim — they keep
+      // poll-sleeping and re-checking, so capacity returns the moment the
+      // governor raises the budget (boot ramp step, or embed latency
+      // recovering). Lane 0 is always inside the budget (laneBudget() >= 1),
+      // so the queue can never fully stall.
+      if (opts.governor && laneId >= opts.governor.laneBudget()) {
+        if (!stopped) {
+          timer = setTimeout(() => { launchTick(); }, pollMs);
+        }
+        return;
+      }
+
       const job = repo.claimPending();
 
       if (!job) {
@@ -180,9 +201,12 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
         await handler.handle(payload, ctx);
         repo.complete(job.id);
         jobLog.info('job completed');
-        recordHandlerRun(db, { handler: job.kind, status: 'success', durationMs: Date.now() - handlerStartedAt });
+        const successDurationMs = Date.now() - handlerStartedAt;
+        recordHandlerRun(db, { handler: job.kind, status: 'success', durationMs: successDurationMs });
+        opts.governor?.recordHandlerRun(job.kind, successDurationMs);
       } catch (err) {
         const durationMs = Date.now() - handlerStartedAt;
+        opts.governor?.recordHandlerRun(job.kind, durationMs);
         // Budget exceeded → pause the job (not a failure, not retried).
         // Do NOT call fail() — that would increment attempts and eventually
         // poison the job after repeated daily cap hits, preventing recovery
@@ -227,7 +251,14 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
             // Absent a hint (the common case — most transient failures carry none), this is
             // a no-op: byte-identical to the prior fixed backoff.
             const retryAfterMs = TransientError.is(err) ? err.retryAfterMs : undefined;
-            const delay = retryAfterMs !== undefined ? Math.max(backoffDelay, retryAfterMs) : backoffDelay;
+            const baseDelay = retryAfterMs !== undefined ? Math.max(backoffDelay, retryAfterMs) : backoffDelay;
+            // P1.4: storm-aware shaping — positive-only jitter (never
+            // undercuts the Retry-After floor or the exponential minimum)
+            // plus a 30s floor while the aggregate retry rate is over
+            // budget, so a wave of same-moment failures cannot retry in
+            // lockstep against a saturated provider. No governor = no-op.
+            opts.governor?.recordRetry();
+            const delay = opts.governor ? opts.governor.shapeRetryDelay(baseDelay) : baseDelay;
             jobLog.info({ error_message: errMsg.slice(0, 200), delay_ms: delay, retry_after_ms: retryAfterMs }, 'job requeued for retry');
             setTimeout(() => { repo.requeueForRetry(job.id); }, delay);
           }

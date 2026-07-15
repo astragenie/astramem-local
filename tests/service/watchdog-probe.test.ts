@@ -296,3 +296,110 @@ describe('DEFAULT_FAILURE_THRESHOLD', () => {
     expect(DEFAULT_FAILURE_THRESHOLD).toBeGreaterThan(1);
   });
 });
+
+describe('restart-storm circuit breaker (P1.1)', () => {
+  const dataDir = '/tmp/astra-data';
+  const port = 7777;
+  const failingFetch = vi.fn(async () => { throw new Error('timeout'); }) as unknown as typeof fetch;
+
+  /** In-memory kill log standing in for watchdog-kills.jsonl. */
+  function makeKillLog(initial: number[] = []) {
+    const kills = [...initial];
+    return {
+      // Optional params mirror readKillsInWindow's real signature — the
+      // probe always passes both, so the defaults are never exercised here.
+      readKillsInWindowImpl: vi.fn((_dataDir: string, nowMs: number = NOW, windowMs: number = 6 * HOUR) =>
+        kills.filter(ms => nowMs - ms <= windowMs && ms <= nowMs)),
+      appendKillEventImpl: vi.fn(() => { kills.push(NOW); }),
+      kills,
+    };
+  }
+  const NOW = 1_784_000_000_000;
+  const HOUR = 3_600_000;
+
+  it('skips the kill and reports breaker-tripped when the window already holds threshold kills', async () => {
+    const killLog = makeKillLog([NOW - 5 * HOUR, NOW - 3 * HOUR, NOW - 1 * HOUR]);
+    const stopLockHolderImpl = vi.fn(async () => ({ ok: true, detail: 'should never be called' }));
+    const adapter = makePlainAdapter();
+    const counter = makeCounter(1); // one prior failure — this tick reaches threshold
+
+    const result = await runWatchdogProbe({
+      port, dataDir, adapter, fetchImpl: failingFetch, stopLockHolderImpl,
+      ...counter, ...killLog, nowMs: NOW,
+    });
+
+    expect(result.healthy).toBe(false);
+    expect(result.action).toBe('breaker-tripped');
+    expect(result.detail).toContain('3 watchdog kill(s)');
+    expect(stopLockHolderImpl).not.toHaveBeenCalled();
+    expect(adapter.start).not.toHaveBeenCalled();
+    // Failure count is retained, not reset — /health is still failing and
+    // the breaker must not mask that.
+    expect(counter.value).toBe(2);
+  });
+
+  it('kills that aged out of the 6h window do not count — the breaker self-clears', async () => {
+    const killLog = makeKillLog([NOW - 7 * HOUR, NOW - 6.5 * HOUR, NOW - 1 * HOUR]); // only 1 in window
+    const stopLockHolderImpl = vi.fn(async () => ({ ok: true, detail: 'stopped pid 42' }));
+    const adapter = makePlainAdapter();
+    const counter = makeCounter(1);
+
+    const result = await runWatchdogProbe({
+      port, dataDir, adapter, fetchImpl: failingFetch, stopLockHolderImpl,
+      ...counter, ...killLog, nowMs: NOW,
+    });
+
+    expect(result.action).toBe('restarted');
+    expect(stopLockHolderImpl).toHaveBeenCalledOnce();
+  });
+
+  it('records a kill event exactly when the stop succeeds, so successive storms trip the breaker', async () => {
+    const killLog = makeKillLog([NOW - 4 * HOUR, NOW - 2 * HOUR]); // 2 kills — one below trip
+    const stopLockHolderImpl = vi.fn(async () => ({ ok: true, detail: 'stopped pid 42' }));
+    const adapter = makePlainAdapter();
+    const counter = makeCounter(1);
+
+    const third = await runWatchdogProbe({
+      port, dataDir, adapter, fetchImpl: failingFetch, stopLockHolderImpl,
+      ...counter, ...killLog, nowMs: NOW,
+    });
+    expect(third.action).toBe('restarted');
+    expect(killLog.appendKillEventImpl).toHaveBeenCalledOnce();
+
+    // Daemon fails again after that third kill: breaker must now be open.
+    const counter2 = makeCounter(1);
+    const fourth = await runWatchdogProbe({
+      port, dataDir, adapter, fetchImpl: failingFetch, stopLockHolderImpl,
+      ...counter2, ...killLog, nowMs: NOW,
+    });
+    expect(fourth.action).toBe('breaker-tripped');
+    expect(stopLockHolderImpl).toHaveBeenCalledOnce(); // still just the one real kill
+  });
+
+  it('does NOT record a kill event when the stop fails (nothing died)', async () => {
+    const killLog = makeKillLog([]);
+    const stopLockHolderImpl = vi.fn(async () => ({ ok: false, detail: 'could not verify lock holder' }));
+    const counter = makeCounter(1);
+
+    const result = await runWatchdogProbe({
+      port, dataDir, adapter: makePlainAdapter(), fetchImpl: failingFetch, stopLockHolderImpl,
+      ...counter, ...killLog, nowMs: NOW,
+    });
+
+    expect(result.action).toBe('restart-failed');
+    expect(killLog.appendKillEventImpl).not.toHaveBeenCalled();
+  });
+
+  it('breaker never engages below the failure threshold (a first failure is not consulted against the kill log)', async () => {
+    const killLog = makeKillLog([NOW - 1 * HOUR, NOW - 2 * HOUR, NOW - 3 * HOUR]);
+    const counter = makeCounter(0);
+
+    const result = await runWatchdogProbe({
+      port, dataDir, adapter: makePlainAdapter(), fetchImpl: failingFetch,
+      stopLockHolderImpl: vi.fn(async () => ({ ok: true, detail: 'x' })),
+      ...counter, ...killLog, nowMs: NOW,
+    });
+
+    expect(result.action).toBe('below-threshold');
+  });
+});
