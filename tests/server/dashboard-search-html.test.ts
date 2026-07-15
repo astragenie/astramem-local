@@ -111,7 +111,8 @@ describe('GET /dashboard/search — score table (SLICE-410-6)', () => {
     expect(res.statusCode).toBe(200);
     const body = res.body;
     expect(body.toLowerCase()).toContain('<th>project</th>');
-    expect(body.toLowerCase()).toContain('<th>profile</th>');
+    // profile header carries a derived-value tooltip (review LOW)
+    expect(body.toLowerCase()).toMatch(/<th title="derived:[^"]*">profile<\/th>/);
     expect(body).toContain('astramemory-local');
     expect(body).toContain('conversational');
   });

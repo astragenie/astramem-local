@@ -163,7 +163,7 @@ function renderTable(hits: SearchDebugHit[], hitContext: Map<string, HitContext>
       <tr>
         <th>id</th><th>source</th><th>bm25(norm)</th><th>cosine(norm)</th>
         <th>importance</th><th>freshness</th><th>fused</th><th>rank</th>
-        <th>project</th><th>profile</th>
+        <th>project</th><th title="derived: extract_profile of the session's most recent transcript — best-effort">profile</th>
       </tr>
     </thead>
     <tbody>${rows}

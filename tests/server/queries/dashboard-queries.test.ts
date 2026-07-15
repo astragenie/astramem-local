@@ -361,6 +361,14 @@ describe('project + profile columns and filters (dashboard memory-listing surfac
       expect(parseMemoryFilterParam('astramemory-local')).toBe('astramemory-local');
       expect(parseMemoryFilterParam('  engineering  ')).toBe('engineering');
     });
+
+    it('repeated query key (string[] from the default parser) -> last value wins, never throws', () => {
+      // ?project=a&project=b reaches the route as ['a','b'] — raw.trim() on
+      // that array was an unhandled 500 (review finding).
+      expect(parseMemoryFilterParam(['repo-a', 'repo-b'])).toBe('repo-b');
+      expect(parseMemoryFilterParam(['repo-a', 'none'])).toBeNull();
+      expect(parseMemoryFilterParam([])).toBeUndefined();
+    });
   });
 
   describe('queryDashboard threads memoryFilters through end-to-end', () => {

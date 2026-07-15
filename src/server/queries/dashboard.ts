@@ -148,10 +148,17 @@ export const NONE_FILTER_VALUE = 'none';
 /** Parses one raw `?project=`/`?profile=` query value into a MemoryListFilters
  *  field: missing/blank -> `undefined` (no filter), the `NONE_FILTER_VALUE`
  *  sentinel -> `null` (match NULL rows), anything else -> the trimmed literal
- *  value to match exactly. */
-export function parseMemoryFilterParam(raw: string | undefined): string | null | undefined {
-  if (raw === undefined) return undefined;
-  const trimmed = raw.trim();
+ *  value to match exactly.
+ *
+ *  Accepts `string[]` because Fastify's default querystring parser produces
+ *  an array for a repeated key (`?project=a&project=b`) — the route's
+ *  untyped `as Record<string, string | undefined>` cast hid that, and
+ *  `raw.trim()` on an array threw an unhandled 500 (review finding). Last
+ *  value wins, matching common last-one-wins query semantics. */
+export function parseMemoryFilterParam(raw: string | string[] | undefined): string | null | undefined {
+  const single = Array.isArray(raw) ? raw[raw.length - 1] : raw;
+  if (typeof single !== 'string') return undefined;
+  const trimmed = single.trim();
   if (trimmed === '') return undefined;
   if (trimmed.toLowerCase() === NONE_FILTER_VALUE) return null;
   return trimmed;

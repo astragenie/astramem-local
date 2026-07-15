@@ -332,7 +332,9 @@ describe('renderDashboard — Mission Control (FEAT-410 SLICE-410-4)', () => {
         }],
       }), config);
       expect(html).toContain('<th>Project</th>');
-      expect(html).toContain('<th>Profile</th>');
+      // Profile header carries a derived-value tooltip (review LOW): the
+      // column is a best-effort proxy, and the operator should see that.
+      expect(html).toMatch(/<th title="derived:[^"]*">Profile<\/th>/);
     });
 
     it('renders memories.project and the derived profile when present', () => {

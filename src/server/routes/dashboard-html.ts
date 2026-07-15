@@ -515,7 +515,7 @@ function renderActivityFeed(data: DashboardData, rawPage: string | undefined): s
   const trs = pageRows.map(r => r.html).join('');
 
   return `${filterForm}<table>
-  <thead><tr><th>Time</th><th>Kind</th><th>Detail</th><th>Info</th><th>Project</th><th>Profile</th></tr></thead>
+  <thead><tr><th>Time</th><th>Kind</th><th>Detail</th><th>Info</th><th>Project</th><th title="derived: extract_profile of the session's most recent transcript — best-effort, can lag the actually-resolved profile">Profile</th></tr></thead>
   <tbody>${trs}</tbody>
 </table>
 ${renderActivityPager(data.memoryFilters, page, totalPages, offset, pageRows.length, total)}`;
