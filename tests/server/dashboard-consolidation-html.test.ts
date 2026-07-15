@@ -162,6 +162,79 @@ describe('GET /dashboard/consolidation — pending list + accept/reject', () => 
     expect(race.body).not.toContain('at ');  // no stack trace lines
   });
 
+  // Pagination — PER_PAGE=25, in-memory slice over the already-fetched
+  // ProposalRepo.list() rows (no new SQL). Preserves ?status= so paging
+  // within e.g. "pending" doesn't jump to a different tab.
+  describe('pagination — ?page= (PER_PAGE=25)', () => {
+    function seedManyPending(count: number): void {
+      const repo = new MemoryRepo(db);
+      // Each proposal needs a DISTINCT (winner_id, loser_id) pair — pending
+      // proposals are guarded by a unique index on that pair
+      // (migrations/008-consolidation.sql), so reusing one winner/loser
+      // across all rows collides on the second insert.
+      for (let i = 0; i < count; i++) {
+        const winnerId = insertMemory(repo, `winner text ${i}`, `h-page-winner-${i}`);
+        const loserId = insertMemory(repo, `loser text ${i}`, `h-page-loser-${i}`);
+        insertProposal(db, {
+          id: `prop-page-${String(i).padStart(2, '0')}`,
+          winnerId, loserId, similarity: 0.8,
+          createdAt: Date.now() + i,
+        });
+      }
+    }
+
+    it('page 1 shows the first 25, page 2 shows the remaining rows — no overlap', async () => {
+      seedManyPending(30);
+      const page1 = await app.inject({ method: 'GET', url: '/dashboard/consolidation?status=pending&page=1', headers: AUTH });
+      const page2 = await app.inject({ method: 'GET', url: '/dashboard/consolidation?status=pending&page=2', headers: AUTH });
+      expect(page1.statusCode).toBe(200);
+      expect(page2.statusCode).toBe(200);
+
+      expect(page1.body).toContain('prop-page-00');
+      expect(page1.body).toContain('prop-page-24');
+      expect(page1.body).not.toContain('prop-page-25');
+
+      expect(page2.body).toContain('prop-page-25');
+      expect(page2.body).toContain('prop-page-29');
+      expect(page2.body).not.toContain('prop-page-00');
+    });
+
+    it('renders the "page N/M — showing X–Y of Z" caption and a next link preserving ?status=', async () => {
+      seedManyPending(30);
+      const res = await app.inject({ method: 'GET', url: '/dashboard/consolidation?status=pending&page=1', headers: AUTH });
+      expect(res.body).toContain('page 1/2');
+      expect(res.body).toContain('showing 1');
+      expect(res.body).toContain('of 30');
+      expect(res.body).toContain('href="/dashboard/consolidation?status=pending&page=2"');
+      // prev is omitted (inert, not a link) on page 1.
+      expect(res.body).not.toContain('href="/dashboard/consolidation?status=pending&page=0"');
+    });
+
+    it('next is omitted (inert) on the last page; prev links back', async () => {
+      seedManyPending(30);
+      const res = await app.inject({ method: 'GET', url: '/dashboard/consolidation?status=pending&page=2', headers: AUTH });
+      expect(res.body).toContain('page 2/2');
+      expect(res.body).toContain('href="/dashboard/consolidation?status=pending&page=1"');
+      expect(res.body).not.toContain('href="/dashboard/consolidation?status=pending&page=3"');
+    });
+
+    it('an out-of-range ?page= clamps to the last valid page instead of an empty table', async () => {
+      seedManyPending(30);
+      const res = await app.inject({ method: 'GET', url: '/dashboard/consolidation?status=pending&page=999', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('prop-page-29');
+      expect(res.body).toContain('page 2/2');
+    });
+
+    it('a non-numeric ?page= falls back to page 1', async () => {
+      seedManyPending(30);
+      const res = await app.inject({ method: 'GET', url: '/dashboard/consolidation?status=pending&page=abc', headers: AUTH });
+      expect(res.statusCode).toBe(200);
+      expect(res.body).toContain('prop-page-00');
+      expect(res.body).toContain('page 1/2');
+    });
+  });
+
   it('a missing memory shows "(memory not found)" instead of throwing', async () => {
     insertProposal(db, { id: 'prop-4', winnerId: 'ghost-winner', loserId: 'ghost-loser', similarity: 0.7 });
     const res = await app.inject({ method: 'GET', url: '/dashboard/consolidation', headers: AUTH });

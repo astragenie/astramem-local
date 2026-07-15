@@ -18,6 +18,7 @@ import type { Memory, MemoryType, MemoryScope } from '../contracts/index.js';
 import { DEFAULT_EMBED_DIM } from '../contracts/embed.js';
 import { fuseHits, normalizeScores, type FusedHit } from './fuse.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
+import { getVecSearchOffload } from '../vector/vec-search-offload.js';
 import { usefulnessScores, DEFAULT_IMPLICIT_POSITIVE_WEIGHT } from '../storage/usefulness.js';
 import { EntityRepo } from '../storage/entities.js';
 import { applyRerank, type RerankOpts } from './rerank.js';
@@ -530,8 +531,15 @@ async function gatherCandidates(
       const vecs = await embed.embed([embedInput]);
       const queryVec = vecs[0];
       if (!queryVec) throw new Error('embed provider returned empty result');
-      const vecStore = new SqliteVecStore(db, embed.dim);
-      const raw = await vecStore.search(queryVec, vecK);
+      // Daemon-registered worker offload (vec-search-offload.ts): the KNN is a
+      // synchronous native scan that grows with the corpus (~1s+ at 36k atoms
+      // under SQLCipher) — on the worker thread it costs the event loop
+      // nothing. Unregistered contexts (mcp-stdio, CLI, eval, tests) take the
+      // inline store below, byte-identical to prior behavior.
+      const offload = getVecSearchOffload();
+      const raw = offload
+        ? await offload(queryVec, vecK)
+        : await new SqliteVecStore(db, embed.dim).search(queryVec, vecK);
       vecHits.push(...raw.map(h => ({ id: h.id, cosine: h.score })));
     } catch {
       // Vector search unavailable (no rows, no provider) — FTS-only mode

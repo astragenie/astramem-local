@@ -476,6 +476,23 @@ describe('usefulnessScores (weighted, issue #190)', () => {
     expect(score).toBeCloseTo((0.6 + 1) / (0.6 + 2), 6);
   });
 
+  // Regression (2026-07-15): one bound param per id overflowed SQLite's
+  // SQLITE_MAX_VARIABLE_NUMBER (~999) once a consolidation run passed the full
+  // valid-atom set, throwing "too many SQL variables" and poisoning every
+  // consolidate job on a large corpus. usefulnessScores now batches the IN().
+  it('handles > 999 atom ids without "too many SQL variables" (batched IN)', () => {
+    const ids: string[] = [];
+    for (let i = 0; i < 1500; i++) ids.push(insertMem(repo, `scores-batch-${i}`));
+    // Give one atom in a LATER batch a real signal so we prove batching keeps
+    // returning correct scores past the first chunk, not just that it runs.
+    recordRecallUsed(db, { atomId: ids[1200]!, surface: 'mcp', signal: 'explicit' });
+    let scores!: Map<string, number>;
+    expect(() => { scores = usefulnessScores(db, ids); }).not.toThrow();
+    expect(scores.size).toBe(1500);
+    expect(scores.get(ids[0]!)).toBe(0.5); // no signal -> neutral
+    expect(scores.get(ids[1200]!)).toBeCloseTo(2 / 3, 6); // signal counted across batch boundary
+  });
+
   it('a correction still demotes an implicit-only grant exactly as it would an explicit one', () => {
     const a = insertMem(repo, 'scores-heuristic-corrected');
     recordRecallUsed(db, { atomId: a, surface: 'system', signal: 'heuristic' });

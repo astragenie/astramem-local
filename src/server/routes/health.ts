@@ -16,6 +16,10 @@ import { statfsSync } from 'node:fs';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** TTL for the cached usefulness block below. ADR-010 marks the rate
+ *  "measure only" — 60s of staleness on a 7-day aggregate is noise. */
+const USEFULNESS_CACHE_TTL_MS = 60_000;
+
 /**
  * db is optional so /health keeps working for any caller that doesn't wire a
  * DB (defensive default) — the usefulness block degrades to zeros rather
@@ -26,9 +30,29 @@ const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
  * `status` field carries the degraded-start signal (starting|ok|degraded).
  */
 export function healthRoute(config: Config = defaultConfig(), db?: DB, healthState?: HealthState) {
+  // usefulnessRate is a synchronous json_extract scan over the 7-day event
+  // window — after a heavy session that window IS the whole memory_events
+  // table, i.e. seconds of sync work ON THE EVENT LOOP per call. /health is
+  // hit by the hang-watchdog (180s), monitoring probes, and the dashboard's
+  // auto-refresh, so computing it per-request turned the liveness endpoint
+  // itself into a loop-saturating amplifier during the 2026-07-15 incident
+  // (probes stacked behind each other's scans until everything timed out and
+  // the watchdog killed a healthy daemon). This is the same "accidental O(N)
+  // on /health" class the memory_health comment below already bans — cache
+  // it. A liveness endpoint must be O(1).
+  let usefulnessCache: { at: number; rate: { served: number; used: number; rate: number | null } } | null = null;
+  const cachedUsefulnessRate = (): { served: number; used: number; rate: number | null } => {
+    if (!db) return { served: 0, used: 0, rate: null };
+    const now = Date.now();
+    if (usefulnessCache && now - usefulnessCache.at < USEFULNESS_CACHE_TTL_MS) return usefulnessCache.rate;
+    const rate = usefulnessRate(db, { sinceMs: now - SEVEN_DAYS_MS });
+    usefulnessCache = { at: now, rate };
+    return rate;
+  };
+
   return async (app: FastifyInstance) => {
     app.get('/health', async () => {
-      const rate = db ? usefulnessRate(db, { sinceMs: Date.now() - SEVEN_DAYS_MS }) : { served: 0, used: 0, rate: null };
+      const rate = cachedUsefulnessRate();
       return {
         ok: true,
         version: PKG_VERSION,

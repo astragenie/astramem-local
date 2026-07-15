@@ -19,6 +19,7 @@ import { mcpRoute } from './routes/mcp.js';
 import { dashboardRoute } from './routes/dashboard.js';
 import { dashboardConsolidationRoute } from './routes/dashboard-consolidation-html.js';
 import { dashboardJobsRoute } from './routes/dashboard-jobs-html.js';
+import { dashboardLogsRoute } from './routes/dashboard-logs-html.js';
 import { dashboardSearchRoute } from './routes/dashboard-search-html.js';
 import { dashboardApiRoute } from './routes/dashboard-api-html.js';
 import { memoryToolRoute } from './routes/memory-tool.js';
@@ -235,6 +236,7 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   await app.register(dashboardRoute(opts.db, config, opts.token, opts.healthState, devNoAuthActive));
   await app.register(dashboardConsolidationRoute(opts.db, opts.token, devNoAuthActive));
   await app.register(dashboardJobsRoute(opts.db, opts.token, devNoAuthActive));
+  await app.register(dashboardLogsRoute(config.dataDir, opts.token, devNoAuthActive));
   await app.register(dashboardSearchRoute(opts.db, embed, opts.token, devNoAuthActive));
   await app.register(dashboardApiRoute(opts.token, devNoAuthActive));
   await app.register(memoryToolRoute(opts.db, config));

@@ -84,3 +84,34 @@ describe('GET /dashboard/* prefix auth exemption + stub pages', () => {
     expect(res.statusCode).toBe(401);
   });
 });
+
+// Shared nav header (renderDashboardNav, dashboard-nav.ts): every /dashboard*
+// page must link to every other page, not just the three that used to
+// hand-roll their own <nav>. Jobs and logs previously had no nav at all.
+describe('shared dashboard nav — every page links to every other page', () => {
+  let db: DB;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    app = await buildApp({ db, token: TOKEN });
+  });
+
+  const PAGES: Array<[string, string[]]> = [
+    ['/dashboard', ['/dashboard/jobs', '/dashboard/consolidation', '/dashboard/search', '/dashboard/logs', '/dashboard/api']],
+    ['/dashboard/jobs', ['/dashboard', '/dashboard/consolidation', '/dashboard/search', '/dashboard/logs', '/dashboard/api']],
+    ['/dashboard/consolidation', ['/dashboard', '/dashboard/jobs', '/dashboard/search', '/dashboard/logs', '/dashboard/api']],
+    ['/dashboard/search', ['/dashboard', '/dashboard/jobs', '/dashboard/consolidation', '/dashboard/logs', '/dashboard/api']],
+    ['/dashboard/logs', ['/dashboard', '/dashboard/jobs', '/dashboard/consolidation', '/dashboard/search', '/dashboard/api']],
+    ['/dashboard/api', ['/dashboard', '/dashboard/jobs', '/dashboard/consolidation', '/dashboard/search', '/dashboard/logs']],
+  ];
+
+  it.each(PAGES)('%s: nav links to every other dashboard page', async (path, others) => {
+    const res = await app.inject({ method: 'GET', url: path, headers: AUTH });
+    expect(res.statusCode).toBe(200);
+    for (const href of others) {
+      expect(res.body).toContain(`href="${href}"`);
+    }
+  });
+});

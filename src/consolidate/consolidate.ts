@@ -489,6 +489,22 @@ function insertContradictionProposal(
 }
 
 export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Promise<ConsolidateSummary> {
+  // Kill-switch (2026-07-15): even a requeued/orphaned consolidate job must
+  // no-op when disabled — the boot-enqueue gate in serve.ts alone can't cover
+  // a job already sitting in the queue. Returns an empty summary; the job
+  // completes cleanly with no scan and no event-loop-freezing setup.
+  if (process.env['ASTRA_SKIP_CONSOLIDATE'] === '1') {
+    (opts.log ?? ((m: string) => console.warn(m)))(
+      `${new Date().toISOString()} [consolidate] skipped — ASTRA_SKIP_CONSOLIDATE=1`,
+    );
+    return {
+      groupsScanned: 0, groupsSkipped: [], merged: [], proposed: [],
+      autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
+      contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
+      contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
+      judgeCallsNearThreshold: 0,
+    };
+  }
   // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
   // reliably same-fact paraphrases, while 0.90–0.92 still contains
   // distinct facts (e.g. two different env-var names at sim 0.91) —
@@ -567,6 +583,15 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       }
     }
 
+    // Yield to the event loop periodically during the O(n^2) pairwise scan.
+    // Without this a large group blocks the loop for the WHOLE scan — /health,
+    // /version, /search and MCP all freeze, and the hang-watchdog then kills an
+    // otherwise-healthy daemon (2026-07-15 incident: the consolidate
+    // SQL-variable fix let consolidation complete on a 36k-atom corpus and this
+    // loop had no yield points). A couple hundred pairs of cosine(1024-dim) is
+    // a few ms of work, so yielding at that cadence keeps the daemon responsive
+    // at negligible overhead. setImmediate is safe here: the loop is NOT inside
+    // a synchronous better-sqlite3 db.transaction() — each mutation autocommits.
     for (let i = 0; i < group.length; i++) {
       for (let j = i + 1; j < group.length; j++) {
         // ADR-019 Tier 1 (issue #347): yield to the event loop every

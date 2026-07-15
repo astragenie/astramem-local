@@ -96,6 +96,10 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // ASTRA_MEMORY_DATADIR=':memory:' test/dev path always stays plaintext
   // and never touches the keystore.
   let db: ReturnType<typeof openDb>;
+  /** Retained for the vec-search offload worker (its own read-only
+   *  connection needs the same SQLCipher key) — undefined on the plaintext
+   *  and :memory: paths. */
+  let dbKey: string | undefined;
   if (dataDir === ':memory:') {
     db = openDb(dbPath);
   } else if (cfg.security.encryption.enabled) {
@@ -103,6 +107,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     encryptIfPlaintext(dbPath, keyResult.key);
     try {
       db = openDb(dbPath, { key: keyResult.key });
+      dbKey = keyResult.key;
     } catch (err) {
       throw rewrapWrongKeyError(err, dbPath, keyResult.source);
     }
@@ -252,6 +257,27 @@ export async function serve(opts: ServeOpts): Promise<void> {
     ctx: extCtx,
     healthState,
   });
+
+  // KNN offload (2026-07-15 incident): recall's brute-force vector scan is a
+  // synchronous native call that grows with the corpus — run it on a worker
+  // thread with its own read-only connection so it never blocks the event
+  // loop. Registered for real datadirs only: a :memory: DB is invisible to a
+  // second connection, and non-daemon entry points (mcp-stdio, CLI, eval)
+  // never register, keeping their inline synchronous path. Any worker
+  // failure falls back to the main-thread scan (loud WARN per occurrence).
+  let vecSearchHost: import('../vector/vec-search-host.js').VecSearchWorkerHost | null = null;
+  if (dataDir !== ':memory:') {
+    const { VecSearchWorkerHost } = await import('../vector/vec-search-host.js');
+    const { setVecSearchOffload } = await import('../vector/vec-search-offload.js');
+    const fallbackStore = new SqliteVecStore(db, cfg.embedding.dim);
+    vecSearchHost = new VecSearchWorkerHost({
+      dbPath,
+      key: dbKey,
+      fallback: (vec, k) => fallbackStore.search(vec, k),
+    });
+    const host = vecSearchHost;
+    setVecSearchOffload((vec, k) => host.search(vec, k));
+  }
 
   // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
   // Requires explicit opt-in + url + workspace + device token; private
@@ -443,9 +469,20 @@ export async function serve(opts: ServeOpts): Promise<void> {
         console.warn(`${ts()} [astramem-local] consolidate enqueue failed: ${err instanceof Error ? err.message : String(err)}`);
       }
     };
-    enqueueConsolidate(); // boot pass — catches anything a downtime window skipped
-    consolidateTimer = setInterval(enqueueConsolidate, CONSOLIDATE_INTERVAL_MS);
-    consolidateTimer.unref();
+    // ASTRA_SKIP_CONSOLIDATE=1 kill-switch: on a large corpus the consolidate
+    // pairwise scan's SETUP (load all valid atoms + group + build per-group
+    // embedding maps) is synchronous and unbounded — it can freeze the event
+    // loop long enough on boot that the daemon looks dead (2026-07-15). The
+    // in-loop yield helps the O(n^2) scan itself but not the setup, so this
+    // switch lets an operator disable consolidation until the setup is also
+    // bounded. Skips both the boot pass and the recurring timer.
+    if (process.env['ASTRA_SKIP_CONSOLIDATE'] === '1') {
+      console.warn(`${ts()} [astramem-local] consolidation disabled via ASTRA_SKIP_CONSOLIDATE=1`);
+    } else {
+      enqueueConsolidate(); // boot pass — catches anything a downtime window skipped
+      consolidateTimer = setInterval(enqueueConsolidate, CONSOLIDATE_INTERVAL_MS);
+      consolidateTimer.unref();
+    }
   }
 
   // Cleanup cadence (FEAT-432): the `cleanup` handler (jobs prune + archival
@@ -586,6 +623,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       if (oversizeScanTimer) clearInterval(oversizeScanTimer);
       if (spoolDrainTimer) clearInterval(spoolDrainTimer);
       if (shipper) await shipper.stop();
+      if (vecSearchHost) await vecSearchHost.stop(); // terminate the KNN worker's read-only connection
       await worker.stop();         // drain in-flight tick before closing DB
       try {
         if (dataDir !== ':memory:') db.pragma('wal_checkpoint(TRUNCATE)');
