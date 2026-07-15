@@ -41,6 +41,17 @@ export const consolidateHandler: JobHandler = {
       // than crashing (see resolveContradictionDetection's non-fatal guard).
       contradictionDetection: ctx.config.consolidation.contradictionDetection,
       judgeProvider: isExtendedCtx(ctx) ? ctx.providers.llm.extraction : undefined,
+      // P2.1 stabilization: scheduled/enqueued runs pick up the configured
+      // candidate-selection strategy too (default 'full', byte-identical to
+      // pre-P2.1 behavior). Reuse the already-wired vecStore off an
+      // ExtendedHandlerCtx rather than let runConsolidation allocate a
+      // second SqliteVecStore against the same connection — without one
+      // (e.g. a unit test's bare ctx), runConsolidation falls back to
+      // constructing its own.
+      candidateSelection: ctx.config.consolidation.candidateSelection,
+      knnK: ctx.config.consolidation.knnK,
+      maxCandidatePairsPerRun: ctx.config.consolidation.maxCandidatePairsPerRun,
+      vectorStore: isExtendedCtx(ctx) ? ctx.vecStore : undefined,
     });
   },
 };
