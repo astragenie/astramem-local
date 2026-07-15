@@ -1,10 +1,14 @@
 /**
  * Search routes:
  *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=&preset=
- *   POST /recall  { query|text, k|limit, filters? }  filters.as_of: ISO-8601 date-time,
+ *   POST /recall  { query|text, k|limit, mode?, filters? }  filters.as_of: ISO-8601 date-time,
  *                                          filters.entity: FEAT-402 AC-4,
  *                                          filters.agentMode: FEAT-426 ('filter'|'boost')
+ *                                          filters.scope: FEAT-532 L2 (private|team|org, array)
  *                 { preset? }              FEAT-454: named retrieval preset, see src/search/presets.ts
+ *                 { mode? }                FEAT-532 L2: 'keyword'|'semantic'|'hybrid', see
+ *                                           src/search/search.ts's gatherCandidates() doc comment.
+ *                                           Omitted = 'hybrid'.
  *   POST /remember { text, type, metadata? }
  *
  * #112 (U3-local): `query`/`k` are the pre-ADR-005 legacy field names for
@@ -16,6 +20,17 @@
  * weights/filters (default|recent|exact|entity|temporal) — see
  * src/search/presets.ts for the full semantics and AC-3 400 cases. Omitted
  * `preset` is `'default'`, byte-identical to pre-FEAT-454 behavior (AC-1).
+ *
+ * FEAT-532 L1: POST /recall's response is now the canonical
+ * astramem-retrieval-result@1 envelope (contracts/schemas/
+ * retrieval-result.v1.schema.json) — `{ schema, query, hits, total }`, hits
+ * wire-mapped via src/contracts/wire-hit.ts's toWireHit(). BREAKING versus
+ * the pre-FEAT-532 flat `{ hits }` shape: each hit's fusion-leg `source`
+ * (fts|vec|both) is dropped and `capture_source` is renamed to the
+ * canonical `source` (provenance) — a client reading the old `source`
+ * meaning will silently misinterpret the new one. GET /search is
+ * UNCHANGED (still the flat `{ hits }` shape) — only POST /recall adopts
+ * the envelope in this slice.
  */
 
 import { randomUUID } from 'node:crypto';
@@ -51,7 +66,7 @@ import { assignQueryFilterValues, assignStructuredFilterValues } from '../../con
 // the canonical 10-value union in src/contracts/memory.ts, this schema picks
 // it up automatically — tests/contracts/recall-filter-parity.test.ts is the
 // regression gate that fails the build if a local copy is ever re-introduced.
-import { MEMORY_TYPES } from '../../contracts/memory.js';
+import { MEMORY_TYPES, MEMORY_SCOPES } from '../../contracts/memory.js';
 // FEAT-454: named retrieval preset — routing over existing fusion
 // weights/filters, never a new scoring path. See src/search/presets.ts.
 import {
@@ -61,9 +76,17 @@ import {
   PresetValidationError,
   type RetrievalPreset,
 } from '../../search/presets.js';
+// FEAT-532 L1: promoted wire-mapping (SearchHit -> the canonical
+// astramem-retrieval-result@1 hit shape), shared with
+// tests/contracts/conformance.test.ts's live conformance checks.
+import { toWireHit } from '../../contracts/wire-hit.js';
 
 const MemoryTypeEnum = z.enum(MEMORY_TYPES);
+const MemoryScopeEnum = z.enum(MEMORY_SCOPES);
 const RetrievalPresetEnum = z.enum(RETRIEVAL_PRESETS);
+// FEAT-532 L2: astramem-retrieval-query@1 `mode` (contracts/schemas/
+// retrieval-query.v1.schema.json). Threaded into search()'s SearchOpts.mode.
+const RetrievalModeEnum = z.enum(['keyword', 'semantic', 'hybrid']);
 
 const RecallBodySchema = z.object({
   // #112 AC-2: `text` (ADR-005 canonical) and `query` (legacy) are both
@@ -94,10 +117,19 @@ const RecallBodySchema = z.object({
     /** FEAT-401: ISO-8601 date-time — bitemporal time-travel (ADR-001/ADR-005). */
     as_of: z.string().optional(),
     /** FEAT-402 slice 2 AC-4/FEAT-424: entity name — resolved via the AC-9 normalize seam — canonical contract. */
-    entity: EntityFilterSchema
+    entity: EntityFilterSchema,
+    /** FEAT-532 L2: ADR-009 scope hard filter (private|team|org) — canonical
+     *  contract (retrieval-query.v1.schema.json `filters.scope`, array-only,
+     *  unlike project/agent's string-or-list shape). Absent = no constraint. */
+    scope: z.array(MemoryScopeEnum).optional()
   }).optional(),
   /** FEAT-454: named retrieval preset — see src/search/presets.ts. Omitted = 'default'. */
-  preset: RetrievalPresetEnum.optional()
+  preset: RetrievalPresetEnum.optional(),
+  /** FEAT-532 L2: astramem-retrieval-query@1 `mode` — which candidate leg(s)
+   *  search() runs. Omitted = 'hybrid', byte-identical to pre-FEAT-532
+   *  behavior (both legs always ran). See src/search/search.ts's
+   *  gatherCandidates() doc comment for the exact per-mode behavior. */
+  mode: RetrievalModeEnum.optional()
 }).refine((body) => (body.text ?? body.query) !== undefined, {
   // #112 AC-2: at least one of the canonical/legacy query-text spellings
   // is required — mirrors the pre-#112 `query: z.string().min(1)` required
@@ -227,6 +259,10 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       // hand-rolled lines; see src/contracts/filter-registry.ts).
       assignStructuredFilterValues(rawFilters, filters as unknown as Record<string, unknown>);
       if (rawFilters?.agentMode) filters.agentMode = rawFilters.agentMode;
+      // FEAT-532 L2: scope isn't in the filter-registry (array-only shape,
+      // unlike registry filters' string-or-list) — assigned directly, same
+      // truthy-length gate as `type` above.
+      if (rawFilters?.scope && rawFilters.scope.length > 0) filters.scope = rawFilters.scope;
       if (rawFilters?.as_of !== undefined) {
         try {
           filters.as_of = parseAsOf(rawFilters.as_of);
@@ -248,13 +284,20 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
       const weights = resolvePresetWeights(preset, baseWeights);
 
+      // FEAT-532 L2: astramem-retrieval-query@1 `mode` — omitted defaults to
+      // 'hybrid', byte-identical to pre-FEAT-532 behavior (search() always
+      // ran both legs). Threaded into SearchOpts.mode below, NOT to be
+      // confused with recordRecallServed's unrelated `mode: 'recall'`
+      // surface tag a few lines down.
+      const retrievalMode = parsed.data.mode ?? 'hybrid';
+
       // ADR-019 Tier 1 (issue #347) Decision 1b: bound the actual search/DB
       // work in a deadline race so a hang inside THIS handler's own async
       // chain returns a clean 504 instead of hanging to the client's cap.
       // See src/server/lib/deadline.ts's doc comment for what this does and
       // does NOT protect against (it does not close #347 — 1a does).
       return withDeadline('POST /recall', reply, async () => {
-        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose });
+        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose, mode: retrievalMode });
         // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
         recordRecallServed(db, {
           query,
@@ -265,7 +308,17 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         });
         // SLICE-411: enforce the [0,1] wire score contract at serialization,
         // independent of fuseScores() internal math.
-        return { hits: clampScores(hits, 'POST /recall') };
+        const clamped = clampScores(hits, 'POST /recall');
+        // FEAT-532 L1: canonical astramem-retrieval-result@1 envelope
+        // (contracts/schemas/retrieval-result.v1.schema.json) — see this
+        // file's top doc comment for the BREAKING-change note versus the
+        // pre-FEAT-532 flat `{ hits }` shape.
+        return {
+          schema: 'astramem-retrieval-result@1' as const,
+          query: { text: query, mode: retrievalMode },
+          hits: clamped.map(toWireHit),
+          total: clamped.length,
+        };
       });
     });
 

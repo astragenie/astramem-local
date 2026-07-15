@@ -35,8 +35,11 @@ export type MemoryType = (typeof MEMORY_TYPES)[number];
 
 /** ADR-009 memory scope — private is the default for all local-agent writes.
  *  Renamed from 'personal' (DEC-048, U7-local astramem-local#110); team/org
- *  are unchanged. */
-export type MemoryScope = 'private' | 'team' | 'org';
+ *  are unchanged. Runtime source of truth (FEAT-532 L2), same MEMORY_TYPES
+ *  pattern above — a `filters.scope` enum check draws from one array
+ *  instead of a hand-copied literal list. */
+export const MEMORY_SCOPES = ['private', 'team', 'org'] as const;
+export type MemoryScope = (typeof MEMORY_SCOPES)[number];
 
 /**
  * One-release inbound alias (U7-local astramem-local#110, DEC-048): accepts
