@@ -30,6 +30,7 @@ import {
   countRejected,
   clearRejected,
   shouldStartShipper,
+  sanitizeJsonbHostile,
 } from '../../src/sync/shipper.js';
 
 function seedMemory(db: DB, scope: 'private' | 'team' | 'org', hash: string): string {
@@ -192,6 +193,48 @@ describe('buildEnvelope — wire conformance', () => {
     const shippedCreate = envelope.events.find(e => e.event_type === 'create');
     // The WIRE envelope must say the truth (team), never the frozen 'private'.
     expect((shippedCreate!.payload_json as Record<string, unknown>).scope).toBe('team');
+  });
+
+  // 2026-07-15 sync-wedge incident: a NUL character inside a memory's text
+  // serialized as \u0000, which Postgres' jsonb parser rejects (22P05) inside
+  // the cloud's single-transaction batch accept — acked_seq never advanced
+  // and the shipper resent the identical poison batch forever. Ship-time
+  // sanitization self-heals the queue with no cloud deploy.
+  describe('sanitizeJsonbHostile (sync-wedge incident, 2026-07-15)', () => {
+    it('strips NUL characters from strings, recursively through objects and arrays', () => {
+      expect(sanitizeJsonbHostile('a\u0000b')).toBe('ab');
+      expect(sanitizeJsonbHostile({ text: 'x\u0000', nested: { arr: ['\u0000y', 1, null] } }))
+        .toEqual({ text: 'x', nested: { arr: ['y', 1, null] } });
+    });
+
+    it('replaces lone UTF-16 surrogates with U+FFFD but keeps valid pairs', () => {
+      expect(sanitizeJsonbHostile('a\uD800b')).toBe('a�b'); // lone high
+      expect(sanitizeJsonbHostile('a\uDC00b')).toBe('a�b'); // lone low
+      expect(sanitizeJsonbHostile('ok 😀 emoji')).toBe('ok 😀 emoji'); // valid pair untouched
+    });
+
+    it('leaves numbers, booleans, and null alone', () => {
+      expect(sanitizeJsonbHostile(42)).toBe(42);
+      expect(sanitizeJsonbHostile(null)).toBeNull();
+      expect(sanitizeJsonbHostile(true)).toBe(true);
+    });
+
+    it('buildEnvelope ships a NUL-bearing payload sanitized (the exact wedge shape)', () => {
+      const db = openDb(':memory:');
+      migrate(db);
+      const events = new MemoryEventRepo(db);
+      const team = seedMemory(db, 'team', 'h-nul');
+      events.append({
+        event_type: 'create',
+        atom_id: team,
+        payload: { scope: 'team', text: 'regex bug needed a negative lookahead `(?!\u0000)`' },
+      });
+
+      const envelope = buildEnvelope('device-1', 'ws-1', 0, listUnsynced(db, 100));
+      const shipped = envelope.events[0]!.payload_json as Record<string, unknown>;
+      expect(shipped['text']).toBe('regex bug needed a negative lookahead `(?!)`');
+      expect(JSON.stringify(envelope)).not.toContain('\\u0000');
+    });
   });
 
   it('does not touch payload_json for event types other than create (promote_scope already carries its own accurate "to")', () => {
