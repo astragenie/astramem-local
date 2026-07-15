@@ -157,7 +157,7 @@ async function promptConfirm(message: string, defaultValue: boolean): Promise<bo
 
 interface WizardAnswers {
   vector: 'sqlite-vec' | 'lancedb';
-  embedProvider: 'ollama' | 'azure-openai';
+  embedProvider: 'ollama' | 'azure-openai' | 'onnx';
   llmProvider: LlmProviderChoice;
   dataDir: string;
   port: number;
@@ -204,11 +204,14 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   const embedProvider = (await promptSelect(
     'Embedding provider:',
     [
-      { name: 'ollama (local, free)', value: 'ollama' },
+      // ADR-018 default: in-process ONNX (mxbai-embed-large, cls/q8) — proven
+      // 0.989 cosine parity with Ollama-mxbai, no Ollama process required.
+      { name: 'onnx (local, in-process — no Ollama needed, recommended)', value: 'onnx' },
+      { name: 'ollama (local, requires an Ollama server running)', value: 'ollama' },
       { name: 'azure-openai (cloud, ~$0)', value: 'azure-openai' },
     ],
-    'ollama'
-  )) as 'ollama' | 'azure-openai';
+    'onnx'
+  )) as 'ollama' | 'azure-openai' | 'onnx';
 
   // codex-subscription is only offered when a Codex CLI login is already
   // present — there is nothing useful to configure otherwise, and offering
@@ -419,7 +422,7 @@ async function confirmOllamaDownload(models: string[]): Promise<boolean> {
 
 function gatherNonInteractive(): WizardAnswers {
   const vector = (process.env[NON_INTERACTIVE_ENV.vector] ?? 'sqlite-vec') as 'sqlite-vec' | 'lancedb';
-  const embedProvider = (process.env[NON_INTERACTIVE_ENV.embedProvider] ?? 'ollama') as 'ollama' | 'azure-openai';
+  const embedProvider = (process.env[NON_INTERACTIVE_ENV.embedProvider] ?? 'onnx') as 'ollama' | 'azure-openai' | 'onnx';
   // v0.18.0: shipped default flipped to codex-subscription (see
   // gatherInteractive's llmProvider prompt comment for rationale) — the
   // non-TTY path has no "codex login detected" concept to gate on, so it

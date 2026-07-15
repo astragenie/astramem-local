@@ -45,8 +45,19 @@ export interface Config {
   };
   embedding: {
     /** ADR-018 SLICE-1: 'onnx' widened in — an in-process ONNX Runtime
-     * (CPU execution provider) embedder, opt-in only. `defaultConfig()`
-     * below stays `'ollama'`; this ADR does not flip the shipped default. */
+     * (CPU execution provider) embedder. ADR-018 S4 (2026-07-15) flipped
+     * `defaultConfig()` below to `'onnx'` — measured drop-in parity vs the
+     * previous `ollama`/`mxbai-embed-large` default (0.98944 mean cosine,
+     * 0/200 pairs below the 0.98 gate; see
+     * docs/research/20260715-onnx-embedder-benchmark-results.md) means this
+     * is a runtime change (GPU/external-server -> CPU/in-process), not a
+     * quality change, for a FRESH install. An EXISTING config.yaml that
+     * already sets `embedding.provider` explicitly (every config.yaml this
+     * daemon has ever written does — see writer.ts) is never silently
+     * switched: `loadConfigFromDisk`'s deep-merge only overrides keys the
+     * on-disk file itself sets, and this default is strictly the fallback
+     * base for an absent/malformed file, never applied on top of a present
+     * key. */
     provider: 'ollama' | 'azure-openai' | 'onnx';
     model: string;
     /** FEAT-409: parameterized — single source of truth is
@@ -86,9 +97,14 @@ export interface Config {
   codexSubscription: { authPath?: string };
   /** ADR-018 SLICE-1 — optional block for the `onnx` embedding provider
    * (`src/providers/embed/onnx.ts`). Absent/undefined is valid: every field
-   * has an in-code default (pinned HF model+revision, dtype 'q8', 4
-   * threads) so `provider: 'onnx'` alone is a complete config. Only
-   * meaningful when `embedding.provider === 'onnx'`; ignored otherwise. */
+   * has an in-code default (pinned HF model+revision, dtype 'q8', a
+   * core-count-bounded thread cap — see DEFAULT_NUM_THREADS in onnx.ts) so
+   * `provider: 'onnx'` alone is a complete config. Only meaningful when
+   * `embedding.provider === 'onnx'`; ignored otherwise. ADR-018 S4:
+   * `defaultConfig()` below sets `{dtype:'q8', pooling:'cls'}` explicitly
+   * (the registered default for `mxbai-embed-large-v1` anyway — see
+   * ONNX_MODEL_REGISTRY — but stated here so the shipped default is
+   * legible without cross-referencing the registry). */
   onnxEmbed?: {
     /** Override the default local weight-cache directory. Unset defers to
      * `@huggingface/transformers`' own cache resolution (S2 wires this to
@@ -952,7 +968,26 @@ export function defaultConfig(): Config {
       compaction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' },
       extraction: { provider: 'codex-subscription', model: 'gpt-5.4-mini' }
     },
-    embedding: { provider: 'ollama', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
+    // ADR-018 S4 (2026-07-15): default flipped ollama -> onnx. Model label
+    // stays 'mxbai-embed-large' (the same label the ollama default has
+    // always used, NOT the ONNX_MODEL_REGISTRY key 'mxbai-embed-large-v1')
+    // deliberately — QUERY_PREFIX_BY_MODEL (contracts/embed.ts) resolves
+    // both labels to the identical query-side prefix, and the explicit
+    // onnxEmbed block below pins dtype/pooling directly, so this resolves
+    // to byte-identical hfModelId/revision/dtype/pooling as the registry's
+    // 'mxbai-embed-large-v1' entry would (OnnxEmbedProvider's SLICE-1/2
+    // hardcoded fallback constants — DEFAULT_ONNX_HF_MODEL_ID/
+    // DEFAULT_ONNX_REVISION — ARE the registry entry's own values; see
+    // onnx-registry.ts). Keeping the label stable across the ollama->onnx
+    // switch avoids a second, redundant "model changed" identity for what
+    // is the same underlying weights per docs/adr/ADR-018-onnx-embedding-provider.md.
+    embedding: { provider: 'onnx', model: 'mxbai-embed-large', dim: DEFAULT_EMBED_DIM },
+    // Explicit so the shipped default is legible without cross-referencing
+    // ONNX_MODEL_REGISTRY — matches that registry's 'mxbai-embed-large-v1'
+    // entry (cls pooling, q8 dtype), which is the ADR-018 benchmark's
+    // measured drop-in GO recommendation (0.98944 mean cosine parity vs the
+    // previous ollama/mxbai-embed-large default, 0/200 pairs below gate).
+    onnxEmbed: { dtype: 'q8', pooling: 'cls' },
     vector: { store: 'sqlite-vec' },
     budget: { daily_usd: 10 },
     ollama: { baseUrl: 'http://127.0.0.1:11434' },

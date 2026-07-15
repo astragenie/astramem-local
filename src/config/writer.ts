@@ -228,6 +228,20 @@ export function configToYaml(cfg: Config): string {
     line(0, 'codexSubscription'),
     ...(cfg.codexSubscription.authPath ? [line(1, 'authPath', cfg.codexSubscription.authPath)] : []),
     '',
+    // ADR-018 — in-process ONNX embedding provider settings. Only meaningful
+    // when embedding.provider === 'onnx'; every field has an in-code default
+    // (Config['onnxEmbed'] + ONNX_MODEL_REGISTRY), so the block is emitted only
+    // when set (defaultConfig() ships {dtype:'q8', pooling:'cls'}). Each field
+    // is emitted only when defined, matching the codexSubscription/azure blocks.
+    ...(cfg.onnxEmbed ? [
+      line(0, 'onnxEmbed'),
+      ...(cfg.onnxEmbed.cacheDir !== undefined ? [line(1, 'cacheDir', cfg.onnxEmbed.cacheDir)] : []),
+      ...(cfg.onnxEmbed.modelPath !== undefined ? [line(1, 'modelPath', cfg.onnxEmbed.modelPath)] : []),
+      ...(cfg.onnxEmbed.numThreads !== undefined ? [line(1, 'numThreads', cfg.onnxEmbed.numThreads)] : []),
+      ...(cfg.onnxEmbed.dtype !== undefined ? [line(1, 'dtype', cfg.onnxEmbed.dtype)] : []),
+      ...(cfg.onnxEmbed.pooling !== undefined ? [line(1, 'pooling', cfg.onnxEmbed.pooling)] : []),
+      '',
+    ] : []),
     line(0, 'search'),
     line(1, 'alpha', cfg.search.alpha),
     line(1, 'beta', cfg.search.beta),
