@@ -90,6 +90,7 @@ import { checkServicePointer } from './service-pointer.js';
 import { checkCrashLoop } from './crash-loop.js';
 export { crashLoopStreakLength, CRASH_LOOP_THRESHOLD } from './crash-loop.js';
 import { checkRestartStorm } from './restart-storm.js';
+import { checkEventLoopLag } from './event-loop-lag.js';
 import { checkSchemaDrift } from './schema-drift.js';
 import { checkBudget } from './budget.js';
 import { checkBudgetCapCodexBlind } from './budget-cap-codex-blind.js';
@@ -183,6 +184,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkServicePointer(opts.servicePointerPath, opts.releasesRoot),
     checkCrashLoop(dataDir),
     checkRestartStorm(dataDir),
+    checkEventLoopLag(port, opts.eventLoopLag),
     checkSchemaDrift(dataDir, encryptionEnabled, opts.servicePointerPath, opts.releasesRoot),
     checkBudget(dataDir, dailyBudgetUsd, encryptionEnabled),
     checkBudgetCapCodexBlind(dailyBudgetUsd, opts.codexSubscriptionInUse ?? false),

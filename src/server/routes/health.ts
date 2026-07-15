@@ -93,6 +93,13 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
                 attempts: healthState.embed.attempts,
               },
               worker: workerBlock(healthState),
+              // P1.2 (2026-07-15 incident): event-loop lag over the current
+              // window — the number a human had to hand-measure with curl
+              // during the incident. O(1) native histogram read; numbers,
+              // never a boolean (canary-rate rule).
+              ...(healthState.eventLoopLag
+                ? { event_loop: healthState.eventLoopLag.snapshot() }
+                : {}),
               // A2-lite (ADR-015): last unattended doctor-schedule result —
               // readable without a human present, per the ADR's binding rule.
               doctor: healthState.doctor,

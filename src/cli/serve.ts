@@ -183,6 +183,16 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // Resolve providers: mock mode (CI/test) or real providers
   const healthState = createHealthState();
   if (dataDir !== ':memory:') healthState.dataDir = dataDir;
+  // P1.2 (2026-07-15 incident): always-on event-loop-lag histogram. Window
+  // resets every 15 minutes (same cadence as the frequent doctor tick, so
+  // the doctor check and /health always describe the recent window, not the
+  // daemon's lifetime). O(1) native sampling — negligible overhead.
+  const { createEventLoopLagMonitor } = await import('../server/event-loop-lag.js');
+  const eventLoopLag = createEventLoopLagMonitor();
+  healthState.eventLoopLag = eventLoopLag;
+  const EVENT_LOOP_LAG_WINDOW_MS = 15 * 60 * 1000;
+  const eventLoopLagResetTimer = setInterval(() => eventLoopLag.reset(), EVENT_LOOP_LAG_WINDOW_MS);
+  eventLoopLagResetTimer.unref();
   let providers: ProviderSet | MockProviderSet;
   const useMock = process.env.ASTRA_MEMORY_MOCK_PROVIDERS === '1';
   if (useMock) {
@@ -441,6 +451,8 @@ export async function serve(opts: ServeOpts): Promise<void> {
     devNoAuthActive: cfg.auth.devNoAuth === true && isLoopbackHost(cfg.network.host),
     audioMode: cfg.audio.mode,
     audioDisclosureAcknowledged: cfg.audio.disclosureAcknowledged ?? false,
+    // P1.2: scheduled doctor runs read the live histogram in-process.
+    eventLoopLag,
   };
   // Full-tier opts add the real providers — used ONLY on the 24h piggyback
   // below, never on the frequent tick. Safe under ASTRA_MEMORY_MOCK_PROVIDERS
@@ -648,6 +660,8 @@ export async function serve(opts: ServeOpts): Promise<void> {
     try {
       stopPreflight?.();
       stopFrequentDoctor?.();
+      clearInterval(eventLoopLagResetTimer);
+      eventLoopLag.disable();
       if (walTimer) clearInterval(walTimer);
       if (consolidateTimer) clearInterval(consolidateTimer);
       if (cleanupTimer) clearInterval(cleanupTimer);

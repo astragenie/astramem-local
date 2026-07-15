@@ -48,6 +48,14 @@ export interface HealthState {
   doctor: DoctorScheduleHealth;
   /** Resolved data directory — lets /health report disk_free_bytes. */
   dataDir?: string;
+  /**
+   * Event-loop lag monitor (stabilization plan P1.2) — set by serve.ts at
+   * boot, absent in non-daemon contexts (mcp-stdio, CLI, most tests). The
+   * /health route surfaces its snapshot as `event_loop`; the
+   * "Event loop lag" doctor check reads it in-process on the scheduled
+   * runs. See src/server/event-loop-lag.ts.
+   */
+  eventLoopLag?: import('./event-loop-lag.js').EventLoopLagMonitor;
   status(): DaemonStatus;
   uptimeSeconds(): number;
 }
