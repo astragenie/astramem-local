@@ -34,6 +34,19 @@
  * call would be misrouted into the atom-extraction branch. Vocabulary lives
  * in ../consolidate/mock-judge-pairs.ts, same closed-table pattern as
  * MOCK_EXTRACTION_VOCAB.
+ *
+ * P2.2 (saturation soak test, tests/soak/) adds an opt-in
+ * ASTRA_MOCK_EMBED_DELAY_MS knob read by MockEmbedProvider.embed() below —
+ * a non-negative integer number of milliseconds to `setTimeout`-delay before
+ * resolving, simulating an embed provider queued/saturated the way real
+ * Ollama was during the 2026-07-15 incident (measured 62-142s), WITHOUT
+ * blocking the event loop (the delay is a Promise/setTimeout, not a sync
+ * sleep — a sync delay here would defeat the entire point of the soak test,
+ * which asserts the event loop stays responsive during induced saturation).
+ * Defaults to 0 (no delay, byte-identical to pre-P2.2 behavior) whenever the
+ * env var is unset/non-numeric/non-positive. Same reachability guarantee as
+ * the rest of this file: only read behind ASTRA_MEMORY_MOCK_PROVIDERS=1,
+ * never in real serving.
  */
 
 import { createHash } from 'node:crypto';
@@ -122,6 +135,15 @@ class MockLLMProvider implements LLMProvider {
 
 // ── Mock Embed ────────────────────────────────────────────────────────────────
 
+/** P2.2 soak-test knob — see the module doc comment above. Read once at
+ *  module load (this file only ever loads inside a freshly spawned
+ *  ASTRA_MEMORY_MOCK_PROVIDERS=1 process, so a fresh read per daemon
+ *  lifetime is correct — no runtime env mutation needs to be observed). */
+const MOCK_EMBED_DELAY_MS = (() => {
+  const raw = Number(process.env['ASTRA_MOCK_EMBED_DELAY_MS']);
+  return Number.isFinite(raw) && raw > 0 ? raw : 0;
+})();
+
 class MockEmbedProvider implements EmbedProvider {
   readonly name = 'ollama' as const;
   readonly model = 'mock-embed';
@@ -132,6 +154,9 @@ class MockEmbedProvider implements EmbedProvider {
   }
 
   async embed(texts: string[]): Promise<Float32Array[]> {
+    if (MOCK_EMBED_DELAY_MS > 0) {
+      await new Promise<void>(resolve => setTimeout(resolve, MOCK_EMBED_DELAY_MS));
+    }
     return texts.map(t => makeDeterministicVec(t, this.dim));
   }
 
