@@ -42,7 +42,7 @@ describe('/health db snapshot (P1.3)', () => {
       computedAt: Date.now() - 12_000,
       queue: { completed: 41 },
       pending_proposals: 7,
-      memory_health: { generatedAt: 1, activeCount: 3 },
+      memory_health: { generatedAt: 1, activeCount: 3 } as unknown as import('../../src/server/queries/memory-health.js').MemoryHealthReport,
       disk_free_bytes: 123_456,
     };
     await buildApp();
@@ -87,6 +87,26 @@ describe('/health db snapshot (P1.3)', () => {
     expect(snap.computedAt).toBeGreaterThan(0);
     expect(snap.queue).toEqual({});
     expect(snap.pending_proposals).toBe(0);
-    expect(snap.disk_free_bytes).toBeNull();
+    // No dataDir passed -> undefined (key omitted on the wire), matching the
+    // fresh path's rule. null is reserved for "dataDir set, statfs failed".
+    expect(snap.disk_free_bytes).toBeUndefined();
+  });
+
+  it('no-healthState callers never trigger DB reads on /health (lazy dbBlock)', async () => {
+    // Route registered WITH a db but WITHOUT healthState — the dominant
+    // buildApp({ db, token }) test pattern. The DB block is discarded by the
+    // healthState gate, so it must not be computed at all (review finding:
+    // an eager compute here silently re-added 3 SQL reads per probe).
+    app = Fastify({ logger: false });
+    const spied = vi.spyOn(db, 'prepare');
+    await app.register(healthRoute(defaultConfig(), db, undefined));
+    await app.ready();
+    spied.mockClear();
+    const res = await app.inject({ method: 'GET', url: '/health' });
+    expect(res.statusCode).toBe(200);
+    // The only allowed DB touch is the usefulness-rate cache fill (1 query,
+    // cached 60s). The queue/pending/memory_health trio must not run.
+    const sqlSeen = spied.mock.calls.map(c => String(c[0]));
+    expect(sqlSeen.filter(s => s.includes('consolidation_proposals'))).toHaveLength(0);
   });
 });

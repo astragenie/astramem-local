@@ -59,21 +59,31 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
     const buildBody = (fresh: boolean) => {
       const rate = cachedUsefulnessRate();
       const snap = !fresh && healthState?.dbSnapshot ? healthState.dbSnapshot : null;
-      const dbBlock = snap
-        ? {
-            queue: snap.queue,
-            pending_proposals: snap.pending_proposals,
-            memory_health: snap.memory_health,
-            ...(snap.disk_free_bytes !== null ? { disk_free_bytes: snap.disk_free_bytes } : {}),
-            // P1.3: staleness is visible, never silently fresh-looking.
-            snapshot_age_ms: Date.now() - snap.computedAt,
-          }
-        : {
-            ...(db
-              ? { queue: queueCounts(db), pending_proposals: pendingProposals(db), memory_health: memoryHealthBlock(db) }
-              : {}),
-            ...(healthState?.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
-          };
+      // Lazy on purpose: only ever evaluated inside the `healthState ?`
+      // spread below. An eager `const dbBlock = ...` here ran the three SQL
+      // reads for every healthState-less caller (the dominant test-suite
+      // pattern) and threw the result away — reintroducing exactly the
+      // accidental-per-request-DB-touch class this slice exists to kill
+      // (review finding, feat/p1-3).
+      const dbBlock = () =>
+        snap
+          ? {
+              queue: snap.queue,
+              pending_proposals: snap.pending_proposals,
+              memory_health: snap.memory_health,
+              // Key-presence rule matches the fresh path: present whenever a
+              // dataDir was configured at snapshot time (null on a statfs
+              // failure), omitted only when there is no dataDir.
+              ...(snap.disk_free_bytes !== undefined ? { disk_free_bytes: snap.disk_free_bytes } : {}),
+              // P1.3: staleness is visible, never silently fresh-looking.
+              snapshot_age_ms: Date.now() - snap.computedAt,
+            }
+          : {
+              ...(db
+                ? { queue: queueCounts(db), pending_proposals: pendingProposals(db), memory_health: memoryHealthBlock(db) }
+                : {}),
+              ...(healthState?.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
+            };
       return {
         ok: true,
         version: PKG_VERSION,
@@ -124,7 +134,7 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
               // A2-lite (ADR-015): last unattended doctor-schedule result —
               // readable without a human present, per the ADR's binding rule.
               doctor: healthState.doctor,
-              ...dbBlock,
+              ...dbBlock(),
             }
           : {}),
       };
@@ -151,7 +161,10 @@ export function computeHealthDbSnapshot(db: DB, dataDir?: string): import('../he
     queue: queueCounts(db),
     pending_proposals: pendingProposals(db),
     memory_health: memoryHealthBlock(db),
-    disk_free_bytes: dataDir ? diskFree(dataDir) : null,
+    // undefined = no dataDir configured (key omitted on the wire);
+    // null = dataDir configured but statfs failed (key present as null) —
+    // same two-state rule the fresh path has always had.
+    disk_free_bytes: dataDir ? diskFree(dataDir) : undefined,
   };
 }
 

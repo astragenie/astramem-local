@@ -69,7 +69,7 @@ export interface LoadGovernor {
   recordRetry(): void;
   /** Shape a computed retry delay: storm floor clamp + positive jitter. */
   shapeRetryDelay(delayMs: number): number;
-  /** Current embed-latency EWMA — observability (dashboard//health later). */
+  /** Current embed-latency EWMA — observability (dashboard, /health later). */
   ewmaMs(): number;
   /** Stop ramp timers. Idempotent. */
   stop(): void;

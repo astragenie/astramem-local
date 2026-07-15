@@ -183,16 +183,16 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // Resolve providers: mock mode (CI/test) or real providers
   const healthState = createHealthState();
   if (dataDir !== ':memory:') healthState.dataDir = dataDir;
-  // P1.2 (2026-07-15 incident): always-on event-loop-lag histogram. Window
-  // resets every 15 minutes (same cadence as the frequent doctor tick, so
-  // the doctor check and /health always describe the recent window, not the
-  // daemon's lifetime). O(1) native sampling — negligible overhead.
+  // P1.2 (2026-07-15 incident): always-on event-loop-lag histogram. The
+  // WINDOW is owned by the scheduled doctor check (checkEventLoopLag resets
+  // the monitor after each in-process read), NOT by a timer here: an
+  // independent same-period setInterval started moments before the doctor
+  // schedule phase-aligned with it, wiping the histogram right before every
+  // scheduled read — the canary reported "window too fresh" forever
+  // (review finding, feat/p1-2). O(1) native sampling — negligible overhead.
   const { createEventLoopLagMonitor } = await import('../server/event-loop-lag.js');
   const eventLoopLag = createEventLoopLagMonitor();
   healthState.eventLoopLag = eventLoopLag;
-  const EVENT_LOOP_LAG_WINDOW_MS = 15 * 60 * 1000;
-  const eventLoopLagResetTimer = setInterval(() => eventLoopLag.reset(), EVENT_LOOP_LAG_WINDOW_MS);
-  eventLoopLagResetTimer.unref();
   // P1.3: pre-compute /health's DB-backed block off the request path so the
   // liveness endpoint never runs SQL per probe (watchdog hits it every 180s;
   // under DB contention per-request queries queue the probe behind whatever
@@ -712,7 +712,6 @@ export async function serve(opts: ServeOpts): Promise<void> {
     try {
       stopPreflight?.();
       stopFrequentDoctor?.();
-      clearInterval(eventLoopLagResetTimer);
       eventLoopLag.disable();
       if (healthSnapshotTimer) clearInterval(healthSnapshotTimer);
       if (walTimer) clearInterval(walTimer);

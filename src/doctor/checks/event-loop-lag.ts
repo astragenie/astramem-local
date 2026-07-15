@@ -30,6 +30,17 @@ import type { EventLoopLagMonitor, EventLoopLagSnapshot } from '../../server/eve
  * that stalls every few minutes.
  */
 export const P99_ALARM_MS = 1_000;
+/**
+ * Separate alarm on the WORST single delay. monitorEventLoopDelay records
+ * one histogram sample per stall regardless of its length — over a mature
+ * 15-min window (~45k samples at 20ms resolution) a single catastrophic
+ * 219s stall is ~0.002% of samples and moves p99 not at all. p99 catches
+ * FREQUENT moderate lag; max catches the rare-but-severe incident class
+ * that actually got the daemon killed on 2026-07-15. 5s (vs p99's 1s)
+ * because a single one-off ~1s GC pause is normal life on Node, but any
+ * single 5s+ block already ate half the watchdog's 10s probe timeout.
+ */
+export const MAX_ALARM_MS = 5_000;
 export const MIN_WINDOW_AGE_MS = 60_000;
 
 function verdict(snap: EventLoopLagSnapshot, source: string, now: number): CheckResult {
@@ -41,12 +52,16 @@ function verdict(snap: EventLoopLagSnapshot, source: string, now: number): Check
       message: `event loop lag: window only ${Math.round(windowAgeMs / 1000)}s old (${source}) — too fresh to judge; p99 so far ${snap.p99Ms}ms`,
     };
   }
-  if (snap.p99Ms > P99_ALARM_MS) {
+  if (snap.p99Ms > P99_ALARM_MS || snap.maxMs > MAX_ALARM_MS) {
+    const trigger =
+      snap.p99Ms > P99_ALARM_MS
+        ? `p99 ${snap.p99Ms}ms exceeds ${P99_ALARM_MS}ms`
+        : `worst single stall ${snap.maxMs}ms exceeds ${MAX_ALARM_MS}ms`;
     return {
       ok: false,
       message:
-        `event loop lag: p99 ${snap.p99Ms}ms (mean ${snap.meanMs}ms, max ${snap.maxMs}ms) over the last ` +
-        `${Math.round(windowAgeMs / 60_000)}min exceeds ${P99_ALARM_MS}ms (${source}) — something synchronous is ` +
+        `event loop lag: ${trigger} (p99 ${snap.p99Ms}ms, mean ${snap.meanMs}ms, max ${snap.maxMs}ms) over the last ` +
+        `${Math.round(windowAgeMs / 60_000)}min (${source}) — something synchronous is ` +
         `starving the loop; /recall, /health and MCP all queue behind it, and past ~10s the watchdog starts killing.`,
       fix:
         'Find the synchronous work: recent additions to job handlers, unyielded scans, sync sqlite calls on big ' +
@@ -69,7 +84,19 @@ export function checkEventLoopLag(
     tier: 'cheap', // O(1) histogram read in-process; one short local HTTP GET otherwise
     async run(): Promise<CheckResult> {
       if (monitor) {
-        return verdict(monitor.snapshot(), 'in-process', Date.now());
+        // Read THEN reset: the window is owned by this scheduled read, not
+        // by an independent wall-clock timer. serve.ts used to reset on its
+        // own 15-min setInterval started moments before the frequent-doctor
+        // schedule (same period) — the doctor tick then always fired a
+        // near-constant few ms AFTER the reset, so every scheduled read saw
+        // a seconds-old window and the MIN_WINDOW_AGE_MS guard reported
+        // inconclusive forever (found in review; the exact
+        // built-wired-never-invoked class this repo documents). Resetting
+        // here instead guarantees each scheduled read sees a full
+        // doctor-cadence window, and the next window starts now.
+        const result = verdict(monitor.snapshot(), 'in-process', Date.now());
+        monitor.reset();
+        return result;
       }
       try {
         // Short timeout: this is a loopback GET against an always-cached

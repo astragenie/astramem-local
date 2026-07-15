@@ -1,7 +1,7 @@
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import type { Check, CheckResult } from '../types.js';
 import {
-  readKillsInWindow,
+  parseKillLog,
   watchdogKillsPath,
   RESTART_STORM_THRESHOLD,
   RESTART_STORM_WINDOW_MS,
@@ -37,15 +37,16 @@ export function checkRestartStorm(
         return { ok: true, message: 'restart storm: no watchdog kills recorded yet' };
       }
 
-      // readKillsInWindow never throws (degrades to []), so an unreadable
-      // log is indistinguishable from an empty one here. Re-verify
-      // readability explicitly so a permissions/corruption glitch reports
-      // inconclusive rather than a false GREEN.
+      // Deliberately NOT readKillsInWindow: that helper never throws
+      // (degrades to []), which would make an unreadable log
+      // indistinguishable from an empty one — a false GREEN. Read the file
+      // ourselves so a permissions/corruption glitch reports inconclusive
+      // (catch-must-not-report-healthy discipline), then share the parser.
       let kills: number[];
       try {
-        kills = readKillsInWindow(dataDir, Date.now(), windowMs);
+        kills = parseKillLog(readFileSync(watchdogKillsPath(dataDir), 'utf8'), Date.now(), windowMs);
       } catch (err) {
-        return { ok: true, inconclusive: true, message: `restart storm check error (non-fatal): ${err}` };
+        return { ok: true, inconclusive: true, message: `restart storm: kill log exists but is unreadable (${err}) — not measured` };
       }
 
       if (kills.length < threshold) {

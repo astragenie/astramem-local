@@ -76,8 +76,12 @@ export interface HealthDbSnapshot {
   computedAt: number;
   queue: Record<string, number>;
   pending_proposals: number;
-  memory_health: object;
-  disk_free_bytes: number | null;
+  /** buildMemoryHealthCheap's report, or {} when its query failed (same
+   *  degrade-never-500 rule as the fresh path's memoryHealthBlock). */
+  memory_health: import('./queries/memory-health.js').MemoryHealthReport | Record<string, never>;
+  /** undefined = no dataDir configured (key omitted on the wire);
+   *  null = dataDir configured but statfs failed (key present as null). */
+  disk_free_bytes?: number | null;
 }
 
 export function createHealthState(now: () => number = Date.now): HealthState {

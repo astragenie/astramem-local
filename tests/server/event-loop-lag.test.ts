@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, vi } from 'vitest';
 import { createEventLoopLagMonitor, type HistogramLike } from '../../src/server/event-loop-lag.js';
-import { checkEventLoopLag, P99_ALARM_MS, MIN_WINDOW_AGE_MS } from '../../src/doctor/checks/event-loop-lag.js';
+import { checkEventLoopLag, P99_ALARM_MS, MAX_ALARM_MS, MIN_WINDOW_AGE_MS } from '../../src/doctor/checks/event-loop-lag.js';
 
 const NS = 1e6; // 1ms in ns
 
@@ -57,10 +57,10 @@ describe('createEventLoopLagMonitor', () => {
 });
 
 describe('checkEventLoopLag (in-process monitor path)', () => {
-  function monitorWith(p99Ms: number, windowAgeMs: number) {
+  function monitorWith(p99Ms: number, windowAgeMs: number, maxMs = p99Ms * 2) {
     const now = Date.now();
     return {
-      snapshot: () => ({ p99Ms, meanMs: p99Ms / 2, maxMs: p99Ms * 2, windowStartedAt: now - windowAgeMs }),
+      snapshot: () => ({ p99Ms, meanMs: p99Ms / 2, maxMs, windowStartedAt: now - windowAgeMs }),
       reset: vi.fn(),
       disable: vi.fn(),
     };
@@ -80,10 +80,41 @@ describe('checkEventLoopLag (in-process monitor path)', () => {
     expect(result.fix).toBeTruthy();
   });
 
+  it('RED on a rare-but-severe single stall: max over MAX_ALARM_MS with a healthy p99', async () => {
+    // The incident class: one 219s block is a single histogram sample —
+    // statistically invisible to p99 over a mature window, but max sees it.
+    const result = await checkEventLoopLag(7777, monitorWith(12, 15 * 60_000, MAX_ALARM_MS + 214_000)).run();
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain(`worst single stall ${MAX_ALARM_MS + 214_000}ms`);
+    expect(result.fix).toBeTruthy();
+  });
+
+  it('GREEN when max is a normal one-off pause under MAX_ALARM_MS', async () => {
+    const result = await checkEventLoopLag(7777, monitorWith(12, 15 * 60_000, 1_200)).run();
+    expect(result.ok).toBe(true);
+  });
+
   it('inconclusive (not GREEN) during the cold-start window, even with a huge p99', async () => {
     const result = await checkEventLoopLag(7777, monitorWith(50_000, MIN_WINDOW_AGE_MS - 1_000)).run();
     expect(result.ok).toBe(true);
     expect(result.inconclusive).toBe(true);
+  });
+
+  it('resets the monitor after each in-process read so the next scheduled read sees a full fresh window', async () => {
+    // Review finding (feat/p1-2): a serve.ts wall-clock reset timer with the
+    // same period as the doctor schedule phase-aligned with it and wiped the
+    // window right before every scheduled read — permanent inconclusive.
+    // The check itself owning the reset (read THEN reset) kills that class.
+    const mon = monitorWith(12, 15 * 60_000);
+    await checkEventLoopLag(7777, mon).run();
+    expect(mon.reset).toHaveBeenCalledOnce();
+
+    // Reset happens on the inconclusive path too — the boot tick restarts
+    // the window so the second tick is judged on a full window.
+    const cold = monitorWith(12, 1_000);
+    const result = await checkEventLoopLag(7777, cold).run();
+    expect(result.inconclusive).toBe(true);
+    expect(cold.reset).toHaveBeenCalledOnce();
   });
 });
 

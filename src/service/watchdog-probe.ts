@@ -124,10 +124,36 @@ export function watchdogKillsPath(dataDir: string): string {
 }
 
 /**
+ * Pure parse of kill-log content: timestamps (epoch ms) inside the rolling
+ * window, oldest first. Malformed LINES are skipped (per-line, never fatal);
+ * this function itself never touches the filesystem. Exported separately
+ * from {@link readKillsInWindow} so callers who need to distinguish "file
+ * unreadable" from "no kills" (the doctor check's inconclusive path) can do
+ * their own read and still share this parsing.
+ */
+export function parseKillLog(content: string, nowMs: number, windowMs: number): number[] {
+  return content
+    .split('\n')
+    .filter(Boolean)
+    .map((line): number | null => {
+      try {
+        const parsed = JSON.parse(line) as Partial<WatchdogKillEvent>;
+        const ms = typeof parsed.ts === 'string' ? Date.parse(parsed.ts) : NaN;
+        return Number.isFinite(ms) ? ms : null;
+      } catch {
+        return null;
+      }
+    })
+    .filter((ms): ms is number => ms !== null && nowMs - ms <= windowMs && ms <= nowMs);
+}
+
+/**
  * Kill timestamps (epoch ms) inside the rolling window, oldest first.
  * Never throws: an unreadable/missing/malformed log degrades to [] — a read
  * glitch must not trip the breaker (that would silently disable the
- * watchdog), and equally must not crash the probe.
+ * watchdog), and equally must not crash the probe. Callers who must NOT
+ * conflate unreadable-with-empty (doctor's restart-storm check) should read
+ * the file themselves and call {@link parseKillLog}.
  */
 export function readKillsInWindow(
   dataDir: string,
@@ -135,19 +161,7 @@ export function readKillsInWindow(
   windowMs: number = RESTART_STORM_WINDOW_MS,
 ): number[] {
   try {
-    return readFileSync(watchdogKillsPath(dataDir), 'utf8')
-      .split('\n')
-      .filter(Boolean)
-      .map((line): number | null => {
-        try {
-          const parsed = JSON.parse(line) as Partial<WatchdogKillEvent>;
-          const ms = typeof parsed.ts === 'string' ? Date.parse(parsed.ts) : NaN;
-          return Number.isFinite(ms) ? ms : null;
-        } catch {
-          return null;
-        }
-      })
-      .filter((ms): ms is number => ms !== null && nowMs - ms <= windowMs && ms <= nowMs);
+    return parseKillLog(readFileSync(watchdogKillsPath(dataDir), 'utf8'), nowMs, windowMs);
   } catch {
     return [];
   }
