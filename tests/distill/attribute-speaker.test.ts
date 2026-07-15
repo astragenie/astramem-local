@@ -45,6 +45,27 @@ describe('attributeSpeaker', () => {
       const evidence = 'one thing though, we still need the doctor WARN row before this ships. (per Priya)';
       expect(attributeSpeaker(transcript, evidence)).toBe('Priya Nair');
     });
+
+    // FEAT-506: pre-FEAT-505 tier 1 was a first-match-wins loop with no
+    // ambiguity check — a literal collision between two DIFFERENT speakers'
+    // lines silently picked whichever came first in the transcript. Tier 2
+    // already refuses to guess on a near-tie (AMBIGUITY_MARGIN); tier 1 must
+    // apply the same discipline instead of trusting substring-match order.
+    it('routes an exact-substring tie between two DIFFERENT speakers to null instead of first-match-wins', () => {
+      const transcript = [
+        "user: [Alice Chen] sounds good, let's ship it",
+        "assistant: [Bob Okafor] sounds good, let's ship it",
+      ].join('\n');
+      expect(attributeSpeaker(transcript, "sounds good, let's ship it")).toBeNull();
+    });
+
+    it('still attributes when multiple lines match but all belong to the SAME speaker (not a real ambiguity)', () => {
+      const transcript = [
+        "user: [Alice Chen] let's ship it today",
+        "user: [Alice Chen] let's ship it today, for real this time",
+      ].join('\n');
+      expect(attributeSpeaker(transcript, "let's ship it today")).toBe('Alice Chen');
+    });
   });
 
   describe('tier 2 — fuzzy fallback on a real-LLM-style paraphrase', () => {

@@ -20,7 +20,14 @@
  *
  *  1. EXACT SUBSTRING (pre-existing, FEAT-491): the evidence excerpt is a
  *     literal substring of a labeled line's utterance, or vice versa. Fast,
- *     unambiguous when it fires — kept as the first attempt.
+ *     unambiguous when it fires — kept as the first attempt. FEAT-506: "fast"
+ *     is not the same as "unambiguous" — a literal collision between two
+ *     DIFFERENT speakers' lines (e.g. both say "sounds good, let's ship it")
+ *     used to hand the atom to whichever labeled line came first in the
+ *     transcript. Now collects every exact match and only commits when they
+ *     all agree on the same speaker; a genuine cross-speaker tie falls
+ *     through to tier 2 (which applies its own margin check on the full
+ *     candidate set) rather than guessing.
  *
  *  2. FUZZY FALLBACK (FEAT-505): live-reproduced twice — the default
  *     extraction model (codex-subscription/gpt-5.4-mini) paraphrases the
@@ -132,11 +139,20 @@ export function attributeSpeaker(transcriptText: string, evidence: string | null
   const labeledLines = extractLabeledLines(transcriptText);
   if (labeledLines.length === 0) return null;
 
-  // Tier 1 — exact substring (FEAT-491, unchanged).
-  for (const { speaker, utterance } of labeledLines) {
-    if (utterance.includes(needle) || needle.includes(utterance)) {
-      return speaker;
-    }
+  // Tier 1 — exact substring (FEAT-491). FEAT-506: collect every match
+  // rather than returning on the first — only commit when they all agree on
+  // the same speaker. A collision between two DIFFERENT speakers' lines
+  // falls through to tier 2 below instead of trusting transcript order.
+  const exactMatches = labeledLines.filter(
+    ({ utterance }) => utterance.includes(needle) || needle.includes(utterance),
+  );
+  if (exactMatches.length > 0) {
+    const exactSpeakers = new Set(exactMatches.map(m => m.speaker));
+    if (exactSpeakers.size === 1) return exactMatches[0]!.speaker;
+    // Ambiguous — two or more different speakers both satisfy the exact
+    // substring test. Fall through to tier 2, which scores every labeled
+    // line (these candidates included) and applies the same
+    // best-vs-runner-up margin discipline instead of a first-match guess.
   }
 
   // Tier 2 — fuzzy fallback (FEAT-505). See module doc comment for the
