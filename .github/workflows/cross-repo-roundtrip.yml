@@ -85,6 +85,15 @@ jobs:
           NODE_ENV: development
         run: |
           set -e
+          # Pin the @astragenie scope to public npmjs BEFORE install. The plugin
+          # repo gitignores .npmrc (it holds a GitHub Packages token at publish
+          # time), so the repo-local scope route never reaches a fresh checkout —
+          # and a runner-global ~/.npmrc that points @astragenie at GitHub
+          # Packages would 404 the 2.x contracts line (only legacy 1.x lives on
+          # GH Packages). Without this, `bun install --frozen-lockfile` resolves
+          # @astragenie/astramem-contracts@2.4.0 against an unscoped default-
+          # registry path and 404s. Mirrors the plugin's own lint.yml/test.yml.
+          echo "@astragenie:registry=https://registry.npmjs.org" >> .npmrc
           for attempt in 1 2; do
             if bun install --frozen-lockfile; then
               break
