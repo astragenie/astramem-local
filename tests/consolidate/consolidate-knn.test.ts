@@ -273,8 +273,8 @@ describe('P2.1: maxCandidatePairsPerRun resumable cursor', () => {
   // ceiling.
   const NUM_GROUPS = 8;
 
-  async function seedPairFixture(db: DB, rng: () => number): Promise<string[][]> {
-    const pairs: string[][] = [];
+  async function seedPairFixture(db: DB, rng: () => number): Promise<Array<[string, string]>> {
+    const pairs: Array<[string, string]> = [];
     for (let g = 0; g < NUM_GROUPS; g++) {
       const centroid = randomVec(rng);
       const a = await seedAtom(db, `g${g}-a`, `h-g${g}-a`, centroid, { repo: `g${g}`, type: 'fact' });
