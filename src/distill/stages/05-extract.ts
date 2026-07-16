@@ -14,6 +14,7 @@ import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
 import {
   AtomSchema,
   EntityKindSchema,
+  ExtractionSchema,
   RELATION_PREDICATES,
   resolveExtractionPrompt,
   EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
@@ -187,6 +188,12 @@ export async function extractChunk(
   );
 }
 
+/** JSON-schema mirror of ExtractionSchema for providers with structured
+ * outputs (Ollama `format: <schema>`), converted once at module load via
+ * zod's own converter — see the jsonSchema call-site comment in callExtract
+ * for the qwen3.5 failure mode this closes. */
+const EXTRACTION_JSON_SCHEMA = z.toJSONSchema(ExtractionSchema) as Record<string, unknown>;
+
 async function callExtract(
   text: string,
   systemPrompt: string,
@@ -209,6 +216,16 @@ async function callExtract(
   const result = await provider.chat(messages, {
     temperature: EXTRACT_TEMPERATURE,
     json: true,
+    // Structured-output schema derived ONCE from ExtractionSchema (module
+    // const below) — never a second hand-written shape (ADR-016). Fixes the
+    // qwen3.5-family duplicate-key collapse (2026-07-16): bare format:"json"
+    // permits `{"text":"A","text":"B"}` — grammatically valid JSON whose
+    // last-key-wins parse silently collapses a full extraction to ONE atom,
+    // indistinguishable from severe under-extraction (measured 1 -> 8 atoms
+    // on the same prompt with a schema). Providers without schema support
+    // ignore this field and keep plain json-mode behavior (contract:
+    // ChatOpts.jsonSchema, contracts/llm.ts).
+    jsonSchema: EXTRACTION_JSON_SCHEMA,
     // FEAT-479 (SLICE-433): bumped 1500 -> 2500. The v3 engineering prompt's
     // 300-800 char rich shape for lesson/decision atoms (vs v1/v2's ~500
     // char cap applied uniformly) makes a full 2-6 atom chunk with a couple

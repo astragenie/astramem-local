@@ -65,6 +65,41 @@ function makeMockLLM(responses: string[], usdCost = 0): LLMProvider {
 }
 
 describe('extract stage', () => {
+  // 2026-07-16 qwen3.5 duplicate-key collapse: bare format:"json" permits
+  // `{"text":"A","text":"B"}` (valid JSON, last-key-wins parse -> ONE atom,
+  // indistinguishable from under-extraction). The structured-output schema
+  // is the fix — this pins that every extract call actually sends it,
+  // derived from ExtractionSchema (the jsonSchema contract field was
+  // built-wired-never-invoked before this).
+  it('passes the ExtractionSchema-derived jsonSchema on every chat call', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const seen: (ChatOpts | undefined)[] = [];
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        seen.push(opts);
+        return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+
+    await extractChunk(0, 'some chunk text', llm, budget, 10.0);
+
+    expect(seen).toHaveLength(1);
+    const schema = seen[0]?.jsonSchema as Record<string, unknown> | undefined;
+    expect(schema).toBeDefined();
+    // Structural spot-checks against the derived schema — atoms must be an
+    // ARRAY OF OBJECTS (the exact shape the dup-key collapse violates).
+    const atoms = (schema!.properties as Record<string, { type?: string; items?: { type?: string } }>).atoms;
+    expect(atoms.type).toBe('array');
+    expect(atoms.items?.type).toBe('object');
+  });
+
   it('extracts atoms from valid JSON response', async () => {
     const db = openDb(':memory:');
     migrate(db);
