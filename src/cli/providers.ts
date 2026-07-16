@@ -58,6 +58,23 @@ export async function providersCommand(args: string[]): Promise<void> {
         run: () => llmChatProbe(p.llm.extraction),
       });
     }
+    // Contradiction judge (2026-07-16): probe only when it is a DISTINCT
+    // provider (consolidation.contradictionDetection.{provider,model}
+    // override set) — the identity default is already covered by the
+    // extraction probe above, and a misconfigured judge would otherwise
+    // surface only when a consolidation run first fires a judge call.
+    const judge = p.llm.judge;
+    const judgeDistinct =
+      judge !== undefined &&
+      !(judge.name === p.llm.extraction.name && judge.model === p.llm.extraction.model) &&
+      !(judge.name === p.llm.compaction.name && judge.model === p.llm.compaction.model);
+    if (judgeDistinct) {
+      checks.push({
+        name: `LLM chat probe (contradiction judge: ${judge.name}/${judge.model})`,
+        tier: 'full',
+        run: () => llmChatProbe(judge),
+      });
+    }
     checks.push({
       name: `Embed probe (${p.embed.name}/${p.embed.model})`,
       tier: 'full', // real embed call

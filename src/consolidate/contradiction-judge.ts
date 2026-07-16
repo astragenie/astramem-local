@@ -20,9 +20,12 @@
  * reintroduce a BudgetTracker dependency here without first confirming the
  * provider in use actually reports non-zero cost.
  *
- * Reuses `ProviderSet.llm.extraction` (the same provider already used for
- * structured JSON extraction, stage 5) — no new `llm.judge` config surface
- * (design §1.3).
+ * Provider: `ProviderSet.llm.judge` — DEFAULTS to the extraction instance
+ * (design §1.3's original "no new llm.judge surface" decision) but
+ * overridable via `consolidation.contradictionDetection.{provider,model}`
+ * since 2026-07-16 (operator request: a binary temperature-0 verdict does
+ * not need the extraction-grade model, and on a codex-extraction install
+ * every judged pair drew metered quota).
  */
 
 import { z } from 'zod';

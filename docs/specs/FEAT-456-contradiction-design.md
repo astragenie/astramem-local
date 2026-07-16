@@ -110,6 +110,11 @@ export async function judgeContradiction(
 - **Provider:** reuses `ProviderSet.llm.extraction` (the same provider already used for structured
   JSON extraction, stage 5) — no new `llm.judge` config surface. This matches the FEAT body's own
   instruction and keeps the 2-role `ProviderSet` shape unchanged.
+  - **SUPERSEDED 2026-07-16 (operator request):** the judge is now `ProviderSet.llm.judge`,
+    which defaults to the extraction instance (this section's original behavior, byte-identical
+    when unset) but is overridable via `consolidation.contradictionDetection.{provider,model}` —
+    a binary temperature-0 verdict does not need the extraction-grade model, and on a
+    codex-extraction install every judged pair drew metered quota.
 - **Call:** `llm.chat(messages, { temperature: 0, json: true })`, single pair per call (batching
   pairs into one call would save round-trips but makes parse-failure blast radius and eval-fixture
   labeling much messier for v1 — not worth it at `maxPerRun` scale).
