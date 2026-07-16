@@ -18,6 +18,7 @@ import {
   type OnnxTensorLike,
   type OnnxPoolingStrategy,
 } from '../../../src/providers/embed/onnx.js';
+import { resolveOnnxCacheDir } from '../../../src/providers/index.js';
 import { runEmbedContractSuite } from '../_contract-suite.js';
 
 // ---------------------------------------------------------------------------
@@ -238,8 +239,46 @@ describe('onnx-embed', () => {
       });
     });
 
+    // #363 review follow-up: modelPath is the air-gapped operator's explicit
+    // override — an incomplete modelPath must NEVER silently resolve to a
+    // stray snapshot under cacheDir or the library cache (the caller throws
+    // instead). Falling back would load weights the operator never pointed at.
+    it('modelPath is exclusive — never falls back to cacheDir/library cache when set', () => {
+      withTmp((root) => {
+        const empty = join(root, 'empty');
+        mkdirSync(empty, { recursive: true });
+        makeSnapshot(root); // complete snapshot under the fallback locations
+        expect(
+          resolveLocalSnapshotDir({ ...baseOpts, modelPath: empty, cacheDir: root }, root),
+        ).toBeUndefined();
+      });
+    });
+
     it('returns undefined with no candidates at all', () => {
       expect(resolveLocalSnapshotDir(baseOpts)).toBeUndefined();
+    });
+  });
+
+  // #363 review follow-up: the stable-cache default in providers/index.ts
+  // carries the release-rotation fix's rationale — pin it.
+  describe('resolveOnnxCacheDir() — stable per-install cache default', () => {
+    it('defaults to <dataDir>/models/onnx', () => {
+      expect(resolveOnnxCacheDir({ dataDir: join('C:', 'data') })).toBe(
+        join('C:', 'data', 'models', 'onnx'),
+      );
+    });
+
+    it('keeps the library default (undefined) under :memory: throwaway state', () => {
+      expect(resolveOnnxCacheDir({ dataDir: ':memory:' })).toBeUndefined();
+    });
+
+    it('an explicit config.onnxEmbed.cacheDir always wins', () => {
+      expect(
+        resolveOnnxCacheDir({ dataDir: join('C:', 'data'), onnxEmbed: { cacheDir: join('X:', 'y') } }),
+      ).toBe(join('X:', 'y'));
+      expect(
+        resolveOnnxCacheDir({ dataDir: ':memory:', onnxEmbed: { cacheDir: join('X:', 'y') } }),
+      ).toBe(join('X:', 'y'));
     });
   });
 
