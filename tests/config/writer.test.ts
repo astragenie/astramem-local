@@ -35,7 +35,7 @@ function buildFullyPopulatedConfig(): Config {
     codexSubscription: { authPath: '/home/user/.codex/auth.json' },
     onnxEmbed: { cacheDir: '/var/cache/onnx', modelPath: '/opt/models/mxbai.onnx', numThreads: 2, dtype: 'fp16', pooling: 'mean' },
     search: {
-      alpha: 0.25, beta: 0.35, gamma: 0.15, delta: 0.05, epsilon: 0.2, zeta: 0.05, eta: 0.03,
+      alpha: 0.25, beta: 0.35, gamma: 0.15, delta: 0.05, epsilon: 0.2, zeta: 0.05, eta: 0.03, theta: 0.04,
       governance: { maxComponentWeight: 0.8 },
       usefulness: {
         implicitPositive: { enabled: true, windowDays: 45, minDistinctQueries: 3, weight: 0.5, maxGrantsPerRun: 250 },
@@ -294,6 +294,8 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     //    unless a passing ADR-005 eval-harness run is recorded for it — a
     //    real value here would never survive loadConfigFromDisk regardless
     //    of whether the emitter wrote it correctly.
+    //  - search.theta: issue #352B's θ component is gated the identical way
+    //    — same reasoning as eta above.
     //  - search.usefulness.implicitPositive.enabled: issue #190's own
     //    eval-evidence gate (same applyFusionGovernance call), same reason —
     //    this fixture's enabled:true has no recorded evidence, so it is
@@ -304,6 +306,7 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(loadedSearch).toEqual({
       ...cfgSearch,
       eta: 0,
+      theta: 0,
       usefulness: { implicitPositive: { ...cfgSearch.usefulness.implicitPositive, enabled: false } },
     });
 

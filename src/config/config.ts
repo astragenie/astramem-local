@@ -177,7 +177,14 @@ export interface Config {
    * `SearchFilters.agent` value into `agentMode: 'boost'` instead of the
    * default hard filter, a candidate whose provenance.agent matches gets
    * +η instead of having non-matches excluded outright. At eta=0 ranking is
-   * byte-identical to pre-FEAT-426 behavior).
+   * byte-identical to pre-FEAT-426 behavior), and θ supersession/correction
+   * freshness bonus (issue #352B: DEFAULT 0 = OFF; a candidate currently
+   * flagged as the loser side of an OPEN, pending `kind='contradiction'`
+   * consolidation proposal loses the +θ bonus its uncontested peers get —
+   * see src/search/fuse.ts's module doc θ section and
+   * src/search/search.ts's `correctionSignalForCandidates`. At theta=0
+   * ranking is byte-identical to pre-#352B behavior; the corrected-atom
+   * marker on recall payloads is populated independent of this weight).
    *
    * FEAT-428 (fusion-model governance, arch-review of FEAT-426 findings 1+3):
    * `governance` is a guard over these weights, not a ranking behavior —
@@ -186,7 +193,7 @@ export interface Config {
    * sees governed weights. See that function's doc comment for the two
    * guards (component ceiling, η eval-evidence gate). */
   search: {
-    alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number; eta: number;
+    alpha: number; beta: number; gamma: number; delta: number; epsilon: number; zeta: number; eta: number; theta: number;
     governance: {
       /** No individual component weight may exceed this. Over-ceiling
        * weights are clamped (not rejected — a bad config value must not
@@ -1082,7 +1089,7 @@ export function defaultConfig(): Config {
     openaiCompatible: { apiKeyEnv: 'OPENAI_COMPAT_API_KEY' },
     codexSubscription: {},
     search: {
-      alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0,
+      alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0, theta: 0,
       governance: { maxComponentWeight: 1.0 },
       usefulness: {
         implicitPositive: {
@@ -1269,6 +1276,11 @@ export function defaultConfig(): Config {
  *    FEAT-428 — see that module), a configured `eta > 0` is forced back to
  *    0 (the safe, byte-identical-ranking default) and a warning is logged,
  *    instead of silently shipping an unvalidated ranking change.
+ * 2b. θ eval-evidence gate: identical shape to guard 2, for `theta` (issue
+ *    #352B supersession/correction freshness bonus — see fuse.ts's module
+ *    doc). Ships wired but inert (default 0) until a passing evidence entry
+ *    licenses it; the corrected-atom marker on recall payloads is populated
+ *    independent of this gate (see src/search/search.ts).
  * 3. issue #190 implicitPositive eval-evidence gate: same shape as guard 2,
  *    for `search.usefulness.implicitPositive.enabled` — a config that turns
  *    the automatic positive-usefulness-signal sweep on is forced back to
@@ -1297,7 +1309,7 @@ export function applyFusionGovernance(
     ...search,
     usefulness: { implicitPositive: { ...search.usefulness.implicitPositive } },
   };
-  const componentKeys = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta'] as const;
+  const componentKeys = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta', 'theta'] as const;
   for (const key of componentKeys) {
     const value = governed[key];
     if (value > ceiling) {
@@ -1317,6 +1329,18 @@ export function applyFusionGovernance(
       'shipping a nonzero eta.',
     );
     governed.eta = 0;
+  }
+
+  // issue #352B: θ (supersession/correction freshness bonus) is gated the
+  // exact same way η is — see fuse.ts's module doc θ section.
+  if (governed.theta > 0 && !checkEvalEvidence('theta')) {
+    log(
+      `[fusion-governance] search.theta=${governed.theta} is configured but no passing ADR-005 ` +
+      "eval-harness evidence is recorded for 'theta' (src/eval/eval-evidence.ts) — forcing " +
+      'theta=0 for this config. Record a passing tests/eval/retrieval-eval.test.ts run before ' +
+      'shipping a nonzero theta. See issue #352.',
+    );
+    governed.theta = 0;
   }
 
   if (governed.usefulness.implicitPositive.enabled && !checkEvalEvidence('implicitPositive')) {

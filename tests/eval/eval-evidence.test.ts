@@ -44,4 +44,18 @@ describe('eval-evidence', () => {
   it('an empty evidence list never passes', () => {
     expect(hasPassingEvalEvidence('eta', [])).toBe(false);
   });
+
+  // issue #352B: theta (supersession/correction freshness bonus) is gated
+  // the same way eta is — mirrors the eta-specific assertions above.
+  it('the shipped evidence table has no passing entry for theta yet (issue #352B as-shipped state)', () => {
+    expect(hasPassingEvalEvidence('theta')).toBe(false);
+    expect(RECORDED_EVAL_EVIDENCE.find(e => e.component === 'theta')).toBeUndefined();
+  });
+
+  it('a recorded theta entry that clears both floors counts as passing evidence', () => {
+    const evidence: FusionEvalEvidence[] = [
+      { component: 'theta', recordedAt: '2026-07-16', meanRecall: 0.92, meanNdcg: 0.75, evidenceRef: 'PR#999' },
+    ];
+    expect(hasPassingEvalEvidence('theta', evidence)).toBe(true);
+  });
 });

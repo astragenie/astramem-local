@@ -179,6 +179,67 @@ describe('fuseScores', () => {
       expect(maxed).toBeCloseTo(1); // raw == weightSum when every component + bonus is maxed
     });
   });
+
+  // issue #352B: theta (supersession/correction freshness bonus) — the 8th
+  // governed fusion component, DEFAULT OFF like zeta/eta. UNLIKE them, its
+  // no-signal default is 1 (uncontested), not 0 — see the fuse.ts module
+  // doc's θ section. At theta=0 this asymmetry never matters: 0 * anything
+  // is 0 either way.
+  describe('theta (supersession/correction freshness bonus, issue #352B)', () => {
+    const base = {
+      normBm25: 0.5, normCosine: 0.5, importance: 0.5, freshness: 0.5,
+      alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1,
+    };
+
+    it('theta omitted → uncontestedBonus=0 (flagged) contributes nothing (byte-identical to no theta)', () => {
+      const withoutTheta = fuseScores(base);
+      const withFlagButNoTheta = fuseScores({ ...base, uncontestedBonus: 0 });
+      expect(withFlagButNoTheta).toBe(withoutTheta);
+    });
+
+    it('theta=0 → uncontestedBonus=0 (flagged) still contributes nothing (explicit OFF, #352B default)', () => {
+      const thetaZero = fuseScores({ ...base, theta: 0, uncontestedBonus: 0 });
+      const noTheta = fuseScores(base);
+      expect(thetaZero).toBe(noTheta);
+    });
+
+    it('uncontestedBonus defaults to 1 (uncontested), not 0 — the inverse default of entityBonus/agentBonus', () => {
+      // With theta active, an id with NO map entry (uncontestedBonus undefined)
+      // must score identically to one explicitly marked uncontestedBonus: 1.
+      const implicit = fuseScores({ ...base, theta: 0.2 });
+      const explicit = fuseScores({ ...base, theta: 0.2, uncontestedBonus: 1 });
+      expect(implicit).toBe(explicit);
+    });
+
+    it('theta>0 with uncontestedBonus=1 raises the score by the bonus share of the active weight sum', () => {
+      // base raw = 0.4*0.5 + 0.4*0.5 + 0.1*0.5 + 0.1*0.5 = 0.5, weightSum(no theta) = 1.0 -> plain = 0.5
+      const plain = fuseScores(base);
+      expect(plain).toBeCloseTo(0.5);
+      // boosted raw = 0.5 + 0.2*1 = 0.7, weightSum = 0.4+0.4+0.1+0.1+0.2 = 1.2 -> 0.7/1.2
+      const boosted = fuseScores({ ...base, theta: 0.2, uncontestedBonus: 1 });
+      expect(boosted).toBeCloseTo(0.7 / 1.2);
+      expect(boosted).toBeGreaterThan(plain);
+    });
+
+    it('theta>0 with uncontestedBonus=0 (flagged/contested) dilutes the score via the larger weight sum, unlike an unflagged peer', () => {
+      // A flagged (contested) atom loses the bonus its uncontested peer gets,
+      // even though the underlying bm25/cosine/importance/freshness are identical.
+      const contested = fuseScores({ ...base, theta: 0.2, uncontestedBonus: 0 });
+      const uncontested = fuseScores({ ...base, theta: 0.2, uncontestedBonus: 1 });
+      expect(contested).toBeCloseTo(0.5 / 1.2);
+      expect(contested).toBeLessThan(uncontested);
+    });
+
+    it('fused score stays <= 1 even with theta stacked on top of every other maxed component', () => {
+      const maxed = fuseScores({
+        normBm25: 1, normCosine: 1, importance: 1, freshness: 1,
+        usefulness: 1, entityBonus: 1, agentBonus: 1, uncontestedBonus: 1,
+        alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0.1, eta: 0.1, theta: 0.1,
+      });
+      expect(maxed).toBeLessThanOrEqual(1);
+      expect(maxed).toBeCloseTo(1); // raw == weightSum when every component + bonus is maxed
+    });
+  });
 });
 
 // Wire-contract regression (memory-plugin#8): the daemon's default weights
@@ -325,5 +386,49 @@ describe('fuseHits — FEAT-426 eta ranking safety (rank changes, membership doe
     // Rank changed — 'b' (the agent-matched candidate) now ranks first.
     expect(boosted[0]?.id).toBe('b');
     expect(boosted[0]?.score).toBeGreaterThan(boosted[1]?.score as number);
+  });
+});
+
+// issue #352B: theta/uncontestedBonus is a rank-only concern too — it must
+// never change WHICH candidates appear, only how they're ordered, and its
+// no-signal default (uncontested) is the OPPOSITE of zeta/eta's.
+describe('fuseHits — issue #352B theta ranking safety (rank changes, membership does not)', () => {
+  const NOW = 1_700_000_000_000;
+  const metas = new Map([
+    ['a', { importance: 0.5, created_at: NOW }],
+    ['b', { importance: 0.5, created_at: NOW }],
+  ]);
+  // Identical bm25/cosine for both candidates so, absent theta, they tie —
+  // any reshuffle at theta>0 is attributable ONLY to the flagged candidate
+  // losing its uncontested bonus.
+  const ftsHits = [{ id: 'a', bm25: -1 }, { id: 'b', bm25: -1 }];
+  const vecHits = [{ id: 'a', cosine: 0.5 }, { id: 'b', cosine: 0.5 }];
+  const weights = { alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1 };
+
+  it('theta=0 (default) → order identical whether or not an uncontested map is supplied', () => {
+    const withoutMap = fuseHits(ftsHits, vecHits, metas, { ...weights, theta: 0 }, NOW);
+    const withMapButThetaZero = fuseHits(
+      ftsHits, vecHits, metas, { ...weights, theta: 0 }, NOW, undefined, undefined, undefined, undefined,
+      new Map([['b', 0]]),
+    );
+    expect(withMapButThetaZero.map(h => h.id)).toEqual(withoutMap.map(h => h.id));
+    expect(withMapButThetaZero.map(h => h.score)).toEqual(withoutMap.map(h => h.score));
+  });
+
+  it('theta>0 with one candidate flagged (uncontestedBonus 0) demotes it relative to its unflagged peer', () => {
+    const baseline = fuseHits(ftsHits, vecHits, metas, weights, NOW);
+    // Tied candidates — baseline order is a tie; flagging 'b' must demote it.
+    expect(baseline.map(h => h.score)[0]).toBeCloseTo(baseline.map(h => h.score)[1] as number);
+    const baselineIds = new Set(baseline.map(h => h.id));
+
+    const demoted = fuseHits(
+      ftsHits, vecHits, metas, { ...weights, theta: 0.5 }, NOW, undefined, undefined, undefined, undefined,
+      new Map([['b', 0]]),
+    );
+    // Membership unchanged — same two candidates, neither added nor dropped.
+    expect(new Set(demoted.map(h => h.id))).toEqual(baselineIds);
+    // Rank changed — 'a' (uncontested, no map entry -> default 1) now ranks first.
+    expect(demoted[0]?.id).toBe('a');
+    expect(demoted[0]?.score).toBeGreaterThan(demoted[1]?.score as number);
   });
 });

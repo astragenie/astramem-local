@@ -31,12 +31,19 @@
  * `runImplicitPositivePass`), not a fusion weight, but follows the identical
  * "ships OFF, needs a recorded ADR-005 run before going live" posture: see
  * docs/specs/20260714-implicit-usefulness-signal-190.md.
+ *
+ * issue #352B: `theta` gates `search.theta` (the 8th fusion component, the
+ * supersession/correction freshness bonus — see src/search/fuse.ts's module
+ * doc). Same "empty table, ships 0" posture as η at introduction: the
+ * corrected-atom MARKER on recall payloads is available immediately
+ * (src/search/search.ts's `correctionSignalForCandidates`), independent of
+ * this gate — only the fusion WEIGHT is held back pending evidence.
  */
 
-/** Fusion weight keys this module can record evidence for. 'eta' and
- * 'implicitPositive' are currently gated (see module doc); the union leaves
- * room for a future component without implying ε/ζ are gated today. */
-export type GatedFusionComponent = 'eta' | 'implicitPositive';
+/** Fusion weight keys this module can record evidence for. 'eta', 'theta',
+ * and 'implicitPositive' are currently gated (see module doc); the union
+ * leaves room for a future component without implying ε/ζ are gated today. */
+export type GatedFusionComponent = 'eta' | 'theta' | 'implicitPositive';
 
 export interface FusionEvalEvidence {
   /** The fusion weight key this evidence licenses. */

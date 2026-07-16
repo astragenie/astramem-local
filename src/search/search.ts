@@ -219,13 +219,35 @@ export interface SearchHit {
    */
   reranked?: true;
   rerank_score?: number;
+  /**
+   * issue #352B (Ask B gap 2): present only when this atom is currently the
+   * LOSER side of an OPEN (`status='pending'`) `kind='contradiction'`
+   * consolidation proposal — a fresher/contradicting atom was already
+   * detected (`winner_id`) but no supersede edge has been created yet, so
+   * this atom keeps surfacing in ordinary recall (unlike a properly
+   * superseded atom, which `validityFilterClause` already hard-hides).
+   * Purely informational — populated regardless of `search.theta` (the θ
+   * fusion weight, see fuse.ts), which defaults to 0 and is governed
+   * separately (`applyFusionGovernance`). Consumers can use this to render
+   * a "possibly outdated" marker even at theta=0. LOCAL-ONLY: deliberately
+   * excluded from the canonical astramem-retrieval-result@1 wire hit
+   * (`toWireHit`, src/contracts/wire-hit.ts) — that schema is
+   * `additionalProperties: false` and cross-repo, so this field is visible
+   * on GET /search and the MCP tools' raw JSON, but not on POST /recall's
+   * envelope, until/unless a cross-repo contract change adds it there.
+   */
+  correction_pending?: {
+    proposal_id: string;
+    winner_id: string;
+    confidence: number;
+  };
 }
 
 export interface SearchOpts {
   db: DB;
   embed: EmbedProvider;
   weights: {
-    alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number;
+    alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number; theta?: number;
     /** issue #190: optional so every existing caller (eval harness's own
      *  narrower weights type, hand-built test fixtures) keeps compiling
      *  unchanged — see the DEFAULT_IMPLICIT_POSITIVE_WEIGHT fallback where
@@ -483,6 +505,53 @@ function agentBonusForFilter(db: DB, agent: string | string[], candidateIds: Set
   return bonus;
 }
 
+/** issue #352B: shape of the corrected-atom marker surfaced on `SearchHit`. */
+export interface CorrectionPendingSignal {
+  proposal_id: string;
+  winner_id: string;
+  confidence: number;
+}
+
+/**
+ * Compute the corrected-atom marker + θ uncontested-bonus source for a
+ * candidate set (issue #352B, Ask B gap 2): every id that is currently the
+ * `loser_id` of an OPEN (`status='pending'`) `kind='contradiction'`
+ * consolidation proposal. This is a plain indexed lookup against rows the
+ * consolidation job already wrote — never an LLM call at recall time, and
+ * never gated on `theta` (unlike entityBonusForQuery/agentBonusForFilter,
+ * which only run when their weight is active) because the marker itself
+ * must be visible on recall payloads even at the shipped `theta=0` default
+ * (see the wave plan's dispatch note).
+ *
+ * Confidence defaults to 0 when `metadata_json` is missing/unparsable
+ * (defensive — mirrors `parseContradictionMetadata`'s never-throw posture)
+ * rather than omitting the entry: the candidate IS still flagged either way.
+ */
+function correctionSignalForCandidates(db: DB, candidateIds: Set<string>): Map<string, CorrectionPendingSignal> {
+  const result = new Map<string, CorrectionPendingSignal>();
+  if (candidateIds.size === 0) return result;
+
+  const idPh = Array.from(candidateIds).map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT id, winner_id, loser_id, metadata_json FROM consolidation_proposals
+     WHERE kind = 'contradiction' AND status = 'pending' AND loser_id IN (${idPh})`
+  ).all(...candidateIds) as Array<{ id: string; winner_id: string; loser_id: string; metadata_json: string | null }>;
+
+  for (const row of rows) {
+    let confidence = 0;
+    if (row.metadata_json) {
+      try {
+        const parsed = JSON.parse(row.metadata_json) as { confidence?: unknown };
+        if (typeof parsed.confidence === 'number') confidence = parsed.confidence;
+      } catch {
+        // defensive — never throw search() on a malformed metadata_json row
+      }
+    }
+    result.set(row.loser_id, { proposal_id: row.id, winner_id: row.winner_id, confidence });
+  }
+  return result;
+}
+
 /**
  * Gather raw FTS5 + vector candidates for one query string — the exact
  * steps 1-2 `search()` always ran inline before WS6. Extracted so the
@@ -678,6 +747,7 @@ export async function search(
     db, Array.from(allIds), weights.usefulness?.implicitPositive.weight ?? DEFAULT_IMPLICIT_POSITIVE_WEIGHT,
   );
   const zeta = weights.zeta ?? 0;
+  const theta = weights.theta ?? 0;
   const entityBonus = zeta > 0 ? entityBonusForQuery(db, query, allIds) : undefined;
   // FEAT-426: η agent-match soft-boost — only computed when the caller
   // opted `agent` into 'boost' mode (default 'filter' skips this entirely;
@@ -688,8 +758,19 @@ export async function search(
   const agentBonus = (eta > 0 && agentMode === 'boost' && filters.agent !== undefined)
     ? agentBonusForFilter(db, filters.agent, allIds)
     : undefined;
+  // issue #352B: corrected-atom marker + θ uncontested-bonus source — always
+  // computed (not gated on `theta > 0` like entityBonus/agentBonus above)
+  // because the marker must appear on recall payloads regardless of the
+  // fusion weight. `uncontestedBonus` only carries EXPLICIT 0 entries for
+  // flagged ids — fuseScores' default (1, uncontested) covers every other
+  // candidate, so passing it through unconditionally is a no-op whenever
+  // theta=0 (0 * anything = 0 in fuseScores' raw sum either way).
+  const correctionSignal = correctionSignalForCandidates(db, allIds);
+  const uncontestedBonus = correctionSignal.size > 0
+    ? new Map(Array.from(correctionSignal.keys(), id => [id, 0]))
+    : undefined;
   const nowMs = Date.now();
-  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus);
+  const fused = fuseHits(filteredFtsHits, filteredVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus, uncontestedBonus);
 
   // WS6 merge (dilution bound): supplemental (sub-query-sourced) candidates
   // are fused in a SEPARATE fuseHits() call — `normalizeScores` (fuse.ts) is
@@ -713,7 +794,7 @@ export async function search(
   let rankedFused = fused;
   const supplementalRawScore = new Map<string, number>();
   if (opts.decompose && (subFtsHits.length > 0 || subVecHits.length > 0)) {
-    const supplementalFused = fuseHits(subFtsHits, subVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus);
+    const supplementalFused = fuseHits(subFtsHits, subVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus, uncontestedBonus);
     const capped = supplementalFused
       .slice(0, opts.decompose.maxSupplemental)
       .map(h => {
@@ -882,7 +963,7 @@ export async function search(
   const normCosineArr3 = normalizeScores(filteredVecHits.map(h => h.cosine));
   const normCosineForExplain = new Map(filteredVecHits.map((h, i) => [h.id, normCosineArr3[i] ?? 0]));
   const explainWeightSumRaw =
-    weights.alpha + weights.beta + weights.gamma + weights.delta + (weights.epsilon ?? 0) + zeta + eta;
+    weights.alpha + weights.beta + weights.gamma + weights.delta + (weights.epsilon ?? 0) + zeta + eta + theta;
   const explainWeightSum = explainWeightSumRaw === 0 ? 1 : explainWeightSumRaw;
   const explainWeights = {
     bm25: weights.alpha / explainWeightSum,
@@ -892,6 +973,7 @@ export async function search(
     usefulness: (weights.epsilon ?? 0) / explainWeightSum,
     entity_bonus: zeta / explainWeightSum,
     agent_bonus: eta / explainWeightSum,
+    correction_freshness: theta / explainWeightSum,
   };
 
   function buildExplanation(id: string, score: number, importance: number, createdAtMs: number): ScoreExplanation {
@@ -915,6 +997,14 @@ export async function search(
     if (agentBonus) {
       const raw = agentBonus.get(id) ?? 0;
       signals.agent_bonus = { raw, weight: explainWeights.agent_bonus, final: raw * explainWeights.agent_bonus };
+    }
+    // issue #352B: only surfaced when theta is active — mirrors zeta/eta's
+    // conditional-signal pattern above. `uncontestedBonus` itself is always
+    // computed (for the marker), but the θ signal is only explanation-worthy
+    // once its weight can actually move the score.
+    if (theta > 0) {
+      const raw = uncontestedBonus?.get(id) ?? 1;
+      signals.correction_freshness = { raw, weight: explainWeights.correction_freshness, final: raw * explainWeights.correction_freshness };
     }
     // WS6: a supplemental (decomposition-sourced) hit carries its own
     // undamped fused score as `raw`, `supplementalWeight` as `weight`, and
@@ -945,6 +1035,7 @@ export async function search(
       confidence: mem.confidence,
       created_at: new Date(mem.created_at).toISOString(),
       ...(mem.capture_source !== null ? { capture_source: mem.capture_source } : {}),
+      ...(correctionSignal.has(hit.id) ? { correction_pending: correctionSignal.get(hit.id)! } : {}),
       explanation: buildExplanation(hit.id, hit.score, mem.importance, mem.created_at),
     });
     if (results.length >= buildLimit) break;
