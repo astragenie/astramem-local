@@ -9,7 +9,10 @@
  *                 { mode? }                FEAT-532 L2: 'keyword'|'semantic'|'hybrid', see
  *                                           src/search/search.ts's gatherCandidates() doc comment.
  *                                           Omitted = 'hybrid'.
- *   POST /remember { text, type, metadata? }
+ *   POST /remember { text, type, project?, agent?, metadata? }
+ *                 project/agent (#341): flat top-level canonical fields —
+ *                 preferred over the deprecated nested metadata.project/
+ *                 metadata.agent, which remain accepted for compat.
  *
  * #112 (U3-local): `query`/`k` are the pre-ADR-005 legacy field names for
  * POST /recall; `text`/`limit` are the canonical ADR-005 names
@@ -141,6 +144,16 @@ const RecallBodySchema = z.object({
 const RememberBodySchema = z.object({
   text: z.string().min(1),
   type: MemoryTypeEnum,
+  // #341: flat top-level canonical fields — the wire shape the daemon-client
+  // HTTP transport's own `RememberRequest` type declares (`{project, agent}`
+  // top-level), mirroring the flat convention already used elsewhere on this
+  // daemon (canonical /ingest/transcript's `project_id`/`agent_type`, the
+  // MCP `remember` tool's `projectId`/`agentId` aliases). Take priority over
+  // the deprecated nested `metadata.project`/`metadata.agent` below when
+  // both are supplied — additive, backward-compatible: a caller sending only
+  // nested metadata behaves byte-identically to before.
+  project: z.string().optional(),
+  agent: z.string().optional(),
   metadata: z.object({
     repo: z.string().optional(),
     project: z.string().optional(),
@@ -328,7 +341,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
       }
-      const { type, metadata } = parsed.data;
+      const { type, metadata, project, agent } = parsed.data;
 
       // Stage-0 secret redaction (SEC-3/5, OQ-2) — same choke point as ingest,
       // applied before persistence AND before the embed call (SEC-4: no
@@ -346,9 +359,11 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
         text,
         normalized_text: text.toLowerCase(),
         repo: metadata?.repo ?? null,
-        project: metadata?.project ?? null,
+        // #341: flat top-level alias wins over the deprecated nested form
+        // when both are present — see RememberBodySchema's doc comment.
+        project: project ?? metadata?.project ?? null,
         branch: metadata?.branch ?? null,
-        agent: metadata?.agent ?? null,
+        agent: agent ?? metadata?.agent ?? null,
         session_id: null,
         hash,
         source_hash: null,
