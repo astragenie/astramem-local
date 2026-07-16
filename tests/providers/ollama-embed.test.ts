@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OllamaEmbedProvider } from '../../src/providers/embed/ollama.js';
 import { runEmbedContractSuite } from './_contract-suite.js';
+import { LIVE_MODEL_TESTS_DISABLED } from '../helpers/live-model-gate.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -210,7 +211,9 @@ describe('ollama-embed', () => {
     });
   });
 
-  describe.skipIf(!process.env.INTEGRATION_LIVE)('live integration', () => {
+  // Opt-in: INTEGRATION_LIVE=1; ASTRA_MEMORY_MOCK_PROVIDERS=1 always wins and
+  // forces a skip even if INTEGRATION_LIVE is also set — #251.
+  describe.skipIf(LIVE_MODEL_TESTS_DISABLED)('live integration', () => {
     // #50 (nightly-live: red): this block previously hardcoded
     // 'nomic-embed-text-v2-moe' (pre-v0.2.1-hotfix reference), which is
     // natively 768-dim while OllamaEmbedProvider expects 1024 regardless

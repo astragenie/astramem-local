@@ -19,27 +19,23 @@
  * These differ by ONE WORD, and that word is the entire fact. Cosine cannot see it —
  * which is exactly why `autoAcceptThreshold` stays null and the judge exists.
  *
- * SKIPPED when Ollama is unreachable, so CI without a model host stays green. That is a
- * deliberate tradeoff: a skipped honest test beats a passing dishonest one.
+ * Gated behind INTEGRATION_LIVE (issue #251) — permission first, reachability second.
+ * The live tests below run only when INTEGRATION_LIVE is set (and ASTRA_MEMORY_MOCK_PROVIDERS
+ * isn't), and even then still SKIP (not fail) when Ollama is unreachable, so CI without a
+ * model host stays green and a plain `bun run test` never fires a live model call by
+ * default. That is a deliberate tradeoff: a skipped honest test beats a passing dishonest one.
  */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { judgeContradiction, type JudgeableAtom } from '../../src/consolidate/contradiction-judge.js';
 import { getProviders } from '../../src/providers/index.js';
 import { defaultConfig } from '../../src/config/config.js';
+import { LIVE_MODEL_TESTS_DISABLED } from '../helpers/live-model-gate.js';
 
 const atom = (text: string): JudgeableAtom => ({ text, created_at: Date.now() });
 
 const OLLAMA = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434';
 
 let ollamaUp = false;
-beforeAll(async () => {
-  try {
-    const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(3000) });
-    ollamaUp = r.ok;
-  } catch {
-    ollamaUp = false;
-  }
-});
 
 /** The real pairs, lifted verbatim from the live store's pending merge proposals. */
 const REAL_FALSE_MERGES = [
@@ -66,7 +62,25 @@ const REAL_TRUE_DUPLICATES = [
   },
 ];
 
-describe('contradiction judge — REAL model, REAL false-merge pairs from the live store', () => {
+// Gated on PERMISSION first (issue #251): this describe block — including
+// the beforeAll reachability ping below — only runs when INTEGRATION_LIVE
+// is set and ASTRA_MEMORY_MOCK_PROVIDERS isn't (see live-model-gate.ts).
+// Previously this ping ran unconditionally at module load for every test
+// run in this file (it lived outside any describe), firing a real request
+// at 127.0.0.1:11434 on every `bun run test` on a box where Ollama happened
+// to be reachable — the exact capability-not-permission hazard #251
+// describes. Reachability stays a SECONDARY check inside each `it` below,
+// same as before: a skipped honest test beats a passing dishonest one.
+describe.skipIf(LIVE_MODEL_TESTS_DISABLED)('contradiction judge — REAL model, REAL false-merge pairs from the live store', () => {
+  beforeAll(async () => {
+    try {
+      const r = await fetch(`${OLLAMA}/api/tags`, { signal: AbortSignal.timeout(3000) });
+      ollamaUp = r.ok;
+    } catch {
+      ollamaUp = false;
+    }
+  });
+
   for (const pair of REAL_FALSE_MERGES) {
     it(`does NOT say 'agrees': ${pair.name}`, async () => {
       if (!ollamaUp) {
@@ -101,7 +115,14 @@ describe('contradiction judge — REAL model, REAL false-merge pairs from the li
       expect(v.verdict).not.toBe('contradicts');
     }, 90_000);
   }
+});
 
+// Config-only assertion — no live model involved, so it lives in its own
+// always-run describe rather than inside the INTEGRATION_LIVE-gated block
+// above. Keeping it there would have made this coverage vanish by default
+// too, which is exactly the "gate silently drops coverage" failure mode
+// #251 warns against avoiding.
+describe('contradiction judge — config defaults', () => {
   it('ships with contradictionDetection ENABLED and autoAcceptThreshold NULL', () => {
     const cfg = defaultConfig();
     // The pairing is the point. The judge is on BECAUSE no numeric threshold is safe:
