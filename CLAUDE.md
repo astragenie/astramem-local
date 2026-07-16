@@ -115,7 +115,8 @@ Diagnose: `node dist/cli/index.js doctor` (now reads config.yaml same as serve)
 - Config: `%APPDATA%\Astramem\config.yaml`
 - Secrets: `%APPDATA%\Astramem\secrets.env` (contains `MEMORY_BEARER=<64-hex>`)
 - Ingest log: `%APPDATA%\Astramem\ingest.log` (rotated at 10MB)
-- SQLite: `%LOCALAPPDATA%\AstraMemory\memory.sqlite`
+- SQLite: `%LOCALAPPDATA%\Astramem\memory.sqlite` — NOT `AstraMemory`, which is the LEGACY ≤0.2.2 dir (`legacyDataDir()` in `src/config/datadir.ts`, migration/fallback readers only). Canonical dir name is `Astramem` under both `%APPDATA%` and `%LOCALAPPDATA%`.
+- ONNX embed model cache: `%LOCALAPPDATA%\Astramem\models\onnx\` (stable across release rotation; default since the 2026-07-16 offline-load fix — before that the cache lived inside the release dir's `node_modules` and was silently discarded on release rotation)
 
 Non-Windows: `~/.config/astramem/` and `~/.local/share/astra-memory/`.
 
