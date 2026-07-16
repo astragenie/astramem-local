@@ -207,6 +207,22 @@ describe('doctor scheduling (A2-lite)', () => {
     }
   });
 
+  // 2026-07-16: extraction-yield.ts was promoted 'full' -> 'cheap' after
+  // EXPLAIN QUERY PLAN verification showed its window queries resolve via
+  // `idx_extraction_yield_created` (an index-range search bounded to the
+  // 7-day window), not an unbounded/unindexed corpus-scale scan like the
+  // #226 five above — see the tier comment on checkExtractionYield. This is
+  // the positive mirror of FULL_TIER_ONLY_CHECK_NAMES: it locks the new
+  // intent in place so a future accidental demotion back to 'full' (losing
+  // the 15-min detection latency this promotion exists to buy) fails here
+  // instead of going unnoticed.
+  it('frequent tier DOES run "Extraction yield" — promoted off the full tier 2026-07-16', async () => {
+    const opts: DoctorCheckOpts = { dataDir: dir, encryptionEnabled: false, port: 39777 };
+    const result = await runFrequentDoctorChecks(opts, () => {});
+    const names = result.results.map(r => r.name);
+    expect(names).toContain('Extraction yield');
+  });
+
   it('every check getChecks() returns declares a tier of either "cheap" or "full" — no check is silently untiered', async () => {
     const opts: DoctorCheckOpts = { dataDir: dir, encryptionEnabled: false, port: 39777 };
     const result = await runFullDoctorChecks(opts, () => {});

@@ -265,12 +265,23 @@ Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answ
   rather than a new interval — a tight interval on a real LLM call is a self-DoS on a shared
   GPU and, on a metered endpoint, the FEAT-482 incident class. Skipped under `:memory:`.
   Results land in `healthState.doctor` + a structured warn log on any red (ADR-015). So do
-  NOT "wire doctor into serve" — it is already wired. The one NARROW residual: two DB-only
-  rate canaries, `extraction-yield.ts` and `memory-health.ts` (poison-rate), are tagged
-  `tier: 'full'` (24h cadence), not `'cheap'` — so a broken local model has up to ~24h
-  detection latency on those two, while `spool-quarantine.ts` (`tier: 'cheap'`) fires every
-  15 min. Promoting those two to `'cheap'` is a small optional change (weigh against the
-  `MEANINGFUL_USAGE_THRESHOLD` gating they carry), NOT a headline gap.
+  NOT "wire doctor into serve" — it is already wired.
+  **CORRECTED 2026-07-16 (the prior version of this bullet mis-briefed an agent into nearly
+  re-tripping incident #226 — do not re-word this back to "promote both").** `extraction-yield.ts`
+  and `memory-health.ts` are both DB-only (no LLM/embed call), but `tier` is decided by query
+  cost, not provider presence, and the two check files differ on that axis:
+  - `extraction-yield.ts` is now `tier: 'cheap'` (promoted 2026-07-16) — its window queries
+    are index-range searches bounded to a 7-day window (`idx_extraction_yield_created`,
+    migration 042; confirmed via `EXPLAIN QUERY PLAN`), genuinely safe on a 15-min interval.
+    Locked by a positive regression test in `tests/doctor/schedule.test.ts`. A broken local
+    model's zero-yield rate now surfaces in 15 min, not 24h.
+  - `memory-health.ts` MUST STAY `tier: 'full'`. This exact promotion was already tried and
+    reverted in incident #226 (2026-07-13): `stalenessDistribution()` and
+    `countsByTypeAndScope()` (`src/server/queries/memory-health.ts`) run unbounded
+    full-active-memories scans with no date filter and no LIMIT — a genuine O(N)-with-usage
+    cost, not a bounded read. Hard-locked by `FULL_TIER_ONLY_CHECK_NAMES` in
+    `tests/doctor/schedule.test.ts` (includes "Memory health") — flipping its tier fails that
+    test. Do not promote it; do not re-word this bullet to suggest promoting it.
 - **RESOLVED 2026-07-15 — `checkMemoryHealth` is no longer a `{ok:true}` stub.** Moved to
   `src/doctor/checks/memory-health.ts` with 4 real return paths incl a poison-rate alarm
   (`ok:false` when `distill.poisonRate >= POISON_RATE_ALARM`). The one-return-path bug this

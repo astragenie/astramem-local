@@ -41,10 +41,23 @@ const ZERO_YIELD_RATE_ALARM = 0.5;
 export function checkExtractionYield(dataDir: string, encryptionEnabled: boolean): Check {
   return {
     name: 'Extraction yield',
-    // 'full' — extraction_yield is a corpus-scale table (grows with every
-    // distill job), and this check's window queries are not covered by an
-    // index beyond created_at — same tier rationale as checkEntityRelations.
-    tier: 'full',
+    // 'cheap' — CORRECTED (2026-07-16). This was originally tagged 'full' by
+    // analogy to checkEntityRelations ("same tier rationale"), but that
+    // analogy doesn't hold under inspection: checkEntityRelations runs an
+    // unconditional `COUNT(*) FROM entity_relations` (no WHERE clause at
+    // all) plus an unindexed `memories.created_at >= ?` scan — genuine
+    // unbounded/unindexed corpus-scale scans, the #226 failure shape.
+    // extraction_yield's own queries (eligibleRunCount/zeroYieldCount,
+    // storage/extraction-yield-log.ts) both filter `created_at >= ?` against
+    // `idx_extraction_yield_created` (migration 042) — `EXPLAIN QUERY PLAN`
+    // confirms SQLite resolves both as `SEARCH extraction_yield USING INDEX
+    // idx_extraction_yield_created (created_at>?)`, an index-range search
+    // bounded to the 7-day window, not a table scan. That is exactly the
+    // 'cheap' definition in types.ts: "index-backed/bounded SQLite reads...
+    // safe on a 15-minute interval, forever, on any corpus size." Locked by
+    // a positive regression test in tests/doctor/schedule.test.ts so a
+    // future accidental demotion back to 'full' fails the build.
+    tier: 'cheap',
     async run(): Promise<CheckResult> {
       const dbPath = join(dataDir, 'memory.sqlite');
       if (!existsSync(dbPath)) {
