@@ -5,7 +5,13 @@
  * instead of waiting for the next logon.
  */
 import { describe, it, expect } from 'vitest';
-import { buildTaskXml, buildDailyTaskXml, DEFAULT_REPETITION_SEC } from '../../src/service/task-xml.js';
+import {
+  buildTaskXml,
+  buildDailyTaskXml,
+  DEFAULT_REPETITION_SEC,
+  DEFAULT_REPETITION_ISO,
+  parseSimpleIso8601DurationSeconds,
+} from '../../src/service/task-xml.js';
 
 const BASE_OPTS = {
   command: 'C:\\app\\shim.cmd',
@@ -56,10 +62,36 @@ describe('buildTaskXml', () => {
     expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
   });
 
-  it('DEFAULT_REPETITION_SEC matches the PT5M default (300s)', () => {
-    expect(DEFAULT_REPETITION_SEC).toBe(300);
+  it('DEFAULT_REPETITION_ISO is PT5M and buildTaskXml uses it when repetitionIso is unset', () => {
+    expect(DEFAULT_REPETITION_ISO).toBe('PT5M');
     const xml = buildTaskXml(BASE_OPTS);
     expect(xml).toContain('<Interval>PT5M</Interval>');
+  });
+});
+
+describe('parseSimpleIso8601DurationSeconds', () => {
+  it('parses minutes, seconds, hours, and combinations', () => {
+    expect(parseSimpleIso8601DurationSeconds('PT5M')).toBe(300);
+    expect(parseSimpleIso8601DurationSeconds('PT180S')).toBe(180);
+    expect(parseSimpleIso8601DurationSeconds('PT1H')).toBe(3600);
+    expect(parseSimpleIso8601DurationSeconds('PT1H30M')).toBe(5400);
+    expect(parseSimpleIso8601DurationSeconds('PT1H2M3S')).toBe(3723);
+  });
+
+  it('throws on an unsupported/malformed duration rather than silently returning 0', () => {
+    expect(() => parseSimpleIso8601DurationSeconds('P1D')).toThrow();
+    expect(() => parseSimpleIso8601DurationSeconds('not a duration')).toThrow();
+    expect(() => parseSimpleIso8601DurationSeconds('PT')).toThrow();
+  });
+
+  it('DEFAULT_REPETITION_SEC is DERIVED from DEFAULT_REPETITION_ISO, not a hand-mirrored second constant', () => {
+    // The regression this guards: DEFAULT_REPETITION_SEC used to be a
+    // separately hand-typed `300` next to the 'PT5M' literal, kept in sync
+    // only by a comment. Proving the numeric constant round-trips through
+    // the SAME parser buildTaskXml's own callers would use closes that gap —
+    // if the two ever independently drifted, this assertion (not a comment)
+    // would catch it.
+    expect(DEFAULT_REPETITION_SEC).toBe(parseSimpleIso8601DurationSeconds(DEFAULT_REPETITION_ISO));
   });
 });
 
