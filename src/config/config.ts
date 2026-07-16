@@ -1087,7 +1087,10 @@ export function defaultConfig(): Config {
       budgetTokens: 1500,
       policy: { enabled: true, minScore: 0.15, minPromptChars: 12 },
     },
-    sync: { enabled: false, url: '', workspaceId: null, batchSize: 200, intervalMs: 30_000, experimental: false },
+    // batchSize 200 → 50 (2026-07-16): one batch ships per interval tick and the cloud
+    // embeds each memory synchronously, so this is the cloud-DB load throttle — 200/30s
+    // saturated a small prod instance's Disk IO Budget during a large backfill.
+    sync: { enabled: false, url: '', workspaceId: null, batchSize: 50, intervalMs: 30_000, experimental: false },
     security: {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
       encryption: { enabled: true }
