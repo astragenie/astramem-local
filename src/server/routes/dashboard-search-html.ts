@@ -135,7 +135,9 @@ function renderWeights(weights: Config['search']): string {
   return `&alpha;${fmtWeight(weights.alpha)} &beta;${fmtWeight(weights.beta)} `
     + `&gamma;${fmtWeight(weights.gamma)} &delta;${fmtWeight(weights.delta)} `
     + `&epsilon;${fmtWeight(weights.epsilon)} &zeta;${fmtWeight(weights.zeta)} `
-    + `&eta;${fmtWeight(weights.eta)}`;
+    // issue #352B review finding 2: theta (the 8th governed fusion
+    // component) was missing from the debug page's weight readout.
+    + `&eta;${fmtWeight(weights.eta)} &theta;${fmtWeight(weights.theta)}`;
 }
 
 function renderTable(hits: SearchDebugHit[], hitContext: Map<string, HitContext>): string {
