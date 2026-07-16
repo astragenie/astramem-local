@@ -45,6 +45,8 @@ import {
   applyExtractProfileGovernance,
   applyMultiHopGovernance,
   applyRetentionGovernance,
+  applyCandidateSelectionGovernance,
+  applyContradictionDetectionGovernance,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -321,6 +323,17 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     distill: applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill)),
     multiHop: applyMultiHopGovernance(cfg.multiHop),
     retention: applyRetentionGovernance(cfg.retention),
+    // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has
+    // ZERO production callers — the real boot path (resolveRuntimeConfig →
+    // loadConfigFromDisk → getProviders) got NO consolidation governance at
+    // all. Harmless for `mode` (runConsolidation re-guards at runtime via
+    // resolveContradictionDetection) but fatal for the judge provider
+    // override: an out-of-union `contradictionDetection.provider` typo would
+    // reach buildLLMProvider's throwing Azure fall-through DURING BOOT,
+    // before any runtime guard exists.
+    consolidation: applyCandidateSelectionGovernance(
+      applyContradictionDetectionGovernance(cfg.consolidation),
+    ),
   };
 }
 

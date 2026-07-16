@@ -40,7 +40,13 @@ export const consolidateHandler: JobHandler = {
       // unit test's bare ctx), mode!=='off' is disabled for the run rather
       // than crashing (see resolveContradictionDetection's non-fatal guard).
       contradictionDetection: ctx.config.consolidation.contradictionDetection,
-      judgeProvider: isExtendedCtx(ctx) ? ctx.providers.llm.extraction : undefined,
+      // `judge` is set by getProviders (dedicated provider when
+      // consolidation.contradictionDetection.{provider,model} is configured,
+      // else the extraction instance); the `?? extraction` fallback covers
+      // hand-built ProviderSets that predate the optional field.
+      judgeProvider: isExtendedCtx(ctx)
+        ? ctx.providers.llm.judge ?? ctx.providers.llm.extraction
+        : undefined,
       // P2.1 stabilization: scheduled/enqueued runs pick up the configured
       // candidate-selection strategy too (default 'full', byte-identical to
       // pre-P2.1 behavior). Reuse the already-wired vecStore off an

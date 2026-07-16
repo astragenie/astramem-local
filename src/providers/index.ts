@@ -16,6 +16,15 @@ export interface ProviderSet {
   llm: {
     compaction: LLMProvider;
     extraction: LLMProvider;
+    /** Contradiction judge (FEAT-456). `getProviders` ALWAYS sets it: the
+     * SAME INSTANCE as `extraction` when no override is configured
+     * (identity — shared rate-limit bucket, byte-identical pre-override
+     * behavior), or a distinct provider built from
+     * `consolidation.contradictionDetection.{provider,model}`. Optional in
+     * the TYPE only so hand-built test ProviderSets stay valid — consumers
+     * fall back with `judge ?? extraction`, which is exactly the
+     * pre-override behavior. */
+    judge?: LLMProvider;
   };
   embed: EmbedProvider;
 }
@@ -188,6 +197,26 @@ function buildEmbedProvider(config: Config): EmbedProvider {
  *   config.embedding.provider       + config.embedding.model
  */
 export function getProviders(config: Config): ProviderSet {
+  const extraction = buildLLMProvider(
+    config.llm.extraction.provider,
+    config.llm.extraction.model,
+    config,
+  );
+  // Judge override (consolidation.contradictionDetection.{provider,model}):
+  // only build a SECOND provider when at least one half is actually set —
+  // otherwise reuse the extraction INSTANCE (shared rate-limit bucket,
+  // byte-identical pre-override behavior). An invalid provider value was
+  // already dropped by applyContradictionDetectionGovernance, so this can
+  // never hit buildLLMProvider's throwing Azure fall-through on a typo.
+  const cd = config.consolidation?.contradictionDetection;
+  const judge =
+    cd?.provider !== undefined || cd?.model !== undefined
+      ? buildLLMProvider(
+          cd.provider ?? config.llm.extraction.provider,
+          cd.model ?? config.llm.extraction.model,
+          config,
+        )
+      : extraction;
   return {
     llm: {
       compaction: buildLLMProvider(
@@ -195,11 +224,8 @@ export function getProviders(config: Config): ProviderSet {
         config.llm.compaction.model,
         config,
       ),
-      extraction: buildLLMProvider(
-        config.llm.extraction.provider,
-        config.llm.extraction.model,
-        config,
-      ),
+      extraction,
+      judge,
     },
     embed: buildEmbedProvider(config),
   };
