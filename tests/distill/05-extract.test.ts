@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { z } from 'zod';
 import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { extractChunk, extract, BudgetExceeded } from '../../src/distill/stages/05-extract.js';
@@ -7,6 +8,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT_V2,
   EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
+  ExtractionSchema,
 } from '../../src/distill/prompts/extract.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
 import { TransientError } from '../../src/pipeline/errors.js';
@@ -65,6 +67,59 @@ function makeMockLLM(responses: string[], usdCost = 0): LLMProvider {
 }
 
 describe('extract stage', () => {
+  // 2026-07-16 qwen3.5 duplicate-key collapse: bare format:"json" permits
+  // `{"text":"A","text":"B"}` (valid JSON, last-key-wins parse -> ONE atom,
+  // indistinguishable from under-extraction). The structured-output schema
+  // is the fix — this pins that every extract call actually sends it,
+  // derived from ExtractionSchema (the jsonSchema contract field was
+  // built-wired-never-invoked before this).
+  it('passes the ExtractionSchema-derived jsonSchema on every chat call', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const seen: (ChatOpts | undefined)[] = [];
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        seen.push(opts);
+        return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+
+    await extractChunk(0, 'some chunk text', llm, budget, 10.0);
+
+    expect(seen).toHaveLength(1);
+    const schema = seen[0]?.jsonSchema as Record<string, unknown> | undefined;
+    expect(schema).toBeDefined();
+    // The call site must send exactly the ExtractionSchema-derived schema —
+    // deep-equal against an independent conversion, so neither a drifted
+    // hand-written copy nor a partial/stale schema can pass.
+    expect(schema).toEqual(z.toJSONSchema(ExtractionSchema));
+    // And the properties that actually defeat the collapse must be present
+    // explicitly (a future converter change that silently dropped them
+    // would still deep-equal above, so pin them by name too):
+    const atoms = (schema!.properties as Record<string, Record<string, unknown>>).atoms!;
+    expect(atoms.type).toBe('array');
+    const items = atoms.items as Record<string, unknown>;
+    expect(items.type).toBe('object');
+    expect(items.required).toContain('text');
+    expect(items.additionalProperties).toBe(false);
+  });
+
+  // Build-failing guard for the module-load conversion: a future
+  // `.refine()`/`.transform()`/`.catch()` on AtomSchema (or anything it
+  // nests) makes z.toJSONSchema throw AT IMPORT TIME of 05-extract.ts —
+  // which is the daemon's distill boot path. This repo's history says a
+  // comment alone does not survive contact with contributors
+  // (guidance-cannot-fix-a-default); this test does.
+  it('ExtractionSchema stays toJSONSchema-representable (module-load conversion must never throw)', () => {
+    expect(() => z.toJSONSchema(ExtractionSchema)).not.toThrow();
+  });
+
   it('extracts atoms from valid JSON response', async () => {
     const db = openDb(':memory:');
     migrate(db);
