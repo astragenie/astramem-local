@@ -75,6 +75,22 @@ export async function providersCommand(args: string[]): Promise<void> {
         run: () => llmChatProbe(judge),
       });
     }
+    // Pass-B extraction override (FEAT-534): same "only probe when distinct"
+    // posture as the judge check above — the identity default is already
+    // covered by the extraction probe, and a silent model mix is exactly
+    // the ADR-015 hazard this visibility requirement (FEAT-534 AC-4) exists
+    // to close.
+    const extractionPassB = p.llm.extractionPassB;
+    const passBDistinct =
+      extractionPassB !== undefined &&
+      !(extractionPassB.name === p.llm.extraction.name && extractionPassB.model === p.llm.extraction.model);
+    if (passBDistinct) {
+      checks.push({
+        name: `LLM chat probe (extraction pass B: ${extractionPassB.name}/${extractionPassB.model})`,
+        tier: 'full',
+        run: () => llmChatProbe(extractionPassB),
+      });
+    }
     checks.push({
       name: `Embed probe (${p.embed.name}/${p.embed.model})`,
       tier: 'full', // real embed call

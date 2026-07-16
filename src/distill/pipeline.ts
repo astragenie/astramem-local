@@ -44,6 +44,16 @@ export interface PipelineContext {
   db: DB;
   llmCompaction: LLMProvider;
   llmExtraction: LLMProvider;
+  /** Per-pass extraction provider override (FEAT-534). Optional in the type
+   * — every real caller (distillHandler) always sets it via
+   * ProviderSet.llm.extractionPassB, which `getProviders` itself always
+   * populates (identity default), but hand-built test contexts (this file's
+   * own test suite included) may omit it entirely. Consumers read it as
+   * `ctx.llmExtractionPassB ?? ctx.llmExtraction` (runPipeline's stage 5b
+   * below) — byte-identical to pre-FEAT-534 behavior whenever it's absent.
+   * Only consulted when `extractionPasses: 2`; ignored entirely on
+   * single-pass. */
+  llmExtractionPassB?: LLMProvider;
   embed: EmbedProvider;
   capUsd: number;
   sessionId: string | null;
@@ -257,7 +267,17 @@ export async function runPipeline(
   // behavior for every such caller.
   const sessionDateIso = ctx.capturedAtLocalDate
     ?? (ctx.capturedAtMs != null ? new Date(ctx.capturedAtMs).toISOString().slice(0, 10) : undefined);
-  pipeLog.info({ stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile, chunk_concurrency: chunkConcurrency }, 'stage start');
+  pipeLog.info(
+    {
+      stage: 'extract', chunk_count: compactedChunks.length, extract_profile: resolvedExtractProfile,
+      chunk_concurrency: chunkConcurrency,
+      // FEAT-534: provider identity on every extract-stage log line, not just
+      // extract-specifics below — a silent model mix on EITHER pass is an
+      // ADR-015 hazard, and pass A's own model is otherwise unrecorded here.
+      provider: ctx.llmExtraction.name, model: ctx.llmExtraction.model,
+    },
+    'stage start',
+  );
   let extractResults;
   try {
     extractResults = await extract(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, resolvedExtractProfile, chunkConcurrency, checkpointJobKey, sessionDateIso, costCap);
@@ -276,15 +296,34 @@ export async function runPipeline(
   // (distill.extractionPasses: 2). Cost guard: only reached once pass A above
   // has ALREADY returned successfully (the try/catch above re-throws on any
   // pass-A failure before this line is ever reached) — never doubles a
-  // retry storm on a failing/paused pass A. Same provider instance
-  // (ctx.llmExtraction), same chunks, same budget tracker.
+  // retry storm on a failing/paused pass A. Same chunks, same budget
+  // tracker.
+  //
+  // FEAT-534: provider is `ctx.llmExtractionPassB ?? ctx.llmExtraction` —
+  // unset (the default) rides the SAME provider instance pass A used,
+  // byte-identical to pre-FEAT-534 behavior. Set, it runs pass B on a
+  // distinct provider/model (see Config['distill']['extractionPassB']'s doc
+  // comment for the codex-pass-A / qwen3-pass-B hybrid motivation). Logged
+  // explicitly below (provider/model on both start and complete) so a
+  // silent model mix is never invisible in the distill event log — the
+  // exact ADR-015 concern this override introduces.
+  const passBProvider = ctx.llmExtractionPassB ?? ctx.llmExtraction;
   let extractResultsSpecifics: typeof extractResults | undefined;
   if (resolvedExtractionPasses === 2) {
-    pipeLog.info({ stage: 'extract-specifics', chunk_count: compactedChunks.length, chunk_concurrency: chunkConcurrency }, 'stage start');
+    pipeLog.info(
+      {
+        stage: 'extract-specifics', chunk_count: compactedChunks.length, chunk_concurrency: chunkConcurrency,
+        provider: passBProvider.name, model: passBProvider.model,
+      },
+      'stage start',
+    );
     try {
-      extractResultsSpecifics = await extractSpecifics(compactedChunks, ctx.llmExtraction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso);
+      extractResultsSpecifics = await extractSpecifics(compactedChunks, passBProvider, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso);
       const specificsAtoms = extractResultsSpecifics.reduce((sum, r) => sum + r.atoms.length, 0);
-      pipeLog.info({ stage: 'extract-specifics', atoms_extracted: specificsAtoms }, 'stage complete');
+      pipeLog.info(
+        { stage: 'extract-specifics', atoms_extracted: specificsAtoms, provider: passBProvider.name, model: passBProvider.model },
+        'stage complete',
+      );
     } catch (err) {
       if (err instanceof ExtractBudgetExceeded) {
         pipeLog.warn({ stage: 'extract-specifics', error_kind: 'BudgetExceeded' }, 'stage aborted — budget exceeded');

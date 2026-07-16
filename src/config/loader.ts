@@ -47,6 +47,7 @@ import {
   applyRetentionGovernance,
   applyCandidateSelectionGovernance,
   applyContradictionDetectionGovernance,
+  applyExtractionPassBGovernance,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -320,7 +321,12 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
   return {
     ...cfg,
     search: applyFusionGovernance(cfg.search),
-    distill: applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill)),
+    // FEAT-534: extractionPassB provider governance added here — this IS the
+    // real boot path (the 2026-07-16 review comment below explains why that
+    // matters: loadConfig() has zero production callers). Note
+    // applyExtractionPassesGovernance itself is still NOT wired into this
+    // chain (a pre-existing gap predating this slice; out of scope here).
+    distill: applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
     multiHop: applyMultiHopGovernance(cfg.multiHop),
     retention: applyRetentionGovernance(cfg.retention),
     // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has

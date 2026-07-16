@@ -69,13 +69,71 @@ const OPENAI_ALIASES: Record<string, { baseUrl: string; envKey: string }> = {
   groq: { baseUrl: 'https://api.groq.com/openai/v1', envKey: 'GROQ_API_KEY' },
 };
 
-/** Shared per-fixture direct-pipeline loop for cloud/codex extraction specs. */
-async function collectDirect(model: string, llmCompaction: LLMProvider, llmExtraction: LLMProvider, fixtures: GoldFixture[]): Promise<ModelAtomsByFixture> {
+/**
+ * FEAT-534: split a `+passB=<spec>` suffix off a model spec, e.g.
+ * `codex:gpt-5.4-mini+passB=ollama:qwen3:8b` -> base `codex:gpt-5.4-mini`,
+ * passBSpec `ollama:qwen3:8b`. No suffix -> passBSpec `null` (single-pass,
+ * byte-identical to pre-FEAT-534 parsing — every existing spec has no `+`).
+ */
+function splitPassBSuffix(spec: string): { base: string; passBSpec: string | null } {
+  const idx = spec.indexOf('+passB=');
+  if (idx === -1) return { base: spec, passBSpec: null };
+  return { base: spec.slice(0, idx), passBSpec: spec.slice(idx + '+passB='.length) };
+}
+
+/**
+ * FEAT-534: resolve a bare provider:model spec (the same syntax
+ * collectAtomsForModel's own branches accept, minus the daemon-HTTP-path
+ * bare-ollama-tag special case) into a constructed LLMProvider, for use as
+ * a `+passB=` override. Supports `ollama:<tag>` (or a bare tag, defaulting
+ * to ollama — mirrors the FEAT's own `+passB=ollama:qwen3:8b` example),
+ * `codex:<model>`, `azure:<deployment>`, `openai:<alias>:<model>`.
+ */
+function buildProviderFromSpec(spec: string): { label: string; provider: LLMProvider } {
+  if (spec.startsWith('azure:')) {
+    const deployment = spec.slice('azure:'.length);
+    const azureCfg = resolveAzureConfig({ answererDeployment: deployment });
+    return { label: spec, provider: new AzureReasoningLLMProvider({ cfg: azureCfg, model: deployment, reasoningEffort: 'minimal' }) };
+  }
+  if (spec.startsWith('openai:')) {
+    const firstColon = spec.indexOf(':');
+    const secondColon = spec.indexOf(':', firstColon + 1);
+    const alias = spec.slice(firstColon + 1, secondColon);
+    const extractModel = spec.slice(secondColon + 1);
+    const a = OPENAI_ALIASES[alias];
+    if (!a) throw new Error(`unknown openai alias '${alias}' in +passB= spec — known: ${Object.keys(OPENAI_ALIASES).join(', ')}`);
+    const apiKey = process.env[a.envKey];
+    if (!apiKey) throw new Error(`${a.envKey} not set (add it to .bench-keys.env) — required for +passB=${spec}`);
+    return { label: spec, provider: new OpenAICompatibleLLMProvider({ baseUrl: a.baseUrl, model: extractModel, apiKey }) };
+  }
+  if (spec.startsWith('codex:')) {
+    const codexModel = spec.slice('codex:'.length);
+    return { label: spec, provider: new CodexSubscriptionLLMProvider({ model: codexModel }) };
+  }
+  // ollama: explicit `ollama:<tag>` prefix, or a bare tag defaulting to ollama.
+  const ollamaTag = spec.startsWith('ollama:') ? spec.slice('ollama:'.length) : spec;
+  return { label: `ollama:${ollamaTag}`, provider: new OllamaLLMProvider({ model: ollamaTag }) };
+}
+
+/** Shared per-fixture direct-pipeline loop for cloud/codex extraction specs.
+ *  `passB` set (FEAT-534) runs dual-pass extraction, pass A on
+ *  `llmExtraction`, pass B on `passB.provider` — see pipeline-direct.ts's
+ *  own extractionPasses/llmExtractionPassB doc comment for the merge rules. */
+async function collectDirect(
+  model: string,
+  llmCompaction: LLMProvider,
+  llmExtraction: LLMProvider,
+  fixtures: GoldFixture[],
+  passB?: { label: string; provider: LLMProvider },
+): Promise<ModelAtomsByFixture> {
   const perFixture: ModelAtomsByFixture['perFixture'] = {};
   for (const fixture of fixtures) {
     process.stdout.write(`  ${fixture.id}... `);
     try {
-      const result = await runDirectPipeline(fixture.turns, { llmCompaction, llmExtraction });
+      const result = await runDirectPipeline(fixture.turns, {
+        llmCompaction, llmExtraction,
+        ...(passB ? { extractionPasses: 2 as const, llmExtractionPassB: passB.provider } : {}),
+      });
       perFixture[fixture.id] = {
         atoms: result.atoms.map(a => ({ type: a.type, text: a.text })),
         wallMs: result.wallMs,
@@ -83,7 +141,12 @@ async function collectDirect(model: string, llmCompaction: LLMProvider, llmExtra
         poisonJobs: 0,
         usageUsd: result.usageUsd,
       };
-      console.log(`${result.atoms.length} atoms in ${result.wallMs}ms ($${result.usageUsd.toFixed(4)})`);
+      // FEAT-534 AC-4: per-pass atom counts recorded distinctly, not just
+      // the merged total — the measurement gate for the hybrid hypothesis.
+      const splitNote = result.passBAtomCount !== undefined
+        ? ` (passA=${result.passAAtomCount}, passB=${result.passBAtomCount}, merged=${result.atoms.length})`
+        : '';
+      console.log(`${result.atoms.length} atoms${splitNote} in ${result.wallMs}ms ($${result.usageUsd.toFixed(4)})`);
     } catch (err) {
       console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
       perFixture[fixture.id] = { atoms: [], wallMs: 0, status: 'error', poisonJobs: 0, usageUsd: 0 };
@@ -104,6 +167,7 @@ if (!modelsArg) {
   console.error('Usage: bun run-bench.mts --models <comma-separated model specs> [--out-dir <dir>] [--per-session-timeout-ms 180000] [--skip-judge] [--runs 1]');
   console.error('  Ollama candidate: bare tag, e.g. qwen2.5-coder:7b');
   console.error('  Azure reference:  azure:<deployment>, e.g. azure:gpt-5-mini');
+  console.error('  Mixed-pass (FEAT-534): <spec>+passB=<spec>, e.g. codex:gpt-5.4-mini+passB=ollama:qwen3:8b — pass A on the base spec, pass B (specifics sweeper) on the override; only azure:/openai:/codex: base specs support it.');
   console.error('  --runs N (default 1): re-run extraction+judging N times per model; N>1 reports mean±stdev and a pairwise significance gate (FEAT-450).');
   console.error(`  --compaction-model <tag> (default ${DEFAULT_COMPACTION_MODEL}): compaction model held constant across every candidate.`);
   process.exit(1);
@@ -134,57 +198,54 @@ interface ModelAtomsByFixture {
 }
 
 async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Promise<ModelAtomsByFixture> {
-  if (model.startsWith('azure:')) {
-    const deployment = model.slice('azure:'.length);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=azure/${deployment}) ===`);
+  // FEAT-534: mixed-pass spec syntax, e.g. `codex:gpt-5.4-mini+passB=ollama:qwen3:8b`.
+  // `base` drives the existing prefix branching below unchanged; `passBSpec`
+  // (when present) is resolved once here and threaded into whichever
+  // direct-pipeline branch matches `base` — the ONLY specs that support it,
+  // since the daemon-HTTP (bare ollama) and nuextract:adapted branches below
+  // have no in-process pipeline call to attach a second pass to.
+  const { base, passBSpec } = splitPassBSuffix(model);
+  const passB = passBSpec ? buildProviderFromSpec(passBSpec) : undefined;
+
+  if (base.startsWith('azure:')) {
+    const deployment = base.slice('azure:'.length);
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=azure/${deployment}${passB ? `, passB=${passB.label}` : ''}) ===`);
     const azureCfg = resolveAzureConfig({ answererDeployment: deployment });
     const llmCompaction = new OllamaLLMProvider({ model: compactionModel });
     const llmExtraction = new AzureReasoningLLMProvider({ cfg: azureCfg, model: deployment, reasoningEffort: 'minimal' });
-
-    const perFixture: ModelAtomsByFixture['perFixture'] = {};
-    for (const fixture of fixtures) {
-      process.stdout.write(`  ${fixture.id}... `);
-      try {
-        const result = await runDirectPipeline(fixture.turns, { llmCompaction, llmExtraction });
-        perFixture[fixture.id] = {
-          atoms: result.atoms.map(a => ({ type: a.type, text: a.text })),
-          wallMs: result.wallMs,
-          status: 'ready',
-          poisonJobs: 0,
-          usageUsd: result.usageUsd,
-        };
-        console.log(`${result.atoms.length} atoms in ${result.wallMs}ms ($${result.usageUsd.toFixed(4)})`);
-      } catch (err) {
-        console.log(`FAILED: ${err instanceof Error ? err.message : String(err)}`);
-        perFixture[fixture.id] = { atoms: [], wallMs: 0, status: 'error', poisonJobs: 0, usageUsd: 0 };
-      }
-    }
-    return { model, perFixture, daemonBootMs: null };
+    return collectDirect(model, llmCompaction, llmExtraction, fixtures, passB);
   }
 
-  if (model.startsWith('openai:')) {
+  if (base.startsWith('openai:')) {
     // openai:<alias>:<model> — e.g. openai:dashscope:qwen-plus
-    const firstColon = model.indexOf(':');
-    const secondColon = model.indexOf(':', firstColon + 1);
-    const alias = model.slice(firstColon + 1, secondColon);
-    const extractModel = model.slice(secondColon + 1);
+    const firstColon = base.indexOf(':');
+    const secondColon = base.indexOf(':', firstColon + 1);
+    const alias = base.slice(firstColon + 1, secondColon);
+    const extractModel = base.slice(secondColon + 1);
     const a = OPENAI_ALIASES[alias];
     if (!a) throw new Error(`unknown openai alias '${alias}' — known: ${Object.keys(OPENAI_ALIASES).join(', ')}`);
     const apiKey = process.env[a.envKey];
-    if (!apiKey) throw new Error(`${a.envKey} not set (add it to .bench-keys.env) — required for ${model}`);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=openai-compat ${alias}/${extractModel}) ===`);
+    if (!apiKey) throw new Error(`${a.envKey} not set (add it to .bench-keys.env) — required for ${base}`);
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=openai-compat ${alias}/${extractModel}${passB ? `, passB=${passB.label}` : ''}) ===`);
     const llmCompaction = new OllamaLLMProvider({ model: compactionModel });
     const llmExtraction = new OpenAICompatibleLLMProvider({ baseUrl: a.baseUrl, model: extractModel, apiKey });
-    return collectDirect(model, llmCompaction, llmExtraction, fixtures);
+    return collectDirect(model, llmCompaction, llmExtraction, fixtures, passB);
   }
 
-  if (model.startsWith('codex:')) {
+  if (base.startsWith('codex:')) {
     // codex:<model> — uses the machine's existing ~/.codex login (no key).
-    const codexModel = model.slice('codex:'.length);
-    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=codex-subscription/${codexModel}) ===`);
+    const codexModel = base.slice('codex:'.length);
+    console.log(`\n=== ${model} (direct in-process pipeline; compaction=ollama/${compactionModel}, extraction=codex-subscription/${codexModel}${passB ? `, passB=${passB.label}` : ''}) ===`);
     const llmCompaction = new OllamaLLMProvider({ model: compactionModel });
     const llmExtraction = new CodexSubscriptionLLMProvider({ model: codexModel });
-    return collectDirect(model, llmCompaction, llmExtraction, fixtures);
+    return collectDirect(model, llmCompaction, llmExtraction, fixtures, passB);
+  }
+
+  if (passBSpec) {
+    throw new Error(
+      `+passB= mixed-pass syntax is only supported for direct-pipeline specs (azure:/openai:/codex:), ` +
+      `not '${base}' (daemon HTTP path / nuextract:adapted have no in-process pipeline to attach a second pass to). See FEAT-534.`,
+    );
   }
 
   if (model === 'nuextract:adapted') {

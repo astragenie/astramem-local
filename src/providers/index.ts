@@ -25,6 +25,17 @@ export interface ProviderSet {
      * fall back with `judge ?? extraction`, which is exactly the
      * pre-override behavior. */
     judge?: LLMProvider;
+    /** Per-pass extraction provider override (FEAT-534). `getProviders`
+     * ALWAYS sets it, mirroring `judge` above exactly: the SAME INSTANCE as
+     * `extraction` when no `distill.extractionPassB` override is configured
+     * (identity — shared rate-limit bucket, byte-identical pre-override
+     * behavior), or a distinct provider built from
+     * `distill.extractionPassB.{provider,model}`. Optional in the TYPE only
+     * so hand-built test ProviderSets stay valid — consumers fall back with
+     * `extractionPassB ?? extraction`, exactly the pre-override behavior.
+     * Only meaningful when `distill.extractionPasses: 2` — pipeline.ts
+     * ignores it entirely on single-pass. */
+    extractionPassB?: LLMProvider;
   };
   embed: EmbedProvider;
 }
@@ -217,6 +228,21 @@ export function getProviders(config: Config): ProviderSet {
           config,
         )
       : extraction;
+  // Pass-B extraction override (FEAT-534): same identity-default shape as
+  // the judge resolution just above — only build a SECOND provider when at
+  // least one half is actually set, otherwise reuse the extraction INSTANCE.
+  // An invalid `provider` value was already dropped by
+  // applyExtractionPassBGovernance on the boot path, so this can never hit
+  // buildLLMProvider's throwing Azure fall-through on a typo.
+  const passB = config.distill?.extractionPassB;
+  const extractionPassB =
+    passB?.provider !== undefined || passB?.model !== undefined
+      ? buildLLMProvider(
+          passB.provider ?? config.llm.extraction.provider,
+          passB.model ?? config.llm.extraction.model,
+          config,
+        )
+      : extraction;
   return {
     llm: {
       compaction: buildLLMProvider(
@@ -226,6 +252,7 @@ export function getProviders(config: Config): ProviderSet {
       ),
       extraction,
       judge,
+      extractionPassB,
     },
     embed: buildEmbedProvider(config),
   };
