@@ -1209,7 +1209,15 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             matched: matched.length,
             resolved,
             skipped,
-            remaining: Math.max(0, totalMatching - matched.length),
+            // NOT totalMatching - matched.length: a skipped proposal (409
+            // lifecycle conflict — its winner/loser was merged/erased since
+            // listing) stays status='pending' and still matches the filter,
+            // so it's counted in both `totalMatching` and `matched` but was
+            // never actually resolved. Subtracting matched.length would
+            // silently drop it from `remaining`, and a caller following this
+            // tool's own "call again while remaining is nonzero" contract
+            // would stop looping with the skip still pending, unnoticed.
+            remaining: Math.max(0, totalMatching - resolved),
           }),
         }],
       };
