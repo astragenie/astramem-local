@@ -70,6 +70,28 @@ describe('cli model — buildModelFetchPlan()', () => {
   it('throws when no cache dir resolves at all', () => {
     expect(() => buildModelFetchPlan({})).toThrow(/--dest/);
   });
+
+  it('rejects an invalid --dtype loudly (never a silent "model undefined.onnx" URL)', () => {
+    expect(() => buildModelFetchPlan({ cacheDir: CACHE, dtype: 'q4' })).toThrow(/invalid --dtype "q4"/);
+  });
+
+  // #363-review 🔴: when config.onnxEmbed.modelPath is set, the daemon
+  // consults ONLY modelPath — the seed MUST target it, or fetch prints a
+  // false green while daemon boot throws.
+  it('config modelPath beats cacheDir as the seed root (matches daemon exclusivity)', () => {
+    const mp = join('D:', 'airgap');
+    const plan = buildModelFetchPlan({ cacheDir: CACHE, configModelPath: mp });
+    expect(plan.snapshotDir).toBe(join(mp, DEFAULT_ONNX_HF_MODEL_ID, DEFAULT_ONNX_REVISION));
+  });
+
+  it('--dest still beats config modelPath (explicit CLI override)', () => {
+    const plan = buildModelFetchPlan({
+      cacheDir: CACHE,
+      configModelPath: join('D:', 'airgap'),
+      dest: join('E:', 'seed'),
+    });
+    expect(plan.snapshotDir).toBe(join('E:', 'seed', DEFAULT_ONNX_HF_MODEL_ID, DEFAULT_ONNX_REVISION));
+  });
 });
 
 describe('cli model — curlRecipe()', () => {

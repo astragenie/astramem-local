@@ -20,7 +20,7 @@
  */
 import { createWriteStream, existsSync, mkdirSync, statSync } from 'node:fs';
 import { rename, unlink } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { Readable } from 'node:stream';
 import {
@@ -57,17 +57,26 @@ export interface ModelFetchPlan {
   files: ModelFetchPlanFile[];
 }
 
+const VALID_DTYPES: readonly OnnxDType[] = ['q8', 'fp16', 'fp32'];
+
 export interface ModelFetchPlanOpts {
   /** Registry label (NOT the HF repo id). Defaults to config.embedding.model
    * when that names a registered ONNX model, else DEFAULT_MODEL_LABEL. */
   model?: string;
-  dtype?: OnnxDType;
+  /** Unvalidated CLI input — checked against VALID_DTYPES here (loud throw
+   * on a typo like `--dtype q4`; an unknown key would otherwise flow into
+   * DTYPE_FILE_SUFFIX and silently build a `model undefined.onnx` URL). */
+  dtype?: string;
   /** Cache ROOT override (snapshot lands at <dest>/<hfRepo>/<revision>/). */
   dest?: string;
   /** From config: embedding.model / onnxEmbed overrides / resolved cache dir. */
   configModel?: string;
   configDtype?: OnnxDType;
   configRevision?: string;
+  /** config.onnxEmbed.modelPath — when set (and no --dest), it is BOTH the
+   * seed target and the only place the daemon will look (see
+   * resolveLocalSnapshotDir: modelPath is exclusive). */
+  configModelPath?: string;
   cacheDir?: string;
 }
 
@@ -84,9 +93,15 @@ export function buildModelFetchPlan(opts: ModelFetchPlanOpts): ModelFetchPlan {
       `unknown onnx model "${modelLabel}" — registered models: ${Object.keys(ONNX_MODEL_REGISTRY).join(', ')}`,
     );
   }
-  const dtype = opts.dtype ?? opts.configDtype ?? entry.defaultDtype;
+  if (opts.dtype !== undefined && !VALID_DTYPES.includes(opts.dtype as OnnxDType)) {
+    throw new Error(`invalid --dtype "${opts.dtype}" — expected one of: ${VALID_DTYPES.join(', ')}`);
+  }
+  const dtype = (opts.dtype as OnnxDType | undefined) ?? opts.configDtype ?? entry.defaultDtype;
   const revision = opts.configRevision ?? entry.defaultRevision;
-  const cacheRoot = opts.dest ?? opts.cacheDir;
+  // modelPath beats cacheDir: the daemon consults ONLY modelPath when it is
+  // configured, so seeding anywhere else would be a false green (the exact
+  // #363-review false-positive class — verify where the daemon looks).
+  const cacheRoot = opts.dest ?? opts.configModelPath ?? opts.cacheDir;
   if (!cacheRoot) {
     throw new Error('no cache directory resolved — pass --dest or configure a real dataDir');
   }
@@ -162,7 +177,9 @@ export async function modelCommand(
   const sub = args[0];
   if (sub !== 'fetch' && sub !== 'status') {
     console.log('usage: astramem-local model <fetch|status> [--model <label>] [--dtype q8|fp16|fp32] [--dest <dir>] [--print-urls] [--force]');
-    process.exitCode = sub ? 1 : 0;
+    // Missing subcommand is as much a usage error as an unknown one —
+    // scripts checking the exit code must never read bare `model` as success.
+    process.exitCode = 1;
     return;
   }
   const flag = (name: string): string | undefined => {
@@ -173,14 +190,30 @@ export async function modelCommand(
   const { cfg } = resolveRuntimeConfig();
   const plan = buildModelFetchPlan({
     model: flag('--model'),
-    dtype: flag('--dtype') as OnnxDType | undefined,
+    dtype: flag('--dtype'),
     dest: flag('--dest'),
     configModel: cfg.embedding.model,
     configDtype: cfg.onnxEmbed?.dtype,
+    configModelPath: cfg.onnxEmbed?.modelPath,
     cacheDir: resolveOnnxCacheDir(cfg),
   });
 
   if (sub === 'status') {
+    // Daemon-eye view first: modelPath may hold the snapshot DIRECTLY at
+    // its root (resolver candidate 1), a layout the per-file plan below
+    // (which always assumes <root>/<hfRepo>/<revision>) cannot see.
+    const resolved = resolveLocalSnapshotDir({
+      hfModelId: plan.hfRepo,
+      revision: plan.revision,
+      dtype: plan.dtype,
+      modelPath: cfg.onnxEmbed?.modelPath,
+      cacheDir: resolveOnnxCacheDir(cfg),
+    });
+    if (resolved) {
+      console.log(`model    : ${plan.modelLabel} (${plan.hfRepo}@${plan.revision.slice(0, 12)}, dtype ${plan.dtype})`);
+      console.log(`✓ snapshot complete at ${resolved} — the daemon will load it fully offline.`);
+      return;
+    }
     process.exitCode = printStatus(plan) ? 0 : 1;
     return;
   }
@@ -193,13 +226,15 @@ export async function modelCommand(
   }
 
   const force = args.includes('--force');
-  mkdirSync(join(plan.snapshotDir, 'onnx'), { recursive: true });
   let failed = false;
   for (const f of plan.files) {
     if (!force && fileState(f.dest) === 'present') {
       console.log(`· ${f.file} — already present, skipping (--force to re-download)`);
       continue;
     }
+    // Derive the directory from the file's own dest — never a hardcoded
+    // subdir literal that requiredSnapshotFiles could silently outgrow.
+    mkdirSync(dirname(f.dest), { recursive: true });
     console.log(`↓ ${f.file} ← ${f.url}`);
     try {
       await downloader(f.url, f.dest);
@@ -214,26 +249,33 @@ export async function modelCommand(
     console.error('');
     console.error('Download failed. If curl works on this box but node does not (a known');
     console.error('local-TLS-filtering failure mode — see the 2026-07-16 outage), run:');
-    for (const line of curlRecipe(buildModelFetchPlan({
-      model: plan.modelLabel,
-      dtype: plan.dtype,
-      dest: flag('--dest'),
-      cacheDir: resolveOnnxCacheDir(cfg),
-    }))) {
+    for (const line of curlRecipe(plan)) {
       console.error(`  ${line}`);
     }
     process.exitCode = 1;
     return;
   }
 
-  // Verify with the SAME resolver the daemon boots with — a green fetch that
-  // the provider would not actually resolve is a lie (ADR-016: derive, don't
-  // re-declare).
-  const resolved = resolveLocalSnapshotDir(
-    { hfModelId: plan.hfRepo, revision: plan.revision, dtype: plan.dtype, cacheDir: flag('--dest') ?? resolveOnnxCacheDir(cfg) },
-  );
+  // Verify through the DAEMON'S eyes — same resolver, same config-derived
+  // candidates (ADR-016: derive, don't re-declare). Crucially this threads
+  // config.onnxEmbed.modelPath: when it is set the daemon consults ONLY
+  // modelPath, so a seed that landed anywhere else must NOT print green.
+  const resolved = resolveLocalSnapshotDir({
+    hfModelId: plan.hfRepo,
+    revision: plan.revision,
+    dtype: plan.dtype,
+    modelPath: cfg.onnxEmbed?.modelPath,
+    cacheDir: resolveOnnxCacheDir(cfg),
+  });
   if (resolved) {
     console.log(`✓ snapshot complete at ${resolved} — the daemon will load it fully offline.`);
+  } else if (flag('--dest')) {
+    console.error(
+      `✗ files downloaded to ${plan.snapshotDir}, but the daemon will NOT find them there ` +
+        `(it resolves from ${cfg.onnxEmbed?.modelPath ?? resolveOnnxCacheDir(cfg) ?? 'the library default cache'}). `,
+    );
+    console.error('  Re-run without --dest, or point config.onnxEmbed.modelPath at your --dest directory.');
+    process.exitCode = 1;
   } else {
     console.error('✗ files downloaded but the provider does not resolve the snapshot — layout mismatch, please report this.');
     process.exitCode = 1;
