@@ -32,6 +32,9 @@ import {
   compact,
   compactSystemPrompt,
   shouldCompact,
+  compactionDecisionFor,
+  chunkAlreadyFits,
+  COMPACTION_FITS_THRESHOLD_CHARS,
   type CompactResult,
 } from '../../src/distill/stages/04-compact.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
@@ -40,9 +43,23 @@ import { migrate } from '../../src/storage/migrate.js';
 import type { Chunk } from '../../src/distill/stages/03-chunk.js';
 import type { LLMProvider } from '../../src/contracts/index.js';
 
+// Small: well BELOW COMPACTION_FITS_THRESHOLD_CHARS (800) — used everywhere
+// size is irrelevant (categorical mode/profile skip, or the size gate itself
+// under test) or to prove mode:'always' overrides the size heuristic too.
 const chunks: Chunk[] = [
   { index: 0, text: 'Caroline: I went to the LGBTQ support group on May 7.\nMelanie: Tell Alice I said hi.' },
   { index: 1, text: 'Melanie: My kids are excited for summer camp in June.' },
+];
+
+// Large: comfortably ABOVE COMPACTION_FITS_THRESHOLD_CHARS (800) — #284 Bug 2
+// requires "keep it conservative", so the oversized fixture used to prove
+// engineering-under-auto still compacts is sized with real headroom (~1200
+// chars, 1.5x the threshold), not a hair's-breadth over it.
+const LARGE_FILLER =
+  'Caroline: I went to the LGBTQ support group on May 7 and it was a really meaningful afternoon spent listening to other people share their stories. ';
+const largeChunks: Chunk[] = [
+  { index: 0, text: LARGE_FILLER.repeat(8) },
+  { index: 1, text: LARGE_FILLER.repeat(8) },
 ];
 
 /** BudgetTracker needs a real DB — only the COMPACTING paths reach it (the skip
@@ -157,11 +174,11 @@ describe('compact() — the skip path makes ZERO LLM calls and passes the raw ch
     expect(out.map(r => r.index)).toEqual([0, 1]);
   });
 
-  it('engineering: still calls the provider, with the CODING-AGENT prompt', async () => {
+  it('engineering: still calls the provider, with the CODING-AGENT prompt (oversized chunks, unaffected by the #284 Bug 2 size gate)', async () => {
     const provider = fakeProvider();
     const budget = realBudget();
 
-    await compact(chunks, provider, budget, 1, 1, undefined, { profile: 'engineering', mode: 'auto' });
+    await compact(largeChunks, provider, budget, 1, 1, undefined, { profile: 'engineering', mode: 'auto' });
 
     expect(provider.calls).toBe(2);
     expect(provider.lastSystem).toMatch(/AI coding agent sessions/);
@@ -180,13 +197,85 @@ describe('compact() — the skip path makes ZERO LLM calls and passes the raw ch
     expect(provider.lastSystem).not.toMatch(/AI coding agent sessions/);
   });
 
-  it('no opts at all: byte-identical to pre-fix behavior (compacts, engineering prompt)', async () => {
+  it('no opts at all: byte-identical to pre-fix behavior (compacts, engineering prompt; oversized chunks so #284 Bug 2 does not interfere)', async () => {
     const provider = fakeProvider();
     const budget = realBudget();
 
-    await compact(chunks, provider, budget, 1);
+    await compact(largeChunks, provider, budget, 1);
 
     expect(provider.calls).toBe(2);
     expect(provider.lastSystem).toMatch(/AI coding agent sessions/);
+  });
+});
+
+describe('compactionDecisionFor — #284 Bug 2: the SIZE half of the gate', () => {
+  // Precedence: mode 'never' beats everything; mode 'always' beats both the
+  // profile gate and the size gate; only under 'auto' does profile apply,
+  // and only then size.
+  it('mode:never skips regardless of profile or size, reason mode-never', () => {
+    expect(compactionDecisionFor('tiny', { profile: 'engineering', mode: 'never' }))
+      .toEqual({ compact: false, skipReason: 'mode-never' });
+    expect(compactionDecisionFor(LARGE_FILLER.repeat(8), { profile: 'engineering', mode: 'never' }))
+      .toEqual({ compact: false, skipReason: 'mode-never' });
+  });
+
+  it('mode:always compacts regardless of profile or size — no skipReason', () => {
+    expect(compactionDecisionFor('tiny', { profile: 'conversational', mode: 'always' }))
+      .toEqual({ compact: true });
+  });
+
+  it('auto + conversational skips on PROFILE even when the chunk is oversized (profile beats size)', () => {
+    expect(compactionDecisionFor(LARGE_FILLER.repeat(8), { profile: 'conversational', mode: 'auto' }))
+      .toEqual({ compact: false, skipReason: 'profile' });
+  });
+
+  it('auto + engineering + a chunk that already fits: skips on SIZE', () => {
+    expect(compactionDecisionFor('short chunk', { profile: 'engineering', mode: 'auto' }))
+      .toEqual({ compact: false, skipReason: 'size' });
+  });
+
+  it('auto + engineering + an oversized chunk: compacts (unchanged)', () => {
+    expect(compactionDecisionFor(LARGE_FILLER.repeat(8), { profile: 'engineering', mode: 'auto' }))
+      .toEqual({ compact: true });
+  });
+
+  it('chunkAlreadyFits / COMPACTION_FITS_THRESHOLD_CHARS agree at the boundary', () => {
+    const atThreshold = 'x'.repeat(COMPACTION_FITS_THRESHOLD_CHARS);
+    const overThreshold = 'x'.repeat(COMPACTION_FITS_THRESHOLD_CHARS + 1);
+    expect(chunkAlreadyFits(atThreshold)).toBe(true); // <= threshold still fits (headroom, not hair-trigger)
+    expect(chunkAlreadyFits(overThreshold)).toBe(false);
+  });
+});
+
+describe('compact() — #284 Bug 2 size gate, end to end', () => {
+  it('auto + engineering + chunk that already fits: SKIPPED, zero LLM calls', async () => {
+    const provider = fakeProvider();
+    const budget = realBudget();
+
+    // Both fixture chunks are well under COMPACTION_FITS_THRESHOLD_CHARS.
+    const out = await compact(chunks, provider, budget, 1, 1, undefined, { profile: 'engineering', mode: 'auto' });
+
+    expect(provider.calls).toBe(0);
+    expect(out.map(r => r.text)).toEqual(['', '']);
+  });
+
+  it('auto + engineering + oversized chunk: still compacts (unchanged from pre-#284-Bug-2 behavior)', async () => {
+    const provider = fakeProvider();
+    const budget = realBudget();
+
+    await compact(largeChunks, provider, budget, 1, 1, undefined, { profile: 'engineering', mode: 'auto' });
+
+    expect(provider.calls).toBe(2);
+  });
+
+  it('mode:always + a small chunk: still compacts — operator override beats the size heuristic', async () => {
+    const provider = fakeProvider();
+    const budget = realBudget();
+
+    // Same tiny fixture that size-skips under 'auto' — 'always' must ignore that.
+    const out = await compact(chunks, provider, budget, 1, 1, undefined, { profile: 'engineering', mode: 'always' });
+
+    expect(provider.calls).toBe(2);
+    expect(out.every(r => r.text === 'COMPRESSED')).toBe(true);
   });
 });

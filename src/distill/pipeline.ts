@@ -16,7 +16,7 @@
 import { cleanup } from './stages/01-cleanup.js';
 import { normalize } from './stages/02-normalize.js';
 import { chunk, resolveMaxChunkChars } from './stages/03-chunk.js';
-import { compact, shouldCompact, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
+import { compact, shouldCompact, compactionDecisionFor, BudgetExceeded as CompactBudgetExceeded } from './stages/04-compact.js';
 import { extract, extractSpecifics, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
 import { mergeDualPassAtoms } from './dedup-merge.js';
 import { reduce } from './stages/06-reduce.js';
@@ -215,6 +215,23 @@ export async function runPipeline(
   // shouldCompact() gate (04-compact.ts) so the log can never drift from
   // the actual decision the stage makes one line later.
   const willCompact = shouldCompact({ profile: resolvedExtractProfile, mode: compactionMode });
+
+  // #284 Bug 2: per-CHUNK size gate on top of the categorical mode/profile
+  // gate above. `willCompact` alone can no longer tell the whole story once
+  // a batch can be PARTIALLY skipped (mode 'auto' + engineering, some chunks
+  // already fitting) — compactionDecisionFor is called here with the exact
+  // same (text, profile, mode) compact() itself uses per chunk below, so
+  // this summary can never drift from the real per-chunk decision.
+  const compactDecisions = chunks.map(chk =>
+    compactionDecisionFor(chk.text, { profile: resolvedExtractProfile, mode: compactionMode }),
+  );
+  const compactionSizeSkipped = compactDecisions.filter(d => d.skipReason === 'size').length;
+  const compactionSkipReasons = new Set(compactDecisions.filter(d => !d.compact).map(d => d.skipReason));
+  const compactionSkipReason =
+    compactionSkipReasons.size === 0 ? undefined
+    : compactionSkipReasons.size === 1 ? [...compactionSkipReasons][0]
+    : 'mixed';
+
   pipeLog.info(
     {
       stage: 'compact',
@@ -223,6 +240,8 @@ export async function runPipeline(
       extract_profile: resolvedExtractProfile,
       compaction_mode: compactionMode,
       compaction_skipped: !willCompact,
+      compaction_skip_reason: compactionSkipReason,
+      compaction_size_skipped: compactionSizeSkipped,
     },
     willCompact ? 'stage start' : 'stage start — SKIPPED (passthrough, no LLM call)',
   );
@@ -235,7 +254,13 @@ export async function runPipeline(
     );
     compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
     pipeLog.info(
-      { stage: 'compact', chunks_compacted: compactedChunks.length, compaction_skipped: !willCompact },
+      {
+        stage: 'compact',
+        chunks_compacted: compactedChunks.length,
+        compaction_skipped: !willCompact,
+        compaction_skip_reason: compactionSkipReason,
+        compaction_size_skipped: compactionSizeSkipped,
+      },
       'stage complete',
     );
   } catch (err) {

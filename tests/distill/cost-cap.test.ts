@@ -177,7 +177,10 @@ describe('compact() / extract() — costCap stops dispatch across multiple chunk
     const tracker = new DistillCostCapTracker({ enabled: true, maxCallsPerJob: 2 }, () => {});
     const chunks = [0, 1, 2, 3, 4].map((i) => ({ index: i, text: `chunk ${i}` }));
 
-    const results = await compact(chunks, llm, budget, 10.0, 1, undefined, { costCap: tracker });
+    // mode:'always' — these tiny fixture chunks are testing costCap dispatch
+    // mechanics, not the #284 Bug 2 size gate; 'always' bypasses the size
+    // heuristic (an operator override) so it can't confound this assertion.
+    const results = await compact(chunks, llm, budget, 10.0, 1, undefined, { mode: 'always', costCap: tracker });
 
     expect(callCount()).toBe(2);
     expect(results.filter((r) => r.text === 'compressed')).toHaveLength(2);
@@ -209,7 +212,7 @@ describe('compact() / extract() — costCap stops dispatch across multiple chunk
     const tracker = new DistillCostCapTracker({ enabled: true, maxCallsPerJob: 3 }, () => {});
     const chunks = [0, 1, 2, 3].map((i) => ({ index: i, text: `chunk ${i}` }));
 
-    const compactResults = await compact(chunks, compactLlm, budget, 10.0, 1, undefined, { costCap: tracker });
+    const compactResults = await compact(chunks, compactLlm, budget, 10.0, 1, undefined, { mode: 'always', costCap: tracker });
     expect(compactCalls()).toBe(3); // all 3 of the shared budget spent in compact()
 
     const extractInput = compactResults.map((r) => ({ index: r.index, text: r.text || `chunk ${r.index}` }));
@@ -230,7 +233,7 @@ describe('compact() / extract() — costCap stops dispatch across multiple chunk
     const disabled = new DistillCostCapTracker({ enabled: false }, () => {});
     const chunks = [0, 1, 2].map((i) => ({ index: i, text: `chunk ${i}` }));
 
-    const results = await compact(chunks, llm, budget, 10.0, 1, undefined, { costCap: disabled });
+    const results = await compact(chunks, llm, budget, 10.0, 1, undefined, { mode: 'always', costCap: disabled });
 
     expect(callCount()).toBe(3);
     expect(results.every((r) => r.text === 'compressed')).toBe(true);
