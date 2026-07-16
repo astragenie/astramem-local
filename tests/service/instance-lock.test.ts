@@ -3,7 +3,8 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { acquireInstanceLock, AlreadyRunningError, ZombieLockTakeoverError, lockPath, stopLockHolder, getProcessStartTime } from '../../src/service/instance-lock.js';
+import { createServer, type Server } from 'node:net';
+import { acquireInstanceLock, AlreadyRunningError, ZombieLockTakeoverError, lockPath, stopLockHolder, getProcessStartTime, isPortInUse } from '../../src/service/instance-lock.js';
 
 /** A fixed, arbitrary start-time used across identity-check tests. */
 const FIXED_STARTED_AT = '2026-07-13T00:00:00.000Z';
@@ -98,7 +99,7 @@ describe('instance-lock', () => {
     lock.release();
   });
 
-  it('REFUSES to steal (throws ZombieLockTakeoverError, never overwrites the lock) when the stop cannot be confirmed', async () => {
+  it('REFUSES to steal (throws ZombieLockTakeoverError, never overwrites the lock) when the stop cannot be confirmed AND the port is genuinely still bound', async () => {
     writeFileSync(
       lockPath(dir),
       JSON.stringify({ pid: process.ppid, port: 9999, startedAt: FIXED_STARTED_AT, version: '0.5.0' }),
@@ -111,12 +112,74 @@ describe('instance-lock', () => {
         // Identity check reports a mismatch — stopLockHolder must refuse to
         // signal an unrelated process that happens to share this PID.
         processStartTime: async () => new Date(Date.parse(FIXED_STARTED_AT) + 60 * 60 * 1000),
+        // issue #389: a confirmed-bound port is what keeps this refusal in
+        // place — without this, an unbound port would now let the takeover
+        // proceed instead (see the dedicated port-FREE test below).
+        portInUse: async () => true,
       }),
     ).rejects.toThrow(ZombieLockTakeoverError);
     expect(signaled).toEqual([]); // never signaled — identity refused before any kill
     // The original holder's info must still be on disk — we must never
     // return control (or a lock handle) while its ownership is unconfirmed.
     expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.ppid);
+  });
+
+  // issue #389: a recycled PID (identity-mismatch) makes stopLockHolder
+  // refuse to signal — but that refusal alone used to always throw
+  // ZombieLockTakeoverError, turning a recoverable state (holder isn't our
+  // daemon AND isn't bound to the port either) into a hard boot-denial loop.
+  // These tests inject `portInUse` so nothing real is ever bound/checked.
+  it('issue #389: recycled-PID (identity-mismatch) + port FREE -> takeover proceeds (no throw)', async () => {
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9999, startedAt: FIXED_STARTED_AT, version: '0.5.0' }),
+    );
+    const signaled: number[] = [];
+    let portChecked: number | null = null;
+    const lock = await acquireInstanceLock(dir, 7777, '0.6.0', {
+      healthProbe: async () => false, // zombie-detected AND stopLockHolder's own "still serving" probe
+      signal: pid => { signaled.push(pid); },
+      // Identity check reports a mismatch — stopLockHolder refuses to signal.
+      processStartTime: async () => new Date(Date.parse(FIXED_STARTED_AT) + 60 * 60 * 1000),
+      portInUse: async port => { portChecked = port; return false; }, // nothing actually listening
+    });
+    expect(signaled).toEqual([]); // never signaled — identity refused before any kill, exactly as #388 left it
+    expect(portChecked).toBe(9999); // checked the HOLDER's recorded port
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.pid); // takeover proceeded
+    lock.release();
+  });
+
+  it('issue #389: recycled-PID (identity-mismatch) + port STILL BOUND -> throws ZombieLockTakeoverError, never overwrites the lock', async () => {
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9999, startedAt: FIXED_STARTED_AT, version: '0.5.0' }),
+    );
+    const signaled: number[] = [];
+    await expect(
+      acquireInstanceLock(dir, 7777, '0.6.0', {
+        healthProbe: async () => false,
+        signal: pid => { signaled.push(pid); },
+        processStartTime: async () => new Date(Date.parse(FIXED_STARTED_AT) + 60 * 60 * 1000),
+        portInUse: async () => true, // something is genuinely still bound
+      }),
+    ).rejects.toThrow(ZombieLockTakeoverError);
+    expect(signaled).toEqual([]);
+    // The original holder's info must still be on disk — unchanged from the
+    // pre-#389 refusal behavior when the port genuinely can't be ruled out.
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.ppid);
+  });
+
+  it('issue #389: genuinely-dead holder (!pidAlive) still takes over unconditionally, without ever consulting the port check (unchanged from #388)', async () => {
+    writeFileSync(lockPath(dir), JSON.stringify({ pid: 2 ** 30, port: 7777, startedAt: '', version: '' }));
+    let portChecked = false;
+    const lock = await acquireInstanceLock(dir, 8888, '0.6.0', {
+      portInUse: async () => { portChecked = true; return true; },
+    });
+    // The dead-PID path steals via `pidAlive` alone and never reaches the
+    // zombie/health-probe branch at all — the port check must not fire here.
+    expect(portChecked).toBe(false);
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.pid);
+    lock.release();
   });
 
   it('release does not delete a lock that was stolen by a newer process', async () => {
@@ -438,5 +501,39 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
       // The proof: the process is actually gone, not just reported gone.
       expect(isAlive(pid)).toBe(false);
     }, 40_000); // two real OS start-time queries (pre-seed + stopLockHolder's own) plus signal-delivery wait
+  });
+});
+
+// issue #389: the real (non-injected) port-liveness probe. Uses an ephemeral
+// port bound by this suite itself — never a fixed/well-known port and never
+// anything astramem code touches — so this is safe against a box that also
+// runs the production daemon and sibling agents' processes.
+describe('isPortInUse (real socket probe, issue #389)', () => {
+  let server: Server;
+  let port: number;
+
+  beforeEach(async () => {
+    server = createServer();
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', () => resolve());
+    });
+    const addr = server.address();
+    if (!addr || typeof addr === 'string') throw new Error('expected an AddressInfo from an ephemeral TCP listener');
+    port = addr.port;
+  });
+
+  afterEach(async () => {
+    if (!server.listening) return;
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  });
+
+  it('reports true while something is actually listening', async () => {
+    expect(await isPortInUse(port)).toBe(true);
+  });
+
+  it('reports false (ECONNREFUSED) once nothing is listening', async () => {
+    await new Promise<void>(resolve => server.close(() => resolve()));
+    expect(await isPortInUse(port)).toBe(false);
   });
 });
