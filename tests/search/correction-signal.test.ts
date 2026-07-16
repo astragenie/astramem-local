@@ -138,4 +138,59 @@ describe('search() correction_pending marker (issue #352B)', () => {
     // Unflagged winner defaults to uncontestedBonus 1 -> raw 1 in the signal.
     expect(winnerBoosted?.explanation.signals.correction_freshness?.raw).toBe(1);
   });
+
+  // Review finding 4 (PR #378): the NULL/malformed metadata_json fallback to
+  // confidence 0 was implemented (correctionSignalForCandidates's try/catch
+  // and the `if (row.metadata_json)` guard) but untested until now.
+  it('falls back to confidence:0 when metadata_json is NULL or malformed JSON, without dropping the marker', async () => {
+    const db = setupDb();
+    const winnerId = seed(db, 'cache ttl is now sixty seconds', 'h-w7');
+    const nullMetaLoserId = seed(db, 'cache ttl is thirty seconds', 'h-l7');
+    const malformedMetaLoserId = seed(db, 'cache ttl is fifteen seconds', 'h-l8');
+
+    db.prepare(`
+      INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+      VALUES ('contra-null-meta', 'contradiction', ?, ?, ?, 'pending', ?, NULL)
+    `).run(winnerId, nullMetaLoserId, 0.7, Date.now());
+    db.prepare(`
+      INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+      VALUES ('contra-bad-meta', 'contradiction', ?, ?, ?, 'pending', ?, ?)
+    `).run(winnerId, malformedMetaLoserId, 0.7, Date.now(), '{not valid json');
+
+    const hits = await search('cache ttl seconds', {}, 10, {
+      db, embed: fakeEmbed, weights: defaultConfig().search,
+    });
+
+    const nullMetaHit = hits.find(h => h.id === nullMetaLoserId);
+    const malformedMetaHit = hits.find(h => h.id === malformedMetaLoserId);
+    expect(nullMetaHit?.correction_pending).toEqual({
+      proposal_id: 'contra-null-meta', winner_id: winnerId, confidence: 0,
+    });
+    expect(malformedMetaHit?.correction_pending).toEqual({
+      proposal_id: 'contra-bad-meta', winner_id: winnerId, confidence: 0,
+    });
+  });
+});
+
+// Review finding 1 (PR #378): correctionSignalForCandidates() ran unindexed
+// against consolidation_proposals on EVERY search()/recall() call — the only
+// pre-existing index (migration 008's partial UNIQUE dedup guard) doesn't
+// cover (kind, status, loser_id). migrations/051 adds a purpose-built
+// partial index; this pins that the query planner actually rides it rather
+// than full-scanning the table.
+describe('consolidation_proposals loser-id lookup uses the migration-051 partial index', () => {
+  it('EXPLAIN QUERY PLAN reports idx_consolidation_proposals_pending_contradiction_loser, not a full scan', () => {
+    const db = setupDb();
+    // Query text copied verbatim from correctionSignalForCandidates
+    // (src/search/search.ts) — SQLite's partial-index matching requires the
+    // query's WHERE clause to syntactically match the index's own WHERE
+    // clause (same lesson as migration 045's doc comment).
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT id, winner_id, loser_id, metadata_json FROM consolidation_proposals
+      WHERE kind = 'contradiction' AND status = 'pending' AND loser_id IN (?, ?)
+    `).all('a', 'b') as Array<{ detail: string }>;
+    expect(plan.some(p => p.detail.includes('idx_consolidation_proposals_pending_contradiction_loser'))).toBe(true);
+    expect(plan.some(p => /SCAN consolidation_proposals\b/.test(p.detail))).toBe(false);
+  });
 });
