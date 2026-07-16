@@ -10,6 +10,7 @@ import { recordRecallUsed } from '../../src/storage/usefulness.js';
 import { runConsolidation, mergeAsSupersede } from '../../src/consolidate/consolidate.js';
 import { ProposalRepo, parseContradictionMetadata } from '../../src/consolidate/proposals.js';
 import { buildApp } from '../../src/server/app.js';
+import { defaultConfig } from '../../src/config/config.js';
 import { makeMockProviders } from '../../src/pipeline/mock-providers.js';
 import { latestConsolidationJudgeRun } from '../../src/storage/consolidation-judge-log.js';
 import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../../src/contracts/index.js';
@@ -324,6 +325,44 @@ describe('consolidation REST surface', () => {
 
     const badLimit = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&limit=0', headers: auth });
     expect(badLimit.statusCode).toBe(400); // limit must be positive
+  });
+
+  // #372 scope update (2026-07-16): consolidation.candidateSelection=knn is
+  // now LIVE in prod (shipped default stays 'full'). POST /consolidation/run
+  // reads candidateSelection from the app's Config, not the request body
+  // (src/server/routes/consolidation.ts), so exercising knn over HTTP means
+  // building the app with a knn-configured Config — same pagination/total
+  // assertions as the 'full'-mode test above, proving the route wiring is
+  // unaffected by which mode actually produced the proposals.
+  it('GET /consolidation/proposals paginates identically when the app is configured for candidateSelection=knn (#372)', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    for (let i = 0; i < 5; i++) {
+      await seedEmbedded(db, `knn topic ${i} winner`, `h-knn-page-w${i}`, vecAt(30 + i));
+      await seedEmbedded(db, `knn topic ${i} loser`, `h-knn-page-l${i}`, vecAt(30 + i, 0.45));
+    }
+    const knnConfig = {
+      ...defaultConfig(),
+      consolidation: { ...defaultConfig().consolidation, candidateSelection: 'knn' as const, knnK: 3 },
+    };
+    const app = await buildApp({ db, token: 't', config: knnConfig });
+    const auth = { authorization: 'Bearer t' };
+    const run = await app.inject({ method: 'POST', url: '/consolidation/run', headers: auth, payload: {} });
+    expect((run.json() as { proposed: unknown[] }).proposed).toHaveLength(5); // knn found every seeded pair
+
+    const all = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending', headers: auth });
+    expect(all.json().proposals).toHaveLength(5);
+    expect(all.json().total).toBe(5);
+
+    const page1 = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&limit=2', headers: auth });
+    const page2 = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&limit=2&offset=2', headers: auth });
+    const page3 = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&limit=2&offset=4', headers: auth });
+    const paged = [
+      ...(page1.json().proposals as Array<{ id: string }>),
+      ...(page2.json().proposals as Array<{ id: string }>),
+      ...(page3.json().proposals as Array<{ id: string }>),
+    ];
+    expect(paged.map(p => p.id)).toEqual((all.json().proposals as Array<{ id: string }>).map(p => p.id));
   });
 });
 

@@ -16,6 +16,7 @@ import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
+import { ProposalRepo } from '../../src/consolidate/proposals.js';
 import { PKG_VERSION } from '../../src/server/lib/wire-meta.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { FastifyInstance } from 'fastify';
@@ -1326,5 +1327,54 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     const result = await toolCall('resolve_consolidation_proposals_batch', { action: 'accept', limit: 2 });
     const payload = result.payload as { matched: number; resolved: number; remaining: number };
     expect(payload).toMatchObject({ matched: 2, resolved: 2, remaining: 1 });
+  });
+
+  // #372 scope update (2026-07-16): consolidation.candidateSelection=knn is
+  // now LIVE in prod, and the pending-proposal count it's expected to drive
+  // is well beyond the 768 this slice was scoped against. This drains a
+  // knn-mode-produced queue across repeated capped batch calls — the
+  // "call again while remaining is nonzero" loop the tool's own description
+  // documents — rather than testing a single call against synthetic rows.
+  it('resolve_consolidation_proposals_batch drains a knn-mode-produced queue across repeated capped calls', async () => {
+    const { runConsolidation } = await import('../../src/consolidate/consolidate.js');
+    const { SqliteVecStore } = await import('../../src/vector/sqlite-vec.js');
+    const memRepo = new MemoryRepo(db);
+    const vecStore = new SqliteVecStore(db);
+    const mkVec = (axis: number, tilt = 0): Float32Array => {
+      const v = new Float32Array(1024);
+      v[axis] = 1;
+      if (tilt > 0) v[0] = tilt;
+      return v;
+    };
+    const N = 12;
+    for (let i = 0; i < N; i++) {
+      const w = memRepo.insert({
+        type: 'fact', text: `knn drain ${i} winner`, normalized_text: `knn drain ${i} winner`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-knn-drain-w${i}`, source_hash: null,
+      });
+      const l = memRepo.insert({
+        type: 'fact', text: `knn drain ${i} loser`, normalized_text: `knn drain ${i} loser`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-knn-drain-l${i}`, source_hash: null,
+      });
+      await vecStore.upsert(w, mkVec(40 + i));
+      await vecStore.upsert(l, mkVec(40 + i, 0.45));
+    }
+    const summary = await runConsolidation(db, { candidateSelection: 'knn', knnK: 3 });
+    expect(summary.proposed).toHaveLength(N); // knn found every seeded pair, same as 'full' would
+
+    let totalResolved = 0;
+    let remaining = N;
+    let calls = 0;
+    while (remaining > 0) {
+      calls++;
+      const result = await toolCall('resolve_consolidation_proposals_batch', { action: 'accept', kind: 'merge', limit: 5 });
+      const payload = result.payload as { resolved: number; remaining: number };
+      totalResolved += payload.resolved;
+      remaining = payload.remaining;
+    }
+    expect(totalResolved).toBe(N);
+    expect(calls).toBe(3); // ceil(12 / 5) = 3 capped calls to fully drain
+    expect(new ProposalRepo(db).list('pending')).toHaveLength(0);
+    expect(new ProposalRepo(db).list('accepted')).toHaveLength(N);
   });
 });
