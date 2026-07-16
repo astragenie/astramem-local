@@ -1,6 +1,7 @@
+<!-- CLOSED 2026-07-16: already shipped as PR #316 (merged 2026-07-14, commit 775a33b1) — CachingEmbedProvider decorator, migration 043, document-role scoped, 20k-entry LRU, doctor hit-rate canary. Stale backlog entry; re-dispatched in wave 3, builder verified already-done (10/10 tests). Always-on for document-role, no config toggle by design. -->
 ---
 id: FEAT-492
-status: pending
+status: done
 priority: null
 category: performance
 target_release: null
