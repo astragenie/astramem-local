@@ -37,13 +37,39 @@
  * ExecutionTimeLimit=PT0S fix above (CLI-created tasks default to 72h).
  */
 
-/** Numeric seconds equivalent of the `repetitionIso` default ('PT5M') used
- *  when `buildTaskXml` registers the main daemon task (schtasks.ts's
- *  `install()`). Exported so the "Task repetition dormancy" doctor canary
- *  (issue #370) can compute a staleness threshold without hand-parsing an
- *  ISO-8601 duration or re-hardcoding 300 as a second source of truth — MUST
- *  stay in sync with the 'PT5M' string literal below if that ever changes. */
-export const DEFAULT_REPETITION_SEC = 300;
+/**
+ * Minimal ISO-8601 duration parser — deliberately NOT general-purpose. Only
+ * supports the `PT[nH][nM][nS]` subset this codebase's own callers ever
+ * produce (task-xml.ts's own `repetitionIso` values, schtasks.ts's
+ * `PT${intervalSec}S`) — no days/weeks/months/years, no fractional
+ * components. Throws on anything outside that subset so a typo in a literal
+ * this file controls fails loudly at import time rather than silently
+ * producing 0. Exported so both `DEFAULT_REPETITION_SEC` below and the "Task
+ * repetition dormancy" doctor canary (issue #370 review) can derive a
+ * seconds value from a single ISO-8601 literal instead of hand-mirroring a
+ * second numeric constant that can drift out of sync.
+ */
+export function parseSimpleIso8601DurationSeconds(iso: string): number {
+  const m = iso.match(/^PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/);
+  if (!m || (!m[1] && !m[2] && !m[3])) {
+    throw new Error(`parseSimpleIso8601DurationSeconds: unsupported ISO-8601 duration "${iso}"`);
+  }
+  const [, h, mi, s] = m;
+  return Number(h ?? 0) * 3600 + Number(mi ?? 0) * 60 + Number(s ?? 0);
+}
+
+/** The daemon task's own keepalive repetition (schtasks.ts's `install()`).
+ *  `buildTaskXml` uses this as `repetitionIso`'s default (below) — the ISO
+ *  literal is the single source of truth; `DEFAULT_REPETITION_SEC` is
+ *  derived from it, not a hand-mirrored second constant. */
+export const DEFAULT_REPETITION_ISO = 'PT5M';
+
+/** Numeric seconds equivalent of {@link DEFAULT_REPETITION_ISO}, derived (not
+ *  hand-mirrored) so the "Task repetition dormancy" doctor canary (issue
+ *  #370) can compute a staleness threshold without re-implementing ISO-8601
+ *  duration parsing or risking a second literal drifting out of sync with
+ *  the first. */
+export const DEFAULT_REPETITION_SEC = parseSimpleIso8601DurationSeconds(DEFAULT_REPETITION_ISO);
 
 export interface TaskXmlOpts {
   /** Full command to execute (the stable shim .cmd path). */
@@ -128,7 +154,7 @@ export function buildDailyTaskXml(opts: TaskXmlOpts & { startTime?: string; desc
 
 export function buildTaskXml(opts: TaskXmlOpts): string {
   const description = opts.description ?? 'AstraMemory local memory daemon (astramem-local). Managed by astramem-local service install / reinstall.';
-  const repetition = `<Interval>${opts.repetitionIso ?? 'PT5M'}</Interval>
+  const repetition = `<Interval>${opts.repetitionIso ?? DEFAULT_REPETITION_ISO}</Interval>
         <StopAtDurationEnd>false</StopAtDurationEnd>`;
   const startBoundary = opts.startBoundaryIso ?? localIsoNow();
   return `<?xml version="1.0" encoding="UTF-16"?>
