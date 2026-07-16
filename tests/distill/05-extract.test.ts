@@ -102,7 +102,7 @@ describe('extract stage', () => {
     // And the properties that actually defeat the collapse must be present
     // explicitly (a future converter change that silently dropped them
     // would still deep-equal above, so pin them by name too):
-    const atoms = (schema!.properties as Record<string, Record<string, unknown>>).atoms;
+    const atoms = (schema!.properties as Record<string, Record<string, unknown>>).atoms!;
     expect(atoms.type).toBe('array');
     const items = atoms.items as Record<string, unknown>;
     expect(items.type).toBe('object');
