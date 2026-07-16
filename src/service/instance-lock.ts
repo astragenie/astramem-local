@@ -326,16 +326,54 @@ function readLock(path: string): LockInfo | null {
 }
 
 /**
+ * Thrown when a lock holder fails 3 health probes (looks like a zombie) but
+ * `stopLockHolder` could not confirm it is actually gone before we would
+ * otherwise take over the lock and call `app.listen()` on its port. Issue
+ * #387: the old code logged a warning and stole the lock unconditionally on
+ * 3 failed probes — when the "zombie" was actually alive-but-wedged (a
+ * daemon stuck before `app.listen()`, e.g. mid an unbounded consolidate
+ * setup), the new process's own `listen()` threw `EADDRINUSE`, the crash
+ * handler exited 1, and the scheduler's keepalive respawned another
+ * instance that repeated the identical misdiagnosis — dozens of exit-1s in
+ * a tight loop with no self-heal. Surfacing this as a distinct, loud error
+ * (rather than silently retrying `writeLock`/`listen`) means the caller
+ * fails fast with a diagnosable message instead of racing the port.
+ */
+export class ZombieLockTakeoverError extends Error {
+  constructor(public readonly holder: LockInfo, public readonly stopResult: StopLockHolderResult) {
+    super(
+      `refusing to take over daemon.lock held by pid ${holder.pid} (port ${holder.port}): could not ` +
+      `confirm it actually stopped (${stopResult.detail}). Binding our own listener now would risk ` +
+      'racing an EADDRINUSE crash loop against a holder that may still be alive (issue #387). ' +
+      'Manual intervention required (verify the PID, then `astramem-local service stop` or kill it directly).',
+    );
+    this.name = 'ZombieLockTakeoverError';
+  }
+}
+
+/**
  * Acquire the single-instance lock for `dataDir`.
  *
  * Throws AlreadyRunningError when a healthy daemon already holds it.
+ * Throws ZombieLockTakeoverError (issue #387) when the holder fails 3
+ * health probes but cannot be confirmed stopped — we must never return a
+ * lock handle (and let the caller proceed to `app.listen()`) while the old
+ * holder might still own the port.
  * Returns a handle whose release() is idempotent and safe from crash handlers.
  */
 export async function acquireInstanceLock(
   dataDir: string,
   port: number,
   version: string,
-  opts: { healthProbe?: (port: number) => Promise<boolean> } = {},
+  opts: {
+    healthProbe?: (port: number) => Promise<boolean>;
+    /** Injectable signal sender for the zombie-stop path — tests substitute a spy instead of really killing a PID. Threaded through to `stopLockHolder`. */
+    signal?: (pid: number, signal: NodeJS.Signals | number) => void;
+    /** Injectable process-start-time resolver for the zombie-stop path's identity check. Threaded through to `stopLockHolder`. */
+    processStartTime?: (pid: number) => Promise<Date | null>;
+    /** Total time to wait for the zombie holder's /health to stop answering after signaling it. Threaded through to `stopLockHolder`'s `waitMs`. */
+    zombieStopWaitMs?: number;
+  } = {},
 ): Promise<InstanceLock> {
   const path = lockPath(dataDir);
   const probe = opts.healthProbe ?? healthOk;
@@ -353,7 +391,23 @@ export async function acquireInstanceLock(
       if (healthy) throw new AlreadyRunningError(holder);
       console.warn(
         `[astramem-local] daemon.lock held by pid ${holder.pid} but /health on port ${holder.port} ` +
-        `is unresponsive (3 probes) — treating as zombie and taking over the lock.`,
+        `is unresponsive (3 probes) — treating as zombie; verifying it is actually gone before taking over.`,
+      );
+      // issue #387: never take over the lock (and hand control back to
+      // serve.ts to bind the port) on health-unresponsiveness alone — reuse
+      // stopLockHolder's identity-checked kill so a merely-wedged (not
+      // dead) holder is actually terminated first, or the takeover refuses.
+      const stopResult = await stopLockHolder(dataDir, holder.port ?? port, {
+        healthProbe: probe,
+        signal: opts.signal,
+        processStartTime: opts.processStartTime,
+        waitMs: opts.zombieStopWaitMs,
+      });
+      if (!stopResult.ok) {
+        throw new ZombieLockTakeoverError(holder, stopResult);
+      }
+      console.warn(
+        `[astramem-local] zombie holder pid ${holder.pid} confirmed stopped (${stopResult.detail}) — taking over the lock.`,
       );
     }
     exclusive = false; // stale/zombie/corrupt → steal via tmp+rename

@@ -157,6 +157,27 @@ export interface ConsolidateOpts {
    * here.
    */
   vectorStore?: VectorStore;
+  /**
+   * issue #387: wall-clock ceiling on the SETUP phase (load atoms + build
+   * per-group embedding maps) — the part of a run that used to execute as
+   * one uninterrupted synchronous stretch BEFORE the pairwise scan's own
+   * cooperative yields (`yieldEveryNPairs`, ADR-019 Tier 1) ever got a
+   * chance to fire. On a large corpus this alone froze the event loop long
+   * enough that `/health` looked dead, and — combined with the
+   * boot-recovery bug this issue also fixed (`JobRepo.recoverOrphans`) —
+   * reproduced on every restart. When the budget is exceeded mid-load, the
+   * loader stops fetching MORE atoms and the run proceeds with whatever was
+   * already loaded (`summary.setupBudgetExceeded = true`, logged loudly) —
+   * degraded coverage this pass, not a hang. Default 60s.
+   */
+  setupBudgetMs?: number;
+  /**
+   * issue #387: how many atoms the SETUP phase (atoms load + per-group
+   * embedding-map build) processes between cooperative yields — same
+   * `setImmediate`-based real yield `yieldEveryNPairs` uses for the scan
+   * itself, applied to the phase that used to have none at all. Default 500.
+   */
+  setupYieldEveryNAtoms?: number;
 }
 
 export interface ConsolidateSummary {
@@ -199,6 +220,13 @@ export interface ConsolidateSummary {
    * pairs fall through to the existing merge-tier classification unchanged.
    */
   contradictionCapReached: boolean;
+  /**
+   * issue #387: true when `setupBudgetMs` elapsed before the SETUP phase
+   * (atoms load + per-group embedding-map build) finished — the run
+   * proceeded with only what was loaded/built by then. See
+   * `ConsolidateOpts.setupBudgetMs`'s doc comment.
+   */
+  setupBudgetExceeded: boolean;
   /**
    * FEAT-482: true when `contradictionDetection.maxWallClockMs` elapsed
    * before the scan finished — a SEPARATE guard from `contradictionCapReached`
@@ -644,6 +672,53 @@ function insertContradictionProposal(
   return inserted.changes > 0 ? proposalId : null;
 }
 
+/** issue #387 defaults — see `ConsolidateOpts.setupBudgetMs`/`setupYieldEveryNAtoms`. */
+const DEFAULT_SETUP_BUDGET_MS = 60_000;
+const DEFAULT_SETUP_YIELD_EVERY_N_ATOMS = 500;
+
+/**
+ * issue #387: page through `memories`/`memories_vec` instead of one giant
+ * `.all()` call, yielding to the event loop (same `setImmediate` pattern
+ * `yieldEveryNPairs` uses) every `pageSize` rows and checking the wall-clock
+ * budget between pages. `ORDER BY ... m.rowid` adds a stable tiebreaker the
+ * pre-#387 single-query version didn't need (LIMIT/OFFSET pagination is
+ * only correct over a deterministically-ordered result set) — `m.rowid` is
+ * unique and orthogonal to (repo, type, created_at), so it only disambiguates
+ * ties the old query left unspecified anyway; it does not change which rows
+ * are returned, only the tie order among rows that already sorted equal.
+ *
+ * On budget exhaustion, stops fetching further pages and returns what was
+ * loaded so far (`budgetExceeded: true`) rather than either hanging or
+ * silently returning a complete-looking but truncated dataset — the caller
+ * is expected to log this loudly.
+ */
+async function loadAtomsSetupBounded(
+  db: DB,
+  deadline: number,
+  pageSize: number,
+  onYield?: () => void,
+): Promise<{ atoms: AtomRow[]; budgetExceeded: boolean }> {
+  const stmt = db.prepare(`
+    SELECT m.id, m.rowid, m.repo, m.type, m.text, m.importance, m.created_at, m.derived_from
+    FROM memories m
+    JOIN memories_vec v ON v.rowid = m.rowid
+    WHERE m.valid_to IS NULL
+    ORDER BY m.repo, m.type, m.created_at, m.rowid
+    LIMIT ? OFFSET ?
+  `);
+  const atoms: AtomRow[] = [];
+  let offset = 0;
+  for (;;) {
+    const page = stmt.all(pageSize, offset) as AtomRow[];
+    atoms.push(...page);
+    if (page.length < pageSize) return { atoms, budgetExceeded: false }; // last page
+    offset += pageSize;
+    if (Date.now() >= deadline) return { atoms, budgetExceeded: true };
+    await new Promise<void>(resolve => setImmediate(resolve));
+    onYield?.();
+  }
+}
+
 export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Promise<ConsolidateSummary> {
   // Kill-switch (2026-07-15): even a requeued/orphaned consolidate job must
   // no-op when disabled — the boot-enqueue gate in serve.ts alone can't cover
@@ -658,7 +733,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
       contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
       contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
-      judgeCallsNearThreshold: 0,
+      judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
     };
   }
   // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
@@ -693,7 +768,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     autoAcceptedProposals: [], staleRejectedProposals: [], autoAccepted: [],
     contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
     contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
-    judgeCallsNearThreshold: 0,
+    judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
   };
 
   if (autoMergeContained) {
@@ -702,14 +777,28 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     summary.staleRejectedProposals = swept.staleRejected;
   }
 
+  // issue #387: SETUP (load atoms + group + build per-group embedding maps)
+  // used to run as one uninterrupted synchronous stretch, before the scan's
+  // own cooperative yields (yieldEveryNPairs, ADR-019 Tier 1) ever got a
+  // chance to fire — long enough on a large corpus to freeze the event loop
+  // and starve /health. Bounded + yielded from here on; see
+  // ConsolidateOpts.setupBudgetMs/setupYieldEveryNAtoms.
+  const setupYieldEveryNAtoms = opts.setupYieldEveryNAtoms ?? DEFAULT_SETUP_YIELD_EVERY_N_ATOMS;
+  const setupBudgetMs = opts.setupBudgetMs ?? DEFAULT_SETUP_BUDGET_MS;
+  const setupDeadline = Date.now() + setupBudgetMs;
+
   // Valid atoms only, embedded only (no vector row → nothing to compare).
-  const atoms = db.prepare(`
-    SELECT m.id, m.rowid, m.repo, m.type, m.text, m.importance, m.created_at, m.derived_from
-    FROM memories m
-    JOIN memories_vec v ON v.rowid = m.rowid
-    WHERE m.valid_to IS NULL
-    ORDER BY m.repo, m.type, m.created_at
-  `).all() as AtomRow[];
+  const { atoms, budgetExceeded: atomsLoadBudgetExceeded } = await loadAtomsSetupBounded(
+    db, setupDeadline, setupYieldEveryNAtoms, onYield,
+  );
+  if (atomsLoadBudgetExceeded) {
+    summary.setupBudgetExceeded = true;
+    log(
+      `[consolidate] WARN setup budget (${setupBudgetMs}ms) exceeded while loading atoms — proceeding ` +
+      `with ${atoms.length} atoms loaded so far this pass (issue #387). Coverage is reduced this run; ` +
+      'the remainder is picked up on the next scheduled pass.',
+    );
+  }
 
   const groups = new Map<string, AtomRow[]>();
   for (const a of atoms) {
@@ -909,8 +998,17 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
 
   let pairsProcessedThisRun = 0;
   let ceilingHitAtGroupIndex = -1;
+  // issue #387: shared across every group's embedding-map build below —
+  // counts atoms regardless of which group they belong to, so many small
+  // groups back-to-back still get bounded the same as one large one.
+  let setupYieldCounter = 0;
+  let setupAbortedMidScan = false;
 
-  for (let gi = 0; gi < groupOrder.length; gi++) {
+  // If the atoms LOAD itself already blew the budget, don't even start
+  // building embedding maps — every group's deadline check would fail
+  // immediately anyway; skip straight to persisting whatever partial state
+  // exists (recordConsolidationRun etc., below the loop).
+  for (let gi = 0; !atomsLoadBudgetExceeded && gi < groupOrder.length; gi++) {
     const group = (groupOrder[gi] as GroupEntry).atoms;
     const first = group[0] as AtomRow;
 
@@ -939,6 +1037,34 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
           row.embedding.buffer, row.embedding.byteOffset, row.embedding.byteLength / 4,
         ));
       }
+      // issue #387: this per-group embedding-map build is the other half of
+      // the SETUP phase the doc comment above the loop names — same
+      // cooperative-yield + wall-clock-budget treatment as the atoms load.
+      setupYieldCounter++;
+      if (setupYieldCounter >= setupYieldEveryNAtoms) {
+        setupYieldCounter = 0;
+        if (Date.now() >= setupDeadline) {
+          setupAbortedMidScan = true;
+          break;
+        }
+        await new Promise<void>(resolve => setImmediate(resolve));
+        onYield?.();
+      }
+    }
+    if (setupAbortedMidScan) {
+      summary.setupBudgetExceeded = true;
+      log(
+        `[consolidate] WARN setup budget (${setupBudgetMs}ms) exceeded while building embedding maps ` +
+        `(group ${gi + 1}/${groupOrder.length}) — stopping this pass early (issue #387); the ` +
+        'remainder is picked up on the next scheduled pass.',
+      );
+      // Reuse the ceiling-resume bookkeeping below (when active) so a
+      // setup-budget abort resumes from here next run instead of either
+      // restarting from scratch or (worse) the ceiling block below
+      // mistaking an early abort for "finished every group" and resetting
+      // the cursor to null.
+      ceilingHitAtGroupIndex = gi;
+      break;
     }
 
     // Candidate-pair generation: O(n^2) nested loop for 'full' (unchanged
