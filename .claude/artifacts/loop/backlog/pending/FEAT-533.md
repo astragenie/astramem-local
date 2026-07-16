@@ -5,7 +5,7 @@ priority: null
 category: quality
 target_release: null
 created: 2026-07-16
-updated: 2026-07-16
+updated: 2026-07-16 (architect-amended: batch granularity)
 depends_on: []
 slices: []
 derived_from: null
@@ -46,9 +46,14 @@ capability-disclaimer | ephemeral | rephrase-of-existing`.
    provider?, model? }` following the contradictionDetection shape (#373)
    — provider/model default to llm.extraction, overridable to a local
    model so triage is free on metered installs.
-2. ONE batched call per chunk (all atoms in a single prompt with a JSON
-   schema — reuse the structured-output pattern from #369), never a call
-   per atom.
+2. Batched calls over the flat post-reduce atom stream — a fixed
+   atom-count batch per LLM call across the whole JOB (architect
+   correction 2026-07-16: "per chunk" is unimplementable at the insertion
+   point — stage-6 reduce() merges/dedupes atoms across chunks before
+   embedAndIndex runs, and NormalizedMemory carries no chunkIndex; batching
+   the deduped stream is also strictly cheaper). JSON-schema structured
+   output per #369; never a call per atom; never re-plumb chunk identity
+   through 06-reduce/07-normalize.
 3. **`dry-run` ships first and is the default-on ramp**: verdicts are
    logged to a `triage_guard_drops`-style table (mirror
    `evidence_guard_drops`, migration 030 conventions) WITHOUT dropping
