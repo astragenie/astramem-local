@@ -1,4 +1,6 @@
 import { cpus } from 'node:os';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import type { EmbedHealth, EmbedProvider, OnnxDType, OnnxPoolingStrategy } from '../../contracts/embed.js';
 import { DEFAULT_EMBED_DIM } from '../../contracts/embed.js';
 import { childLogger } from '../../log/logger.js';
@@ -165,6 +167,78 @@ interface ResolvedOnnxLoadOpts {
   numThreads: number;
 }
 
+/** dtype → ONNX artifact filename suffix. Mirrors
+ * `@huggingface/transformers`' internal `DEFAULT_DTYPE_SUFFIX_MAPPING`
+ * (`q8` resolves to `model_quantized.onnx`) — must stay in sync with the
+ * installed library or `resolveLocalSnapshotDir` will report a complete
+ * snapshot as incomplete (fail-open to the download path, never the
+ * reverse). */
+const DTYPE_FILE_SUFFIX: Readonly<Record<OnnxDType, string>> = {
+  q8: '_quantized',
+  fp16: '_fp16',
+  fp32: '',
+};
+
+/** Files that must ALL exist for a cached snapshot to be loadable fully
+ * offline. Matches both the hub layout and the library's on-disk cache
+ * layout (`<cacheRoot>/<hfRepo>/<revision>/...`). */
+export function requiredSnapshotFiles(dtype: OnnxDType): string[] {
+  return [
+    'config.json',
+    'tokenizer.json',
+    'tokenizer_config.json',
+    join('onnx', `model${DTYPE_FILE_SUFFIX[dtype]}.onnx`),
+  ];
+}
+
+/**
+ * Resolve a COMPLETE local model snapshot directory, or `undefined` when at
+ * least one required file is missing (→ caller falls back to the
+ * hub-download path, which populates the cache for the next boot).
+ *
+ * Why this exists (2026-07-16 prod embed outage): passing a repo id +
+ * pinned revision to `from_pretrained` is NOT offline-safe even with a
+ * fully populated cache. `@huggingface/transformers` 4.2.0's
+ * `loadTokenizer` → `get_tokenizer_files()` issues a network HEAD to the
+ * hub on EVERY load, passing empty options — it ignores both the caller's
+ * `revision` and `local_files_only`, and its cache key is keyed on `main`
+ * while a pinned-revision download is cached under the SHA path, so the
+ * lookup can never hit. When the hub is unreachable it resolves to zero
+ * tokenizer files and the load dies with
+ * `Cannot read properties of undefined (reading 'tokenizer_class')`.
+ * Passing a DIRECTORY as `pretrained_model_name_or_path` bypasses the hub
+ * entirely (`isValidHfModelId` rejects filesystem paths → every file is
+ * read locally, zero network) — verified offline-clean on a box whose
+ * node→huggingface.co path was hard-down while curl succeeded.
+ *
+ * Candidate order (first complete snapshot wins):
+ *   1. `modelPath` itself (operator points straight at a snapshot dir)
+ *   2. `modelPath/<hfRepo>/<revision>` (operator points at a cache root)
+ *   3. `cacheDir/<hfRepo>/<revision>` (config.onnxEmbed.cacheDir)
+ *   4. `libraryCacheDir/<hfRepo>/<revision>` (the library's own default
+ *      cache — where a prior boot's download actually landed)
+ */
+export function resolveLocalSnapshotDir(
+  opts: Pick<ResolvedOnnxLoadOpts, 'hfModelId' | 'revision' | 'dtype' | 'cacheDir' | 'modelPath'>,
+  libraryCacheDir?: string,
+): string | undefined {
+  const required = requiredSnapshotFiles(opts.dtype);
+  const candidates: string[] = [];
+  if (opts.modelPath) {
+    candidates.push(opts.modelPath, join(opts.modelPath, opts.hfModelId, opts.revision));
+  }
+  if (opts.cacheDir) {
+    candidates.push(join(opts.cacheDir, opts.hfModelId, opts.revision));
+  }
+  if (libraryCacheDir) {
+    candidates.push(join(libraryCacheDir, opts.hfModelId, opts.revision));
+  }
+  for (const dir of candidates) {
+    if (required.every((f) => existsSync(join(dir, f)))) return dir;
+  }
+  return undefined;
+}
+
 /**
  * Default backend loader — dynamically imports `@huggingface/transformers`
  * (keeps the multi-hundred-MB dependency chain, incl. `onnxruntime-node`'s
@@ -174,19 +248,44 @@ interface ResolvedOnnxLoadOpts {
  * since allocating VRAM defeats the entire point of this provider.
  */
 async function loadTransformersBackend(opts: ResolvedOnnxLoadOpts): Promise<OnnxBackend> {
-  const { AutoTokenizer, AutoModel } = await import('@huggingface/transformers');
+  const { AutoTokenizer, AutoModel, env } = await import('@huggingface/transformers');
+  const log = childLogger({ provider: 'onnx-loader', model: opts.hfModelId });
 
-  const pretrainedOpts: Record<string, unknown> = { revision: opts.revision };
-  if (opts.modelPath) {
-    // Explicit local override — offline/air-gapped install, no download.
-    pretrainedOpts.local_files_only = true;
-    pretrainedOpts.cache_dir = opts.modelPath;
-  } else if (opts.cacheDir) {
-    pretrainedOpts.cache_dir = opts.cacheDir;
+  // Offline-first: a complete cached snapshot is loaded by DIRECTORY path,
+  // which never touches the network — see resolveLocalSnapshotDir's doc
+  // comment for the library bug that makes the repo-id path hub-dependent
+  // even on a warm cache (2026-07-16 prod embed outage).
+  const snapshotDir = resolveLocalSnapshotDir(opts, (env as { cacheDir?: string }).cacheDir);
+
+  const modelId = snapshotDir ?? opts.hfModelId;
+  const pretrainedOpts: Record<string, unknown> = {};
+  if (snapshotDir) {
+    log.info({ snapshot_dir: snapshotDir }, 'onnx: loading model from local snapshot (offline)');
+  } else {
+    // Hub download path — first run only; populates the cache so every
+    // subsequent boot resolves a snapshot and stays offline.
+    pretrainedOpts.revision = opts.revision;
+    if (opts.modelPath) {
+      // Operator pointed at a local path but no complete snapshot was found
+      // there — fail loudly rather than silently downloading (ADR-015): an
+      // air-gapped install would otherwise hang on an unreachable hub.
+      throw new Error(
+        `onnx: config.onnxEmbed.modelPath is set ("${opts.modelPath}") but no complete ` +
+          `snapshot for ${opts.hfModelId}@${opts.revision} (dtype ${opts.dtype}) was found ` +
+          `there — expected files: ${requiredSnapshotFiles(opts.dtype).join(', ')}`,
+      );
+    }
+    if (opts.cacheDir) {
+      pretrainedOpts.cache_dir = opts.cacheDir;
+    }
+    log.warn(
+      { hf_model_id: opts.hfModelId, revision: opts.revision },
+      'onnx: no local snapshot found — downloading from the hub (requires network)',
+    );
   }
 
-  const tokenizer = await AutoTokenizer.from_pretrained(opts.hfModelId, pretrainedOpts);
-  const model = await AutoModel.from_pretrained(opts.hfModelId, {
+  const tokenizer = await AutoTokenizer.from_pretrained(modelId, pretrainedOpts);
+  const model = await AutoModel.from_pretrained(modelId, {
     ...pretrainedOpts,
     dtype: opts.dtype,
     device: 'cpu',

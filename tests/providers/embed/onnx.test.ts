@@ -1,8 +1,13 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   OnnxEmbedProvider,
   poolMeanNormalize,
   poolClsNormalize,
+  requiredSnapshotFiles,
+  resolveLocalSnapshotDir,
   DEFAULT_ONNX_HF_MODEL_ID,
   DEFAULT_ONNX_REVISION,
   DEFAULT_ONNX_DTYPE,
@@ -140,6 +145,104 @@ describe('onnx-embed', () => {
   // the loadBackend DI seam: capture the ResolvedOnnxLoadOpts the provider
   // actually hands to the backend loader, without downloading a real model.
   // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // Offline snapshot resolution (2026-07-16 prod embed outage): a complete
+  // cached snapshot must be loadable by DIRECTORY path with zero network —
+  // transformers.js 4.2.0's get_tokenizer_files() issues a hub HEAD on every
+  // repo-id load, ignoring revision + local_files_only, so a warm cache
+  // alone does NOT make the repo-id path offline-safe.
+  // -------------------------------------------------------------------------
+  describe('resolveLocalSnapshotDir() — offline snapshot resolution', () => {
+    const REPO = 'mixedbread-ai/mxbai-embed-large-v1';
+    const REV = 'b33106f585b9ce46904ad7443a3b52b7a63e231c';
+
+    function makeSnapshot(root: string, opts: { omit?: string } = {}): string {
+      const dir = join(root, REPO, REV);
+      mkdirSync(join(dir, 'onnx'), { recursive: true });
+      for (const f of requiredSnapshotFiles('q8')) {
+        if (opts.omit && f.includes(opts.omit)) continue;
+        writeFileSync(join(dir, f), '{}');
+      }
+      return dir;
+    }
+
+    function withTmp(fn: (root: string) => void): void {
+      const root = mkdtempSync(join(tmpdir(), 'onnx-snap-'));
+      try {
+        fn(root);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+
+    const baseOpts = { hfModelId: REPO, revision: REV, dtype: 'q8' as const };
+
+    it('requiredSnapshotFiles maps dtype to the library filename suffix', () => {
+      expect(requiredSnapshotFiles('q8')).toContain(join('onnx', 'model_quantized.onnx'));
+      expect(requiredSnapshotFiles('fp16')).toContain(join('onnx', 'model_fp16.onnx'));
+      expect(requiredSnapshotFiles('fp32')).toContain(join('onnx', 'model.onnx'));
+      // tokenizer_config.json is the exact file whose absence killed prod —
+      // never let it drop out of the required set.
+      expect(requiredSnapshotFiles('q8')).toContain('tokenizer_config.json');
+    });
+
+    it('resolves a complete snapshot under the library default cache', () => {
+      withTmp((root) => {
+        const dir = makeSnapshot(root);
+        expect(resolveLocalSnapshotDir(baseOpts, root)).toBe(dir);
+      });
+    });
+
+    it('resolves a complete snapshot under config cacheDir', () => {
+      withTmp((root) => {
+        const dir = makeSnapshot(root);
+        expect(resolveLocalSnapshotDir({ ...baseOpts, cacheDir: root })).toBe(dir);
+      });
+    });
+
+    it('resolves modelPath pointed straight at a snapshot dir', () => {
+      withTmp((root) => {
+        const dir = makeSnapshot(root);
+        expect(resolveLocalSnapshotDir({ ...baseOpts, modelPath: dir })).toBe(dir);
+      });
+    });
+
+    it('resolves modelPath pointed at a cache root', () => {
+      withTmp((root) => {
+        const dir = makeSnapshot(root);
+        expect(resolveLocalSnapshotDir({ ...baseOpts, modelPath: root })).toBe(dir);
+      });
+    });
+
+    it('returns undefined when any required file is missing (incomplete → download path)', () => {
+      withTmp((root) => {
+        makeSnapshot(root, { omit: 'tokenizer_config' });
+        expect(resolveLocalSnapshotDir(baseOpts, root)).toBeUndefined();
+      });
+    });
+
+    it('returns undefined when the model artifact for the requested dtype is missing', () => {
+      withTmp((root) => {
+        makeSnapshot(root); // writes q8 artifact only
+        expect(resolveLocalSnapshotDir({ ...baseOpts, dtype: 'fp16' }, root)).toBeUndefined();
+      });
+    });
+
+    it('prefers modelPath over cacheDir over the library cache', () => {
+      withTmp((root) => {
+        const a = join(root, 'a');
+        const b = join(root, 'b');
+        const dirA = makeSnapshot(a);
+        makeSnapshot(b);
+        expect(resolveLocalSnapshotDir({ ...baseOpts, modelPath: a, cacheDir: b }, b)).toBe(dirA);
+      });
+    });
+
+    it('returns undefined with no candidates at all', () => {
+      expect(resolveLocalSnapshotDir(baseOpts)).toBeUndefined();
+    });
+  });
+
   describe('model resolution dispatch (registry vs explicit override)', () => {
     function captureLoadOpts(): {
       loadBackend: NonNullable<OnnxEmbedConfig['loadBackend']>;
