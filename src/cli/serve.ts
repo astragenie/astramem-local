@@ -722,7 +722,14 @@ export async function serve(opts: ServeOpts): Promise<void> {
       if (oversizeScanTimer) clearInterval(oversizeScanTimer);
       if (spoolDrainTimer) clearInterval(spoolDrainTimer);
       if (shipper) await shipper.stop();
-      if (vecSearchHost) await vecSearchHost.stop(); // terminate the KNN worker's read-only connection
+      if (vecSearchHost) {
+        // Deregister BEFORE stopping: the module slot must never reference a
+        // terminated host over a closed db (review MEDIUM on 3c9a81f2) — a
+        // search racing shutdown takes the inline sync path instead.
+        const { setVecSearchOffload } = await import('../vector/vec-search-offload.js');
+        setVecSearchOffload(null);
+        await vecSearchHost.stop(); // terminate the KNN worker's read-only connection
+      }
       await worker.stop();         // drain in-flight tick before closing DB
       // ADR-019 Decision 2(d): OnnxWorkerHostProvider owns a live
       // worker_thread once spawned (preload() above, or a lazy first

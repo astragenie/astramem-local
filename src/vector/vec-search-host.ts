@@ -69,6 +69,13 @@ export class VecSearchWorkerHost {
   private terminating = false;
   private fallbacks = 0;
   private readonly pending = new Map<number, Pending>();
+  /** Serializes main-thread fallback scans. A worker crash rejects every
+   *  in-flight search at once; without this, N callers would each start a
+   *  full synchronous KNN scan back-to-back with no event-loop turns between
+   *  them — reproducing the loop-stacking pattern this class exists to
+   *  prevent, just crash-triggered. Chaining them lets queued HTTP work run
+   *  between scans. (Review MEDIUM on 3c9a81f2.) */
+  private fallbackChain: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly opts: VecSearchHostOpts) {}
 
@@ -91,7 +98,10 @@ export class VecSearchWorkerHost {
         { error_message: err instanceof Error ? err.message : String(err), fallback_count: this.fallbacks },
         'vec search fell back to main-thread scan',
       );
-      return this.opts.fallback(vec, k);
+      const run = (): Promise<VecHit[]> => this.opts.fallback(vec, k);
+      const chained = this.fallbackChain.then(run, run);
+      this.fallbackChain = chained.catch(() => undefined);
+      return chained;
     }
   }
 
