@@ -1,3 +1,42 @@
+# ⚠️ DIAGNOSIS CORRECTED (2026-07-16, after challenger review + evidence)
+
+**The original root-cause below was WRONG.** Evidence pulled after the fact:
+- `watchdog-kills.jsonl` is **EMPTY** — the watchdog killed NOTHING. There was
+  no "watchdog kill-storm." That framing is retracted.
+- `crash.log` has **4 EADDRINUSE** errors; `exit-history.jsonl` shows daemons
+  exiting code 1 in 10-70s bursts. This is the **#387/#389 EADDRINUSE
+  task-race** signature (instance-lock takeover racing the port across the
+  keepalive PT5M + watchdog PT3M tasks + my own repeated manual `service
+  start`s), NOT event-loop starvation and NOT distill payload (the plan's own
+  "empty queue still wedged" evidence already ruled distill out).
+- `/health` O(1) is **already built** (cached `healthState.dbSnapshot`, 30s
+  refresh, commit 424cb671) and the restart-storm breaker already exists —
+  plan point #1 was asking to rebuild shipped code.
+- **#392 (the #389 port-free-takeover fix) was NEVER deployed** — its own
+  reinstall health-gate rolled back before repointing. So prod ran the
+  task-race WITHOUT its fix.
+
+**Revised split:**
+- **OUTAGE (P0)** = #387/#389-class multi-spawner EADDRINUSE race. Fix =
+  deploy #392 + correlate which scheduled task fired when (the challenger's
+  required evidence step) + ensure instance-lock makes redundant spawns exit
+  cleanly (AlreadyRunningError) instead of crash-looping. Reconcile with the
+  inv-387 investigation. NOT a /health rebuild.
+- **DISTILL SLOWNESS (points 2-5 below)** = a REAL but SEPARATE backlog
+  concern (local dual-pass IS slow), NOT the outage cause, NOT release-
+  blocking. Keep as its own track.
+- **v0.19.0 is NOT blocked on #1.** The current rollback state (codex
+  extraction, single-pass, standalone daemon) is already safe to ship from.
+- **OPEN RISK:** watchdog+keepalive currently DISABLED = zero auto-restart
+  protection for ANY crash. Needs an owner + deadline to re-enable (after #392
+  deploys). A self-perpetuating EADDRINUSE crash-loop is invisible to the
+  restart-storm breaker (which only counts watchdog-initiated kills) — name
+  and close that gap.
+
+The original (incorrect) analysis is retained below for the record.
+
+---
+
 # Local dual-pass distill slowness + /health starvation / watchdog kill-storm — incident + remediation plan (2026-07-16)
 
 status: DRAFT — pending architect + architect-reviewer sign-off before build
