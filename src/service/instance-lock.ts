@@ -75,6 +75,43 @@ export class AlreadyRunningError extends Error {
   }
 }
 
+/**
+ * Minimum time a lock holder must have been recorded as started (per its own
+ * `startedAt` in daemon.lock) before three failed `/health` probes are
+ * treated as zombie evidence at all (issue #396). The 3-probe loop below has
+ * NO sleep between attempts — once the holder hasn't bound its port yet,
+ * `fetch` fails with ECONNREFUSED almost instantly (not after the 2s probe
+ * timeout), so a holder can fail all 3 probes within milliseconds of its own
+ * launch. Boot can legitimately take several seconds (`migrate` +
+ * `recoverOrphans` + `getProviders`, including ONNX worker spin-up, all run
+ * BEFORE `app.listen()` in `serve.ts`), so "3 fast failures" alone proves
+ * nothing about dead vs. still-booting. This grace period gives a
+ * genuinely-alive, still-booting holder room to reach `app.listen()` before a
+ * second launcher — the schtasks keepalive (PT5M) / watchdog (PT3M) racing
+ * the SAME boot window — can ever consider it a zombie. 30s sits comfortably
+ * above the worst plausible boot-to-listen time (single-digit seconds).
+ */
+export const ZOMBIE_BOOT_GRACE_MS = 30_000;
+
+/**
+ * Thrown when a lock holder fails 3 health probes but was recorded as
+ * started too recently (within `ZOMBIE_BOOT_GRACE_MS`, or an injected
+ * override) to treat as a zombie (issue #396) — it is far more likely still
+ * booting than dead. The caller must defer, not steal: exiting cleanly here
+ * is the SAME "cheap no-op" posture `AlreadyRunningError` already gives a
+ * confirmed-healthy holder — a genuinely-booting daemon gets to finish
+ * without a second launcher racing it into a kill.
+ */
+export class StillBootingError extends Error {
+  constructor(public readonly holder: LockInfo, public readonly elapsedMs: number) {
+    super(
+      `daemon.lock held by pid ${holder.pid} (port ${holder.port}) is unresponsive but was recorded as ` +
+      `started only ${elapsedMs}ms ago — likely still booting, not a zombie; deferring instead of taking over.`,
+    );
+    this.name = 'StillBootingError';
+  }
+}
+
 export function lockPath(dataDir: string): string {
   return join(dataDir, 'daemon.lock');
 }
@@ -617,6 +654,9 @@ export class ZombieLockTakeoverError extends Error {
  * acquire mutex first and successfully bound; the loser waits out the mutex
  * (see `acquireMutex`) and then resolves through this exact same path once
  * it can see the winner's now-written, now-bound daemon.lock.
+ * Throws StillBootingError (issue #396) when the holder fails 3 health
+ * probes but was recorded as started too recently to plausibly have reached
+ * `app.listen()` yet — see `ZOMBIE_BOOT_GRACE_MS`'s doc comment.
  * Throws ZombieLockTakeoverError (issue #387) when the holder fails 3
  * health probes but cannot be confirmed stopped — we must never return a
  * lock handle (and let the caller proceed to `app.listen()`) while the old
@@ -663,6 +703,8 @@ export async function acquireInstanceLock(
     bind?: () => Promise<void>;
     /** Injectable acquire-mutex timeout — tests substitute a tiny value instead of the real 30s default. */
     mutexTimeoutMs?: number;
+    /** Override for `ZOMBIE_BOOT_GRACE_MS` (issue #396) — tests substitute a tiny/zero value instead of waiting out the real 30s default. */
+    bootGraceMs?: number;
   } = {},
 ): Promise<InstanceLock> {
   const path = lockPath(dataDir);
@@ -714,6 +756,7 @@ async function acquireInstanceLockCriticalSection(
     zombieStopWaitMs?: number;
     portInUse?: (port: number) => Promise<boolean>;
     bind?: () => Promise<void>;
+    bootGraceMs?: number;
   },
 ): Promise<void> {
   const port = mine.port;
@@ -727,6 +770,24 @@ async function acquireInstanceLockCriticalSection(
         healthy = await probe(holder.port);
       }
       if (healthy) throw new AlreadyRunningError(holder);
+
+      // issue #396: before treating 3 failed probes as zombie evidence at
+      // all, check whether the holder was recorded as started too recently
+      // to have plausibly reached `app.listen()` yet — see
+      // ZOMBIE_BOOT_GRACE_MS's doc comment for why 3 fast failures alone
+      // proves nothing. Missing/unparseable `startedAt` cannot grant grace
+      // (nothing to compute elapsed time from) — falls through unchanged to
+      // the existing zombie logic below, same fail-closed posture
+      // `stopLockHolder`'s own identity check already uses.
+      const holderStarted = holder.startedAt ? new Date(holder.startedAt) : null;
+      if (holderStarted && !Number.isNaN(holderStarted.getTime())) {
+        const elapsedMs = Date.now() - holderStarted.getTime();
+        const bootGraceMs = opts.bootGraceMs ?? ZOMBIE_BOOT_GRACE_MS;
+        if (elapsedMs < bootGraceMs) {
+          throw new StillBootingError(holder, elapsedMs);
+        }
+      }
+
       console.warn(
         `[astramem-local] daemon.lock held by pid ${holder.pid} but /health on port ${holder.port} ` +
         `is unresponsive (3 probes) — treating as zombie; verifying it is actually gone before taking over.`,

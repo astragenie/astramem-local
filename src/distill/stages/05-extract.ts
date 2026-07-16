@@ -805,6 +805,13 @@ export async function extract(
  * pass A. This is enforced by the CALLER's control flow (pass A's own
  * try/catch already re-throws before this would be reached), not by this
  * function itself.
+ *
+ * `costCap` — same shared-tracker contract as `extract()`'s own `costCap`
+ * param: pass the SAME instance given to compact()/extract() so pass B
+ * shares the job's combined call-count/wall-clock budget. Previously omitted
+ * entirely here, which left the sweeper pass unbounded even when
+ * `config.distill.costCap` was enabled (pipeline.ts had no way to pass a
+ * tracker in) — fixed alongside issue #396.
  */
 export async function extractSpecifics(
   chunks: Array<{ index: number; text: string }>,
@@ -814,6 +821,7 @@ export async function extractSpecifics(
   concurrency = 1,
   jobKey?: string,
   sessionDateIso?: string,
+  costCap?: DistillCostCapTracker,
   /** Clerk-tuning output cap for sweeper calls (2026-07-18) — the caller
    * (runPipeline) resolves it centrally via resolveExtractionPassBTuning;
    * `0`/undefined = no override (pass-A ceiling). */
@@ -827,7 +835,7 @@ export async function extractSpecifics(
       extractChunk(
         chk.index, chk.text, provider, budget, capUsd,
         'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
-        undefined, maxTokensOverride,
+        costCap, maxTokensOverride,
       ),
     );
   }
@@ -844,7 +852,7 @@ export async function extractSpecifics(
     const result = await extractChunk(
       chk.index, chk.text, provider, budget, capUsd,
       'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
-      undefined, maxTokensOverride,
+      costCap, maxTokensOverride,
     );
     chunkCheckpoints.set(jobKey, 'extract', chk.index, result, variant);
     return result;
