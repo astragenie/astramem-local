@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import type { LLMProvider } from '../contracts/llm.js';
 import type { EmbedProvider } from '../contracts/embed.js';
 import { resolveEmbedQueryPrefix } from '../contracts/embed.js';
@@ -123,11 +124,22 @@ function buildEmbedProvider(config: Config): EmbedProvider {
     // .claude/artifacts/crew/validations/20260715T000000Z-validation-onnx-embed-event-loop-block.md
     // for why this is required, not optional, before onnx can safely be the
     // default embedding provider.
+    // ADR-018 S2 (was deferred; forced by the 2026-07-16 prod embed
+    // outage): default the weight cache to a STABLE per-install location
+    // (`<dataDir>/models/onnx/`) instead of the library's own default,
+    // which lives INSIDE the release directory's node_modules — release
+    // rotation (`reinstall` keeps only the newest 2) silently discards it,
+    // and the next boot re-downloads ~337MB or, offline, dies. `:memory:`
+    // (throwaway test state) keeps the library default — no stable install
+    // dir exists to anchor to.
+    const onnxCacheDir =
+      config.onnxEmbed?.cacheDir ??
+      (config.dataDir === ':memory:' ? undefined : join(config.dataDir, 'models', 'onnx'));
     return new OnnxWorkerHostProvider({
       model,
       dim,
       queryPrefix,
-      cacheDir: config.onnxEmbed?.cacheDir,
+      cacheDir: onnxCacheDir,
       modelPath: config.onnxEmbed?.modelPath,
       numThreads: config.onnxEmbed?.numThreads,
       dtype: config.onnxEmbed?.dtype,
