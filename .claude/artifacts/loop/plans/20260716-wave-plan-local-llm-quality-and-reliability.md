@@ -97,6 +97,14 @@ block; serialized rather than proven-disjoint.)
 - Prod default flips (extraction→local, extractionPasses→2, judge→enabled,
   triage→enabled) — each gated on its wave-3 measurement, operator sign-off.
 
+## MERGE POLICY — learned live (2026-07-16 incident)
+
+auto-merge.yml ARMS EVERY NON-DRAFT PR automatically and re-arms on every
+push — opt-OUT, not opt-in; not calling gh pr merge --auto does nothing.
+Escapes: hold / do-not-merge LABEL, or draft state. #379 merged pre-review
+under the sign-off carve-out this way. RULE: every carve-out PR gets the
+hold label AT CREATION.
+
 ## Risks
 
 1. Two interactive sessions + wave builders share one repo: stash is
