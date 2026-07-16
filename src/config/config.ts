@@ -568,6 +568,19 @@ export interface Config {
        * there's no "invalid range" to validate. Default 300_000 (5 min). */
       maxWallClockMs: number;
       mode: 'off' | 'dry-run' | 'enabled';
+      /** Optional judge provider/model override (2026-07-16, operator
+       * request — revisits contradiction-judge.ts's original "no new
+       * llm.judge config surface" decision). Unset = the judge rides
+       * `llm.extraction` exactly as before (same provider INSTANCE, same
+       * rate-limit bucket — byte-identical prior behavior). Set either or
+       * both to run the judge on a different/cheaper model than extraction
+       * (a binary verdict at temperature 0 needs far less model than atom
+       * extraction does — e.g. judge on local Ollama while extraction stays
+       * on codex, so contradiction sweeps stop drawing metered quota).
+       * An invalid `provider` value is dropped (warn, never fatal) by
+       * `applyContradictionDetectionGovernance`. */
+      provider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+      model?: string;
     };
     /**
      * P2.1 stabilization: candidate-pair selection strategy for the
@@ -1443,8 +1456,26 @@ export function applyContradictionDetectionGovernance(
     );
     return { ...consolidation, contradictionDetection: { ...DEFAULT_CONTRADICTION_DETECTION, ...cd, mode: 'off' } };
   }
+  // Judge provider override: an out-of-union value must not reach
+  // buildLLMProvider (whose fall-through arm is Azure and THROWS on a
+  // missing endpoint — a config typo would take down provider construction
+  // at boot). Drop the override, keep the ride-extraction default, warn.
+  if (cd.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(cd.provider)) {
+    log(
+      `[contradiction-detection-governance] consolidation.contradictionDetection.provider=` +
+      `${JSON.stringify(cd.provider)} is not one of 'ollama'|'azure-openai'|'openai-compatible'|` +
+      `'codex-subscription' — dropping the override (judge rides llm.extraction).`,
+    );
+    return {
+      ...consolidation,
+      contradictionDetection: { ...cd, provider: undefined },
+    };
+  }
   return consolidation;
 }
+
+const VALID_JUDGE_PROVIDERS: ReadonlySet<string> =
+  new Set(['ollama', 'azure-openai', 'openai-compatible', 'codex-subscription']);
 
 /**
  * P2.1 stabilization: `consolidation.candidateSelection` is a closed

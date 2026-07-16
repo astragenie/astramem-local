@@ -7,6 +7,7 @@ import {
   applyExtractProfileGovernance,
   applyAudioModeGovernance,
   applyCandidateSelectionGovernance,
+  applyContradictionDetectionGovernance,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -332,6 +333,39 @@ describe('applyDurabilityGateGovernance', () => {
 // durabilityGate/audio.mode — an invalid/typo value (or an out-of-range
 // knnK/maxCandidatePairsPerRun) must fall back to its documented default
 // with a WARN, never silently pass through.
+// 2026-07-16 operator request: judge provider/model override — see
+// Config['consolidation']['contradictionDetection'].provider's doc comment.
+describe('applyContradictionDetectionGovernance — judge provider override', () => {
+  const cdBase = { mode: 'enabled' as const, minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 300_000 };
+  const consolidationOf = (cd: Record<string, unknown>) =>
+    ({ ...defaultConfig().consolidation, contradictionDetection: cd }) as any;
+
+  it('a valid provider override passes through untouched', () => {
+    const input = consolidationOf({ ...cdBase, provider: 'ollama', model: 'qwen2.5:7b' });
+    expect(applyContradictionDetectionGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('unset provider/model stays unset (ride-extraction default)', () => {
+    const input = consolidationOf({ ...cdBase });
+    const out = applyContradictionDetectionGovernance(input, { log: () => {} });
+    expect(out.contradictionDetection.provider).toBeUndefined();
+    expect(out.contradictionDetection.model).toBeUndefined();
+  });
+
+  it('an invalid provider is DROPPED with a warning, never fatal — a typo must not reach buildLLMProvider\'s throwing Azure fall-through at boot', () => {
+    const log = vi.fn();
+    const input = consolidationOf({ ...cdBase, provider: 'olama', model: 'qwen2.5:7b' });
+    const out = applyContradictionDetectionGovernance(input, { log });
+    expect(out.contradictionDetection.provider).toBeUndefined();
+    // model kept: harmless alone (judge rides extraction provider with the
+    // overridden model name only if a later run re-adds a valid provider —
+    // model without provider is still a meaningful half-override).
+    expect(out.contradictionDetection.model).toBe('qwen2.5:7b');
+    expect(out.contradictionDetection.mode).toBe('enabled');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
+  });
+});
+
 describe('applyCandidateSelectionGovernance', () => {
   const base = {
     autoAcceptThreshold: null,
