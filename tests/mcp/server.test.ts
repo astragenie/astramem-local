@@ -1329,6 +1329,67 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     expect(payload).toMatchObject({ matched: 2, resolved: 2, remaining: 1 });
   });
 
+  // Review finding (PR #377, CRITICAL): `remaining` was computed as
+  // `totalMatching - matched.length`, which counts a SKIPPED proposal (still
+  // status='pending', still matching the filter) as resolved just because it
+  // was fetched into this batch. A poisoned proposal — its winner or loser
+  // memory purged out from under it between listing and accept — then makes
+  // `remaining` read 0 while the proposal sits pending forever, and a caller
+  // following this tool's own "call again while remaining is nonzero"
+  // contract stops looping without ever noticing. Fixed to
+  // `totalMatching - resolved`.
+  it('resolve_consolidation_proposals_batch: a skipped (poisoned) proposal is still counted in remaining, not silently dropped', async () => {
+    const memRepo = new MemoryRepo(db);
+    const events = new MemoryEventRepo(db);
+
+    const seedPair = (id: string): { winner: string; loser: string } => {
+      const w = memRepo.insert({
+        type: 'fact', text: `${id} winner`, normalized_text: `${id} winner`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-${id}-w`, source_hash: null,
+      });
+      const l = memRepo.insert({
+        type: 'fact', text: `${id} loser`, normalized_text: `${id} loser`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-${id}-l`, source_hash: null,
+      });
+      db.prepare(`
+        INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+        VALUES (?, 'merge', ?, ?, 0.9, 'pending', ?, NULL)
+      `).run(id, w, l, Date.now());
+      return { winner: w, loser: l };
+    };
+
+    const healthy = seedPair('prop-remaining-healthy');
+    const poisoned = seedPair('prop-remaining-poisoned');
+    // Simulate the lifecycle race the batch tool must tolerate: the loser
+    // memory is erased (e.g. by an unrelated erase_memory call) AFTER the
+    // proposal was written but BEFORE this batch resolves it — accept() will
+    // hit MemoryNotFoundError via mergeAsSupersede -> supersede().
+    events.erase(poisoned.loser);
+
+    const result = await toolCall('resolve_consolidation_proposals_batch', { action: 'accept' });
+    const payload = result.payload as {
+      matched: number; resolved: number; skipped: Array<{ id: string; reason: string }>; remaining: number;
+    };
+    expect(payload.matched).toBe(2);
+    expect(payload.resolved).toBe(1);
+    expect(payload.skipped).toHaveLength(1);
+    expect(payload.skipped[0]!.id).toBe('prop-remaining-poisoned');
+    // The bug: this used to read 0 (totalMatching(2) - matched.length(2)).
+    // Correct: the poisoned proposal is still pending, so still 1 remains.
+    expect(payload.remaining).toBe(1);
+
+    expect(new MemoryRepo(db).get(healthy.loser)!.superseded_by).toBe(healthy.winner);
+    expect(new ProposalRepo(db).get('prop-remaining-poisoned')!.status).toBe('pending');
+
+    // A caller that follows the tool's own "loop while remaining is
+    // nonzero" contract retries and correctly observes it can never drain —
+    // remaining stays 1, not 0, on every subsequent call (poisoned, not
+    // transient).
+    const again = await toolCall('resolve_consolidation_proposals_batch', { action: 'accept' });
+    const againPayload = again.payload as { matched: number; resolved: number; remaining: number };
+    expect(againPayload).toMatchObject({ matched: 1, resolved: 0, remaining: 1 });
+  });
+
   // #372 scope update (2026-07-16): consolidation.candidateSelection=knn is
   // now LIVE in prod, and the pending-proposal count it's expected to drive
   // is well beyond the 768 this slice was scoped against. This drains a
