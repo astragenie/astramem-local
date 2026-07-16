@@ -1202,4 +1202,129 @@ describe('POST /mcp — MCP Streamable HTTP transport', () => {
     expect((resolve.payload as { proposal: { status: string } }).proposal.status).toBe('accepted');
     expect(new MemoryRepo(db).get(loserId)!.superseded_by).toBe(winnerId);
   });
+
+  // #372/#171: list_consolidation_proposals gains limit/offset/minConfidence,
+  // same repo-layer pagination the HTTP route and CLI now use.
+  it('list_consolidation_proposals paginates via limit/offset and reports total independent of the slice', async () => {
+    const memRepo = new MemoryRepo(db);
+    const seedMerge = (i: number, similarity: number, createdAt: number): void => {
+      const w = memRepo.insert({
+        type: 'fact', text: `page winner ${i}`, normalized_text: `page winner ${i}`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-page-w${i}`, source_hash: null,
+      });
+      const l = memRepo.insert({
+        type: 'fact', text: `page loser ${i}`, normalized_text: `page loser ${i}`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-page-l${i}`, source_hash: null,
+      });
+      db.prepare(`
+        INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+        VALUES (?, 'merge', ?, ?, ?, 'pending', ?, NULL)
+      `).run(`prop-page-${i}`, w, l, similarity, createdAt);
+    };
+    for (let i = 0; i < 5; i++) seedMerge(i, 0.9, 1000 + i);
+
+    const page1 = await toolCall('list_consolidation_proposals', { limit: 2 });
+    const p1 = page1.payload as { proposals: unknown[]; total: number };
+    expect(p1.proposals).toHaveLength(2);
+    expect(p1.total).toBe(5); // total is not clamped by limit
+
+    const page2 = await toolCall('list_consolidation_proposals', { limit: 2, offset: 2 });
+    const p2 = page2.payload as { proposals: Array<{ id: string }>; total: number };
+    expect(p2.proposals).toHaveLength(2);
+    const ids1 = (p1.proposals as Array<{ id: string }>).map(p => p.id);
+    const ids2 = p2.proposals.map(p => p.id);
+    expect(new Set([...ids1, ...ids2]).size).toBe(4); // no overlap across pages
+
+    const filtered = await toolCall('list_consolidation_proposals', { minConfidence: 0.999 });
+    expect((filtered.payload as { proposals: unknown[]; total: number }).total).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // resolve_consolidation_proposals_batch (#372)
+  // -------------------------------------------------------------------------
+
+  it('resolve_consolidation_proposals_batch accepts only proposals at/above minConfidence, leaves the rest pending', async () => {
+    const memRepo = new MemoryRepo(db);
+    const seedMerge = (id: string, similarity: number): { winner: string; loser: string } => {
+      const w = memRepo.insert({
+        type: 'fact', text: `${id} winner`, normalized_text: `${id} winner`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-${id}-w`, source_hash: null,
+      });
+      const l = memRepo.insert({
+        type: 'fact', text: `${id} loser`, normalized_text: `${id} loser`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-${id}-l`, source_hash: null,
+      });
+      db.prepare(`
+        INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+        VALUES (?, 'merge', ?, ?, ?, 'pending', ?, NULL)
+      `).run(id, w, l, similarity, Date.now());
+      return { winner: w, loser: l };
+    };
+    const low = seedMerge('prop-batch-low', 0.80);
+    const high = seedMerge('prop-batch-high', 0.95);
+
+    const result = await toolCall('resolve_consolidation_proposals_batch', {
+      action: 'accept', kind: 'merge', minConfidence: 0.9,
+    });
+    expect(result.isError).toBe(false);
+    const payload = result.payload as {
+      ok: boolean; matched: number; resolved: number; skipped: unknown[]; remaining: number;
+    };
+    expect(payload).toMatchObject({ ok: true, matched: 1, resolved: 1, skipped: [], remaining: 0 });
+
+    expect(new MemoryRepo(db).get(high.loser)!.superseded_by).toBe(high.winner);
+    expect(new MemoryRepo(db).get(low.loser)!.superseded_by).toBeNull();
+
+    const remaining = await toolCall('list_consolidation_proposals', {});
+    const remainingIds = (remaining.payload as { proposals: Array<{ id: string }> }).proposals.map(p => p.id);
+    expect(remainingIds).toEqual(['prop-batch-low']);
+  });
+
+  it('resolve_consolidation_proposals_batch action=reject marks matches rejected without touching memories', async () => {
+    const memRepo = new MemoryRepo(db);
+    const w = memRepo.insert({
+      type: 'fact', text: 'reject-batch winner', normalized_text: 'reject-batch winner',
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: 'h-rb-w', source_hash: null,
+    });
+    const l = memRepo.insert({
+      type: 'fact', text: 'reject-batch loser', normalized_text: 'reject-batch loser',
+      repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: 'h-rb-l', source_hash: null,
+    });
+    db.prepare(`
+      INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+      VALUES ('prop-reject-batch', 'merge', ?, ?, 0.9, 'pending', ?, NULL)
+    `).run(w, l, Date.now());
+
+    const result = await toolCall('resolve_consolidation_proposals_batch', { action: 'reject', kind: 'merge' });
+    const payload = result.payload as { resolved: number; matched: number };
+    expect(payload).toMatchObject({ matched: 1, resolved: 1 });
+    expect(new MemoryRepo(db).get(l)!.superseded_by).toBeNull(); // reject never mutates memories
+
+    const list = await toolCall('list_consolidation_proposals', { status: 'rejected' });
+    const rows = (list.payload as { proposals: Array<{ id: string; status: string }> }).proposals;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.status).toBe('rejected');
+  });
+
+  it('resolve_consolidation_proposals_batch limit caps the batch and reports remaining > 0', async () => {
+    const memRepo = new MemoryRepo(db);
+    for (let i = 0; i < 3; i++) {
+      const w = memRepo.insert({
+        type: 'fact', text: `cap winner ${i}`, normalized_text: `cap winner ${i}`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-cap-w${i}`, source_hash: null,
+      });
+      const l = memRepo.insert({
+        type: 'fact', text: `cap loser ${i}`, normalized_text: `cap loser ${i}`,
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null, hash: `h-cap-l${i}`, source_hash: null,
+      });
+      db.prepare(`
+        INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+        VALUES (?, 'merge', ?, ?, 0.9, 'pending', ?, NULL)
+      `).run(`prop-cap-${i}`, w, l, Date.now() + i);
+    }
+
+    const result = await toolCall('resolve_consolidation_proposals_batch', { action: 'accept', limit: 2 });
+    const payload = result.payload as { matched: number; resolved: number; remaining: number };
+    expect(payload).toMatchObject({ matched: 2, resolved: 2, remaining: 1 });
+  });
 });

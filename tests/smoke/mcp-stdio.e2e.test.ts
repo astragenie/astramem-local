@@ -31,9 +31,12 @@ import {
   type IsolatedDaemonEnv,
 } from './helpers/daemon.js';
 
-// Same 18-tool pin as tests/mcp/server.test.ts — the stdio transport must
+// Same tool-set pin as tests/mcp/server.test.ts — the stdio transport must
 // advertise the identical tool set as the HTTP transport (both are built
-// from the same buildMcpServer()).
+// from the same buildMcpServer()). Deliberately not naming a count in this
+// comment (see server.test.ts's countRegisterToolCallSites doc comment on
+// why a hand-maintained number drifts) — add/remove an entry here whenever
+// a tool is added/removed in src/mcp/server.ts.
 const EXPECTED_TOOL_NAMES = [
   'agent_profile',
   'erase_memory',
@@ -49,6 +52,8 @@ const EXPECTED_TOOL_NAMES = [
   'recall_memory',
   'remember',
   'resolve_consolidation_proposal',
+  // #372 — bulk accept/reject for the consolidation proposal queue.
+  'resolve_consolidation_proposals_batch',
   'restore_memory',
   'search_memory',
   'session_digest',

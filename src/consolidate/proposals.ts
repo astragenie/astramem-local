@@ -52,6 +52,31 @@ export function parseContradictionMetadata(p: ConsolidationProposal): Contradict
   }
 }
 
+/**
+ * Confidence proxy shared by pagination and batch-resolve filtering (#372).
+ * There is no dedicated `confidence` column — `kind='merge'` rows have no
+ * `metadata_json` at all (always NULL, see {@link ConsolidationProposal}),
+ * so the cosine `similarity` that produced the proposal stands in for it;
+ * `kind='contradiction'` rows carry an actual judge confidence inside
+ * `metadata_json` (see {@link parseContradictionMetadata}), falling back to
+ * 0 if that JSON is missing or unparsable rather than throwing.
+ */
+export function proposalConfidence(p: ConsolidationProposal): number {
+  if (p.kind === 'contradiction') return parseContradictionMetadata(p)?.confidence ?? 0;
+  return p.similarity;
+}
+
+/** Optional filters for {@link ProposalRepo.list} — additive, all omittable
+ *  (existing two-arg callers are unaffected). */
+export interface ProposalListOptions {
+  /** Max rows to return. Omitted = no limit (pre-existing behavior). */
+  limit?: number;
+  /** Rows to skip before applying `limit`. Default 0. */
+  offset?: number;
+  /** Only rows whose {@link proposalConfidence} is >= this value. */
+  minConfidence?: number;
+}
+
 export class ProposalNotFoundError extends Error {
   constructor(id: string) {
     super(`consolidation proposal not found: ${id}`);
@@ -75,16 +100,51 @@ export class ProposalRepo {
    * and by the MCP/dashboard surfacing work — trivial extra `WHERE`, no
    * new index (the table is small; both filters are already covered by
    * the existing `status`/`kind` columns).
+   *
+   * #372/#171: `opts.minConfidence`/`limit`/`offset` are additive on top of
+   * that same precedent. `minConfidence` is not a SQL-filterable column
+   * (see {@link proposalConfidence} — it requires a JSON parse for
+   * `kind='contradiction'` rows), so this fetches the status/kind-filtered
+   * set, filters by confidence, THEN slices for pagination — one JS pass
+   * over a table documented small (hundreds, not millions, of rows), not a
+   * second query shape to keep in sync with a SQL `WHERE`.
    */
-  list(status?: ConsolidationProposal['status'], kind?: ConsolidationProposal['kind']): ConsolidationProposal[] {
+  list(
+    status?: ConsolidationProposal['status'],
+    kind?: ConsolidationProposal['kind'],
+    opts?: ProposalListOptions,
+  ): ConsolidationProposal[] {
     const clauses: string[] = [];
     const params: string[] = [];
     if (status) { clauses.push('status = ?'); params.push(status); }
     if (kind) { clauses.push('kind = ?'); params.push(kind); }
     const where = clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : '';
-    return this.db.prepare(
+    let rows = this.db.prepare(
       `SELECT * FROM consolidation_proposals${where} ORDER BY created_at ASC`,
     ).all(...params) as ConsolidationProposal[];
+    if (opts?.minConfidence !== undefined) {
+      const floor = opts.minConfidence;
+      rows = rows.filter(p => proposalConfidence(p) >= floor);
+    }
+    if (opts?.offset !== undefined || opts?.limit !== undefined) {
+      const offset = opts?.offset ?? 0;
+      rows = opts?.limit !== undefined ? rows.slice(offset, offset + opts.limit) : rows.slice(offset);
+    }
+    return rows;
+  }
+
+  /**
+   * Total rows matching `status`/`kind`/`minConfidence` — the same filters
+   * `list()` applies, minus the limit/offset slice. What a paginating
+   * caller needs to render "page 2/31 of 768"; deliberately reuses `list()`
+   * rather than a separate `COUNT(*)` query so the two can never disagree.
+   */
+  count(
+    status?: ConsolidationProposal['status'],
+    kind?: ConsolidationProposal['kind'],
+    minConfidence?: number,
+  ): number {
+    return this.list(status, kind, minConfidence !== undefined ? { minConfidence } : undefined).length;
   }
 
   get(id: string): ConsolidationProposal | null {

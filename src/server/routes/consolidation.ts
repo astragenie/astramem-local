@@ -1,7 +1,8 @@
 /**
  * Consolidation routes (Wave 4b, ADR-004 stage 9):
  *   POST /consolidation/run                          -> 200 ConsolidateSummary
- *   GET  /consolidation/proposals?status=&kind=       -> { proposals: [...] }
+ *   GET  /consolidation/proposals?status=&kind=&limit=&offset=&min_confidence=
+ *                                                     -> { proposals: [...], total }
  *   POST /consolidation/proposals/:id/accept         -> 200 proposal | 404 | 409
  *   POST /consolidation/proposals/:id/reject         -> 200 proposal | 404 | 409
  *
@@ -12,6 +13,13 @@
  * FEAT-456 SLICE-2: `kind` is an optional second filter on the list route,
  * needed for the design's `?status=accepted&kind=contradiction` audit query
  * (§2.4) — `ProposalRepo.list()` already accepts it (proposals.ts).
+ *
+ * #372/#171: `limit`/`offset`/`min_confidence` are additive on top of that
+ * same precedent — fixes #171's "ignored ?limit" and gives operators a way
+ * to page a queue that has grown into the hundreds without pulling every
+ * row (and every winner/loser text) in one response. `total` reflects the
+ * status/kind/min_confidence filters but NOT the limit/offset slice, so a
+ * client can render "showing N of total".
  */
 
 import { z } from 'zod';
@@ -39,6 +47,9 @@ const RunBodySchema = z.object({
 const ListQuerySchema = z.object({
   status: z.enum(['pending', 'accepted', 'rejected']).optional(),
   kind: z.enum(['merge', 'contradiction']).optional(),
+  limit: z.coerce.number().int().positive().max(1000).optional(),
+  offset: z.coerce.number().int().min(0).optional(),
+  min_confidence: z.coerce.number().min(0).max(1).optional(),
 });
 
 // FEAT-437 residual: `bulk` distinguishes the `consolidate accept --all` CLI
@@ -110,7 +121,11 @@ export function consolidationRoutes(db: DB, config: Config) {
       if (!parsed.success) {
         return reply.code(400).send({ error: 'invalid', details: parsed.error.flatten() });
       }
-      return { proposals: proposals.list(parsed.data.status, parsed.data.kind) };
+      const { status, kind, limit, offset, min_confidence: minConfidence } = parsed.data;
+      return {
+        proposals: proposals.list(status, kind, { limit, offset, minConfidence }),
+        total: proposals.count(status, kind, minConfidence),
+      };
     });
 
     const resolveHandler = (action: 'accept' | 'reject') =>

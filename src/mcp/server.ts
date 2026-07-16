@@ -98,6 +98,14 @@ import {
   ProposalAlreadyResolvedError,
   parseContradictionMetadata,
 } from '../consolidate/proposals.js';
+
+/** #372: cap on how many PENDING proposals a single
+ *  `resolve_consolidation_proposals_batch` call will resolve — each is a
+ *  cheap synchronous DB transaction (no LLM/embed call in the accept/reject
+ *  path), so this exists to bound response size and give an LLM caller a
+ *  predictable "call again if `remaining` is nonzero" loop rather than one
+ *  call trying to serialize a 768-row backlog's worth of skip reasons. */
+const MAX_BATCH_RESOLVE = 200;
 // Canonical cross-repo save-contract unification: `remember`'s type enum and
 // the REST POST /remember route (src/server/routes/search.ts) both derive
 // from this single source of truth instead of a hand-copied list.
@@ -1064,14 +1072,26 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         'near-duplicate pairs (kind=merge) awaiting an explicit merge/keep decision, and FEAT-456 ' +
         'judge-flagged conflicting pairs (kind=contradiction, e.g. "port is 7777" vs "port is 8888") ' +
         'awaiting confirm/dismiss. Contradiction rows include verdict/confidence/excerpts from the ' +
-        'judge. Nothing is changed until a proposal is resolved via resolve_consolidation_proposal.',
+        'judge. Nothing is changed until a proposal is resolved via resolve_consolidation_proposal ' +
+        '(or, for bulk resolution, resolve_consolidation_proposals_batch). #372: limit/offset/' +
+        'minConfidence page and filter a queue that can grow into the hundreds — the unpaged response ' +
+        'was previously impractical for an LLM caller to consume in one call.',
       inputSchema: z.object({
         status: z.enum(['pending', 'accepted', 'rejected']).default('pending').describe('Filter by status'),
         kind: z.enum(['merge', 'contradiction']).optional().describe('Optional filter by proposal kind'),
+        limit: z.number().int().positive().max(1000).optional().describe('Max rows to return (omit for all matching)'),
+        offset: z.number().int().min(0).optional().describe('Rows to skip before applying limit'),
+        minConfidence: z.number().min(0).max(1).optional().describe(
+          'Only proposals at/above this confidence — similarity for kind=merge, judge confidence ' +
+          '(metadata_json) for kind=contradiction',
+        ),
       }),
     },
     async (args) => {
-      const proposals = new ProposalRepo(db).list(args.status, args.kind);
+      const repo = new ProposalRepo(db);
+      const listOpts = { limit: args.limit, offset: args.offset, minConfidence: args.minConfidence };
+      const proposals = repo.list(args.status, args.kind, listOpts);
+      const total = repo.count(args.status, args.kind, args.minConfidence);
       const memRepo = new MemoryRepo(db);
       const enriched = proposals.map(p => ({
         ...p,
@@ -1083,7 +1103,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         // is NULL) — see parseContradictionMetadata.
         contradiction_metadata: parseContradictionMetadata(p),
       }));
-      return { content: [{ type: 'text' as const, text: JSON.stringify({ proposals: enriched }) }] };
+      return { content: [{ type: 'text' as const, text: JSON.stringify({ proposals: enriched, total }) }] };
     }
   );
 
@@ -1126,6 +1146,73 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         }
         throw err;
       }
+    }
+  );
+
+  // ---- resolve_consolidation_proposals_batch --------------------------------
+  server.registerTool(
+    'resolve_consolidation_proposals_batch',
+    {
+      description:
+        'Bulk accept or reject PENDING consolidation proposals matching an optional kind/min-confidence ' +
+        'filter (#372) — the drain tool for a queue too large to resolve one-by-one via ' +
+        'resolve_consolidation_proposal. Confidence is the similarity column for kind=merge proposals ' +
+        'and the judge confidence (metadata_json) for kind=contradiction proposals. Each match goes ' +
+        'through the exact same accept/reject path a single resolve_consolidation_proposal call uses ' +
+        '(accept is the non-destructive merge-as-supersede — reversible via unsupersede_memory), so a ' +
+        'lifecycle conflict on one proposal (its winner/loser was merged or erased since) is skipped, ' +
+        `not fatal to the batch. Capped at ${MAX_BATCH_RESOLVE} proposals per call — call again (the ` +
+        'matching set shrinks as proposals resolve) while `remaining` is nonzero.',
+      inputSchema: z.object({
+        action: z.enum(['accept', 'reject']).describe('Resolution to apply to every matched proposal'),
+        kind: z.enum(['merge', 'contradiction']).optional().describe('Optional filter by proposal kind'),
+        minConfidence: z.number().min(0).max(1).optional().describe('Only resolve proposals at/above this confidence'),
+        limit: z.number().int().positive().max(MAX_BATCH_RESOLVE).default(MAX_BATCH_RESOLVE)
+          .describe(`Max proposals to resolve in this call (<= ${MAX_BATCH_RESOLVE})`),
+      }),
+    },
+    async (args) => {
+      const repo = new ProposalRepo(db);
+      const matched = repo.list('pending', args.kind, { minConfidence: args.minConfidence, limit: args.limit });
+      const totalMatching = repo.count('pending', args.kind, args.minConfidence);
+
+      let resolved = 0;
+      const skipped: Array<{ id: string; reason: string }> = [];
+      for (const p of matched) {
+        try {
+          // bulkAccepted mirrors the CLI's `accept --all` marker (FEAT-437
+          // residual) so memory_events can distinguish a batch resolve from
+          // a single manual accept.
+          if (args.action === 'accept') repo.accept(p.id, undefined, { bulkAccepted: true });
+          else repo.reject(p.id);
+          resolved++;
+        } catch (err) {
+          if (
+            err instanceof ProposalNotFoundError ||
+            err instanceof ProposalAlreadyResolvedError ||
+            err instanceof MemoryNotFoundError ||
+            err instanceof MemoryConflictError
+          ) {
+            skipped.push({ id: p.id, reason: err.message });
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            action: args.action,
+            matched: matched.length,
+            resolved,
+            skipped,
+            remaining: Math.max(0, totalMatching - matched.length),
+          }),
+        }],
+      };
     }
   );
 
