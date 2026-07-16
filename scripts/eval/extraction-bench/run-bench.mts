@@ -140,9 +140,13 @@ async function collectDirect(
         status: 'ready',
         poisonJobs: 0,
         usageUsd: result.usageUsd,
+        // FEAT-534 AC-4 (review finding, PR #376): threaded through to
+        // runModelOnce -> FixtureReportRow below, not just printed — the
+        // archived results.json/report.md are the actual measurement gate
+        // for adopting hybrid as default, not this console line.
+        passAAtomCount: result.passAAtomCount,
+        passBAtomCount: result.passBAtomCount,
       };
-      // FEAT-534 AC-4: per-pass atom counts recorded distinctly, not just
-      // the merged total — the measurement gate for the hybrid hypothesis.
       const splitNote = result.passBAtomCount !== undefined
         ? ` (passA=${result.passAAtomCount}, passB=${result.passBAtomCount}, merged=${result.atoms.length})`
         : '';
@@ -193,7 +197,11 @@ const compactionModel = get('--compaction-model') ?? DEFAULT_COMPACTION_MODEL;
 
 interface ModelAtomsByFixture {
   model: string;
-  perFixture: Record<string, { atoms: JudgeAtomIn[]; wallMs: number; status: string; poisonJobs: number; usageUsd: number }>;
+  perFixture: Record<string, {
+    atoms: JudgeAtomIn[]; wallMs: number; status: string; poisonJobs: number; usageUsd: number;
+    /** FEAT-534: only set by collectDirect's mixed-pass (`+passB=`) branch. */
+    passAAtomCount?: number; passBAtomCount?: number;
+  }>;
   daemonBootMs: number | null;
 }
 
@@ -341,6 +349,11 @@ async function runModelOnce(
       poisonJobs: entry.poisonJobs,
       atoms: entry.atoms,
       score,
+      // FEAT-534 (review finding, PR #376): undefined on every single-pass
+      // fixture (the daemon-HTTP/nuextract branches above never set these on
+      // `entry`), same optional shape FixtureReportRow documents.
+      passAAtomCount: entry.passAAtomCount,
+      passBAtomCount: entry.passBAtomCount,
     });
   }
 
