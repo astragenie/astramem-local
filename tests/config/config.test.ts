@@ -8,6 +8,7 @@ import {
   applyAudioModeGovernance,
   applyCandidateSelectionGovernance,
   applyContradictionDetectionGovernance,
+  applyExtractionPassBGovernance,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -362,6 +363,43 @@ describe('applyContradictionDetectionGovernance — judge provider override', ()
     // model without provider is still a meaningful half-override).
     expect(out.contradictionDetection.model).toBe('qwen2.5:7b');
     expect(out.contradictionDetection.mode).toBe('enabled');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
+  });
+});
+
+// FEAT-534: per-pass extraction provider override — same governance shape as
+// applyContradictionDetectionGovernance's judge provider override just above
+// (config.yaml is hand-parsed scalars with no schema, so a typo'd provider
+// must not reach buildLLMProvider's throwing Azure fall-through at boot).
+describe('applyExtractionPassBGovernance — pass-B provider override', () => {
+  const distillOf = (extractionPassB: Record<string, unknown> | undefined) =>
+    ({ ...defaultConfig().distill, extractionPassB }) as any;
+
+  it('no extractionPassB block at all → unchanged (documented default: unset)', () => {
+    const input = distillOf(undefined);
+    expect(applyExtractionPassBGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('a valid provider override passes through untouched', () => {
+    const input = distillOf({ provider: 'ollama', model: 'qwen3:8b' });
+    expect(applyExtractionPassBGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('unset provider (model-only override) stays unset — no governance action', () => {
+    const input = distillOf({ model: 'qwen3:8b' });
+    const out = applyExtractionPassBGovernance(input, { log: () => {} });
+    expect(out.extractionPassB!.provider).toBeUndefined();
+    expect(out.extractionPassB!.model).toBe('qwen3:8b');
+  });
+
+  it("an invalid provider is DROPPED with a warning, never fatal — boot survives a typo", () => {
+    const log = vi.fn();
+    const input = distillOf({ provider: 'olama', model: 'qwen3:8b' });
+    const out = applyExtractionPassBGovernance(input, { log });
+    expect(out.extractionPassB!.provider).toBeUndefined();
+    // model kept — a harmless half-override, same posture the judge
+    // override's equivalent test documents.
+    expect(out.extractionPassB!.model).toBe('qwen3:8b');
     expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
   });
 });

@@ -771,6 +771,33 @@ export interface Config {
      *  are merged/deduped per chunk (src/distill/dedup-merge.ts) BEFORE
      *  stage 6 (reduce) — string-only, deterministic, no embedding call. */
     extractionPasses: 1 | 2;
+    /** Per-pass extraction provider override (FEAT-534, 2026-07-16 — mirrors
+     *  `consolidation.contradictionDetection`'s provider/model override
+     *  shape, PR #373). Applies ONLY when `extractionPasses: 2` — ignored
+     *  entirely on single-pass. Unset (default) = pass B rides
+     *  `llm.extraction` exactly like pass A, the SAME provider INSTANCE
+     *  (shared rate-limit bucket) — BYTE-IDENTICAL to today's dual-pass
+     *  behavior. Either half overridable independently; unset half falls
+     *  back to `llm.extraction`'s own provider/model, same precedence the
+     *  judge override uses.
+     *
+     *  Motivating evidence (43-fixture extraction bench, 2026-07-16, same
+     *  judge): codex gpt-5.4-mini is surgical (94% precision, 49% recall,
+     *  misses half but is almost never wrong) while local qwen3:8b is
+     *  greedy (70% precision, 84% recall, ~30% junk but finds nearly
+     *  everything). Pass A is the primary extraction; pass B (the
+     *  "specifics sweeper") is a RECALL task — exactly the profile where
+     *  the greedy local model earns its keep, at half the metered cost of
+     *  running dual-pass entirely on the cloud provider.
+     *
+     *  An invalid `provider` value is dropped (warn, never fatal) by
+     *  `applyExtractionPassBGovernance` — same non-fatal posture every
+     *  other provider-union override in this file uses. `model` has no
+     *  closed set to validate. */
+    extractionPassB?: {
+      provider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+      model?: string;
+    };
     /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
      *  counted TOGETHER as one per-job budget — mirrors
      *  `Config['consolidation']['contradictionDetection']`'s `maxPerRun`/
@@ -1665,6 +1692,38 @@ export function applyExtractionPassesGovernance(
   return distill;
 }
 
+/**
+ * Per-pass extraction provider override (FEAT-534): mirrors
+ * `applyContradictionDetectionGovernance`'s provider-drop shape exactly —
+ * `distill.extractionPassB.provider` is a closed union with no schema
+ * enforcement on the hand-parsed config.yaml path, so an out-of-union typo
+ * would otherwise reach `buildLLMProvider`'s throwing Azure fall-through
+ * DURING BOOT (see `getProviders`'s pass-B resolution in
+ * src/providers/index.ts). `model` has no closed set to validate — any
+ * string is a legitimate model name, same as the judge override. A missing
+ * `extractionPassB` block (or one with no `provider` set) is not an error;
+ * it's the documented default (unset = pass B rides `llm.extraction`), so
+ * this only ever mutates the object when `provider` is BOTH present and
+ * invalid.
+ */
+export function applyExtractionPassBGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const passB = distill.extractionPassB;
+  if (!passB || passB.provider === undefined) return distill;
+  if (!VALID_JUDGE_PROVIDERS.has(passB.provider)) {
+    log(
+      `[extraction-pass-b-governance] distill.extractionPassB.provider=` +
+      `${JSON.stringify(passB.provider)} is not one of 'ollama'|'azure-openai'|'openai-compatible'|` +
+      "'codex-subscription' — dropping the override (pass B rides llm.extraction). See FEAT-534.",
+    );
+    return { ...distill, extractionPassB: { ...passB, provider: undefined } };
+  }
+  return distill;
+}
+
 const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = new Set(['mock', 'llm']);
 
 /**
@@ -1714,7 +1773,7 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
   return {
     ...merged,
     search: applyFusionGovernance(merged.search),
-    distill: applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill))),
+    distill: applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))),
     consolidation: applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation)),
     audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),

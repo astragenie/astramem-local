@@ -37,10 +37,12 @@ import { cleanup } from '../../../../src/distill/stages/01-cleanup.js';
 import { normalize } from '../../../../src/distill/stages/02-normalize.js';
 import { chunk, resolveMaxChunkChars } from '../../../../src/distill/stages/03-chunk.js';
 import { compact } from '../../../../src/distill/stages/04-compact.js';
-import { extract } from '../../../../src/distill/stages/05-extract.js';
+import { extract, extractSpecifics } from '../../../../src/distill/stages/05-extract.js';
+import { mergeDualPassAtoms } from '../../../../src/distill/dedup-merge.js';
 import { reduce } from '../../../../src/distill/stages/06-reduce.js';
 import { memoryNormalize, type NormalizedMemory } from '../../../../src/distill/stages/07-memory-normalize.js';
 import { BudgetTracker } from '../../../../src/budget/tracker.js';
+import type { Atom } from '../../../../src/distill/prompts/extract.js';
 import type { FixtureTurn } from './fixtures.js';
 
 /** Minimal throwaway DB — only the one table BudgetTracker touches. Never
@@ -77,6 +79,14 @@ export interface DirectRunResult {
   chunksProcessed: number;
   wallMs: number;
   usageUsd: number;
+  /** FEAT-534 (mixed-pass hybrid bench support): atom counts split by pass,
+   *  present only when `opts.extractionPasses === 2` was requested. `atoms`
+   *  above is always the final MERGED/deduped set (mirrors runPipeline's own
+   *  stage-5b merge) — these two counts are the pre-merge per-pass yield,
+   *  the measurement gate FEAT-534 AC-4 asks for ("per-pass atom counts are
+   *  recorded"). `undefined` on a single-pass run, same as pre-FEAT-534. */
+  passAAtomCount?: number;
+  passBAtomCount?: number;
 }
 
 /**
@@ -96,6 +106,17 @@ export async function runDirectPipeline(
      * PipelineContext.extractProfile / distillHandler's precedence. Defaults
      * to 'engineering' (byte-identical prior behavior) when omitted. */
     extractProfile?: 'engineering' | 'conversational';
+    /** FEAT-534: mirrors PipelineContext/runPipeline's dual-pass shape.
+     *  `1`/omitted is BYTE-IDENTICAL to pre-FEAT-534 behavior — single
+     *  extraction call, no merge. `2` runs the "specifics sweeper" pass
+     *  (05-extract.ts's extractSpecifics) on `llmExtractionPassB ??
+     *  llmExtraction` and merges via the same dedup-merge.ts rules
+     *  runPipeline's stage 5b uses. */
+    extractionPasses?: 1 | 2;
+    /** FEAT-534: pass-B provider override. Only consulted when
+     *  `extractionPasses: 2`; unset rides `llmExtraction`, same identity
+     *  default as ProviderSet.llm.extractionPassB. */
+    llmExtractionPassB?: LLMProvider;
   },
 ): Promise<DirectRunResult> {
   const config = opts.config ?? defaultConfig();
@@ -126,13 +147,38 @@ export async function runDirectPipeline(
     const compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
 
     const extractResults = await extract(compactedChunks, opts.llmExtraction, budget, capUsd, opts.extractProfile ?? 'engineering');
-    const allAtoms = extractResults.flatMap(r => r.atoms);
-    const usageUsd = compactResults.reduce((s, r) => s + r.usageUsd, 0) + extractResults.reduce((s, r) => s + r.usageUsd, 0);
+    let allAtoms: Atom[] = extractResults.flatMap(r => r.atoms);
+    let usageUsd = compactResults.reduce((s, r) => s + r.usageUsd, 0) + extractResults.reduce((s, r) => s + r.usageUsd, 0);
+
+    // FEAT-534: dual-pass, mirrors runPipeline's stage 5b exactly (same
+    // extractSpecifics call, same per-chunk mergeDualPassAtoms merge) —
+    // this bench previously had NO dual-pass path at all, so a `--models
+    // codex:...+passB=...` spec would otherwise silently run single-pass.
+    let passAAtomCount: number | undefined;
+    let passBAtomCount: number | undefined;
+    if (opts.extractionPasses === 2) {
+      const passBProvider = opts.llmExtractionPassB ?? opts.llmExtraction;
+      const specificsResults = await extractSpecifics(compactedChunks, passBProvider, budget, capUsd);
+      usageUsd += specificsResults.reduce((s, r) => s + r.usageUsd, 0);
+
+      const specificsByChunk = new Map(specificsResults.map(r => [r.chunkIndex, r]));
+      const merged: Atom[] = [];
+      for (const passAResult of extractResults) {
+        const passBResult = specificsByChunk.get(passAResult.chunkIndex);
+        const { merged: chunkMerged } = mergeDualPassAtoms(passAResult.atoms, passBResult?.atoms ?? []);
+        merged.push(...chunkMerged);
+      }
+      passAAtomCount = extractResults.reduce((s, r) => s + r.atoms.length, 0);
+      passBAtomCount = specificsResults.reduce((s, r) => s + r.atoms.length, 0);
+      allAtoms = merged;
+    }
 
     const reduced = reduce(allAtoms);
     const normalizedMemories: NormalizedMemory[] = memoryNormalize(reduced);
 
     return {
+      passAAtomCount,
+      passBAtomCount,
       atoms: normalizedMemories.map(m => ({
         type: m.type,
         text: m.normalizedText,

@@ -127,6 +127,12 @@ export const distillHandler: JobHandler = {
       db: ctx.db,
       llmCompaction: ctx.providers.llm.compaction,
       llmExtraction: ctx.providers.llm.extraction,
+      // FEAT-534: getProviders ALWAYS sets extractionPassB (identity default
+      // to the extraction instance when distill.extractionPassB is unset —
+      // see ProviderSet.llm.extractionPassB's doc comment), so this thread-
+      // through is byte-identical to pre-FEAT-534 behavior whenever the
+      // operator hasn't configured an override.
+      llmExtractionPassB: ctx.providers.llm.extractionPassB,
       embed: ctx.providers.embed,
       capUsd: ctx.config.budget.daily_usd,
       sessionId: session_id,

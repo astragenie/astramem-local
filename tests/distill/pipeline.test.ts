@@ -602,4 +602,79 @@ describe('dual-pass extraction (distill.extractionPasses)', () => {
     // 3 pass-A atoms + 1 disjoint pass-B atom (the duplicate was deduped away).
     expect(result.memoriesCreated).toBe(4);
   });
+
+  // ---------------------------------------------------------------------
+  // FEAT-534: per-pass extraction provider override
+  // (PipelineContext.llmExtractionPassB). Both ACs below use a DISTINCT
+  // mock provider per pass (not just a distinct system prompt, as
+  // makeDualPassMockLLM above distinguishes) so a capture-provider
+  // assertion can pin exactly which provider instance each pass's chat()
+  // call landed on — the real signal the FEAT's acceptance criteria ask
+  // for ("pass A chat calls hit codex and pass B chat calls hit ollama").
+  // ---------------------------------------------------------------------
+
+  /** A named mock provider that counts its OWN chat() calls — used in pairs
+   *  so a test can assert calls landed on the right instance, not just that
+   *  SOME provider was called N times. */
+  function makeNamedMockLLM(modelName: string, extractionReply: string): { llm: LLMProvider; extractionCalls: () => number } {
+    let extractionCalls = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: modelName,
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (!opts?.json) return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+        extractionCalls++;
+        return { text: extractionReply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: modelName, latency_ms: 0 };
+      },
+    };
+    return { llm, extractionCalls: () => extractionCalls };
+  }
+
+  it('FEAT-534: llmExtractionPassB set — pass A calls land on llmExtraction, pass B calls land on the override, never crossed', async () => {
+    const passA = makeNamedMockLLM('pass-a-model', EXTRACTION_RESPONSE);
+    const passB = makeNamedMockLLM('pass-b-model', SPECIFICS_RESPONSE);
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db,
+      llmCompaction: passA.llm,
+      llmExtraction: passA.llm,
+      llmExtractionPassB: passB.llm,
+      embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    // Each provider instance saw exactly its own pass's one call — not 2 on
+    // one and 0 on the other, and not both landing on the same instance.
+    expect(passA.extractionCalls()).toBe(1);
+    expect(passB.extractionCalls()).toBe(1);
+
+    // Merge behavior is unaffected by which provider produced which pass's
+    // atoms — same 4-memory outcome the shared-provider test above asserts.
+    expect(result.memoriesCreated).toBe(4);
+  });
+
+  it('FEAT-534: llmExtractionPassB unset — both passes hit llmExtraction (byte-identical to pre-FEAT-534 dual-pass)', async () => {
+    const { llm, extractionCallCount } = makeDualPassMockLLM();
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db,
+      llmCompaction: llm,
+      llmExtraction: llm,
+      // llmExtractionPassB deliberately omitted.
+      embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    // Both pass A and pass B calls landed on the ONE shared provider —
+    // exactly the same count the pre-FEAT-534 dual-pass test above asserts.
+    expect(extractionCallCount()).toBe(2);
+    expect(result.memoriesCreated).toBe(4);
+  });
 });
