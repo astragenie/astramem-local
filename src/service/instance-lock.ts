@@ -21,6 +21,7 @@ import { openSync, closeSync, writeSync, readFileSync, writeFileSync, renameSync
 import { join } from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { Socket } from 'node:net';
 
 const execFileAsync = promisify(execFile);
 
@@ -141,6 +142,41 @@ async function healthOk(port: number, timeoutMs = 2000): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Check whether something is actively listening on 127.0.0.1:<port>.
+ *
+ * Used by the zombie-takeover path (issue #389) to tell apart a recycled-PID
+ * holder (identity mismatch, but nothing is actually bound to the port —
+ * takeover is safe, there is nothing to race) from a holder that is
+ * genuinely still bound (takeover would race the new listener's own
+ * `app.listen()` into an EADDRINUSE crash loop, issue #387's original bug).
+ *
+ * ECONNREFUSED is the only outcome that proves "free". A successful connect
+ * proves "in use". A timeout or any other connection error cannot prove
+ * either way, so both fail CLOSED as "in use" — the same fail-closed posture
+ * `stopLockHolder`'s identity check already uses: we would rather over-refuse
+ * a takeover than under-refuse one and race a live listener.
+ */
+export function isPortInUse(port: number, timeoutMs = 1000): Promise<boolean> {
+  return new Promise(resolve => {
+    const socket = new Socket();
+    let settled = false;
+    const finish = (inUse: boolean): void => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(inUse);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(true));
+    socket.once('error', (err: NodeJS.ErrnoException) => {
+      finish(err.code !== 'ECONNREFUSED');
+    });
+    socket.connect(port, '127.0.0.1');
+  });
 }
 
 function writeLock(path: string, info: LockInfo, exclusive: boolean): void {
@@ -326,18 +362,23 @@ function readLock(path: string): LockInfo | null {
 }
 
 /**
- * Thrown when a lock holder fails 3 health probes (looks like a zombie) but
- * `stopLockHolder` could not confirm it is actually gone before we would
- * otherwise take over the lock and call `app.listen()` on its port. Issue
- * #387: the old code logged a warning and stole the lock unconditionally on
- * 3 failed probes — when the "zombie" was actually alive-but-wedged (a
- * daemon stuck before `app.listen()`, e.g. mid an unbounded consolidate
- * setup), the new process's own `listen()` threw `EADDRINUSE`, the crash
- * handler exited 1, and the scheduler's keepalive respawned another
- * instance that repeated the identical misdiagnosis — dozens of exit-1s in
- * a tight loop with no self-heal. Surfacing this as a distinct, loud error
- * (rather than silently retrying `writeLock`/`listen`) means the caller
- * fails fast with a diagnosable message instead of racing the port.
+ * Thrown when a lock holder fails 3 health probes (looks like a zombie),
+ * `stopLockHolder` could not confirm it is actually gone, AND (issue #389)
+ * the holder's port is still genuinely bound — so taking over the lock and
+ * calling `app.listen()` would risk racing a live listener. Issue #387: the
+ * old code logged a warning and stole the lock unconditionally on 3 failed
+ * probes — when the "zombie" was actually alive-but-wedged (a daemon stuck
+ * before `app.listen()`, e.g. mid an unbounded consolidate setup), the new
+ * process's own `listen()` threw `EADDRINUSE`, the crash handler exited 1,
+ * and the scheduler's keepalive respawned another instance that repeated the
+ * identical misdiagnosis — dozens of exit-1s in a tight loop with no
+ * self-heal. Issue #389: `stopLockHolder`'s refusal alone is not proof of
+ * danger — a recycled-PID holder (identity-mismatch) also refuses to be
+ * signaled, but if it isn't our daemon it isn't bound to our port either, so
+ * `acquireInstanceLock` only reaches this error when the port is confirmed
+ * still in use. Surfacing this as a distinct, loud error (rather than
+ * silently retrying `writeLock`/`listen`) means the caller fails fast with a
+ * diagnosable message instead of racing the port.
  */
 export class ZombieLockTakeoverError extends Error {
   constructor(public readonly holder: LockInfo, public readonly stopResult: StopLockHolderResult) {
@@ -373,6 +414,8 @@ export async function acquireInstanceLock(
     processStartTime?: (pid: number) => Promise<Date | null>;
     /** Total time to wait for the zombie holder's /health to stop answering after signaling it. Threaded through to `stopLockHolder`'s `waitMs`. */
     zombieStopWaitMs?: number;
+    /** Injectable port-liveness probe for the zombie-stop path's port-free check (issue #389) — tests substitute a stub instead of a real socket connect. */
+    portInUse?: (port: number) => Promise<boolean>;
   } = {},
 ): Promise<InstanceLock> {
   const path = lockPath(dataDir);
@@ -404,11 +447,27 @@ export async function acquireInstanceLock(
         waitMs: opts.zombieStopWaitMs,
       });
       if (!stopResult.ok) {
-        throw new ZombieLockTakeoverError(holder, stopResult);
+        // issue #389: stopLockHolder's refusal alone isn't proof the holder is
+        // still dangerous — a recycled PID (identity-mismatch) refuses to be
+        // signaled by design, but if it isn't OUR daemon it also isn't bound
+        // to our port. Check the port directly before treating that refusal
+        // as a takeover blocker; only a genuinely-bound port means there is
+        // something to race.
+        const checkPortInUse = opts.portInUse ?? isPortInUse;
+        const targetPort = holder.port ?? port;
+        const portBusy = await checkPortInUse(targetPort);
+        if (portBusy) {
+          throw new ZombieLockTakeoverError(holder, stopResult);
+        }
+        console.warn(
+          `[astramem-local] zombie holder pid ${holder.pid} could not be confirmed stopped (${stopResult.detail}), ` +
+          `but port ${targetPort} is free — nothing to race, proceeding with takeover.`,
+        );
+      } else {
+        console.warn(
+          `[astramem-local] zombie holder pid ${holder.pid} confirmed stopped (${stopResult.detail}) — taking over the lock.`,
+        );
       }
-      console.warn(
-        `[astramem-local] zombie holder pid ${holder.pid} confirmed stopped (${stopResult.detail}) — taking over the lock.`,
-      );
     }
     exclusive = false; // stale/zombie/corrupt → steal via tmp+rename
   }
