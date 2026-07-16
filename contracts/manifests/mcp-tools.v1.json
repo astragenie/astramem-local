@@ -158,6 +158,12 @@
       "status": "stable"
     },
     {
+      "name": "resolve_consolidation_proposals_batch",
+      "owner": "local",
+      "description": "Bulk accept or reject PENDING consolidation proposals matching an optional kind/min-confidence filter (#372) — capped per call, report matched/resolved/skipped/remaining.",
+      "status": "stable"
+    },
+    {
       "name": "restore_memory",
       "owner": "local",
       "description": "Un-archive a memory previously archived by the W4.4 TTL policy or a manual archive event.",

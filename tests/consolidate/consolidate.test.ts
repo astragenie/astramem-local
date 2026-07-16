@@ -279,6 +279,52 @@ describe('consolidation REST surface', () => {
     expect(contraList).toHaveLength(1);
     expect(contraList[0]!.kind).toBe('contradiction');
   });
+
+  // #372/#171: GET /consolidation/proposals ignored ?limit entirely — always
+  // returned the full pending set. limit/offset/min_confidence are additive
+  // query params backed by ProposalRepo's new pagination opts; `total`
+  // reflects status/kind/min_confidence but not the limit/offset slice.
+  it('GET /consolidation/proposals?limit=&offset=&min_confidence= paginates and filters (#171/#372)', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    // Five independent near-duplicate pairs -> five pending merge proposals,
+    // similarity controlled via `tilt` so min_confidence has something to
+    // filter (proposalConfidence == similarity for kind=merge).
+    for (let i = 0; i < 5; i++) {
+      await seedEmbedded(db, `topic ${i} winner`, `h-page-w${i}`, vecAt(10 + i));
+      await seedEmbedded(db, `topic ${i} loser`, `h-page-l${i}`, vecAt(10 + i, 0.45));
+    }
+    const app = await buildApp({ db, token: 't' });
+    const auth = { authorization: 'Bearer t' };
+    await app.inject({ method: 'POST', url: '/consolidation/run', headers: auth, payload: {} });
+
+    const all = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending', headers: auth });
+    expect(all.json().proposals).toHaveLength(5);
+    expect(all.json().total).toBe(5);
+
+    const page1 = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&limit=2', headers: auth });
+    expect(page1.json().proposals).toHaveLength(2);
+    expect(page1.json().total).toBe(5); // total is NOT clamped by limit
+
+    const page2 = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&limit=2&offset=2', headers: auth });
+    expect(page2.json().proposals).toHaveLength(2);
+    const overlap = new Set([
+      ...(page1.json().proposals as Array<{ id: string }>).map(p => p.id),
+      ...(page2.json().proposals as Array<{ id: string }>).map(p => p.id),
+    ]);
+    expect(overlap.size).toBe(4); // no duplicate rows across pages
+
+    // Every seeded pair sits at the same borderline similarity band, so a
+    // floor above that band excludes all of them and total drops to 0 too.
+    const filtered = await app.inject({
+      method: 'GET', url: '/consolidation/proposals?status=pending&min_confidence=0.999', headers: auth,
+    });
+    expect(filtered.json().proposals).toEqual([]);
+    expect(filtered.json().total).toBe(0);
+
+    const badLimit = await app.inject({ method: 'GET', url: '/consolidation/proposals?status=pending&limit=0', headers: auth });
+    expect(badLimit.statusCode).toBe(400); // limit must be positive
+  });
 });
 
 describe('containment auto-merge (FEAT-410 follow-up)', () => {

@@ -4,11 +4,20 @@
  *
  *   consolidate run [--json]              trigger a pass now (also scheduled
  *                                         at boot + every 6h by the daemon)
- *   consolidate proposals [--json]        list pending merge proposals with
- *                                         both texts side by side
- *   consolidate accept <id|--all> [--json]  accept proposal(s) — merges loser
+ *   consolidate proposals [--json] [--kind merge|contradiction]
+ *                         [--limit N] [--offset N] [--min-confidence X]
+ *                                         list pending proposals with both
+ *                                         texts side by side (#171: was a
+ *                                         full-table dump, ignored --limit)
+ *   consolidate accept <id> [--json]      accept one proposal — merges loser
  *                                         into winner (supersede, not delete)
- *   consolidate reject <id> [--json]      reject a proposal
+ *   consolidate accept --all|--kind K|--min-confidence X [--json]
+ *                                         bulk accept every PENDING proposal
+ *                                         matching the given filter(s) (#372)
+ *   consolidate reject <id> [--json]      reject one proposal
+ *   consolidate reject --all|--kind K|--min-confidence X [--json]
+ *                                         bulk reject, same filter rules as
+ *                                         bulk accept
  *
  * Talks to the running daemon over HTTP (same env contract as search/recall):
  * ASTRA_MEMORY_URL (default http://127.0.0.1:7777), ASTRA_MEMORY_TOKEN.
@@ -62,6 +71,32 @@ async function memoryText(id: string): Promise<string> {
   }
 }
 
+/** `--flag value` extractor — returns the token immediately after `flag`,
+ *  or undefined if `flag` isn't present. Mirrors how `--all` etc. are read
+ *  below (plain array scan, no dependency pulled in for a handful of CLI
+ *  flags). */
+function getFlagValue(args: string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx === -1 ? undefined : args[idx + 1];
+}
+
+/** Builds the `?status=pending&kind=&limit=&offset=&min_confidence=` query
+ *  string shared by `proposals` (listing) and the `--all|--kind|--min-
+ *  confidence` bulk paths of `accept`/`reject` (#372/#171) — one place that
+ *  maps CLI flag names to the GET /consolidation/proposals query params. */
+function buildListQuery(rest: string[], status = 'pending'): string {
+  const params = new URLSearchParams({ status });
+  const kind = getFlagValue(rest, '--kind');
+  if (kind) params.set('kind', kind);
+  const limit = getFlagValue(rest, '--limit');
+  if (limit) params.set('limit', limit);
+  const offset = getFlagValue(rest, '--offset');
+  if (offset) params.set('offset', offset);
+  const minConfidence = getFlagValue(rest, '--min-confidence');
+  if (minConfidence) params.set('min_confidence', minConfidence);
+  return params.toString();
+}
+
 export async function consolidateCommand(args: string[]): Promise<void> {
   const [sub, ...rest] = args;
   const jsonMode = rest.includes('--json') || args.includes('--json');
@@ -80,7 +115,8 @@ export async function consolidateCommand(args: string[]): Promise<void> {
     }
 
     case 'proposals': {
-      const { proposals } = (await api('/consolidation/proposals?status=pending')) as { proposals: Proposal[] };
+      const { proposals, total } = (await api(`/consolidation/proposals?${buildListQuery(rest)}`)) as
+        { proposals: Proposal[]; total?: number };
       if (jsonMode) {
         console.log(JSON.stringify(proposals));
         break;
@@ -89,7 +125,8 @@ export async function consolidateCommand(args: string[]): Promise<void> {
         console.log('No pending consolidation proposals.');
         break;
       }
-      console.log(`\n${proposals.length} pending proposal(s):\n`);
+      const ofTotal = total !== undefined && total !== proposals.length ? ` of ${total} matching` : '';
+      console.log(`\n${proposals.length}${ofTotal} pending proposal(s):\n`);
       for (const p of proposals) {
         const [winText, loseText] = await Promise.all([memoryText(p.winner_id), memoryText(p.loser_id)]);
         console.log(`  ${p.id}  (similarity ${p.similarity.toFixed(3)})`);
@@ -103,15 +140,19 @@ export async function consolidateCommand(args: string[]): Promise<void> {
     }
 
     case 'accept': {
-      const all = rest.includes('--all');
+      // #372: `--kind`/`--min-confidence` widen `--all` into a filtered bulk
+      // accept (e.g. `accept --kind merge --min-confidence 0.9`) rather than
+      // requiring the all-or-one choice this command used to offer.
+      const bulk = rest.includes('--all') || getFlagValue(rest, '--kind') !== undefined
+        || getFlagValue(rest, '--min-confidence') !== undefined;
       let ids: string[];
-      if (all) {
-        const { proposals } = (await api('/consolidation/proposals?status=pending')) as { proposals: Proposal[] };
+      if (bulk) {
+        const { proposals } = (await api(`/consolidation/proposals?${buildListQuery(rest)}`)) as { proposals: Proposal[] };
         ids = proposals.map(p => p.id);
       } else {
         const id = rest.find(a => !a.startsWith('-'));
         if (!id) {
-          console.error('consolidate accept: proposal id required (or --all)');
+          console.error('consolidate accept: proposal id required (or --all / --kind / --min-confidence)');
           process.exit(1);
         }
         ids = [id];
@@ -120,12 +161,12 @@ export async function consolidateCommand(args: string[]): Promise<void> {
       const skipped: Array<{ id: string; reason: string }> = [];
       for (const id of ids) {
         try {
-          // `all` (--all) marks each accept as bulk-resolved so memory_events
+          // Bulk accepts mark each accept as bulk-resolved so memory_events
           // can distinguish it from a single manual accept — see
           // ProposalRepo.accept's `opts.bulkAccepted` (FEAT-437 residual).
           await api(`/consolidation/proposals/${id}/accept`, {
             method: 'POST',
-            body: JSON.stringify(all ? { bulk: true } : {}),
+            body: JSON.stringify(bulk ? { bulk: true } : {}),
           });
           accepted++;
         } catch (err) {
@@ -144,13 +185,38 @@ export async function consolidateCommand(args: string[]): Promise<void> {
     }
 
     case 'reject': {
-      const id = rest.find(a => !a.startsWith('-'));
-      if (!id) {
-        console.error('consolidate reject: proposal id required');
-        process.exit(1);
+      // #372: same bulk-filter rules as `accept` above. Single-id mode keeps
+      // its pre-existing `{ rejected: <id> }` JSON shape untouched — only
+      // the new bulk path gets the count/skipped shape (matching `accept`).
+      const bulk = rest.includes('--all') || getFlagValue(rest, '--kind') !== undefined
+        || getFlagValue(rest, '--min-confidence') !== undefined;
+      if (!bulk) {
+        const id = rest.find(a => !a.startsWith('-'));
+        if (!id) {
+          console.error('consolidate reject: proposal id required (or --all / --kind / --min-confidence)');
+          process.exit(1);
+        }
+        await api(`/consolidation/proposals/${id}/reject`, { method: 'POST' });
+        console.log(jsonMode ? JSON.stringify({ rejected: id }) : `Rejected ${id}.`);
+        break;
       }
-      await api(`/consolidation/proposals/${id}/reject`, { method: 'POST' });
-      console.log(jsonMode ? JSON.stringify({ rejected: id }) : `Rejected ${id}.`);
+      const { proposals } = (await api(`/consolidation/proposals?${buildListQuery(rest)}`)) as { proposals: Proposal[] };
+      let rejected = 0;
+      const skipped: Array<{ id: string; reason: string }> = [];
+      for (const p of proposals) {
+        try {
+          await api(`/consolidation/proposals/${p.id}/reject`, { method: 'POST' });
+          rejected++;
+        } catch (err) {
+          skipped.push({ id: p.id, reason: (err as Error).message.split('\n')[0] ?? 'unknown' });
+        }
+      }
+      if (jsonMode) {
+        console.log(JSON.stringify({ rejected, skipped }));
+      } else {
+        console.log(`Rejected ${rejected} proposal(s)${skipped.length ? `, skipped ${skipped.length} (lifecycle conflicts)` : ''}.`);
+        for (const s of skipped) console.log(`  skipped ${s.id}: ${s.reason}`);
+      }
       break;
     }
 
@@ -158,10 +224,15 @@ export async function consolidateCommand(args: string[]): Promise<void> {
       console.log(`astramem-local consolidate <subcommand>
 
 Subcommands:
-  run                       Trigger a consolidation pass now
-  proposals                 List pending merge proposals (side-by-side texts)
-  accept <id> | --all       Accept proposal(s) — supersedes loser into winner
-  reject <id>               Reject a proposal
+  run                                    Trigger a consolidation pass now
+  proposals [--kind K] [--limit N] [--offset N] [--min-confidence X]
+                                          List pending proposals (side-by-side texts)
+  accept <id>                            Accept one proposal — supersedes loser into winner
+  accept --all|--kind K|--min-confidence X
+                                          Bulk accept every PENDING proposal matching the filter(s)
+  reject <id>                            Reject one proposal
+  reject --all|--kind K|--min-confidence X
+                                          Bulk reject, same filter rules as bulk accept
 
 The daemon also runs a pass automatically at boot and every 6 hours.`);
       if (sub !== undefined && sub !== '--help' && sub !== '-h') process.exit(1);
