@@ -110,27 +110,53 @@ export class JobRepo {
    *
    * - 'running' jobs are orphans: the previous process died mid-handle (on
    *   Windows, schtasks /end and Task Manager kills bypass the SIGTERM
-   *   handler entirely). Requeue them.
+   *   handler entirely). Requeue them — EXCEPT `kind = 'consolidate'`, which
+   *   is poisoned instead (see below, issue #387).
    * - 'failed' jobs with attempts < maxAttempts were waiting on an IN-MEMORY
    *   retry timer (worker.ts setTimeout) that died with the process — without
-   *   this they are stranded in 'failed' forever. Requeue them too.
+   *   this they are stranded in 'failed' forever. Requeue them too (all
+   *   kinds, including 'consolidate' — a job that reached 'failed' already
+   *   went through the worker's normal catch/`fail()` path and respects the
+   *   `maxAttempts` poison threshold; the blind-requeue hazard below is
+   *   specific to 'running', which bypasses that threshold entirely).
    *
    * `attempts` is preserved in both cases so poison thresholds still apply.
    * Handlers must tolerate re-execution of partially-applied work (distill/
    * reembed write via idempotent upserts; a rare duplicate memory from a
    * mid-write crash is deduped downstream by consolidation).
+   *
+   * issue #387: a 'running' consolidate job orphaned by a mid-handle kill
+   * used to be requeued exactly like any other kind, straight back to
+   * 'pending' — the worker's first poll then re-ran the IDENTICAL unbounded
+   * pairwise-scan setup (src/consolidate/consolidate.ts) that froze the
+   * event loop long enough to kill the previous process in the first place,
+   * reproducing the freeze on every single restart with no way out short of
+   * manual DB surgery. A consolidate job recovered from 'running' is now
+   * poisoned instead of requeued — same terminal state `markPoison` uses,
+   * with a `last_error` naming the issue so `queue`/doctor forensics don't
+   * read as an unexplained poison. Requires an explicit re-enqueue (or a fix
+   * to the setup phase's own bound/yield behavior) to run again — see
+   * consolidate.ts's `setupBudgetMs`/`setupYieldEveryNAtoms`.
    */
-  recoverOrphans(maxAttempts = 3): { requeuedRunning: number; requeuedFailed: number } {
+  recoverOrphans(maxAttempts = 3): { requeuedRunning: number; requeuedFailed: number; poisonedConsolidate: number } {
     const now = Date.now();
+    const poisonedConsolidate = this.db.prepare(`
+      UPDATE jobs
+      SET state = 'poison', updated_at = ?,
+          last_error = 'boot recovery: running consolidate job poisoned, not requeued ' ||
+            '(issue #387 — the unbounded pairwise-scan setup can freeze the event loop on ' ||
+            'every restart if simply requeued); re-enqueue manually once safe'
+      WHERE state = 'running' AND kind = 'consolidate'
+    `).run(now).changes;
     const requeuedRunning = this.db.prepare(`
       UPDATE jobs SET state = 'pending', updated_at = ?
-      WHERE state = 'running'
+      WHERE state = 'running' AND kind != 'consolidate'
     `).run(now).changes;
     const requeuedFailed = this.db.prepare(`
       UPDATE jobs SET state = 'pending', updated_at = ?
       WHERE state = 'failed' AND attempts < ?
     `).run(now, maxAttempts).changes;
-    return { requeuedRunning, requeuedFailed };
+    return { requeuedRunning, requeuedFailed, poisonedConsolidate };
   }
 
   /**

@@ -26,8 +26,56 @@ describe('JobRepo boot recovery + retention', () => {
     setJob(db, id, 'running', 1);
     const r = repo.recoverOrphans();
     expect(r.requeuedRunning).toBe(1);
+    expect(r.poisonedConsolidate).toBe(0);
     expect(repo.get(id)?.state).toBe('pending');
     expect(repo.get(id)?.attempts).toBe(1); // attempts preserved
+  });
+
+  // issue #387: a 'running' consolidate job orphaned by a mid-handle kill
+  // used to be requeued exactly like any other kind, so the worker's next
+  // poll re-ran the same unbounded setup that froze the previous process —
+  // reproducing the freeze on every restart. It must now be poisoned, not
+  // requeued, while every other kind (distill included) keeps recovering
+  // normally in the SAME recoverOrphans() call.
+  it('recoverOrphans poisons a running consolidate job instead of requeuing it, but still requeues a running distill job in the same pass', () => {
+    const consolidateId = repo.enqueue('consolidate', {});
+    setJob(db, consolidateId, 'running', 0);
+    const distillId = repo.enqueue('distill', {});
+    setJob(db, distillId, 'running', 0);
+
+    const r = repo.recoverOrphans();
+
+    expect(r.poisonedConsolidate).toBe(1);
+    expect(r.requeuedRunning).toBe(1); // only the distill job
+
+    const consolidateJob = repo.get(consolidateId);
+    expect(consolidateJob?.state).toBe('poison');
+    expect(consolidateJob?.last_error).toContain('#387');
+    expect(consolidateJob?.attempts).toBe(0); // attempts preserved, not incremented
+
+    expect(repo.get(distillId)?.state).toBe('pending');
+  });
+
+  it('recoverOrphans poisons EVERY running consolidate job, not just the first', () => {
+    const idA = repo.enqueue('consolidate', {});
+    setJob(db, idA, 'running', 1);
+    const idB = repo.enqueue('consolidate', {});
+    setJob(db, idB, 'running', 2);
+
+    const r = repo.recoverOrphans();
+
+    expect(r.poisonedConsolidate).toBe(2);
+    expect(repo.get(idA)?.state).toBe('poison');
+    expect(repo.get(idB)?.state).toBe('poison');
+  });
+
+  it('recoverOrphans still requeues a FAILED consolidate job under maxAttempts (only the running-state bypass is guarded)', () => {
+    const id = repo.enqueue('consolidate', {});
+    setJob(db, id, 'failed', 1);
+    const r = repo.recoverOrphans();
+    expect(r.poisonedConsolidate).toBe(0);
+    expect(r.requeuedFailed).toBe(1);
+    expect(repo.get(id)?.state).toBe('pending');
   });
 
   it('recoverOrphans requeues failed jobs whose in-memory retry timer died', () => {

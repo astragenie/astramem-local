@@ -160,6 +160,17 @@ export async function serve(opts: ServeOpts): Promise<void> {
       `${recovered.requeuedFailed} interrupted retries`,
     );
   }
+  // issue #387: a 'running' consolidate job is never blind-requeued (see
+  // JobRepo.recoverOrphans's doc comment) — surface it loudly (ADR-015) so a
+  // restart that just avoided the freeze-reproduction loop is visible in
+  // boot logs, not silently swallowed.
+  if (recovered.poisonedConsolidate > 0) {
+    console.error(
+      `${ts()} [astramem-local] job recovery: poisoned ${recovered.poisonedConsolidate} orphaned ` +
+      'running consolidate job(s) instead of requeuing (issue #387) — a previous boot likely froze ' +
+      'mid-scan; re-enqueue manually (astramem-local queue) once the setup budget/yield fix is confirmed safe.',
+    );
+  }
   const purged = bootRepo.purgeOld();
   if (purged.completed + purged.poison > 0) {
     console.log(`${ts()} [astramem-local] job retention: purged ${purged.completed} completed, ${purged.poison} poison`);

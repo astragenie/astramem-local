@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { acquireInstanceLock, AlreadyRunningError, lockPath, stopLockHolder, getProcessStartTime } from '../../src/service/instance-lock.js';
+import { acquireInstanceLock, AlreadyRunningError, ZombieLockTakeoverError, lockPath, stopLockHolder, getProcessStartTime } from '../../src/service/instance-lock.js';
 
 /** A fixed, arbitrary start-time used across identity-check tests. */
 const FIXED_STARTED_AT = '2026-07-13T00:00:00.000Z';
@@ -72,18 +72,51 @@ describe('instance-lock', () => {
     ).rejects.toThrow(AlreadyRunningError);
   });
 
-  it('steals when holder PID is alive but health probe fails 3x (zombie)', async () => {
+  // issue #387: on 3 failed health probes, acquireInstanceLock no longer
+  // steals unconditionally — it must first confirm the holder is actually
+  // gone (reusing stopLockHolder's identity-checked kill). These two tests
+  // inject `signal`/`processStartTime` so nothing real is ever touched
+  // (holder pid is process.ppid — the test runner's own parent).
+  it('steals when holder PID is alive but health probe fails 3x (zombie) AND the identity-checked stop confirms it actually stopped', async () => {
     writeFileSync(
       lockPath(dir),
-      JSON.stringify({ pid: process.ppid, port: 9999, startedAt: 'x', version: '0.5.0' }),
+      JSON.stringify({ pid: process.ppid, port: 9999, startedAt: FIXED_STARTED_AT, version: '0.5.0' }),
     );
     let probes = 0;
+    const signaled: number[] = [];
     const lock = await acquireInstanceLock(dir, 7777, '0.6.0', {
+      // Same stub answers both the 3x zombie-detection loop AND the
+      // post-signal wait loop inside stopLockHolder — always unhealthy, so
+      // the "stopped" branch is reached on the very first post-signal probe.
       healthProbe: async () => { probes++; return false; },
+      signal: pid => { signaled.push(pid); },
+      processStartTime: matchingStartTime,
     });
-    expect(probes).toBe(3);
+    expect(probes).toBeGreaterThanOrEqual(3); // 3 zombie-detect probes + >=1 stopLockHolder probe
+    expect(signaled).toEqual([process.ppid]); // confirmed via a real (injected) kill, not skipped
     expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.pid);
     lock.release();
+  });
+
+  it('REFUSES to steal (throws ZombieLockTakeoverError, never overwrites the lock) when the stop cannot be confirmed', async () => {
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9999, startedAt: FIXED_STARTED_AT, version: '0.5.0' }),
+    );
+    const signaled: number[] = [];
+    await expect(
+      acquireInstanceLock(dir, 7777, '0.6.0', {
+        healthProbe: async () => false, // zombie-detected AND "still serving" per stopLockHolder's own probe
+        signal: pid => { signaled.push(pid); },
+        // Identity check reports a mismatch — stopLockHolder must refuse to
+        // signal an unrelated process that happens to share this PID.
+        processStartTime: async () => new Date(Date.parse(FIXED_STARTED_AT) + 60 * 60 * 1000),
+      }),
+    ).rejects.toThrow(ZombieLockTakeoverError);
+    expect(signaled).toEqual([]); // never signaled — identity refused before any kill
+    // The original holder's info must still be on disk — we must never
+    // return control (or a lock handle) while its ownership is unconfirmed.
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.ppid);
   });
 
   it('release does not delete a lock that was stolen by a newer process', async () => {
