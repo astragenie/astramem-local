@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { OllamaLLMProvider } from '../../src/providers/llm/ollama.js';
 import { TransientError } from '../../src/pipeline/errors.js';
 import { runLLMContractSuite } from './_contract-suite.js';
+import { LIVE_MODEL_TESTS_DISABLED } from '../helpers/live-model-gate.js';
 
 // ---------------------------------------------------------------------------
 // Fetch mock helpers
@@ -439,9 +440,10 @@ describe('ollama-llm', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Live integration (opt-in: INTEGRATION_LIVE=1)
+  // Live integration (opt-in: INTEGRATION_LIVE=1; ASTRA_MEMORY_MOCK_PROVIDERS=1
+  // always wins and forces a skip even if INTEGRATION_LIVE is also set — #251)
   // ---------------------------------------------------------------------------
-  describe.skipIf(!process.env.INTEGRATION_LIVE)('live integration', () => {
+  describe.skipIf(LIVE_MODEL_TESTS_DISABLED)('live integration', () => {
     // NOT the production default (config.ts) — deliberately, since 2026-07-14
     // (Option A / CPU-runner fix, see nightly-live.yml's "Model policy"
     // comment). `.health()` only hits GET /api/tags and never runs

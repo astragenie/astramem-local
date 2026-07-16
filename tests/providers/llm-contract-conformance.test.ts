@@ -25,6 +25,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { ALL_LLM_ADAPTERS } from './_llm-provider-adapters.js';
 import { TransientError, DeterministicError } from '../../src/pipeline/errors.js';
+import { LIVE_MODEL_TESTS_DISABLED } from '../helpers/live-model-gate.js';
 
 // Mirrors 04-compact.ts's COMPACT_SYSTEM call shape: a system + user message
 // pair, no `json` opt, expecting plain-text prose back. Deliberately
@@ -259,12 +260,21 @@ describe.each(REASONING_PARAM_ADAPTERS)(
 
 // ─────────────────────────────────────────────────────────────────────────
 // Live tier — a couple of tiny prompts against a REAL Ollama host only.
-// Skips (not fails) when unreachable, per contradiction-e2e.test.ts's
-// pattern: a skipped honest test beats a passing dishonest one. Ollama was
-// reported saturated by a concurrent LoCoMo eval at suite-authoring time, so
-// this stays deliberately tiny — two single-word-ish prompts, no load test.
-// Azure/OpenAI are hermetic-only: hitting them costs real money and uses
-// the operator's keys, which is out of scope for a test suite.
+//
+// Gated on PERMISSION first (issue #251): this describe block — including
+// its beforeEach reachability ping — only runs when INTEGRATION_LIVE is set
+// and ASTRA_MEMORY_MOCK_PROVIDERS isn't (see live-model-gate.ts). Skipping
+// the whole describe means the ping itself never fires by default, so the
+// documented `bun run test` command makes zero calls to 127.0.0.1:11434
+// regardless of what happens to be running on the box.
+//
+// Reachability stays a SECONDARY check once permitted: Ollama was reported
+// saturated by a concurrent LoCoMo eval at suite-authoring time, so this
+// still skips (not fails) when unreachable even under INTEGRATION_LIVE — a
+// skipped honest test beats a passing dishonest one — and stays
+// deliberately tiny: two single-word-ish prompts, no load test. Azure/
+// OpenAI are hermetic-only: hitting them costs real money and uses the
+// operator's keys, which is out of scope for a test suite.
 // ─────────────────────────────────────────────────────────────────────────
 import { OllamaLLMProvider } from '../../src/providers/llm/ollama.js';
 
@@ -273,7 +283,7 @@ const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434';
 let ollamaUp = false;
 let ollamaModel = 'qwen2.5:7b';
 
-describe('LLM provider contract conformance — live (ollama only)', () => {
+describe.skipIf(LIVE_MODEL_TESTS_DISABLED)('LLM provider contract conformance — live (ollama only)', () => {
   beforeEach(async () => {
     try {
       const r = await fetch(`${OLLAMA_HOST}/api/tags`, { signal: AbortSignal.timeout(3000) });
