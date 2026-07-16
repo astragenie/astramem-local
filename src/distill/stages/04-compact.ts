@@ -9,7 +9,7 @@
  */
 
 import type { LLMProvider, ChatMsg } from '../../contracts/index.js';
-import type { Chunk } from './03-chunk.js';
+import { DEFAULT_MAX_CHUNK_CHARS, type Chunk } from './03-chunk.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { mapWithConcurrency } from '../concurrency.js';
 import { chunkCheckpoints } from '../chunk-checkpoint.js';
@@ -236,6 +236,66 @@ export function shouldCompact(opts?: CompactOpts): boolean {
   return opts?.profile !== 'conversational';
 }
 
+/**
+ * #284 Bug 2 — the size half of the gate. shouldCompact() above is BLIND to
+ * any individual chunk's size; it only rules out compaction categorically
+ * (mode 'never', or mode 'auto' + conversational). Below this many
+ * characters, an individual chunk is small enough that compaction cannot
+ * meaningfully help it "fit" anything.
+ *
+ * Stage 3 already caps every chunk at DEFAULT_MAX_CHUNK_CHARS (3200 chars,
+ * ~800 tokens — see 03-chunk.ts) against an extraction context sized up to
+ * NUM_CTX_CAP (16384 tokens — see ollama.ts): a FULL-SIZED chunk was never
+ * at real risk of not fitting in the first place, which is why compaction's
+ * traditional "shrink it to fit" justification is already thin even for the
+ * chunks that DO get compacted. This threshold picks out chunks well BELOW
+ * even that already-modest packing target — a quarter of
+ * DEFAULT_MAX_CHUNK_CHARS — so only chunks that are clearly, comfortably
+ * small skip. Deliberate headroom: a chunk at or near the normal packing
+ * target still compacts unchanged, per #284's explicit "keep it
+ * conservative" instruction. A chunk this small has nothing meaningful left
+ * to shrink, so running compaction on it only pays the over-compression /
+ * fact-loss risk documented on COMPACT_SYSTEM_CONVERSATIONAL's doc comment
+ * for a few hundred characters of savings.
+ */
+export const COMPACTION_FITS_THRESHOLD_CHARS = Math.floor(DEFAULT_MAX_CHUNK_CHARS / 4); // 800 chars, ~200 tokens
+
+/** Does this chunk already comfortably fit — i.e. is it too small for
+ *  compaction to meaningfully help? See COMPACTION_FITS_THRESHOLD_CHARS. */
+export function chunkAlreadyFits(text: string): boolean {
+  return text.length <= COMPACTION_FITS_THRESHOLD_CHARS;
+}
+
+/** Why a chunk's compaction was skipped — surfaced in pipeline.ts's
+ *  observability so a doctor/log reader can tell "compaction is off for this
+ *  profile" (mode-never / profile) apart from "this specific chunk didn't
+ *  need it" (size), rather than one undifferentiated boolean. */
+export type CompactSkipReason = 'mode-never' | 'profile' | 'size';
+
+export interface CompactionDecision {
+  compact: boolean;
+  skipReason?: CompactSkipReason;
+}
+
+/**
+ * Per-chunk compaction decision — the size-aware sibling of shouldCompact().
+ * Precedence, highest first: 'never' skips unconditionally; 'always' compacts
+ * unconditionally (an explicit operator override beats BOTH the profile gate
+ * and the size heuristic below it); only under 'auto' does the profile gate
+ * apply, and only then the size gate. Mirrored 1:1 by compact()'s own
+ * per-chunk dispatch AND by pipeline.ts's stage-4 logging, so the log can
+ * never drift from the decision the stage actually makes (same discipline as
+ * shouldCompact()'s own doc comment in pipeline.ts).
+ */
+export function compactionDecisionFor(text: string, opts?: CompactOpts): CompactionDecision {
+  const mode = opts?.mode ?? 'auto';
+  if (mode === 'never') return { compact: false, skipReason: 'mode-never' };
+  if (mode === 'always') return { compact: true };
+  if (opts?.profile === 'conversational') return { compact: false, skipReason: 'profile' };
+  if (chunkAlreadyFits(text)) return { compact: false, skipReason: 'size' };
+  return { compact: true };
+}
+
 export async function compact(
   chunks: Chunk[],
   provider: LLMProvider,
@@ -254,8 +314,23 @@ export async function compact(
     return chunks.map(chk => ({ index: chk.index, text: '', usageUsd: 0 }));
   }
 
+  // #284 Bug 2: PER-CHUNK size gate. The early return above only rules out
+  // the batch-wide categorical cases (mode 'never', or mode 'auto' +
+  // conversational) — reaching here means either mode 'always' or mode
+  // 'auto' + engineering, and an individual chunk may still be small enough
+  // to skip on its own merits (compactionDecisionFor). Deciding per-call
+  // (rather than filtering the `chunks` array up front) keeps index
+  // ordering and checkpoint-cache keying below untouched.
+  const runChunk = (chk: Chunk): Promise<CompactResult> => {
+    const decision = compactionDecisionFor(chk.text, opts);
+    if (!decision.compact) {
+      return Promise.resolve({ index: chk.index, text: '', usageUsd: 0 });
+    }
+    return compactChunk(chk, provider, budget, capUsd, opts?.profile, opts?.costCap);
+  };
+
   if (!jobKey) {
-    return mapWithConcurrency(chunks, concurrency, (chk) => compactChunk(chk, provider, budget, capUsd, opts?.profile, opts?.costCap));
+    return mapWithConcurrency(chunks, concurrency, runChunk);
   }
 
   const pending: Chunk[] = [];
@@ -267,7 +342,7 @@ export async function compact(
   }
 
   const fresh = await mapWithConcurrency(pending, concurrency, async (chk) => {
-    const result = await compactChunk(chk, provider, budget, capUsd, opts?.profile, opts?.costCap);
+    const result = await runChunk(chk);
     chunkCheckpoints.set(jobKey, 'compact', chk.index, result);
     return result;
   });

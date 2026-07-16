@@ -78,6 +78,9 @@ describe('compact stage', () => {
       async health(): Promise<LLMHealth> { return { ok: true, model: 'test', latency_ms: 0 }; },
     };
 
+    // mode:'always' — these tiny fixture chunks exist to test dispatch
+    // mechanics, not the #284 Bug 2 size gate; 'always' bypasses the size
+    // heuristic so it can't confound this assertion.
     const results = await compact(
       [
         { index: 0, text: 'chunk one' },
@@ -87,6 +90,9 @@ describe('compact stage', () => {
       llm,
       budget,
       10.0,
+      1,
+      undefined,
+      { mode: 'always' },
     );
 
     expect(results.length).toBe(3);
@@ -139,6 +145,9 @@ describe('compact() concurrency (FEAT-487)', () => {
       budget,
       10.0,
       // concurrency omitted — must default to 1
+      undefined,
+      undefined,
+      { mode: 'always' }, // tiny fixture chunks — bypass the #284 Bug 2 size gate
     );
 
     expect(callOrder).toEqual([1, 2, 3]);
@@ -172,6 +181,8 @@ describe('compact() concurrency (FEAT-487)', () => {
       budget,
       10.0,
       2,
+      undefined,
+      { mode: 'always' }, // tiny fixture chunks — bypass the #284 Bug 2 size gate
     );
 
     expect(results[0]?.text).toBe('done:slow chunk');
@@ -204,7 +215,9 @@ describe('compact() concurrency (FEAT-487)', () => {
     // unit tests in tests/distill/concurrency.test.ts pin the exact
     // dispatch-count behavior; this integration test pins that compact()
     // itself rejects with the right error type end to end).
-    await expect(compact(chunks, llm, budget, capUsd, 2)).rejects.toBeInstanceOf(BudgetExceeded);
+    // mode:'always' — tiny fixture chunks must actually reach compactChunk()
+    // to exercise the budget throw; bypass the #284 Bug 2 size gate.
+    await expect(compact(chunks, llm, budget, capUsd, 2, undefined, { mode: 'always' })).rejects.toBeInstanceOf(BudgetExceeded);
   });
 
   it('setting concurrency explicitly to 1 is the documented safety valve — identical results/order to the default', async () => {
@@ -267,8 +280,11 @@ describe('compact() retry checkpointing (chunk-retry-amplification fix)', () => 
       async health(): Promise<LLMHealth> { return { ok: true, model: 'test', latency_ms: 0 }; },
     };
 
+    // mode:'always' throughout — this test is exercising checkpoint/retry
+    // plumbing on fixture chunks well under the #284 Bug 2 size threshold;
+    // 'always' bypasses that gate so it can't confound the call counts below.
     // Attempt 1: fails at chunk 14 — chunks 0-13 succeeded first.
-    await expect(compact(chunks, llm, budget, 10.0, 1, jobKey)).rejects.toThrow('rate limited');
+    await expect(compact(chunks, llm, budget, 10.0, 1, jobKey, { mode: 'always' })).rejects.toThrow('rate limited');
     expect(callCount).toBe(RATE_LIMIT_AT_INDEX + 1); // chunks 0..14 attempted, 14 succeeded, 15th (idx 14) threw
 
     const callsAfterFirstAttempt = callCount;
@@ -276,7 +292,7 @@ describe('compact() retry checkpointing (chunk-retry-amplification fix)', () => 
     // Attempt 2 (the worker's retry, same job/content — same jobKey): the
     // rate limit has cleared. This must NOT re-issue LLM calls for chunks
     // 0-13, which already succeeded on attempt 1.
-    const results = await compact(chunks, llm, budget, 10.0, 1, jobKey);
+    const results = await compact(chunks, llm, budget, 10.0, 1, jobKey, { mode: 'always' });
 
     const callsOnRetry = callCount - callsAfterFirstAttempt;
     // Only chunks 14..19 (6 chunks) needed a fresh LLM call on the retry —
@@ -306,10 +322,11 @@ describe('compact() retry checkpointing (chunk-retry-amplification fix)', () => 
     } satisfies LLMProvider;
     const chunks = [{ index: 0, text: 'a' }, { index: 1, text: 'b' }];
 
-    await compact(chunks, llm, budget, 10.0, 1, 'job-A');
+    // mode:'always' — bypass the #284 Bug 2 size gate for these tiny chunks.
+    await compact(chunks, llm, budget, 10.0, 1, 'job-A', { mode: 'always' });
     expect(callCount).toBe(2);
 
-    await compact(chunks, llm, budget, 10.0, 1, 'job-B');
+    await compact(chunks, llm, budget, 10.0, 1, 'job-B', { mode: 'always' });
     expect(callCount).toBe(4); // a different job re-runs every chunk — no cross-job leakage
   });
 
@@ -329,9 +346,10 @@ describe('compact() retry checkpointing (chunk-retry-amplification fix)', () => 
     } satisfies LLMProvider;
     const chunks = [{ index: 0, text: 'a' }, { index: 1, text: 'b' }];
 
-    await compact(chunks, llm, budget, 10.0); // no jobKey
+    // mode:'always' — bypass the #284 Bug 2 size gate for these tiny chunks.
+    await compact(chunks, llm, budget, 10.0, 1, undefined, { mode: 'always' }); // no jobKey
     expect(callCount).toBe(2);
-    await compact(chunks, llm, budget, 10.0); // no jobKey — no caching, full re-dispatch
+    await compact(chunks, llm, budget, 10.0, 1, undefined, { mode: 'always' }); // no jobKey — no caching, full re-dispatch
     expect(callCount).toBe(4);
   });
 });
