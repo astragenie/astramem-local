@@ -267,6 +267,14 @@ async function main() {
       break;
     }
 
+    case 'model': {
+      // astramem-local model fetch|status [--model L] [--dtype D] [--dest DIR] [--print-urls] [--force]
+      // Pre-seed the ONNX embed snapshot cache for offline/air-gapped installs (#363 follow-up).
+      const { modelCommand } = await import('./model.js');
+      await modelCommand(rest);
+      break;
+    }
+
     case 'mcp-stdio': {
       // astramem-local mcp-stdio — MCP server over stdio transport (test-enabling
       // infrastructure; the daemon's POST /mcp is the supported production surface)
@@ -390,6 +398,11 @@ Commands:
   consolidate run|proposals|accept|reject
                                          Near-duplicate memory consolidation (also
                                          auto-scheduled: boot + every 6h)
+  model fetch|status [--model L] [--dtype D] [--dest DIR] [--print-urls] [--force]
+                                         Pre-seed / inspect the ONNX embed snapshot
+                                         cache so first boot works fully offline
+                                         (--print-urls emits a curl recipe for boxes
+                                         where node's TLS is filtered or air-gapped)
   rebuild [--repo R] [--project P] [--limit N] [--dry-run] [--json]
                                          Queue reembed jobs for existing memories
                                          (same dim, model/provider swap)
