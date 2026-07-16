@@ -58,6 +58,25 @@ describe('aggregateFixtureScores', () => {
     const agg = aggregateFixtureScores(rows, 0);
     expect(agg.overExtractionOnNothingFixture).toBe(3);
   });
+
+  // FEAT-534 (review finding, PR #376): per-pass atom counts must reach the
+  // archived aggregate, not just console.log.
+  it('averages passAAtomCount/passBAtomCount across fixtures that carry a pass split', () => {
+    const rows = [
+      fixtureRow('fx01', score({ fixtureId: 'fx01' }), { passAAtomCount: 3, passBAtomCount: 2 }),
+      fixtureRow('fx02', score({ fixtureId: 'fx02' }), { passAAtomCount: 5, passBAtomCount: 4 }),
+    ];
+    const agg = aggregateFixtureScores(rows, 0);
+    expect(agg.avgPassAAtomCount).toBe(4);
+    expect(agg.avgPassBAtomCount).toBe(3);
+  });
+
+  it('is null (not 0, not NaN) when no fixture in the run carried a pass split — the single-pass default', () => {
+    const rows = [fixtureRow('fx01', score({ fixtureId: 'fx01' }))];
+    const agg = aggregateFixtureScores(rows, 0);
+    expect(agg.avgPassAAtomCount).toBeNull();
+    expect(agg.avgPassBAtomCount).toBeNull();
+  });
 });
 
 describe('combineRuns — AC-5 regression-free + AC-1 multi-run', () => {
@@ -136,6 +155,43 @@ describe('renderMarkdown', () => {
     const promptV2 = multiRunReport('prompt-v2', [0.53, 0.59, 0.61, 0.72]);
     const md = renderMarkdown([promptV1, promptV2], 0);
     expect(md).toContain('within noise / not significant');
+  });
+
+  // FEAT-534 (review finding, PR #376): the model column already identifies
+  // the pass split via the raw `+passB=` spec string (model name itself),
+  // but the archived table previously carried no per-pass atom COUNTS at
+  // all — this pins that AC-4's "measurement gate" data actually lands in
+  // the rendered report.md, not just a console line that's gone once the
+  // process exits.
+  it('renders Pass A/Pass B atom columns — populated for a mixed-pass model, "—" for a single-pass one', () => {
+    const mixedRows = [
+      fixtureRow('fx01', score({ fixtureId: 'fx01' }), { passAAtomCount: 3, passBAtomCount: 2 }),
+    ];
+    const mixedReport = {
+      model: 'codex:gpt-5.4-mini+passB=ollama:qwen3:8b',
+      daemonBootMs: 500,
+      fixtures: mixedRows,
+      aggregate: aggregateFixtureScores(mixedRows, 0),
+    };
+    const singlePassRows = [fixtureRow('fx01', score({ fixtureId: 'fx01' }))];
+    const singlePassReport = {
+      model: 'codex:gpt-5.4-mini',
+      daemonBootMs: 500,
+      fixtures: singlePassRows,
+      aggregate: aggregateFixtureScores(singlePassRows, 0),
+    };
+    const md = renderMarkdown([mixedReport, singlePassReport], 0);
+    expect(md).toContain('Pass A atoms');
+    expect(md).toContain('Pass B atoms');
+    const lines = md.split('\n');
+    const mixedLine = lines.find(l => l.startsWith('| codex:gpt-5.4-mini+passB=ollama:qwen3:8b '));
+    const singlePassLine = lines.find(l => l.startsWith('| codex:gpt-5.4-mini '));
+    // Mixed row: mean atom counts (single fixture here, so exactly 3 / 2).
+    expect(mixedLine).toBeDefined();
+    expect(mixedLine!.trim().endsWith('| 3.0 | 2.0 |')).toBe(true);
+    // Single-pass row: no split at all — both columns render "—".
+    expect(singlePassLine).toBeDefined();
+    expect(singlePassLine!.trim().endsWith('| — | — |')).toBe(true);
   });
 
   it('renders a judge self-agreement section when provided', () => {
