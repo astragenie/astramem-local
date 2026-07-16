@@ -250,6 +250,11 @@ export function configToYaml(cfg: Config): string {
     line(1, 'epsilon', cfg.search.epsilon),
     line(1, 'zeta', cfg.search.zeta),
     line(1, 'eta', cfg.search.eta),
+    // issue #352B: θ, the 8th governed fusion component (supersession/
+    // correction freshness bonus — see fuse.ts). Same round-trip requirement
+    // as zeta/eta above: omitting it here would silently drop a hand-set
+    // `search.theta` on the next config write-back.
+    line(1, 'theta', cfg.search.theta),
     // FEAT-428 governance ceiling — also dropped pre-FEAT-461 (missed by the
     // original bug report's own field list; caught by the AC-1 exhaustive
     // round-trip test instead).

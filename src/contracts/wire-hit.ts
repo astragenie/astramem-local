@@ -15,12 +15,25 @@
  *  - drop `reranked`/`rerank_score` — fully recoverable from
  *    `explanation.signals.cross_encoder` presence/`.final` once merged, so
  *    nothing is lost by omitting them from the wire.
+ *  - drop `correction_pending` (issue #352B) — the closed hit shape's
+ *    property whitelist doesn't include it (adding it there is a cross-repo
+ *    contract change: SaaS + plugin both consume this schema, out of scope
+ *    for this local-only slice). The marker still surfaces on GET /search
+ *    and the MCP search_memory/recall_memory tools, which serialize
+ *    SearchHit directly rather than through this closed envelope.
  *  - rename `capture_source` -> the canonical `source` (CONTRACT-FREEZE §1,
  *    astragenie/memory#759: "source maps to local's provenance").
  */
 import type { SearchHit } from '../search/search.js';
 
 export function toWireHit(hit: SearchHit): unknown {
-  const { source: _fusionLeg, capture_source, reranked: _reranked, rerank_score: _rerankScore, ...rest } = hit;
+  const {
+    source: _fusionLeg,
+    capture_source,
+    reranked: _reranked,
+    rerank_score: _rerankScore,
+    correction_pending: _correctionPending,
+    ...rest
+  } = hit;
   return { ...rest, ...(capture_source !== undefined ? { source: capture_source } : {}) };
 }

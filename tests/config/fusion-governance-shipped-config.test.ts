@@ -48,6 +48,16 @@ describe('FEAT-428 hard gate: shipped default config carries no unevidenced fusi
     }
   });
 
+  // issue #352B: theta (supersession/correction freshness bonus, the 8th
+  // fusion component) ships wired-but-inert, same posture as eta above.
+  it('theta ships at 0 unless a passing recorded eval-evidence entry licenses it', () => {
+    if (shipped.theta > 0) {
+      expect(hasPassingEvalEvidence('theta')).toBe(true);
+    } else {
+      expect(shipped.theta).toBe(0);
+    }
+  });
+
   it('epsilon is the one exempt component — its nonzero default is the evidence baseline every retrieval-eval.test.ts run already exercises, not an ungated bypass', () => {
     expect(shipped.epsilon).toBeGreaterThan(0);
   });

@@ -228,6 +228,48 @@ describe('applyFusionGovernance', () => {
     expect(cfg.search.eta).toBe(0);
   });
 
+  // issue #352B: theta (supersession/correction freshness bonus, the 8th
+  // fusion component) is gated identically to eta — mirrors the eta block
+  // above exactly.
+  it('theta>0 with no recorded eval evidence is refused — forced back to 0 — and logs why', () => {
+    const search = { ...baseSearch(), theta: 0.3 };
+    const logs: string[] = [];
+    const governed = applyFusionGovernance(search, {
+      log: (m) => logs.push(m),
+      checkEvalEvidence: () => false,
+    });
+
+    expect(governed.theta).toBe(0);
+    expect(logs.some(m => m.includes('search.theta=0.3') && m.includes('eval'))).toBe(true);
+  });
+
+  it('theta>0 WITH passing recorded eval evidence is allowed to activate', () => {
+    const search = { ...baseSearch(), theta: 0.3 };
+    const governed = applyFusionGovernance(search, { checkEvalEvidence: () => true });
+    expect(governed.theta).toBe(0.3);
+  });
+
+  it('theta=0 (default) never consults eval evidence at all — the gate only fires for theta>0', () => {
+    const search = baseSearch();
+    const checkEvalEvidence = vi.fn(() => false);
+    const governed = applyFusionGovernance(search, { checkEvalEvidence });
+    expect(governed.theta).toBe(0);
+    expect(checkEvalEvidence).not.toHaveBeenCalled();
+  });
+
+  it('the real (uninjected) evidence lookup also refuses theta>0 today (no evidence recorded yet)', () => {
+    const search = { ...baseSearch(), theta: 0.2 };
+    const governed = applyFusionGovernance(search, { log: () => {} });
+    expect(governed.theta).toBe(0);
+  });
+
+  it('loadConfig wires applyFusionGovernance in: an override setting theta>0 without evidence comes back 0', () => {
+    const cfg = loadConfig({
+      search: { ...defaultConfig().search, theta: 0.5 },
+    } as any);
+    expect(cfg.search.theta).toBe(0);
+  });
+
   it('loadConfig wires applyFusionGovernance in: an override with an over-ceiling weight comes back clamped', () => {
     const cfg = loadConfig({
       search: { ...defaultConfig().search, zeta: 3 },
