@@ -486,6 +486,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     encryptionEnabled: cfg.security.encryption.enabled,
     durabilityGateMode: cfg.distill.durabilityGate,
     extractProfile: cfg.distill.extractProfile,
+    atomTriageMode: cfg.distill.atomTriage.mode,
     dailyBudgetUsd: cfg.budget.daily_usd,
     codexSubscriptionInUse,
     autoCaptureEnabled: cfg.capture.autoCapture.enabled,

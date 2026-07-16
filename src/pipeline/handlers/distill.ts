@@ -133,6 +133,12 @@ export const distillHandler: JobHandler = {
       // through is byte-identical to pre-FEAT-534 behavior whenever the
       // operator hasn't configured an override.
       llmExtractionPassB: ctx.providers.llm.extractionPassB,
+      // FEAT-533: getProviders ALWAYS sets atomTriage (identity default to
+      // the extraction instance when distill.atomTriage.{provider,model} is
+      // unset — see ProviderSet.llm.atomTriage's doc comment), so this
+      // thread-through is byte-identical to pre-FEAT-533 behavior whenever
+      // the operator hasn't opted into a non-'off' mode.
+      llmAtomTriage: ctx.providers.llm.atomTriage,
       embed: ctx.providers.embed,
       capUsd: ctx.config.budget.daily_usd,
       sessionId: session_id,

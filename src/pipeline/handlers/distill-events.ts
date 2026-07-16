@@ -170,6 +170,14 @@ export const distillEventsHandler: JobHandler = {
       durabilityGateMode: ctx.config.distill.durabilityGate,
       redactConfig: ctx.config,
       gatedOutCounter,
+      // FEAT-533: same atom-triage wiring as the transcript path
+      // (distill.ts / pipeline.ts's runPipeline) — this handler has no
+      // runPipeline call to thread it through, so it's set directly here.
+      atomTriageMode: ctx.config.distill.atomTriage.mode,
+      llmAtomTriage: ctx.providers.llm.atomTriage,
+      atomTriageBatchSize: ctx.config.distill.atomTriage.batchSize,
+      atomTriageMaxPerRun: ctx.config.distill.atomTriage.maxPerRun,
+      atomTriageMaxWallClockMs: ctx.config.distill.atomTriage.maxWallClockMs,
     });
 
     const created = indexResults.filter(r => r.created).length;

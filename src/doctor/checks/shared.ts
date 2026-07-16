@@ -153,6 +153,9 @@ export interface DoctorCheckOpts {
    * fit measurement. Defaults to `http://127.0.0.1:11434` when not supplied
    * — mirrors `getGpuChecks`'s `ollamaBaseUrl` option. */
   ollamaBaseUrl?: string;
+  /** FEAT-533: current `distill.atomTriage.mode`. Defaults to `'off'` (the
+   * shipped default) when not supplied — see `checkAtomTriage`. */
+  atomTriageMode?: 'off' | 'dry-run' | 'enabled';
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────

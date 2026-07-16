@@ -8,7 +8,7 @@
  * 4. Update embedding_provider/model/dim on the memories row
  */
 
-import type { EmbedProvider } from '../../contracts/index.js';
+import type { EmbedProvider, LLMProvider } from '../../contracts/index.js';
 import type { NormalizedMemory } from './07-memory-normalize.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
@@ -23,9 +23,11 @@ import { defaultConfig } from '../../config/config.js';
 import { redactIfEnabled } from '../../redact/index.js';
 import { childLogger } from '../../log/logger.js';
 import { gateDurability, type DurabilityGateMode, type GatedReason } from '../durability-gate.js';
+import { triageBatch, AtomTriageRunTracker, type TriageVerdict } from '../atom-triage.js';
 import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
+import { recordTriageGuardDrops, recordTriageRunLog, type TriageGuardDropRow } from '../../storage/triage-guard-log.js';
 import { attributeSpeaker } from '../attribute-speaker.js';
 
 export interface IndexResult {
@@ -113,6 +115,35 @@ export interface EmbedIndexContext {
    * unchanged — callers read `.count` back after the call resolves.
    */
   gatedOutCounter?: { count: number };
+  /**
+   * FEAT-533: LLM atom-triage tier mode. Undefined/omitted behaves as
+   * 'off' — every pre-FEAT-533 caller (and the existing test suite) that
+   * never sets this field is byte-identical: the triage batch loop below
+   * is skipped entirely whenever this resolves to 'off'.
+   */
+  atomTriageMode?: 'off' | 'dry-run' | 'enabled';
+  /**
+   * Provider for the triage batch call — only consulted when
+   * `atomTriageMode !== 'off'`. Real callers (distill/pipeline.ts) always
+   * set this from `ProviderSet.llm.atomTriage`, which `getProviders`
+   * itself always populates (identity default to `llm.extraction`) — see
+   * that field's doc comment. A caller that sets a non-'off' mode without
+   * also supplying this is a no-op (no triage call is ever made) rather
+   * than a throw, same tolerant-default posture `durabilityGateMode`'s
+   * omission gets.
+   */
+  llmAtomTriage?: LLMProvider;
+  /** Fixed atom-count batch size for the triage sweep — see
+   *  `Config['distill']['atomTriage'].batchSize`'s doc comment for why
+   *  this batches the whole job's flat post-reduce/post-normalize atom
+   *  stream rather than per chunk. Falls back to 20 when omitted. */
+  atomTriageBatchSize?: number;
+  /** Call-count cap on the triage sweep for this job — falls back to 200
+   *  when omitted. See `AtomTriageRunTracker`. */
+  atomTriageMaxPerRun?: number;
+  /** Wall-clock cap (ms) on the triage sweep for this job — falls back to
+   *  300000 (5 min) when omitted. See `AtomTriageRunTracker`. */
+  atomTriageMaxWallClockMs?: number;
 }
 
 /**
@@ -163,6 +194,15 @@ export async function embedAndIndex(
   // PR #231's checks.ts split).
   let vecUpsertDrops = 0;
 
+  // ─── Phase A: erasure-replay filter + regex durability gate ─────────────
+  // Same two "last line of defense, never persisted" checks the original
+  // single loop always ran, just split out so the LLM atom-triage tier
+  // below (Phase B) only ever sees SURVIVORS of the free regex gate — per
+  // FEAT-533's architect-pinned ordering ("regex gate runs first, free; LLM
+  // triage sees survivors"). Nothing about the erasure/durability-gate
+  // LOGIC changed, only where the loop boundary sits.
+  interface Survivor { originalIndex: number; mem: NormalizedMemory; vec: Float32Array }
+  const survivors: Survivor[] = [];
   for (let i = 0; i < memories.length; i++) {
     const mem = memories[i];
     const vec = vectors[i];
@@ -220,6 +260,81 @@ export async function embedAndIndex(
 
     if (gatedForReason) {
       if (ctx.gatedOutCounter) ctx.gatedOutCounter.count += 1;
+      continue;
+    }
+
+    survivors.push({ originalIndex: i, mem, vec });
+  }
+
+  // ─── Phase B: LLM atom-triage tier (FEAT-533) ────────────────────────────
+  // Batched over ALL regex-gate survivors for the WHOLE job (fixed
+  // atom-count batches, not per chunk — see Config['distill']['atomTriage']
+  // for why). 'off' (the shipped default) short-circuits before any LLM
+  // call — byte-identical to pre-FEAT-533 behavior. A caller with a
+  // non-'off' mode but no `llmAtomTriage` provider is also a no-op (never a
+  // throw) — see EmbedIndexContext.llmAtomTriage's doc comment.
+  const atomTriageMode = ctx.atomTriageMode ?? 'off';
+  const triageVerdicts = new Map<number, TriageVerdict>();
+  const triageDropRows: TriageGuardDropRow[] = [];
+  let atomsTriagedCount = 0;
+  let atomsDroppedByTriage = 0;
+  if (atomTriageMode !== 'off' && ctx.llmAtomTriage && survivors.length > 0) {
+    const batchSize = ctx.atomTriageBatchSize ?? 20;
+    const triageLog = (message: string) =>
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn({}, message);
+    const tracker = new AtomTriageRunTracker(
+      {
+        maxPerRun: ctx.atomTriageMaxPerRun ?? 200,
+        maxWallClockMs: ctx.atomTriageMaxWallClockMs ?? 300_000,
+      },
+      triageLog,
+    );
+    for (let start = 0; start < survivors.length; start += batchSize) {
+      // Cap reached — every remaining survivor falls through un-triaged
+      // (no verdict entry -> implicit 'keep' below): fail OPEN, never
+      // drop-by-timeout (FEAT-482 lesson, restated for this cap).
+      if (tracker.shouldStop()) break;
+      const batch = survivors.slice(start, start + batchSize);
+      tracker.recordCall();
+      const verdicts = await triageBatch(
+        ctx.llmAtomTriage,
+        batch.map((s) => ({ index: s.originalIndex, text: s.mem.text })),
+        { log: triageLog },
+      );
+      for (const [index, verdict] of verdicts) triageVerdicts.set(index, verdict);
+      // Count every ATTEMPTED atom (not just successfully-classified ones)
+      // toward the rate denominator — a provider that fails open on every
+      // call still consumed real job volume, and the doctor "Atom triage"
+      // canary needs that reflected in the rate, not silently excluded
+      // (canary-must-measure-rate-not-existence: a systemically broken
+      // judge and a genuinely quiet job must not look identical).
+      atomsTriagedCount += batch.length;
+    }
+  }
+
+  // ─── Phase C: insert survivors, honoring the triage verdict ─────────────
+  for (const survivor of survivors) {
+    const { originalIndex: i, mem, vec } = survivor;
+    const verdict = triageVerdicts.get(i);
+    const isNonKeepVerdict = atomTriageMode !== 'off' && verdict !== undefined && verdict.verdict !== 'keep';
+
+    if (isNonKeepVerdict && atomTriageMode === 'enabled') {
+      // 'enabled': actually drop — never reaches insertWithCreateEvent, so
+      // there is no memory_id to record (memoryId: null — see
+      // triage-guard-log.ts's doc comment).
+      atomsDroppedByTriage++;
+      triageDropRows.push({
+        reason: verdict!.verdict,
+        memoryId: null,
+        model: ctx.llmAtomTriage?.model ?? 'unknown',
+        confidence: verdict!.confidence,
+        mode: 'enabled',
+        sessionId: ctx.sessionId,
+      });
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { triageVerdict: verdict!.verdict, confidence: verdict!.confidence, atom_type: mem.type },
+        'atom triage: atom rejected — never passed to insertWithCreateEvent',
+      );
       continue;
     }
 
@@ -419,6 +534,24 @@ export async function embedAndIndex(
       );
     }
 
+    // FEAT-533 dry-run: the atom persisted (dry-run drops NOTHING — see
+    // Config['distill']['atomTriage']'s doc comment), but a non-'keep'
+    // verdict is still recorded so the manually reviewed agreement sample
+    // this FEAT's own eval gate depends on has something to compare against
+    // the Azure judge's junk labels. `memoryId` is known here (unlike the
+    // 'enabled' branch above), so it rides along in the row.
+    if (isNonKeepVerdict && atomTriageMode === 'dry-run') {
+      atomsDroppedByTriage++;
+      triageDropRows.push({
+        reason: verdict!.verdict,
+        memoryId,
+        model: ctx.llmAtomTriage?.model ?? 'unknown',
+        confidence: verdict!.confidence,
+        mode: 'dry-run',
+        sessionId: ctx.sessionId,
+      });
+    }
+
     results.push({ memoryId, created });
   }
 
@@ -490,6 +623,29 @@ export async function embedAndIndex(
       { vecUpsertDrops },
       'vec index: one or more atoms in this batch failed vec upsert — flagged needs_vec_index, reembed jobs enqueued',
     );
+  }
+
+  // FEAT-533: same isolation, same reasoning as the diagnostic writes above
+  // — every real stage-8 write for this call already succeeded, so a
+  // failure here must never surface as if stage 8 itself failed. Only
+  // written when triage actually ran this call (atomTriageMode !== 'off'):
+  // a job with zero triaged atoms IS a real zero (mode 'off', or 'off' by
+  // omission) and must not pollute the doctor "Atom triage" canary's rate
+  // denominator with a phantom 0/0 row for every ordinary call.
+  if (atomTriageMode !== 'off') {
+    try {
+      recordTriageGuardDrops(ctx.db, triageDropRows);
+      recordTriageRunLog(ctx.db, {
+        sessionId: ctx.sessionId,
+        atomsTriaged: atomsTriagedCount,
+        atomsDropped: atomsDroppedByTriage,
+      });
+    } catch (err) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err) },
+        'atom-triage counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
+      );
+    }
   }
 
   return results;

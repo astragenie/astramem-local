@@ -81,6 +81,13 @@ function buildFullyPopulatedConfig(): Config {
     distill: {
       durabilityGate: 'strict', extractProfile: 'conversational', chunkConcurrency: 5, compaction: 'never',
       maxChunkChars: 2400, extractionPasses: 1, costCap: { enabled: true, maxCallsPerJob: 40, maxWallClockMs: 180_000 },
+      // provider/model deliberately unset — same round-trip gap
+      // consolidation.contradictionDetection's own provider/model override
+      // already has in this fixture (see that field above): writer.ts
+      // doesn't emit either (hand-edit-only, like extractionPassB), so
+      // setting them here would fail the round-trip assertion below for a
+      // reason unrelated to what that assertion is actually checking.
+      atomTriage: { mode: 'dry-run', batchSize: 15, maxPerRun: 100, maxWallClockMs: 60_000 },
     },
     capture: {
       autoCapture: {
@@ -189,9 +196,15 @@ describe('configToYaml', () => {
     // not.toContain('maxWallClockMs') would false-fail on that unrelated field.
     const distillBlock = yaml.slice(yaml.indexOf('\ndistill:'), yaml.indexOf('\nmemoryHealth:'));
     expect(distillBlock).toContain('costCap:');
-    expect(distillBlock).toContain('enabled: false');
-    expect(distillBlock).not.toContain('maxCallsPerJob');
-    expect(distillBlock).not.toContain('maxWallClockMs');
+    // Further-scoped to JUST the costCap sub-block (not the whole distill
+    // block): distill.atomTriage (FEAT-533) always emits its OWN
+    // maxWallClockMs immediately after costCap, same "unrelated field with
+    // the same name" reasoning the distill-block scoping above already
+    // documents for contradictionDetection.
+    const costCapBlock = distillBlock.slice(distillBlock.indexOf('costCap:'), distillBlock.indexOf('atomTriage:'));
+    expect(costCapBlock).toContain('enabled: false');
+    expect(costCapBlock).not.toContain('maxCallsPerJob');
+    expect(costCapBlock).not.toContain('maxWallClockMs');
   });
 
   it('emits a configured distill.costCap with limits', () => {
@@ -459,11 +472,19 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     expect(yaml).toMatch(/^sync:/m);
     expect(yaml).toContain('  experimental: true');
     // Connection fields owned by sync.json must never leak into config.yaml,
-    // even though buildFullyPopulatedConfig() sets non-default values for them.
-    expect(yaml).not.toContain('workspaceId');
-    expect(yaml).not.toContain('sync.example.com');
-    expect(yaml).not.toMatch(/^\s+batchSize:/m);
-    expect(yaml).not.toMatch(/^\s+intervalMs:/m);
+    // even though buildFullyPopulatedConfig() sets non-default values for
+    // them. Scoped to the `sync:` block itself (up to the next top-level
+    // key) — `batchSize`/`intervalMs` are checked as sync.json-connection-
+    // field NAMES here, not as a claim that no OTHER, unrelated config key
+    // anywhere in the file may ever share that name (distill.atomTriage.
+    // batchSize, FEAT-533, is a legitimate different field).
+    const syncBlockMatch = yaml.match(/^sync:\n(?:^ {2}.*\n)*/m);
+    expect(syncBlockMatch).toBeTruthy();
+    const syncBlock = syncBlockMatch![0];
+    expect(syncBlock).not.toContain('workspaceId');
+    expect(syncBlock).not.toContain('sync.example.com');
+    expect(syncBlock).not.toMatch(/^\s+batchSize:/m);
+    expect(syncBlock).not.toMatch(/^\s+intervalMs:/m);
   });
 });
 
