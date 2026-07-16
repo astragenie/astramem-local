@@ -110,6 +110,7 @@ import { checkEntityRelations } from './entity-relations.js';
 import { checkEvidenceProvenance } from './evidence-provenance.js';
 import { checkTranscriptSessionProvenance } from './transcript-session-provenance.js';
 import { checkExtractionYield } from './extraction-yield.js';
+import { checkAtomTriage } from './atom-triage.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
 import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
 import { checkEntityLinkRate } from './entity-link-rate.js';
@@ -214,6 +215,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkSpeakerAttributionRate(dataDir, encryptionEnabled),
     checkTranscriptSessionProvenance(dataDir, encryptionEnabled),
     checkExtractionYield(dataDir, encryptionEnabled),
+    checkAtomTriage(dataDir, opts.atomTriageMode ?? 'off', encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
     checkAtomValidityExtraction(dataDir, encryptionEnabled),
     checkEntityLinkRate(dataDir, encryptionEnabled),

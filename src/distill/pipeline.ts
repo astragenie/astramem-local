@@ -54,6 +54,14 @@ export interface PipelineContext {
    * Only consulted when `extractionPasses: 2`; ignored entirely on
    * single-pass. */
   llmExtractionPassB?: LLMProvider;
+  /** LLM atom-triage provider override (FEAT-533). Optional in the type —
+   * every real caller (distillHandler/distillEventsHandler) always sets it
+   * via ProviderSet.llm.atomTriage, which `getProviders` itself always
+   * populates (identity default to llmExtraction), but hand-built test
+   * contexts may omit it entirely. Only consulted when
+   * `config.distill.atomTriage.mode !== 'off'` — see
+   * EmbedIndexContext.llmAtomTriage's doc comment. */
+  llmAtomTriage?: LLMProvider;
   embed: EmbedProvider;
   capUsd: number;
   sessionId: string | null;
@@ -526,6 +534,15 @@ export async function runPipeline(
     durabilityGateMode: ctx.durabilityGateMode,
     redactConfig: ctx.config,
     gatedOutCounter,
+    // FEAT-533: mode/caps resolved from config (falls back to 'off'/the
+    // documented defaults when ctx.config is omitted — same convention
+    // ctx.config's other stage-8 consumers above use), provider from
+    // ctx.llmAtomTriage (byte-identical no-op when both are absent).
+    atomTriageMode: ctx.config?.distill.atomTriage.mode,
+    llmAtomTriage: ctx.llmAtomTriage,
+    atomTriageBatchSize: ctx.config?.distill.atomTriage.batchSize,
+    atomTriageMaxPerRun: ctx.config?.distill.atomTriage.maxPerRun,
+    atomTriageMaxWallClockMs: ctx.config?.distill.atomTriage.maxWallClockMs,
     // FEAT-491: the flattened transcript text this run's atoms were
     // extracted from (this function's own `transcript` parameter) — stage 8
     // uses it to recover per-atom speaker attribution from the

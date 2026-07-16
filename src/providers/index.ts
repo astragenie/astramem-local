@@ -36,6 +36,17 @@ export interface ProviderSet {
      * Only meaningful when `distill.extractionPasses: 2` — pipeline.ts
      * ignores it entirely on single-pass. */
     extractionPassB?: LLMProvider;
+    /** LLM atom-triage tier (FEAT-533). `getProviders` ALWAYS sets it,
+     * mirroring `judge`/`extractionPassB` above exactly: the SAME INSTANCE
+     * as `extraction` when no `distill.atomTriage.{provider,model}`
+     * override is configured (identity — shared rate-limit bucket,
+     * byte-identical pre-override behavior), or a distinct provider built
+     * from that override. Optional in the TYPE only so hand-built test
+     * ProviderSets stay valid — consumers fall back with
+     * `atomTriage ?? extraction`, exactly the pre-override behavior. Only
+     * meaningful when `distill.atomTriage.mode !== 'off'` — embedAndIndex
+     * never calls it on the shipped default. */
+    atomTriage?: LLMProvider;
   };
   embed: EmbedProvider;
 }
@@ -243,6 +254,21 @@ export function getProviders(config: Config): ProviderSet {
           config,
         )
       : extraction;
+  // Atom-triage provider override (FEAT-533): same identity-default shape
+  // as judge/extractionPassB above — only build a SECOND provider when at
+  // least one half is actually set, otherwise reuse the extraction
+  // INSTANCE. An invalid `provider` value was already dropped by
+  // applyAtomTriageGovernance on the boot path, so this can never hit
+  // buildLLMProvider's throwing Azure fall-through on a typo.
+  const at = config.distill?.atomTriage;
+  const atomTriage =
+    at?.provider !== undefined || at?.model !== undefined
+      ? buildLLMProvider(
+          at.provider ?? config.llm.extraction.provider,
+          at.model ?? config.llm.extraction.model,
+          config,
+        )
+      : extraction;
   return {
     llm: {
       compaction: buildLLMProvider(
@@ -253,6 +279,7 @@ export function getProviders(config: Config): ProviderSet {
       extraction,
       judge,
       extractionPassB,
+      atomTriage,
     },
     embed: buildEmbedProvider(config),
   };

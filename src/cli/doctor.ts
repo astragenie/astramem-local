@@ -36,6 +36,7 @@ export async function doctorCommand(args: string[]): Promise<void> {
       durabilityGateMode: cfg.distill.durabilityGate,
       extractProfile: cfg.distill.extractProfile,
       distillCostCap: cfg.distill.costCap,
+      atomTriageMode: cfg.distill.atomTriage.mode,
       // FEAT-479 AC-15 (SLICE-436): real configured cap (previously this
       // call site never passed one, so checkBudget silently always assumed
       // the getChecks() default of 10 regardless of the operator's actual

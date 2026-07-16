@@ -854,6 +854,59 @@ export interface Config {
        *  fall-through as the count cap. Ignored when omitted. */
       maxWallClockMs?: number;
     };
+    /** LLM atom-triage tier (FEAT-533) — a post-extraction, pre-persist
+     *  batched LLM classification call that labels each atom keep|junk|
+     *  meta-echo|capability-disclaimer|ephemeral|rephrase-of-existing,
+     *  layered ON TOP of the existing regex `durabilityGate` taxonomy above
+     *  (regex runs first, free; this tier only ever sees survivors —
+     *  `src/distill/stages/08-embed-index.ts`'s `embedAndIndex` loop is the
+     *  single insertion point, the same choke point `durabilityGate` itself
+     *  uses). Mirrors `consolidation.contradictionDetection`'s 3-state-enum +
+     *  provider-override shape (PR #373) rather than a boolean pair, for the
+     *  same reason that field documents: avoids an ambiguous
+     *  `enabled:false, dryRun:true` combination.
+     *
+     *  `off` (shipped default) is BYTE-IDENTICAL to pre-FEAT-533 behavior —
+     *  the triage batch call is never made. `dry-run` calls the model and
+     *  logs every non-'keep' verdict to `triage_guard_drops` (reason, atom
+     *  id, model, confidence) but drops NOTHING — every atom persists
+     *  regardless of verdict; this is the safe-rollout mode and the shipped
+     *  default the moment an operator opts in. `enabled` actually skips
+     *  persisting a non-'keep' atom (same "continue, never persisted" shape
+     *  `durabilityGate` already uses at the same call site) — flipping to
+     *  `enabled` requires a manually reviewed dry-run agreement sample
+     *  against FEAT-533's 43-fixture bench first (see that FEAT's spec);
+     *  this slice ships `dry-run` capable only and does not flip prod.
+     *
+     *  `provider`/`model` default to `llm.extraction` (identity — same
+     *  provider INSTANCE, shared rate-limit bucket) when unset, exactly like
+     *  `contradictionDetection`/`extractionPassB`'s own override shape —
+     *  overridable to a local model so triage stays free on a metered
+     *  (codex-subscription) extraction install. An invalid `provider` value
+     *  is dropped (warn, never fatal) by `applyAtomTriageGovernance`.
+     *
+     *  `batchSize`: fixed ATOM-COUNT batching over the flat post-reduce/
+     *  post-normalize atom stream for the WHOLE JOB, not per chunk
+     *  (architect correction, 2026-07-16 FEAT-533 spec amendment: stage 6's
+     *  `reduce()` merges/dedupes atoms across chunks before `embedAndIndex`
+     *  ever runs, and `NormalizedMemory` carries no chunkIndex to re-derive
+     *  chunk identity from — batching the deduped stream is also strictly
+     *  cheaper). One LLM call per `batchSize` atoms (or fewer for the final
+     *  partial batch); never one call per atom.
+     *
+     *  `maxPerRun`/`maxWallClockMs`: same call-count + wall-clock cap shape
+     *  `contradictionDetection` carries (FEAT-482 lesson) — bounds THIS
+     *  job's triage calls only. Once either caps, every remaining
+     *  un-triaged atom in this job is treated as 'keep' (fails OPEN,
+     *  persists unfiltered) — never drop-by-timeout. */
+    atomTriage: {
+      mode: 'off' | 'dry-run' | 'enabled';
+      provider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+      model?: string;
+      batchSize: number;
+      maxPerRun: number;
+      maxWallClockMs: number;
+    };
   };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
@@ -1250,6 +1303,12 @@ export function defaultConfig(): Config {
     distill: {
       durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto',
       maxChunkChars: 3200, extractionPasses: 2, costCap: { enabled: false },
+      // FEAT-533: 'off' — shipped default, BYTE-IDENTICAL to pre-FEAT-533
+      // behavior (no triage batch call is ever made). Opt in to 'dry-run'
+      // per-install via config.yaml; 'enabled' is gated on a reviewed
+      // dry-run agreement sample (see Config['distill']['atomTriage']'s doc
+      // comment) and is not shipped as a default by this slice.
+      atomTriage: { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 },
     },
     capture: {
       autoCapture: {
@@ -1744,6 +1803,68 @@ export function applyExtractionPassBGovernance(
       "'codex-subscription' — dropping the override (pass B rides llm.extraction). See FEAT-534.",
     );
     return { ...distill, extractionPassB: { ...passB, provider: undefined } };
+  }
+  return distill;
+}
+
+/**
+ * FEAT-533: `distill.atomTriage.mode` is a closed 3-value enum, same
+ * governance concern `applyContradictionDetectionGovernance` already
+ * documents — config.yaml is hand-parsed scalars with no schema, so a
+ * typo'd mode value would otherwise pass straight through `deepMerge`
+ * unchecked. Validated here, never fatal; an invalid or missing block falls
+ * back to `'off'` (the documented default) and is logged. Reuses
+ * `VALID_JUDGE_PROVIDERS` (declared above for the contradiction-judge
+ * override) — `distill.atomTriage.provider` is the same closed provider
+ * union with the same "must not reach buildLLMProvider's throwing Azure
+ * fall-through on a boot-time typo" concern.
+ */
+const VALID_ATOM_TRIAGE_MODES: ReadonlySet<Config['distill']['atomTriage']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+const DEFAULT_ATOM_TRIAGE: Config['distill']['atomTriage'] =
+  { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 };
+
+export function applyAtomTriageGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const at = distill.atomTriage;
+  // `loadConfig`'s top-level override merge is shallow, so a partial
+  // override that only touches a sibling `distill` field can drop
+  // `atomTriage` entirely — a missing object gets the same non-fatal
+  // fallback as an invalid `mode` (mirrors
+  // applyContradictionDetectionGovernance's identical guard).
+  if (!at || !VALID_ATOM_TRIAGE_MODES.has(at.mode)) {
+    log(
+      at
+        ? `[atom-triage-governance] distill.atomTriage.mode=${JSON.stringify(at.mode)} is not one of ` +
+          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-533 / " +
+          'src/distill/atom-triage.ts.'
+        : "[atom-triage-governance] distill.atomTriage is missing — falling back to defaults (mode: 'off'). " +
+          'See FEAT-533 / src/distill/atom-triage.ts.',
+    );
+    return { ...distill, atomTriage: { ...DEFAULT_ATOM_TRIAGE, ...at, mode: 'off' } };
+  }
+  // Provider override: an out-of-union value must not reach buildLLMProvider
+  // (whose fall-through arm is Azure and THROWS on a missing endpoint) DURING
+  // BOOT. Drop the override, keep the ride-extraction default, warn — same
+  // posture as applyContradictionDetectionGovernance/applyExtractionPassBGovernance.
+  if (at.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(at.provider)) {
+    log(
+      `[atom-triage-governance] distill.atomTriage.provider=${JSON.stringify(at.provider)} is not one of ` +
+      "'ollama'|'azure-openai'|'openai-compatible'|'codex-subscription' — dropping the override (triage rides " +
+      'llm.extraction). See FEAT-533.',
+    );
+    return { ...distill, atomTriage: { ...at, provider: undefined } };
+  }
+  if (!Number.isInteger(at.batchSize) || at.batchSize < 1) {
+    log(
+      `[atom-triage-governance] distill.atomTriage.batchSize=${JSON.stringify(at.batchSize)} is not a positive ` +
+      `integer — falling back to ${DEFAULT_ATOM_TRIAGE.batchSize}.`,
+    );
+    return { ...distill, atomTriage: { ...at, batchSize: DEFAULT_ATOM_TRIAGE.batchSize } };
   }
   return distill;
 }

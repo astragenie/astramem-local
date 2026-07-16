@@ -48,6 +48,7 @@ import {
   applyCandidateSelectionGovernance,
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
+  applyAtomTriageGovernance,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -326,7 +327,13 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     // matters: loadConfig() has zero production callers). Note
     // applyExtractionPassesGovernance itself is still NOT wired into this
     // chain (a pre-existing gap predating this slice; out of scope here).
-    distill: applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
+    // FEAT-533: applyAtomTriageGovernance added the same way, on the same
+    // real boot path — each governance function in this composition only
+    // ever touches its own field, so nesting order is safe (see
+    // applyExtractProfileGovernance's doc comment).
+    distill: applyAtomTriageGovernance(
+      applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
+    ),
     multiHop: applyMultiHopGovernance(cfg.multiHop),
     retention: applyRetentionGovernance(cfg.retention),
     // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has

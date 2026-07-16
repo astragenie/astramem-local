@@ -417,6 +417,18 @@ export function configToYaml(cfg: Config): string {
     ...(((cfg.distill ?? EMIT_DEFAULTS.distill).costCap?.maxWallClockMs !== undefined)
       ? [line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).costCap!.maxWallClockMs as number)]
       : []),
+    // LLM atom-triage tier (FEAT-533) — mode: 'off' is the shipped default,
+    // byte-identical to pre-FEAT-533 behavior. Same shape as
+    // consolidation.contradictionDetection above: the optional provider/
+    // model override is a hand-edit-only field (consistent with that
+    // block's own provider/model, and extractionPassB's, neither of which
+    // this writer round-trips either — an operator who sets one on disk
+    // keeps it via deepMerge; writeConfig() just never re-emits it).
+    line(1, 'atomTriage'),
+    line(2, 'mode', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.mode),
+    line(2, 'batchSize', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.batchSize),
+    line(2, 'maxPerRun', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.maxPerRun),
+    line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.maxWallClockMs),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes

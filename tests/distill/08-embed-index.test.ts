@@ -3,11 +3,12 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { embedAndIndex } from '../../src/distill/stages/08-embed-index.js';
 import type { NormalizedMemory } from '../../src/distill/stages/07-memory-normalize.js';
-import type { EmbedProvider, EmbedHealth } from '../../src/contracts/index.js';
+import type { EmbedProvider, EmbedHealth, LLMProvider, ChatMsg, ChatOpts } from '../../src/contracts/index.js';
 import type { DB } from '../../src/storage/db.js';
 import { EntityRepo } from '../../src/storage/entities.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { defaultConfig } from '../../src/config/config.js';
+import { ATOM_TRIAGE_MARKER, type TriageVerdictLabel } from '../../src/distill/atom-triage.js';
 
 // AC-7: capture what the gate actually logs (via a mocked childLogger)
 // instead of asserting on source-code shape — proves the redacted text, not
@@ -696,5 +697,236 @@ describe('embedAndIndex stage', () => {
       // swallowed failure instead of it propagating.
       expect(warnCalls.some(c => c.msg.includes('relation guard-drop counter write failed'))).toBe(true);
     });
+  });
+});
+
+// ─── FEAT-533: LLM atom-triage tier ─────────────────────────────────────────
+
+/** Deterministic fake triage provider: routes verdicts by exact text match
+ *  from `verdictByText` (missing entries default to 'keep'), same
+ *  closed-table posture MOCK_EXTRACTION_VOCAB uses for extraction. Verifies
+ *  the marker is present so a misrouted (non-triage) call is caught. */
+function makeTriageProvider(
+  verdictByText: Record<string, { verdict: TriageVerdictLabel; confidence: number }>,
+): LLMProvider {
+  return {
+    name: 'ollama',
+    model: 'test-triage-model',
+    async chat(messages: ChatMsg[], _opts?: ChatOpts) {
+      const system = messages.find(m => m.role === 'system')?.content ?? '';
+      if (!system.includes(ATOM_TRIAGE_MARKER)) {
+        throw new Error('test provider received a non-triage call (missing ATOM_TRIAGE_MARKER)');
+      }
+      const user = messages.find(m => m.role === 'user')?.content ?? '';
+      const verdicts: Array<{ index: number; verdict: string; confidence: number }> = [];
+      for (const line of user.split('\n')) {
+        const m = line.match(/^\[(\d+)\]\s(.*)$/);
+        if (!m) continue;
+        const index = Number(m[1]);
+        const text = m[2]!;
+        const v = verdictByText[text] ?? { verdict: 'keep' as const, confidence: 1 };
+        verdicts.push({ index, verdict: v.verdict, confidence: v.confidence });
+      }
+      return { text: JSON.stringify({ verdicts }), usage: { in: 1, out: 1, usd: 0 } };
+    },
+    async health() {
+      return { ok: true, model: 'test-triage-model', latency_ms: 0 };
+    },
+  };
+}
+
+function makeThrowingTriageProvider(message: string): LLMProvider {
+  return {
+    name: 'ollama',
+    model: 'unreachable-triage-model',
+    async chat() {
+      throw new Error(message);
+    },
+    async health() {
+      return { ok: false, model: 'unreachable-triage-model', latency_ms: 0, error: message };
+    },
+  };
+}
+
+describe('embedAndIndex — FEAT-533 atom-triage tier', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it("mode 'off' (default, including omitted) never calls the triage provider — byte-identical to pre-FEAT-533", async () => {
+    const embed = makeMockEmbed();
+    let called = false;
+    const llmAtomTriage = makeTriageProvider({});
+    const wrapped: LLMProvider = { ...llmAtomTriage, chat: async (...args) => { called = true; return llmAtomTriage.chat(...args); } };
+    const mems = [normalizedMem('a durable fact about the architecture', 'a'.repeat(64))];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      llmAtomTriage: wrapped,
+      // atomTriageMode intentionally omitted
+    });
+
+    expect(called).toBe(false);
+    expect(results).toHaveLength(1);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM triage_guard_drops').get() as any).n).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM triage_run_log').get() as any).n).toBe(0);
+  });
+
+  it("mode 'dry-run': every atom persists regardless of verdict, and a row is recorded per non-'keep' verdict with the real memory_id", async () => {
+    const embed = makeMockEmbed();
+    const junkText = 'no results found';
+    const keepText = 'a durable fact about the architecture';
+    const llmAtomTriage = makeTriageProvider({ [junkText]: { verdict: 'junk', confidence: 0.85 } });
+    const mems = [normalizedMem(junkText, 'b'.repeat(64)), normalizedMem(keepText, 'c'.repeat(64))];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'dry-run',
+      llmAtomTriage,
+    });
+
+    // Both atoms persisted — dry-run drops nothing.
+    expect(results).toHaveLength(2);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memories').get() as any).n).toBe(2);
+
+    const rows = db.prepare('SELECT reason, memory_id, model, confidence, mode, session_id FROM triage_guard_drops').all() as any[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe('junk');
+    expect(rows[0].mode).toBe('dry-run');
+    expect(rows[0].model).toBe('test-triage-model');
+    expect(rows[0].confidence).toBeCloseTo(0.85);
+    expect(rows[0].session_id).toBeNull();
+    // memory_id is set (the atom actually persisted) — find it among the
+    // junk-text result to confirm it's the SAME id embedAndIndex returned.
+    const junkResultId = results.find(r => {
+      const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(r.memoryId) as any;
+      return row?.text === junkText;
+    })?.memoryId;
+    expect(rows[0].memory_id).toBe(junkResultId);
+
+    const runLog = db.prepare('SELECT atoms_triaged, atoms_dropped FROM triage_run_log').get() as any;
+    expect(runLog.atoms_triaged).toBe(2);
+    expect(runLog.atoms_dropped).toBe(1);
+  });
+
+  it("mode 'enabled': non-'keep' atoms are dropped (never persisted), sibling 'keep' atoms persist unchanged, drops counted by reason", async () => {
+    const embed = makeMockEmbed();
+    const junkText = 'no results found';
+    const echoText = 'searching for prior session notes';
+    const keepText = 'Chose PostgreSQL for ACID guarantees over MongoDB';
+    const llmAtomTriage = makeTriageProvider({
+      [junkText]: { verdict: 'junk', confidence: 0.9 },
+      [echoText]: { verdict: 'meta-echo', confidence: 0.7 },
+    });
+    const mems = [
+      normalizedMem(junkText, 'd'.repeat(64)),
+      normalizedMem(echoText, 'e'.repeat(64)),
+      normalizedMem(keepText, 'f'.repeat(64)),
+    ];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'enabled',
+      llmAtomTriage,
+    });
+
+    // Only the keep-verdict atom persisted.
+    expect(results).toHaveLength(1);
+    const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
+    expect(row.text).toBe(keepText);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memories').get() as any).n).toBe(1);
+
+    const rows = db.prepare('SELECT reason, memory_id, mode FROM triage_guard_drops ORDER BY reason').all() as any[];
+    expect(rows).toHaveLength(2);
+    expect(rows.map(r => r.reason)).toEqual(['junk', 'meta-echo']);
+    // Dropped atoms never reached insertWithCreateEvent — no memory_id.
+    expect(rows.every(r => r.memory_id === null)).toBe(true);
+    expect(rows.every(r => r.mode === 'enabled')).toBe(true);
+
+    const runLog = db.prepare('SELECT atoms_triaged, atoms_dropped FROM triage_run_log').get() as any;
+    expect(runLog.atoms_triaged).toBe(3);
+    expect(runLog.atoms_dropped).toBe(2);
+  });
+
+  it('provider unreachable: fails open — every atom persists, a WARN is logged, no atom is silently dropped', async () => {
+    warnCalls.length = 0;
+    const embed = makeMockEmbed();
+    const llmAtomTriage = makeThrowingTriageProvider('ECONNREFUSED');
+    const mems = [
+      normalizedMem('no results found', 'g'.repeat(64)),
+      normalizedMem('a durable fact about the architecture', 'h'.repeat(64)),
+    ];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'enabled',
+      llmAtomTriage,
+    });
+
+    expect(results).toHaveLength(2);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM memories').get() as any).n).toBe(2);
+    expect(warnCalls.some(c => c.msg.includes('ECONNREFUSED'))).toBe(true);
+    // Fail-open means nothing was classified as dropped.
+    expect((db.prepare('SELECT COUNT(*) AS n FROM triage_guard_drops').get() as any).n).toBe(0);
+    const runLog = db.prepare('SELECT atoms_dropped FROM triage_run_log').get() as any;
+    expect(runLog.atoms_dropped).toBe(0);
+  });
+
+  it('maxPerRun cap reached: atoms in later batches fall through un-triaged and persist unfiltered (never drop-by-timeout)', async () => {
+    const embed = makeMockEmbed();
+    const junkText = 'no results found';
+    const llmAtomTriage = makeTriageProvider({ [junkText]: { verdict: 'junk', confidence: 0.9 } });
+    // batchSize 1 + maxPerRun 1 -> only the FIRST atom's batch call ever runs;
+    // the second atom (also junk-worthy) is never triaged at all.
+    const mems = [
+      normalizedMem(junkText, 'i'.repeat(64), 0.7, undefined, undefined),
+      normalizedMem(junkText.slice(0) + ' (second)', 'j'.repeat(64)),
+    ];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'enabled',
+      llmAtomTriage,
+      atomTriageBatchSize: 1,
+      atomTriageMaxPerRun: 1,
+    });
+
+    // First atom triaged+dropped; second never reached by the capped
+    // tracker, so it falls through and persists.
+    expect(results).toHaveLength(1);
+    const persisted = db.prepare('SELECT text FROM memories').all() as any[];
+    expect(persisted[0]!.text).toContain('(second)');
+
+    const runLog = db.prepare('SELECT atoms_triaged, atoms_dropped FROM triage_run_log').get() as any;
+    expect(runLog.atoms_triaged).toBe(1); // only the first batch was attempted
+    expect(runLog.atoms_dropped).toBe(1);
+  });
+
+  it('the regex durability gate runs BEFORE triage — a gate-rejected atom never reaches the triage provider', async () => {
+    const embed = makeMockEmbed();
+    let triageCallCount = 0;
+    const base = makeTriageProvider({});
+    const counting: LLMProvider = { ...base, chat: async (...args) => { triageCallCount++; return base.chat(...args); } };
+    const mems = [
+      normalizedMem('Run memory test', 'k'.repeat(64)), // bare_todo, gated under 'strict'
+      normalizedMem('a durable fact about the architecture', 'l'.repeat(64)),
+    ];
+
+    const gatedOutCounter = { count: 0 };
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      durabilityGateMode: 'strict',
+      gatedOutCounter,
+      atomTriageMode: 'enabled',
+      llmAtomTriage: counting,
+    });
+
+    expect(gatedOutCounter.count).toBe(1); // 'Run memory test' gated by regex
+    expect(results).toHaveLength(1); // only the durable fact survives to persist
+    // The triage provider only ever saw the ONE survivor, not the gated atom.
+    expect(triageCallCount).toBe(1);
   });
 });

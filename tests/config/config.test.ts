@@ -9,6 +9,7 @@ import {
   applyCandidateSelectionGovernance,
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
+  applyAtomTriageGovernance,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -346,13 +347,13 @@ describe('applyFusionGovernance', () => {
 describe('applyDurabilityGateGovernance', () => {
   it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
     for (const mode of ['strict', 'lenient', 'off'] as const) {
-      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const };
+      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
       expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to off and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const };
+    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
     const logs: string[] = [];
     const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -443,6 +444,62 @@ describe('applyExtractionPassBGovernance — pass-B provider override', () => {
     // override's equivalent test documents.
     expect(out.extractionPassB!.model).toBe('qwen3:8b');
     expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
+  });
+});
+
+describe('applyAtomTriageGovernance — FEAT-533', () => {
+  const distillOf = (atomTriage: Record<string, unknown> | undefined) =>
+    ({ ...defaultConfig().distill, atomTriage }) as any;
+
+  it("shipped default is 'off' — byte-identical, unchanged by governance", () => {
+    const input = defaultConfig().distill;
+    expect(input.atomTriage.mode).toBe('off');
+    expect(applyAtomTriageGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('a valid mode + provider override passes through untouched', () => {
+    const input = distillOf({ mode: 'dry-run', provider: 'ollama', model: 'qwen2.5:7b', batchSize: 10, maxPerRun: 100, maxWallClockMs: 60_000 });
+    expect(applyAtomTriageGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('missing atomTriage block falls back to defaults (mode: off), never throws', () => {
+    const log = vi.fn();
+    const input = distillOf(undefined);
+    const out = applyAtomTriageGovernance(input, { log });
+    expect(out.atomTriage.mode).toBe('off');
+    expect(out.atomTriage.batchSize).toBe(20);
+    expect(out.atomTriage.maxPerRun).toBe(200);
+    expect(out.atomTriage.maxWallClockMs).toBe(300_000);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('atomTriage is missing'));
+  });
+
+  it("an invalid mode falls back to 'off' with a warning, never fatal", () => {
+    const log = vi.fn();
+    const input = distillOf({ mode: 'enable', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+    const out = applyAtomTriageGovernance(input, { log });
+    expect(out.atomTriage.mode).toBe('off');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('enable'));
+  });
+
+  it('an invalid provider is DROPPED with a warning, never fatal — boot survives a typo', () => {
+    const log = vi.fn();
+    const input = distillOf({ mode: 'dry-run', provider: 'olama', model: 'qwen2.5:7b', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+    const out = applyAtomTriageGovernance(input, { log });
+    expect(out.atomTriage.provider).toBeUndefined();
+    // model kept — a harmless half-override, same posture the judge/pass-B
+    // override tests document.
+    expect(out.atomTriage.model).toBe('qwen2.5:7b');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
+  });
+
+  it('a non-positive-integer batchSize falls back to 20, logged', () => {
+    for (const bad of [0, -5, 2.5]) {
+      const log = vi.fn();
+      const input = distillOf({ mode: 'dry-run', batchSize: bad, maxPerRun: 200, maxWallClockMs: 300_000 });
+      const out = applyAtomTriageGovernance(input, { log });
+      expect(out.atomTriage.batchSize).toBe(20);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('batchSize'));
+    }
   });
 });
 
@@ -548,13 +605,13 @@ describe('applyAudioModeGovernance', () => {
 describe('applyExtractProfileGovernance', () => {
   it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
     for (const profile of ['engineering', 'conversational'] as const) {
-      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const };
+      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
       expect(applyExtractProfileGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to engineering and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const };
+    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
     const logs: string[] = [];
     const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
 
