@@ -113,6 +113,16 @@ export const AtomSchema = z.object({
   invalid_at: z.string().optional(),
 });
 
+/**
+ * INVARIANT: this schema (and everything AtomSchema nests) must stay
+ * `z.toJSONSchema()`-representable — 05-extract.ts converts it at MODULE
+ * LOAD into the structured-output `jsonSchema` sent to providers (the
+ * qwen3.5 duplicate-key-collapse fix, 2026-07-16). Adding a `.refine()` /
+ * `.transform()` / `.catch()` here throws at import time and takes down the
+ * whole distill pipeline with it. Enforced by a build-failing test
+ * (tests/distill/05-extract.test.ts "ExtractionSchema stays
+ * toJSONSchema-representable"), not just this comment.
+ */
 export const ExtractionSchema = z.object({
   atoms: z.array(AtomSchema)
 });
