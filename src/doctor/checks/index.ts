@@ -137,6 +137,7 @@ import { checkHandlerRunLog } from './handler-run-log.js';
 import { checkRetention } from './retention.js';
 import { checkAudioAddon } from './audio-addon.js';
 import { checkModelFitCanary } from './model-fit.js';
+import { checkTaskRepetitionDormancy } from './task-repetition-dormancy.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -242,6 +243,15 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     // an 8 GB VRAM card) survives every upgrade forever. See model-fit.ts's
     // module doc comment.
     checkModelFitCanary(opts.llmConfig ?? defaultConfig().llm, { ollamaBaseUrl: opts.ollamaBaseUrl }),
+    // Issue #370: win32-only (no-ops elsewhere) — WARN when a registered
+    // Astra scheduled task's Last Run Time is stale relative to its own
+    // repetition interval, the operator-facing signal for the
+    // dormant-repetition-after-registration class task-xml.ts's TimeTrigger
+    // fixes. tier: 'full' (real schtasks.exe process spawns, not a bounded
+    // read) — runs on the manual `doctor` CLI and the existing 24h piggyback
+    // tick, not the 15-min frequent schedule. See task-repetition-dormancy.ts's
+    // module doc comment.
+    checkTaskRepetitionDormancy(),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.

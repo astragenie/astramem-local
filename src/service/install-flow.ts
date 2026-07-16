@@ -7,10 +7,23 @@
  *
  * On ALL platforms (FEAT-443 SLICE-1 — previously Windows-only) the
  * scheduler is pointed at the STABLE shim path, never at the build directly
- * — upgrades only rewrite the shim pointer (see shim.ts). The unit/plist
- * (systemd/launchd) or scheduled task (schtasks) is written exactly once, at
- * first install; a subsequent `reinstall` repoints `current.json` and never
- * re-registers with the scheduler.
+ * — upgrades only rewrite the shim pointer (see shim.ts).
+ *
+ * CORRECTED 2026-07-16 (issue #370) — the claim that used to sit here ("the
+ * unit/plist/task is written exactly once, at first install; a subsequent
+ * `reinstall` repoints `current.json` and never re-registers with the
+ * scheduler") was WRONG for the plain `reinstall` path. `installServiceFlow`
+ * is called by `service install`, `init`, AND a plain `reinstall`
+ * (reinstall.ts), and `adapter.install()` below unconditionally re-registers
+ * on EVERY call — schtasks.ts's `install()` runs `schtasks /create ... /f`
+ * every time, systemd.ts's `install()` runs `writeFileSync` + `daemon-reload`
+ * every time. Only `reinstall --rollback` / `reinstall --dev` (reinstall.ts's
+ * repoint path) truly never call this function and never touch the
+ * scheduler. Re-registering on every plain reinstall is exactly why a Windows
+ * scheduled task's logon-trigger repetition used to go dormant after each
+ * `reinstall` until the next logon/reboot — see task-xml.ts's header for the
+ * fix (a `<TimeTrigger>` that re-arms the repetition immediately at every
+ * registration, not just the first).
  */
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
