@@ -217,6 +217,13 @@ export function requiredSnapshotFiles(dtype: OnnxDType): string[] {
  *   3. `cacheDir/<hfRepo>/<revision>` (config.onnxEmbed.cacheDir)
  *   4. `libraryCacheDir/<hfRepo>/<revision>` (the library's own default
  *      cache — where a prior boot's download actually landed)
+ *
+ * When `modelPath` is set, candidates 3-4 are NOT consulted (review
+ * follow-up on #363): `modelPath` is the air-gapped operator's explicit
+ * override, and silently falling back past it to a stray cache snapshot
+ * would load weights the operator never pointed at — the incomplete-
+ * modelPath case must fail loudly (the caller throws), never resolve
+ * elsewhere.
  */
 export function resolveLocalSnapshotDir(
   opts: Pick<ResolvedOnnxLoadOpts, 'hfModelId' | 'revision' | 'dtype' | 'cacheDir' | 'modelPath'>,
@@ -226,12 +233,13 @@ export function resolveLocalSnapshotDir(
   const candidates: string[] = [];
   if (opts.modelPath) {
     candidates.push(opts.modelPath, join(opts.modelPath, opts.hfModelId, opts.revision));
-  }
-  if (opts.cacheDir) {
-    candidates.push(join(opts.cacheDir, opts.hfModelId, opts.revision));
-  }
-  if (libraryCacheDir) {
-    candidates.push(join(libraryCacheDir, opts.hfModelId, opts.revision));
+  } else {
+    if (opts.cacheDir) {
+      candidates.push(join(opts.cacheDir, opts.hfModelId, opts.revision));
+    }
+    if (libraryCacheDir) {
+      candidates.push(join(libraryCacheDir, opts.hfModelId, opts.revision));
+    }
   }
   for (const dir of candidates) {
     if (required.every((f) => existsSync(join(dir, f)))) return dir;
@@ -272,7 +280,9 @@ async function loadTransformersBackend(opts: ResolvedOnnxLoadOpts): Promise<Onnx
       throw new Error(
         `onnx: config.onnxEmbed.modelPath is set ("${opts.modelPath}") but no complete ` +
           `snapshot for ${opts.hfModelId}@${opts.revision} (dtype ${opts.dtype}) was found ` +
-          `there — expected files: ${requiredSnapshotFiles(opts.dtype).join(', ')}`,
+          `at "${opts.modelPath}" or "${join(opts.modelPath, opts.hfModelId, opts.revision)}" ` +
+          `(only modelPath is consulted when set — cacheDir and the library cache are ` +
+          `deliberately skipped). Expected files: ${requiredSnapshotFiles(opts.dtype).join(', ')}`,
       );
     }
     if (opts.cacheDir) {
@@ -338,12 +348,23 @@ export interface OnnxEmbedConfig {
    * to override a registered model's documented default (e.g. to restore
    * SLICE-1/2's mean-pooling behavior for mxbai on an existing install). */
   pooling?: OnnxPoolingStrategy;
-  /** Local cache directory for downloaded weights. S2 wires this to
-   * `<dataDir>/models/onnx/` per ADR-018 (deferred) — unset here defers to
-   * the library's own default cache resolution. */
+  /** Local cache directory for downloaded weights. providers/index.ts
+   * defaults this to `<dataDir>/models/onnx/` (ADR-018 S2, wired 2026-07-16
+   * — the library's own default cache lives inside the release directory's
+   * node_modules and is silently discarded on release rotation); unset here
+   * defers to the library's own default cache resolution. */
   cacheDir?: string;
-  /** Explicit local filesystem override — takes precedence over any
-   * download when set (offline/air-gapped installs). */
+  /** Explicit local snapshot override for offline/air-gapped installs.
+   * When set, it is the ONLY location consulted and it MUST contain a
+   * complete snapshot (`config.json`, `tokenizer.json`,
+   * `tokenizer_config.json`, `onnx/model<dtype-suffix>.onnx` — see
+   * `requiredSnapshotFiles`) either directly at `modelPath` or at
+   * `modelPath/<hfRepo>/<revision>/`; otherwise boot throws (never a
+   * silent hub download — ADR-015). BREAKING vs pre-#363 semantics, which
+   * treated this as a `cache_dir` for the library's own resolution: an
+   * install laid out for the old scheme must reshape to one of the two
+   * layouts above (a directory populated by a prior daemon download
+   * already matches the second). */
   modelPath?: string;
   /** ORT intraOpNumThreads cap. Defaults to DEFAULT_NUM_THREADS (4). */
   numThreads?: number;
