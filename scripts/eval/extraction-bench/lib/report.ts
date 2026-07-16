@@ -22,6 +22,16 @@ export interface FixtureReportRow {
   poisonJobs: number;
   atoms: JudgeAtomIn[];
   score: FixtureScore | null;
+  /** FEAT-534: pre-merge per-pass atom counts for a mixed-pass
+   *  (`+passB=`) run — `atoms` above is always the final MERGED/deduped
+   *  set. `undefined` on every single-pass fixture (the default), same
+   *  optional-when-not-applicable shape `DirectRunResult` itself uses
+   *  (scripts/eval/extraction-bench/lib/pipeline-direct.ts). Review finding
+   *  (PR #376): these previously reached only console.log, never the
+   *  archived results.json/report.md — AC-4's "measurement gate for
+   *  adopting hybrid as default" needs them persisted, not just printed. */
+  passAAtomCount?: number;
+  passBAtomCount?: number;
 }
 
 export interface RunAggregate {
@@ -35,6 +45,12 @@ export interface RunAggregate {
   avgWallMsPerSession: number;
   totalWallMs: number;
   azureUsd: number;
+  /** FEAT-534: mean pre-merge per-pass atom count across this run's
+   *  fixtures, for a mixed-pass (`+passB=`) run — `null` when no fixture in
+   *  the run carried a pass split (single-pass, the overwhelming majority
+   *  of runs). See FixtureReportRow.passAAtomCount/passBAtomCount. */
+  avgPassAAtomCount: number | null;
+  avgPassBAtomCount: number | null;
 }
 
 /** One model, one run — the pre-FEAT-450 report shape. */
@@ -83,6 +99,13 @@ export function aggregateFixtureScores(fixtureReports: FixtureReportRow[], azure
   const wallTimes = fixtureReports.filter(f => f.status !== 'error').map(f => f.wallMs);
   const failedFixtures = fixtureReports.filter(f => f.status === 'error' || f.status === 'timeout' || f.status === 'partial').length;
 
+  // FEAT-534: per-pass atom counts, present only on fixtures a mixed-pass
+  // (`+passB=`) run actually ran dual-pass on — filtered like junkRates/
+  // typeAccs above, not read off `score` (these come from the extraction
+  // result itself, independent of judging).
+  const passAAtomCounts = fixtureReports.map(f => f.passAAtomCount).filter((n): n is number => n !== undefined);
+  const passBAtomCounts = fixtureReports.map(f => f.passBAtomCount).filter((n): n is number => n !== undefined);
+
   return {
     avgRecall,
     avgPrecision,
@@ -94,6 +117,8 @@ export function aggregateFixtureScores(fixtureReports: FixtureReportRow[], azure
     avgWallMsPerSession: mean(wallTimes) ?? 0,
     totalWallMs: wallTimes.reduce((a, b) => a + b, 0),
     azureUsd,
+    avgPassAAtomCount: mean(passAAtomCounts),
+    avgPassBAtomCount: mean(passBAtomCounts),
   };
 }
 
@@ -127,6 +152,11 @@ export function combineRuns(runs: SingleRunReport[]): ModelReport {
     avgWallMsPerSession: mean(aggregates.map(a => a.avgWallMsPerSession)) ?? 0,
     totalWallMs: aggregates.reduce((s, a) => s + a.totalWallMs, 0),
     azureUsd: aggregates.reduce((s, a) => s + a.azureUsd, 0),
+    // FEAT-534: same mean-of-per-run-means pattern overExtractionOnNothingFixture
+    // uses just above — null-safe via mean()'s NaN filtering when a run had no
+    // pass split at all.
+    avgPassAAtomCount: mean(aggregates.map(a => a.avgPassAAtomCount ?? NaN)),
+    avgPassBAtomCount: mean(aggregates.map(a => a.avgPassBAtomCount ?? NaN)),
   };
 
   return {
@@ -147,9 +177,17 @@ export interface RenderOptions {
 export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: RenderOptions = {}): string {
   const lines: string[] = [];
   lines.push('# Extraction-bench results', '');
-  lines.push('| Model | Recall | Precision | F1 | Junk rate | Type acc | Over-extract (nothing fx) | Avg s/session | Failed fixtures | Azure $ |');
-  lines.push('|---|---|---|---|---|---|---|---|---|---|');
+  // FEAT-534 (review finding, PR #376): Pass A/Pass B atom columns — the
+  // model column already identifies the pass split (the raw `+passB=` spec
+  // string flows through as `r.model` unchanged), but the per-pass atom
+  // COUNTS previously reached only console.log, never this archived table.
+  // "—" for every single-pass row (avgPassAAtomCount/avgPassBAtomCount both
+  // null) keeps the table's shape unchanged for the overwhelming majority
+  // of runs that never use `+passB=`.
+  lines.push('| Model | Recall | Precision | F1 | Junk rate | Type acc | Over-extract (nothing fx) | Avg s/session | Failed fixtures | Azure $ | Pass A atoms | Pass B atoms |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
   const fmtPct = (n: number | null) => (n === null ? '—' : `${(n * 100).toFixed(0)}%`);
+  const fmtCount = (n: number | null) => (n === null ? '—' : n.toFixed(1));
   for (const r of reports) {
     const a = r.aggregate;
     const recallCell = r.stats ? formatStatsPct(r.stats.recall) : fmtPct(a.avgRecall);
@@ -158,7 +196,7 @@ export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: R
     const typeAccCell = r.stats ? formatStatsPct(r.stats.typeAccuracy) : fmtPct(a.avgTypeAccuracy);
     const modelCell = r.runs ? `${r.model} (n=${r.runs.length})` : r.model;
     lines.push(
-      `| ${modelCell} | ${recallCell} | ${precisionCell} | ${f1Cell} | ${fmtPct(a.avgJunkRate)} | ${typeAccCell} | ${a.overExtractionOnNothingFixture ?? '—'} | ${(a.avgWallMsPerSession / 1000).toFixed(1)}s | ${a.failedFixtures} | $${a.azureUsd.toFixed(4)} |`,
+      `| ${modelCell} | ${recallCell} | ${precisionCell} | ${f1Cell} | ${fmtPct(a.avgJunkRate)} | ${typeAccCell} | ${a.overExtractionOnNothingFixture ?? '—'} | ${(a.avgWallMsPerSession / 1000).toFixed(1)}s | ${a.failedFixtures} | $${a.azureUsd.toFixed(4)} | ${fmtCount(a.avgPassAAtomCount)} | ${fmtCount(a.avgPassBAtomCount)} |`,
     );
   }
   lines.push('', `_Judge: Azure gpt-5-mini (reasoning_effort=${opts.judgeReasoningEffort ?? 'minimal'}). Estimated judge spend this run: ~$${judgeUsd.toFixed(3)}._`);
