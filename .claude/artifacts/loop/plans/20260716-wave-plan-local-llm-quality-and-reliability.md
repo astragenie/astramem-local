@@ -1,6 +1,6 @@
 # Wave plan — local-LLM quality + reliability track (2026-07-16)
 
-status: architect-reviewed-amended (2026-07-16; challenger review pending resend)
+status: APPROVED-WITH-CHANGES (architect + challenger, 2026-07-16) — all 5 challenger changes applied; dispatch-ready
 owner: lead (interactive session)
 context: qwen3:8b won the 43-fixture judged extraction bench (F1 76% vs prod
 codex 64%); compaction flipped local today; contradiction judge live in
@@ -28,7 +28,7 @@ This plan sequences the 8 next items into conflict-free parallel waves.
 | FEAT-534 pass-B provider | config.ts, loader.ts, pipeline.ts, 05-extract.ts, run-bench.mts, providers/index.ts, pipeline/handlers/distill.ts (architect amend) |
 | FEAT-533 atom triage | config.ts, loader.ts, durability-gate.ts, 08-embed-index.ts, new migration, doctor check |
 | #370 watchdog re-arm | schtasks.ts, install-flow.ts, watchdog-probe.ts, doctor check |
-| #372 consolidation ops | consolidate.ts, server routes, MCP tools, cli/consolidate.ts |
+| #372 consolidation ops | consolidate.ts, proposals.ts, server routes, MCP tools, cli/consolidate.ts, contracts/manifests/mcp-tools.v1.json + parity tests (challenger change 1 — CI hard-fails on tool-name drift) |
 | #352B supersession→recall | search/search.ts, fuse.ts |
 | #284 profile-gated compaction | pipeline.ts, 04-compact.ts, config.ts (distill block) |
 | #341 silent-client (local half) | tests/contracts, server ingest route docs |
@@ -42,27 +42,53 @@ Conflicts driving sequencing: 534⨯533⨯284 share config.ts/pipeline.ts;
 | Slice | Builder | Notes |
 |---|---|---|
 | W1-A FEAT-534 pass-B provider | crew:fullstack-dev | #373-pattern config + governance; capture-provider tests; bench spec syntax. NO default change. |
-| W1-B #370 watchdog re-arm | crew:fullstack-dev | ARCHITECT-PINNED DESIGN: ADD a `<TimeTrigger StartBoundary=now>` alongside (not replacing) LogonTrigger in task-xml.ts's buildTaskXml — one fix point covers both tasks (schtasks.ts:146,:369 share it); schedule-type /sc switch REJECTED (regresses the ExecutionTimeLimit=PT0S fix). Bug recurs on EVERY reinstall (adapter.install() re-creates with /f each time — install-flow's 'exactly once' comment is stale; fix that comment too). Doctor canary on LastRunTime staleness > 3× interval. Validator: throwaway task name only — install() has no dry-run. |
+| W1-B #370 watchdog re-arm | crew:fullstack-dev | ARCHITECT-PINNED DESIGN: ADD a `<TimeTrigger StartBoundary=now>` alongside (not replacing) LogonTrigger in task-xml.ts's buildTaskXml — one fix point covers both tasks (schtasks.ts:146,:369 share it); schedule-type /sc switch REJECTED (regresses the ExecutionTimeLimit=PT0S fix). Bug recurs on EVERY reinstall (adapter.install() re-creates with /f each time — install-flow's 'exactly once' comment is stale; fix that comment too). Doctor canary on LastRunTime staleness > 3× interval. Validator: throwaway task name only — install() has no dry-run. **MERGE CARVE-OUT (challenger change 4): the final install-flow.ts/schtasks PR requires explicit operator sign-off — NO auto-merge** (mutates the only production daemon's OS service registration). |
 | W1-C #372 consolidation ops | crew:backend-dev | Pagination at the REPO layer (ProposalRepo.list, proposals.ts:79) so HTTP/MCP/CLI/dashboard inherit it (FEAT-456 SLICE-2 precedent); min-confidence is NOT a column — parse metadata_json in-repo, fetch-filter-slice in JS. Batch-resolve MCP tool + CLI; flip candidateSelection knn PRIORITY RAISED: first live run showed 17 skipped groups holding 28,097 atoms — 76% of corpus never scanned in 'full' mode. MCP tool addition MUST update contracts/manifests/mcp-tools.v1.json + parity tests (cross-repo SoT). |
 | W1-D #352B supersession→recall | crew:backend-dev | HARD CONSTRAINT (architect): any staleness signal enters via applyFusionGovernance's componentKeys array + eval-evidence gate (config.ts:1285-1329) — never summed ad hoc in fuse.ts. Scope per architect: a NEW GOVERNED 8th fusion term (mirror zeta/eta: componentKeys entry + ceiling + eval-evidence gate) PLUS search.ts data plumbing to surface the supersession edge into the scorer — not fuse.ts math alone. Builder locates the exact fuse.ts scoring loop BEFORE implementing. Recall-eval floors (recall@10>=0.9, NDCG>=0.7) must hold. |
 
-Wave-1 exit gate: all four PRs merged green + `/runner:phase-gate`-style
-suite pass on main.
+Wave-1 exit gate (challenger change 3, applies to EVERY wave): all wave
+PRs merged green + full suite pass on main + **reinstall the live service
+and confirm doctor green on the Schema-drift and restart-storm checks**
+before the next wave dispatches — W1-B mutates the production schtasks
+registration and W2-A adds this plan's one migration; on a shared
+production box that combination reproduces the #306 crash-loop class,
+and the existing mitigations detect-and-stop, they do not auto-heal.
 
 ## Wave 2 (3 parallel, after W1 merges)
 
 | Slice | Builder | Notes |
 |---|---|---|
 | W2-A FEAT-533 atom triage | crew:fullstack-dev | rebases on 534's config/loader shape; dry-run ONLY this wave; migration number from origin/main at push. |
-| W2-B #284 profile-gated compaction | crew:fullstack-dev | shouldCompact seam exists; conversational→skip-or-light policy; A/B evidence from LoCoMo ablation (no-compact 0.484) in the FEAT notes. |
-| W2-C #341 local half | crew:backend-dev | daemon-side contract test pinning flat project/agent on POST /ingest + RememberRequest parity; the plugins-common serialization fix is a SEPARATE cross-repo PR (astramem-plugin repo) — tracked, not built here. |
+| W2-B #341 local half | crew:backend-dev | daemon-side contract test pinning flat project/agent on POST /ingest + RememberRequest parity; the plugins-common serialization fix is a SEPARATE cross-repo PR (astramem-plugin repo) — tracked, not built here. |
+
+(#284 MOVED to wave 3 — challenger change 2: the plan's own matrix flags
+534×533×284 sharing config.ts, and 533∥284 both edit the distill config
+block; serialized rather than proven-disjoint.)
 
 ## Wave 3 (2 parallel, after W2)
 
 | Slice | Builder | Notes |
 |---|---|---|
 | W3-A FEAT-492 embed cache | crew:backend-dev | 08-embed-index free after 533 merges; content-hash keyed on (text, model, dim, revision). |
-| W3-B Bench validation batch | crew:verifier | GPU free post-LoCoMo: FEAT-534 hybrid bench row; FEAT-533 dry-run agreement vs Azure judge labels; judge dry-run verdict sample review → go/no-go for `enabled`. |
+| W3-B #284 profile-gated compaction | crew:fullstack-dev | moved from W2 (config.ts distill-block conflict with 533); shouldCompact seam exists; A/B evidence from LoCoMo ablation (no-compact 0.484). |
+| W3-C Bench validation batch | crew:verifier | GPU free post-LoCoMo: FEAT-534 hybrid bench row; FEAT-533 dry-run agreement vs Azure judge labels; judge dry-run verdict sample review → go/no-go for `enabled`. |
+
+## Alternatives considered (challenger change 5)
+
+- **Fully serialize all 8 slices**: rejected — file-conflict analysis shows
+  4-way parallelism is safe in wave 1, and serialization roughly triples
+  wall-clock for zero risk reduction on non-overlapping files.
+- **Ship #370 alone first (wave 0)**: considered — it IS the highest
+  operational risk (dormant restart nets). Rejected as a solo wave because
+  its build is independent of every other slice (no shared files) so it
+  gains nothing by excluding parallel peers; instead its risk is handled by
+  the sign-off carve-out (change 4) and the per-wave reinstall+doctor gate
+  (change 3), which restore the protection earlier than a serialized plan
+  would.
+- **Defer #372's MCP tool to avoid the manifest parity dance**: rejected —
+  the 768-proposal backlog (and 76%-unscanned finding) is now growing again
+  since consolidation was re-enabled today; operator surface is the point
+  of the slice.
 
 ## Explicitly out of plan
 
