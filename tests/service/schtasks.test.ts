@@ -89,6 +89,21 @@ describe('SchtasksAdapter', () => {
       );
       expect(cmdWrites).toHaveLength(0);
     });
+
+    it('issue #370: also registers a TimeTrigger so the PT5M repetition arms without waiting for the next logon', async () => {
+      await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
+      const xmlWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/AstraMemoryD\.xml$/i),
+      );
+      const buf = xmlWrite![1] as Buffer;
+      const xml = buf.subarray(2).toString('utf16le');
+      expect(xml).toContain('<LogonTrigger>');
+      expect(xml).toContain('<TimeTrigger>');
+      expect(xml).toMatch(/<TimeTrigger>\s*<StartBoundary>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}<\/StartBoundary>/);
+      // Both triggers share the exact same 5-minute keepalive interval.
+      const intervals = [...xml.matchAll(/<Interval>([^<]+)<\/Interval>/g)].map(m => m[1]);
+      expect(intervals).toEqual(['PT5M', 'PT5M']);
+    });
   });
 
   describe('install — Tier A (CLI fallback, no /RU)', () => {
@@ -428,6 +443,20 @@ describe('SchtasksAdapter', () => {
       expect(xml).toContain('<Interval>PT180S</Interval>');
       expect(xml).toContain('service watchdog-probe');
       expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
+    });
+
+    it('issue #370: also registers a TimeTrigger so the probe repetition arms without waiting for the next logon', async () => {
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      const xmlWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/AstraMemoryDWatchdog\.xml$/i),
+      );
+      const buf = xmlWrite![1] as Buffer;
+      const xml = buf.subarray(2).toString('utf16le');
+      expect(xml).toContain('<LogonTrigger>');
+      expect(xml).toContain('<TimeTrigger>');
+      // Both triggers share the exact same probe-cadence interval, not the daemon's PT5M.
+      const intervals = [...xml.matchAll(/<Interval>([^<]+)<\/Interval>/g)].map(m => m[1]);
+      expect(intervals).toEqual(['PT180S', 'PT180S']);
     });
 
     it('falls back to schtasks /sc MINUTE /mo N when the XML tier fails', async () => {

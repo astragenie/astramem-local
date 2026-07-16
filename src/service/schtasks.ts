@@ -5,9 +5,13 @@ import { tmpdir } from 'node:os';
 import { buildTaskXml, buildDailyTaskXml } from './task-xml.js';
 import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
-const TASK_NAME = 'AstraMemoryD';
+// Exported (not just local consts) so the "Task repetition dormancy" doctor
+// canary (issue #370, src/doctor/checks/task-repetition-dormancy.ts) targets
+// the SAME two task names this adapter actually registers, instead of
+// duplicating the string literals as a second source of truth.
+export const TASK_NAME = 'AstraMemoryD';
 const BACKUP_TASK_NAME = 'AstraMemoryDBackup';
-const WATCHDOG_TASK_NAME = 'AstraMemoryDWatchdog';
+export const WATCHDOG_TASK_NAME = 'AstraMemoryDWatchdog';
 
 /** User-scope Startup folder. Files placed here auto-run at logon — no admin. */
 function startupDir(): string {
@@ -61,7 +65,7 @@ export function runCmd(cmd: string): Promise<string> {
  * existed, telling the user to reinstall a service that was already
  * there and simply slow to answer (ADR-015 rule 4).
  */
-function isInconclusiveFailure(err: unknown): boolean {
+export function isInconclusiveFailure(err: unknown): boolean {
   const e = err as RunCmdError;
   return e?.signal != null || e?.code === 'ENOENT';
 }
