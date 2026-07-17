@@ -28,9 +28,41 @@ jobs:
   auto-merge:
     runs-on: ["self-hosted", "astragenie"]
     steps:
+      # GitHub does not trigger workflow runs from pushes made with
+      # GITHUB_TOKEN. Arming auto-merge with GITHUB_TOKEN therefore makes
+      # GitHub perform the squash-merge as github-actions[bot], and the
+      # resulting push to main fires NO `on: push` workflow — main CI,
+      # actionlint and the publish jobs all silently skip.
+      #
+      # This is not hypothetical. It took out every push-triggered workflow on
+      # main across all five repos from 2026-07-09 (when this workflow landed)
+      # until 2026-07-16, and left @astragenie/astra-app-shell@2.11.0
+      # unpublished for six days: Publish - NPM retries on every main push, and
+      # 13 main pushes went by without firing it once.
+      #
+      # Fail loudly instead of falling back to GITHUB_TOKEN. memory carried
+      # `secrets.AUTOMERGE_PAT || secrets.GITHUB_TOKEN`, the PAT was never
+      # created, and the `||` silently selected the broken token — which is
+      # precisely why a week-long outage stayed invisible. A red check here is
+      # cheap: this workflow is NOT a required check in any repo's ruleset, so
+      # PRs remain mergeable by hand, and a human merge *does* trigger the
+      # `on: push` workflows.
+      - name: Preflight — require AUTOMERGE_PAT
+        shell: bash
+        env:
+          AUTOMERGE_PAT: ${{ secrets.AUTOMERGE_PAT }}
+        run: |
+          if [ -z "${AUTOMERGE_PAT}" ]; then
+            echo "::error title=AUTOMERGE_PAT not set::Auto-merge is disarmed on purpose. Arming it with GITHUB_TOKEN would make GitHub squash-merge as github-actions[bot], and GITHUB_TOKEN pushes do NOT trigger on:push workflows — main CI and the publish jobs would silently skip (see the 2026-07-09..16 fleet outage). Fix: create an AUTOMERGE_PAT secret (PAT or GitHub App token with contents:write + pull-requests:write). Until then, merge PRs manually — a human merge triggers the push workflows correctly."
+            exit 1
+          fi
+
       - name: Arm or disarm auto-merge
-        uses: actions/github-script@v9
+        uses: actions/github-script@v7
         with:
+          # Must be a real user/app token, NOT GITHUB_TOKEN — see the preflight
+          # above. No `||` fallback: silent degradation is the bug being fixed.
+          github-token: ${{ secrets.AUTOMERGE_PAT }}
           script: |
             const pr = context.payload.pull_request;
             const held = pr.labels.some(l => ['hold', 'do-not-merge'].includes(l.name));
