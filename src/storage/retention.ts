@@ -56,7 +56,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import type { Config } from '../config/config.js';
 
 export type RetentionMode = Config['retention']['mode'];
@@ -105,6 +105,32 @@ function scopedKinds(retention: Config['retention'], tier: RetentionTier): Set<s
 }
 
 /**
+ * Path-containment guard (issue #408, ADR-015 loud-failure invariant).
+ * `kind` is sourced from `heavyArtifact.types`/`tierScope.*` — hand-parsed
+ * config.yaml scalars with no schema, so nothing upstream stops a `..`-bearing
+ * value from reaching `join(root, kind)`. This is deletion code (`'enabled'`
+ * mode unlinks every scanned candidate) — a traversal-shaped `kind` must never
+ * let the scan (and therefore the delete) escape `<dataDir>/artifacts/` onto
+ * arbitrary disk paths. Resolves the joined path and asserts it stays
+ * strictly under the resolved artifacts root; refuses + loud-warns (returns
+ * `null`, skipping that kind for this pass) rather than silently scanning or
+ * deleting outside the sandbox.
+ */
+function resolveKindDir(root: string, kind: string): string | null {
+  const resolvedRoot = resolve(root);
+  const target = resolve(root, kind);
+  if (!target.startsWith(resolvedRoot + sep)) {
+    console.warn(
+      `[retention-guard] refusing kind=${JSON.stringify(kind)} — resolves to "${target}", outside the ` +
+      `artifacts root "${resolvedRoot}" (path-traversal guard, issue #408). Check retention.heavyArtifact.types ` +
+      '/ retention.tierScope config for a `..`-bearing kind value.',
+    );
+    return null;
+  }
+  return target;
+}
+
+/**
  * Scans `<dataDir>/artifacts/<kind>/` (one directory per scoped kind) for
  * files older than `retention.ageThresholdDays` (by mtime) and at/above
  * `heavyArtifact.minSizeBytes`. Read-only — never deletes anything; this is
@@ -130,7 +156,8 @@ export function scanRetentionCandidates(
   let totalBytes = 0;
 
   for (const kind of kinds) {
-    const kindDir = join(root, kind);
+    const kindDir = resolveKindDir(root, kind);
+    if (!kindDir) continue; // path-traversal guard refused this kind — see resolveKindDir
     if (!existsSync(kindDir)) continue;
 
     let entries: string[];

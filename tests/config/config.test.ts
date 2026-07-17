@@ -10,6 +10,7 @@ import {
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
   applyAtomTriageGovernance,
+  applyRetentionGovernance,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -594,6 +595,72 @@ describe('applyAudioModeGovernance', () => {
 
   it('defaultConfig ships audio.mode off', () => {
     expect(defaultConfig().audio.mode).toBe('off');
+  });
+});
+
+// FEAT-493 / issue #408: retention.mode and retention.tier are both closed
+// enums, same config.yaml-has-no-schema governance concern as
+// durabilityGate/audio.mode above. This slice closes the review-flagged gap:
+// the tier-fallback branch (an invalid/typo'd retention.tier falling back to
+// 'media', the least destructive tier) previously had zero test coverage.
+describe('applyRetentionGovernance', () => {
+  it('leaves a valid mode+tier combination byte-identical (governance is a guard, not a behavior change)', () => {
+    const retention = {
+      mode: 'dry-run' as const,
+      tier: 'lean' as const,
+      ageThresholdDays: 90,
+      heavyArtifact: { minSizeBytes: 1_048_576, types: ['audio-raw'] },
+      tierScope: { media: ['audio-raw'], lean: ['transcript-derived'] },
+    };
+    expect(applyRetentionGovernance(retention)).toEqual(retention);
+  });
+
+  it('falls back to mode "off" and logs why on an invalid/typo mode value', () => {
+    const retention = { ...defaultConfig().retention, mode: 'enbaled' as any };
+    const logs: string[] = [];
+    const governed = applyRetentionGovernance(retention, { log: (m) => logs.push(m) });
+
+    expect(governed.mode).toBe('off');
+    expect(logs.some(m => m.includes('retention.mode') && m.includes('enbaled'))).toBe(true);
+  });
+
+  it('missing retention block falls back to defaults with mode "off", logged', () => {
+    const logs: string[] = [];
+    const governed = applyRetentionGovernance(undefined as any, { log: (m) => logs.push(m) });
+
+    expect(governed.mode).toBe('off');
+    expect(governed.tier).toBe(defaultConfig().retention.tier);
+    expect(logs.some(m => m.includes('retention is missing'))).toBe(true);
+  });
+
+  it('falls back to tier "media" and logs why on an invalid/typo tier value (review gap, issue #408)', () => {
+    const retention = { ...defaultConfig().retention, mode: 'enabled' as const, tier: 'lena' as any };
+    const logs: string[] = [];
+    const governed = applyRetentionGovernance(retention, { log: (m) => logs.push(m) });
+
+    expect(governed.tier).toBe('media');
+    expect(governed.mode).toBe('enabled'); // the tier fallback must not clobber an otherwise-valid mode
+    expect(logs.some(m => m.includes('retention.tier') && m.includes('lena'))).toBe(true);
+  });
+
+  it("an invalid tier still clamps a simultaneously out-of-range ageThresholdDays in the same pass", () => {
+    const retention = { ...defaultConfig().retention, mode: 'dry-run' as const, tier: 'bogus' as any, ageThresholdDays: 999_999 };
+    const logs: string[] = [];
+    const governed = applyRetentionGovernance(retention, { log: (m) => logs.push(m) });
+
+    expect(governed.tier).toBe('media');
+    expect(governed.ageThresholdDays).toBe(3650);
+  });
+
+  it('loadConfig wires applyRetentionGovernance in: an invalid tier override comes back "media"', () => {
+    const cfg = loadConfig({ retention: { mode: 'dry-run', tier: 'bogus' } } as any);
+    expect(cfg.retention.tier).toBe('media');
+    expect(cfg.retention.mode).toBe('dry-run');
+  });
+
+  it('loadConfig leaves a valid retention.tier untouched', () => {
+    const cfg = loadConfig({ retention: { mode: 'dry-run', tier: 'all' } } as any);
+    expect(cfg.retention.tier).toBe('all');
   });
 });
 
