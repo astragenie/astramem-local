@@ -253,13 +253,28 @@ jobs:
           bun run test:smoke -- \
             --reporter=default --reporter=json --outputFile=smoke-test-results.json
 
+      - name: Run soak suite
+        # Timing/host-scheduling-sensitive load tests, excluded from the
+        # blocking PR/main gate (vitest.config.ts) to keep it deterministic —
+        # see that file's tests/soak/** exclude comment. They run HERE nightly
+        # via their own config (vitest.soak.config.ts). No Ollama dependency
+        # (induced-saturation + mock providers), so they don't rely on any of
+        # the Ollama setup above. A red here is a signal to investigate the
+        # worker-throttle governor, not a merge blocker.
+        id: soak-tests
+        continue-on-error: true
+        run: |
+          bun run test:soak -- \
+            --testTimeout=60000 \
+            --reporter=default --reporter=json --outputFile=soak-test-results.json
+
       - name: Extract failing test names
         if: always()
         run: |
           node -e "
             const fs = require('fs');
             const names = [];
-            for (const f of ['live-test-results.json', 'e2e-mock-test-results.json', 'smoke-test-results.json']) {
+            for (const f of ['live-test-results.json', 'e2e-mock-test-results.json', 'smoke-test-results.json', 'soak-test-results.json']) {
               if (!fs.existsSync(f)) continue;
               let data;
               try { data = JSON.parse(fs.readFileSync(f, 'utf8')); } catch { continue; }
@@ -277,7 +292,7 @@ jobs:
         id: result
         if: always()
         run: |
-          if [ "${{ steps.live-tests.outcome }}" = "success" ] && [ "${{ steps.e2e-mock-tests.outcome }}" = "success" ] && [ "${{ steps.smoke-tests.outcome }}" = "success" ]; then
+          if [ "${{ steps.live-tests.outcome }}" = "success" ] && [ "${{ steps.e2e-mock-tests.outcome }}" = "success" ] && [ "${{ steps.smoke-tests.outcome }}" = "success" ] && [ "${{ steps.soak-tests.outcome }}" = "success" ]; then
             echo "status=green" >> "$GITHUB_OUTPUT"
           else
             echo "status=red" >> "$GITHUB_OUTPUT"
