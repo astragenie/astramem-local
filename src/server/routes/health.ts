@@ -11,7 +11,10 @@ import type { HealthState } from '../health-state.js';
 import { isLoopbackHost } from '../lib/network.js';
 import { usefulnessRate } from '../../storage/usefulness.js';
 import { queryJobStates } from '../queries/dashboard.js';
-import { buildMemoryHealthCheap, type MemoryHealthReport } from '../queries/memory-health.js';
+import { buildMemoryHealthCheap, distillSessionStats, type MemoryHealthReport } from '../queries/memory-health.js';
+import { POISON_RATE_ALARM, MEANINGFUL_USAGE_THRESHOLD } from '../../doctor/checks/shared.js';
+import type { DistillPoisonRateSnapshot } from '../health-state.js';
+import { getProviderHealthEntry, type ProviderHealthEntry } from '../../providers/llm/health-tracking.js';
 import { statfsSync } from 'node:fs';
 
 const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
@@ -75,12 +78,20 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
               // dataDir was configured at snapshot time (null on a statfs
               // failure), omitted only when there is no dataDir.
               ...(snap.disk_free_bytes !== undefined ? { disk_free_bytes: snap.disk_free_bytes } : {}),
+              // FEAT-538: cached poison-rate — present whenever the snapshot
+              // was computed by a build that carries it (always, post-538).
+              ...(snap.distill_poison_rate ? { distill_poison_rate: snap.distill_poison_rate } : {}),
               // P1.3: staleness is visible, never silently fresh-looking.
               snapshot_age_ms: Date.now() - snap.computedAt,
             }
           : {
               ...(db
-                ? { queue: queueCounts(db), pending_proposals: pendingProposals(db), memory_health: memoryHealthBlock(db) }
+                ? {
+                    queue: queueCounts(db),
+                    pending_proposals: pendingProposals(db),
+                    memory_health: memoryHealthBlock(db),
+                    distill_poison_rate: distillPoisonRateBlock(db),
+                  }
                 : {}),
               ...(healthState?.dataDir ? { disk_free_bytes: diskFree(healthState.dataDir) } : {}),
             };
@@ -134,6 +145,14 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
               // A2-lite (ADR-015): last unattended doctor-schedule result —
               // readable without a human present, per the ADR's binding rule.
               doctor: healthState.doctor,
+              // FEAT-538: main-provider regression health — in-memory,
+              // mutated in place by the chat()-wrapping decorator
+              // (src/providers/llm/health-tracking.ts) via a registry keyed
+              // by provider NAME, resolved here to the extraction/compaction
+              // ROLE via the currently-configured provider name for each.
+              // NOT DB-backed — read directly, never through
+              // dbBlock()/dbSnapshot, and no provider call on this path.
+              provider_health: providerHealthBlock(config),
               ...dbBlock(),
             }
           : {}),
@@ -165,6 +184,72 @@ export function computeHealthDbSnapshot(db: DB, dataDir?: string): import('../he
     // null = dataDir configured but statfs failed (key present as null) —
     // same two-state rule the fresh path has always had.
     disk_free_bytes: dataDir ? diskFree(dataDir) : undefined,
+    // FEAT-538: poison-RATE (not count) — /health.status reads
+    // `.alarmed` off this same 30s-refreshed snapshot; see health-state.ts's
+    // status() and DistillPoisonRateSnapshot doc comments.
+    distill_poison_rate: distillPoisonRateBlock(db),
+  };
+}
+
+/**
+ * FEAT-538: wires memory-health.ts's `distillSessionStats` (previously only
+ * read by the `tier:'full'`/24h-cadence `checkMemoryHealth` doctor check)
+ * into the same 30s off-request-path refresh every other /health DB field
+ * already uses — a rising poison RATE (not raw count) now shows up in
+ * minutes, not up to a day later. Same POISON_RATE_ALARM /
+ * MEANINGFUL_USAGE_THRESHOLD floors as the doctor check, so a fresh
+ * install's first couple of poison jobs never trips `alarmed`. Never
+ * throws — degrades to an unalarmed zero snapshot, matching every other
+ * block in this file's "a health-metric query must never 500 the liveness
+ * endpoint" rule.
+ */
+function distillPoisonRateBlock(db: DB): DistillPoisonRateSnapshot {
+  try {
+    const stats = distillSessionStats(db);
+    return {
+      poison: stats.poison,
+      terminal: stats.terminal,
+      rate: stats.poisonRate,
+      alarmed:
+        stats.terminal >= MEANINGFUL_USAGE_THRESHOLD &&
+        stats.poisonRate !== null &&
+        stats.poisonRate >= POISON_RATE_ALARM,
+    };
+  } catch {
+    return { poison: 0, terminal: 0, rate: null, alarmed: false };
+  }
+}
+
+/**
+ * FEAT-538: resolves the extraction/compaction ROLE to its currently
+ * configured provider NAME, looks up that name's shared entry in the
+ * health-tracking registry, and reports it wire-side under the role — so a
+ * caller reads "is my extraction provider healthy" without needing to know
+ * it's backed by a name-keyed registry under the hood (see
+ * health-tracking.ts's module doc comment for why tracking itself is keyed
+ * by name, not role). Pure in-memory read — no DB, no provider call, O(1).
+ */
+function providerHealthBlock(config: Config) {
+  const toWire = (name: string, e: ProviderHealthEntry) => ({
+    provider: name,
+    status: e.status,
+    reason: e.reason,
+    message: e.message,
+    since: e.since,
+    consecutive_failures: e.consecutiveFailures,
+    last_error: e.lastError,
+    last_failure_at: e.lastFailureAt,
+    last_success_at: e.lastSuccessAt,
+  });
+  return {
+    extraction: toWire(
+      config.llm.extraction.provider,
+      getProviderHealthEntry(config.llm.extraction.provider),
+    ),
+    compaction: toWire(
+      config.llm.compaction.provider,
+      getProviderHealthEntry(config.llm.compaction.provider),
+    ),
   };
 }
 

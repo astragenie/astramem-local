@@ -8,6 +8,7 @@ import { AzureOpenAILLMProvider } from './llm/azure-openai.js';
 import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from './llm/codex-subscription.js';
 import { rateLimitLLMProvider } from './llm/rate-limited.js';
+import { trackProviderHealth } from './llm/health-tracking.js';
 import { OllamaEmbedProvider } from './embed/ollama.js';
 import { AzureOpenAIEmbedProvider } from './embed/azure-openai.js';
 import { OnnxWorkerHostProvider } from './embed/onnx-worker-host.js';
@@ -78,9 +79,20 @@ export function buildLLMProvider(
   // Apply the optional daemon-side call-rate limiter around whichever concrete
   // provider we build (token bucket SHARED per provider name — see
   // rateLimitLLMProvider). Disabled (pass-through) unless llm.rateLimit is set.
-  return rateLimitLLMProvider(
-    buildRawLLMProvider(providerName, model, config),
-    config.llm.rateLimit?.callsPerMinute,
+  //
+  // FEAT-538: also wrap in the chat()-observing health tracker, unconditionally
+  // (unlike rate limiting, this is always on — there's no opt-out config, the
+  // same way embed/worker health always report). trackProviderHealth resolves
+  // the SHARED entry for this provider's `.name` from a process-wide registry
+  // (src/providers/llm/health-tracking.ts) — the single wiring point that
+  // covers every role built through this function (compaction, extraction,
+  // judge, extractionPassB, atomTriage, and one-off callers like
+  // src/search/decompose.ts) without any daemon-boot (serve.ts) changes.
+  return trackProviderHealth(
+    rateLimitLLMProvider(
+      buildRawLLMProvider(providerName, model, config),
+      config.llm.rateLimit?.callsPerMinute,
+    ),
   );
 }
 

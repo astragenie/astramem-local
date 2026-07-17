@@ -7,6 +7,12 @@
  * instead of dying when Ollama is slow to load a model at logon.
  */
 
+// FEAT-538: one-directional server -> providers dependency (same direction
+// src/server/routes/search.ts already uses for buildLLMProvider) — see this
+// file's ProviderHealth doc comment below for why the types/registry live in
+// health-tracking.ts rather than here.
+import { hasAnyProviderDown } from '../providers/llm/health-tracking.js';
+
 export type DaemonStatus = 'starting' | 'ok' | 'degraded';
 
 export interface EmbedHealth {
@@ -19,6 +25,41 @@ export interface EmbedHealth {
 
 export interface WorkerHealth {
   lastTickAt: number | null;
+}
+
+/**
+ * Main-provider regression health (FEAT-538). Types + the process-wide
+ * registry live in src/providers/llm/health-tracking.ts (the providers
+ * layer), NOT here — `buildLLMProvider()` (src/providers/index.ts) wraps
+ * every provider it constructs in a chat()-observing decorator that feeds
+ * that registry, keyed by provider name. NOT a periodic probe: a metered
+ * doctor-style poll every few minutes against codex-subscription would be
+ * the exact FEAT-482 self-DoS class this repo already got burned by once;
+ * this reads the ERROR SIGNAL off real distill/compact/judge traffic as it
+ * happens. `status()` below calls `hasAnyProviderDown()` — a live O(1)
+ * registry read, never a probe — which itself only flips a given provider's
+ * entry to 'down' after N consecutive qualifying failures (AC-5: one
+ * transient blip must never flip this) and resets to 'up' on the very next
+ * success. See health-tracking.ts's module doc comment for the full design
+ * (including why it's keyed by provider name, not by extraction/compaction
+ * role).
+ */
+
+/** Cached distill-session poison-rate snapshot (FEAT-538) — reuses
+ *  memory-health.ts's `distillSessionStats` + doctor's existing
+ *  `POISON_RATE_ALARM`/`MEANINGFUL_USAGE_THRESHOLD` floors (previously only
+ *  consulted by the `tier:'full'`, 24h-cadence `checkMemoryHealth` doctor
+ *  check), refreshed on the same 30s off-request-path timer as the rest of
+ *  `HealthDbSnapshot` — see `computeHealthDbSnapshot` in
+ *  src/server/routes/health.ts. */
+export interface DistillPoisonRateSnapshot {
+  poison: number;
+  terminal: number;
+  rate: number | null;
+  /** true when `terminal >= MEANINGFUL_USAGE_THRESHOLD && rate >=
+   *  POISON_RATE_ALARM` — the same gate checkMemoryHealth's ok:false branch
+   *  uses, so a fresh install's first couple of poison jobs never trips this. */
+  alarmed: boolean;
 }
 
 /**
@@ -96,6 +137,12 @@ export interface HealthDbSnapshot {
   /** undefined = no dataDir configured (key omitted on the wire);
    *  null = dataDir configured but statfs failed (key present as null). */
   disk_free_bytes?: number | null;
+  /** FEAT-538: cached distill-session poison-rate — see
+   *  DistillPoisonRateSnapshot's doc comment. Optional: absent on a snapshot
+   *  built before this field existed (defensive — none should exist in
+   *  practice since dbSnapshot is only ever process-local), and on a
+   *  hand-built test snapshot that predates FEAT-538. */
+  distill_poison_rate?: DistillPoisonRateSnapshot;
 }
 
 export function createHealthState(now: () => number = Date.now): HealthState {
@@ -108,9 +155,20 @@ export function createHealthState(now: () => number = Date.now): HealthState {
     ready: true,
     status(): DaemonStatus {
       if (!state.ready) return 'starting';
-      if (state.embed.ok === true) return 'ok';
       if (state.embed.ok === null) return 'starting';
-      return 'degraded';
+      if (state.embed.ok === false) return 'degraded';
+      // FEAT-538: a live daemon whose main LLM provider is failing, or whose
+      // poison rate is climbing fast, is not "ok" even though embed and the
+      // worker loop are both fine — this is the ADR-015 gap the 2026-07-17
+      // codex-401 incident exposed (187 poison jobs, /health said "ok" the
+      // whole time). Both reads are O(1) and never probe anything on the
+      // request path: hasAnyProviderDown() reads the module-wide registry
+      // src/providers/index.ts's buildLLMProvider() feeds on every real
+      // chat() call, and the poison rate comes from the same 30s-refreshed
+      // dbSnapshot every other /health DB field already uses.
+      if (hasAnyProviderDown()) return 'degraded';
+      if (state.dbSnapshot?.distill_poison_rate?.alarmed) return 'degraded';
+      return 'ok';
     },
     uptimeSeconds(): number {
       return Math.floor((now() - startedAt) / 1000);
