@@ -22,7 +22,6 @@
  * worktree.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { setTimeout as sleep } from 'node:timers/promises';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -33,7 +32,6 @@ import { exitHistoryPaths } from '../../src/service/shim.js';
 import {
   runFrequentDoctorChecks,
   runFullDoctorChecks,
-  startFrequentDoctorSchedule,
   type DoctorScheduleResult,
 } from '../../src/doctor/schedule.js';
 import { makeMockProviders } from '../../src/pipeline/mock-providers.js';
@@ -76,47 +74,19 @@ describe('doctor scheduling (A2-lite)', () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it('startFrequentDoctorSchedule fires an immediate boot pass, then fires again on its own after the interval elapses — no external trigger', async () => {
-    // Real timers, not sinon fake timers: several checks in the frequent
-    // tier do genuine async I/O (dynamic imports, a real loopback fetch in
-    // checkDaemonReachable with its own real setTimeout-based abort) that
-    // fake-timer virtual-time advancement does not reliably wait out. A
-    // short real interval + deadline-bounded polling proves the same
-    // property — the schedule fires on its own, with nothing in this test
-    // ever calling runFrequentDoctorChecks directly — without that hazard.
-    // port: 39777 is a port nothing in this environment listens on, so
-    // checkDaemonReachable resolves fast (ECONNREFUSED) and deterministically
-    // rather than possibly probing a real locally-running daemon on :7777.
-    const opts: DoctorCheckOpts = { dataDir: dir, encryptionEnabled: false, port: 39777 };
-    const seen: DoctorScheduleResult[] = [];
-    const stop = startFrequentDoctorSchedule(opts, (r) => seen.push(r), 40);
-
-    try {
-      const waitForCount = async (n: number, deadlineMs: number) => {
-        const deadline = Date.now() + deadlineMs;
-        while (seen.length < n && Date.now() < deadline) await sleep(10);
-      };
-
-      // Boot pass — nothing else in this test invokes anything.
-      await waitForCount(1, 5000);
-      expect(seen.length).toBeGreaterThanOrEqual(1);
-      expect(seen[0]!.tier).toBe('frequent');
-
-      // Purely time passing, no external trigger, should keep firing.
-      await waitForCount(3, 5000);
-      expect(seen.length).toBeGreaterThanOrEqual(3);
-    } finally {
-      stop();
-    }
-
-    // stop() clears the interval so no NEW tick starts, but a tick already
-    // in flight when stop() ran can still resolve afterward — let it settle
-    // before capturing the "at rest" count, or this assertion races.
-    await sleep(100);
-    const countAtStop = seen.length;
-    await sleep(200);
-    expect(seen.length).toBe(countAtStop); // stopped — no further ticks
-  }, 15000);
+  // The interval-firing / stop() timing behavior of startFrequentDoctorSchedule
+  // used to be proven here with REAL timers + real doctor checks (~50+
+  // sequential SQLite reads / fs stats / a loopback fetch per tick, per
+  // runChecks() in runner.ts). Under parallel CI load a single real tick can
+  // take longer than the test's short interval, so ticks overlap and land
+  // unpredictably relative to stop() — off-by-one tick counts ("expected 6 to
+  // be 5") or a 5000ms timeout, passes in isolation, flaky under load. Moved
+  // to tests/doctor/schedule-interval.test.ts, which mocks the check registry
+  // to a single near-instant stub and drives the schedule with vitest fake
+  // timers (vi.advanceTimersByTimeAsync) — exact tick counts, independent of
+  // machine load, per the "stub the I/O so only the schedule timing is under
+  // test" fallback (fake timers alone can't reliably wait out the real async
+  // I/O the full check registry does; see that file's header comment).
 
   it('frequent tier NEVER runs the LLM chat probe or embed probe, even if the caller supplies providers', async () => {
     const providers = makeMockProviders();
