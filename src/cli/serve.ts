@@ -124,34 +124,42 @@ export async function serve(opts: ServeOpts): Promise<void> {
   let db!: ReturnType<typeof openDb>;
 
   /**
-   * The real boot body: DB open → migrate → job recovery → providers →
-   * buildApp → worker/vec-search/shipper wiring → app.listen(). Runs AS THE
-   * `bind` CALLBACK passed to `acquireInstanceLock` (dataDir !== ':memory:')
-   * — i.e. entirely WHILE the Item 2 `.acquiring` mutex is held, immediately
-   * after daemon.lock has already been written claiming ownership. See
-   * instance-lock.ts's header for why the mutex must span this whole
-   * sequence and not just the lock write.
+   * The real boot body. Runs AS THE `bind` CALLBACK passed to
+   * `acquireInstanceLock` (dataDir !== ':memory:') — i.e. entirely WHILE the
+   * Item 2 `.acquiring` mutex is held, immediately after daemon.lock has
+   * already been written claiming ownership. See instance-lock.ts's header
+   * for why the mutex must span this whole sequence and not just the lock
+   * write — unchanged by FEAT-537 below, still not touched.
    *
-   * Why this doesn't ALSO implement Wave 0 Item 3's literal "bind port
-   * before migrate" design (verified at runtime, not assumed): `buildApp()`
-   * → `ingestRoute()` prepares several statements (e.g. against
-   * `ingest_idempotency`) SYNCHRONOUSLY at route-registration time — calling
-   * buildApp() against an unmigrated DB throws `SqliteError: no such table:
-   * ingest_idempotency` before a single route is even reachable. `migrate()`
-   * must therefore run before `buildApp()`, which must run before
-   * `app.listen()` — there is no way to bind the real listener meaningfully
-   * ahead of migrate without first making ingestRoute's prepared statements
-   * lazy (prepare-on-first-use), which is a route-layer change out of this
-   * slice's scope (src/service/instance-lock.ts + src/cli/serve.ts). Filed
-   * as a follow-up rather than worked around with an early placeholder
-   * listener + live handoff (extra failure surface for a narrow win).
+   * FEAT-537: `buildApp()` → `ingestRoute()` used to prepare several
+   * statements (e.g. against `ingest_idempotency`) SYNCHRONOUSLY at
+   * route-registration time — calling buildApp() against an unmigrated DB
+   * threw `SqliteError: no such table: ingest_idempotency` before a single
+   * route was reachable, which is why an earlier slice (Wave 0 Item 3) could
+   * only ship the `healthState.ready` 503 gate without the literal
+   * bind-before-migrate ordering it was meant to protect. `ingestRoute`'s
+   * statements are now prepared lazily (prepare-on-first-use, cached — see
+   * src/server/routes/ingest.ts), so `buildApp()` + `app.listen()` can run
+   * BEFORE `migrate()` in the default (non-strict) path:
    *
-   * What IS delivered: the Item 2 mutex now correctly spans the ENTIRE
-   * decide → write daemon.lock → migrate → buildApp → bind sequence, and
-   * the `healthState.ready` gate + 503 infrastructure (src/server/app.ts)
-   * is wired and tested, ready for a future change that genuinely defers
-   * migrate past the bind. The boot-body duration is measured and a >5s
-   * warning is logged either way — useful signal regardless of ordering.
+   *   lock acquire → bind (buildApp + listen) → migrate/recover/wiring →
+   *   healthState.ready = true (set by the caller once this resolves)
+   *
+   * While `healthState.ready` is false, /health and /version answer
+   * normally (health.ts degrades every DB read to a safe default on a
+   * missing table) and every OTHER route 503s via buildApp()'s readiness
+   * gate — so a slow or hanging migrate() no longer makes the daemon
+   * unreachable on the wire, just temporarily 503 on non-health routes.
+   *
+   * `opts.strictPreflight` (legacy CI/scripted fail-fast mode) keeps the
+   * PRE-FEAT-537 ordering — migrate/recover/wiring, THEN a real embed call,
+   * THEN buildApp + listen — because that mode's entire point is to
+   * validate schema + a live embed call BEFORE ever accepting traffic;
+   * binding ahead of that validation would defeat it. `runMigrateAndDbSetup`
+   * below is shared by both branches so the DB-dependent boot steps
+   * themselves (migrate, schema-dim resolution, job recovery/purge, health
+   * snapshot refresher, worker/KNN/shipper wiring) stay defined exactly
+   * once — only the ORDER relative to bind differs per branch.
    */
   const bootAndBind = async (): Promise<void> => {
     const bootStartedAt = Date.now();
@@ -187,76 +195,227 @@ export async function serve(opts: ServeOpts): Promise<void> {
       db = openDb(dbPath);
     }
     dbForCrash = db;
-    // FEAT-409: dim only matters for a genuinely fresh DB — migrate() skips
-    // already-applied migrations regardless, so this stays correct across
-    // upgrades and restarts of an existing (already at some dim) DB.
-    try {
-      migrate(db, cfg.embedding.dim);
-    } catch (err) {
-      if (err instanceof SchemaNewerThanDaemonError) {
-        // Issue #306: the datadir was migrated by a newer astramem-local than
-        // this pinned release. Print ONE actionable line (not a stack trace)
-        // — the operator fix is `reinstall`, not a bug report. The caller
-        // (acquireInstanceLock's bind-failure handling, or the :memory:
-        // catch below) closes the DB / releases whatever lock was written.
-        console.error(`${ts()} [astramem-local] ${err.message}`);
+
+    // ---------------------------------------------------------------------
+    // DB-dependent boot work — everything that needs a MIGRATED schema
+    // (migrate itself, schema-dim resolution, job recovery/purge, the
+    // health-snapshot refresher, worker/KNN-offload/shipper wiring). Shared
+    // by both branches below; only its position relative to bind changes.
+    // ---------------------------------------------------------------------
+    const runMigrateAndDbSetup = async (): Promise<void> => {
+      // FEAT-409: dim only matters for a genuinely fresh DB — migrate() skips
+      // already-applied migrations regardless, so this stays correct across
+      // upgrades and restarts of an existing (already at some dim) DB.
+      try {
+        migrate(db, cfg.embedding.dim);
+      } catch (err) {
+        if (err instanceof SchemaNewerThanDaemonError) {
+          // Issue #306: the datadir was migrated by a newer astramem-local than
+          // this pinned release. Print ONE actionable line (not a stack trace)
+          // — the operator fix is `reinstall`, not a bug report. The caller
+          // (acquireInstanceLock's bind-failure handling, or the :memory:
+          // catch below) closes the DB / releases whatever lock was written.
+          console.error(`${ts()} [astramem-local] ${err.message}`);
+        }
+        throw err;
       }
-      throw err;
-    }
 
-    // FEAT-409 AC-3: the dim the embed preflight checks against is the
-    // PERSISTED schema dim (what memories_vec was actually created with),
-    // not just cfg.embedding.dim — a config/provider dim that drifted from
-    // the real schema (edited config.yaml without running `reembed-dim`)
-    // must fail loud here, not deep inside the first ingest's sqlite-vec
-    // dimension mismatch. Falls back to cfg.embedding.dim on a genuinely
-    // fresh DB (memories_vec doesn't exist yet — migrate() just created it
-    // at that dim, so they agree by construction).
-    schemaDim = getVecSchemaDim(db) ?? cfg.embedding.dim;
+      // FEAT-409 AC-3: the dim the embed preflight checks against is the
+      // PERSISTED schema dim (what memories_vec was actually created with),
+      // not just cfg.embedding.dim — a config/provider dim that drifted from
+      // the real schema (edited config.yaml without running `reembed-dim`)
+      // must fail loud here, not deep inside the first ingest's sqlite-vec
+      // dimension mismatch. Falls back to cfg.embedding.dim on a genuinely
+      // fresh DB (memories_vec doesn't exist yet — migrate() just created it
+      // at that dim, so they agree by construction).
+      schemaDim = getVecSchemaDim(db) ?? cfg.embedding.dim;
 
-    // Boot job recovery (P1.1): requeue jobs orphaned by a non-graceful death
-    // ('running' from a mid-handle kill; 'failed' whose in-memory retry timer
-    // died with the process). Purge old completed/poison bookkeeping (P1.2).
-    bootRepo = new JobRepo(db);
-    const recovered = bootRepo.recoverOrphans();
-    if (recovered.requeuedRunning + recovered.requeuedFailed > 0) {
-      console.log(
-        `${ts()} [astramem-local] job recovery: requeued ${recovered.requeuedRunning} orphaned running, ` +
-        `${recovered.requeuedFailed} interrupted retries`,
-      );
-    }
-    // issue #387: a 'running' consolidate job is never blind-requeued (see
-    // JobRepo.recoverOrphans's doc comment) — surface it loudly (ADR-015) so a
-    // restart that just avoided the freeze-reproduction loop is visible in
-    // boot logs, not silently swallowed.
-    if (recovered.poisonedConsolidate > 0) {
-      console.error(
-        `${ts()} [astramem-local] job recovery: poisoned ${recovered.poisonedConsolidate} orphaned ` +
-        'running consolidate job(s) instead of requeuing (issue #387) — a previous boot likely froze ' +
-        'mid-scan; re-enqueue manually (astramem-local queue) once the setup budget/yield fix is confirmed safe.',
-      );
-    }
-    const purged = bootRepo.purgeOld();
-    if (purged.completed + purged.poison > 0) {
-      console.log(`${ts()} [astramem-local] job retention: purged ${purged.completed} completed, ${purged.poison} poison`);
-    }
+      // Boot job recovery (P1.1): requeue jobs orphaned by a non-graceful death
+      // ('running' from a mid-handle kill; 'failed' whose in-memory retry timer
+      // died with the process). Purge old completed/poison bookkeeping (P1.2).
+      bootRepo = new JobRepo(db);
+      const recovered = bootRepo.recoverOrphans();
+      if (recovered.requeuedRunning + recovered.requeuedFailed > 0) {
+        console.log(
+          `${ts()} [astramem-local] job recovery: requeued ${recovered.requeuedRunning} orphaned running, ` +
+          `${recovered.requeuedFailed} interrupted retries`,
+        );
+      }
+      // issue #387: a 'running' consolidate job is never blind-requeued (see
+      // JobRepo.recoverOrphans's doc comment) — surface it loudly (ADR-015) so a
+      // restart that just avoided the freeze-reproduction loop is visible in
+      // boot logs, not silently swallowed.
+      if (recovered.poisonedConsolidate > 0) {
+        console.error(
+          `${ts()} [astramem-local] job recovery: poisoned ${recovered.poisonedConsolidate} orphaned ` +
+          'running consolidate job(s) instead of requeuing (issue #387) — a previous boot likely froze ' +
+          'mid-scan; re-enqueue manually (astramem-local queue) once the setup budget/yield fix is confirmed safe.',
+        );
+      }
+      const purged = bootRepo.purgeOld();
+      if (purged.completed + purged.poison > 0) {
+        console.log(`${ts()} [astramem-local] job retention: purged ${purged.completed} completed, ${purged.poison} poison`);
+      }
 
-    // Encryption-migration backup cleanup (P1.5): once the encrypted DB has
-    // been opening successfully for 7+ days, the plaintext copy is pure
-    // data-at-rest exposure — delete it. Doctor surfaces it during the window.
-    if (dataDir !== ':memory:' && cfg.security.encryption.enabled) {
-      cleanupPreEncryptionBak(dbPath);
-    }
+      // Encryption-migration backup cleanup (P1.5): once the encrypted DB has
+      // been opening successfully for 7+ days, the plaintext copy is pure
+      // data-at-rest exposure — delete it. Doctor surfaces it during the window.
+      if (dataDir !== ':memory:' && cfg.security.encryption.enabled) {
+        cleanupPreEncryptionBak(dbPath);
+      }
 
-    // SEC-9: disabling redaction is a deliberate trust trade-off — make it loud.
-    if (!cfg.security.redaction.enabled) {
-      console.warn(
-        `${ts()} [astramem-local] WARNING: secret redaction is DISABLED (security.redaction.enabled=false). ` +
-        'Transcripts and memories will be persisted WITHOUT stage-0 secret scrubbing.',
-      );
-    }
+      // SEC-9: disabling redaction is a deliberate trust trade-off — make it loud.
+      if (!cfg.security.redaction.enabled) {
+        console.warn(
+          `${ts()} [astramem-local] WARNING: secret redaction is DISABLED (security.redaction.enabled=false). ` +
+          'Transcripts and memories will be persisted WITHOUT stage-0 secret scrubbing.',
+        );
+      }
 
-    // Resolve providers: mock mode (CI/test) or real providers
+      // P1.3 refresher: immediate first compute so /health carries the block
+      // right from boot, then every 30s. Keep-last-good on failure — a refresh
+      // glitch must never blank the block or crash anything.
+      {
+        const { computeHealthDbSnapshot } = await import('../server/routes/health.js');
+        const refreshHealthSnapshot = (): void => {
+          try {
+            healthState.dbSnapshot = computeHealthDbSnapshot(db, dataDir !== ':memory:' ? dataDir : undefined);
+          } catch (err) {
+            console.warn(`${ts()} [astramem-local] health snapshot refresh failed (kept last good): ${err instanceof Error ? err.message : String(err)}`);
+          }
+        };
+        refreshHealthSnapshot();
+        healthSnapshotTimer = setInterval(refreshHealthSnapshot, 30_000);
+        healthSnapshotTimer.unref();
+      }
+
+      // Wire up the worker with extended context so distillation runs
+      const registry = new HandlerRegistry();
+      registry.register(distillHandler);
+      registry.register(distillEventsHandler);
+      registry.register(cleanupHandler);
+      registry.register(consolidateHandler);
+      registry.register(reembedHandler);
+      registry.register(transcribeHandler);
+
+      // FEAT-492: content-hash embedding cache, DOCUMENT-role only. The worker's
+      // extended context gets its OWN `providers` object with `embed` swapped for
+      // a caching wrapper — `providers.embed` above (already handed to buildApp
+      // for the query-role search routes, and used unchanged for the preflight/
+      // doctor probes below) stays raw. See src/providers/embed/cache.ts's doc
+      // comment for why the two must not share one wrapped instance.
+      const { CachingEmbedProvider } = await import('../providers/embed/cache.js');
+      const workerProviders: ProviderSet | MockProviderSet = {
+        ...providers,
+        embed: new CachingEmbedProvider(providers.embed, db),
+      };
+
+      const extCtx: ExtendedHandlerCtx = {
+        db,
+        config: cfg,
+        providers: workerProviders,
+        memoryRepo: new MemoryRepo(db),
+        vecStore: new SqliteVecStore(db, cfg.embedding.dim),
+      };
+
+      // P1.4/P1.5 load governor: lanes ramp 1 → half → full over 60s steps at
+      // boot ("serve traffic first, catch up second" — a restart re-enqueues
+      // orphans and must not claim them at full concurrency while the daemon is
+      // proving liveness to the watchdog), then the embed-latency EWMA throttles
+      // the budget whenever distill/reembed handler runs slow past 5s/20s.
+      // :memory: (tests, throwaway) skips the ramp — no watchdog, no backlog.
+      const { createLoadGovernor } = await import('../pipeline/backpressure.js');
+      const { resolveWorkerConcurrency } = await import('../pipeline/worker.js');
+      governor = createLoadGovernor({
+        maxLanes: resolveWorkerConcurrency(cfg),
+        ...(dataDir !== ':memory:' ? { bootRamp: {} } : {}),
+      });
+
+      // startWorker takes HandlerCtx but we pass ExtendedHandlerCtx (structural subtype)
+      worker = startWorker({
+        pollMs: 500,
+        registry,
+        db,
+        config: cfg,
+        ctx: extCtx,
+        healthState,
+        governor,
+      });
+
+      // KNN offload (2026-07-15 incident): recall's brute-force vector scan is a
+      // synchronous native call that grows with the corpus — run it on a worker
+      // thread with its own read-only connection so it never blocks the event
+      // loop. Registered for real datadirs only: a :memory: DB is invisible to a
+      // second connection, and non-daemon entry points (mcp-stdio, CLI, eval)
+      // never register, keeping their inline synchronous path. Any worker
+      // failure falls back to the main-thread scan (loud WARN per occurrence).
+      if (dataDir !== ':memory:') {
+        const { VecSearchWorkerHost } = await import('../vector/vec-search-host.js');
+        const { setVecSearchOffload } = await import('../vector/vec-search-offload.js');
+        const fallbackStore = new SqliteVecStore(db, cfg.embedding.dim);
+        vecSearchHost = new VecSearchWorkerHost({
+          dbPath,
+          key: dbKey,
+          fallback: (vec, k) => fallbackStore.search(vec, k),
+        });
+        const host = vecSearchHost;
+        setVecSearchOffload((vec, k) => host.search(vec, k));
+      }
+
+      // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
+      // Requires explicit opt-in + url + workspace + device token; private
+      // atoms never ship regardless (scope filter inside the shipper).
+      // `!isolated` is a second, independent guard on top of resolveRuntimeConfig
+      // already forcing cfg.sync.enabled=false under ASTRA_MEMORY_ISOLATED=1 — a
+      // synthetic/eval daemon must never start the shipper even if some future
+      // code path re-derives cfg.sync from elsewhere.
+      //
+      // EXPERIMENTAL HARD GATE (sync-experimental-gate slice). Originally added
+      // because sync-to-cloud was broken against astramem-cloud (8868 events
+      // failing HTTP 400); that was root-caused to a YARP stale-pooled-connection
+      // bug in the shared gateway (`common` repo, commit `edf266a`, bounds
+      // `PooledConnectionLifetime`), fixed and deployed to prod 2026-07-14, and
+      // re-verified live 2026-07-15 — sync is no longer known-broken. The gate
+      // now stands as a deliberate staged-rollout safety net, not a "sync is
+      // broken" guard. `sync.enabled` alone (set by `astramem-local pair` on a
+      // successful redeem) is NOT sufficient to start the shipper — see
+      // shouldStartShipper() in sync/shipper.ts. `cfg.sync.experimental` is a
+      // separate, config.yaml-only, hand-edit opt-in that `pair` never touches.
+      if (cfg.sync.enabled && dataDir !== ':memory:' && !isolated && !cfg.sync.experimental) {
+        console.warn(
+          `${ts()} [astramem-local] sync is EXPERIMENTAL — sync.enabled=true but sync.experimental=false; ` +
+          `the cloud sync shipper was NOT started. Sync-to-cloud is not yet stable. Set sync.experimental: ` +
+          `true in config.yaml to opt in once you understand the risk.`,
+        );
+      }
+      if (shouldStartShipper({ enabled: cfg.sync.enabled, experimental: cfg.sync.experimental, dataDir, isolated })) {
+        const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken(defaultConfigDir());
+        if (!cfg.sync.url || !cfg.sync.workspaceId || !syncToken) {
+          console.warn(
+            `${ts()} [astramem-local] sync.enabled=true but url/workspaceId/device-token incomplete — shipper NOT started.`,
+          );
+        } else {
+          shipper = startShipper({
+            db,
+            url: cfg.sync.url,
+            workspaceId: cfg.sync.workspaceId,
+            deviceId: getOrCreateDeviceId(defaultConfigDir()),
+            token: syncToken,
+            batchSize: cfg.sync.batchSize,
+            intervalMs: cfg.sync.intervalMs,
+          });
+          console.log(`${ts()} astramem-local sync shipper active -> ${cfg.sync.url}`);
+        }
+      }
+    };
+
+    // Resolve providers: mock mode (CI/test) or real providers. Provider
+    // CONSTRUCTION is config-driven only (no DB dependency, no schema read)
+    // — it must run before `buildApp()` either way, because buildApp() bakes
+    // `providers.embed` into every search/recall/mcp route's closure at
+    // REGISTRATION time; there is no way to swap it in after routes are
+    // registered, so the real provider has to exist first regardless of
+    // which branch below binds before or after migrate.
     if (dataDir !== ':memory:') healthState.dataDir = dataDir;
     if (useMock) {
       providers = makeMockProviders(cfg.embedding.dim);
@@ -266,10 +425,28 @@ export async function serve(opts: ServeOpts): Promise<void> {
       // Real providers from config — only imported when not in mock mode
       const { getProviders } = await import('../providers/index.js');
       providers = getProviders(cfg);
+    }
 
-      if (opts.strictPreflight) {
-        // Legacy fail-fast behavior (CI / scripted checks): probe once with the
-        // historical 5s timeout and exit 1 before accepting traffic.
+    // FEAT-406: host is config-driven (default '127.0.0.1'). buildApp derives
+    // the /health + /version auth boundary from the SAME cfg.network.host, so
+    // a non-local bind here always implies Bearer-gated health/version there.
+    // devops#69: `port` may be 0 (caller asked for an OS-assigned ephemeral
+    // port — see tests/smoke/helpers/daemon.ts spawnDaemon, which parses the
+    // REAL bound port back out of the log line below to avoid fixed-port
+    // collisions with the shared runner VM's persistent TEI container on
+    // :8080 and with neighbor CI jobs' own daemons). Fastify's listen()
+    // resolves with the actual bound address, so read the real port from
+    // there rather than echoing back the (possibly 0) request.
+    if (opts.strictPreflight) {
+      // Legacy fail-fast path (CI / scripted checks): validate schema + a
+      // real embed call BEFORE binding — structurally incompatible with
+      // binding ahead of migrate, so this branch keeps the PRE-FEAT-537
+      // ordering: migrate/recover/wiring, then the real embed preflight
+      // (needs the persisted schemaDim resolved by runMigrateAndDbSetup),
+      // THEN buildApp + listen.
+      await runMigrateAndDbSetup();
+
+      if (!useMock) {
         const { embedProbe } = await import('../doctor/probes/embed-probe.js');
         const preflightResult = await embedProbe(providers.embed, 5000, schemaDim);
         if (!preflightResult.ok) {
@@ -284,171 +461,35 @@ export async function serve(opts: ServeOpts): Promise<void> {
         healthState.embed.ok = true;
         healthState.embed.lastOkAt = Date.now();
       }
-      // Degraded-start (D3): the non-strict preflight runs in the BACKGROUND
-      // after app.listen — see startEmbedPreflight below. A daemon that can
-      // serve recall-from-cache and queue ingest beats a dead one; cold Ollama
-      // model loads at logon no longer kill the boot.
+
+      app = await buildApp({ db, token, embed: providers.embed, config: cfg, healthState });
+      address = await app.listen({ port, host });
+    } else {
+      // Default degraded-start path (FEAT-537 / Wave 0 Item 3): bind the
+      // port FIRST — healthState.ready is still false here, so /health
+      // answers `starting` and every other route 503s via buildApp()'s
+      // readiness gate — THEN run migrate/recovery/worker-wiring. A daemon
+      // that can't reach its own DB in time is now reachable/diagnosable on
+      // the wire the whole time instead of unresponsive until boot finishes.
+      // Degraded-start (D3): the non-strict EMBED preflight runs in the
+      // BACKGROUND after this function returns — see startEmbedPreflight,
+      // called by the outer serve() once bootAndBind resolves.
+      app = await buildApp({ db, token, embed: providers.embed, config: cfg, healthState });
+      address = await app.listen({ port, host });
+      await runMigrateAndDbSetup();
     }
 
-    app = await buildApp({ db, token, embed: providers.embed, config: cfg, healthState });
-
-    // P1.3 refresher: immediate first compute so /health carries the block
-    // right from boot, then every 30s. Keep-last-good on failure — a refresh
-    // glitch must never blank the block or crash anything.
-    {
-      const { computeHealthDbSnapshot } = await import('../server/routes/health.js');
-      const refreshHealthSnapshot = (): void => {
-        try {
-          healthState.dbSnapshot = computeHealthDbSnapshot(db, dataDir !== ':memory:' ? dataDir : undefined);
-        } catch (err) {
-          console.warn(`${ts()} [astramem-local] health snapshot refresh failed (kept last good): ${err instanceof Error ? err.message : String(err)}`);
-        }
-      };
-      refreshHealthSnapshot();
-      healthSnapshotTimer = setInterval(refreshHealthSnapshot, 30_000);
-      healthSnapshotTimer.unref();
-    }
-
-    // Wire up the worker with extended context so distillation runs
-    const registry = new HandlerRegistry();
-    registry.register(distillHandler);
-    registry.register(distillEventsHandler);
-    registry.register(cleanupHandler);
-    registry.register(consolidateHandler);
-    registry.register(reembedHandler);
-    registry.register(transcribeHandler);
-
-    // FEAT-492: content-hash embedding cache, DOCUMENT-role only. The worker's
-    // extended context gets its OWN `providers` object with `embed` swapped for
-    // a caching wrapper — `providers.embed` above (already handed to buildApp
-    // for the query-role search routes, and used unchanged for the preflight/
-    // doctor probes below) stays raw. See src/providers/embed/cache.ts's doc
-    // comment for why the two must not share one wrapped instance.
-    const { CachingEmbedProvider } = await import('../providers/embed/cache.js');
-    const workerProviders: ProviderSet | MockProviderSet = {
-      ...providers,
-      embed: new CachingEmbedProvider(providers.embed, db),
-    };
-
-    const extCtx: ExtendedHandlerCtx = {
-      db,
-      config: cfg,
-      providers: workerProviders,
-      memoryRepo: new MemoryRepo(db),
-      vecStore: new SqliteVecStore(db, cfg.embedding.dim),
-    };
-
-    // P1.4/P1.5 load governor: lanes ramp 1 → half → full over 60s steps at
-    // boot ("serve traffic first, catch up second" — a restart re-enqueues
-    // orphans and must not claim them at full concurrency while the daemon is
-    // proving liveness to the watchdog), then the embed-latency EWMA throttles
-    // the budget whenever distill/reembed handler runs slow past 5s/20s.
-    // :memory: (tests, throwaway) skips the ramp — no watchdog, no backlog.
-    const { createLoadGovernor } = await import('../pipeline/backpressure.js');
-    const { resolveWorkerConcurrency } = await import('../pipeline/worker.js');
-    governor = createLoadGovernor({
-      maxLanes: resolveWorkerConcurrency(cfg),
-      ...(dataDir !== ':memory:' ? { bootRamp: {} } : {}),
-    });
-
-    // startWorker takes HandlerCtx but we pass ExtendedHandlerCtx (structural subtype)
-    worker = startWorker({
-      pollMs: 500,
-      registry,
-      db,
-      config: cfg,
-      ctx: extCtx,
-      healthState,
-      governor,
-    });
-
-    // KNN offload (2026-07-15 incident): recall's brute-force vector scan is a
-    // synchronous native call that grows with the corpus — run it on a worker
-    // thread with its own read-only connection so it never blocks the event
-    // loop. Registered for real datadirs only: a :memory: DB is invisible to a
-    // second connection, and non-daemon entry points (mcp-stdio, CLI, eval)
-    // never register, keeping their inline synchronous path. Any worker
-    // failure falls back to the main-thread scan (loud WARN per occurrence).
-    if (dataDir !== ':memory:') {
-      const { VecSearchWorkerHost } = await import('../vector/vec-search-host.js');
-      const { setVecSearchOffload } = await import('../vector/vec-search-offload.js');
-      const fallbackStore = new SqliteVecStore(db, cfg.embedding.dim);
-      vecSearchHost = new VecSearchWorkerHost({
-        dbPath,
-        key: dbKey,
-        fallback: (vec, k) => fallbackStore.search(vec, k),
-      });
-      const host = vecSearchHost;
-      setVecSearchOffload((vec, k) => host.search(vec, k));
-    }
-
-    // Sync shipper (ADR-003): one-way log shipping to the cloud ledger.
-    // Requires explicit opt-in + url + workspace + device token; private
-    // atoms never ship regardless (scope filter inside the shipper).
-    // `!isolated` is a second, independent guard on top of resolveRuntimeConfig
-    // already forcing cfg.sync.enabled=false under ASTRA_MEMORY_ISOLATED=1 — a
-    // synthetic/eval daemon must never start the shipper even if some future
-    // code path re-derives cfg.sync from elsewhere.
-    //
-    // EXPERIMENTAL HARD GATE (sync-experimental-gate slice). Originally added
-    // because sync-to-cloud was broken against astramem-cloud (8868 events
-    // failing HTTP 400); that was root-caused to a YARP stale-pooled-connection
-    // bug in the shared gateway (`common` repo, commit `edf266a`, bounds
-    // `PooledConnectionLifetime`), fixed and deployed to prod 2026-07-14, and
-    // re-verified live 2026-07-15 — sync is no longer known-broken. The gate
-    // now stands as a deliberate staged-rollout safety net, not a "sync is
-    // broken" guard. `sync.enabled` alone (set by `astramem-local pair` on a
-    // successful redeem) is NOT sufficient to start the shipper — see
-    // shouldStartShipper() in sync/shipper.ts. `cfg.sync.experimental` is a
-    // separate, config.yaml-only, hand-edit opt-in that `pair` never touches.
-    if (cfg.sync.enabled && dataDir !== ':memory:' && !isolated && !cfg.sync.experimental) {
-      console.warn(
-        `${ts()} [astramem-local] sync is EXPERIMENTAL — sync.enabled=true but sync.experimental=false; ` +
-        `the cloud sync shipper was NOT started. Sync-to-cloud is not yet stable. Set sync.experimental: ` +
-        `true in config.yaml to opt in once you understand the risk.`,
-      );
-    }
-    if (shouldStartShipper({ enabled: cfg.sync.enabled, experimental: cfg.sync.experimental, dataDir, isolated })) {
-      const syncToken = process.env.ASTRA_SYNC_TOKEN ?? readSyncToken(defaultConfigDir());
-      if (!cfg.sync.url || !cfg.sync.workspaceId || !syncToken) {
-        console.warn(
-          `${ts()} [astramem-local] sync.enabled=true but url/workspaceId/device-token incomplete — shipper NOT started.`,
-        );
-      } else {
-        shipper = startShipper({
-          db,
-          url: cfg.sync.url,
-          workspaceId: cfg.sync.workspaceId,
-          deviceId: getOrCreateDeviceId(defaultConfigDir()),
-          token: syncToken,
-          batchSize: cfg.sync.batchSize,
-          intervalMs: cfg.sync.intervalMs,
-        });
-        console.log(`${ts()} astramem-local sync shipper active -> ${cfg.sync.url}`);
-      }
-    }
-
-    // FEAT-406: host is config-driven (default '127.0.0.1'). buildApp derives
-    // the /health + /version auth boundary from the SAME cfg.network.host, so
-    // a non-local bind here always implies Bearer-gated health/version there.
-    // devops#69: `port` may be 0 (caller asked for an OS-assigned ephemeral
-    // port — see tests/smoke/helpers/daemon.ts spawnDaemon, which parses the
-    // REAL bound port back out of the log line below to avoid fixed-port
-    // collisions with the shared runner VM's persistent TEI container on
-    // :8080 and with neighbor CI jobs' own daemons). Fastify's listen()
-    // resolves with the actual bound address, so read the real port from
-    // there rather than echoing back the (possibly 0) request.
-    address = await app.listen({ port, host });
     const actualPort = Number(new URL(address).port);
     console.log(`${ts()} astramem-local serving on ${host}:${actualPort}`);
 
     const bootMs = Date.now() - bootStartedAt;
     if (bootMs > 5_000) {
       console.warn(
-        `${ts()} [astramem-local] boot sequence (open/migrate/recover/providers/listen) took ${bootMs}ms — ` +
-        'slower than the ~5s expected budget; a probe hitting this daemon during boot would not have been ' +
-        'answerable yet (see serve.ts bootAndBind doc comment for why this window cannot yet be shortened by ' +
-        'binding the port earlier).',
+        `${ts()} [astramem-local] boot sequence took ${bootMs}ms — slower than the ~5s expected budget. ` +
+        (opts.strictPreflight
+          ? 'strict-preflight mode: the daemon was not reachable on the wire at all until just now.'
+          : '/health has been reachable (starting, then 503-gated on other routes) since bind; ' +
+            'only migrate/recovery/worker-wiring took this long.'),
       );
     }
   };
@@ -618,7 +659,22 @@ export async function serve(opts: ServeOpts): Promise<void> {
   // (the mock LLM/embed providers never touch Ollama).
   const fullDoctorOpts: DoctorCheckOpts = {
     ...baseDoctorOpts,
-    llmProviders: { compaction: providers.llm.compaction, extraction: providers.llm.extraction },
+    // Wave 1 (BYO providers, #414): forward every configurable role, not
+    // just compaction/extraction — judge/extractionPassB/atomTriage are
+    // optional overrides that `getProviders` ALWAYS sets (see ProviderSet's
+    // doc comment in src/providers/index.ts), falling back to the same
+    // instance as `extraction` when unconfigured. `getChecks`'s dedup loop
+    // (src/doctor/checks/index.ts) already skips a probe that matches an
+    // earlier-listed role's provider, so passing all five here is safe for
+    // every pre-Wave-1 config too (byte-identical: one dedup'd probe per
+    // distinct provider instance, same as before this change).
+    llmProviders: {
+      compaction: providers.llm.compaction,
+      extraction: providers.llm.extraction,
+      judge: providers.llm.judge,
+      extractionPassB: providers.llm.extractionPassB,
+      atomTriage: providers.llm.atomTriage,
+    },
     embedProvider: providers.embed,
   };
   const handleDoctorResult = (result: DoctorScheduleResult): void => {
