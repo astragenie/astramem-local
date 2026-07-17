@@ -1,6 +1,6 @@
 ---
 id: FEAT-539
-status: pending
+status: done
 priority: P1
 category: feature
 target_release: RC
@@ -57,3 +57,5 @@ from the resolved runtime config the daemon already exposes.
   SEE it's healthy. Detect (538) → show (539) → switch (BYO) = the full resilience loop.
 - Sequence AFTER FEAT-538 lands (needs its providerHealth shape) — do not build in parallel
   (both touch the provider-health surface).
+
+> **Closed 2026-07-17 (RC).** dashboard Providers section — merged #423
