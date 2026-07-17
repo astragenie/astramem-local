@@ -1,6 +1,6 @@
 ---
 id: FEAT-484
-status: pending
+status: done
 priority: null
 category: feature
 target_release: null
@@ -19,3 +19,4 @@ Worktree-sourced memories are filed under a garbage repo name — provenance bug
 Created via free-text intake (`/runner:intake "<text>"`). Priority is
 unset — this FEAT has not been scored yet. Run `/runner:triage`
 (PM scoring + `backlog pm-apply`) to score it before slicing.
+> **Closed 2026-07-17.** repo-identity fix + backfill merged #405 (91baa1be); ingest hot-path made async in review-fix (3c7d5d02)

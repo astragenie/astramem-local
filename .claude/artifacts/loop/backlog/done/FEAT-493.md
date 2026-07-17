@@ -1,6 +1,6 @@
 ---
 id: FEAT-493
-status: pending
+status: done
 priority: null
 category: platform
 target_release: null
@@ -37,3 +37,5 @@ Config-gated per repo convention, sane default retention window, sanity ceiling 
 
 Cheap (mode enum + scoped deletes). Decide which local artifacts count as "heavy derived
 payloads" (raw capture spool? transcript raws once FEAT-489 exists?) during slice derivation.
+
+> **Closed 2026-07-17.** tiered retention disk-artifact deletion merged #406; 3 non-blocking notes tracked #408
