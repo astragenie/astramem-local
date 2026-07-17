@@ -2,12 +2,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { getProviders } from '../../src/providers/index.js';
 import { defaultConfig } from '../../src/config/config.js';
 import type { Config } from '../../src/config/config.js';
-import { OllamaLLMProvider } from '../../src/providers/llm/ollama.js';
 import { OllamaEmbedProvider } from '../../src/providers/embed/ollama.js';
-import { AzureOpenAILLMProvider } from '../../src/providers/llm/azure-openai.js';
 import { AzureOpenAIEmbedProvider } from '../../src/providers/embed/azure-openai.js';
-import { OpenAICompatibleLLMProvider } from '../../src/providers/llm/openai-compatible.js';
-import { CodexSubscriptionLLMProvider } from '../../src/providers/llm/codex-subscription.js';
+
+// FEAT-538: buildLLMProvider() now unconditionally wraps every LLM provider
+// it constructs in a chat()-observing health decorator (see
+// src/providers/llm/health-tracking.ts), so `llm.compaction`/`llm.extraction`
+// are no longer instances of the concrete provider classes (OllamaLLMProvider
+// etc.) directly — they're a HealthTrackingLLMProvider wrapping one.
+// Assertions below check the LLMProvider CONTRACT (`.name`/`.model`, the same
+// fields a real caller depends on) instead of concrete class identity — a
+// more robust pattern anyway, since enabling `llm.rateLimit` already broke
+// instanceof the exact same way via RateLimitedLLMProvider. Embed providers
+// are untouched by this FEAT (no health tracking on the embed role), so
+// those instanceof checks are unchanged.
 
 function azureConfig(overrides: Partial<Config> = {}): Config {
   const base = defaultConfig();
@@ -36,18 +44,18 @@ describe('getProviders factory', () => {
     vi.restoreAllMocks();
   });
 
-  it('returns OllamaLLMProvider for compaction when config.llm.compaction.provider=ollama', () => {
+  it('returns an ollama-named provider for compaction when config.llm.compaction.provider=ollama', () => {
     const cfg = defaultConfig();
     cfg.llm.compaction.provider = 'ollama';
     const { llm } = getProviders(cfg);
-    expect(llm.compaction).toBeInstanceOf(OllamaLLMProvider);
+    expect(llm.compaction.name).toBe('ollama');
   });
 
-  it('returns OllamaLLMProvider for extraction when config.llm.extraction.provider=ollama', () => {
+  it('returns an ollama-named provider for extraction when config.llm.extraction.provider=ollama', () => {
     const cfg = defaultConfig();
     cfg.llm.extraction.provider = 'ollama';
     const { llm } = getProviders(cfg);
-    expect(llm.extraction).toBeInstanceOf(OllamaLLMProvider);
+    expect(llm.extraction.name).toBe('ollama');
   });
 
   it('returns OllamaEmbedProvider when config.embedding.provider=ollama', () => {
@@ -57,22 +65,21 @@ describe('getProviders factory', () => {
     expect(embed).toBeInstanceOf(OllamaEmbedProvider);
   });
 
-  it('returns AzureOpenAILLMProvider for compaction when config.llm.compaction.provider=azure-openai', () => {
+  it('returns an azure-openai-named provider for compaction when config.llm.compaction.provider=azure-openai', () => {
     const cfg = azureConfig();
     cfg.llm.compaction.provider = 'azure-openai';
     cfg.llm.compaction.model = 'gpt-4.1';
     cfg.llm.extraction.provider = 'ollama'; // keep extraction as ollama to avoid embed config needed
     const { llm } = getProviders(cfg);
-    expect(llm.compaction).toBeInstanceOf(AzureOpenAILLMProvider);
     expect(llm.compaction.name).toBe('azure-openai');
   });
 
-  it('returns AzureOpenAILLMProvider for extraction when config.llm.extraction.provider=azure-openai', () => {
+  it('returns an azure-openai-named provider for extraction when config.llm.extraction.provider=azure-openai', () => {
     const cfg = azureConfig();
     cfg.llm.extraction.provider = 'azure-openai';
     cfg.llm.extraction.model = 'gpt-4.1-mini';
     const { llm } = getProviders(cfg);
-    expect(llm.extraction).toBeInstanceOf(AzureOpenAILLMProvider);
+    expect(llm.extraction.name).toBe('azure-openai');
     expect(llm.extraction.model).toBe('gpt-4.1-mini');
   });
 
@@ -91,8 +98,8 @@ describe('getProviders factory', () => {
     cfg.llm.extraction.provider = 'azure-openai';
     cfg.llm.extraction.model = 'gpt-4.1-mini';
     const { llm } = getProviders(cfg);
-    expect(llm.compaction).toBeInstanceOf(OllamaLLMProvider);
-    expect(llm.extraction).toBeInstanceOf(AzureOpenAILLMProvider);
+    expect(llm.compaction.name).toBe('ollama');
+    expect(llm.extraction.name).toBe('azure-openai');
   });
 
   it('provider models match config', () => {
@@ -121,13 +128,13 @@ describe('getProviders factory', () => {
     expect(() => getProviders(cfg)).toThrow(/endpoint/i);
   });
 
-  it('returns OpenAICompatibleLLMProvider for compaction when config.llm.compaction.provider=openai-compatible', () => {
+  it('returns an openai-compatible-named provider for compaction when config.llm.compaction.provider=openai-compatible', () => {
     const cfg = defaultConfig();
     cfg.openaiCompatible.baseUrl = 'https://api.openai.com/v1';
     cfg.llm.compaction.provider = 'openai-compatible';
     cfg.llm.compaction.model = 'gpt-4o-mini';
     const { llm } = getProviders(cfg);
-    expect(llm.compaction).toBeInstanceOf(OpenAICompatibleLLMProvider);
+    expect(llm.compaction.name).toBe('openai-compatible');
     expect(llm.compaction.model).toBe('gpt-4o-mini');
   });
 
@@ -137,12 +144,12 @@ describe('getProviders factory', () => {
     expect(() => getProviders(cfg)).toThrow(/base_url/i);
   });
 
-  it('returns CodexSubscriptionLLMProvider for extraction when config.llm.extraction.provider=codex-subscription', () => {
+  it('returns a codex-subscription-named provider for extraction when config.llm.extraction.provider=codex-subscription', () => {
     const cfg = defaultConfig();
     cfg.llm.extraction.provider = 'codex-subscription';
     cfg.llm.extraction.model = 'gpt-5.4-mini';
     const { llm } = getProviders(cfg);
-    expect(llm.extraction).toBeInstanceOf(CodexSubscriptionLLMProvider);
+    expect(llm.extraction.name).toBe('codex-subscription');
     expect(llm.extraction.model).toBe('gpt-5.4-mini');
   });
 
