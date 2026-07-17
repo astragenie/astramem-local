@@ -17,10 +17,27 @@
 # (set FORCE=1 to always reinstall), then re-runs `init`, which is itself
 # safe to re-run against an existing config.
 #
+# Root/sudo: running as root refuses to proceed (same FORCE=1 override) since
+# it would install/start the service AS ROOT. Under `sudo` specifically,
+# config/data written while running as root get chowned back to $SUDO_USER
+# afterward.
+#
 # Native deps: astramem-local depends on better-sqlite3-multiple-ciphers and
 # @napi-rs/keyring. npm will use prebuilt binaries when available for your
 # platform/arch, falling back to a from-source compile (needs a C/C++
 # toolchain + python3) when no prebuild matches.
+
+# Re-exec under bash when invoked via `sh install.sh` / `curl | sh`. `set -o
+# pipefail` below is a bash-only option; dash (the default /bin/sh on
+# Debian/Ubuntu/Alpine) aborts on it with "Illegal option -o pipefail" before
+# any install logic runs (FEAT-474, found during SLICE-425 — predates this
+# FEAT, verified with `dash install.sh`). The shebang has always said bash;
+# this makes `sh`/piped-into-`sh` invocations actually honor that instead of
+# dying on line 1 of real logic.
+if [ -z "${BASH_VERSION:-}" ]; then
+  exec bash "$0" "$@"
+fi
+
 set -euo pipefail
 
 PKG="astramem-local"
@@ -79,9 +96,82 @@ fi
 if ! command -v astramem-local >/dev/null 2>&1; then
   echo "error: install completed but 'astramem-local' is not on PATH." >&2
   echo "  Check npm's global bin dir is on PATH: npm config get prefix" >&2
+  # AC-9: also print a copy-pasteable line instead of making the user derive
+  # it themselves, targeted at the detected login shell's rc file.
+  npm_bin_dir="$(npm config get prefix 2>/dev/null)/bin"
+  case "${SHELL:-}" in
+    */fish)
+      rc_file="\$HOME/.config/fish/config.fish"
+      echo "  Add it to PATH by pasting this (fish detected):" >&2
+      echo "    echo 'set -gx PATH \"${npm_bin_dir}\" \$PATH' >> ${rc_file}" >&2
+      ;;
+    */zsh)
+      echo "  Add it to PATH by pasting this (zsh detected):" >&2
+      echo "    echo 'export PATH=\"${npm_bin_dir}:\$PATH\"' >> \$HOME/.zshrc" >&2
+      ;;
+    *)
+      rc_file="\$HOME/.bashrc"
+      [ -n "${SHELL:-}" ] || rc_file="\$HOME/.profile"
+      echo "  Add it to PATH by pasting this:" >&2
+      echo "    echo 'export PATH=\"${npm_bin_dir}:\$PATH\"' >> ${rc_file}" >&2
+      ;;
+  esac
   exit 1
 fi
 echo "Installed: $(astramem-local --version 2>/dev/null || echo "(version check unavailable)")"
+
+# --- 3b. Root / sudo guard -----------------------------------------------------
+# AC-6: refuse to silently auto-start a root-owned daemon. `init` can install
+# and start the OS service (systemd/launchd) — doing that as root is unusual
+# for a per-user daemon and easy to do by accident via `curl | sudo bash`.
+# Require the same FORCE=1 override already used for the reinstall skip above.
+if [ "$(id -u)" -eq 0 ] && [ -z "${FORCE:-}" ]; then
+  echo >&2
+  echo "error: this installer is running as root." >&2
+  echo "  Running 'astramem-local init' as root will install and start the" >&2
+  echo "  astramem-local service AS ROOT, which is unusual for a per-user" >&2
+  echo "  daemon and is not recommended." >&2
+  echo "  Re-run as a normal user, or set FORCE=1 to proceed anyway." >&2
+  exit 1
+fi
+if [ "$(id -u)" -eq 0 ]; then
+  echo "warning: FORCE is set — proceeding to run 'astramem-local init' as root." >&2
+fi
+
+# AC-7: under `sudo` (root with $SUDO_USER set), config.yaml/secrets.env and
+# the data dir get written while running as root — hand them back to the
+# invoking user afterward so they can manage their own config without sudo.
+# Mirrors defaultConfigDir()/defaultDataDir() (src/config/datadir.ts) for the
+# macOS/Linux targets this script covers (Windows is out of scope).
+chown_config_and_data_to_sudo_user() {
+  config_dir="${XDG_CONFIG_HOME:-$HOME/.config}/astra-memory"
+  data_dir="${XDG_DATA_HOME:-$HOME/.local/share}/astra-memory"
+  if [ "$(uname -s)" = "Darwin" ]; then
+    config_dir="$HOME/Library/Application Support/astra-memory"
+    data_dir="$config_dir"
+  fi
+  echo "Restoring ownership of astramem-local config/data to ${SUDO_USER}..."
+  for dir in "$config_dir" "$data_dir"; do
+    if [ -e "$dir" ]; then
+      chown -R "${SUDO_USER}" "$dir" 2>/dev/null || echo "warning: could not chown $dir back to ${SUDO_USER}" >&2
+    fi
+  done
+}
+
+# Dispatches to `astramem-local init`. Normally this replaces the shell via
+# `exec` (today's behavior, unchanged — AC-10). Under sudo it runs in the
+# foreground instead so AC-7's chown-back can run afterward; `exec` would
+# replace this process and nothing after it would ever execute.
+run_init() {
+  if [ -n "${SUDO_USER:-}" ] && [ "$(id -u)" -eq 0 ]; then
+    astramem_init_status=0
+    astramem-local init "$@" || astramem_init_status=$?
+    chown_config_and_data_to_sudo_user
+    exit "$astramem_init_status"
+  else
+    exec astramem-local init "$@"
+  fi
+}
 
 # --- 4. Run the setup wizard ---------------------------------------------------
 # `init` is interactive (it prompts for provider choice, etc.). When this
@@ -101,7 +191,7 @@ echo "Installed: $(astramem-local --version 2>/dev/null || echo "(version check 
 # once the subshell proved it's safe) touches this shell's own stdin.
 if [ -t 0 ]; then
   echo "Running 'astramem-local init' ${*:+with args: $*} ..."
-  exec astramem-local init "$@"
+  run_init "$@"
 fi
 
 echo
@@ -110,7 +200,7 @@ echo "Stdin isn't a terminal (this script was likely piped in, e.g. curl | bash)
 if [ -e /dev/tty ] && (exec < /dev/tty) 2>/dev/null; then
   exec < /dev/tty
   echo "Re-attached to /dev/tty — running 'astramem-local init' ${*:+with args: $*} ..."
-  exec astramem-local init "$@"
+  run_init "$@"
 fi
 
 echo "No controlling terminal (/dev/tty) is available (e.g. CI or a container),"

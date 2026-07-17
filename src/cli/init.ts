@@ -830,6 +830,12 @@ export async function init(argv: string[] = []): Promise<void> {
 
   // 5. Write config.yaml
   const configDir = defaultConfigDir();
+  // FEAT-474 AC-8: create the config dir with restrictive perms (owner rwx
+  // only) rather than relying on the OS default umask — matches the
+  // existing per-file guarantee on secrets.env (mode 0600). No-op if the
+  // directory already exists (mkdirSync recursive doesn't retrofit mode on
+  // an existing path); `mode` is silently ignored on Windows (NTFS ACLs).
+  mkdirSync(configDir, { recursive: true, mode: 0o700 });
   const configPath = join(configDir, 'config.yaml');
   writeConfig(cfg, configPath);
   if (!nonInteractive) console.log(`\n  ✓ config.yaml written to ${configPath}`);
