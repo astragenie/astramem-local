@@ -16,6 +16,25 @@
  *     foreign PID that recycled the id) → steal loudly.
  *
  * Steal = atomic tmp+rename overwrite, same pattern as migrate-encrypt.ts.
+ *
+ * ACQUIRE MUTEX (Wave 0 Item 2, issue #397 follow-up — the real stabilization
+ * P0). The steps above ("decide") used to be unprotected against a SECOND
+ * concurrent caller running the exact same decision sequence at the same
+ * time — the managed service starts two schtasks (`AstraMemoryD` keepalive
+ * PT5M, `AstraMemoryDWatchdog` PT3M) that can fire within moments of each
+ * other. `renameSync` (the steal path's atomic overwrite) never throws
+ * EEXIST, so two racers could both classify a holder as a zombie, both
+ * "win" the steal, and both proceed to `app.listen()` → EADDRINUSE
+ * crash-loop / split-brain. A separate `daemon.lock.acquiring` sentinel,
+ * exclusively created (`wx`) at the very top of `acquireInstanceLock` and
+ * released in a `finally`, now serializes the ENTIRE
+ * read-holder → zombie-probe → decide → write → **bind** sequence — not
+ * just the lock write. The `bind` callback (typically `() => app.listen()`)
+ * runs to completion WHILE the mutex is still held, closing the narrower
+ * "lock written, port not yet bound" race a mutex scoped only to the write
+ * would still leave open. `daemon.lock` itself is UNCHANGED — format,
+ * `readLockInfo`, `stopLockHolder`, and doctor all read the same file the
+ * same way as before this addition.
  */
 import { openSync, closeSync, writeSync, readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -46,6 +65,114 @@ export class AlreadyRunningError extends Error {
 
 export function lockPath(dataDir: string): string {
   return join(dataDir, 'daemon.lock');
+}
+
+/**
+ * The acquire-mutex sentinel path (Item 2). Separate FILE from `daemon.lock`
+ * itself — the mutex's job is to serialize DECISION-MAKING across
+ * near-simultaneous callers, not to record who holds the daemon; keeping it
+ * a distinct file means daemon.lock's own format/readers never have to know
+ * this mutex exists.
+ */
+export function acquiringLockPath(dataDir: string): string {
+  return `${lockPath(dataDir)}.acquiring`;
+}
+
+/** Thrown when the acquire mutex itself cannot be obtained within the
+ *  timeout — i.e. another process has been mid-decide for longer than any
+ *  real boot (probe + zombie-kill + bind) should ever take. Almost always
+ *  means a sibling astramem-local process is genuinely wedged, not merely
+ *  slow; surfaced as a loud, distinct error rather than silently retried
+ *  forever, so it reaches the crash-exit path instead of hanging the caller. */
+export class MutexTimeoutError extends Error {
+  constructor(public readonly path: string, public readonly timeoutMs: number) {
+    super(
+      `timed out after ${timeoutMs}ms waiting for the instance-lock acquire mutex at ${path} — ` +
+      'another astramem-local process appears to be wedged mid-boot (holding the mutex without releasing it).',
+    );
+    this.name = 'MutexTimeoutError';
+  }
+}
+
+const MUTEX_POLL_INTERVAL_MS = 100;
+/** Generous enough to cover the worst realistic decide-window (3 health
+ *  probes at 2s each + a zombie stopLockHolder kill-wait up to 5s + a real
+ *  app.listen()), without hanging a genuinely wedged racer's sibling forever. */
+const DEFAULT_MUTEX_TIMEOUT_MS = 30_000;
+
+interface MutexHandle {
+  release(): void;
+}
+
+/**
+ * Exclusively acquire `path` (`wx` create), waiting out any current holder
+ * rather than failing immediately — a near-simultaneous sibling caller
+ * should serialize BEHIND the winner and then proceed through the normal
+ * decide logic once it releases (at which point it will see the winner's
+ * now-written, now-bound daemon.lock and resolve to `AlreadyRunningError`
+ * the ordinary way), not bail out with a synthesized error. A held sentinel
+ * whose recorded PID is no longer alive is stale (the prior holder crashed
+ * between open() and its `finally`) and is stolen immediately, so a dead
+ * process can never wedge every future boot.
+ */
+async function acquireMutex(
+  path: string,
+  opts: { timeoutMs?: number; pidAliveFn?: (pid: number) => boolean } = {},
+): Promise<MutexHandle> {
+  const timeoutMs = opts.timeoutMs ?? DEFAULT_MUTEX_TIMEOUT_MS;
+  const isAlive = opts.pidAliveFn ?? pidAlive;
+  const deadline = Date.now() + timeoutMs;
+
+  for (;;) {
+    try {
+      const fd = openSync(path, 'wx');
+      try {
+        writeSync(fd, JSON.stringify({ pid: process.pid }));
+      } finally {
+        closeSync(fd);
+      }
+      let released = false;
+      return {
+        release(): void {
+          if (released) return;
+          released = true;
+          try {
+            const raw = readFileSync(path, 'utf8');
+            const parsed = JSON.parse(raw) as { pid?: number };
+            if (parsed.pid === process.pid) unlinkSync(path);
+          } catch {
+            /* best-effort — a concurrent stale-cleanup racer may already have removed it */
+          }
+        },
+      };
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+
+    // Someone else holds the mutex. Tell apart "genuinely mid-decide" from a
+    // stale sentinel left by a process that died between open() and its
+    // finally (e.g. SIGKILL mid-boot) — a liveness-only check is sufficient
+    // here: this mutex only serializes decision-making, not data integrity.
+    // The real correctness guarantee (identity-verified kill before a
+    // takeover) still lives in stopLockHolder against daemon.lock itself.
+    let holderPid: number | null = null;
+    try {
+      const raw = readFileSync(path, 'utf8');
+      holderPid = (JSON.parse(raw) as { pid?: number }).pid ?? null;
+    } catch {
+      /* unreadable/corrupt — treat as stale below */
+    }
+
+    if (holderPid === null || !isAlive(holderPid)) {
+      try { unlinkSync(path); } catch { /* a concurrent cleanup may have won the race */ }
+      continue; // retry the exclusive create immediately
+    }
+
+    if (Date.now() >= deadline) {
+      throw new MutexTimeoutError(path, timeoutMs);
+    }
+    await new Promise(resolve => setTimeout(resolve, MUTEX_POLL_INTERVAL_MS));
+  }
 }
 
 function pidAlive(pid: number): boolean {
@@ -395,11 +522,18 @@ export class ZombieLockTakeoverError extends Error {
 /**
  * Acquire the single-instance lock for `dataDir`.
  *
- * Throws AlreadyRunningError when a healthy daemon already holds it.
+ * Throws AlreadyRunningError when a healthy daemon already holds it — this
+ * now includes the case where a near-simultaneous sibling caller won the
+ * acquire mutex first and successfully bound; the loser waits out the mutex
+ * (see `acquireMutex`) and then resolves through this exact same path once
+ * it can see the winner's now-written, now-bound daemon.lock.
  * Throws ZombieLockTakeoverError (issue #387) when the holder fails 3
  * health probes but cannot be confirmed stopped — we must never return a
  * lock handle (and let the caller proceed to `app.listen()`) while the old
  * holder might still own the port.
+ * Throws MutexTimeoutError (Item 2) when the acquire mutex itself cannot be
+ * obtained within `opts.mutexTimeoutMs` — a sibling has been mid-decide far
+ * longer than any real boot should take.
  * Returns a handle whose release() is idempotent and safe from crash handlers.
  */
 export async function acquireInstanceLock(
@@ -416,12 +550,74 @@ export async function acquireInstanceLock(
     zombieStopWaitMs?: number;
     /** Injectable port-liveness probe for the zombie-stop path's port-free check (issue #389) — tests substitute a stub instead of a real socket connect. */
     portInUse?: (port: number) => Promise<boolean>;
+    /**
+     * Item 2/3 coupling: called AFTER daemon.lock is written, WHILE the
+     * `.acquiring` mutex is still held — typically `() => app.listen(...)`.
+     * The mutex is released only once this settles (resolve or reject), so
+     * a second racer can never observe "lock written, port not yet bound"
+     * and mistakenly steal. Defaults to a no-op, so callers that only care
+     * about the lock-decision logic itself (most of this file's own test
+     * suite) are unaffected — the mutex is still acquired and released
+     * around the decide+write sequence either way, just with nothing to
+     * wait for afterward. On failure, the lock we just wrote is released
+     * (best-effort, only if we still own it) before the mutex releases and
+     * the error propagates, so a bind failure never leaves a phantom
+     * healthy-looking lock behind for the next boot attempt to trip over.
+     */
+    bind?: () => Promise<void>;
+    /** Injectable acquire-mutex timeout — tests substitute a tiny value instead of the real 30s default. */
+    mutexTimeoutMs?: number;
   } = {},
 ): Promise<InstanceLock> {
   const path = lockPath(dataDir);
+  const acquiringPath = acquiringLockPath(dataDir);
   const probe = opts.healthProbe ?? healthOk;
   const mine: LockInfo = { pid: process.pid, startedAt: new Date().toISOString(), port, version };
 
+  const mutex = await acquireMutex(acquiringPath, { timeoutMs: opts.mutexTimeoutMs });
+  try {
+    await acquireInstanceLockCriticalSection(dataDir, path, mine, probe, opts);
+  } finally {
+    mutex.release();
+  }
+
+  let released = false;
+  return {
+    path,
+    release(): void {
+      if (released) return;
+      released = true;
+      try {
+        // Only remove the lock if we still own it (a zombie-steal by a newer
+        // process must not be deleted by the old holder on its way out).
+        const current = readLock(path);
+        if (current && current.pid === process.pid) unlinkSync(path);
+      } catch {
+        /* best-effort — lock steal handles leftovers */
+      }
+    },
+  };
+}
+
+/**
+ * The decide → write → bind sequence, run entirely under the `.acquiring`
+ * mutex (see `acquireInstanceLock`). Split out purely so the mutex
+ * acquire/release wrapping above stays easy to read; not exported.
+ */
+async function acquireInstanceLockCriticalSection(
+  dataDir: string,
+  path: string,
+  mine: LockInfo,
+  probe: (port: number) => Promise<boolean>,
+  opts: {
+    signal?: (pid: number, signal: NodeJS.Signals | number) => void;
+    processStartTime?: (pid: number) => Promise<Date | null>;
+    zombieStopWaitMs?: number;
+    portInUse?: (port: number) => Promise<boolean>;
+    bind?: () => Promise<void>;
+  },
+): Promise<void> {
+  const port = mine.port;
   let exclusive = true;
   if (existsSync(path)) {
     const holder = readLock(path);
@@ -477,27 +673,31 @@ export async function acquireInstanceLock(
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
       // Raced another starting daemon between existsSync and open('wx') —
-      // the other process won; defer to it.
+      // under the mutex this should be unreachable in practice (only one
+      // caller is ever inside this critical section at a time), but stays
+      // as defense-in-depth against a non-astramem-local writer of the same
+      // path. The other process won; defer to it.
       const holder = readLock(path);
       throw new AlreadyRunningError(holder ?? { pid: -1, port, startedAt: '', version: '' });
     }
     throw err;
   }
 
-  let released = false;
-  return {
-    path,
-    release(): void {
-      if (released) return;
-      released = true;
+  if (opts.bind) {
+    try {
+      await opts.bind();
+    } catch (err) {
+      // We wrote the lock but failed to actually bind (e.g. app.listen()
+      // itself threw) — release it so a subsequent boot attempt (schtasks
+      // keepalive re-run) doesn't see a phantom healthy-looking holder that
+      // never actually bound anything. Only touch it if it's still ours.
       try {
-        // Only remove the lock if we still own it (a zombie-steal by a newer
-        // process must not be deleted by the old holder on its way out).
         const current = readLock(path);
         if (current && current.pid === process.pid) unlinkSync(path);
       } catch {
-        /* best-effort — lock steal handles leftovers */
+        /* best-effort */
       }
-    },
-  };
+      throw err;
+    }
+  }
 }

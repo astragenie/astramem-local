@@ -1,10 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, openSync, closeSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
-import { acquireInstanceLock, AlreadyRunningError, ZombieLockTakeoverError, lockPath, stopLockHolder, getProcessStartTime, isPortInUse } from '../../src/service/instance-lock.js';
+import {
+  acquireInstanceLock, AlreadyRunningError, ZombieLockTakeoverError, lockPath, stopLockHolder,
+  getProcessStartTime, isPortInUse, acquiringLockPath, MutexTimeoutError, type InstanceLock,
+} from '../../src/service/instance-lock.js';
 
 /** A fixed, arbitrary start-time used across identity-check tests. */
 const FIXED_STARTED_AT = '2026-07-13T00:00:00.000Z';
@@ -535,5 +538,169 @@ describe('isPortInUse (real socket probe, issue #389)', () => {
   it('reports false (ECONNREFUSED) once nothing is listening', async () => {
     await new Promise<void>(resolve => server.close(() => resolve()));
     expect(await isPortInUse(port)).toBe(false);
+  });
+});
+
+// Wave 0 Item 2 — the `.acquiring` mutex. These tests use INJECTED timing
+// (a manually-controlled gate, or a manually-held sentinel file) rather than
+// organic "spawn N, see one bind" races — per ADR-016 §5, an organic-timing
+// concurrency test can pass green for the wrong reason (a mutex scoped only
+// to the lock write, not the bind, still usually "looks" serialized under
+// normal scheduling). Every assertion here targets the SPECIFIC window the
+// old code left open: the mutex must be held continuously from decide
+// through the caller's `bind` callback (typically `app.listen()`), not just
+// until `daemon.lock` is written.
+describe('acquireInstanceLock — the .acquiring mutex (Wave 0 Item 2)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-lock-mutex-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('a manually-held .acquiring sentinel blocks a new acquireInstanceLock call from proceeding past the mutex', async () => {
+    // Simulate "another process is mid-decide" by taking the sentinel
+    // ourselves, exactly the way acquireMutex does internally — with a LIVE
+    // pid (our own) recorded, so it reads as genuinely held rather than
+    // stale (an empty/unparseable sentinel is treated as stale and stolen
+    // immediately — that's a DIFFERENT, deliberately fast path, covered by
+    // the next test).
+    writeFileSync(acquiringLockPath(dir), JSON.stringify({ pid: process.pid }));
+
+    let resolved = false;
+    const acquirePromise = acquireInstanceLock(dir, 7777, '0.6.0', { mutexTimeoutMs: 5_000 })
+      .then(lock => { resolved = true; return lock; });
+
+    // Give the call every chance to race past the mutex if it were broken —
+    // it must NOT have written daemon.lock or resolved while the sentinel
+    // (written by the OS-level pid inside it, our own pid here) is held and
+    // still alive.
+    await new Promise(r => setTimeout(r, 150));
+    expect(resolved).toBe(false);
+    expect(existsSync(lockPath(dir))).toBe(false);
+
+    // Release the sentinel the same way acquireMutex's own release() does —
+    // simulating the prior holder finishing.
+    unlinkSync(acquiringLockPath(dir));
+
+    const lock = await acquirePromise;
+    expect(resolved).toBe(true);
+    expect(existsSync(lockPath(dir))).toBe(true);
+    lock.release();
+  });
+
+  it('a held-but-stale sentinel (pid no longer alive) is stolen immediately rather than waited out', async () => {
+    // A PID beyond the practical range is never alive — same convention the
+    // existing "steals a lock held by a dead PID" test above uses.
+    writeFileSync(acquiringLockPath(dir), JSON.stringify({ pid: 2 ** 30 }));
+
+    const start = Date.now();
+    const lock = await acquireInstanceLock(dir, 7777, '0.6.0', { mutexTimeoutMs: 20_000 });
+    const elapsedMs = Date.now() - start;
+
+    // Should resolve almost immediately (stale-sentinel steal path), not
+    // wait anywhere near the mutex timeout.
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(existsSync(lockPath(dir))).toBe(true);
+    lock.release();
+  });
+
+  it('the .acquiring mutex stays held through the bind callback, not just until daemon.lock is written', async () => {
+    let bindStarted = false;
+    let releaseBindGate: () => void = () => {};
+    const bindGate = new Promise<void>(resolve => { releaseBindGate = resolve; });
+    const slowBind = async (): Promise<void> => {
+      bindStarted = true;
+      await bindGate; // held open until this test explicitly releases it
+    };
+
+    const acquirePromise = acquireInstanceLock(dir, 7777, '0.6.0', { bind: slowBind });
+
+    // Poll for bind() to actually start (proves we got past decide+write).
+    const deadline = Date.now() + 5_000;
+    while (!bindStarted && Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 10));
+    }
+    expect(bindStarted).toBe(true);
+
+    // daemon.lock IS already written at this point (write happens before
+    // bind) — proving this isn't just catching the earlier, already-fixed
+    // window.
+    expect(existsSync(lockPath(dir))).toBe(true);
+
+    // While bind() is still pending, the mutex sentinel must STILL be held —
+    // a second attempt to exclusively create it must fail with EEXIST. This
+    // is the exact assertion the pre-fix code could never have passed: a
+    // mutex released right after the lock write would have left the
+    // sentinel gone by now.
+    expect(() => {
+      const fd = openSync(acquiringLockPath(dir), 'wx');
+      closeSync(fd);
+    }).toThrow(/EEXIST/);
+
+    releaseBindGate();
+    const lock: InstanceLock = await acquirePromise;
+
+    // Now that bind() resolved and the mutex released, a fresh exclusive
+    // create must succeed again.
+    const fd = openSync(acquiringLockPath(dir), 'wx');
+    closeSync(fd);
+    unlinkSync(acquiringLockPath(dir));
+    lock.release();
+  });
+
+  it('two concurrent acquires against an empty dir never run their bind callbacks concurrently (max-concurrency=1)', async () => {
+    let active = 0;
+    let maxConcurrent = 0;
+    const order: string[] = [];
+    const trackedBind = (label: string) => async (): Promise<void> => {
+      active++;
+      maxConcurrent = Math.max(maxConcurrent, active);
+      order.push(`${label}-start`);
+      await new Promise(r => setTimeout(r, 50));
+      order.push(`${label}-end`);
+      active--;
+    };
+
+    // Both calls run in the SAME OS process — the pid-self-check in
+    // acquireInstanceLockCriticalSection means the second call's decide
+    // logic sees `holder.pid === process.pid` and steals rather than
+    // throwing AlreadyRunningError (that health-probe path is exhaustively
+    // covered by the single-acquire tests earlier in this file, which use
+    // process.ppid to simulate a genuinely different pid). What THIS test
+    // proves — the thing Item 2 actually fixes — is that the mutex forces
+    // the two binds to run strictly SEQUENTIALLY, never overlapping.
+    const results = await Promise.allSettled([
+      acquireInstanceLock(dir, 7777, '0.6.0', { bind: trackedBind('a') }),
+      acquireInstanceLock(dir, 7777, '0.6.0', { bind: trackedBind('b') }),
+    ]);
+
+    expect(maxConcurrent).toBe(1);
+    // Strictly sequential: whichever started second only starts after the
+    // first fully finished.
+    expect(order[0]?.endsWith('-start')).toBe(true);
+    expect(order[1]).toBe(`${order[0]!.replace('-start', '')}-end`);
+
+    for (const r of results) {
+      if (r.status === 'fulfilled') r.value.release();
+    }
+  });
+
+  it('MutexTimeoutError is thrown (not an indefinite hang) when a live sentinel holder never releases within the budget', async () => {
+    // A live pid (our own) that never releases the sentinel — simulates a
+    // genuinely wedged sibling process.
+    writeFileSync(acquiringLockPath(dir), JSON.stringify({ pid: process.pid }));
+
+    await expect(
+      acquireInstanceLock(dir, 7777, '0.6.0', { mutexTimeoutMs: 200 }),
+    ).rejects.toThrow(MutexTimeoutError);
+
+    // Clean up the sentinel this test wrote so afterEach's rmSync isn't
+    // doing anything surprising (it would clean it up anyway, but this
+    // documents the expected end state explicitly).
+    unlinkSync(acquiringLockPath(dir));
   });
 });
