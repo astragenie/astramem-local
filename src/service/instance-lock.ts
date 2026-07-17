@@ -35,6 +35,18 @@
  * would still leave open. `daemon.lock` itself is UNCHANGED — format,
  * `readLockInfo`, `stopLockHolder`, and doctor all read the same file the
  * same way as before this addition.
+ *
+ * SENTINEL PID-IDENTITY HARDENING (issue #415 LOW follow-up). The `.acquiring`
+ * sentinel now also records the writer's `startedAt` (wall clock at write
+ * time — same convention `daemon.lock` itself already uses), and a contended
+ * `acquireMutex` attempt verifies the recorded holder via the same PID +
+ * OS-reported-start-time identity check `stopLockHolder` uses against
+ * `daemon.lock` (see `checkHolderIdentity`), not liveness alone. Before this,
+ * a dead holder's recycled PID being reused by an unrelated live process made
+ * `acquireMutex` treat the sentinel as still genuinely held, waiting out the
+ * full `MutexTimeoutError` budget (~30s) before crash-exiting — bounded, not
+ * a correctness break, but a needless boot stall the identity check now
+ * avoids by recognizing the recycled PID as stale and stealing immediately.
  */
 import { openSync, closeSync, writeSync, readFileSync, writeFileSync, renameSync, unlinkSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
@@ -111,23 +123,38 @@ interface MutexHandle {
  * decide logic once it releases (at which point it will see the winner's
  * now-written, now-bound daemon.lock and resolve to `AlreadyRunningError`
  * the ordinary way), not bail out with a synthesized error. A held sentinel
- * whose recorded PID is no longer alive is stale (the prior holder crashed
- * between open() and its `finally`) and is stolen immediately, so a dead
- * process can never wedge every future boot.
+ * whose recorded PID is no longer alive, OR whose PID is alive but has been
+ * recycled by an unrelated process (issue #415 LOW — identity confirmed via
+ * `checkHolderIdentity`, the same check `stopLockHolder` uses against
+ * `daemon.lock`), is stale and is stolen immediately, so neither a dead
+ * process nor a PID-recycle false positive can wedge a future boot for the
+ * full mutex timeout.
  */
 async function acquireMutex(
   path: string,
-  opts: { timeoutMs?: number; pidAliveFn?: (pid: number) => boolean } = {},
+  opts: {
+    timeoutMs?: number;
+    pidAliveFn?: (pid: number) => boolean;
+    /** Injectable process-start-time resolver for the sentinel's own
+     *  identity check — tests substitute a stub instead of shelling out to
+     *  the OS. Defaults to the real `getProcessStartTime`. */
+    processStartTimeFn?: (pid: number) => Promise<Date | null>;
+  } = {},
 ): Promise<MutexHandle> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_MUTEX_TIMEOUT_MS;
   const isAlive = opts.pidAliveFn ?? pidAlive;
+  const resolveStartTime = opts.processStartTimeFn ?? getProcessStartTime;
   const deadline = Date.now() + timeoutMs;
 
   for (;;) {
     try {
       const fd = openSync(path, 'wx');
       try {
-        writeSync(fd, JSON.stringify({ pid: process.pid }));
+        // startedAt = our own wall clock at write time, the same convention
+        // daemon.lock's own `mine.startedAt` already uses (not an OS query
+        // against ourselves — we already know we're alive; the OS query only
+        // matters for verifying a CONTENDED holder below).
+        writeSync(fd, JSON.stringify({ pid: process.pid, startedAt: new Date().toISOString() }));
       } finally {
         closeSync(fd);
       }
@@ -151,22 +178,46 @@ async function acquireMutex(
 
     // Someone else holds the mutex. Tell apart "genuinely mid-decide" from a
     // stale sentinel left by a process that died between open() and its
-    // finally (e.g. SIGKILL mid-boot) — a liveness-only check is sufficient
-    // here: this mutex only serializes decision-making, not data integrity.
-    // The real correctness guarantee (identity-verified kill before a
-    // takeover) still lives in stopLockHolder against daemon.lock itself.
+    // finally (e.g. SIGKILL mid-boot) — OR a sentinel whose PID has since
+    // been recycled by an unrelated process (issue #415 LOW). Liveness alone
+    // used to be treated as "genuinely held", which made a PID-recycle false
+    // positive wait out the entire mutex timeout before crash-exiting.
+    // Reuses `checkHolderIdentity` (the same PID+start-time comparison
+    // `stopLockHolder` runs against daemon.lock) so this doesn't duplicate
+    // the drift-comparison logic per call site (#224 lesson).
     let holderPid: number | null = null;
+    let holderStartedAt: string | undefined;
     try {
       const raw = readFileSync(path, 'utf8');
-      holderPid = (JSON.parse(raw) as { pid?: number }).pid ?? null;
+      const parsed = JSON.parse(raw) as { pid?: number; startedAt?: string };
+      holderPid = parsed.pid ?? null;
+      holderStartedAt = parsed.startedAt;
     } catch {
       /* unreadable/corrupt — treat as stale below */
     }
 
-    if (holderPid === null || !isAlive(holderPid)) {
+    if (holderPid === null) {
       try { unlinkSync(path); } catch { /* a concurrent cleanup may have won the race */ }
       continue; // retry the exclusive create immediately
     }
+
+    const identity = await checkHolderIdentity(holderPid, holderStartedAt, resolveStartTime, isAlive);
+    if (identity.status === 'dead' || identity.status === 'mismatch') {
+      // Dead PID, or alive-but-recycled (the sentinel's actual writer is
+      // gone and an unrelated process now owns this PID) — either way there
+      // is nothing left to wait out.
+      try { unlinkSync(path); } catch { /* a concurrent cleanup may have won the race */ }
+      continue; // retry the exclusive create immediately
+    }
+    // identity.status === 'match' -> genuinely held by a live sibling.
+    // 'no-recorded-start' / 'query-failed' -> identity unproven; fail CLOSED
+    // here means treating the sentinel as still held rather than risking two
+    // boots racing app.listen() — the opposite fail-closed direction from
+    // stopLockHolder (whose unproven identity means "don't kill it"; see
+    // checkHolderIdentity's doc comment). This also keeps a pre-fix sentinel
+    // shape (`{pid}`, no startedAt — e.g. written by an older binary mid
+    // rolling-upgrade) working exactly as before: genuinely held, not an
+    // instant steal.
 
     if (Date.now() >= deadline) {
       throw new MutexTimeoutError(path, timeoutMs);
@@ -197,6 +248,45 @@ function pidAlive(pid: number): boolean {
  * — the exact gap this check exists to close.
  */
 const IDENTITY_TOLERANCE_MS = 60_000;
+
+/**
+ * Shared identity-check core (issue #415 LOW). `stopLockHolder` (against
+ * `daemon.lock`) and `acquireMutex` (against the `.acquiring` sentinel) both
+ * funnel through here rather than each carrying their own copy of the
+ * PID+start-time drift comparison — the #224 lesson was one choke point per
+ * piece of identity logic, not one per call site.
+ *
+ * `recordedStartedAt` missing/unparseable, and the OS start-time query
+ * itself failing, both come back as distinct "cannot verify" statuses rather
+ * than being folded into `mismatch` — callers decide separately how to fail:
+ *  - `stopLockHolder` fails CLOSED toward "don't touch it" (acting on an
+ *    unproven identity risks killing an innocent process).
+ *  - `acquireMutex` fails CLOSED toward "still held" (acting on an unproven
+ *    identity risks two boots racing `app.listen()`).
+ * Neither caller may treat `no-recorded-start`/`query-failed` as a pass.
+ */
+type HolderIdentity =
+  | { status: 'dead' }
+  | { status: 'no-recorded-start' }
+  | { status: 'query-failed' }
+  | { status: 'mismatch' | 'match'; recordedStart: Date; actualStart: Date; driftMs: number };
+
+async function checkHolderIdentity(
+  pid: number,
+  recordedStartedAt: string | undefined,
+  resolveStartTime: (pid: number) => Promise<Date | null>,
+  isAliveFn: (pid: number) => boolean,
+): Promise<HolderIdentity> {
+  if (!isAliveFn(pid)) return { status: 'dead' };
+  const recordedStart = recordedStartedAt ? new Date(recordedStartedAt) : null;
+  if (!recordedStart || Number.isNaN(recordedStart.getTime())) return { status: 'no-recorded-start' };
+  const actualStart = await resolveStartTime(pid);
+  if (!actualStart) return { status: 'query-failed' };
+  const driftMs = Math.abs(actualStart.getTime() - recordedStart.getTime());
+  return driftMs > IDENTITY_TOLERANCE_MS
+    ? { status: 'mismatch', recordedStart, actualStart, driftMs }
+    : { status: 'match', recordedStart, actualStart, driftMs };
+}
 
 /**
  * Resolve the OS-reported creation time of `pid`, or null when it cannot be
@@ -411,36 +501,35 @@ export async function stopLockHolder(
   const probe = opts.healthProbe ?? healthOk;
   const resolveStartTime = opts.processStartTime ?? getProcessStartTime;
 
-  if (!pidAlive(holder.pid)) {
-    return { ok: true, detail: `stale lock (pid ${holder.pid} already dead)` };
-  }
-
   // PID-alive is not identity. A crash can leave a stale lock behind; the OS
   // then recycles the PID for an unrelated process, and "alive" alone would
   // make us signal it. Confirm the live process at holder.pid actually
   // started when the lock says it did, BEFORE ever sending a signal. Any
   // failure to determine this — unreadable /proc entry, a failed OS query,
   // a missing/corrupt startedAt — fails CLOSED: we have not proven this is
-  // our daemon, so we do not touch it.
-  const recordedStart = holder.startedAt ? new Date(holder.startedAt) : null;
-  if (!recordedStart || Number.isNaN(recordedStart.getTime())) {
+  // our daemon, so we do not touch it. Shared with acquireMutex's own
+  // staleness check (issue #415 LOW) via checkHolderIdentity.
+  const identity = await checkHolderIdentity(holder.pid, holder.startedAt, resolveStartTime, pidAlive);
+
+  if (identity.status === 'dead') {
+    return { ok: true, detail: `stale lock (pid ${holder.pid} already dead)` };
+  }
+  if (identity.status === 'no-recorded-start') {
     return {
       ok: false,
       detail: `refusing to signal pid ${holder.pid}: lock has no valid startedAt to verify identity against`,
       reason: 'identity-unverifiable',
     };
   }
-  const actualStart = await resolveStartTime(holder.pid);
-  if (!actualStart) {
+  if (identity.status === 'query-failed') {
     return {
       ok: false,
       detail: `refusing to signal pid ${holder.pid}: could not verify process identity (unable to determine OS process start time)`,
       reason: 'identity-unverifiable',
     };
   }
-  const driftMs = Math.abs(actualStart.getTime() - recordedStart.getTime());
-  if (driftMs > IDENTITY_TOLERANCE_MS) {
-    const driftDetail = `process start time mismatch (lock says ${holder.startedAt}, OS says ${actualStart.toISOString()}, drift ${driftMs}ms > ${IDENTITY_TOLERANCE_MS}ms) — likely a recycled PID, not our daemon`;
+  if (identity.status === 'mismatch') {
+    const driftDetail = `process start time mismatch (lock says ${holder.startedAt}, OS says ${identity.actualStart.toISOString()}, drift ${identity.driftMs}ms > ${IDENTITY_TOLERANCE_MS}ms) — likely a recycled PID, not our daemon`;
     if (!opts.force) {
       return {
         ok: false,
@@ -454,6 +543,7 @@ export async function stopLockHolder(
       `[astramem-local] WARNING: --force overriding recycled-PID guard; signaling pid ${holder.pid} anyway (${driftDetail})`,
     );
   }
+  // identity.status === 'match' (or 'mismatch' with --force) falls through to signal below.
 
   try {
     sendSignal(holder.pid, 'SIGTERM');
@@ -544,7 +634,13 @@ export async function acquireInstanceLock(
     healthProbe?: (port: number) => Promise<boolean>;
     /** Injectable signal sender for the zombie-stop path — tests substitute a spy instead of really killing a PID. Threaded through to `stopLockHolder`. */
     signal?: (pid: number, signal: NodeJS.Signals | number) => void;
-    /** Injectable process-start-time resolver for the zombie-stop path's identity check. Threaded through to `stopLockHolder`. */
+    /**
+     * Injectable process-start-time resolver for identity checks. Threaded
+     * through to `stopLockHolder`'s zombie-stop identity check AND to
+     * `acquireMutex`'s own `.acquiring` sentinel staleness check (issue #415
+     * LOW) — one injectable resolver covers both identity checks in the
+     * boot path.
+     */
     processStartTime?: (pid: number) => Promise<Date | null>;
     /** Total time to wait for the zombie holder's /health to stop answering after signaling it. Threaded through to `stopLockHolder`'s `waitMs`. */
     zombieStopWaitMs?: number;
@@ -574,7 +670,10 @@ export async function acquireInstanceLock(
   const probe = opts.healthProbe ?? healthOk;
   const mine: LockInfo = { pid: process.pid, startedAt: new Date().toISOString(), port, version };
 
-  const mutex = await acquireMutex(acquiringPath, { timeoutMs: opts.mutexTimeoutMs });
+  const mutex = await acquireMutex(acquiringPath, {
+    timeoutMs: opts.mutexTimeoutMs,
+    processStartTimeFn: opts.processStartTime,
+  });
   try {
     await acquireInstanceLockCriticalSection(dataDir, path, mine, probe, opts);
   } finally {
