@@ -381,6 +381,108 @@ describe('codex-subscription-llm', () => {
       await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(/re-login/i);
     });
 
+    // ---------------------------------------------------------------------
+    // FEAT-540: reload auth.json on 401 instead of requiring a daemon
+    // restart. Incident (2026-07-17): operator hit ChatGPT quota, the
+    // running daemon kept holding the now-dead in-memory token, and a
+    // subsequent `codex login` (fresh auth.json on disk) was never picked
+    // up without a full restart.
+    // ---------------------------------------------------------------------
+    it('AC-1: reloads auth.json from disk on 401 (out-of-band `codex login`) and retries once — recovers without a restart', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath, { accessToken: fakeJwt({ sub: 'stale' }) });
+      let responsesCalls = 0;
+      let refreshCalls = 0;
+      const freshAccessToken = fakeJwt({ sub: 'fresh-from-relogin' });
+
+      globalThis.fetch = vi.fn(async (url: unknown) => {
+        if (String(url) === CODEX_TOKEN_URL) {
+          refreshCalls++;
+          return jsonResponse(200, { access_token: 'should-not-be-used', refresh_token: 'unused' });
+        }
+        responsesCalls++;
+        if (responsesCalls === 1) {
+          // Simulate the operator running `codex login` while the daemon is
+          // mid-request: a fresh auth.json lands on disk between the first
+          // 401 and the provider's next read.
+          writeAuthFile(authPath, { accessToken: freshAccessToken, refreshToken: 'refresh-fresh' });
+          return jsonResponse(401, { error: 'unauthorized' });
+        }
+        return codexSseResponse('recovered-via-reload');
+      }) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      const res = await p.chat([{ role: 'user', content: 'x' }]);
+
+      expect(res.text).toBe('recovered-via-reload');
+      expect(responsesCalls).toBe(2);
+      // The reload path recovered before ever falling back to the OAuth
+      // refresh_token flow — no daemon restart AND no refresh round-trip.
+      expect(refreshCalls).toBe(0);
+    });
+
+    it('AC-2: reload picks up a still-invalid token — one retry, then a loud auth failure, no infinite loop', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath, { accessToken: fakeJwt({ sub: 'stale' }), refreshToken: 'refresh-stale' });
+      let responsesCalls = 0;
+      let refreshCalls = 0;
+
+      globalThis.fetch = vi.fn(async (url: unknown) => {
+        if (String(url) === CODEX_TOKEN_URL) {
+          refreshCalls++;
+          return jsonResponse(400, { error: 'invalid_grant' });
+        }
+        responsesCalls++;
+        if (responsesCalls === 1) {
+          // A new auth.json lands on disk, but it's ALSO dead (e.g. the
+          // account itself is still over quota) — reload must not loop.
+          writeAuthFile(authPath, { accessToken: fakeJwt({ sub: 'also-dead' }), refreshToken: 'refresh-also-dead' });
+        }
+        return jsonResponse(401, { error: 'unauthorized' });
+      }) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(/re-login/i);
+
+      // Exactly one reload-retry (2 responses calls total: initial 401 +
+      // one reload retry), then exactly one OAuth refresh attempt — never
+      // more, i.e. no reload/retry loop.
+      expect(responsesCalls).toBe(2);
+      expect(refreshCalls).toBe(1);
+    });
+
+    it('AC-3: an unchanged auth.json on a repeat 401 never triggers a reload retry (no storm)', async () => {
+      const authPath = tmpAuthPath();
+      writeAuthFile(authPath); // never rewritten during this test
+      let responsesCalls = 0;
+      let refreshCalls = 0;
+
+      globalThis.fetch = vi.fn(async (url: unknown) => {
+        if (String(url) === CODEX_TOKEN_URL) {
+          refreshCalls++;
+          return jsonResponse(400, { error: 'invalid_grant' });
+        }
+        responsesCalls++;
+        return jsonResponse(401, { error: 'unauthorized' });
+      }) as unknown as typeof fetch;
+
+      const p = new CodexSubscriptionLLMProvider({ authPath });
+      await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(/re-login/i);
+      // No content change on disk -> tryReloadAuthFromDisk is a no-op, so
+      // this collapses to exactly the pre-FEAT-540 shape: one 401, then
+      // refresh() throws before any reload-driven retry ever happens.
+      expect(responsesCalls).toBe(1);
+      expect(refreshCalls).toBe(1);
+
+      // A second call, still with an untouched auth.json, behaves
+      // identically rather than accumulating reload attempts.
+      responsesCalls = 0;
+      refreshCalls = 0;
+      await expect(p.chat([{ role: 'user', content: 'x' }])).rejects.toThrow(/re-login/i);
+      expect(responsesCalls).toBe(1);
+      expect(refreshCalls).toBe(1);
+    });
+
     it('throws on non-401 4xx without attempting refresh', async () => {
       const authPath = tmpAuthPath();
       writeAuthFile(authPath);
