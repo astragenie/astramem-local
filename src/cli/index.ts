@@ -21,6 +21,7 @@ import { reinstallCommand } from './reinstall.js';
 import { reembedDimCommand } from './reembed-dim.js';
 import { entityBackfillCommand } from './entity-backfill.js';
 import { entityPurgeJunkCommand } from './entity-purge.js';
+import { repoIdentityBackfillCommand } from './repo-identity-backfill.js';
 import { cliMemoryRestore } from './memory.js';
 import { memoryHealthCommand } from './memory-health.js';
 import { mcpStdio } from './mcp-stdio.js';
@@ -203,6 +204,14 @@ async function main() {
       // astramem-local entity-purge-junk [--yes] [--json]
       // Preview is the DEFAULT; --yes is required to delete.
       entityPurgeJunkCommand(rest);
+      break;
+    }
+
+    case 'repo-identity-backfill': {
+      // astramem-local repo-identity-backfill [--yes] [--limit N] [--json]
+      // FEAT-484 (issue #177): re-stamp memories mis-tagged repo='agent-<hash>'.
+      // Preview is the DEFAULT; --yes is required to mutate.
+      repoIdentityBackfillCommand(rest);
       break;
     }
 
@@ -425,6 +434,12 @@ Commands:
                                          SAME rule as the guard and the doctor canary.
                                          PREVIEWS by default — --yes to actually delete.
                                          Never deletes a MEMORY, only entity rows.
+  repo-identity-backfill [--yes] [--limit N] [--json]
+                                         Re-stamp memories mis-tagged repo='agent-<hash>'
+                                         (FEAT-484, issue #177 — worktree-basename
+                                         provenance bug) via git-aware re-resolution.
+                                         Never guesses: unresolvable rows are left
+                                         untouched. PREVIEWS by default — --yes to apply.
   config upgrade-model [--yes] [--json]  Detect a config-pinned Ollama LLM model that is
                                          known-bad or no longer fits local VRAM (issue #279,
                                          see doctor's "Model fit canary") and print the exact
