@@ -116,6 +116,31 @@ array of per-model reports, regardless of `--runs`) and `report.md` (the
 ranked summary table) to `--out-dir`. With `--runs` > 1 and judge
 self-agreement enabled, `judge-agreement.json` is also written.
 
+### Embedding: ONNX, matching production (ADR-018)
+
+Since ADR-018 S4 (2026-07-15) production embeds via an **in-process ONNX Runtime**
+embedder (`defaultConfig().embedding.provider = 'onnx'`), not Ollama. This harness
+now matches that: the isolated bench daemon is configured for `embedding.provider:
+onnx` and its `onnxEmbed.cacheDir` is pointed at the machine's real ONNX model cache
+(`%LOCALAPPDATA%\Astramem\models\onnx\` on Windows, `~/.local/share/astra-memory/
+models/onnx/` elsewhere) so the model loads **offline**, exactly like prod.
+
+Why it must be pointed at an existing cache: the sandbox spawns a daemon with a
+FRESH dataDir, so its own `<dataDir>/models/onnx/` is empty — and transformers.js
+still HEADs the HF hub on every load (the offline-load bug, see CLAUDE.md /
+`onnx-offline-load-transformers-phones-home`), which is blocked on the prod box. With
+no cache the ONNX embed probe fails and `/health` reports `degraded`.
+
+- **Default**: the machine's prod ONNX cache is used automatically (resolved by
+  `resolveOnnxCacheDir()` in `lib/daemon-runner.ts`).
+- **Override**: set `ASTRA_BENCH_ONNX_CACHE=<dir>` to point elsewhere.
+- **Fresh box with no cache**: seed it once with `node dist/cli/index.js model fetch`,
+  or accept the fallback — the runner tolerates a `degraded` daemon **only** when both
+  LLM providers (extraction + compaction) are still `up`, because this bench exercises
+  distill stages 1-7 only (atom quality is decided before stage 8's embed+index), so a
+  down embedder does not affect the measured atoms. A real extraction/compaction
+  outage still fails the run loudly.
+
 ### Statistical reliability (FEAT-450)
 
 Before FEAT-450, every config here was run **once**, over 15 fixtures,
