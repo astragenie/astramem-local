@@ -1,5 +1,5 @@
 import { deriveWorktreeSafeBasename } from '../pipeline/cwd-basename.js';
-import { resolveRepoIdentity } from './repo-identity.js';
+import { resolveRepoIdentity, resolveRepoIdentityAsync } from './repo-identity.js';
 
 /**
  * deriveRepoFromCwd — tier-1 heuristic (FEAT-403 AC-1).
@@ -24,4 +24,14 @@ import { resolveRepoIdentity } from './repo-identity.js';
  */
 export function deriveRepoFromCwd(cwd: string | null | undefined): string | null {
   return resolveRepoIdentity(cwd) ?? deriveWorktreeSafeBasename(cwd);
+}
+
+/**
+ * Async twin of `deriveRepoFromCwd` — uses `resolveRepoIdentityAsync` (never
+ * blocks the event loop) instead of the sync git spawn. Callers on the
+ * daemon's ingest hot path MUST use this and await it BEFORE opening a
+ * `db.transaction()` (see `resolveRepoIdentityAsync`'s doc comment).
+ */
+export async function deriveRepoFromCwdAsync(cwd: string | null | undefined): Promise<string | null> {
+  return (await resolveRepoIdentityAsync(cwd)) ?? deriveWorktreeSafeBasename(cwd);
 }

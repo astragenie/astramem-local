@@ -208,8 +208,9 @@ async function main() {
     }
 
     case 'repo-identity-backfill': {
-      // astramem-local repo-identity-backfill [--yes] [--limit N] [--json]
-      // FEAT-484 (issue #177): re-stamp memories mis-tagged repo='agent-<hash>'.
+      // astramem-local repo-identity-backfill [--yes] [--limit N] [--pattern REGEX] [--json]
+      // FEAT-484 (issue #177): re-stamp memories mis-tagged repo='agent-<hash>'
+      // (or another ephemeral worktree-basename shape — DEFAULT_BAD_REPO_PATTERN).
       // Preview is the DEFAULT; --yes is required to mutate.
       repoIdentityBackfillCommand(rest);
       break;
@@ -434,10 +435,13 @@ Commands:
                                          SAME rule as the guard and the doctor canary.
                                          PREVIEWS by default — --yes to actually delete.
                                          Never deletes a MEMORY, only entity rows.
-  repo-identity-backfill [--yes] [--limit N] [--json]
+  repo-identity-backfill [--yes] [--limit N] [--pattern REGEX] [--json]
                                          Re-stamp memories mis-tagged repo='agent-<hash>'
+                                         or another ephemeral worktree-basename shape
                                          (FEAT-484, issue #177 — worktree-basename
                                          provenance bug) via git-aware re-resolution.
+                                         --pattern overrides the built-in bad-shape
+                                         regex for a shape not covered by default.
                                          Never guesses: unresolvable rows are left
                                          untouched. PREVIEWS by default — --yes to apply.
   config upgrade-model [--yes] [--json]  Detect a config-pinned Ollama LLM model that is

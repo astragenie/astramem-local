@@ -33,10 +33,31 @@
 import type { DB } from '../storage/db.js';
 import { resolveRepoIdentity } from './repo-identity.js';
 
-/** Matches the observed bad shape (`agent-ac72934b8fdc982ea`, issue #177) —
- *  deliberately narrow so a legitimately-named repo starting with "agent"
- *  (e.g. a real repo called `agent-tools`) is never swept up by accident. */
-export const DEFAULT_BAD_REPO_PATTERN = /^agent-[0-9a-f]{6,}$/i;
+/**
+ * Matches the known ephemeral worktree-basename shapes this daemon's
+ * ecosystem actually produces under the NESTED `.claude/worktrees/<name>`
+ * convention (parent segment `worktrees`, not `<repo>-worktrees` — the one
+ * shape `deriveWorktreeSafeBasename`'s string heuristic can't recognize; see
+ * derive-repo.ts). Observed on disk (2026-07-17):
+ *   - `agent-ac72934b8fdc982ea` — runner-plugin agent worktrees (issue #177,
+ *     the originally-reported shape): `agent-` + a hex id.
+ *   - `wt-387fix`, `wt-484-recover`, `worktree-foo` — short "wt-"/"worktree-"
+ *     prefixed ephemeral names some tooling nests directly under
+ *     `.claude/worktrees/` instead of a sibling `<repo>-worktrees/` dir.
+ *   - `memoized-jumping-elephant` — the memorable-random-name generator
+ *     (adjective-adjective-noun, 3-4 lowercase words) some worktree tooling
+ *     uses in place of a hash.
+ * Deliberately still guarded: every branch requires a specific PREFIX or a
+ * minimum 3-word random-name shape, so a legitimately-named repo (e.g.
+ * `agent-tools`, `astramemory-local`, `runner-plugin` — 1-2 real words) is
+ * never swept up by accident. Even if a false positive slips through the
+ * scan filter, `runRepoIdentityBackfill` only ever mutates a row when git's
+ * own resolution DISAGREES with the stored value (see the `resolved ===
+ * row.repo` guard below) — a false-positive scan candidate that's actually
+ * correct is reported `unresolved` and left untouched.
+ */
+export const DEFAULT_BAD_REPO_PATTERN =
+  /^(?:agent-[0-9a-f]{6,}|wt-[a-z0-9][a-z0-9-]*|worktree-[a-z0-9][a-z0-9-]*|[a-z]+(?:-[a-z]+){2,3})$/i;
 
 export interface RepoIdentityBackfillOptions {
   dryRun: boolean;

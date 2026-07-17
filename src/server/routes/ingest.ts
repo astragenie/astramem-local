@@ -7,7 +7,7 @@ import { stableStringify } from '../lib/stable-stringify.js';
 import { type Config, defaultConfig } from '../../config/config.js';
 import { redactIfEnabled, type RedactionEvent } from '../../redact/index.js';
 import { recordRedactionEvents } from '../../storage/redaction-log.js';
-import { deriveRepoFromCwd } from '../../tag-hygiene/derive-repo.js';
+import { deriveRepoFromCwd, deriveRepoFromCwdAsync } from '../../tag-hygiene/derive-repo.js';
 import { AtomSchema } from '../../distill/prompts/extract.js';
 
 // ---------------------------------------------------------------------------
@@ -326,6 +326,17 @@ export function ingestCanonicalTranscript(
   config: Config,
   data: z.infer<typeof CanonicalIngestSchema>,
   idempotencyKey: string | null,
+  // FEAT-484 review fix (PR #405, HIGH): the HTTP route resolves this via
+  // `deriveRepoFromCwdAsync` BEFORE calling in, hoisted above this
+  // function's `db.transaction()` — a sync git spawn inside a
+  // better-sqlite3 transaction callback would block the daemon's single
+  // event loop for up to GIT_TIMEOUT_MS (see CLAUDE.md "Daemon event-loop
+  // saturation triad"). `undefined` (the param omitted) means the caller
+  // hasn't been updated to pre-resolve — falls back to the sync heuristic
+  // below, preserving existing behavior for those callers (spool-drain,
+  // tests) unchanged. `null` is a valid pre-resolved "git couldn't answer"
+  // result and is NOT re-resolved.
+  resolvedRepo?: string | null,
 ): CanonicalTranscriptIngestResult {
   if (data.kind === 'events' || !data.turns || data.turns.length === 0) {
     throw new Error('ingestCanonicalTranscript: requires a non-empty `turns` array (transcript kind only)');
@@ -428,6 +439,9 @@ export function ingestCanonicalTranscript(
   let transcriptId!: string;
   let jobId!: string;
 
+  // Hoisted above the transaction — see the `resolvedRepo` param doc above.
+  const sessionRepo = resolvedRepo !== undefined ? resolvedRepo : deriveRepoFromCwd(data.cwd);
+
   const tx = db.transaction(() => {
     if (idempotencyKey !== null) {
       stmtInsertIdempotency.run(idempotencyKey, bodyHash, '__pending__', now);
@@ -451,7 +465,7 @@ export function ingestCanonicalTranscript(
       }
     }
 
-    stmtUpsertSession.run(data.session_id, deriveRepoFromCwd(data.cwd), data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
+    stmtUpsertSession.run(data.session_id, sessionRepo, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
 
     transcriptId = randomUUID();
     stmtInsertTranscript.run(
@@ -720,11 +734,16 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
           let transcriptId!: string;
           let jobId!: string;
 
+          // FEAT-484 review fix (PR #405, HIGH): resolved async, hoisted
+          // above the sync `db.transaction()` below — see the doc comment
+          // on `resolveRepoIdentityAsync`.
+          const sessionRepo = await deriveRepoFromCwdAsync(data.cwd);
+
           try {
             const tx = db.transaction(() => {
               if (idempotencyKey !== null) claimIdempotencySlot(idempotencyKey, bodyHash, now);
 
-              stmtUpsertSession.run(data.session_id, deriveRepoFromCwd(data.cwd), data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
+              stmtUpsertSession.run(data.session_id, sessionRepo, data.project_id, data.agent_type ?? null, data.cwd ?? null, now);
 
               transcriptId = randomUUID();
               stmtInsertTranscript.run(
@@ -832,12 +851,19 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
         //        don't produce different body hashes.
         const idempotencyKey = (req.headers['idempotency-key'] as string | undefined) ?? null;
 
+        // FEAT-484 review fix (PR #405, HIGH): resolved async here — the
+        // route handler is already `async` — and passed in pre-resolved so
+        // `ingestCanonicalTranscript`'s internal `db.transaction()` never
+        // spawns `git` synchronously. See `resolveRepoIdentityAsync`'s doc
+        // comment.
+        const resolvedRepo = await deriveRepoFromCwdAsync(data.cwd);
+
         // D-B2/D-B3/FEAT-449: the claim -> insert -> finalize sequence (and
         // the dangling-row / replay / conflict semantics) now live in the
         // shared ingestCanonicalTranscript — this route is a thin wrapper
         // that maps its result or thrown sentinel error to an HTTP response.
         try {
-          const result = ingestCanonicalTranscript(db, config, data, idempotencyKey);
+          const result = ingestCanonicalTranscript(db, config, data, idempotencyKey, resolvedRepo);
 
           log.info(
             { job_id: result.jobId, transcript_id: result.transcriptId, wire_version: data.wire_version, event: data.event },
