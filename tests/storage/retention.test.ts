@@ -11,7 +11,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 import { defaultConfig, type Config } from '../../src/config/config.js';
 import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
@@ -373,6 +373,71 @@ describe('FEAT-493 retention — sweep-stats persistence (doctor "last sweep" st
       errorCount: 0,
     });
     expect(existsSync(defaultSweepStatsPath(dataDir))).toBe(true);
+  });
+});
+
+describe('FEAT-493 retention — path-traversal guard (issue #408)', () => {
+  let dataDir: string;
+  let outsideDir: string;
+  let outsideFile: string;
+  const now = Date.now();
+  const OLD = now - 120 * DAY_MS;
+
+  beforeEach(() => {
+    dataDir = mkdtempSync(join(tmpdir(), 'astramem-retention-traversal-test-'));
+    // A sibling directory OUTSIDE `<dataDir>/artifacts/` — the thing a
+    // `..`-bearing `kind` value could otherwise reach via `join(root, kind)`.
+    outsideDir = mkdtempSync(join(tmpdir(), 'astramem-retention-outside-'));
+    outsideFile = join(outsideDir, 'secret.bin');
+    writeFileSync(outsideFile, Buffer.alloc(2 * 1024 * 1024));
+    const mtimeSec = OLD / 1000;
+    utimesSync(outsideFile, mtimeSec, mtimeSec);
+  });
+
+  afterEach(() => {
+    rmSync(dataDir, { recursive: true, force: true });
+    rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it('refuses a ..-bearing kind: scan reports zero candidates and never unlinks the outside file', () => {
+    const artifactsRoot = defaultArtifactsDir(dataDir);
+    mkdirSync(artifactsRoot, { recursive: true });
+    // A relative `..` path from the artifacts root straight to `outsideDir` —
+    // exactly the shape a config typo or malicious value would take.
+    const traversalKind = relative(artifactsRoot, outsideDir);
+    expect(traversalKind.startsWith('..')).toBe(true); // sanity: this really is outside the root
+
+    const cfg = retentionConfig({
+      mode: 'enabled',
+      heavyArtifact: { minSizeBytes: 1024, types: [traversalKind] },
+      tierScope: { media: [traversalKind], lean: [] },
+    });
+
+    const scan = scanRetentionCandidates(dataDir, cfg, 'media', now);
+    expect(scan.candidates).toHaveLength(0);
+
+    const result = runRetentionPass(dataDir, cfg, 'media', now);
+    expect(result.candidates).toHaveLength(0);
+    expect(result.deleted).toHaveLength(0);
+    expect(existsSync(outsideFile)).toBe(true); // the outside file survives, untouched
+  });
+
+  it('still scans/deletes a legitimately nested kind after refusing a traversal sibling', () => {
+    const legitPath = writeArtifact(dataDir, 'audio-raw', 'a1.wav', 2 * 1024 * 1024, OLD);
+    const artifactsRoot = defaultArtifactsDir(dataDir);
+    const traversalKind = relative(artifactsRoot, outsideDir);
+
+    const cfg = retentionConfig({
+      mode: 'enabled',
+      heavyArtifact: { minSizeBytes: 1024, types: ['audio-raw', traversalKind] },
+      tierScope: { media: ['audio-raw', traversalKind], lean: [] },
+    });
+
+    const result = runRetentionPass(dataDir, cfg, 'media', now);
+
+    expect(result.deleted.map(d => d.path)).toEqual([legitPath]);
+    expect(existsSync(legitPath)).toBe(false); // legitimate kind: reclaimed as normal
+    expect(existsSync(outsideFile)).toBe(true); // traversal kind: refused, untouched
   });
 });
 

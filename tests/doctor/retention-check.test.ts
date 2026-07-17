@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getChecks } from '../../src/doctor/checks.js';
 import { defaultConfig, type Config } from '../../src/config/config.js';
-import { defaultArtifactsDir } from '../../src/storage/retention.js';
+import { defaultArtifactsDir, writeSweepStats, type RetentionSweepResult } from '../../src/storage/retention.js';
 
 function findCheck(checks: ReturnType<typeof getChecks>, name: string) {
   const c = checks.find(c => c.name === name);
@@ -98,5 +98,65 @@ describe('doctor "Disk-artifact retention" check (FEAT-493)', () => {
     expect(result.message).toContain('1 candidate(s)');
     expect(result.message).toContain('2.0MB');
     expect(result.message).toContain('audio-raw: 1');
+  });
+
+  // issue #408 (review gap): the readSweepStats/last-sweep-message logic
+  // (checkRetention's `lastSweepMsg` branch) previously had zero coverage —
+  // neither the "no sweep yet" nor the "populated" shape was exercised.
+  describe('last-sweep message (readSweepStats + writeSweepStats wiring)', () => {
+    it('appends "no sweep has run yet" when no sweep has ever been persisted', async () => {
+      const result = await checkFor(
+        retentionConfig({ mode: 'dry-run', heavyArtifact: { minSizeBytes: 1024, types: ['audio-raw'] } }),
+      ).run();
+
+      expect(result.ok).toBe(true);
+      expect(result.message).toContain('no sweep has run yet');
+    });
+
+    it('appends the last sweep summary (mode/tier, deleted count, MB freed) once one has been persisted', async () => {
+      const deletedCandidate = { kind: 'audio-raw', path: '/some/deleted.wav', sizeBytes: 768 * 1024, mtimeMs: Date.now() };
+      const sweep: RetentionSweepResult = {
+        tier: 'media',
+        mode: 'enabled',
+        candidates: new Array(4).fill(deletedCandidate),
+        totalBytes: 3 * 1024 * 1024,
+        byKind: { 'audio-raw': { count: 4, bytes: 3 * 1024 * 1024 } },
+        scannedAt: Date.now() - 3_600_000,
+        deleted: new Array(4).fill(deletedCandidate),
+        deletedBytes: 3 * 1024 * 1024,
+        errors: [],
+      };
+      writeSweepStats(dir, sweep);
+
+      const result = await checkFor(
+        retentionConfig({ mode: 'dry-run', heavyArtifact: { minSizeBytes: 1024, types: ['audio-raw'] } }),
+      ).run();
+
+      expect(result.ok).toBe(true);
+      expect(result.message).toContain('last sweep (enabled/media)');
+      expect(result.message).toContain('4 deleted');
+      expect(result.message).toContain('3.0MB freed');
+    });
+
+    it('appends an error-count suffix when the persisted sweep recorded per-file unlink failures', async () => {
+      const sweep: RetentionSweepResult = {
+        tier: 'lean',
+        mode: 'enabled',
+        candidates: [],
+        totalBytes: 0,
+        byKind: {},
+        scannedAt: Date.now(),
+        deleted: [],
+        deletedBytes: 0,
+        errors: [{ path: '/some/path', message: 'EPERM' }],
+      };
+      writeSweepStats(dir, sweep);
+
+      const result = await checkFor(
+        retentionConfig({ mode: 'dry-run', heavyArtifact: { minSizeBytes: 1024, types: ['audio-raw'] } }),
+      ).run();
+
+      expect(result.message).toContain('1 error(s)');
+    });
   });
 });
