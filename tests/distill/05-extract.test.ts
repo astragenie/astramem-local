@@ -110,6 +110,39 @@ describe('extract stage', () => {
     expect(items.additionalProperties).toBe(false);
   });
 
+  // FEAT-536 AC-4 (Wave 1): the capability registry (capabilities.ts) is
+  // actually CONSULTED here, not dead code sitting next to it — a provider
+  // whose capability is the bare 'json_object' bucket (azure-openai,
+  // openai-compatible, codex-subscription, and every BYO preset resolving
+  // through openai-compatible) never gets a jsonSchema on the wire, because
+  // those providers ignore it anyway (contracts/llm.ts's `jsonSchema` doc
+  // comment). This is the negative-space counterpart to the "on every chat
+  // call" test above, which uses a `name: 'ollama'` mock — a
+  // 'strict-schema' provider that DOES get the field.
+  it('omits jsonSchema for a provider whose capability is bare json_object (azure-openai)', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const seen: (ChatOpts | undefined)[] = [];
+    const llm: LLMProvider = {
+      name: 'azure-openai' as const,
+      model: 'gpt-4.1',
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        seen.push(opts);
+        return { text: VALID_EXTRACTION_JSON, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'gpt-4.1', latency_ms: 0 };
+      },
+    };
+
+    await extractChunk(0, 'some chunk text', llm, budget, 10.0);
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.json).toBe(true);
+    expect(seen[0]?.jsonSchema).toBeUndefined();
+  });
+
   // Build-failing guard for the module-load conversion: a future
   // `.refine()`/`.transform()`/`.catch()` on AtomSchema (or anything it
   // nests) makes z.toJSONSchema throw AT IMPORT TIME of 05-extract.ts —

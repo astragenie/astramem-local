@@ -23,6 +23,7 @@ import {
 } from '../prompts/extract.js';
 import { BudgetTracker, BudgetExceeded } from '../../budget/tracker.js';
 import { TransientError } from '../../pipeline/errors.js';
+import { supportsJsonSchema } from '../../providers/llm/capabilities.js';
 import { mapWithConcurrency } from '../concurrency.js';
 import { chunkCheckpoints } from '../chunk-checkpoint.js';
 import { normalizeEntityName } from '../../entity/normalize.js';
@@ -224,8 +225,13 @@ async function callExtract(
     // indistinguishable from severe under-extraction (measured 1 -> 8 atoms
     // on the same prompt with a schema). Providers without schema support
     // ignore this field and keep plain json-mode behavior (contract:
-    // ChatOpts.jsonSchema, contracts/llm.ts).
-    jsonSchema: EXTRACTION_JSON_SCHEMA,
+    // ChatOpts.jsonSchema, contracts/llm.ts). FEAT-536 AC-4 (Wave 1):
+    // `supportsJsonSchema` (capabilities.ts) is the capability registry
+    // consulted here — omitted entirely (not just harmlessly ignored) for a
+    // 'json_object'-only provider (azure-openai, openai-compatible + every
+    // BYO preset resolving through it, codex-subscription), so those
+    // providers don't serialize/transmit a schema they can't use.
+    ...(supportsJsonSchema(provider.name) ? { jsonSchema: EXTRACTION_JSON_SCHEMA } : {}),
     // FEAT-479 (SLICE-433): bumped 1500 -> 2500. The v3 engineering prompt's
     // 300-800 char rich shape for lesson/decision atoms (vs v1/v2's ~500
     // char cap applied uniformly) makes a full 2-6 atom chunk with a couple

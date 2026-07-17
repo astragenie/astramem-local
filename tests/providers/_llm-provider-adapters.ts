@@ -30,6 +30,7 @@ import { AzureOpenAILLMProvider } from '../../src/providers/llm/azure-openai.js'
 import { OllamaLLMProvider } from '../../src/providers/llm/ollama.js';
 import { OpenAICompatibleLLMProvider } from '../../src/providers/llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from '../../src/providers/llm/codex-subscription.js';
+import { AnthropicLLMProvider } from '../../src/providers/llm/anthropic.js';
 import type { LLMProvider } from '../../src/contracts/llm.js';
 
 export interface CapturedRequest {
@@ -242,6 +243,52 @@ const openaiCompatibleAdapter: LLMProviderAdapter = {
   },
 };
 
+// ─── anthropic ───────────────────────────────────────────────────────────
+//
+// Wave 1 addition. Structurally distinct wire shape from the other three
+// (Messages API, not /v1/chat/completions): JSON mode is forced tool-use,
+// not a `response_format` field — `requestedJson` checks for `tool_choice`,
+// and `appendsJsonHintWhenMissing` is false because forced tool-use doesn't
+// depend on the prompt containing the literal word "json" the way Azure/
+// OpenAI-compatible's `response_format:json_object` does. No
+// `reasoningParams` — Anthropic has no o-series/gpt-5*-style
+// temperature/max_tokens rejection rule (see anthropic.ts's module doc
+// comment for the full JSON-mode design).
+
+const anthropicAdapter: LLMProviderAdapter = {
+  name: 'anthropic',
+  createProvider(responder) {
+    const fetchMock = vi.fn(async (url: unknown, init?: unknown): Promise<Response> => {
+      const body = JSON.parse((init as RequestInit).body as string) as Record<string, unknown>;
+      return responder({ url: String(url), init: init as RequestInit, body });
+    });
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    return new AnthropicLLMProvider({
+      apiKey: 'sk-ant-test',
+      model: 'claude-sonnet-4-5-20250929',
+    });
+  },
+  successResponse(text, inTokens = 10, outTokens = 5) {
+    return jsonResponse(200, {
+      content: [{ type: 'text', text }],
+      usage: { input_tokens: inTokens, output_tokens: outTokens },
+    });
+  },
+  errorResponse(status, message = 'error') {
+    return jsonResponse(status, { error: { message } });
+  },
+  requestedJson(body) {
+    return body.tool_choice !== undefined && Array.isArray(body.tools) && (body.tools as unknown[]).length > 0;
+  },
+  outgoingContents(body) {
+    const contents: string[] = [];
+    if (typeof body.system === 'string') contents.push(body.system);
+    const messages = (body.messages ?? []) as Array<{ content: string }>;
+    return [...contents, ...messages.map((m) => m.content)];
+  },
+  appendsJsonHintWhenMissing: false,
+};
+
 // ─── codex-subscription ─────────────────────────────────────────────────
 
 const CODEX_RESPONSES_URL = 'https://chatgpt.com/backend-api/codex/responses';
@@ -326,4 +373,5 @@ export const ALL_LLM_ADAPTERS: LLMProviderAdapter[] = [
   azureAdapter,
   openaiCompatibleAdapter,
   codexAdapter,
+  anthropicAdapter,
 ];

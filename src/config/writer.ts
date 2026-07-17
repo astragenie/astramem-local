@@ -228,6 +228,9 @@ export function configToYaml(cfg: Config): string {
     line(0, 'codexSubscription'),
     ...(cfg.codexSubscription.authPath ? [line(1, 'authPath', cfg.codexSubscription.authPath)] : []),
     '',
+    line(0, 'anthropic'),
+    line(1, 'apiKeyEnv', cfg.anthropic.apiKeyEnv),
+    '',
     // ADR-018 — in-process ONNX embedding provider settings. Only meaningful
     // when embedding.provider === 'onnx'; every field has an in-code default
     // (Config['onnxEmbed'] + ONNX_MODEL_REGISTRY), so the block is emitted only

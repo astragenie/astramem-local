@@ -110,6 +110,14 @@ export interface Config {
    * session instead of an API key. See providers/llm/codex-subscription.ts
    * and docs/providers.md for the ToS-gray-zone warning before enabling. */
   codexSubscription: { authPath?: string };
+  /** Anthropic Messages API provider (Wave 1 BYO). `apiKeyEnv` names the env
+   * var read for the key (secrets.env-style, mirrors openaiCompatible) —
+   * left unset it defaults to ANTHROPIC_API_KEY. No `baseUrl` field: unlike
+   * openai-compatible (which fronts many vendors), this provider always
+   * targets api.anthropic.com — see providers/llm/anthropic.ts. Model comes
+   * from `llm.compaction.model`/`llm.extraction.model` like every other
+   * provider, not duplicated here. */
+  anthropic: { apiKeyEnv: string };
   /** ADR-018 SLICE-1 — optional block for the `onnx` embedding provider
    * (`src/providers/embed/onnx.ts`). Absent/undefined is valid: every field
    * has an in-code default (pinned HF model+revision, dtype 'q8', a
@@ -1181,6 +1189,7 @@ export function defaultConfig(): Config {
     azure: { apiVersion: '2024-10-21' },
     openaiCompatible: { apiKeyEnv: 'OPENAI_COMPAT_API_KEY' },
     codexSubscription: {},
+    anthropic: { apiKeyEnv: 'ANTHROPIC_API_KEY' },
     search: {
       alpha: 0.4, beta: 0.4, gamma: 0.1, delta: 0.1, epsilon: 0.1, zeta: 0, eta: 0, theta: 0,
       governance: { maxComponentWeight: 1.0 },

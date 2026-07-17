@@ -34,13 +34,30 @@ export interface DoctorCheckOpts {
   /** Whether encryption at rest is enabled (default: true) — SEC-1/2/8. */
   encryptionEnabled?: boolean;
   /**
-   * LLM providers to real-chat-probe. If compaction + extraction are the same
-   * provider instance (same name+model), only one probe fires.
+   * LLM providers to real-chat-probe, one per configurable role. A BYO
+   * provider (Wave 1) may be assigned to ANY of these roles, not just
+   * compaction/extraction — Anthropic as the judge, a Groq preset as
+   * extractionPassB, etc. — so every role supplied here gets its own probe.
+   * Roles sharing the same provider instance (same name+model) as an
+   * earlier-listed role are deduplicated: only one probe fires per distinct
+   * name+model pair (see `getChecks`'s dedup loop in index.ts). `compaction`
+   * + `extraction` stay required (every real config sets both); the other
+   * three are optional because they only exist when the operator has
+   * configured that override (`consolidation.contradictionDetection`,
+   * `distill.extractionPassB`, `distill.atomTriage` — mirrors
+   * `ProviderSet.llm`'s own optionality in providers/index.ts).
    */
   llmProviders?: {
     compaction: LLMProvider;
-    /** Only probed when name+model differs from compaction */
     extraction: LLMProvider;
+    /** Contradiction judge override (FEAT-456) — same instance as
+     *  `extraction` when unconfigured; still safe to pass unconditionally
+     *  since the dedup loop skips a probe that matches an earlier role. */
+    judge?: LLMProvider;
+    /** Pass-B extraction override (FEAT-534). */
+    extractionPassB?: LLMProvider;
+    /** Atom-triage override (FEAT-533). */
+    atomTriage?: LLMProvider;
   };
   /** Embed provider to real-embed-probe. */
   embedProvider?: EmbedProvider;

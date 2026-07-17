@@ -192,6 +192,53 @@ describe.each(ALL_LLM_ADAPTERS)('LLM provider contract conformance — $name', (
 });
 
 // ─────────────────────────────────────────────────────────────────────────
+// json:true -> parseable JSON, for the "plain json_object" providers.
+//
+// Excludes ollama and anthropic (Wave 1 note): those two are the only
+// providers with SHAPE-CONSTRAINED structured output (ollama's schema-typed
+// `format`, anthropic's forced tool-use — see capabilities.ts's
+// StructuredOutputCapability), and each already has its own dedicated,
+// shape-correct test coverage (ollama-llm.test.ts; anthropic-llm.test.ts's
+// "forced tool-use JSON extraction" block, which asserts the
+// tool_use.input -> ChatResult.text re-serialization this generic
+// `successResponse('{"ok":true}')` fixture can't exercise — Anthropic only
+// reads `tool_use` content blocks under json:true, and the shared
+// `successResponse` helper returns a plain `text` block, so running this
+// exact assertion against the anthropic adapter would fail for a reason
+// that has nothing to do with the provider being broken). azure-openai,
+// openai-compatible, and codex-subscription all speak plain
+// `response_format:{type:"json_object"}`-equivalent JSON mode — "some valid
+// JSON back", not a specific shape — so the shared fixture is a faithful
+// simulation of their real wire behavior.
+// ─────────────────────────────────────────────────────────────────────────
+const PLAIN_JSON_OBJECT_ADAPTERS = ALL_LLM_ADAPTERS.filter((a) => a.name !== 'ollama' && a.name !== 'anthropic');
+
+describe.each(PLAIN_JSON_OBJECT_ADAPTERS)(
+  'LLM provider contract conformance — json:true response is parseable JSON — $name',
+  (adapter) => {
+    let restoreFetch: () => void;
+
+    beforeEach(() => {
+      const original = globalThis.fetch;
+      restoreFetch = () => {
+        globalThis.fetch = original;
+      };
+    });
+
+    afterEach(() => {
+      restoreFetch();
+    });
+
+    it('a json:true call whose upstream returns a well-formed JSON string round-trips through ChatResult.text unchanged and JSON.parse-able', async () => {
+      const provider = adapter.createProvider(() => adapter.successResponse('{"ok":true,"n":1}'));
+      const result = await provider.chat([{ role: 'user', content: 'extract' }], { json: true });
+      expect(() => JSON.parse(result.text)).not.toThrow();
+      expect(JSON.parse(result.text)).toEqual({ ok: true, n: 1 });
+    });
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────
 // Reasoning-model (o-series/gpt-5*) parameter handling.
 //
 // Only providers speaking the classic OpenAI Chat Completions wire shape
