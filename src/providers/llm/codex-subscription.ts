@@ -296,22 +296,28 @@ function resolveAccountId(tokens: CodexAuthTokens): string | null {
   return null;
 }
 
-/** Loads and minimally validates auth.json. Throws a DeterministicError with
- * an actionable message on any failure — missing file, unreadable, or
- * missing the tokens this provider needs — so a misconfigured
- * codex-subscription selection fails the same clear way Azure does when its
- * endpoint/key are missing (providers/index.ts), rather than a confusing
- * downstream stack trace. */
-function loadAuthFile(path: string): CodexAuthFile {
-  let raw: string;
+/** Reads auth.json's raw bytes. Throws an actionable DeterministicError when
+ * the file is missing/unreadable. Split out from the old loadAuthFile so the
+ * FEAT-540 reload-on-401 path (tryReloadAuthFromDisk) can compare raw
+ * content across loads without re-implementing this error message. */
+function readAuthFileRaw(path: string): string {
   try {
-    raw = readFileSync(path, 'utf8');
+    return readFileSync(path, 'utf8');
   } catch {
     throw new DeterministicError(
       `codex-subscription: no Codex CLI login found at ${path}. Run \`codex login\` first ` +
         '(requires the Codex CLI — https://developers.openai.com/codex).',
     );
   }
+}
+
+/** Parses + minimally validates already-read auth.json content. Throws a
+ * DeterministicError with an actionable message on any failure — invalid
+ * JSON or missing the tokens this provider needs — so a misconfigured
+ * codex-subscription selection fails the same clear way Azure does when its
+ * endpoint/key are missing (providers/index.ts), rather than a confusing
+ * downstream stack trace. */
+function parseAuthFile(raw: string, path: string): CodexAuthFile {
   let parsed: CodexAuthFile;
   try {
     parsed = JSON.parse(raw) as CodexAuthFile;
@@ -327,6 +333,12 @@ function loadAuthFile(path: string): CodexAuthFile {
     );
   }
   return parsed;
+}
+
+/** Loads and minimally validates auth.json (read + parse in one step) — the
+ * shape every call site except the FEAT-540 reload path wants. */
+function loadAuthFile(path: string): CodexAuthFile {
+  return parseAuthFile(readAuthFileRaw(path), path);
 }
 
 /** Best-effort atomic write-back of rotated tokens, mirroring the tmp+rename
@@ -357,6 +369,12 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
   private refreshToken: string | null = null;
   private accountId: string | null = null;
   private authLoaded = false;
+  /** Raw auth.json content as of the last (re)load — FEAT-540's
+   * reload-on-401 signal. Content-compared rather than mtime-compared:
+   * filesystem mtime granularity varies by OS and is a flaky signal in
+   * tests and on some platforms; a raw string compare is exact and just as
+   * cheap for a file this small. */
+  private lastAuthRaw: string | null = null;
 
   constructor(config: CodexSubscriptionLLMConfig = {}) {
     this.model = config.model ?? DEFAULT_MODEL;
@@ -391,11 +409,55 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
    * the daemon. */
   private ensureAuthLoaded(): void {
     if (this.authLoaded) return;
-    const auth = loadAuthFile(this.authPath);
+    this.applyAuthRaw(readAuthFileRaw(this.authPath));
+    this.authLoaded = true;
+  }
+
+  /** Parses raw auth.json content and swaps it into the in-memory token
+   * fields, recording it as the new `lastAuthRaw` baseline. Shared by the
+   * initial load and the FEAT-540 reload-on-401 path. */
+  private applyAuthRaw(raw: string): void {
+    const auth = parseAuthFile(raw, this.authPath);
     this.accessToken = auth.tokens.access_token;
     this.refreshToken = auth.tokens.refresh_token;
     this.accountId = resolveAccountId(auth.tokens);
-    this.authLoaded = true;
+    this.lastAuthRaw = raw;
+  }
+
+  /**
+   * FEAT-540: on a 401, re-read auth.json from disk and swap in fresh
+   * tokens IF the file's content actually changed since we last loaded it.
+   * This is how an already-running daemon picks up an operator's
+   * out-of-band `codex login` (e.g. after the session-invalidating
+   * 2026-07-17 quota incident) WITHOUT a full restart.
+   *
+   * Returns false (no-op, existing tokens left untouched) when: the file is
+   * momentarily unreadable, the content is byte-identical to what we already
+   * have loaded, or the new content fails to parse/validate — in every one
+   * of those cases the caller falls through to the pre-existing OAuth
+   * refresh_token flow (`refresh()`) instead.
+   *
+   * The unchanged-content check IS the reload-storm guard (AC-3): a 401
+   * against an auth.json nobody has touched is a hard "no", not a retry —
+   * we only ever burn the extra fetch when there is genuinely new material
+   * on disk to try, so a permanently-dead token can never trigger more than
+   * one reload attempt per chat() call, and zero on every call after that
+   * until the file changes again.
+   */
+  private tryReloadAuthFromDisk(): boolean {
+    let raw: string;
+    try {
+      raw = readFileSync(this.authPath, 'utf8');
+    } catch {
+      return false;
+    }
+    if (raw === this.lastAuthRaw) return false;
+    try {
+      this.applyAuthRaw(raw);
+      return true;
+    } catch {
+      return false; // new content doesn't parse / is missing tokens — leave prior tokens in place
+    }
   }
 
   private async refresh(): Promise<void> {
@@ -458,6 +520,16 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
       },
       last_refresh: new Date().toISOString(),
     });
+
+    // Keep the FEAT-540 reload baseline in sync with our own write-back —
+    // best-effort only, so tryReloadAuthFromDisk doesn't mistake this
+    // provider's own rotation for an operator's out-of-band `codex login`
+    // on the next 401 and redundantly re-apply tokens it already holds.
+    try {
+      this.lastAuthRaw = readFileSync(this.authPath, 'utf8');
+    } catch {
+      /* best-effort tracking only — refresh() already succeeded either way */
+    }
   }
 
   private headers(): Record<string, string> {
@@ -556,9 +628,29 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
 
     let res = await this.callResponses(body, opts?.signal);
     if (res.status === 401) {
-      log.warn('codex-subscription received 401 — attempting token refresh');
-      await this.refresh();
-      res = await this.callResponses(body, opts?.signal);
+      log.warn('codex-subscription received 401');
+
+      // FEAT-540: try an out-of-band `codex login` first — if the operator
+      // re-authed after a session-invalidating failure (e.g. hit the
+      // ChatGPT quota), auth.json on disk already has a good token and no
+      // OAuth refresh_token round-trip is needed at all. Only fires when
+      // the file content actually changed since our last load (see
+      // tryReloadAuthFromDisk doc comment) — a stale/untouched auth.json
+      // falls straight through to the pre-existing refresh() flow below,
+      // unchanged from before this feature.
+      if (this.tryReloadAuthFromDisk()) {
+        log.warn(
+          { authPath: this.authPath },
+          'codex-subscription reloaded auth.json after 401 (out-of-band `codex login`?) — retrying without a restart',
+        );
+        res = await this.callResponses(body, opts?.signal);
+      }
+
+      if (res.status === 401) {
+        log.warn('codex-subscription still unauthorized — attempting OAuth token refresh');
+        await this.refresh();
+        res = await this.callResponses(body, opts?.signal);
+      }
     }
 
     if (!res.ok) {
