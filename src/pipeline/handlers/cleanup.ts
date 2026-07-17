@@ -4,6 +4,7 @@ import type { JobHandler, HandlerCtx } from '../handler.js';
 import { runArchivalPass } from '../../storage/archival.js';
 import { pruneIngestIdempotency } from '../../storage/ingest-idempotency.js';
 import { runImplicitPositivePass } from '../../storage/usefulness.js';
+import { runRetentionPass, writeSweepStats } from '../../storage/retention.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { JobRepo } from '../job-repo.js';
 
@@ -28,6 +29,16 @@ import { JobRepo } from '../job-repo.js';
  * (`runImplicitPositivePass`, src/storage/usefulness.ts) on the same
  * cadence — config.search.usefulness.implicitPositive.enabled === false
  * (the default) makes it a hard no-op, same posture as archival above.
+ *
+ * FEAT-493: also runs the tiered disk-artifact retention pass
+ * (src/storage/retention.ts's `runRetentionPass`) on the same cadence, using
+ * `config.retention.tier` as the active Media/Lean/All dial —
+ * config.retention.mode === 'off' (the default) makes it a no-op, same
+ * posture as archival above. This pass NEVER touches `memories` rows (that
+ * axis is archival.ts's exclusive domain — arch-review boundary, 2026-07-14)
+ * — it only ever unlinks files under `<dataDir>/artifacts/<kind>/`. Sweep
+ * results are persisted via `writeSweepStats` for the doctor "last sweep"
+ * stat (src/doctor/checks/retention.ts).
  *
  * Issue #209: also the durable safety net for the vec-index retry drain —
  * every memory still flagged `needs_vec_index = 1` (a write-time vec upsert
@@ -84,6 +95,21 @@ export const cleanupHandler: JobHandler = {
         `${ts()} [cleanup] archival pass: ${archival.archived}/${archival.candidates} stale low-usefulness ` +
         `memories archived`,
       );
+    }
+
+    // FEAT-493: disk-artifact retention. 'off' (the default) never touches
+    // the filesystem at all — matches archival's no-op posture above.
+    if (ctx.config.retention.mode !== 'off') {
+      const retention = runRetentionPass(ctx.config.dataDir, ctx.config.retention, ctx.config.retention.tier);
+      writeSweepStats(ctx.config.dataDir, retention);
+      if (retention.candidates.length > 0) {
+        console.log(
+          `${ts()} [cleanup] retention pass (${retention.mode}/${retention.tier}): ` +
+          `${retention.deleted.length}/${retention.candidates.length} candidate(s) reclaimed ` +
+          `(${retention.deletedBytes} of ${retention.totalBytes} bytes)` +
+          (retention.errors.length > 0 ? `, ${retention.errors.length} error(s)` : ''),
+        );
+      }
     }
 
     const idempotency = pruneIngestIdempotency(ctx.db, ctx.config);

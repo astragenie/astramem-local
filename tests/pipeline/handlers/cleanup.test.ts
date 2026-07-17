@@ -1,10 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { openDb } from '../../../src/storage/db.js';
 import { migrate } from '../../../src/storage/migrate.js';
 import { cleanupHandler } from '../../../src/pipeline/handlers/cleanup.js';
 import { defaultConfig } from '../../../src/config/config.js';
 import { MemoryRepo } from '../../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../../src/storage/memory-events.js';
+import { defaultArtifactsDir, readSweepStats } from '../../../src/storage/retention.js';
 import type { DB } from '../../../src/storage/db.js';
 import type { HandlerCtx } from '../../../src/pipeline/handler.js';
 import type { CleanupPayload } from '../../../src/contracts/index.js';
@@ -267,6 +271,95 @@ describe('cleanupHandler', () => {
       expect(grant).toBeDefined();
       const payloadJson = JSON.parse(grant?.payload_json ?? '{}');
       expect(payloadJson.signal).toBe('heuristic');
+    });
+  });
+
+  // FEAT-493: tiered disk-artifact retention runs on this same cadence,
+  // gated behind config.retention.mode !== 'off' (default). Un-clamped from
+  // the #317 scaffolding — 'enabled' now actually deletes files.
+  describe('disk-artifact retention (FEAT-493)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    let dataDir: string;
+
+    function writeArtifact(kind: string, name: string, sizeBytes: number, mtimeMs: number): string {
+      const kindDir = join(defaultArtifactsDir(dataDir), kind);
+      mkdirSync(kindDir, { recursive: true });
+      const filePath = join(kindDir, name);
+      writeFileSync(filePath, Buffer.alloc(sizeBytes));
+      const mtimeSec = mtimeMs / 1000;
+      utimesSync(filePath, mtimeSec, mtimeSec);
+      return filePath;
+    }
+
+    beforeEach(() => {
+      dataDir = mkdtempSync(join(tmpdir(), 'astramem-cleanup-retention-test-'));
+    });
+
+    afterEach(() => {
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    it("mode 'off' (default) never touches the filesystem — artifact survives a cleanup pass", async () => {
+      const filePath = writeArtifact('audio-raw', 'a1.wav', 2 * 1024 * 1024, Date.now() - 120 * DAY_MS);
+      const offCtx: HandlerCtx = { db, config: { ...defaultConfig(), dataDir } };
+
+      await cleanupHandler.handle({ kind: 'cleanup', older_than_days: 30 }, offCtx);
+
+      expect(existsSync(filePath)).toBe(true);
+      expect(readSweepStats(dataDir)).toBeNull(); // no sweep even attempted
+    });
+
+    it("mode 'enabled' reclaims a matching heavy artifact and persists the sweep result", async () => {
+      const filePath = writeArtifact('audio-raw', 'a1.wav', 2 * 1024 * 1024, Date.now() - 120 * DAY_MS);
+      const enabledCtx: HandlerCtx = {
+        db,
+        config: {
+          ...defaultConfig(),
+          dataDir,
+          retention: {
+            ...defaultConfig().retention,
+            mode: 'enabled',
+            tier: 'media',
+            heavyArtifact: { minSizeBytes: 1024, types: ['audio-raw'] },
+            tierScope: { media: ['audio-raw'], lean: [] },
+          },
+        },
+      };
+
+      await cleanupHandler.handle({ kind: 'cleanup', older_than_days: 30 }, enabledCtx);
+
+      expect(existsSync(filePath)).toBe(false);
+      const stats = readSweepStats(dataDir);
+      expect(stats).toMatchObject({ tier: 'media', mode: 'enabled', deletedCount: 1 });
+    });
+
+    it("mode 'enabled' never deletes a memory row, even with distilled memories present", async () => {
+      new MemoryRepo(db).insert({
+        type: 'fact', text: 'a distilled memory', normalized_text: 'a distilled memory',
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+        hash: 'retention-boundary-hash', source_hash: null,
+      });
+      const before = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n;
+      writeArtifact('audio-raw', 'a1.wav', 2 * 1024 * 1024, Date.now() - 120 * DAY_MS);
+
+      const enabledCtx: HandlerCtx = {
+        db,
+        config: {
+          ...defaultConfig(),
+          dataDir,
+          retention: {
+            ...defaultConfig().retention,
+            mode: 'enabled',
+            tier: 'all',
+            heavyArtifact: { minSizeBytes: 1024, types: ['audio-raw'] },
+          },
+        },
+      };
+
+      await cleanupHandler.handle({ kind: 'cleanup', older_than_days: 30 }, enabledCtx);
+
+      const after = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n;
+      expect(after).toBe(before); // memory row axis untouched by the retention pass
     });
   });
 });

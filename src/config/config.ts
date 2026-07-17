@@ -403,23 +403,31 @@ export interface Config {
      * in the trailing 7 days. */
     usefulnessFloor: number;
   };
-  /** Tiered disk-artifact retention (FEAT-493, scaffolding slice). Reclaims
-   * HEAVY BINARY/DERIVED ARTIFACTS ON DISK ONLY — never `memories` rows.
-   * That axis belongs exclusively to `archival` above (FEAT-404,
+  /** Tiered disk-artifact retention (FEAT-493). Reclaims HEAVY
+   * BINARY/DERIVED ARTIFACTS ON DISK ONLY — never `memories` rows. That axis
+   * belongs exclusively to `archival` above (FEAT-404,
    * src/storage/archival.ts); do not entangle the two (arch-review boundary,
-   * 2026-07-14). Off by default, and for a different reason than most
-   * config-off defaults in this file: this pass DELETES files on disk once
-   * `enabled` actually ships (it does not yet — see
-   * `applyRetentionGovernance`), so an operator must opt in deliberately
-   * rather than discover a reclaim happened silently. `dry-run` is the safe
-   * rollout step: computes and reports what WOULD be reclaimed, deletes
-   * nothing. See src/storage/retention.ts. */
+   * 2026-07-14). Off by default: this pass DELETES files on disk when
+   * `mode: 'enabled'`, so an operator must opt in deliberately rather than
+   * discover a reclaim happened silently. `dry-run` is the safe rollout
+   * step: computes and reports what WOULD be reclaimed, deletes nothing.
+   * See src/storage/retention.ts. */
   retention: {
     mode: 'off' | 'dry-run' | 'enabled';
+    /** Which tier the automatic cleanup-cadence sweep (and any live doctor
+     * snapshot) reclaims — the "dial for disk growth" the FEAT-493
+     * description asks for. `media` (default, least destructive) keeps
+     * every DB row searchable and only reclaims heavy binary artifacts;
+     * `lean` additionally strips heavy DERIVED payloads while distilled
+     * memories + transcripts stay searchable; `all` reclaims every kind in
+     * `heavyArtifact.types`. See `src/storage/retention.ts`'s `scopedKinds`
+     * for the exact per-tier set. Distilled memories are NEVER deleted by
+     * ANY tier here — see the arch-review boundary above. */
+    tier: 'media' | 'lean' | 'all';
     /** Files older than this (by mtime) are candidates. Sanity-clamped to
      * [1, 3650] days at governance time (FEAT-493 acceptance hint) — an
      * unbounded value would let a typo'd config silently mean "everything is
-     * a candidate" the moment `enabled` ships for real. */
+     * a candidate" the moment `enabled` runs for real. */
     ageThresholdDays: number;
     /** Directory scanned for candidates: `<artifactsDir>/<kind>/<file>`, one
      * subdirectory per `heavyArtifact.types` entry. Defaults to
@@ -1199,6 +1207,7 @@ export function defaultConfig(): Config {
     archival: { enabled: false, ageThresholdDays: 183, usefulnessFloor: 0.0 },
     retention: {
       mode: 'off',
+      tier: 'media',
       ageThresholdDays: 90,
       heavyArtifact: { minSizeBytes: 1_048_576, types: [] },
       tierScope: { media: [], lean: [] },
@@ -1642,23 +1651,21 @@ export function applyCandidateSelectionGovernance(
 }
 
 /**
- * FEAT-493 (scaffolding slice): `retention.mode` is a closed 3-value enum,
- * same governance concern `applyDurabilityGateGovernance` already documents
- * — config.yaml is hand-parsed scalars with no schema, so a typo'd mode
- * value would otherwise pass straight through `deepMerge` unchecked. An
- * invalid or missing block falls back to `'off'` (the documented default),
- * logged, never fatal.
+ * FEAT-493: `retention.mode` is a closed 3-value enum, same governance
+ * concern `applyDurabilityGateGovernance` already documents — config.yaml is
+ * hand-parsed scalars with no schema, so a typo'd mode value would otherwise
+ * pass straight through `deepMerge` unchecked. An invalid or missing block
+ * falls back to `'off'` (the documented default), logged, never fatal.
  *
- * Also downgrades `'enabled'` to `'dry-run'` unconditionally, loudly logged.
- * This is NOT the same "invalid value" case above: `'enabled'` is a
- * documented, valid enum member, but this scaffolding slice ships mode +
- * dry-run reporting only (see src/storage/retention.ts) — no code path
- * actually deletes a file yet. Silently letting `mode: 'enabled'` sit in
- * config while the runtime quietly behaves like `dry-run` would be exactly
- * the "green check, nothing actually happened" class this repo's ADR-015
- * exists to kill; downgrading with a loud log makes the gap visible instead.
- * Remove this clamp in the follow-up slice that wires real deletion behind
- * `enabled`.
+ * `mode: 'enabled'` is now a real, wired deletion path (src/storage/
+ * retention.ts's `runRetentionPass` unlinks candidate files) — the #317
+ * scaffolding slice's "downgrade 'enabled' to 'dry-run'" clamp has been
+ * REMOVED as part of finishing that slice. Do not re-add it; `'enabled'` is
+ * meant to delete files now.
+ *
+ * `retention.tier` is a second closed enum (the Media/Lean/All dial) with
+ * the same governance shape: invalid/missing falls back to `'media'` (the
+ * least destructive tier), logged, never fatal.
  *
  * `ageThresholdDays` is clamped to [1, RETENTION_MAX_AGE_DAYS] for the same
  * "never let a bad config value silently mean something extreme" reason
@@ -1666,6 +1673,9 @@ export function applyCandidateSelectionGovernance(
  */
 const VALID_RETENTION_MODES: ReadonlySet<Config['retention']['mode']> =
   new Set(['off', 'dry-run', 'enabled']);
+
+const VALID_RETENTION_TIERS: ReadonlySet<Config['retention']['tier']> =
+  new Set(['media', 'lean', 'all']);
 
 /** 10 years — generous enough that no legitimate retention window ever needs
  * more, tight enough that a fat-fingered value (an extra zero) can't
@@ -1693,13 +1703,13 @@ export function applyRetentionGovernance(
 
   let governed = retention;
 
-  if (governed.mode === 'enabled') {
+  if (!VALID_RETENTION_TIERS.has(governed.tier)) {
     log(
-      "[retention-governance] retention.mode='enabled' is not implemented yet (FEAT-493 scaffolding ships " +
-      "mode + dry-run reporting only) — running as 'dry-run' instead. No files will be deleted. See " +
+      `[retention-governance] retention.tier=${JSON.stringify(governed.tier)} is not one of ` +
+      "'media'|'lean'|'all' — falling back to 'media' (the least destructive tier). See FEAT-493 / " +
       'src/storage/retention.ts.',
     );
-    governed = { ...governed, mode: 'dry-run' };
+    governed = { ...governed, tier: 'media' };
   }
 
   const clampedAge = Math.min(RETENTION_MAX_AGE_DAYS, Math.max(1, governed.ageThresholdDays));
