@@ -1,6 +1,6 @@
 ---
 id: FEAT-485
-status: pending
+status: done
 priority: null
 category: feature
 target_release: null
@@ -19,3 +19,4 @@ Evidence and source provenance are wired but almost never populated — the 'bui
 Created via free-text intake (`/runner:intake "<text>"`). Priority is
 unset — this FEAT has not been scored yet. Run `/runner:triage`
 (PM scoring + `backlog pm-apply`) to score it before slicing.
+> **Closed 2026-07-17.** core already shipped #291 (evidence guard + rate canaries + e2e canary); dashboard evidence/'traced' surface added #409. No regression — transcript_ref gaps were remember()/memory-tool born-at-scope rows by design (ADR-009)
