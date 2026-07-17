@@ -12,6 +12,7 @@
 
 import { openRuntimeDb } from './open-runtime-db.js';
 import { queuePurgeCommand } from './queue-purge.js';
+import { queueRequeueCommand } from './queue-requeue.js';
 import type { JobState } from '../contracts/index.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -40,6 +41,11 @@ export interface QueueSummary {
 export async function queueCommand(args: string[]): Promise<void> {
   if (args[0] === 'purge') {
     await queuePurgeCommand(args.slice(1));
+    return;
+  }
+
+  if (args[0] === 'requeue') {
+    await queueRequeueCommand(args.slice(1));
     return;
   }
 
