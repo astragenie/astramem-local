@@ -1,10 +1,27 @@
 # Provider setup
 
-AstraMemory Local's LLM stages (compaction, extraction) support four providers: Ollama (local,
-free), Azure OpenAI (cloud), a generic `openai-compatible` client (OpenAI API, Groq, vLLM, LM
-Studio, ...), and an experimental `codex-subscription` provider that reuses a Codex CLI ChatGPT
-login instead of a metered key. Embedding only supports Ollama and Azure OpenAI. You configure
-LLM providers independently for the compaction stage and the extraction stage.
+AstraMemory Local's LLM stages (compaction, extraction) support five provider implementations:
+Ollama (local, free), Azure OpenAI (cloud), a generic `openai-compatible` client (OpenAI API,
+Groq, vLLM, LM Studio, ...), `codex-subscription` (reuses a Codex CLI ChatGPT login instead of a
+metered key — **this is the shipped default as of v0.18.0**, not an obscure option), and
+`anthropic` (Claude, via the native Messages API). On top of `openai-compatible`, four curated
+**presets** — Groq, Gemini, Kimi (Moonshot), DeepSeek — were added in Wave 1 BYO (PR #414) so the
+`init` wizard can offer them as one-click choices instead of asking you to hand-type a base URL;
+each preset is not a new provider, just a named `{baseUrl, defaultModel}` pair. Embedding only
+supports Ollama and Azure OpenAI. You configure LLM providers independently for the compaction
+stage and the extraction stage.
+
+**Quick picker:**
+
+| You want                                             | Use                                    |
+|-------------------------------------------------------|-----------------------------------------|
+| Zero setup, already have `codex login` done            | `codex-subscription` (the default)     |
+| Fully local, free, no cloud account                    | `ollama`                               |
+| Best JSON-mode reliability, willing to pay per token    | Azure OpenAI or Anthropic              |
+| Already have a Claude subscription/API key              | `anthropic`                            |
+| Fastest cloud inference, open-weight models             | `openai-compatible` + Groq preset      |
+| Already have a Gemini API key                           | `openai-compatible` + Gemini preset (partial JSON-mode — see caveat below) |
+| Already have a Kimi/Moonshot or DeepSeek key             | `openai-compatible` + that preset      |
 
 ---
 
@@ -344,7 +361,13 @@ anything else (Groq model names, local vLLM model paths) reports `usd: 0` rather
 
 ---
 
-## Codex subscription (EXPERIMENTAL — uses your ChatGPT quota, not billed API usage)
+## Codex subscription (default — uses your ChatGPT quota, not billed API usage)
+
+> As of v0.18.0 this is the **shipped default** for both `llm.compaction.provider` and
+> `llm.extraction.provider` (`defaultConfig()`, `src/config/config.ts`) — the `init` wizard also
+> defaults here whenever it detects `~/.codex/auth.json` already exists. It remains EXPERIMENTAL
+> in the sense described below: an unofficial endpoint, ToS-gray-zone, and no per-call USD cost
+> visibility (usage is metered by your ChatGPT plan's Codex quota, not `budget.daily_usd`).
 
 > **Read this before enabling.** `codex-subscription` reuses the OAuth session created by
 > `codex login` ("Sign in with ChatGPT") to call the **unofficial** ChatGPT Codex backend
@@ -393,6 +416,38 @@ node dist/cli/index.js doctor
 
 Doctor runs a `Codex auth` check (auth.json presence + access-token expiry, no network call) plus
 the generic LLM chat probe (a real 1-token call).
+
+### Quota exhaustion: the 2026-07-17 incident, and how to recover
+
+**What happened:** the `codex-subscription` provider started returning `401` when the account's
+ChatGPT Codex quota was exhausted. The provider's own retry (see "Failure behavior" below)
+refreshes the OAuth token and retries once, but a *quota* 401 isn't fixed by a token refresh — the
+retry also 401s, and the distill job goes to `poison` (the normal bounded-retry exhaustion path).
+196 distill jobs poisoned this way before the underlying quota recovered (ChatGPT quotas reset on
+a rolling window — see your OpenAI account's usage page for your own reset schedule).
+
+**How to recover once the underlying cause is fixed** (quota reset, or a fresh `codex login` if
+the real problem was an expired/revoked session): poisoned jobs are not automatically retried —
+requeue them explicitly with the `queue requeue --poison` CLI:
+
+```bash
+# Re-login first if `codex login status` shows you're logged out:
+codex login
+
+# Move poisoned distill jobs back to pending, in a bounded batch:
+node dist/cli/index.js queue requeue --poison --kind distill --limit 50
+
+# Watch progress, then requeue the next batch if it drains clean:
+node dist/cli/index.js queue
+node dist/cli/index.js queue requeue --poison --kind distill --limit 50
+```
+
+`--limit N` is deliberately bounded (default: all) so you can drain in monitored batches and stop
+if the underlying cause hasn't actually cleared (jobs immediately re-poison — a clear signal to
+stop and re-diagnose rather than keep draining). Requeued jobs retain their original
+`payload_json`, so a retry re-runs the exact same extraction/compaction work — nothing is lost,
+only delayed. `--kind` filters to one job kind (e.g. `distill`); omit it to requeue every poisoned
+kind. See `src/cli/queue-requeue.ts` for the full flag reference.
 
 ### Failure behavior
 
@@ -482,6 +537,196 @@ higher `reasoning.effort` values (`medium`/`high`/`xhigh`) or non-mini models (`
 
 ---
 
+## Anthropic (Claude)
+
+`anthropic` speaks the native Anthropic Messages API (`POST /v1/messages`), not the OpenAI-style
+`/v1/chat/completions` shape — it is the one genuinely new provider *implementation* in Wave 1 BYO
+(the four presets below all reuse `openai-compatible`). LLM stages only — not usable for embedding.
+
+### JSON-mode caveat: forced tool-use, not a text JSON mode
+
+Anthropic has no `response_format:{type:'json_object'}` equivalent. This provider gets structured
+JSON back via **forced tool-use**: it defines a tool named `emit_json` and sets
+`tool_choice:{type:'tool', name:'emit_json'}`, so the model must call it; the tool's `input` field
+comes back as an already-parsed JSON object, which the provider re-serializes to a string so every
+existing `JSON.parse(result.text)` call site keeps working unchanged. Practical effect for you:
+`anthropic` is the one provider whose structured-output capability is `'tool-use'` rather than
+`'json_object'` (`src/providers/llm/capabilities.ts`) — it honors a real `jsonSchema` constraint
+(`supportsJsonSchema('anthropic')` is `true`), unlike the `openai-compatible`/`azure-openai`/
+`codex-subscription` bucket, which only guarantees *some* valid JSON with no shape guarantee.
+
+### 1. Get an API key
+
+Create a key at [console.anthropic.com](https://console.anthropic.com) (Settings → API Keys).
+
+### 2. Configure
+
+```yaml
+llm:
+  compaction:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929   # init wizard's default; no benchmark yet in this repo
+  extraction:
+    provider: anthropic
+    model: claude-sonnet-4-5-20250929
+
+anthropic:
+  apiKeyEnv: ANTHROPIC_API_KEY    # default shown; override only if you want a differently-named var
+```
+
+There is no `baseUrl` field for this provider (unlike `openaiCompatible`) — it always targets
+`api.anthropic.com`; the model always comes from `llm.compaction.model` / `llm.extraction.model`.
+
+### 3. Write the key
+
+```bash
+echo "ANTHROPIC_API_KEY=sk-ant-..." >> ~/.config/astra-memory/secrets.env
+```
+
+On Windows use `%APPDATA%\Astramem\secrets.env`. Like every other provider key in this file, this
+is a **plaintext line in secrets.env (mode 0600)** — it is not written to the OS credential store
+(that store is reserved for the daemon's own `MEMORY_BEARER` token; see the Ollama/Azure sections
+above for the same pattern).
+
+### 4. Wizard flow
+
+`init` offers `anthropic (Claude)` in the cloud-LLM picker (alongside the four presets below,
+`azure-openai`, and `codex-subscription`) whenever you reach a cloud-provider choice — either
+directly, or via the Ollama tier picker's "BYO cloud" pivot. It prompts for the API key
+(`Anthropic API key:`) and nothing else. For non-interactive/scripted installs, set:
+
+```bash
+ASTRA_MEMORY_INIT_LLM_PROVIDER=anthropic
+ASTRA_MEMORY_INIT_ANTHROPIC_API_KEY=sk-ant-...
+```
+
+### 5. Verify
+
+```bash
+node dist/cli/index.js doctor
+```
+
+Doctor runs the generic LLM chat probe (a real 1-token call). The provider never logs the API key
+by value — even in error bodies reflected back from a hostile/buggy upstream, the key is redacted
+before it reaches structured logs.
+
+---
+
+## BYO cloud presets: Groq, Gemini, Kimi (Moonshot), DeepSeek
+
+These four are **not separate provider implementations** — each is a named `{baseUrl,
+defaultModel}` pair (`src/providers/llm/byo-presets.ts`) that resolves through the existing
+`openai-compatible` adapter. Picking one in the wizard is equivalent to hand-typing that vendor's
+base URL into the plain "OpenAI-compatible" flow above, plus a curated default model. LLM stages
+only — not usable for embedding.
+
+| Preset       | `baseUrl`                                              | Default model             | Key env var         | JSON mode        |
+|--------------|----------------------------------------------------------|----------------------------|-----------------------|--------------------|
+| Groq         | `https://api.groq.com/openai/v1`                         | `llama-3.3-70b-versatile`  | `GROQ_API_KEY`        | confirmed          |
+| Gemini       | `https://generativelanguage.googleapis.com/v1beta/openai/` | `gemini-2.0-flash`       | `GEMINI_API_KEY`      | **partial — see caveat** |
+| Kimi (Moonshot) | `https://api.moonshot.cn/v1`                           | `moonshot-v1-8k`           | `MOONSHOT_API_KEY`    | confirmed          |
+| DeepSeek     | `https://api.deepseek.com`                                | `deepseek-chat`            | `DEEPSEEK_API_KEY`    | confirmed          |
+
+All four take standard `Authorization: Bearer <key>` auth (same as `openai-compatible` already
+sends) — none need a query-param scheme. None of these presets were live-fire tested against a
+real API key at merge time (Wave 1, PR #414, 2026-07-17 — no operator credential was available in
+that environment); each was verified against the vendor's own published docs instead. Run
+`doctor`'s `llmChatProbe` (a real `json:true` call) against your own key before trusting a preset
+for production extraction — that probe is what actually proves a preset works end-to-end.
+
+### Gemini's JSON-mode caveat
+
+Gemini is the one preset marked `'partial'` rather than `'confirmed'` for `jsonObjectMode`.
+`openai-compatible.ts` sends the bare `response_format:{type:'json_object'}` hint; Gemini's own
+docs document that shape for **batch** mode, but recommend `response_format:{type:'json_schema',
+...}` for real-time (sync) calls — the exact shape this codebase sends is not the vendor's
+documented happy path for sync calls. In practice this likely still returns valid JSON (Gemini's
+structured-output models generally honor the looser `json_object` hint too), but it is the one
+preset here that was not confirmed working on the exact wire shape AstraMemory Local sends.
+Verify with `doctor` before relying on it for extraction; if it silently underperforms, it needs
+the same per-model dispatch `openai-compatible.ts` already has for the OpenAI o-series/gpt-5*
+reasoning-model case — that would be a provider-level fix, not a preset-level one.
+
+### `max_tokens` vs `max_completion_tokens`
+
+Groq and Kimi have deprecated `max_tokens` in favor of `max_completion_tokens` on their own APIs,
+but both still document the old field as "deprecated," not "removed." `openai-compatible.ts`
+always sends `max_tokens` for a non-reasoning-prefixed model name (none of these four vendors' model
+names match the `o1`/`o3`/`o4`/`gpt-5` prefixes it checks for the newer field), so this is expected
+to keep working — it is the one piece of drift the preset registry could not verify against a live
+call. If a doctor probe or bug report ever shows `max_tokens` silently ignored or rejected by Groq
+or Kimi, that is a provider-level fix (the same per-model dispatch pattern as the reasoning-model
+case), not something you can work around from `config.yaml`.
+
+### 1. Configure
+
+```yaml
+llm:
+  compaction:
+    provider: openai-compatible
+    model: llama-3.3-70b-versatile   # Groq's default; see table above for the other three
+  extraction:
+    provider: openai-compatible
+    model: llama-3.3-70b-versatile
+
+openaiCompatible:
+  baseUrl: https://api.groq.com/openai/v1   # see table above for Gemini/Kimi/DeepSeek base URLs
+  apiKeyEnv: GROQ_API_KEY                     # see table above for the other three
+```
+
+### 2. Write the key
+
+```bash
+echo "GROQ_API_KEY=gsk_..." >> ~/.config/astra-memory/secrets.env
+```
+
+Plaintext, mode 0600 — same pattern as every other provider key in this file, never the OS
+credential store. Swap the env var name for the preset you picked (`GEMINI_API_KEY`,
+`MOONSHOT_API_KEY`, `DEEPSEEK_API_KEY`) — each preset uses a distinct env var name specifically so
+switching presets never silently reuses a stale key written under a different vendor's name.
+
+### 3. Wizard flow
+
+`init`'s cloud-LLM picker lists each preset as `<vendor label> (<default model>)` alongside
+`anthropic (Claude)`, `azure-openai`, and `codex-subscription`. Choosing one only prompts for the
+API key (`<vendor> API key:`) — the base URL and default model are pre-filled from the preset. For
+non-interactive/scripted installs:
+
+```bash
+ASTRA_MEMORY_INIT_LLM_PROVIDER=openai-compatible
+ASTRA_MEMORY_INIT_LLM_PRESET=groq            # groq | gemini | kimi | deepseek
+ASTRA_MEMORY_INIT_OPENAI_COMPAT_API_KEY=gsk_...
+```
+
+`ASTRA_MEMORY_INIT_LLM_PRESET` is only consulted when `ASTRA_MEMORY_INIT_LLM_PROVIDER=openai-compatible`.
+
+### 4. Verify
+
+```bash
+node dist/cli/index.js doctor
+```
+
+Same generic LLM chat probe plus the `openai-compatible`-specific `GET <baseUrl>/models`
+reachability check. Pricing: none of these four vendors have entries in
+`src/providers/llm/pricing.ts` today, so cost reports `usd: 0` rather than a guess — the same
+convention as any other unrecognized model id on this provider.
+
+---
+
+## Checking provider health
+
+`GET /health` already reports overall daemon status (`starting`/`ok`/`degraded`) at boot. As of
+this writing, whether a **runtime** LLM provider failure (auth error, exhausted quota, repeated
+5xx) also flips `/health.status` to `degraded` depends on FEAT-538 (PR #417, **not yet merged** —
+tracked separately from the Wave 1 BYO work this document otherwise describes). Once it lands,
+`/health.status` will degrade on real provider auth/quota/5xx failures and on a rising poison
+rate, giving you a single endpoint to watch instead of grepping logs for provider errors. Until
+then, watch `node dist/cli/index.js queue` (poison/failed counts) and the daemon's structured logs
+for provider warnings — see the 2026-07-17 codex-401 incident above for what that looks like in
+practice.
+
+---
+
 ## Mixed configuration
 
 You can mix providers. For example, use Azure for extraction (better JSON mode) and Ollama for
@@ -506,8 +751,31 @@ embedding:
 
 ## Switching providers after initial setup
 
-Switching the **LLM** provider (compaction or extraction) is instant — just update `config.yaml`
-and restart the daemon. Pending jobs pick up the new provider.
+### Switching the LLM provider (any of the six above)
+
+1. Edit `config.yaml` — set `llm.extraction.provider` (and `llm.compaction.provider`, if you want
+   both stages to switch) to the new provider name, and `model` to that provider's model tag (see
+   each provider's section above for its config shape — `anthropic` and `codexSubscription` need
+   no `baseUrl`; `openaiCompatible` needs one for a BYO preset or custom endpoint).
+2. If the new provider needs an API key, add it to `secrets.env` under the env var name that
+   provider's config block expects (`anthropic.apiKeyEnv`, `openaiCompatible.apiKeyEnv`) — see the
+   per-provider "Write the key" steps above.
+3. **Restart the daemon.** `config.yaml` is read exactly once at process boot
+   (`resolveRuntimeConfig`) — there is no live reload today, so a provider/key edit made while the
+   daemon is running has no effect on the running process until it restarts. (A `FEAT-540`
+   auto-reload has been discussed to close this gap; until it ships, restart is required — don't
+   assume a hand-edited `config.yaml` took effect without one.)
+
+```bash
+astramem-local service stop
+# edit config.yaml + secrets.env here
+astramem-local service start
+node dist/cli/index.js doctor   # confirm the new provider is reachable
+```
+
+Switching the LLM provider does **not** require reindexing — only vector embeddings are
+geometry-sensitive (see below). Pending jobs pick up the new provider on restart; nothing already
+completed is reprocessed.
 
 Switching the **embedding** provider or model requires reindexing because all stored vector
 embeddings are in the old model's geometric space. Mixed embeddings produce meaningless cosine
