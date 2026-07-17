@@ -7,6 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { LLMProvider, EmbedProvider } from '../../src/contracts/index.js';
+import { LLM_PROVIDER_NAMES } from '../../src/contracts/llm.js';
 
 export function runLLMContractSuite(
   providerName: string,
@@ -15,7 +16,7 @@ export function runLLMContractSuite(
   describe(`LLMProvider contract — ${providerName}`, () => {
     it('has correct name', () => {
       const p = factory();
-      expect(['ollama', 'azure-openai', 'openai-compatible', 'codex-subscription']).toContain(p.name);
+      expect(LLM_PROVIDER_NAMES).toContain(p.name);
     });
 
     it('has non-empty model', () => {
