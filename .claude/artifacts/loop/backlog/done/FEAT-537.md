@@ -1,6 +1,6 @@
 ---
 id: FEAT-537
-status: pending
+status: done
 priority: P2
 category: platform
 target_release: post-RC
@@ -48,3 +48,5 @@ the route handlers must not prepare statements until first use.
   compaction+extraction to the probe loop; wire the other 3 roles (judge/passB/triage) now
   that Wave 1 BYO added the multi-role doctor loop (`checks/index.ts`). Do in whichever PR
   touches serve.ts next.
+
+> **Closed 2026-07-17 (RC).** lazy-prepare / bind-before-migrate — merged #420

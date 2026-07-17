@@ -1,6 +1,6 @@
 ---
 id: FEAT-538
-status: pending
+status: done
 priority: P1
 category: platform
 target_release: RC
@@ -59,3 +59,5 @@ failure look identical."
   are needed.
 - Strong RC candidate — shipping a daemon whose `/health` says `ok` while extraction is dead
   undermines every "is it healthy?" check an operator or the watchdog makes.
+
+> **Closed 2026-07-17 (RC).** provider-health /health degraded — merged #417

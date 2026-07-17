@@ -1,6 +1,6 @@
 ---
 id: FEAT-540
-status: pending
+status: done
 priority: P1
 category: platform
 target_release: RC
@@ -45,3 +45,5 @@ operator experience for the DEFAULT provider.
   dashboard) → SELF-HEAL (this — reload on 401) → SWITCH (BYO, #414). The incident proved
   all four belong in the RC.
 - Recovery tooling from the same incident already shipped: `queue requeue --poison` (#419).
+
+> **Closed 2026-07-17 (RC).** codex auth-reload self-heal — merged #424
