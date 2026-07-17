@@ -29,8 +29,9 @@
  * signal).
  */
 import { randomBytes, randomUUID } from 'node:crypto';
-import { writeFileSync, mkdirSync } from 'node:fs';
+import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { platform, homedir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
 import {
   spawnEvalDaemon, waitForHealthStatus, killDaemon, makeIsolatedEvalEnv, cleanupIsolatedEvalEnv,
@@ -53,6 +54,34 @@ import type { GoldFixture } from './fixtures.js';
  * config for this constant. */
 export const DEFAULT_COMPACTION_MODEL = 'qwen3.5:4b';
 const BENCH_PROJECT_ID = 'extraction-bench';
+
+/**
+ * Resolve the machine's existing ONNX embed-model cache so the isolated bench
+ * daemon can load it OFFLINE — exactly like prod.
+ *
+ * Since ADR-018 S4 (2026-07-15) `defaultConfig().embedding.provider` is `'onnx'`
+ * (in-process ONNX Runtime, not Ollama). This sandbox spawns a daemon with a
+ * FRESH dataDir, so its own ONNX cache (`<dataDir>/models/onnx/`) is empty — and
+ * transformers.js still HEADs the HF hub on every load (the offline-load bug, see
+ * CLAUDE.md / onnx-offline-load-transformers-phones-home), which is blocked on this
+ * box, so the embed probe fails and `/health` reports `degraded`. Pointing
+ * `onnxEmbed.cacheDir` at the machine's real (prod) cache makes the model load from
+ * disk offline, and the daemon boots clean `ok` — the bench now uses ONNX embed
+ * going forward, matching production instead of an ad-hoc Ollama embedder.
+ *
+ * Override the location with `ASTRA_BENCH_ONNX_CACHE`. Returns null when no cache
+ * is present, in which case the caller falls back to the degraded-tolerant boot
+ * gate (the bench only needs distill stages 1-7, so embed being down is harmless —
+ * see runOllamaCandidate). Seed a fresh box with `node dist/cli/index.js model fetch`.
+ */
+export function resolveOnnxCacheDir(): string | null {
+  const override = process.env['ASTRA_BENCH_ONNX_CACHE'];
+  if (override) return existsSync(override) ? override : null;
+  const dir = platform() === 'win32'
+    ? join(process.env['LOCALAPPDATA'] ?? '', 'Astramem', 'models', 'onnx')
+    : join(homedir(), '.local', 'share', 'astra-memory', 'models', 'onnx');
+  return existsSync(dir) ? dir : null;
+}
 
 export interface DaemonAtom {
   id: string;
@@ -111,6 +140,11 @@ export async function runOllamaCandidate(
   // security.encryption.enabled: false) to also pin the extraction model.
   // parseConfigYaml (src/config/loader.ts) deep-merges this subset over
   // defaultConfig() — no need to emit every key, only the ones we override.
+  // ONNX embed (ADR-018): match prod's in-process ONNX embedder rather than the
+  // library-default Ollama path. Points at the machine's real ONNX cache so the
+  // model loads offline and the daemon boots clean 'ok'; omitted (embed left at the
+  // default provider) only when no cache is present — see resolveOnnxCacheDir.
+  const onnxCacheDir = resolveOnnxCacheDir();
   const configYaml = [
     'security:',
     '  encryption:',
@@ -122,6 +156,12 @@ export async function runOllamaCandidate(
     '  extraction:',
     '    provider: ollama',
     `    model: '${extractionModel}'`,
+    ...(onnxCacheDir ? [
+      'embedding:',
+      '  provider: onnx',
+      'onnxEmbed:',
+      `  cacheDir: '${onnxCacheDir.replace(/\\/g, '/')}'`,
+    ] : []),
     'budget:',
     '  daily_usd: 50',
     '',
@@ -139,7 +179,22 @@ export async function runOllamaCandidate(
   try {
     let t = Date.now();
     daemon = await spawnEvalDaemon({ dataDir, token, env: isolated.env });
-    await waitForHealthStatus(daemon.baseUrl, ['ok'], 90_000);
+    // Accept 'degraded' as a FALLBACK: with an ONNX cache resolved above the
+    // daemon boots clean 'ok', but on a box with no seeded cache the embed probe
+    // still fails. This bench exercises distill stages 1-7 only (atom quality is
+    // fully decided before stage 8 embed+index — see README), so a daemon degraded
+    // solely by that embed-probe (embed unused here) can still extract correctly.
+    // Guarded by asserting both LLM providers are up below, so a genuine
+    // extraction/compaction outage still fails loudly.
+    const status = await waitForHealthStatus(daemon.baseUrl, ['ok', 'degraded'], 90_000);
+    if (status === 'degraded') {
+      const h = await (await fetch(`${daemon.baseUrl}/health`)).json();
+      const ex = h?.provider_health?.extraction?.status;
+      const co = h?.provider_health?.compaction?.status;
+      if (ex !== 'up' || co !== 'up') {
+        throw new Error(`daemon degraded with LLM provider(s) down (extraction=${ex}, compaction=${co}) — extraction would be unreliable, refusing to bench`);
+      }
+    }
     daemonBootMs = Date.now() - t;
 
     for (const fixture of fixtures) {
