@@ -33,6 +33,7 @@ import { installServiceFlow } from '../service/install-flow.js';
 import { installMemoryPackHook } from './hook-install.js';
 import { activateGitHooks } from '../service/git-hooks-activate.js';
 import { defaultAuthPath as defaultCodexAuthPath, hasCodexLogin } from '../providers/llm/codex-subscription.js';
+import type { LLMProviderName } from '../contracts/llm.js';
 
 // ─── Non-interactive env var map ─────────────────────────────────────────────
 
@@ -57,8 +58,9 @@ const NON_INTERACTIVE_ENV = {
   ollamaBaseUrl: 'ASTRA_MEMORY_INIT_OLLAMA_BASE_URL',
 } as const;
 
-/** LLM provider values the wizard can select for compaction/extraction. */
-type LlmProviderChoice = 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+/** LLM provider values the wizard can select for compaction/extraction.
+ *  FEAT-536: derived from the single provider-name source, not re-declared. */
+type LlmProviderChoice = LLMProviderName;
 
 /** Default Ollama extraction/compaction model — used when no tier is chosen.
  * Swapped from qwen3.5:4b to qwen2.5:7b (2026-07-14) — qwen3.5:4b was
