@@ -346,14 +346,19 @@ function loadAuthFile(path: string): CodexAuthFile {
  * so a concurrent reader never observes a torn auth.json. Failure to persist
  * is non-fatal: the refreshed token is still used for the rest of this
  * process even if the write-back fails (e.g. read-only auth.json). */
-function writeAuthFileAtomic(path: string, auth: CodexAuthFile): void {
+/** Returns the exact string written (so callers can sync FEAT-540's
+ *  lastAuthRaw baseline without a racy re-read), or null if the write failed. */
+function writeAuthFileAtomic(path: string, auth: CodexAuthFile): string | null {
   const dir = dirname(path);
   const tmp = join(dir, `.auth.json.${process.pid}.${Date.now()}.tmp`);
+  const serialized = JSON.stringify(auth, null, 2);
   try {
-    writeFileSync(tmp, JSON.stringify(auth, null, 2), 'utf8');
+    writeFileSync(tmp, serialized, 'utf8');
     renameSync(tmp, path);
+    return serialized;
   } catch {
     try { unlinkSync(tmp); } catch { /* best-effort cleanup */ }
+    return null;
   }
 }
 
@@ -510,7 +515,7 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
     // account_id is preserved from the in-memory value (the refresh response
     // doesn't repeat auth.json's direct tokens.account_id field — see
     // resolveAccountId doc comment).
-    writeAuthFileAtomic(this.authPath, {
+    const written = writeAuthFileAtomic(this.authPath, {
       auth_mode: 'chatgpt',
       tokens: {
         access_token: this.accessToken,
@@ -521,15 +526,14 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
       last_refresh: new Date().toISOString(),
     });
 
-    // Keep the FEAT-540 reload baseline in sync with our own write-back —
-    // best-effort only, so tryReloadAuthFromDisk doesn't mistake this
-    // provider's own rotation for an operator's out-of-band `codex login`
-    // on the next 401 and redundantly re-apply tokens it already holds.
-    try {
-      this.lastAuthRaw = readFileSync(this.authPath, 'utf8');
-    } catch {
-      /* best-effort tracking only — refresh() already succeeded either way */
-    }
+    // Sync the FEAT-540 reload baseline to the EXACT bytes we just wrote — NOT
+    // a re-read (PR #424 review). A re-read races an operator's out-of-band
+    // `codex login` landing between our rename and the read: lastAuthRaw would
+    // then track the operator's content while our in-memory tokens differ, so
+    // the next 401's reload guard would wrongly no-op and skip the operator's
+    // fresh login. Using the string we serialized keeps lastAuthRaw == our own
+    // tokens, so an operator write is always seen as "changed" and reloaded.
+    if (written !== null) this.lastAuthRaw = written;
   }
 
   private headers(): Record<string, string> {
