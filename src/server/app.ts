@@ -148,6 +148,28 @@ export async function buildApp(opts: AppOpts): Promise<FastifyInstance> {
   }
   const devNoAuthActive = devNoAuthConfigured && isLocalBind;
 
+  // Boot-readiness gate (Wave 0 Item 3, durable boot-race fix): while
+  // healthState.ready is explicitly false, only /health, /health/full, and
+  // /version may answer — every other route (auth-required or not,
+  // including /dashboard) 503s rather than touching a possibly-unmigrated
+  // DB. serve.ts's non-strict boot path binds the port BEFORE running
+  // migrate/recoverOrphans/provider-setup, so a request landing in that
+  // window must never reach a route that queries tables that may not exist
+  // yet. HealthState.ready defaults to `true` (see health-state.ts) — this
+  // hook is a no-op for every caller that doesn't know about the concept
+  // (bare test apps, hand-built healthState objects), and runs BEFORE the
+  // auth hook below so a starting daemon doesn't even need a valid token to
+  // learn it should retry shortly.
+  app.addHook('preHandler', async (req, reply) => {
+    if (!opts.healthState || opts.healthState.ready) return;
+    const path = req.url.split('?')[0];
+    if (path === '/health' || path === '/health/full' || path === '/version') return;
+    return reply.code(503).send({
+      ok: false,
+      error: { code: 'starting', message: 'astramem-local is still starting up (migrating/initializing) — retry shortly' },
+    });
+  });
+
   app.addHook('preHandler', async (req, reply) => {
     const path = req.url.split('?')[0];
     if (path === '/dashboard' || path?.startsWith('/dashboard/')) return;

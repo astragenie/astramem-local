@@ -219,3 +219,102 @@ describe('Fastify hardening (P1.6)', () => {
     expect(res.payload).not.toContain('secret internal detail');
   });
 });
+
+// Wave 0 Item 3 — boot-readiness gate. `healthState.ready` defaults to
+// `true` (see health-state.ts) so every OTHER test in this file — which
+// never touches the field — is unaffected; these tests are the only ones
+// that exercise the `false` state deliberately, at the buildApp() level
+// (deterministic — no real daemon spawn / timing needed) rather than via a
+// real serve.ts boot, which is the authoritative test for the mechanism
+// serve.ts relies on.
+describe('boot-readiness gate (Wave 0 Item 3) — healthState.ready === false', () => {
+  let db: DB;
+  let app: FastifyInstance;
+
+  afterEach(async () => {
+    await app.close();
+    db.close();
+  });
+
+  it('/health and /version answer normally while not ready; every other route 503s', async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    const hs = createHealthState();
+    hs.ready = false;
+    app = await buildApp({ db, token: TOKEN, healthState: hs });
+
+    const health = await app.inject({ method: 'GET', url: '/health' });
+    expect(health.statusCode).toBe(200);
+    expect(health.json().status).toBe('starting');
+
+    // /health/full is NOT in the public loopback exemption (unlike /health
+    // and /version — see app.ts's auth hook) even outside this gate, so it
+    // needs a bearer regardless of readiness; what this asserts is that the
+    // readiness gate itself doesn't ALSO block it once authed.
+    const full = await app.inject({
+      method: 'GET',
+      url: '/health/full',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(full.statusCode).toBe(200);
+
+    const version = await app.inject({ method: 'GET', url: '/version' });
+    expect(version.statusCode).toBe(200);
+
+    // Authed route — even WITH a valid bearer token, must 503 while not ready.
+    const search = await app.inject({
+      method: 'GET',
+      url: '/search?q=x',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(search.statusCode).toBe(503);
+    const body = search.json();
+    expect(body.ok).toBe(false);
+    expect(body.error.code).toBe('starting');
+
+    // Unauthenticated request to an authed route also 503s (the readiness
+    // gate runs BEFORE the auth hook) rather than 401ing first.
+    const searchNoAuth = await app.inject({ method: 'GET', url: '/search?q=x' });
+    expect(searchNoAuth.statusCode).toBe(503);
+  });
+
+  it('flipping ready back to true unblocks every route immediately (no restart needed)', async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    const hs = createHealthState();
+    hs.ready = false;
+    hs.embed.ok = true;
+    app = await buildApp({ db, token: TOKEN, healthState: hs });
+
+    const before = await app.inject({
+      method: 'GET',
+      url: '/search?q=x',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(before.statusCode).toBe(503);
+
+    hs.ready = true;
+    const after = await app.inject({
+      method: 'GET',
+      url: '/search?q=x',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(after.statusCode).not.toBe(503);
+
+    const health = await app.inject({ method: 'GET', url: '/health' });
+    expect(health.json().status).toBe('ok'); // ready + embed.ok=true
+  });
+
+  it('does not gate anything when healthState is absent (bare test apps unaffected)', async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    app = await buildApp({ db, token: TOKEN }); // no healthState at all
+
+    const search = await app.inject({
+      method: 'GET',
+      url: '/search?q=x',
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(search.statusCode).not.toBe(503);
+  });
+});

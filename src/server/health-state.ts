@@ -46,6 +46,20 @@ export interface HealthState {
   embed: EmbedHealth;
   worker: WorkerHealth;
   doctor: DoctorScheduleHealth;
+  /**
+   * Boot-readiness gate (Wave 0 Item 3: bind port before migrate/recover).
+   * Defaults to `true` — every existing caller that never touches this field
+   * (bare test apps, hand-built HealthState objects) sees exactly the old
+   * `status()` behavior, driven by `embed` alone. `serve.ts`'s non-strict
+   * boot path is the only writer that ever sets this `false`: right after
+   * `createHealthState()`, before binding the port, then back to `true`
+   * once the deferred migrate/recoverOrphans/provider-setup continuation
+   * finishes. While `false`, `status()` reports 'starting' regardless of
+   * `embed`, and `buildApp`'s readiness-gate hook (src/server/app.ts) 503s
+   * every route except /health, /health/full, /version — a half-migrated DB
+   * must never serve a real request.
+   */
+  ready: boolean;
   /** Resolved data directory — lets /health report disk_free_bytes. */
   dataDir?: string;
   /**
@@ -91,7 +105,9 @@ export function createHealthState(now: () => number = Date.now): HealthState {
     embed: { ok: null, lastOkAt: null, lastError: null, attempts: 0 },
     worker: { lastTickAt: null },
     doctor: { lastRunAt: null, lastTier: null, lastFailCount: 0, lastInconclusiveCount: 0, lastFailNames: [] },
+    ready: true,
     status(): DaemonStatus {
+      if (!state.ready) return 'starting';
       if (state.embed.ok === true) return 'ok';
       if (state.embed.ok === null) return 'starting';
       return 'degraded';
