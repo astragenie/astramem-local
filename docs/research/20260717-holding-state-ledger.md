@@ -39,3 +39,26 @@ One doc-hygiene issue found (not a config defect): the inline comment at `config
 3. **`contradictionDetection.mode: dry-run`** — needs a manual review of dry-run verdicts against the 768-proposal backlog before flipping to `enabled`. No code blocker, just an unreviewed-data gate.
 4. **`ASTRA_SKIP_CONSOLIDATE=1`** — needs the consolidate setup phase bounded/chunked (same class of work as fixing `knn` candidate selection's main-thread blocking).
 5. **`sync.batchSize: 25`** — needs cloud-side backlog to drain before raising back toward 50.
+
+---
+
+## UNWIND STATUS — 2026-07-17 (post-BYO #414 + Wave-0 #415)
+
+Re-evaluated each holding state now that BYO providers (#414), provider-health
+detection (FEAT-538 #417), and the instance-lock stability fix (Wave-0 #415) exist:
+
+| Holding state | Live value | Decision |
+|---|---|---|
+| `llm.extraction/compaction` = codex-subscription | codex | **INTENTIONAL, not a rollback.** Codex is the shipped default; BYO (#414) is the documented alternative; FEAT-538 now detects provider failure. Drop the "ROLLED BACK" framing in config.yaml comments. |
+| `distill.extractionPasses` = 1 (live) | 1 | **Keep 1 on codex** (cost — pass B doubles metered calls). `defaultConfig()` ships 2 (fine; codex is fast). Local dual-pass is PARKED (LoCoMo proved too slow). Live=1 is an intentional cost choice, not a stuck rollback. |
+| `consolidation.candidateSelection` = full | full | **Keep full** until the knn scan is chunked/offloaded (it wedged /health synchronously). Needs a FEAT before re-enabling knn. |
+| watchdog + keepalive tasks DISABLED | disabled | **Unwind CONDITION now met in CODE** (Wave-0 #415 fixed the split-brain that made them dangerous) — but NOT in the running prod daemon, which still runs the OLD wt-396 build. **Re-enable only AFTER prod is redeployed to code containing #415 + a soak** (Wave 0.3). Do not re-arm against the old build. |
+| `ASTRA_SKIP_CONSOLIDATE=1` (shim env) | on | Keep until consolidation is validated on the redeployed daemon. |
+
+**defaultConfig() confirmed CLEAN** — no holding state baked into the shipped release.
+The RC ships clean defaults; the live daemon's holding config is intentional + documented.
+
+**Key deploy dependency:** the running prod daemon (PID 5280, wt-396 build) predates
+#412/#414/#415/#417 — none of the RC work is LIVE yet. Redeploy (reinstall to a build
+containing the merged RC PRs) is required before the operator sees BYO, the provider-health
+`/health` degraded state, the dashboard Providers section, or can safely re-enable the watchdog.
