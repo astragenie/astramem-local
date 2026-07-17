@@ -455,7 +455,11 @@ describe('ollama-llm', () => {
     // ollama list" against a live daemon. (Every other occurrence in this
     // file is a mocked fixture whose tag is arbitrary and pulls nothing.)
     it('actually calls ollama serve', async () => {
-      const p = new OllamaLLMProvider({ model: 'qwen2.5:0.5b' });
+      // baseUrl reads OLLAMA_HOST so this hits whichever instance
+      // nightly-live.yml wired up — a warm host-level singleton on :11434,
+      // or a cold-started container on an ephemeral port. Falls back to the
+      // provider's own default for local runs where it's unset.
+      const p = new OllamaLLMProvider({ model: 'qwen2.5:0.5b', baseUrl: process.env.OLLAMA_HOST });
       const h = await p.health();
       expect(h.ok).toBe(true);
     }, 10_000);

@@ -227,7 +227,11 @@ describe('ollama-embed', () => {
     // runner is a shared, CPU-only, 5-job-slot EC2 host where a cold real
     // embed call can exceed 15s.
     it('actually calls ollama embeddings', async () => {
-      const p = new OllamaEmbedProvider({ model: 'mxbai-embed-large' });
+      // baseUrl reads OLLAMA_HOST so this hits whichever instance
+      // nightly-live.yml wired up — a warm host-level singleton on :11434,
+      // or a cold-started container on an ephemeral port. Falls back to the
+      // provider's own default for local runs where it's unset.
+      const p = new OllamaEmbedProvider({ model: 'mxbai-embed-large', baseUrl: process.env.OLLAMA_HOST });
       const vecs = await p.embed(['hello from integration test']);
       expect(vecs.length).toBe(1);
       expect(vecs[0]!.length).toBe(1024);

@@ -22,6 +22,15 @@
 # installs anything system-wide, to avoid the documented ETXTBSY-style races
 # this shared host hits under concurrent global-tooling installs.
 #
+# Cold start binds an EPHEMERAL host port rather than a second fixed :11434 —
+# this workflow's own concurrency group serializes repeat runs of THIS
+# workflow, but not against other repos'/jobs' unrelated Ollama usage on the
+# same shared box, so two unrelated cold starts landing on :11434 at once
+# would race for the port. OLLAMA_HOST is exported (warm reuse pins it to
+# :11434; cold start pins it to whatever ephemeral port Docker assigned) and
+# is what every later step, and the live tests themselves, target — see the
+# "Probe" and "Start Ollama (docker)" steps.
+#
 # Model cache: actions/cache keyed on the OLLAMA_MODELS env value below —
 # bump a model tag here and the cache key changes automatically, forcing a
 # fresh pull instead of silently serving a stale blob.
@@ -109,6 +118,7 @@ jobs:
         run: |
           if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
             echo "found=1" >> "$GITHUB_OUTPUT"
+            echo "OLLAMA_HOST=http://127.0.0.1:11434" >> "$GITHUB_ENV"
             echo "Existing Ollama service detected on :11434 — reusing it, not starting a container."
           else
             echo "found=0" >> "$GITHUB_OUTPUT"
@@ -126,6 +136,11 @@ jobs:
           which ollama || echo "ollama binary not found on PATH"
 
       - name: Start Ollama (docker)
+        # Ephemeral host port (`-p 11434` with no host side) instead of a
+        # pinned `11434:11434` — this is a fresh, private instance for this
+        # run only (no cross-repo reuse on cold start), so it doesn't need
+        # the fixed port, and skipping it removes the race against other
+        # jobs on this shared host cold-starting at the same moment.
         if: steps.probe.outputs.found == '0'
         run: |
           mkdir -p "/opt/ollama-models"
@@ -133,14 +148,17 @@ jobs:
           # on this (persistent, shared) self-hosted host.
           docker rm -f "$OLLAMA_CONTAINER" >/dev/null 2>&1 || true
           docker run -d --name "$OLLAMA_CONTAINER" \
-            -p 11434:11434 \
+            -p 11434 \
             -v "/opt/ollama-models:/root/.ollama" \
             ollama/ollama:latest
+          OLLAMA_PORT=$(docker port "$OLLAMA_CONTAINER" 11434/tcp | head -n1 | cut -d: -f2)
+          echo "OLLAMA_HOST=http://127.0.0.1:${OLLAMA_PORT}" >> "$GITHUB_ENV"
+          echo "Cold-started Ollama on ephemeral host port ${OLLAMA_PORT}"
 
       - name: Wait for Ollama API
         run: |
           for i in $(seq 1 60); do
-            if curl -sf http://127.0.0.1:11434/api/tags >/dev/null 2>&1; then
+            if curl -sf "${OLLAMA_HOST}/api/tags" >/dev/null 2>&1; then
               echo "Ollama ready after ${i}s"
               exit 0
             fi
@@ -158,7 +176,7 @@ jobs:
         run: |
           for model in $OLLAMA_MODELS; do
             echo "::group::pull $model"
-            curl -sf http://127.0.0.1:11434/api/pull \
+            curl -sf "${OLLAMA_HOST}/api/pull" \
               -d "{\"name\": \"$model\"}" | tail -c 2000
             echo
             echo "::endgroup::"
