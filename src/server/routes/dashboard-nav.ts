@@ -15,7 +15,7 @@
  * Zero JS, per the dashboard convention (app.ts:80) — plain <a> links only.
  */
 
-export type DashboardPage = 'main' | 'jobs' | 'consolidation' | 'search' | 'logs' | 'api';
+export type DashboardPage = 'main' | 'jobs' | 'consolidation' | 'search' | 'logs' | 'api' | 'providers';
 
 const NAV_ITEMS: ReadonlyArray<{ id: DashboardPage; href: string; label: string }> = [
   { id: 'main', href: '/dashboard', label: 'Mission Control' },
@@ -24,6 +24,7 @@ const NAV_ITEMS: ReadonlyArray<{ id: DashboardPage; href: string; label: string 
   { id: 'search', href: '/dashboard/search', label: 'Search' },
   { id: 'logs', href: '/dashboard/logs', label: 'Logs' },
   { id: 'api', href: '/dashboard/api', label: 'API' },
+  { id: 'providers', href: '/dashboard/providers', label: 'Providers' },
 ];
 
 /** Renders the shared nav bar, highlighting `active` (omit for pages with
