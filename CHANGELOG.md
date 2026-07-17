@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-07-17
+
+- Sync ship batch default **50 → 25** — stay under the cloud's 60s request
+  abort during a dense backfill (batch size is the cloud-DB load throttle;
+  #431, follows #368's 200 → 50 IO-budget fix).
+- Soak/load tests moved to the **nightly lane** (`vitest.soak.config.ts` +
+  `test:soak`) so the PR/main CI gate stays deterministic — the
+  `saturation-soak` throttle assertion is timing/host-sensitive and was
+  reddening an otherwise-green suite (#430).
+- See **[0.19.0-beta.0]** below for the bulk of this release: provider
+  centralization (FEAT-536), Wave-0 instance-lock stability + sentinel-PID
+  identity, BYO cloud providers (Anthropic/Groq/Gemini/Kimi/DeepSeek),
+  provider-health `/health` degraded, dashboard Providers section,
+  bind-before-migrate, retention hardening, queue-requeue recovery CLI, codex
+  auth-reload self-heal, `/health` crash-loop self-clear + critical-red
+  degradation, and BYO docs.
 - **Meeting-caption capture, daemon-side acceptance (FEAT-491, contracts
   2.3.0 -> 2.4.0).** Accepts caption-sourced transcripts scraped by the
   astramem-plugin browser extension (Meet/Teams native live captions —
