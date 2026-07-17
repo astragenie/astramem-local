@@ -42,11 +42,27 @@ jobs:
         with:
           path: daemon
 
+      # actions/checkout@v7 has no built-in retry, unlike the bun install steps
+      # below (issue #93 ETXTBSY retry idiom). A transient GitHub 404/5xx on
+      # this step fast-fails the whole job in ~49s with no recovery. Public
+      # repo, no token needed — a plain `git clone` with the same retry+backoff
+      # shape as the bun install steps below closes that gap.
       - name: Checkout plugin (public, no token needed)
-        uses: actions/checkout@v7
-        with:
-          repository: astragenie/astramem-plugin
-          path: plugin
+        run: |
+          set -e
+          url="https://github.com/astragenie/astramem-plugin"
+          for attempt in 1 2 3; do
+            if git clone --depth=1 "$url" plugin; then
+              break
+            fi
+            if [ "$attempt" = "3" ]; then
+              echo "::error::git clone failed after 3 attempts (plugin checkout — transient GitHub error?)"
+              exit 1
+            fi
+            echo "git clone attempt $attempt failed (transient GitHub error?) — retrying in 5s..."
+            rm -rf plugin
+            sleep 5
+          done
 
       # Bun baked into runner image (devops#64) — no setup-bun, but a fleet of
       # self-hosted runners can still race on bun's own cache-restore /
