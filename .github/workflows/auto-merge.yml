@@ -26,7 +26,7 @@ concurrency:
 
 jobs:
   auto-merge:
-    runs-on: ["self-hosted", "astragenie"]
+    runs-on: ["self-hosted", "astragenie", "aws"]
     steps:
       # GitHub does not trigger workflow runs from pushes made with
       # GITHUB_TOKEN. Arming auto-merge with GITHUB_TOKEN therefore makes
