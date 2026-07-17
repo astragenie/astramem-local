@@ -43,15 +43,35 @@ function fmtScore(n: number): string {
 interface HitContext {
   project: string | null;
   profile: string | null;
+  /** FEAT-485: truncated evidence excerpt for the "why" column below, or
+   *  null when this atom carries no evidence (either not yet distilled
+   *  through the FEAT-485 guard, or a direct-insert path with no
+   *  transcript to quote — see checkEvidenceProvenance's doc comment). */
+  evidencePreview: string | null;
+  /** transcript_ref (memories.source_hash) + session both resolvable —
+   *  same "distill-sourced and fully threaded" signal
+   *  checkTranscriptSessionProvenance checks in aggregate, surfaced here
+   *  per-row so an operator can see at a glance which hits are traceable
+   *  back to a source transcript. */
+  hasProvenance: boolean;
 }
 
-/** Batched project/profile lookup for the fusion-debug hit list — SearchDebugHit
- *  only carries `id` + score intermediates (see its doc comment: purely a
- *  fusion-breakdown projection), so the dashboard's project/profile columns
- *  are resolved here in exactly two queries total (never per-row): one
- *  `memories` IN-clause lookup for id -> {project, session_id}, then the
- *  shared queryExtractProfilesBySession helper (also used by the main
- *  dashboard's activity feed) for session_id -> profile. */
+const EVIDENCE_PREVIEW_MAX_CHARS = 80;
+
+/** Batched project/profile/evidence lookup for the fusion-debug hit list —
+ *  SearchDebugHit only carries `id` + score intermediates (see its doc
+ *  comment: purely a fusion-breakdown projection), so the dashboard's
+ *  project/profile/evidence columns are resolved here in exactly two
+ *  queries total (never per-row): one `memories` IN-clause lookup for id ->
+ *  {project, session_id, evidence, source_hash}, then the shared
+ *  queryExtractProfilesBySession helper (also used by the main dashboard's
+ *  activity feed) for session_id -> profile.
+ *  FEAT-485: also surfaces each hit's evidence excerpt + provenance
+ *  resolvability inline, so an operator does not need a separate
+ *  authenticated `/memory/:id/why` request (that route sits behind the
+ *  daemon's Bearer auth, not the dashboard cookie — see app.ts's
+ *  preHandler) just to see whether a search result is traceable to a
+ *  source transcript. */
 function queryHitContext(db: DB, hits: SearchDebugHit[]): Map<string, HitContext> {
   const result = new Map<string, HitContext>();
   if (hits.length === 0) return result;
@@ -59,14 +79,27 @@ function queryHitContext(db: DB, hits: SearchDebugHit[]): Map<string, HitContext
   const ids = hits.map(h => h.id);
   const placeholders = ids.map(() => '?').join(',');
   const rows = db.prepare(`
-    SELECT id, project, session_id FROM memories WHERE id IN (${placeholders})
-  `).all(...ids) as Array<{ id: string; project: string | null; session_id: string | null }>;
+    SELECT id, project, session_id, evidence, source_hash FROM memories WHERE id IN (${placeholders})
+  `).all(...ids) as Array<{
+    id: string;
+    project: string | null;
+    session_id: string | null;
+    evidence: string | null;
+    source_hash: string | null;
+  }>;
 
   const profileBySession = queryExtractProfilesBySession(db, rows.map(r => r.session_id));
   for (const row of rows) {
+    const trimmedEvidence = row.evidence?.trim() || null;
     result.set(row.id, {
       project: row.project,
       profile: row.session_id !== null ? profileBySession.get(row.session_id) ?? null : null,
+      evidencePreview: trimmedEvidence
+        ? (trimmedEvidence.length > EVIDENCE_PREVIEW_MAX_CHARS
+          ? `${trimmedEvidence.slice(0, EVIDENCE_PREVIEW_MAX_CHARS)}…`
+          : trimmedEvidence)
+        : null,
+      hasProvenance: Boolean(row.source_hash) && Boolean(row.session_id),
     });
   }
   return result;
@@ -145,6 +178,17 @@ function renderTable(hits: SearchDebugHit[], hitContext: Map<string, HitContext>
     const ctx = hitContext.get(h.id);
     const project = ctx?.project ? esc(ctx.project) : '—';
     const profile = ctx?.profile ? esc(ctx.profile) : '—';
+    // FEAT-485: evidence excerpt (truncated, full text in the title tooltip)
+    // + a provenance badge — "traced" when both transcript_ref and session
+    // resolve (the same signal checkTranscriptSessionProvenance checks in
+    // aggregate), "—" otherwise (either a direct-insert atom by design, or
+    // pre-FEAT-485 data — see queryHitContext's doc comment).
+    const evidenceCell = ctx?.evidencePreview
+      ? `<span title="${esc(ctx.evidencePreview)}">${esc(ctx.evidencePreview)}</span>`
+      : '<span class="empty-cell">—</span>';
+    const provenanceCell = ctx?.hasProvenance
+      ? '<span class="prov-yes" title="transcript_ref + session both resolve">traced</span>'
+      : '<span class="prov-no">—</span>';
     return `
       <tr>
         <td>${esc(h.id.slice(0, 8))}&hellip;</td>
@@ -157,6 +201,8 @@ function renderTable(hits: SearchDebugHit[], hitContext: Map<string, HitContext>
         <td>${i + 1}</td>
         <td>${project}</td>
         <td>${profile}</td>
+        <td>${evidenceCell}</td>
+        <td>${provenanceCell}</td>
       </tr>`;
   }).join('');
 
@@ -166,6 +212,8 @@ function renderTable(hits: SearchDebugHit[], hitContext: Map<string, HitContext>
         <th>id</th><th>source</th><th>bm25(norm)</th><th>cosine(norm)</th>
         <th>importance</th><th>freshness</th><th>fused</th><th>rank</th>
         <th>project</th><th title="derived: extract_profile of the session's most recent transcript — best-effort">profile</th>
+        <th title="memories.evidence excerpt (FEAT-485)">evidence</th>
+        <th title="transcript_ref (source_hash) + session both resolvable (FEAT-485)">prov</th>
       </tr>
     </thead>
     <tbody>${rows}
@@ -196,6 +244,9 @@ table{border-collapse:collapse;width:100%}
 th,td{border-bottom:1px solid #333;padding:4px 8px;text-align:left}
 th{color:#aaa;text-transform:uppercase;font-size:11px;letter-spacing:.05em}
 .empty{color:#888;margin-top:12px}
+.empty-cell{color:#555}
+.prov-yes{color:#6ac26a}
+.prov-no{color:#555}
 `;
 
 interface FilterInputs {

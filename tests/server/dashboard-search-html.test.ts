@@ -133,6 +133,51 @@ describe('GET /dashboard/search — score table (SLICE-410-6)', () => {
     expect(res.body).toContain('<td>—</td>');
   });
 
+  it('FEAT-485: adds an evidence excerpt + provenance column, "traced" when source_hash + session both resolve', async () => {
+    const db = setupDb();
+    db.prepare('INSERT INTO sessions (id, started_at) VALUES (?, ?)').run('s-prov', Date.now());
+    const id = new MemoryRepo(db).insert({
+      type: 'decision', text: 'sqlite-vec provenance traced decision sentinel', normalized_text: 'x',
+      repo: null, project: null, branch: null, agent: null,
+      session_id: 's-prov', hash: 'sh-prov', source_hash: 'deadbeef',
+      evidence: 'user: use sqlite-vec for v1 — no network dependency',
+    });
+    const vecStore = new SqliteVecStore(db, fakeEmbed.dim);
+    const [vec] = await fakeEmbed.embed(['sqlite-vec provenance traced decision sentinel']);
+    await vecStore.upsert(id, vec as Float32Array);
+
+    const app = await buildApp({ db, token: TOKEN, embed: fakeEmbed });
+    const res = await app.inject({
+      method: 'GET',
+      url: '/dashboard/search?query=sqlite-vec+provenance+traced+decision+sentinel',
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.body;
+    expect(body.toLowerCase()).toContain('<th title="memories.evidence excerpt (feat-485)">evidence</th>');
+    expect(body).toContain('use sqlite-vec for v1');
+    expect(body).toContain('prov-yes');
+    expect(body).toContain('traced');
+  });
+
+  it('FEAT-485: renders — for a candidate with no evidence and no resolvable transcript_ref/session', async () => {
+    const db = setupDb();
+    const id = seed(db, 'no evidence no provenance sentinel check', 'sh-noprov');
+    const app = await buildApp({ db, token: TOKEN, embed: fakeEmbed });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/dashboard/search?query=no+evidence+no+provenance+sentinel+check',
+      headers: AUTH,
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toContain(id.slice(0, 8));
+    expect(res.body).toContain('empty-cell');
+    expect(res.body).toContain('prov-no');
+  });
+
   it('AC-2: no query param shows the form and current fuse.ts weights, no table, not an error', async () => {
     const db = setupDb();
     const app = await buildApp({ db, token: TOKEN, embed: fakeEmbed });
