@@ -82,6 +82,52 @@ export interface DoctorScheduleHealth {
   lastFailNames: string[];
 }
 
+/**
+ * FEAT-541: doctor checks carry no severity today — a cosmetic, intentional
+ * red ("Dev no-auth mode" on a loopback-only dev box) and a genuine
+ * DB-integrity or provider-outage red both land in
+ * `DoctorScheduleHealth.lastFailNames` identically. Before this, /health
+ * could show 4-5 doctor reds and still report `status: 'ok'` — the exact
+ * "health was lying" complaint this FEAT exists to close (2026-07-17).
+ *
+ * Deliberately a SMALL, explicit prefix allowlist, not "everything is
+ * critical unless excepted": over-broad severity flips /health to degraded
+ * on informational reds and trains operators to ignore 'degraded' the same
+ * way an over-alerting canary trains them to ignore red. Matched by
+ * `startsWith` because several checks embed a runtime-resolved label in
+ * their `name` (provider/model/dim) rather than a static string — see
+ * src/doctor/checks/llm-chat.ts (`LLM chat probe (${label})`), embed.ts
+ * (`Embed probe (${provider.dim}-dim)`), onnx-embed.ts
+ * (`ONNX embed health (${provider.model})`).
+ *
+ * Explicitly NOT here, per this FEAT's own scoping: 'Dev no-auth mode'
+ * (intentional local setting), 'Budget cap vs codex-subscription' and
+ * 'Consolidation group coverage' (informational) — these must never alone
+ * degrade /health.
+ */
+export const CRITICAL_DOCTOR_CHECK_PREFIXES: readonly string[] = [
+  // Provider class — a broken extraction/compaction or embed backend means
+  // the daemon is not actually doing its job even though it's "up".
+  'LLM chat probe',
+  'Embed probe',
+  'ONNX embed health',
+  // DB-integrity class — the daemon cannot durably serve without these.
+  'SQLite writable',
+  'sqlite-vec extension loadable',
+  'Schema drift',
+  'Datadir exists and writable',
+  // A genuinely still-looping daemon (not self-cleared by FEAT-541's
+  // stable-uptime decay — see src/doctor/checks/crash-loop.ts) is critical
+  // by definition: it is actively failing to stay up.
+  'Crash loop',
+];
+
+/** True when `name` matches a `CRITICAL_DOCTOR_CHECK_PREFIXES` entry. Names
+ *  are matched by prefix (see that constant's doc comment for why). */
+export function isCriticalDoctorCheck(name: string): boolean {
+  return CRITICAL_DOCTOR_CHECK_PREFIXES.some(prefix => name.startsWith(prefix));
+}
+
 export interface HealthState {
   readonly startedAt: number;
   embed: EmbedHealth;
@@ -168,6 +214,17 @@ export function createHealthState(now: () => number = Date.now): HealthState {
       // dbSnapshot every other /health DB field already uses.
       if (hasAnyProviderDown()) return 'degraded';
       if (state.dbSnapshot?.distill_poison_rate?.alarmed) return 'degraded';
+      // FEAT-541: a CRITICAL doctor check red (provider/embed/DB-integrity
+      // class, or a still-looping crash-loop check — see
+      // isCriticalDoctorCheck's doc comment) degrades /health even when the
+      // gates above are silent (e.g. a schema-drift or sqlite-vec failure
+      // that hasn't yet shown up as a provider/poison-rate symptom). Reads
+      // the cached last-scheduled-run snapshot only (state.doctor is
+      // refreshed by the frequent/full doctor schedule, not here) — O(1),
+      // never an inline doctor run on the request path. An informational red
+      // ("Dev no-auth mode", etc.) never matches the prefix list and never
+      // triggers this on its own.
+      if (state.doctor.lastFailNames.some(isCriticalDoctorCheck)) return 'degraded';
       return 'ok';
     },
     uptimeSeconds(): number {

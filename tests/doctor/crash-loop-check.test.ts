@@ -18,6 +18,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { getChecks } from '../../src/doctor/checks.js';
 import { exitHistoryPaths } from '../../src/service/shim.js';
+import {
+  checkCrashLoop,
+  crashLoopStreakLength,
+  CRASH_LOOP_STABLE_UPTIME_MS,
+} from '../../src/doctor/checks/crash-loop.js';
 
 function findCheck(checks: ReturnType<typeof getChecks>, name: string) {
   const c = checks.find(c => c.name === name);
@@ -125,5 +130,56 @@ describe('doctor "Crash loop" check (FEAT-440 AC-3/AC-5)', () => {
     writeFileSync(historyPath, 'not json\n{"ts":"t","exitCode":1,"durationMs":1}\n', 'utf8');
     const res = await checkFor().run();
     expect(res.ok).toBe(true); // 1 valid non-zero entry < threshold of 3
+  });
+
+  // FEAT-541 (2026-07-17): a daemon that crash-looped once and has been
+  // stable ever since must self-clear rather than staying permanently RED —
+  // the "health was lying" complaint's root cause (the RED status also
+  // permanently suppressed the LLM/embed probes via crashLoopStreakLength's
+  // threshold gate in schedule.ts's runFullDoctorChecks).
+  describe('FEAT-541: self-clear after stable uptime', () => {
+    function seedHighStreak() {
+      seed([
+        { ts: '2026-07-07T00:00:00.000Z', exitCode: 1, durationMs: 200 },
+        { ts: '2026-07-07T00:05:00.000Z', exitCode: 1, durationMs: 210 },
+        { ts: '2026-07-07T00:10:00.000Z', exitCode: 1, durationMs: 190 },
+        { ts: '2026-07-07T00:15:00.000Z', exitCode: 1, durationMs: 205 },
+        { ts: '2026-07-07T00:20:00.000Z', exitCode: 1, durationMs: 205 },
+      ]);
+    }
+
+    it('AC-a: a high historical streak still reports RED when current uptime is below the stable window', async () => {
+      seedHighStreak();
+      const res = await checkCrashLoop(dir, 3, CRASH_LOOP_STABLE_UPTIME_MS - 1000).run();
+      expect(res.ok).toBe(false);
+      expect(res.message).toContain('crash loop detected');
+    });
+
+    it('AC-a: a high historical streak self-clears to OK once uptime reaches the stable window', async () => {
+      seedHighStreak();
+      const res = await checkCrashLoop(dir, 3, CRASH_LOOP_STABLE_UPTIME_MS).run();
+      expect(res.ok).toBe(true);
+      expect(res.message).toContain('self-cleared');
+      expect(res.message).toContain('5 consecutive non-zero exits'); // history still visible
+    });
+
+    it('AC-a: crashLoopStreakLength (the schedule.ts gating signal) decays to 0 at stable uptime despite a high historical streak', () => {
+      seedHighStreak();
+      expect(crashLoopStreakLength(dir, CRASH_LOOP_STABLE_UPTIME_MS - 1000)).toBe(5);
+      expect(crashLoopStreakLength(dir, CRASH_LOOP_STABLE_UPTIME_MS)).toBe(0);
+    });
+
+    it('below-threshold streaks are unaffected by uptime either way', async () => {
+      seed([
+        { ts: '2026-07-07T00:00:00.000Z', exitCode: 0, durationMs: 5000 },
+        { ts: '2026-07-07T00:05:00.000Z', exitCode: 1, durationMs: 200 },
+      ]);
+      const belowStable = await checkCrashLoop(dir, 3, 0).run();
+      const aboveStable = await checkCrashLoop(dir, 3, CRASH_LOOP_STABLE_UPTIME_MS).run();
+      expect(belowStable.ok).toBe(true);
+      expect(aboveStable.ok).toBe(true);
+      expect(belowStable.message).toContain('below threshold');
+      expect(aboveStable.message).toContain('below threshold'); // not the self-cleared branch
+    });
   });
 });
