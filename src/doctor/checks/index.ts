@@ -139,6 +139,7 @@ import { checkRetention } from './retention.js';
 import { checkAudioAddon } from './audio-addon.js';
 import { checkModelFitCanary } from './model-fit.js';
 import { checkTaskRepetitionDormancy } from './task-repetition-dormancy.js';
+import { checkOllamaOrphans } from './ollama-orphans.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -254,6 +255,14 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     // tick, not the 15-min frequent schedule. See task-repetition-dormancy.ts's
     // module doc comment.
     checkTaskRepetitionDormancy(),
+    // Issue #399: unattended-schedule sibling of gpu-checks.ts's CLI-only
+    // "Orphaned llama-server processes" — same highest-confidence signal
+    // (dead-parent detection), no VRAM/nvidia-smi/Ollama-API call, tier
+    // 'full' (real OS process enumeration, same subprocess-spawn cost class
+    // as checkTaskRepetitionDormancy above). See ollama-orphans.ts's module
+    // doc comment for why this exists alongside, not instead of, the richer
+    // CLI diagnostic.
+    checkOllamaOrphans(),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
