@@ -1209,10 +1209,14 @@ export function defaultConfig(): Config {
       budgetTokens: 1500,
       policy: { enabled: true, minScore: 0.15, minPromptChars: 12 },
     },
-    // batchSize 200 → 50 (2026-07-16): one batch ships per interval tick and the cloud
-    // embeds each memory synchronously, so this is the cloud-DB load throttle — 200/30s
-    // saturated a small prod instance's Disk IO Budget during a large backfill.
-    sync: { enabled: false, url: '', workspaceId: null, batchSize: 50, intervalMs: 30_000, experimental: false },
+    // batchSize 200 → 50 → 25: one batch ships per interval tick and the cloud embeds
+    // each memory synchronously, so this is the cloud-DB load throttle. 200/30s
+    // saturated a small prod instance's Disk IO Budget during a large backfill
+    // (2026-07-16); 50 fixed that but a single 50-batch's synchronous cloud-side work
+    // could still exceed the 60s request abort during a dense backfill (50 aborts,
+    // 25 completes), so the default is 25/30s — under both the IO budget and the 60s
+    // deadline. See src/sync/shipper.ts DEFAULT_BATCH for the full rationale.
+    sync: { enabled: false, url: '', workspaceId: null, batchSize: 25, intervalMs: 30_000, experimental: false },
     security: {
       redaction: { enabled: true, entropyThreshold: 4.0, customPatterns: [] },
       encryption: { enabled: true }
