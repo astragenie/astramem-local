@@ -189,7 +189,12 @@ export class AnthropicLLMProvider implements LLMProvider {
       } catch {
         // leave as raw text
       }
-      const snippet = detail.slice(0, 200);
+      // Defense-in-depth (PR #414 review): never echo the API key back through
+      // an error string — it flows into doctor's structured logs. A hostile or
+      // buggy upstream that reflects the key in its error body would otherwise
+      // leak it. The key only ever legitimately travels in the x-api-key header.
+      const rawSnippet = detail.slice(0, 200);
+      const snippet = this.apiKey ? rawSnippet.split(this.apiKey).join('***') : rawSnippet;
       const latency_ms = Date.now() - t0;
       log.warn(
         { latency_ms, status: res.status, error_kind: res.status >= 500 || res.status === 429 ? 'TransientError' : 'DeterministicError' },

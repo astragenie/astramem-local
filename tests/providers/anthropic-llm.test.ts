@@ -317,15 +317,14 @@ describe('anthropic-llm', () => {
       } catch (e) {
         caught = e;
       }
-      // Anthropic itself would never echo the key back, but PROVE this
-      // provider doesn't independently concatenate `this.apiKey` into any
-      // error/log path even if a malicious/misbehaving endpoint tried to
-      // trick it into doing so via a crafted response — the assertion is on
-      // OUR message construction, not on trusting the upstream never will.
-      // (The upstream-echo case above is the "if it does leak, we mirror
-      // it" boundary — the properties below are what THIS class guarantees
-      // regardless of upstream behavior.)
+      // The upstream response above deliberately REFLECTS the key in its error
+      // body — a hostile/buggy endpoint. This asserts the provider redacts it
+      // from the thrown error message (which flows into doctor's structured
+      // logs), not merely that it throws the right error TYPE. (PR #414 review:
+      // the prior version only checked the type and would have passed while
+      // leaking the reflected key.)
       expect(caught).toBeInstanceOf(DeterministicError);
+      expect((caught as Error).message).not.toContain(FAKE_CREDS.apiKey);
     });
 
     it('a failed health() error message does not contain the API key', async () => {
