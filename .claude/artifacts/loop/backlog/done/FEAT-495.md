@@ -1,6 +1,6 @@
 ---
 id: FEAT-495
-status: pending
+status: done
 priority: null
 category: platform
 target_release: null
@@ -47,3 +47,5 @@ Four small, independent hardening items from the 2026-07-14 research (Screenpipe
 ## Notes
 
 All S-effort items; none block each other or anything else.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 96bdad20 (#322)

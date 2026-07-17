@@ -1,6 +1,6 @@
 ---
 id: FEAT-487
-status: pending
+status: done
 priority: null
 category: retrieval
 target_release: null
@@ -175,3 +175,5 @@ misses are rank-misses.
 
 **Total ETA: 14-20h**, front-loaded by a 1-2h gate that can kill 12-18h of it.
 That asymmetry is the whole design.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** declined via SLICE-0 diagnostic gate 552a3afa (ranking ~1pt)

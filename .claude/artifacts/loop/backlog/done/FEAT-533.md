@@ -1,6 +1,6 @@
 ---
 id: FEAT-533
-status: pending
+status: done
 priority: null
 category: quality
 target_release: null
@@ -88,3 +88,5 @@ capability-disclaimer | ephemeral | rephrase-of-existing`.
 - Rephrase-supersession correction-count fix (#371 ask 4) — separate
   concern at the supersession site, not the persist gate.
 - Any change to `/remember` (bypasses the gate by construction).
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 8bcd1fc4 (#391)

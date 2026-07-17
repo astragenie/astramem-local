@@ -1,6 +1,6 @@
 ---
 id: FEAT-491
-status: pending
+status: done
 priority: null
 category: capture
 target_release: null
@@ -51,3 +51,5 @@ Extension scraping fragility is the plugin repo's problem — keep the daemon co
 platform-agnostic. (Original "no new capture module needed, verify guard tolerance" note refuted
 by arch review — see the review block above; the schema work is real and enumerated in the
 acceptance hints.)
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 6a7cf94e (#332)

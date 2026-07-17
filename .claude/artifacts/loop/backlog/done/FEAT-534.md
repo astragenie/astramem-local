@@ -1,6 +1,6 @@
 ---
 id: FEAT-534
-status: pending
+status: done
 priority: null
 category: quality
 target_release: null
@@ -82,3 +82,5 @@ reasons — a free pass B changes that calculus).
   ADR-015 violation; failover needs its own loud design.
 - Changing prod's extractionPasses default — separate operational
   decision gated on the hybrid bench numbers.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 121767da (#376) + cc0b8f47 (#381)

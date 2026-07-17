@@ -1,6 +1,6 @@
 ---
 id: FEAT-489
-status: pending
+status: done
 priority: null
 category: capture
 target_release: null
@@ -53,3 +53,5 @@ light and creates the future paid-add-on seam. Config-gated per repo convention:
 Watch GPU/VRAM contention with distill's Ollama models (known orphan llama-server VRAM trap).
 Whisper.cpp on CPU is acceptable for file ingest (not latency-sensitive). FEAT-490 (confidence
 filter) gates this handler's output.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 4086e767 (#331) + 0b96c308 (#338)

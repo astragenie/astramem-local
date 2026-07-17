@@ -1,6 +1,6 @@
 ---
 id: FEAT-496
-status: pending
+status: done
 priority: null
 category: contracts
 target_release: null
@@ -35,3 +35,5 @@ field must be an explicit schema edit, no passthrough.
 Slice-0-sized (≤1 day). Consider reserving the Screenpipe-inspired provenance triple field names
 (`worker` compute-tier / `model` / `attestation`) in the same edit — nearly free now, additive
 later (screenpipe deep-dive §6).
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 53f4bcd3 (#312)

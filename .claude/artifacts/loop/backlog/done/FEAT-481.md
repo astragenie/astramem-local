@@ -1,6 +1,6 @@
 ---
 id: FEAT-481
-status: in-progress
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -74,3 +74,5 @@ unset — this FEAT has not been scored yet. Run `/runner:triage`
 - SLICE-2: Extraction wiring: relations schema (coordinated inside FEAT-479 builder scope) (2 pts)
 - SLICE-3: MCP tools: get_entity_related + get_entity_timeline, manifest owner flip (2 pts)
 - SLICE-4: Fixtures/eval + doctor invocation canary + docs (2 pts)
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** all 4 slices merged (427-430); frontmatter stale

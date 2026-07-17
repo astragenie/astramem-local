@@ -1,6 +1,6 @@
 ---
 id: FEAT-497
-status: pending
+status: done
 priority: null
 category: governance
 target_release: null
@@ -41,3 +41,5 @@ explicitly.
 
 Blocks FEAT-489 and FEAT-491 slice 1. Small doc effort; the value is deciding BEFORE building —
 same gate ADR-012 imposed on itself.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** ADR-017 3b8e9034 + 55fa4496 (#321)

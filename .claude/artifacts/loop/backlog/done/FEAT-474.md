@@ -1,6 +1,6 @@
 ---
 id: FEAT-474
-status: in-progress
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -265,3 +265,5 @@ Note SLICE-425's `/dev/tty` subshell hardening is still correct and stays: it's 
 right construct if `pipefail` is ever removed, and it costs nothing. But be aware
 its dash scenario is currently *unreachable* because of line 24 — do not cite it as
 evidence that `sh` works today.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** SLICE-1 8b95f126 + SLICE-2 #403 (2c2c5bc8)

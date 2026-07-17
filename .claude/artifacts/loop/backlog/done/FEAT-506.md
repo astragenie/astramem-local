@@ -1,6 +1,6 @@
 # FEAT-506 — meeting_captions ingest should default extract_profile='conversational'
 
-- status: pending
+- status: done
 - source: FEAT-505 build + review adjudication, 2026-07-14 (reviews:
   20260714T235049Z-review-result-feat-505-fuzzy-speaker-attribution.md)
 
@@ -32,3 +32,5 @@ discipline or route ties to null.
    used (test through the real ingest route, not the pipeline directly).
 2. Explicit extract_profile in the envelope still wins (override preserved).
 3. Other capture sources unaffected (engineering default pinned by test).
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** both parts LIVE on main via other commits (route default ingest.ts:355 ~#344, tier-1 ambiguity attribute-speaker.ts); stranded branch 20a59ac6 superseded
