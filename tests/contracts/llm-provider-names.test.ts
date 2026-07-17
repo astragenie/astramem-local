@@ -17,6 +17,7 @@ describe('LLM provider name single-source (FEAT-536)', () => {
       'azure-openai',
       'openai-compatible',
       'codex-subscription',
+      'anthropic',
     ]);
   });
 

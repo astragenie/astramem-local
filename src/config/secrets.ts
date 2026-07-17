@@ -25,11 +25,23 @@ export interface SecretsPayload {
   azureDeployment?: string;
   /** openai-compatible API key. Written under the config-referenced env var
    * name (config.openaiCompatible.apiKeyEnv, default OPENAI_COMPAT_API_KEY)
-   * — omit when the target endpoint needs no auth (local vLLM, etc.). */
+   * — omit when the target endpoint needs no auth (local vLLM, etc.). Also
+   * used for the Groq/Gemini/Kimi/DeepSeek presets (Wave 1 BYO), which all
+   * resolve through the openai-compatible provider — see
+   * providers/llm/byo-presets.ts. */
   openaiCompatApiKey?: string;
   /** Env var name to write openaiCompatApiKey under — defaults to
-   * OPENAI_COMPAT_API_KEY, mirrors config.openaiCompatible.apiKeyEnv. */
+   * OPENAI_COMPAT_API_KEY, mirrors config.openaiCompatible.apiKeyEnv. Each
+   * BYO preset sets its own vendor-named var (GROQ_API_KEY, GEMINI_API_KEY,
+   * MOONSHOT_API_KEY, DEEPSEEK_API_KEY) so switching presets never silently
+   * reuses a stale key written under a different vendor's name. */
   openaiCompatApiKeyEnv?: string;
+  /** Anthropic API key, if the anthropic provider is selected. Written under
+   * config.anthropic.apiKeyEnv (default ANTHROPIC_API_KEY). */
+  anthropicApiKey?: string;
+  /** Env var name to write anthropicApiKey under — defaults to
+   * ANTHROPIC_API_KEY, mirrors config.anthropic.apiKeyEnv. */
+  anthropicApiKeyEnv?: string;
 }
 
 /**
@@ -48,6 +60,9 @@ export function writeSecrets(payload: SecretsPayload, path: string): void {
   if (payload.azureDeployment) lines.push(`AZURE_OPENAI_DEPLOYMENT=${payload.azureDeployment}`);
   if (payload.openaiCompatApiKey) {
     lines.push(`${payload.openaiCompatApiKeyEnv ?? 'OPENAI_COMPAT_API_KEY'}=${payload.openaiCompatApiKey}`);
+  }
+  if (payload.anthropicApiKey) {
+    lines.push(`${payload.anthropicApiKeyEnv ?? 'ANTHROPIC_API_KEY'}=${payload.anthropicApiKey}`);
   }
   lines.push(''); // trailing newline
 

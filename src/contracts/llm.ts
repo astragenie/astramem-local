@@ -71,6 +71,7 @@ export const LLM_PROVIDER_NAMES = [
   'azure-openai',
   'openai-compatible',
   'codex-subscription',
+  'anthropic',
 ] as const;
 
 export type LLMProviderName = (typeof LLM_PROVIDER_NAMES)[number];

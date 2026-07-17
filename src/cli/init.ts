@@ -34,6 +34,11 @@ import { installMemoryPackHook } from './hook-install.js';
 import { activateGitHooks } from '../service/git-hooks-activate.js';
 import { defaultAuthPath as defaultCodexAuthPath, hasCodexLogin } from '../providers/llm/codex-subscription.js';
 import type { LLMProviderName } from '../contracts/llm.js';
+import {
+  OPENAI_COMPAT_PRESETS,
+  OPENAI_COMPAT_PRESET_NAMES,
+  type OpenAICompatPresetName,
+} from '../providers/llm/byo-presets.js';
 
 // ─── Non-interactive env var map ─────────────────────────────────────────────
 
@@ -49,6 +54,13 @@ const NON_INTERACTIVE_ENV = {
   openaiCompatBaseUrl: 'ASTRA_MEMORY_INIT_OPENAI_COMPAT_BASE_URL',
   openaiCompatApiKey: 'ASTRA_MEMORY_INIT_OPENAI_COMPAT_API_KEY',
   codexAuthPath: 'ASTRA_MEMORY_INIT_CODEX_AUTH_PATH',
+  // Wave 1 BYO: 'anthropic' is a real LLMProviderName (llmProvider itself
+  // covers it). llmPreset selects one of the Groq/Gemini/Kimi/DeepSeek
+  // OpenAI-compatible presets (byo-presets.ts) — orthogonal to llmProvider,
+  // which stays 'openai-compatible' for all four; only meaningful when
+  // llmProvider === 'openai-compatible'.
+  llmPreset: 'ASTRA_MEMORY_INIT_LLM_PRESET',
+  anthropicApiKey: 'ASTRA_MEMORY_INIT_ANTHROPIC_API_KEY',
   // Ollama on-demand overrides (interactive-only concepts otherwise — see
   // promptOllamaModelTier / promptOllamaSetup below). Non-interactive mode
   // has no "setup mode" concept (it always keeps the legacy env-driven
@@ -169,11 +181,20 @@ interface WizardAnswers {
   azureEndpoint?: string;
   azureDeployment?: string;
   azureApiKey?: string;
-  // openai-compatible-only
+  // openai-compatible-only (also covers the Groq/Gemini/Kimi/DeepSeek
+  // presets, which are openai-compatible under the hood — see llmPreset)
   openaiCompatBaseUrl?: string;
   openaiCompatApiKey?: string;
+  /** Which BYO preset (byo-presets.ts) supplied openaiCompatBaseUrl, if any
+   *  — set when llmProvider === 'openai-compatible' AND the wizard choice
+   *  was one of the named presets rather than "custom URL". Persisted
+   *  nowhere in config.yaml (the resolved baseUrl/apiKeyEnv are what's
+   *  written) — purely a wizard-flow bookkeeping field. */
+  llmPreset?: OpenAICompatPresetName;
   // codex-subscription-only (EXPERIMENTAL)
   codexAuthPath?: string;
+  // anthropic-only
+  anthropicApiKey?: string;
   // Ollama-only (present when llmProvider and/or embedProvider is 'ollama')
   /** Chosen extraction/compaction model tag (tier pick or custom). Only
    * asked when llmProvider === 'ollama'. Falls back to
@@ -187,6 +208,32 @@ interface WizardAnswers {
   /** Base URL of an existing Ollama server — set when ollamaMode === 'url',
    * or via the non-interactive env override. */
   ollamaBaseUrl?: string;
+}
+
+/**
+ * Resolve a raw `promptSelect`/env-var LLM-provider choice into a real
+ * `llmProvider` (+ preset bookkeeping when the choice was one of the
+ * openai-compatible BYO presets — Groq/Gemini/Kimi/DeepSeek all resolve to
+ * `llmProvider: 'openai-compatible'`, never a distinct `LLMProviderName`;
+ * see byo-presets.ts's doc comment for why). Every other value (ollama,
+ * anthropic, azure-openai, openai-compatible "custom URL", codex-
+ * subscription) is already a real `LLMProviderName` and passes through with
+ * `llmPreset` cleared, so re-resolving after an earlier preset pick (e.g.
+ * the Ollama-tier "BYO cloud" pivot re-choosing a plain provider) can't
+ * leave a stale preset behind.
+ */
+function resolveLlmChoice(choice: string, answers: WizardAnswers): WizardAnswers {
+  if (choice.startsWith('preset:')) {
+    const presetName = choice.slice('preset:'.length) as OpenAICompatPresetName;
+    const preset = OPENAI_COMPAT_PRESETS[presetName];
+    return {
+      ...answers,
+      llmProvider: 'openai-compatible',
+      llmPreset: presetName,
+      openaiCompatBaseUrl: preset.baseUrl,
+    };
+  }
+  return { ...answers, llmProvider: choice as LlmProviderChoice, llmPreset: undefined };
 }
 
 // ─── Gather answers (interactive path) ───────────────────────────────────────
@@ -224,11 +271,21 @@ async function gatherInteractive(): Promise<WizardAnswers> {
 
   // Shared cloud-provider choice list — also reused below by the
   // extraction-model tier picker's "BYO cloud" pivot, so that pivot lands on
-  // the same full provider set (azure-openai / openai-compatible /
-  // codex-subscription) rather than hard-coding azure-openai.
+  // the same full provider set (azure-openai / openai-compatible / anthropic
+  // / the BYO presets / codex-subscription) rather than hard-coding
+  // azure-openai. The four preset entries use a `preset:<name>` sentinel
+  // value — resolved just below into llmProvider:'openai-compatible' +
+  // llmPreset:<name>, since a preset is not itself an LLMProviderName (see
+  // byo-presets.ts's doc comment: every preset resolves THROUGH the
+  // existing openai-compatible provider).
   const cloudLlmChoices: { name: string; value: string }[] = [
+    { name: 'anthropic (Claude)', value: 'anthropic' },
+    ...OPENAI_COMPAT_PRESET_NAMES.map((n) => ({
+      name: `${OPENAI_COMPAT_PRESETS[n].label} (${OPENAI_COMPAT_PRESETS[n].defaultModel})`,
+      value: `preset:${n}`,
+    })),
     { name: 'azure-openai (gpt-4.1)', value: 'azure-openai' },
-    { name: 'openai-compatible (OpenAI API, Groq, vLLM, ...)', value: 'openai-compatible' },
+    { name: 'openai-compatible (custom URL — OpenAI API, vLLM, LM Studio, ...)', value: 'openai-compatible' },
   ];
   if (codexLoginDetected) {
     cloudLlmChoices.push({
@@ -250,26 +307,27 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   // highlighted default when it's actually selectable — fall back to
   // ollama as the default pick otherwise. ollama and the other cloud
   // providers remain fully selectable regardless of the default.
-  let llmProvider = (await promptSelect(
+  const llmChoice = await promptSelect(
     'LLM provider:',
     [{ name: 'ollama (qwen2.5:7b)', value: 'ollama' }, ...cloudLlmChoices],
     codexLoginDetected ? 'codex-subscription' : 'ollama'
-  )) as LlmProviderChoice;
+  );
 
   const dataDir = await promptInput('Data directory:', defaultDataDir());
   const portStr = await promptInput('Daemon port:', '7777');
   const budgetStr = await promptInput('Daily LLM budget cap (USD):', '10');
   const installService = await promptConfirm('Install as OS service?', true);
 
-  const answers: WizardAnswers = {
+  const answers: WizardAnswers = resolveLlmChoice(llmChoice, {
     vector,
     embedProvider,
-    llmProvider,
+    llmProvider: 'ollama',
     dataDir,
     port: parseInt(portStr, 10) || 7777,
     budget: parseFloat(budgetStr) || 10,
     installService,
-  };
+  });
+  let llmProvider = answers.llmProvider;
 
   // Extraction/compaction model tier — only when the LLM stages are on
   // Ollama. One of the choices is "BYO cloud", which pivots llmProvider into
@@ -280,8 +338,9 @@ async function gatherInteractive(): Promise<WizardAnswers> {
   if (llmProvider === 'ollama') {
     const tierChoice = await promptOllamaModelTier();
     if (tierChoice === OLLAMA_TIER_BYO_CLOUD) {
-      llmProvider = (await promptSelect('Cloud LLM provider:', cloudLlmChoices, 'azure-openai')) as LlmProviderChoice;
-      answers.llmProvider = llmProvider;
+      const cloudChoice = await promptSelect('Cloud LLM provider:', cloudLlmChoices, 'azure-openai');
+      Object.assign(answers, resolveLlmChoice(cloudChoice, answers));
+      llmProvider = answers.llmProvider;
     } else {
       answers.ollamaModelTag = tierChoice;
     }
@@ -301,15 +360,28 @@ async function gatherInteractive(): Promise<WizardAnswers> {
     answers.azureApiKey = await promptPassword('Azure OpenAI API key:');
   }
 
-  // openai-compatible-specific prompts
+  // openai-compatible-specific prompts. A BYO preset (Groq/Gemini/Kimi/
+  // DeepSeek) already knows its baseUrl (resolveLlmChoice set it) — only ask
+  // for the API key, under that preset's own env var name. A "custom URL"
+  // choice (no preset) asks for both, same as before this wave.
   if (llmProvider === 'openai-compatible') {
-    answers.openaiCompatBaseUrl = await promptInput(
-      'OpenAI-compatible base URL (e.g. https://api.openai.com/v1, http://localhost:8000/v1):',
-      'https://api.openai.com/v1'
-    );
-    answers.openaiCompatApiKey = await promptPassword(
-      'API key (leave blank if the endpoint needs none, e.g. local vLLM):'
-    );
+    if (answers.llmPreset) {
+      const preset = OPENAI_COMPAT_PRESETS[answers.llmPreset];
+      answers.openaiCompatApiKey = await promptPassword(`${preset.label} API key:`);
+    } else {
+      answers.openaiCompatBaseUrl = await promptInput(
+        'OpenAI-compatible base URL (e.g. https://api.openai.com/v1, http://localhost:8000/v1):',
+        'https://api.openai.com/v1'
+      );
+      answers.openaiCompatApiKey = await promptPassword(
+        'API key (leave blank if the endpoint needs none, e.g. local vLLM):'
+      );
+    }
+  }
+
+  // anthropic-specific prompt
+  if (llmProvider === 'anthropic') {
+    answers.anthropicApiKey = await promptPassword('Anthropic API key:');
   }
 
   // codex-subscription: no further prompts needed — auth.json is already
@@ -434,9 +506,21 @@ function gatherNonInteractive(): WizardAnswers {
   const port = parseInt(process.env[NON_INTERACTIVE_ENV.port] ?? '7777', 10) || 7777;
   const budget = parseFloat(process.env[NON_INTERACTIVE_ENV.budget] ?? '10') || 10;
   const installService = (process.env[NON_INTERACTIVE_ENV.installService] ?? 'false') === 'true';
-  const openaiCompatBaseUrl = process.env[NON_INTERACTIVE_ENV.openaiCompatBaseUrl];
+  // Wave 1 BYO preset (Groq/Gemini/Kimi/DeepSeek) — only meaningful when
+  // llmProvider === 'openai-compatible'. An explicit openaiCompatBaseUrl env
+  // override always wins over the preset's baseUrl (scripted/CI callers may
+  // want a preset's default MODEL/apiKeyEnv naming but point at a proxy).
+  const llmPresetEnv = process.env[NON_INTERACTIVE_ENV.llmPreset];
+  const llmPreset =
+    llmProvider === 'openai-compatible' && llmPresetEnv && llmPresetEnv in OPENAI_COMPAT_PRESETS
+      ? (llmPresetEnv as OpenAICompatPresetName)
+      : undefined;
+  const openaiCompatBaseUrl =
+    process.env[NON_INTERACTIVE_ENV.openaiCompatBaseUrl] ??
+    (llmPreset ? OPENAI_COMPAT_PRESETS[llmPreset].baseUrl : undefined);
   const openaiCompatApiKey = process.env[NON_INTERACTIVE_ENV.openaiCompatApiKey];
   const codexAuthPath = process.env[NON_INTERACTIVE_ENV.codexAuthPath];
+  const anthropicApiKey = process.env[NON_INTERACTIVE_ENV.anthropicApiKey];
   const ollamaModelTag = process.env[NON_INTERACTIVE_ENV.ollamaModelTag];
   const ollamaBaseUrl = process.env[NON_INTERACTIVE_ENV.ollamaBaseUrl];
 
@@ -462,7 +546,7 @@ function gatherNonInteractive(): WizardAnswers {
 
   return {
     vector, embedProvider, llmProvider, dataDir, port, budget, installService,
-    openaiCompatBaseUrl, openaiCompatApiKey, codexAuthPath,
+    openaiCompatBaseUrl, openaiCompatApiKey, llmPreset, codexAuthPath, anthropicApiKey,
     ollamaModelTag, ollamaBaseUrl,
   };
 }
@@ -642,12 +726,20 @@ async function checkAzure(endpoint: string, deployment: string, apiKey: string, 
 // ─── Build config from answers ────────────────────────────────────────────────
 
 /** Default model per LLM provider choice — mirrors the equivalent switch in
- * the `init()` flow's Ollama-model-check block below. */
-function defaultLlmModelFor(provider: LlmProviderChoice): string {
+ * the `init()` flow's Ollama-model-check block below. `preset` overrides the
+ * generic openai-compatible default when the choice was one of the Wave 1
+ * BYO presets (Groq/Gemini/Kimi/DeepSeek — byo-presets.ts). */
+function defaultLlmModelFor(provider: LlmProviderChoice, preset?: OpenAICompatPresetName): string {
+  if (provider === 'openai-compatible' && preset) return OPENAI_COMPAT_PRESETS[preset].defaultModel;
   switch (provider) {
     case 'azure-openai': return 'gpt-4.1';
     case 'openai-compatible': return 'gpt-4o-mini';
     case 'codex-subscription': return 'gpt-5.4-mini'; // see providers/llm/codex-subscription.ts DEFAULT_MODEL
+    // claude-sonnet-4-5 — Anthropic's current general-purpose flagship at
+    // wizard-authoring time; unlike the other providers this has no
+    // extraction-bench measurement in this repo yet (Wave 1 ships the
+    // provider + wizard integration, not a benchmark run).
+    case 'anthropic': return 'claude-sonnet-4-5-20250929';
     case 'ollama': default: return DEFAULT_OLLAMA_LLM_MODEL;
   }
 }
@@ -656,11 +748,11 @@ function buildConfig(answers: WizardAnswers): Config {
   const base = defaultConfig();
 
   // Ollama picks up the user's tier choice (or the default tier); every
-  // other provider (azure-openai / openai-compatible / codex-subscription)
-  // uses its fixed per-provider default model.
+  // other provider (azure-openai / openai-compatible / anthropic / codex-
+  // subscription) uses its fixed per-provider (or per-preset) default model.
   const llmModel = answers.llmProvider === 'ollama'
     ? (answers.ollamaModelTag ?? DEFAULT_OLLAMA_LLM_MODEL)
-    : defaultLlmModelFor(answers.llmProvider);
+    : defaultLlmModelFor(answers.llmProvider, answers.llmPreset);
   const embedModel = answers.embedProvider === 'azure-openai' ? 'text-embedding-3-small' : DEFAULT_OLLAMA_EMBED_MODEL;
 
   return {
@@ -697,11 +789,17 @@ function buildConfig(answers: WizardAnswers): Config {
     openaiCompatible: {
       ...base.openaiCompatible,
       baseUrl: answers.openaiCompatBaseUrl,
+      // A BYO preset (Groq/Gemini/Kimi/DeepSeek) carries its own vendor-
+      // named env var (GROQ_API_KEY, ...) so switching presets never
+      // silently reuses a stale key written under a different vendor's
+      // name; a "custom URL" choice (no preset) keeps the generic default.
+      apiKeyEnv: answers.llmPreset ? OPENAI_COMPAT_PRESETS[answers.llmPreset].apiKeyEnv : base.openaiCompatible.apiKeyEnv,
     },
     codexSubscription: {
       ...base.codexSubscription,
       authPath: answers.codexAuthPath,
     },
+    anthropic: { ...base.anthropic },
   };
 }
 
@@ -862,6 +960,8 @@ export async function init(argv: string[] = []): Promise<void> {
       azureDeployment: answers.azureDeployment,
       openaiCompatApiKey: answers.openaiCompatApiKey,
       openaiCompatApiKeyEnv: cfg.openaiCompatible.apiKeyEnv,
+      anthropicApiKey: answers.anthropicApiKey,
+      anthropicApiKeyEnv: cfg.anthropic.apiKeyEnv,
     },
     secretsPath
   );

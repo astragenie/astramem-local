@@ -74,6 +74,7 @@
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { Check, CheckResult } from '../types.js';
+import type { LLMProvider } from '../../contracts/llm.js';
 import { OpenAICompatibleLLMProvider } from '../../providers/llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from '../../providers/llm/codex-subscription.js';
 import { defaultConfig } from '../../config/config.js';
@@ -266,22 +267,39 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
-  // Run extraction separately only when it uses a different provider/model.
+  // Wave 1 (BYO providers): every configured ROLE gets its own probe, not
+  // just compaction/extraction — a BYO provider may be assigned to the
+  // judge, extractionPassB, or atomTriage role instead (see
+  // DoctorCheckOpts.llmProviders's doc comment, shared.ts). Order is fixed
+  // (compaction, extraction, judge, extractionPassB, atomTriage) to keep
+  // doctor's output order stable/observable. A role sharing the same
+  // provider instance (name+model) as an earlier-listed role is
+  // deduplicated — for the plain compaction+extraction case (every
+  // pre-Wave-1 config) this is byte-identical to the old two-role logic.
   if (opts.llmProviders) {
-    const { compaction, extraction } = opts.llmProviders;
-    checks.push(checkLLMChat(compaction, 'compaction'));
-    const sameProvider =
-      compaction.name === extraction.name && compaction.model === extraction.model;
-    if (!sameProvider) {
-      checks.push(checkLLMChat(extraction, 'extraction'));
+    const { compaction, extraction, judge, extractionPassB, atomTriage } = opts.llmProviders;
+    const roles: Array<readonly [LLMProvider, string]> = [
+      [compaction, 'compaction'],
+      [extraction, 'extraction'],
+      ...(judge ? [[judge, 'judge'] as const] : []),
+      ...(extractionPassB ? [[extractionPassB, 'extractionPassB'] as const] : []),
+      ...(atomTriage ? [[atomTriage, 'atomTriage'] as const] : []),
+    ];
+    const seen = new Set<string>();
+    const probedRoles: Array<readonly [LLMProvider, string]> = [];
+    for (const [provider, label] of roles) {
+      const key = `${provider.name}::${provider.model}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      probedRoles.push([provider, label]);
+      checks.push(checkLLMChat(provider, label));
     }
 
     // Provider-specific supplementary checks (openai-compatible reachability,
     // codex-subscription auth.json presence/expiry) — additive to, not a
-    // replacement for, the generic chat probe above.
-    for (const [provider, label] of (
-      sameProvider ? [[compaction, 'compaction'] as const] : [[compaction, 'compaction'] as const, [extraction, 'extraction'] as const]
-    )) {
+    // replacement for, the generic chat probe above. Runs once per deduped
+    // role, same set the chat probe loop above just built.
+    for (const [provider, label] of probedRoles) {
       if (provider instanceof OpenAICompatibleLLMProvider) {
         checks.push(checkOpenAICompatibleReachable(provider, label));
       }

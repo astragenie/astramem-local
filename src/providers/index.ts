@@ -7,6 +7,7 @@ import { OllamaLLMProvider } from './llm/ollama.js';
 import { AzureOpenAILLMProvider } from './llm/azure-openai.js';
 import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from './llm/codex-subscription.js';
+import { AnthropicLLMProvider } from './llm/anthropic.js';
 import { rateLimitLLMProvider } from './llm/rate-limited.js';
 import { OllamaEmbedProvider } from './embed/ollama.js';
 import { AzureOpenAIEmbedProvider } from './embed/azure-openai.js';
@@ -112,6 +113,18 @@ function buildRawLLMProvider(
     // comment) so selecting this provider without having run `codex login`
     // yet doesn't crash daemon boot the way a missing Azure endpoint does.
     return new CodexSubscriptionLLMProvider({ model, authPath: config.codexSubscription.authPath });
+  }
+
+  if (providerName === 'anthropic') {
+    const apiKeyEnv = config.anthropic.apiKeyEnv || 'ANTHROPIC_API_KEY';
+    const apiKey = process.env[apiKeyEnv];
+    if (!apiKey) {
+      throw new Error(
+        `Anthropic LLM provider selected but ${apiKeyEnv} env var is not set. ` +
+          'Set config.anthropic.apiKeyEnv or export the key directly.',
+      );
+    }
+    return new AnthropicLLMProvider({ apiKey, model });
   }
 
   const endpoint = config.azure.endpoint ?? process.env.AZURE_OPENAI_ENDPOINT;
