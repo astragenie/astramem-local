@@ -63,6 +63,7 @@ function buildFullyPopulatedConfig(): Config {
     archival: { enabled: true, ageThresholdDays: 90, usefulnessFloor: 0.1 },
     retention: {
       mode: 'dry-run',
+      tier: 'lean',
       ageThresholdDays: 30,
       heavyArtifact: { minSizeBytes: 2_097_152, types: ['audio-raw', 'transcript-raw'] },
       tierScope: { media: ['audio-raw'], lean: ['audio-raw', 'transcript-raw'] },

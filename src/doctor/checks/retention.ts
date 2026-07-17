@@ -1,19 +1,21 @@
 import type { Check, CheckResult } from '../types.js';
 import type { Config } from '../../config/config.js';
-import { scanRetentionCandidates } from '../../storage/retention.js';
+import { readSweepStats, scanRetentionCandidates } from '../../storage/retention.js';
 
-// ─── Check: Disk-artifact retention (FEAT-493, scaffolding) ─────────────────
+// ─── Check: Disk-artifact retention (FEAT-493) ──────────────────────────────
+
+const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
 
 /**
- * Informational row reporting the current `retention.mode` plus a LIVE
- * dry-run snapshot of what an `'all'`-tier retention pass would reclaim on
- * disk right now (scans `<dataDir>/artifacts/<kind>/` — see
- * src/storage/retention.ts's doc comment for why this is a plain directory
- * layout and not the day-one `artifacts` SQL table, which was dropped).
- * This is a live scan, not a persisted "last sweep" — this scaffolding slice
- * doesn't wire `runRetentionPass` onto the cleanup job's cadence yet; a
- * future slice that does can swap this live scan for a stored sweep-history
- * read without changing this check's shape or message contract.
+ * Informational row reporting the current `retention.mode`/`tier`, a LIVE
+ * dry-run snapshot of what an `'all'`-tier pass would reclaim on disk right
+ * now (scans `<dataDir>/artifacts/<kind>/` — see src/storage/retention.ts's
+ * doc comment for why this is a plain directory layout and not the day-one
+ * `artifacts` SQL table, which was dropped), AND the persisted result of the
+ * last real sweep the cleanup-job cadence ran (`readSweepStats` —
+ * src/pipeline/handlers/cleanup.ts wires `runRetentionPass` onto that
+ * cadence). The live scan and the persisted sweep can disagree (e.g. new
+ * heavy artifacts written since the last sweep) — that's expected, not a bug.
  *
  * Never a WARN (`ok: true` always — mirrors `checkDurabilityGateMode`'s
  * precedent): retention reclaiming zero bytes is the expected state on any
@@ -35,25 +37,31 @@ export function checkRetention(dataDir: string, retentionConfig: Config['retenti
 
       try {
         const result = scanRetentionCandidates(dataDir, retentionConfig, 'all');
+        const lastSweep = readSweepStats(dataDir);
+        const lastSweepMsg = lastSweep
+          ? ` | last sweep (${lastSweep.mode}/${lastSweep.tier}) at ${new Date(lastSweep.scannedAt).toISOString()}: ` +
+            `${lastSweep.deletedCount} deleted (${mb(lastSweep.deletedBytes)}MB freed)` +
+            (lastSweep.errorCount > 0 ? `, ${lastSweep.errorCount} error(s)` : '')
+          : ' | no sweep has run yet';
 
         if (result.candidates.length === 0) {
           return {
             ok: true,
             message:
-              `retention: ${retentionConfig.mode} — 0 candidates on disk right now (0 bytes reclaimable; ` +
-              'expected until a producer writes into `<dataDir>/artifacts/<kind>/`, e.g. FEAT-489)',
+              `retention: ${retentionConfig.mode}/${retentionConfig.tier} — 0 candidates on disk right now ` +
+              '(0 bytes reclaimable; expected until a producer writes into `<dataDir>/artifacts/<kind>/`, ' +
+              `e.g. FEAT-489)${lastSweepMsg}`,
           };
         }
 
-        const mb = (bytes: number) => (bytes / (1024 * 1024)).toFixed(1);
         const kinds = Object.entries(result.byKind)
           .map(([kind, stat]) => `${kind}: ${stat.count} (${mb(stat.bytes)}MB)`)
           .join(', ');
         return {
           ok: true,
           message:
-            `retention: ${retentionConfig.mode} — ${result.candidates.length} candidate(s), ` +
-            `${mb(result.totalBytes)}MB reclaimable [${kinds}]`,
+            `retention: ${retentionConfig.mode}/${retentionConfig.tier} — ${result.candidates.length} ` +
+            `candidate(s), ${mb(result.totalBytes)}MB reclaimable [${kinds}]${lastSweepMsg}`,
         };
       } catch (err) {
         // The scan itself failed — did NOT verify retention is healthy (same

@@ -357,14 +357,19 @@ export function configToYaml(cfg: Config): string {
     line(1, 'ageThresholdDays', (cfg.archival ?? EMIT_DEFAULTS.archival).ageThresholdDays),
     line(1, 'usefulnessFloor', (cfg.archival ?? EMIT_DEFAULTS.archival).usefulnessFloor),
     '',
-    // Tiered disk-artifact retention (FEAT-493, scaffolding) — mode: 'off'
-    // (default) is a hard no-op, see Config['retention'] doc comment.
-    // heavyArtifact.types / tierScope.media / tierScope.lean are string[]
-    // fields that ship empty by default (no `artifacts` producer exists yet)
-    // — only emitted when non-empty, same "omit when unset/empty" shape as
+    // Tiered disk-artifact retention (FEAT-493) — mode: 'off' (default) is a
+    // hard no-op; mode: 'enabled' deletes files on disk (never `memories`
+    // rows) — see Config['retention'] doc comment. heavyArtifact.types /
+    // tierScope.media / tierScope.lean are string[] fields that ship empty
+    // by default (no `artifacts` producer exists yet) — only emitted when
+    // non-empty, same "omit when unset/empty" shape as
     // security.redaction.customPatterns above.
     line(0, 'retention'),
     line(1, 'mode', (cfg.retention ?? EMIT_DEFAULTS.retention).mode),
+    // FEAT-493 (deletion un-clamped): the Media/Lean/All dial the automatic
+    // cleanup-cadence sweep reads. 'media' (default) is the least
+    // destructive tier — see Config['retention']['tier'] doc comment.
+    line(1, 'tier', (cfg.retention ?? EMIT_DEFAULTS.retention).tier),
     line(1, 'ageThresholdDays', (cfg.retention ?? EMIT_DEFAULTS.retention).ageThresholdDays),
     ...((cfg.retention ?? EMIT_DEFAULTS.retention).artifactsDir
       ? [line(1, 'artifactsDir', (cfg.retention ?? EMIT_DEFAULTS.retention).artifactsDir)]
