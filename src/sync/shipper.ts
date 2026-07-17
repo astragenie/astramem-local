@@ -108,14 +108,18 @@ export function shouldStartShipper(input: ShipperGateInput): boolean {
   return input.enabled && input.experimental && input.dataDir !== ':memory:' && !input.isolated;
 }
 
-// 200 → 50 (2026-07-16): the cloud materializes + embeds each shipped memory
+// 200 → 50 → 25: the cloud materializes + embeds each shipped memory
 // synchronously — entity HNSW insert + vector dedup scan per atom — so batch
 // size is effectively the cloud-DB load throttle (the loop ships ONE batch per
 // interval tick). A 21k-event backfill at 200/30s saturated the prod instance's
-// Disk IO Budget and degraded every co-tenant. 50/30s (~100 atoms/min) drains
-// the same backfill in ~3.5h while staying inside a small instance's headroom.
-// Users can still raise/lower per-device via `sync.batchSize` in config.yaml.
-const DEFAULT_BATCH = 50;
+// Disk IO Budget and degraded every co-tenant (2026-07-16). 50 fixed the IO
+// budget but was still large enough that a single batch's synchronous cloud-side
+// materialize+embed could exceed the 60s request abort during a dense backfill
+// (observed: 50 aborts, 25 completes) — so the throttle is now 25/30s
+// (~50 atoms/min), which stays under both the IO budget AND the 60s request
+// deadline. Users can still raise/lower per-device via `sync.batchSize` in
+// config.yaml.
+const DEFAULT_BATCH = 25;
 const DEFAULT_INTERVAL_MS = 30_000;
 const BACKOFF_CAP_MS = 15 * 60_000;
 const MAX_ERROR_BODY_LEN = 500;
