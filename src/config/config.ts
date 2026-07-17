@@ -1,6 +1,11 @@
 import { defaultDataDir } from './datadir.js';
 import { DEFAULT_EMBED_DIM, type OnnxDType, type OnnxPoolingStrategy } from '../contracts/embed.js';
 import { hasPassingEvalEvidence, type GatedFusionComponent } from '../eval/eval-evidence.js';
+import {
+  LLM_PROVIDER_NAMES,
+  LLM_PROVIDER_NAMES_DISPLAY,
+  type LLMProviderName,
+} from '../contracts/llm.js';
 
 export interface Config {
   port: number;
@@ -40,8 +45,8 @@ export interface Config {
    *  docs/configuration.md / README "Dev no-auth mode" before enabling. */
   auth: { devNoAuth: boolean };
   llm: {
-    compaction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
-    extraction: { provider: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription'; model: string };
+    compaction: { provider: LLMProviderName; model: string };
+    extraction: { provider: LLMProviderName; model: string };
     /**
      * Optional daemon-side call-rate limiter for LLM chat() calls, applied by
      * buildLLMProvider via a token bucket SHARED across every provider instance
@@ -594,7 +599,7 @@ export interface Config {
        * on codex, so contradiction sweeps stop drawing metered quota).
        * An invalid `provider` value is dropped (warn, never fatal) by
        * `applyContradictionDetectionGovernance`. */
-      provider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+      provider?: LLMProviderName;
       model?: string;
     };
     /**
@@ -810,7 +815,7 @@ export interface Config {
      *  other provider-union override in this file uses. `model` has no
      *  closed set to validate. */
     extractionPassB?: {
-      provider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+      provider?: LLMProviderName;
       model?: string;
     };
     /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
@@ -909,7 +914,7 @@ export interface Config {
      *  persists unfiltered) — never drop-by-timeout. */
     atomTriage: {
       mode: 'off' | 'dry-run' | 'enabled';
-      provider?: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+      provider?: LLMProviderName;
       model?: string;
       batchSize: number;
       maxPerRun: number;
@@ -1582,8 +1587,8 @@ export function applyContradictionDetectionGovernance(
   if (cd.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(cd.provider)) {
     log(
       `[contradiction-detection-governance] consolidation.contradictionDetection.provider=` +
-      `${JSON.stringify(cd.provider)} is not one of 'ollama'|'azure-openai'|'openai-compatible'|` +
-      `'codex-subscription' — dropping the override (judge rides llm.extraction).`,
+      `${JSON.stringify(cd.provider)} is not one of ${LLM_PROVIDER_NAMES_DISPLAY}` +
+      ` — dropping the override (judge rides llm.extraction).`,
     );
     return {
       ...consolidation,
@@ -1594,7 +1599,7 @@ export function applyContradictionDetectionGovernance(
 }
 
 const VALID_JUDGE_PROVIDERS: ReadonlySet<string> =
-  new Set(['ollama', 'azure-openai', 'openai-compatible', 'codex-subscription']);
+  new Set(LLM_PROVIDER_NAMES);
 
 /**
  * P2.1 stabilization: `consolidation.candidateSelection` is a closed
@@ -1809,8 +1814,8 @@ export function applyExtractionPassBGovernance(
   if (!VALID_JUDGE_PROVIDERS.has(passB.provider)) {
     log(
       `[extraction-pass-b-governance] distill.extractionPassB.provider=` +
-      `${JSON.stringify(passB.provider)} is not one of 'ollama'|'azure-openai'|'openai-compatible'|` +
-      "'codex-subscription' — dropping the override (pass B rides llm.extraction). See FEAT-534.",
+      `${JSON.stringify(passB.provider)} is not one of ${LLM_PROVIDER_NAMES_DISPLAY}` +
+      ' — dropping the override (pass B rides llm.extraction). See FEAT-534.',
     );
     return { ...distill, extractionPassB: { ...passB, provider: undefined } };
   }
@@ -1864,7 +1869,7 @@ export function applyAtomTriageGovernance(
   if (at.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(at.provider)) {
     log(
       `[atom-triage-governance] distill.atomTriage.provider=${JSON.stringify(at.provider)} is not one of ` +
-      "'ollama'|'azure-openai'|'openai-compatible'|'codex-subscription' — dropping the override (triage rides " +
+      `${LLM_PROVIDER_NAMES_DISPLAY} — dropping the override (triage rides ` +
       'llm.extraction). See FEAT-533.',
     );
     return { ...distill, atomTriage: { ...at, provider: undefined } };

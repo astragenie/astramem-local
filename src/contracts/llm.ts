@@ -54,8 +54,33 @@ export interface LLMHealth {
   error?: string;
 }
 
+/**
+ * FEAT-536: the SINGLE source of truth for LLM provider names. Everything that
+ * needs to know "what providers exist" — the `LLMProvider.name` union below,
+ * every `config.ts` provider-type literal, the wizard's provider choices, the
+ * governance validation Sets, and the not-a-valid-provider error strings — must
+ * derive from THIS list, not re-declare it. Prior to FEAT-536 this set was
+ * hand-copied at 9+ sites (the SCHEMA_VERSION-collision shape that once bricked
+ * prod); adding a provider now means appending here and nowhere else at the
+ * type/validation layer. (The per-provider CONSTRUCTION branch in
+ * `providers/index.ts` `buildRawLLMProvider` is irreducibly per-provider —
+ * each takes different config — and is intentionally not collapsed here.)
+ */
+export const LLM_PROVIDER_NAMES = [
+  'ollama',
+  'azure-openai',
+  'openai-compatible',
+  'codex-subscription',
+] as const;
+
+export type LLMProviderName = (typeof LLM_PROVIDER_NAMES)[number];
+
+/** `'ollama'|'azure-openai'|...` — the canonical human-readable list for error
+ *  messages, derived from {@link LLM_PROVIDER_NAMES} so it can never drift. */
+export const LLM_PROVIDER_NAMES_DISPLAY = LLM_PROVIDER_NAMES.map((n) => `'${n}'`).join('|');
+
 export interface LLMProvider {
-  readonly name: 'ollama' | 'azure-openai' | 'openai-compatible' | 'codex-subscription';
+  readonly name: LLMProviderName;
   readonly model: string;
   chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult>;
   health(): Promise<LLMHealth>;
