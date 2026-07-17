@@ -762,11 +762,19 @@ For each candidate item, pick type in this order — stop at the first match:
 2. todo: pending work explicitly raised
 3. event: something that happened at a point in time (deployment, incident, meeting)
 4. decision: a choice was made between alternatives (pick this over "fact" whenever
-   two or more options were weighed, even if only one is mentioned by name)
+   two or more options were weighed, even if only one is mentioned by name). This
+   applies REGARDLESS OF TENSE OR PHRASING — a past-tense, already-settled report of a
+   choice ("X was chosen over Y", "we went with X instead of Y", "X replaced Y",
+   "picked X because...") is STILL a decision, not a fact, even when it reads like a
+   flat statement with the deliberation no longer shown. Comparison language —
+   "chosen over", "instead of", "rather than", "in favor of", "replaced" — describing a
+   technical choice is a decision cue; do not downgrade it to fact.
 5. lesson: a failure, error, or surprise — extract it EVEN IF unresolved; do not
    require a fix or root cause to exist yet
 6. fact: a verifiable, current property of the code/system (a value, a config
-   default, a version, a status)
+   default, a version, a status) that does NOT involve a choice between alternatives —
+   if the sentence names or implies a rejected alternative, it is a decision (rule 4),
+   not a fact, even when phrased as a simple present-tense statement
 7. note: opinions, preferences, or style remarks that don't fit above
 
 Entities: list every specific named thing the atom is ABOUT (not every word
