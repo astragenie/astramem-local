@@ -38,3 +38,5 @@ Scheduled GitHub Actions workflow (nightly cron + manual dispatch): install Olla
 
 ## Evidence
 Test-inventory review 2026-07-04. Embed-dim incident (v0.2.1 hotfix) is the concrete prior: a live-provider lane would have caught it pre-release. Live tests exist (INTEGRATION_LIVE gating) — this is wiring, not new test authorship.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** PR #51/#66 3df641ed, 9071b4c5

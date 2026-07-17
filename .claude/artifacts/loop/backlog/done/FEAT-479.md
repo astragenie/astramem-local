@@ -1,6 +1,6 @@
 ---
 id: FEAT-479
-status: in-progress
+status: done
 priority: P1
 category: feature
 target_release: null
@@ -187,3 +187,5 @@ That difference is the product.
 - SLICE-4: Conversational profile + few-shots + redaction-posture disclosure (2 pts)
 - SLICE-5: Relations[] additive output field (FEAT-481 SLICE-428 rides this) (1 pts)
 - SLICE-6: Hardened proof phase (blinded, ranges, cost/latency) + budget-cap doctor WARN (2 pts)
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** all slices merged incl ede1a21a (#175); force_closed stale

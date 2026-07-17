@@ -1,6 +1,6 @@
 ---
 id: FEAT-462
-status: in-progress
+status: done
 priority: P1
 category: infra
 target_release: null
@@ -213,3 +213,5 @@ split.
   ]
 }
 ```
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** 55c03d61 + 35af411c merged; frontmatter stale

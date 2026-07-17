@@ -1,6 +1,6 @@
 ---
 id: FEAT-475
-status: in-progress
+status: done
 priority: P2
 category: bug
 target_release: null
@@ -136,3 +136,5 @@ accordingly.
 - `tests/search/rerank.test.ts` — conditional: fold in only if it reproduces under this slice's load harness (per AC2); otherwise out of scope
 - OFF LIMITS: `tests/scripts/post-merge-rebuild.test.ts`, `tests/service/release.test.ts` (FEAT-471's merged fix — do not re-touch)
 - `src/**` — out of scope unless AC6's exception is proven and documented
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** 2/4 files fixed on main 12ab2714; remaining pair defensible-negative (572+ execs); #404

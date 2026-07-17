@@ -1,6 +1,6 @@
 # FEAT-505 — Caption speaker attribution fails under real LLM (fuzzy evidence match)
 
-- status: pending
+- status: done
 - source: L2 wave validation 2026-07-14 (artifact:
   .claude/artifacts/crew/validations/20260714T203254Z-l2-final-integration-validation-transcription-memory-beta.md)
 - depends_on: FEAT-491 (shipped)
@@ -34,3 +34,5 @@ headline value of speaker attribution.
 - Sync emission of speaker_label (wave/sync-emit-provenance, PR #333) is mechanism-proven and
   waits on this producer fix to carry real values end-to-end.
 - segment_start_ms remains producer-less repo-wide (separate, lower-priority gap).
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 56964215 (#337)

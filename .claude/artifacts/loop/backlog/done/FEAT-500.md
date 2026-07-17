@@ -162,3 +162,5 @@ distill-wait cycle that does not fit a bounded implementation dispatch.
 Whoever runs the A/B should record the resulting F1 deltas in this file
 under a new "A/B results" section before deciding on rollout, per the
 acceptance hint.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped d9781deb (#319)

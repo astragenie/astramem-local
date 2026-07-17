@@ -1,6 +1,6 @@
 ---
 id: FEAT-490
-status: pending
+status: done
 priority: null
 category: capture
 target_release: null
@@ -31,3 +31,5 @@ vary), local can apply these verbatim.
 
 Hours of work once FEAT-489 lands — bundle into the same slice if convenient. Complements the
 existing durability gate (junk-ATOM filter) one stage earlier (junk-SEGMENT filter).
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped inside 4086e767 (#331)

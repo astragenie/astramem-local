@@ -39,3 +39,5 @@ Integration test (mock providers): (a) fire k identical POST /ingest/transcript 
 
 ## Evidence
 Test-inventory review 2026-07-04. ingest-e2e.test.ts covers sequential idempotency replay only; no test in the 121-file suite uses concurrent same-key requests (grep: no Promise.all around /ingest).
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** PR #47 ae0c1cdb; tests-only, race refuted

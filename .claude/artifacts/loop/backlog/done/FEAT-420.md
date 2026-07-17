@@ -39,3 +39,5 @@ Fixture-based upgrade test: commit one (or more) small pre-built memory.sqlite f
 
 ## Evidence
 Test-inventory review 2026-07-04. Upgrade flow is documented as THE supported path (CLAUDE.md reinstall section) yet has zero coverage; unit migrate tests build schema from scratch, never from a released artifact.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** PR #49 22c17ec6

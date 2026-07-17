@@ -1,6 +1,6 @@
 ---
 id: FEAT-494
-status: pending
+status: done
 priority: null
 category: observability
 target_release: null
@@ -33,3 +33,5 @@ reuse; pick our own thresholds empirically).
 
 Pure doctor-check work, no dependencies, S effort. Especially relevant once FEAT-489 audio adds
 native add-on memory pressure.
+
+> **Closed 2026-07-17 — reconciled shipped-but-open.** shipped 57b34983 (#314)
