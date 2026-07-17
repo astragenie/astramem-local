@@ -45,9 +45,22 @@ export function healthRoute(config: Config = defaultConfig(), db?: DB, healthSta
     if (!db) return { served: 0, used: 0, rate: null };
     const now = Date.now();
     if (usefulnessCache && now - usefulnessCache.at < USEFULNESS_CACHE_TTL_MS) return usefulnessCache.rate;
-    const rate = usefulnessRate(db, { sinceMs: now - SEVEN_DAYS_MS });
-    usefulnessCache = { at: now, rate };
-    return rate;
+    try {
+      const rate = usefulnessRate(db, { sinceMs: now - SEVEN_DAYS_MS });
+      usefulnessCache = { at: now, rate };
+      return rate;
+    } catch {
+      // FEAT-537: /health is exempt from the readiness gate and reachable
+      // WHILE migrate() is still running in the default degraded-start boot
+      // order (src/cli/serve.ts) — `memory_events` may not exist yet on a
+      // fresh DB. Degrade to a safe zero-rate default instead of 500ing the
+      // liveness endpoint, mirroring pendingProposals/memoryHealthBlock
+      // below (same table-absent tolerance, same file). Deliberately NOT
+      // cached — a real zero rate is legitimate and gets cached elsewhere,
+      // but a table-absent degrade should be retried on the next request
+      // once migrate finishes, not pinned for USEFULNESS_CACHE_TTL_MS.
+      return { served: 0, used: 0, rate: null };
+    }
   };
 
   return async (app: FastifyInstance) => {

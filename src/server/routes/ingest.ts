@@ -534,101 +534,126 @@ export function ingestCanonicalTranscript(
 }
 
 // ---------------------------------------------------------------------------
-// Route factory — prepared statements hoisted to factory scope (D-B6)
-// All db.prepare() calls happen ONCE per server start, not per request.
+// Route factory statements — FEAT-537: prepared LAZILY (on first request),
+// not at route-registration time. `buildApp()` (which calls `ingestRoute()`)
+// runs BEFORE `migrate()` in the reordered boot sequence (src/cli/serve.ts) —
+// binding the port ahead of migration so /health answers `starting` and
+// every authed route 503s via the readiness gate while the DB catches up.
+// Preparing these statements eagerly, at factory-call time, threw
+// `SqliteError: no such table: ingest_idempotency` against a fresh,
+// unmigrated DB, which made buildApp() itself unusable before a single route
+// was reachable. Deferred here and memoized (prepared exactly ONCE, on the
+// first request that needs them, same "prepare once" cost as before) — a
+// prepare failure (bad SQL, genuinely missing table) still throws loudly on
+// that first request rather than being swallowed (ADR-015).
 // ---------------------------------------------------------------------------
 
+function prepareIngestStatements(db: DB) {
+  return {
+    // ---- Canonical path statements ----
+    stmtSelectIdempotency: db.prepare<[string], { body_hash: string; summary_memory_id: string | null }>(
+      'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
+    ),
+
+    // cwd (FEAT-403 / migration 009) is stored so the tag-hygiene backfill can
+    // still catch stragglers, but FEAT-423 also derives `repo` from it
+    // synchronously here — the canonical envelope never sends `repo` directly,
+    // so without this the `repo` column (and anything preferring it, e.g.
+    // deriveProject) would sit NULL until the async backfill runs.
+    stmtUpsertSession: db.prepare<[string, string | null, string | null, string | null, string | null, number]>(`
+      INSERT INTO sessions (id, repo, project, branch, agent, cwd, started_at)
+      VALUES (?, ?, ?, NULL, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        repo    = COALESCE(excluded.repo, repo),
+        project = COALESCE(excluded.project, project),
+        agent   = COALESCE(excluded.agent, agent),
+        cwd     = COALESCE(excluded.cwd, cwd)
+    `),
+
+    stmtInsertTranscript: db.prepare<[
+      string, string, string, string, number,
+      string, number, number, number,
+      string | null, string | null,
+      string | null, string,
+    ]>(`
+      INSERT INTO transcripts (
+        id, session_id, source, content, ingested_at,
+        event, captured_at, client_scrub_applied, client_scrub_hits,
+        client_scrub_version, client_scrub_hits_by_label_json,
+        client_version, wire_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `),
+
+    stmtInsertJob: db.prepare<[string, string, number, number]>(`
+      INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
+      VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
+    `),
+
+    // ADR-008 events kind — same transcripts-row shape as the transcript path
+    // (reuses stmtInsertTranscript), but enqueues a distinct job kind so the
+    // worker routes it to distillEventsHandler instead of distillHandler.
+    stmtInsertDistillEventsJob: db.prepare<[string, string, number, number]>(`
+      INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
+      VALUES (?, 'distill-events', ?, 'pending', 0, ?, ?)
+    `),
+
+    stmtInsertIdempotency: db.prepare<[string, string, string, number]>(`
+      INSERT INTO ingest_idempotency (key, body_hash, summary_memory_id, created_at)
+      VALUES (?, ?, ?, ?)
+      ON CONFLICT(key) DO NOTHING
+    `),
+
+    // Used for D-B3 dangling-row check on replay. `summary_memory_id` starts
+    // out as the transcript id (placeholder, written at ingest time) and may
+    // later be backfilled to a real `memories.id` once distillation completes
+    // (D-DEF2, see storage/ingest-idempotency.ts) — so "does this id still
+    // resolve to something" has to check both tables.
+    stmtCheckTranscriptExists: db.prepare<[string], { id: string } | undefined>(
+      'SELECT id FROM transcripts WHERE id = ?',
+    ),
+    stmtCheckMemoryExists: db.prepare<[string], { id: string } | undefined>(
+      'SELECT id FROM memories WHERE id = ?',
+    ),
+
+    // Used for D-B3 invalidation of dangling idempotency row
+    stmtDeleteIdempotency: db.prepare<[string]>(
+      'DELETE FROM ingest_idempotency WHERE key = ?',
+    ),
+
+    // ---- Legacy path statements ----
+    stmtUpsertSessionLegacy: db.prepare<[string, string | null, string | null, string | null, string | null, number]>(`
+      INSERT INTO sessions (id, repo, project, branch, agent, started_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        repo = COALESCE(excluded.repo, repo),
+        project = COALESCE(excluded.project, project),
+        branch = COALESCE(excluded.branch, branch),
+        agent = COALESCE(excluded.agent, agent)
+    `),
+
+    stmtInsertTranscriptLegacy: db.prepare<[string, string, string, string, number]>(`
+      INSERT INTO transcripts (id, session_id, source, content, ingested_at)
+      VALUES (?, ?, ?, ?, ?)
+    `),
+
+    stmtInsertJobLegacy: db.prepare<[string, string, number, number]>(`
+      INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
+      VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
+    `),
+  };
+}
+
+type IngestStatements = ReturnType<typeof prepareIngestStatements>;
+
 export function ingestRoute(db: DB, config: Config = defaultConfig()) {
-  // ---- Canonical path statements ----
-  const stmtSelectIdempotency = db.prepare<[string], { body_hash: string; summary_memory_id: string | null }>(
-    'SELECT body_hash, summary_memory_id FROM ingest_idempotency WHERE key = ?',
-  );
-
-  // cwd (FEAT-403 / migration 009) is stored so the tag-hygiene backfill can
-  // still catch stragglers, but FEAT-423 also derives `repo` from it
-  // synchronously here — the canonical envelope never sends `repo` directly,
-  // so without this the `repo` column (and anything preferring it, e.g.
-  // deriveProject) would sit NULL until the async backfill runs.
-  const stmtUpsertSession = db.prepare<[string, string | null, string | null, string | null, string | null, number]>(`
-    INSERT INTO sessions (id, repo, project, branch, agent, cwd, started_at)
-    VALUES (?, ?, ?, NULL, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      repo    = COALESCE(excluded.repo, repo),
-      project = COALESCE(excluded.project, project),
-      agent   = COALESCE(excluded.agent, agent),
-      cwd     = COALESCE(excluded.cwd, cwd)
-  `);
-
-  const stmtInsertTranscript = db.prepare<[
-    string, string, string, string, number,
-    string, number, number, number,
-    string | null, string | null,
-    string | null, string,
-  ]>(`
-    INSERT INTO transcripts (
-      id, session_id, source, content, ingested_at,
-      event, captured_at, client_scrub_applied, client_scrub_hits,
-      client_scrub_version, client_scrub_hits_by_label_json,
-      client_version, wire_version
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const stmtInsertJob = db.prepare<[string, string, number, number]>(`
-    INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
-    VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
-  `);
-
-  // ADR-008 events kind — same transcripts-row shape as the transcript path
-  // (reuses stmtInsertTranscript), but enqueues a distinct job kind so the
-  // worker routes it to distillEventsHandler instead of distillHandler.
-  const stmtInsertDistillEventsJob = db.prepare<[string, string, number, number]>(`
-    INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
-    VALUES (?, 'distill-events', ?, 'pending', 0, ?, ?)
-  `);
-
-  const stmtInsertIdempotency = db.prepare<[string, string, string, number]>(`
-    INSERT INTO ingest_idempotency (key, body_hash, summary_memory_id, created_at)
-    VALUES (?, ?, ?, ?)
-    ON CONFLICT(key) DO NOTHING
-  `);
-
-  // Used for D-B3 dangling-row check on replay. `summary_memory_id` starts
-  // out as the transcript id (placeholder, written at ingest time) and may
-  // later be backfilled to a real `memories.id` once distillation completes
-  // (D-DEF2, see storage/ingest-idempotency.ts) — so "does this id still
-  // resolve to something" has to check both tables.
-  const stmtCheckTranscriptExists = db.prepare<[string], { id: string } | undefined>(
-    'SELECT id FROM transcripts WHERE id = ?',
-  );
-  const stmtCheckMemoryExists = db.prepare<[string], { id: string } | undefined>(
-    'SELECT id FROM memories WHERE id = ?',
-  );
-
-  // Used for D-B3 invalidation of dangling idempotency row
-  const stmtDeleteIdempotency = db.prepare<[string]>(
-    'DELETE FROM ingest_idempotency WHERE key = ?',
-  );
-
-  // ---- Legacy path statements ----
-  const stmtUpsertSessionLegacy = db.prepare<[string, string | null, string | null, string | null, string | null, number]>(`
-    INSERT INTO sessions (id, repo, project, branch, agent, started_at)
-    VALUES (?, ?, ?, ?, ?, ?)
-    ON CONFLICT(id) DO UPDATE SET
-      repo = COALESCE(excluded.repo, repo),
-      project = COALESCE(excluded.project, project),
-      branch = COALESCE(excluded.branch, branch),
-      agent = COALESCE(excluded.agent, agent)
-  `);
-
-  const stmtInsertTranscriptLegacy = db.prepare<[string, string, string, string, number]>(`
-    INSERT INTO transcripts (id, session_id, source, content, ingested_at)
-    VALUES (?, ?, ?, ?, ?)
-  `);
-
-  const stmtInsertJobLegacy = db.prepare<[string, string, number, number]>(`
-    INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
-    VALUES (?, 'distill', ?, 'pending', 0, ?, ?)
-  `);
+  // Memoized — prepared on the first request that needs them, cached for
+  // every request after. See the module-doc comment above for why this
+  // can no longer happen eagerly at factory-call time.
+  let cachedStmts: IngestStatements | null = null;
+  function getStmts(): IngestStatements {
+    if (!cachedStmts) cachedStmts = prepareIngestStatements(db);
+    return cachedStmts;
+  }
 
   // ---------------------------------------------------------------------
   // Shared idempotency-key handling (D-B1/D-B2/D-B3) — extracted so the
@@ -644,6 +669,7 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
    * the inline logic in the transcript-kind path.
    */
   function claimIdempotencySlot(key: string, bodyHash: string, now: number): void {
+    const { stmtInsertIdempotency, stmtSelectIdempotency, stmtCheckTranscriptExists, stmtCheckMemoryExists, stmtDeleteIdempotency } = getStmts();
     stmtInsertIdempotency.run(key, bodyHash, '__pending__', now);
     const existing = stmtSelectIdempotency.get(key);
 
@@ -672,12 +698,22 @@ export function ingestRoute(db: DB, config: Config = defaultConfig()) {
 
   /** Update the idempotency placeholder with the real transcript id once the insert has happened. */
   function finalizeIdempotencySlot(key: string, bodyHash: string, transcriptId: string, now: number): void {
+    const { stmtDeleteIdempotency, stmtInsertIdempotency } = getStmts();
     stmtDeleteIdempotency.run(key);
     stmtInsertIdempotency.run(key, bodyHash, transcriptId, now);
   }
 
   return async (app: FastifyInstance) => {
     app.post('/ingest/transcript', async (req, reply) => {
+      // Prepare-once-and-cache (FEAT-537): first request pays the prepare
+      // cost, every request after reuses the memoized statements — same
+      // per-process cost as the old eager-at-registration prepare, just
+      // deferred past the readiness gate instead of ahead of migrate().
+      const {
+        stmtSelectIdempotency, stmtUpsertSession, stmtInsertTranscript,
+        stmtInsertDistillEventsJob, stmtUpsertSessionLegacy,
+        stmtInsertTranscriptLegacy, stmtInsertJobLegacy,
+      } = getStmts();
       const requestId = (req as unknown as Record<string, unknown>)['requestId'] as string | undefined;
       const parsed = parseIngestBody(req.body);
       if (!parsed.success) {
