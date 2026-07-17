@@ -608,6 +608,60 @@ describe('acquireInstanceLock — the .acquiring mutex (Wave 0 Item 2)', () => {
     lock.release();
   });
 
+  // issue #415 LOW (Wave-0 #415 review follow-up): acquireMutex's staleness
+  // check against the `.acquiring` sentinel used liveness alone — a PID that
+  // is alive but has been RECYCLED by an unrelated process still read as
+  // "genuinely held", making a dead-holder's PID-reuse wait out the entire
+  // ~30s mutex timeout before crash-exiting. These two tests exercise the
+  // PID+start-time identity check (checkHolderIdentity, shared with
+  // stopLockHolder) that now gates that decision.
+  it('issue #415 LOW: a sentinel whose PID is alive but whose recorded start time does not match the OS-reported one (recycled PID) is treated as stale and stolen immediately, not waited out', async () => {
+    // Our own pid is alive by definition; give it a recorded startedAt that
+    // is provably wrong so checkHolderIdentity reports a mismatch.
+    writeFileSync(acquiringLockPath(dir), JSON.stringify({ pid: process.pid, startedAt: FIXED_STARTED_AT }));
+
+    const start = Date.now();
+    const lock = await acquireInstanceLock(dir, 7777, '0.6.0', {
+      mutexTimeoutMs: 20_000,
+      // OS reports a start time an hour after the sentinel's recorded one —
+      // same PID, different (real) process; a classic recycled-PID signature.
+      processStartTime: async () => new Date(Date.parse(FIXED_STARTED_AT) + 60 * 60 * 1000),
+    });
+    const elapsedMs = Date.now() - start;
+
+    // Must resolve almost immediately via the stale-sentinel steal path, not
+    // wait out any part of the ~20s mutex timeout budget.
+    expect(elapsedMs).toBeLessThan(2_000);
+    expect(existsSync(lockPath(dir))).toBe(true);
+    lock.release();
+  });
+
+  it('issue #415 LOW: a sentinel whose PID and recorded start time both match the OS-reported one is correctly treated as genuinely held (waits, does not steal)', async () => {
+    writeFileSync(acquiringLockPath(dir), JSON.stringify({ pid: process.pid, startedAt: FIXED_STARTED_AT }));
+
+    let resolved = false;
+    const acquirePromise = acquireInstanceLock(dir, 7777, '0.6.0', {
+      mutexTimeoutMs: 5_000,
+      processStartTime: async () => new Date(FIXED_STARTED_AT), // identity confirmed: matches
+    }).then(lock => { resolved = true; return lock; });
+
+    // Give the call every chance to race past the mutex if identity-matching
+    // were broken (e.g. mistakenly treated as stale) — it must NOT resolve
+    // while the sentinel is genuinely held.
+    await new Promise(r => setTimeout(r, 150));
+    expect(resolved).toBe(false);
+    expect(existsSync(lockPath(dir))).toBe(false);
+
+    // Release the sentinel the same way acquireMutex's own release() does —
+    // simulating the prior (genuine) holder finishing.
+    unlinkSync(acquiringLockPath(dir));
+
+    const lock = await acquirePromise;
+    expect(resolved).toBe(true);
+    expect(existsSync(lockPath(dir))).toBe(true);
+    lock.release();
+  });
+
   it('the .acquiring mutex stays held through the bind callback, not just until daemon.lock is written', async () => {
     let bindStarted = false;
     let releaseBindGate: () => void = () => {};
