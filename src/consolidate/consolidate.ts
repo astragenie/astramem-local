@@ -509,21 +509,26 @@ export function mergeAsSupersede(
  * winner-contained-in-loser row stays manual (the pair-scan handles it
  * superset-first on the same run).
  */
-function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: string[] } {
+function sweepContainedProposals(
+  db: DB,
+): { accepted: string[]; staleRejected: string[]; guardBlocked: ConsolidateSummary['commandGuardBlocked'] } {
   const accepted: string[] = [];
   const staleRejected: string[] = [];
+  const guardBlocked: ConsolidateSummary['commandGuardBlocked'] = [];
   const rows = db.prepare(`
-    SELECT p.id, w.text AS winner_text, l.text AS loser_text,
+    SELECT p.id, p.loser_id, p.similarity, w.text AS winner_text, l.text AS loser_text,
            w.valid_to AS winner_valid_to, l.valid_to AS loser_valid_to,
-           l.superseded_by AS loser_superseded_by, p.winner_id
+           l.superseded_by AS loser_superseded_by, p.winner_id,
+           w.type AS winner_type, l.type AS loser_type
     FROM consolidation_proposals p
     JOIN memories w ON w.id = p.winner_id
     JOIN memories l ON l.id = p.loser_id
     WHERE p.status = 'pending'
   `).all() as Array<{
-    id: string; winner_text: string; loser_text: string;
+    id: string; loser_id: string; similarity: number; winner_text: string; loser_text: string;
     winner_valid_to: number | null; loser_valid_to: number | null;
     loser_superseded_by: string | null; winner_id: string;
+    winner_type: string; loser_type: string;
   }>;
 
   const repo = new ProposalRepo(db);
@@ -545,6 +550,18 @@ function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: s
     }
     const c = containment(r.winner_text, r.loser_text);
     if (c === 'equal' || c === 'a-contains-b') {
+      // FEAT-552 sub-scope C (AC-C1) review follow-up (MEDIUM-2): same guard
+      // as the pairwise-scan containment tier — this sweep auto-accepts an
+      // EXISTING pending proposal via the exact same non-destructive merge
+      // path, so a command pair with differing tokens must be refused here
+      // too, not just at the point the proposal was first created.
+      if (commandGuardBlocksMerge(
+        { type: r.winner_type, text: r.winner_text }, { type: r.loser_type, text: r.loser_text },
+      )) {
+        guardBlocked.push({ winner: r.winner_id, loser: r.loser_id, similarity: r.similarity, reason: COMMAND_GUARD_REASON });
+        annotateCommandGuardBlocked(db, r.id, { source: 'containment-sweep' });
+        continue;
+      }
       try {
         // issue #190: this sweep runs unattended inside runConsolidation with
         // no human in the loop — 'consolidation_auto', same as the two direct
@@ -556,7 +573,7 @@ function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: s
       }
     }
   }
-  return { accepted, staleRejected };
+  return { accepted, staleRejected, guardBlocked };
 }
 
 /**
@@ -843,7 +860,7 @@ async function runDupJudgeSweep(
           `[dup-judge] command-guard: refused to resolve proposal=${row.id} verdict=${v.verdict} ` +
           `confidence=${v.confidence} reason=${COMMAND_GUARD_REASON} — left pending`,
         );
-        annotateCommandGuardBlocked(db, row.id, v.verdict, v.confidence);
+        annotateCommandGuardBlocked(db, row.id, { dup_judge_verdict: v.verdict, dup_judge_confidence: v.confidence });
         continue;
       }
 
@@ -973,21 +990,22 @@ function insertGuardedMergeProposal(
 
 /**
  * FEAT-552 sub-scope C (AC-C1): patch a guard marker onto a STILL-PENDING
- * `kind='merge'` proposal the dup-judge sweep refused to resolve — the
- * proposal's `metadata_json` is otherwise only ever written at INSERT
+ * `kind='merge'` proposal a command-guarded resolve path refused to act on
+ * — the proposal's `metadata_json` is otherwise only ever written at INSERT
  * (contradiction rows) or at RESOLVE time (accept/reject, see
  * `ProposalRepo.resolve`); this is the one place a still-pending row's
  * metadata is annotated, so a human reviewing the queue can see WHY a
- * normally-auto-resolvable pair was left for them.
+ * normally-auto-resolvable pair was left for them. `extra` carries
+ * call-site-specific context (the dup-judge sweep's refused verdict, or the
+ * containment sweep's own marker) — see the two call sites below.
  */
 function annotateCommandGuardBlocked(
-  db: DB, proposalId: string, verdict: DupVerdictLabel, confidence: number,
+  db: DB, proposalId: string, extra: Record<string, unknown> = {},
 ): void {
   const metadata = {
     command_guard_blocked: true,
     command_guard_reason: COMMAND_GUARD_REASON,
-    dup_judge_verdict: verdict,
-    dup_judge_confidence: confidence,
+    ...extra,
   };
   db.prepare(
     "UPDATE consolidation_proposals SET metadata_json = ? WHERE id = ? AND status = 'pending'",
@@ -1105,6 +1123,9 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     const swept = sweepContainedProposals(db);
     summary.autoAcceptedProposals = swept.accepted;
     summary.staleRejectedProposals = swept.staleRejected;
+    // FEAT-552 sub-scope C (AC-C1) review follow-up (MEDIUM-2): same
+    // summary bucket the pairwise-scan containment/mergeThreshold tiers use.
+    summary.commandGuardBlocked.push(...swept.guardBlocked);
   }
 
   // issue #387: SETUP (load atoms + group + build per-group embedding maps)
@@ -1238,6 +1259,24 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
         if (c === 'a-contains-b') { winner = a; loser = b; }
         else if (c === 'b-contains-a') { winner = b; loser = a; }
         // 'equal' keeps the usefulness-based pick.
+        // FEAT-552 sub-scope C (AC-C1) review follow-up (MEDIUM-2): the
+        // containment rule's aggressive text normalization (lowercase,
+        // strip punctuation, collapse whitespace) treats
+        // `git checkout -- A.ts` as containing/contained-by
+        // `git checkout -- A.ts --force` — a DIFFERENT command, not a
+        // paraphrase. Same guard, same downgrade-to-pending-proposal
+        // posture as the mergeThreshold tier below, so this tier can no
+        // longer auto-merge a command pair with differing tokens either.
+        if (commandGuardBlocksMerge(a, b)) {
+          summary.commandGuardBlocked.push({ winner: winner.id, loser: loser.id, similarity: sim, reason: COMMAND_GUARD_REASON });
+          log(
+            `[consolidate] command-guard: blocked containment auto-merge winner=${winner.id} loser=${loser.id} ` +
+            `sim=${sim.toFixed(4)} reason=${COMMAND_GUARD_REASON} — downgraded to a pending proposal`,
+          );
+          const proposalId = insertGuardedMergeProposal(db, winner.id, loser.id, sim);
+          if (proposalId) summary.proposed.push({ winner: winner.id, loser: loser.id, similarity: sim });
+          return;
+        }
         // issue #190: this tier merges immediately with no proposal row
         // and no human step possible — always 'consolidation_auto'.
         mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');

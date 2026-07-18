@@ -1290,6 +1290,75 @@ describe('command-token merge guard (FEAT-552 sub-scope C, AC-C1)', () => {
     expect(summary.commandGuardBlocked).toHaveLength(0);
   });
 
+  // Review follow-up (MEDIUM-2, 2026-07-18): the containment auto-merge
+  // tier's aggressive text normalization treats `git checkout -- A.ts` as
+  // contained in/containing `git checkout -- A.ts --force` — a DIFFERENT
+  // command, not a paraphrase — and bypassed the guard entirely. Reviewer's
+  // exact repro pair, reproduced here as a regression test.
+  it("MEDIUM-2 repro: the containment auto-merge tier blocks a command pair the reviewer found bypassing the guard (`git checkout -- A.ts` vs `--force`)", async () => {
+    const a = await seedEmbedded(db, 'git checkout -- A.ts', 'h-cg-7', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'git checkout -- A.ts --force', 'h-cg-8', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0); // was auto-merging via containment before the fix
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    expect(summary.commandGuardBlocked[0]).toMatchObject({ reason: 'command-token-mismatch' });
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean };
+    expect(metadata.command_guard_blocked).toBe(true);
+
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  // LOW (2026-07-18 review): a compound/&&-chained command pair must also be
+  // blocked — the extra `&& git push` segment is a materially different
+  // command, not incidental formatting, and the containment check's
+  // aggressive normalization would otherwise treat it as a contained subset.
+  it('LOW: blocks a compound (&&-chained) command pair where one command has an extra chained step', async () => {
+    const a = await seedEmbedded(db, 'git add . && git commit -m wip', 'h-cg-9', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'git add . && git commit -m wip && git push', 'h-cg-10', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0);
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    void a; void b;
+  });
+
+  // MEDIUM-2: the SAME guard must also apply when sweepContainedProposals
+  // resolves an EXISTING pending proposal on a later run (not just at the
+  // moment the proposal is first created by the pairwise scan) — mirrors
+  // the pre-existing "sweeps EXISTING pending proposals" test's shape.
+  it('MEDIUM-2: sweepContainedProposals refuses to auto-accept an EXISTING pending command-atom proposal with differing tokens', async () => {
+    const winner = await seedEmbedded(db, 'git checkout -- A.ts --force', 'h-cg-11', vecAt(0), { type: 'command' });
+    const loser = await seedEmbedded(db, 'git checkout -- A.ts', 'h-cg-12', vecAt(0, 0.45), { type: 'command' });
+    recordRecallUsed(db, { atomId: winner, surface: 'rest', signal: 'explicit' }); // superset wins the row
+    const first = await runConsolidation(db, { autoMergeContained: false });
+    expect(first.proposed).toHaveLength(1);
+
+    const second = await runConsolidation(db); // autoMergeContained defaults true
+    expect(second.autoAcceptedProposals).toHaveLength(0); // refused, not swept
+    // Hit twice this run: once by sweepContainedProposals (the existing
+    // pending row), once more by the pairwise scan re-encountering the same
+    // still-valid, still-untouched pair via its own containment branch —
+    // both refuse the same pair, neither one merges or double-inserts
+    // (insertGuardedMergeProposal's dedup guard no-ops the second attempt).
+    expect(second.commandGuardBlocked).toHaveLength(2);
+    for (const hit of second.commandGuardBlocked) {
+      expect(hit).toMatchObject({ winner, loser, reason: 'command-token-mismatch' });
+    }
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1); // still pending — never auto-accepted
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean; source: string };
+    expect(metadata.command_guard_blocked).toBe(true);
+    expect(metadata.source).toBe('containment-sweep');
+    expect(new MemoryRepo(db).get(loser)!.superseded_by).toBeNull();
+  });
+
   it("dup-judge sweep: refuses to resolve (either direction) a pending command-atom proposal with differing tokens, leaving it pending with a guard marker", async () => {
     // Propose-tier similarity (~0.90) so the pairwise scan creates exactly
     // one pending 'merge' proposal for the dup-judge sweep to see.
