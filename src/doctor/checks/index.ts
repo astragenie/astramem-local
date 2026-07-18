@@ -112,6 +112,7 @@ import { checkEvidenceProvenance } from './evidence-provenance.js';
 import { checkTranscriptSessionProvenance } from './transcript-session-provenance.js';
 import { checkExtractionYield } from './extraction-yield.js';
 import { checkAtomTriage } from './atom-triage.js';
+import { checkGatekeeper } from './gatekeeper.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
 import { checkAtomValidityExtraction } from './atom-validity-extraction.js';
 import { checkEntityLinkRate } from './entity-link-rate.js';
@@ -218,6 +219,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkTranscriptSessionProvenance(dataDir, encryptionEnabled),
     checkExtractionYield(dataDir, encryptionEnabled),
     checkAtomTriage(dataDir, opts.atomTriageMode ?? 'off', encryptionEnabled),
+    checkGatekeeper(dataDir, opts.gatekeeperMode ?? 'off', encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
     checkAtomValidityExtraction(dataDir, encryptionEnabled),
     checkEntityLinkRate(dataDir, encryptionEnabled),
@@ -277,13 +279,14 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
   // deduplicated — for the plain compaction+extraction case (every
   // pre-Wave-1 config) this is byte-identical to the old two-role logic.
   if (opts.llmProviders) {
-    const { compaction, extraction, judge, extractionPassB, atomTriage } = opts.llmProviders;
+    const { compaction, extraction, judge, extractionPassB, atomTriage, gatekeeper } = opts.llmProviders;
     const roles: Array<readonly [LLMProvider, string]> = [
       [compaction, 'compaction'],
       [extraction, 'extraction'],
       ...(judge ? [[judge, 'judge'] as const] : []),
       ...(extractionPassB ? [[extractionPassB, 'extractionPassB'] as const] : []),
       ...(atomTriage ? [[atomTriage, 'atomTriage'] as const] : []),
+      ...(gatekeeper ? [[gatekeeper, 'gatekeeper'] as const] : []),
     ];
     const seen = new Set<string>();
     const probedRoles: Array<readonly [LLMProvider, string]> = [];

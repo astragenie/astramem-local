@@ -139,6 +139,12 @@ export const distillHandler: JobHandler = {
       // thread-through is byte-identical to pre-FEAT-533 behavior whenever
       // the operator hasn't opted into a non-'off' mode.
       llmAtomTriage: ctx.providers.llm.atomTriage,
+      // FEAT-548: getProviders ALWAYS sets gatekeeper (identity default to
+      // the extraction instance when distill.gatekeeper.{provider,model} is
+      // unset — see ProviderSet.llm.gatekeeper's doc comment), so this
+      // thread-through is byte-identical to pre-FEAT-548 behavior whenever
+      // the operator hasn't opted into a non-'off' mode.
+      llmGatekeeper: ctx.providers.llm.gatekeeper,
       embed: ctx.providers.embed,
       capUsd: ctx.config.budget.daily_usd,
       sessionId: session_id,

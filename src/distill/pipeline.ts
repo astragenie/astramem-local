@@ -37,6 +37,8 @@ import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
 import { recordEntityGuardDrops } from '../storage/entity-guard-log.js';
 import { recordEvidenceGuardDrops } from '../storage/evidence-guard-log.js';
 import { recordExtractionYield } from '../storage/extraction-yield-log.js';
+import { runGatekeeperSweep } from './gatekeeper.js';
+import { recordGatekeeperSkips, recordGatekeeperRunLog } from '../storage/gatekeeper-log.js';
 
 export { BudgetExceeded } from '../budget/tracker.js';
 
@@ -62,6 +64,13 @@ export interface PipelineContext {
    * `config.distill.atomTriage.mode !== 'off'` — see
    * EmbedIndexContext.llmAtomTriage's doc comment. */
   llmAtomTriage?: LLMProvider;
+  /** Ingest gatekeeper provider (FEAT-548). Optional in the type — every
+   * real caller (distillHandler) always sets it via ProviderSet.llm.gatekeeper,
+   * which `getProviders` itself always populates (identity default to
+   * llmExtraction), but hand-built test contexts may omit it entirely. Only
+   * consulted when `config.distill.gatekeeper.mode !== 'off'` — see
+   * runGatekeeperSweep's own no-op-without-provider convention. */
+  llmGatekeeper?: LLMProvider;
   embed: EmbedProvider;
   capUsd: number;
   sessionId: string | null;
@@ -163,6 +172,83 @@ export async function runPipeline(
   const chunks = chunk(normalized, maxChunkChars);
   pipeLog.info({ stage: 'chunk', chunk_count: chunks.length }, 'stage complete');
 
+  // Stage 3b: Gatekeeper (FEAT-548) — optional pre-extraction substantiveness
+  // gate. 'off' (the shipped default, including an omitted ctx.config) is
+  // BYTE-IDENTICAL to pre-FEAT-548 behavior (AC-1): the entire block below is
+  // skipped, `chunksForExtraction` stays the same ARRAY REFERENCE as `chunks`,
+  // and no gate call is ever made. 'dry-run' runs the gate and logs the
+  // would-have-skipped verdicts + a skip-rate counter but does NOT filter
+  // `chunksForExtraction` (AC-3 — every chunk still reaches compact/extract
+  // unmodified). 'enabled' actually removes 'skip'-verdicted chunks from
+  // `chunksForExtraction` before compact()/extract() ever see them — a chunk
+  // with no verdict entry (fail-open: provider missing/throwing/unparsable,
+  // AC-2) is treated as an implicit 'keep' and stays in.
+  const gatekeeperMode = ctx.config?.distill.gatekeeper.mode ?? 'off';
+  let chunksForExtraction = chunks;
+  if (gatekeeperMode !== 'off') {
+    const gatekeeperLog = (message: string) =>
+      pipeLog.warn({ stage: 'gatekeeper' }, message);
+    pipeLog.info({ stage: 'gatekeeper', chunk_count: chunks.length, mode: gatekeeperMode }, 'stage start');
+    const sweep = await runGatekeeperSweep(chunks, ctx.llmGatekeeper, {
+      batchSize: ctx.config?.distill.gatekeeper.batchSize ?? 20,
+      caps: {
+        maxPerRun: ctx.config?.distill.gatekeeper.maxPerRun ?? 200,
+        maxWallClockMs: ctx.config?.distill.gatekeeper.maxWallClockMs ?? 300_000,
+      },
+      log: gatekeeperLog,
+    });
+
+    const skipRows: Array<{ model: string; confidence: number; mode: 'dry-run' | 'enabled'; sessionId: string | null }> = [];
+    let chunksSkipped = 0;
+    for (const c of chunks) {
+      const verdict = sweep.verdicts.get(c.index);
+      if (verdict && verdict.verdict === 'skip') {
+        chunksSkipped++;
+        skipRows.push({
+          model: ctx.llmGatekeeper?.model ?? 'unknown',
+          confidence: verdict.confidence,
+          mode: gatekeeperMode,
+          sessionId: ctx.sessionId,
+        });
+      }
+    }
+    const skipRate = sweep.chunksEvaluated > 0 ? chunksSkipped / sweep.chunksEvaluated : null;
+    pipeLog.info(
+      {
+        stage: 'gatekeeper',
+        chunks_evaluated: sweep.chunksEvaluated,
+        chunks_skipped: chunksSkipped,
+        skip_rate: skipRate,
+        mode: gatekeeperMode,
+      },
+      'stage complete',
+    );
+
+    // Diagnostic-only write, same isolation as the relation/entity/evidence
+    // guard-drop writes below — a failure here must never be reinterpreted
+    // as a gatekeeper (let alone pipeline) failure; the gate decision above
+    // has already been applied in-memory regardless of whether this
+    // persists.
+    try {
+      recordGatekeeperSkips(ctx.db, skipRows);
+      recordGatekeeperRunLog(ctx.db, {
+        sessionId: ctx.sessionId,
+        chunksEvaluated: sweep.chunksEvaluated,
+        chunksSkipped,
+      });
+    } catch (err) {
+      pipeLog.warn(
+        { stage: 'gatekeeper', error_message: (err instanceof Error ? err.message : String(err)).slice(0, 200) },
+        'gatekeeper counter write failed (non-fatal, diagnostic only — gate decision already applied)',
+      );
+    }
+
+    if (gatekeeperMode === 'enabled') {
+      chunksForExtraction = chunks.filter((c) => sweep.verdicts.get(c.index)?.verdict !== 'skip');
+    }
+    // 'dry-run': chunksForExtraction stays === chunks (unmodified) — see AC-3.
+  }
+
   const budget = new BudgetTracker(ctx.db);
 
   // Opt-in call-count/wall-clock cap on compact()+extract() LLM calls,
@@ -222,7 +308,7 @@ export async function runPipeline(
   // already fitting) — compactionDecisionFor is called here with the exact
   // same (text, profile, mode) compact() itself uses per chunk below, so
   // this summary can never drift from the real per-chunk decision.
-  const compactDecisions = chunks.map(chk =>
+  const compactDecisions = chunksForExtraction.map(chk =>
     compactionDecisionFor(chk.text, { profile: resolvedExtractProfile, mode: compactionMode }),
   );
   const compactionSizeSkipped = compactDecisions.filter(d => d.skipReason === 'size').length;
@@ -235,7 +321,7 @@ export async function runPipeline(
   pipeLog.info(
     {
       stage: 'compact',
-      chunk_count: chunks.length,
+      chunk_count: chunksForExtraction.length,
       chunk_concurrency: chunkConcurrency,
       extract_profile: resolvedExtractProfile,
       compaction_mode: compactionMode,
@@ -249,10 +335,19 @@ export async function runPipeline(
   let compactedChunks: Array<{ index: number; text: string }>;
   try {
     const compactResults = await compact(
-      chunks, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey,
+      chunksForExtraction, ctx.llmCompaction, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey,
       { profile: resolvedExtractProfile, mode: compactionMode, costCap },
     );
-    compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunks[r.index]?.text || '' }));
+    // FEAT-548: looked up by chunk.index VALUE, not array position — pre-
+    // gatekeeper, chunksForExtraction (== chunks) was never filtered, so
+    // chunk.index always coincided with its own array position and a plain
+    // `chunks[r.index]` lookup happened to work. Once 'enabled' mode can
+    // remove chunks from the middle of the array, position and .index value
+    // diverge (e.g. chunk.index 3 can sit at array position 1) — a positional
+    // lookup would silently grab the WRONG chunk's raw text as the
+    // empty-compaction-result fallback.
+    const chunksForExtractionByIndex = new Map(chunksForExtraction.map(chk => [chk.index, chk]));
+    compactedChunks = compactResults.map(r => ({ index: r.index, text: r.text || chunksForExtractionByIndex.get(r.index)?.text || '' }));
     pipeLog.info(
       {
         stage: 'compact',
@@ -503,7 +598,14 @@ export async function runPipeline(
   try {
     recordExtractionYield(ctx.db, {
       sessionId: ctx.sessionId,
-      chunksIn: chunks.length,
+      // FEAT-548: chunksForExtraction (post-gatekeeper), not the raw
+      // chunks.length — a gatekeeper-skipped chunk never reached extraction,
+      // so counting it here would conflate "the gate correctly skipped
+      // noise" with "the extraction model returned zero atoms", corrupting
+      // the zero-yield-rate canary's denominator. Byte-identical to
+      // pre-FEAT-548 (chunksForExtraction === chunks) whenever the gate is
+      // 'off' or 'dry-run'.
+      chunksIn: chunksForExtraction.length,
       atomsOut: allAtoms.length,
     });
   } catch (err) {

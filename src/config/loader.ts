@@ -50,6 +50,7 @@ import {
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
   applyAtomTriageGovernance,
+  applyGatekeeperGovernance,
   applyDupJudgeGovernance,
 } from './config.js';
 
@@ -337,9 +338,13 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     // real boot path — each governance function in this composition only
     // ever touches its own field, so nesting order is safe (see
     // applyExtractProfileGovernance's doc comment).
-    distill: applyAtomTriageGovernance(
+    // FEAT-548: applyGatekeeperGovernance added the same way, on the same
+    // real boot path AND in loadConfig() (config.ts) — the 550/549 reviewers'
+    // bar for a new distill.<tier> governance function is BOTH real
+    // composition points, not just this one.
+    distill: applyGatekeeperGovernance(applyAtomTriageGovernance(
       applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
-    ),
+    )),
     multiHop: applyMultiHopGovernance(cfg.multiHop),
     retention: applyRetentionGovernance(cfg.retention),
     // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has

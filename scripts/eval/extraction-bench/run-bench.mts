@@ -233,6 +233,17 @@ if (atomTriageMode !== undefined && !['off', 'dry-run', 'enabled'].includes(atom
 // config block is ever emitted when --atom-triage is unset). Daemon path
 // only, same constraint --atom-triage itself already carries.
 const triageModel = get('--triage-model');
+// --gatekeeper off|dry-run|enabled (additive, 2026-07-18): FEAT-548
+// pre-extraction chunk-level substantiveness gate as a bench A/B lever;
+// gatekeeper provider pinned to the candidate extraction model itself (see
+// daemon-runner). Daemon path only, mirroring --atom-triage. This is the
+// lever AC-4's 55-fixture dry-run measurement runs through (`--gatekeeper
+// dry-run`): every substantive fixture must report a 0% false-skip rate.
+const gatekeeperMode = get('--gatekeeper') as 'off' | 'dry-run' | 'enabled' | undefined;
+if (gatekeeperMode !== undefined && !['off', 'dry-run', 'enabled'].includes(gatekeeperMode)) {
+  console.error(`--gatekeeper must be off|dry-run|enabled, got: ${gatekeeperMode}`);
+  process.exit(1);
+}
 
 interface ModelAtomsByFixture {
   model: string;
@@ -322,7 +333,7 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   }
 
   console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/${compactionModel}, extraction=ollama/${model}) ===`);
-  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}), ...(atomTriageMode ? { atomTriageMode } : {}), ...(triageModel ? { triageModel } : {}) });
+  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}), ...(atomTriageMode ? { atomTriageMode } : {}), ...(triageModel ? { triageModel } : {}), ...(gatekeeperMode ? { gatekeeperMode } : {}) });
   console.log(`  daemon boot: ${run.daemonBootMs}ms`);
   const perFixture: ModelAtomsByFixture['perFixture'] = {};
   for (const r of run.results as DaemonFixtureResult[]) {

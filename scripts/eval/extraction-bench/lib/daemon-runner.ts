@@ -135,7 +135,7 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled'; triageModel?: string } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled'; triageModel?: string; gatekeeperMode?: 'off' | 'dry-run' | 'enabled' } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
   const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;
@@ -173,7 +173,7 @@ export async function runOllamaCandidate(
       'onnxEmbed:',
       `  cacheDir: '${onnxCacheDir.replace(/\\/g, '/')}'`,
     ] : []),
-    ...(compactionMode || opts.maxChunkChars || opts.atomTriageMode ? [
+    ...(compactionMode || opts.maxChunkChars || opts.atomTriageMode || opts.gatekeeperMode ? [
       'distill:',
       ...(compactionMode ? [`  compaction: ${compactionMode}`] : []),
       // Chunk-size A/B lever (2026-07-17): config.distill.maxChunkChars is a
@@ -199,6 +199,19 @@ export async function runOllamaCandidate(
         `    mode: ${opts.atomTriageMode}`,
         '    provider: ollama',
         `    model: '${opts.triageModel ?? extractionModel}'`,
+      ] : []),
+      // FEAT-548 ingest gatekeeper A/B lever (2026-07-18): pre-extraction
+      // chunk-level substantiveness gate, shipped `mode: off`. Same
+      // same-model-pinning rationale as atomTriage above — the gatekeeper
+      // provider is pinned to the SAME extraction candidate model, so the
+      // experiment measures "model X gate-screening + extracting its own
+      // chunks", not a mixed-provider confound. AC-4's 55-fixture dry-run
+      // measurement is the intended use of this lever.
+      ...(opts.gatekeeperMode ? [
+        '  gatekeeper:',
+        `    mode: ${opts.gatekeeperMode}`,
+        '    provider: ollama',
+        `    model: '${extractionModel}'`,
       ] : []),
     ] : []),
     'budget:',

@@ -864,3 +864,160 @@ describe('evidence-gated sweeper wiring (distill.extractionPassB.evidenceGate)',
     expect(passARowCountOn).toBe(3);
   });
 });
+
+// ─── FEAT-548: ingest gatekeeper ─────────────────────────────────────────────
+
+describe('runPipeline — FEAT-548 ingest gatekeeper', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  /** Deterministic fake gatekeeper provider: applies ONE fixed verdict to
+   *  every numbered chunk in the batch — every test in this describe block
+   *  produces exactly one chunk (FIXTURE_TRANSCRIPT fits well under the
+   *  default maxChunkChars), so there is no need to key by the chunk's exact
+   *  post-cleanup/normalize/pack text (which can legitimately differ from
+   *  the raw fixture string's own newline layout — packTurns rejoins turns
+   *  with '\n\n', not the original single '\n'). Verifies the marker is
+   *  present so a misrouted (non-gatekeeper) call is caught, same posture
+   *  makeTriageProvider (08-embed-index.test.ts) uses for its own marker. */
+  function makeGatekeeperProvider(verdict: 'keep' | 'skip', confidence = 0.9): LLMProvider {
+    return {
+      name: 'ollama',
+      model: 'test-gatekeeper-model',
+      async chat(messages: ChatMsg[], _opts?: ChatOpts) {
+        const system = messages.find((m) => m.role === 'system')?.content ?? '';
+        if (!system.includes('astramem-gatekeeper-v1')) {
+          throw new Error('test provider received a non-gatekeeper call (missing GATEKEEPER_MARKER)');
+        }
+        const user = messages.find((m) => m.role === 'user')?.content ?? '';
+        const verdicts: Array<{ index: number; verdict: string; confidence: number }> = [];
+        for (const line of user.split('\n')) {
+          const m = line.match(/^\[(\d+)\]\s/);
+          if (!m) continue;
+          verdicts.push({ index: Number(m[1]), verdict, confidence });
+        }
+        return { text: JSON.stringify({ verdicts }), usage: { in: 1, out: 1, usd: 0 } };
+      },
+      async health() {
+        return { ok: true, model: 'test-gatekeeper-model', latency_ms: 0 };
+      },
+    };
+  }
+
+  function makeThrowingGatekeeperProvider(message: string): LLMProvider {
+    return {
+      name: 'ollama',
+      model: 'unreachable-gatekeeper-model',
+      async chat() {
+        throw new Error(message);
+      },
+      async health() {
+        return { ok: false, model: 'unreachable-gatekeeper-model', latency_ms: 0, error: message };
+      },
+    };
+  }
+
+  it("AC-1: mode 'off' (default, including omitted config) never calls the gatekeeper provider — byte-identical to pre-FEAT-548", async () => {
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+    let gatekeeperCalled = false;
+    const llmGatekeeper: LLMProvider = {
+      name: 'ollama', model: 'unused-gatekeeper-model',
+      async chat() { gatekeeperCalled = true; return { text: JSON.stringify({ verdicts: [] }), usage: { in: 1, out: 1, usd: 0 } }; },
+      async health() { return { ok: true, model: 'unused-gatekeeper-model', latency_ms: 0 }; },
+    };
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      // config intentionally omitted — mode resolves to 'off' via the
+      // `ctx.config?.distill.gatekeeper.mode ?? 'off'` fallback.
+    });
+
+    expect(gatekeeperCalled).toBe(false);
+    expect(result.memoriesCreated).toBe(3); // unfiltered, same as the base fixture
+    expect((db.prepare('SELECT COUNT(*) AS n FROM gatekeeper_skips').get() as any).n).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM gatekeeper_run_log').get() as any).n).toBe(0);
+  });
+
+  it("AC-3: mode 'dry-run' — a 'skip' verdict is logged (DB rows) with a running skip-rate counter but the chunk still reaches extraction unmodified", async () => {
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+    const llmGatekeeper = makeGatekeeperProvider('skip', 0.95);
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, gatekeeper: { mode: 'dry-run', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 } } },
+    });
+
+    // Dry-run never filters — the chunk still reaches extraction unmodified.
+    expect(result.memoriesCreated).toBe(3);
+
+    const runLog = db.prepare('SELECT session_id, chunks_evaluated, chunks_skipped FROM gatekeeper_run_log').get() as any;
+    expect(runLog).toBeDefined();
+    expect(runLog.chunks_evaluated).toBe(1);
+    expect(runLog.chunks_skipped).toBe(1);
+
+    const skipRow = db.prepare('SELECT model, confidence, mode FROM gatekeeper_skips').get() as any;
+    expect(skipRow).toBeDefined();
+    expect(skipRow.mode).toBe('dry-run');
+    expect(skipRow.confidence).toBeCloseTo(0.95);
+  });
+
+  it('AC-2: a throwing gatekeeper provider fails OPEN under mode "enabled" — the chunk is extracted exactly as if verdicted keep', async () => {
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+    const llmGatekeeper = makeThrowingGatekeeperProvider('gatekeeper provider down');
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, gatekeeper: { mode: 'enabled', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 } } },
+    });
+
+    // Fail-open, ADR-015: the chunk WAS extracted — not silently dropped.
+    expect(result.memoriesCreated).toBe(3);
+
+    const runLog = db.prepare('SELECT chunks_evaluated, chunks_skipped FROM gatekeeper_run_log').get() as any;
+    expect(runLog.chunks_evaluated).toBe(1); // attempted, counted toward the rate denominator
+    expect(runLog.chunks_skipped).toBe(0); // no verdict entry -> implicit keep, never recorded as a skip
+    expect((db.prepare('SELECT COUNT(*) AS n FROM gatekeeper_skips').get() as any).n).toBe(0);
+  });
+
+  it("mode 'enabled' — a real 'skip' verdict removes the chunk from extraction entirely (extraction never called, zero memories)", async () => {
+    let extractionCalls = 0;
+    const llm: LLMProvider = {
+      name: 'ollama', model: 'test-model',
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (opts?.json) extractionCalls++;
+        const reply = opts?.json ? EXTRACTION_RESPONSE : 'compressed content';
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+    const embed = makeMockEmbed();
+    const llmGatekeeper = makeGatekeeperProvider('skip', 0.9);
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, gatekeeper: { mode: 'enabled', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 } } },
+    });
+
+    expect(extractionCalls).toBe(0); // the metered extraction call was never made
+    expect(result.memoriesCreated).toBe(0);
+    expect(result.chunksProcessed).toBe(1); // chunking itself is unaffected — this is the gate's own count, not the raw chunk count
+
+    const runLog = db.prepare('SELECT chunks_evaluated, chunks_skipped FROM gatekeeper_run_log').get() as any;
+    expect(runLog.chunks_evaluated).toBe(1);
+    expect(runLog.chunks_skipped).toBe(1);
+
+    const skipRow = db.prepare('SELECT mode FROM gatekeeper_skips').get() as any;
+    expect(skipRow.mode).toBe('enabled');
+  });
+});
