@@ -135,6 +135,7 @@ async function collectDirect(
       const result = await runDirectPipeline(fixture.turns, {
         llmCompaction, llmExtraction,
         ...(passB ? { extractionPasses: 2 as const, llmExtractionPassB: passB.provider } : {}),
+        ...(passBSweep ? { passBSweep } : {}),
       });
       perFixture[fixture.id] = {
         // FEAT-542: evidence now threaded through (was dropped here before —

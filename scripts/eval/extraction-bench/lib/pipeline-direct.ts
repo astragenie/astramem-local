@@ -30,7 +30,7 @@ import { Database as BunSqliteDatabase } from 'bun:sqlite';
 import type { DB } from '../../../../src/storage/db.js';
 import type { LLMProvider } from '../../../../src/contracts/llm.js';
 import type { Config } from '../../../../src/config/config.js';
-import { defaultConfig } from '../../../../src/config/config.js';
+import { defaultConfig, resolveExtractionPassBTuning } from '../../../../src/config/config.js';
 import { redactIfEnabled } from '../../../../src/redact/index.js';
 import { flattenTranscriptContent } from '../../../../src/distill/flatten-turns.js';
 import { cleanup } from '../../../../src/distill/stages/01-cleanup.js';
@@ -117,6 +117,15 @@ export async function runDirectPipeline(
      *  `extractionPasses: 2`; unset rides `llmExtraction`, same identity
      *  default as ProviderSet.llm.extractionPassB. */
     llmExtractionPassB?: LLMProvider;
+    /** 2026-07-18 codex-leg fidelity fix: the default (omitted) now applies
+     *  the SAME pass-B clerk tuning runPipeline's stage 5b applies
+     *  (resolveExtractionPassBTuning: skip-gate sweepOnlyBelowAtoms +
+     *  maxTokens cap), so a direct-path dual-pass run mirrors what prod
+     *  actually does. Before this, the direct path always ran an untuned
+     *  full sweep — silently diverging from prod the day the tuning
+     *  shipped. `'untuned'` restores the pre-tuning full sweep (replication
+     *  legs), same semantics as the daemon path's `--passb-sweep untuned`. */
+    passBSweep?: 'untuned';
   },
 ): Promise<DirectRunResult> {
   const config = opts.config ?? defaultConfig();
@@ -158,7 +167,17 @@ export async function runDirectPipeline(
     let passBAtomCount: number | undefined;
     if (opts.extractionPasses === 2) {
       const passBProvider = opts.llmExtractionPassB ?? opts.llmExtraction;
-      const specificsResults = await extractSpecifics(compactedChunks, passBProvider, budget, capUsd);
+      // Mirrors runPipeline stage 5b (pipeline.ts): tuned skip-gate + output
+      // cap by default; 'untuned' sweeps every chunk with the pass-A ceiling.
+      const passBTuning = resolveExtractionPassBTuning(config.distill);
+      const passAAtomsByChunk = new Map(extractResults.map(r => [r.chunkIndex, r.atoms.length]));
+      const sweepChunks = opts.passBSweep !== 'untuned' && passBTuning.sweepOnlyBelowAtoms > 0
+        ? compactedChunks.filter((chk) => (passAAtomsByChunk.get(chk.index) ?? 0) < passBTuning.sweepOnlyBelowAtoms)
+        : compactedChunks;
+      const specificsResults = await extractSpecifics(
+        sweepChunks, passBProvider, budget, capUsd, 1, undefined, undefined,
+        opts.passBSweep !== 'untuned' ? passBTuning.maxTokens : undefined,
+      );
       usageUsd += specificsResults.reduce((s, r) => s + r.usageUsd, 0);
 
       const specificsByChunk = new Map(specificsResults.map(r => [r.chunkIndex, r]));
