@@ -10,13 +10,27 @@
  * denominator (`atoms_attempted`) so a future doctor canary — or, nearer
  * term, FEAT-551's own AC-5 LoCoMo A/B measurement lane — can compute
  * `dropped / attempted` instead of reading `evidence_gate_drops` alone.
+ *
+ * FEAT-552 sub-scope C (AC-C2): `evidence_gate_drops`'s `reason` column is
+ * plain TEXT (no CHECK enum) -- reused here for a THIRD, non-drop reason,
+ * 'evidence-fuzzy-matched', so a passB atom admitted via the new fuzzy
+ * token-window tier (src/distill/evidence-verify.ts) is DB-row observable
+ * distinctly from an exact-match admission, with no new migration/table.
+ * `recordEvidenceGateRunLog`'s atomsDropped is computed ONLY from the two
+ * real drop reasons (see src/distill/stages/08-embed-index.ts) -- a fuzzy
+ * admission is a PASS, never counted as dropped.
  */
 
 import type { DB } from './db.js';
 import type { EvidenceGateDropReason } from '../distill/evidence-gate.js';
 
+/** FEAT-552 sub-scope C (AC-C2): a PASS-tier row this table also carries --
+ *  see this file's module doc comment for why a "drops" table has a
+ *  non-drop reason value. */
+export const EVIDENCE_FUZZY_MATCHED_REASON = 'evidence-fuzzy-matched' as const;
+
 export interface EvidenceGateDropRow {
-  reason: EvidenceGateDropReason;
+  reason: EvidenceGateDropReason | typeof EVIDENCE_FUZZY_MATCHED_REASON;
   count: number;
 }
 

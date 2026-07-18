@@ -45,6 +45,7 @@ import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
 import { judgeContradiction, type JudgeVerdict } from './contradiction-judge.js';
 import { dupJudgeBatch, DupJudgeRunTracker, type DupVerdictLabel } from './dup-judge.js';
+import { commandGuardBlocksMerge, COMMAND_GUARD_REASON } from './command-guard.js';
 import { recordConsolidationJudgeRun } from '../storage/consolidation-judge-log.js';
 import { getConsolidationCursor, setConsolidationCursor } from '../storage/consolidation-cursor.js';
 import { recordConsolidationRun } from '../storage/consolidation-run-log.js';
@@ -310,6 +311,24 @@ export interface ConsolidateSummary {
    *  finished — a SEPARATE guard from `dupJudgeCapReached`, same rationale
    *  as `contradictionWallClockCapReached` (FEAT-482 lesson). */
   dupJudgeWallClockCapReached: boolean;
+  /**
+   * FEAT-552 sub-scope C (AC-C1): pairs that cleared `mergeThreshold` but
+   * were BLOCKED from auto-merging by the command-token guard (either atom
+   * `type: 'command'` with differing tokenized command surfaces) —
+   * downgraded to a pending `kind='merge'` proposal instead (see
+   * `insertGuardedMergeProposal`). Always `[]` when no command-type atom is
+   * involved in any candidate pair this run (AC-C1: non-command pairs are
+   * unaffected).
+   */
+  commandGuardBlocked: Array<{ winner: string; loser: string; similarity: number; reason: typeof COMMAND_GUARD_REASON }>;
+  /**
+   * FEAT-552 sub-scope C (AC-C1): count of pending `kind='merge'` proposals
+   * the dup-judge sweep refused to auto-resolve (accept OR reject) this run
+   * because the command-token guard tripped — left pending with a guard
+   * marker in `metadata_json` instead (see `annotateCommandGuardBlocked`).
+   * Always 0 when dup-judge is off/disabled or no guarded pair was pending.
+   */
+  dupJudgeCommandGuardBlocked: number;
 }
 
 // Exported (not just for internal use) so buildFullPairs/buildKnnCandidatePairs
@@ -490,21 +509,26 @@ export function mergeAsSupersede(
  * winner-contained-in-loser row stays manual (the pair-scan handles it
  * superset-first on the same run).
  */
-function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: string[] } {
+function sweepContainedProposals(
+  db: DB,
+): { accepted: string[]; staleRejected: string[]; guardBlocked: ConsolidateSummary['commandGuardBlocked'] } {
   const accepted: string[] = [];
   const staleRejected: string[] = [];
+  const guardBlocked: ConsolidateSummary['commandGuardBlocked'] = [];
   const rows = db.prepare(`
-    SELECT p.id, w.text AS winner_text, l.text AS loser_text,
+    SELECT p.id, p.loser_id, p.similarity, w.text AS winner_text, l.text AS loser_text,
            w.valid_to AS winner_valid_to, l.valid_to AS loser_valid_to,
-           l.superseded_by AS loser_superseded_by, p.winner_id
+           l.superseded_by AS loser_superseded_by, p.winner_id,
+           w.type AS winner_type, l.type AS loser_type
     FROM consolidation_proposals p
     JOIN memories w ON w.id = p.winner_id
     JOIN memories l ON l.id = p.loser_id
     WHERE p.status = 'pending'
   `).all() as Array<{
-    id: string; winner_text: string; loser_text: string;
+    id: string; loser_id: string; similarity: number; winner_text: string; loser_text: string;
     winner_valid_to: number | null; loser_valid_to: number | null;
     loser_superseded_by: string | null; winner_id: string;
+    winner_type: string; loser_type: string;
   }>;
 
   const repo = new ProposalRepo(db);
@@ -526,6 +550,18 @@ function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: s
     }
     const c = containment(r.winner_text, r.loser_text);
     if (c === 'equal' || c === 'a-contains-b') {
+      // FEAT-552 sub-scope C (AC-C1) review follow-up (MEDIUM-2): same guard
+      // as the pairwise-scan containment tier — this sweep auto-accepts an
+      // EXISTING pending proposal via the exact same non-destructive merge
+      // path, so a command pair with differing tokens must be refused here
+      // too, not just at the point the proposal was first created.
+      if (commandGuardBlocksMerge(
+        { type: r.winner_type, text: r.winner_text }, { type: r.loser_type, text: r.loser_text },
+      )) {
+        guardBlocked.push({ winner: r.winner_id, loser: r.loser_id, similarity: r.similarity, reason: COMMAND_GUARD_REASON });
+        annotateCommandGuardBlocked(db, r.id, { source: 'containment-sweep' });
+        continue;
+      }
       try {
         // issue #190: this sweep runs unattended inside runConsolidation with
         // no human in the loop — 'consolidation_auto', same as the two direct
@@ -537,7 +573,7 @@ function sweepContainedProposals(db: DB): { accepted: string[]; staleRejected: s
       }
     }
   }
-  return { accepted, staleRejected };
+  return { accepted, staleRejected, guardBlocked };
 }
 
 /**
@@ -722,6 +758,10 @@ interface PendingMergeProposalRow {
   similarity: number;
   winner_text: string;
   loser_text: string;
+  // FEAT-552 sub-scope C (AC-C1): atom types, needed for the command-token
+  // guard check below — a pending merge proposal alone doesn't carry them.
+  winner_type: string;
+  loser_type: string;
 }
 
 interface DupJudgeSweepResult {
@@ -730,6 +770,9 @@ interface DupJudgeSweepResult {
   callsExecuted: number;
   capReached: boolean;
   wallClockCapReached: boolean;
+  /** FEAT-552 sub-scope C (AC-C1): count of pending proposals the command-
+   *  token guard refused to auto-resolve this sweep. */
+  guardBlocked: number;
 }
 
 /**
@@ -762,7 +805,8 @@ async function runDupJudgeSweep(
   log: (message: string) => void,
 ): Promise<DupJudgeSweepResult> {
   const rows = db.prepare(`
-    SELECT p.id, p.winner_id, p.loser_id, p.similarity, w.text AS winner_text, l.text AS loser_text
+    SELECT p.id, p.winner_id, p.loser_id, p.similarity, w.text AS winner_text, l.text AS loser_text,
+           w.type AS winner_type, l.type AS loser_type
     FROM consolidation_proposals p
     JOIN memories w ON w.id = p.winner_id
     JOIN memories l ON l.id = p.loser_id
@@ -774,8 +818,9 @@ async function runDupJudgeSweep(
   const verdictsPreviewed: ConsolidateSummary['dupJudgeVerdictsPreviewed'] = [];
   const resolvedOut: ConsolidateSummary['dupJudgeResolved'] = [];
   if (rows.length === 0) {
-    return { verdictsPreviewed, resolved: resolvedOut, callsExecuted: 0, capReached: false, wallClockCapReached: false };
+    return { verdictsPreviewed, resolved: resolvedOut, callsExecuted: 0, capReached: false, wallClockCapReached: false, guardBlocked: 0 };
   }
+  let guardBlockedCount = 0;
 
   const tracker = new DupJudgeRunTracker({ maxPerRun: resolved.maxPerRun, maxWallClockMs: resolved.maxWallClockMs }, log);
   const proposalRepo = new ProposalRepo(db);
@@ -796,6 +841,26 @@ async function runDupJudgeSweep(
 
       if (resolved.mode === 'dry-run') {
         verdictsPreviewed.push({ proposalId: row.id, similarity: row.similarity, verdict: v.verdict, confidence: v.confidence });
+        continue;
+      }
+
+      // FEAT-552 sub-scope C (AC-C1): command-token merge guard. Refuses to
+      // auto-resolve (either direction — accept OR reject) a pending
+      // proposal where either atom is `type: 'command'` and their tokenized
+      // command surfaces differ — the verdict is still computed/logged
+      // above, but the proposal is left `pending` (with a guard marker
+      // patched onto its metadata_json) instead of being resolved, so a
+      // human still reviews it. Checked BEFORE the dry-run branch's
+      // counterpart never applies (dry-run never resolves anything anyway).
+      if (commandGuardBlocksMerge(
+        { type: row.winner_type, text: row.winner_text }, { type: row.loser_type, text: row.loser_text },
+      )) {
+        guardBlockedCount++;
+        log(
+          `[dup-judge] command-guard: refused to resolve proposal=${row.id} verdict=${v.verdict} ` +
+          `confidence=${v.confidence} reason=${COMMAND_GUARD_REASON} — left pending`,
+        );
+        annotateCommandGuardBlocked(db, row.id, { dup_judge_verdict: v.verdict, dup_judge_confidence: v.confidence });
         continue;
       }
 
@@ -833,6 +898,7 @@ async function runDupJudgeSweep(
   return {
     verdictsPreviewed, resolved: resolvedOut,
     callsExecuted: state.callsExecuted, capReached: state.capReached, wallClockCapReached: state.wallClockCapReached,
+    guardBlocked: guardBlockedCount,
   };
 }
 
@@ -891,6 +957,59 @@ function insertContradictionProposal(
     winnerId, loserId, winnerId, loserId,
   );
   return inserted.changes > 0 ? proposalId : null;
+}
+
+/**
+ * FEAT-552 sub-scope C (AC-C1): insert a `kind='merge'` proposal for a pair
+ * the command-token guard downgraded from an auto-merge — same dedup guard
+ * (`WHERE NOT EXISTS`) `insertContradictionProposal` uses, plus a
+ * `metadata_json` marker so the guard hit is DB-row observable on the
+ * resulting pending proposal (reusing the EXISTING `consolidation_proposals`
+ * table/column, no migration).
+ */
+function insertGuardedMergeProposal(
+  db: DB, winnerId: string, loserId: string, similarity: number,
+): string | null {
+  const proposalId = randomUUID();
+  const metadata = { command_guard_blocked: true, command_guard_reason: COMMAND_GUARD_REASON };
+  const inserted = db.prepare(`
+    INSERT INTO consolidation_proposals (id, kind, winner_id, loser_id, similarity, status, created_at, metadata_json)
+    SELECT ?, 'merge', ?, ?, ?, 'pending', ?, ?
+    WHERE NOT EXISTS (
+      SELECT 1 FROM consolidation_proposals
+      WHERE status = 'pending'
+        AND MIN(winner_id, loser_id) = MIN(?, ?)
+        AND MAX(winner_id, loser_id) = MAX(?, ?)
+    )
+  `).run(
+    proposalId, winnerId, loserId, similarity, Date.now(), JSON.stringify(metadata),
+    winnerId, loserId, winnerId, loserId,
+  );
+  return inserted.changes > 0 ? proposalId : null;
+}
+
+/**
+ * FEAT-552 sub-scope C (AC-C1): patch a guard marker onto a STILL-PENDING
+ * `kind='merge'` proposal a command-guarded resolve path refused to act on
+ * — the proposal's `metadata_json` is otherwise only ever written at INSERT
+ * (contradiction rows) or at RESOLVE time (accept/reject, see
+ * `ProposalRepo.resolve`); this is the one place a still-pending row's
+ * metadata is annotated, so a human reviewing the queue can see WHY a
+ * normally-auto-resolvable pair was left for them. `extra` carries
+ * call-site-specific context (the dup-judge sweep's refused verdict, or the
+ * containment sweep's own marker) — see the two call sites below.
+ */
+function annotateCommandGuardBlocked(
+  db: DB, proposalId: string, extra: Record<string, unknown> = {},
+): void {
+  const metadata = {
+    command_guard_blocked: true,
+    command_guard_reason: COMMAND_GUARD_REASON,
+    ...extra,
+  };
+  db.prepare(
+    "UPDATE consolidation_proposals SET metadata_json = ? WHERE id = ? AND status = 'pending'",
+  ).run(JSON.stringify(metadata), proposalId);
 }
 
 /** issue #387 defaults — see `ConsolidateOpts.setupBudgetMs`/`setupYieldEveryNAtoms`. */
@@ -957,6 +1076,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
       dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
       dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
+      commandGuardBlocked: [], dupJudgeCommandGuardBlocked: 0,
     };
   }
   // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
@@ -996,12 +1116,16 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
     dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
     dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
+    commandGuardBlocked: [], dupJudgeCommandGuardBlocked: 0,
   };
 
   if (autoMergeContained) {
     const swept = sweepContainedProposals(db);
     summary.autoAcceptedProposals = swept.accepted;
     summary.staleRejectedProposals = swept.staleRejected;
+    // FEAT-552 sub-scope C (AC-C1) review follow-up (MEDIUM-2): same
+    // summary bucket the pairwise-scan containment/mergeThreshold tiers use.
+    summary.commandGuardBlocked.push(...swept.guardBlocked);
   }
 
   // issue #387: SETUP (load atoms + group + build per-group embedding maps)
@@ -1135,6 +1259,24 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
         if (c === 'a-contains-b') { winner = a; loser = b; }
         else if (c === 'b-contains-a') { winner = b; loser = a; }
         // 'equal' keeps the usefulness-based pick.
+        // FEAT-552 sub-scope C (AC-C1) review follow-up (MEDIUM-2): the
+        // containment rule's aggressive text normalization (lowercase,
+        // strip punctuation, collapse whitespace) treats
+        // `git checkout -- A.ts` as containing/contained-by
+        // `git checkout -- A.ts --force` — a DIFFERENT command, not a
+        // paraphrase. Same guard, same downgrade-to-pending-proposal
+        // posture as the mergeThreshold tier below, so this tier can no
+        // longer auto-merge a command pair with differing tokens either.
+        if (commandGuardBlocksMerge(a, b)) {
+          summary.commandGuardBlocked.push({ winner: winner.id, loser: loser.id, similarity: sim, reason: COMMAND_GUARD_REASON });
+          log(
+            `[consolidate] command-guard: blocked containment auto-merge winner=${winner.id} loser=${loser.id} ` +
+            `sim=${sim.toFixed(4)} reason=${COMMAND_GUARD_REASON} — downgraded to a pending proposal`,
+          );
+          const proposalId = insertGuardedMergeProposal(db, winner.id, loser.id, sim);
+          if (proposalId) summary.proposed.push({ winner: winner.id, loser: loser.id, similarity: sim });
+          return;
+        }
         // issue #190: this tier merges immediately with no proposal row
         // and no human step possible — always 'consolidation_auto'.
         mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
@@ -1145,6 +1287,24 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     }
 
     if (sim >= mergeThreshold) {
+      // FEAT-552 sub-scope C (AC-C1): command-token merge guard. Measured
+      // basis: 2026-07-18 prod audit, phi false-merged `git checkout A.ts`
+      // vs `B.ts` at cosine 1.00 — same verb, different file argument. A
+      // pair this guard blocks is downgraded to a manual proposal (never
+      // silently dropped) so a human still sees it; non-command pairs take
+      // this `if` branch completely unaffected (AC-C1 byte-identical
+      // requirement — `commandGuardBlocksMerge` returns false unconditionally
+      // when neither atom is `type: 'command'`).
+      if (commandGuardBlocksMerge(a, b)) {
+        summary.commandGuardBlocked.push({ winner: winner.id, loser: loser.id, similarity: sim, reason: COMMAND_GUARD_REASON });
+        log(
+          `[consolidate] command-guard: blocked auto-merge winner=${winner.id} loser=${loser.id} ` +
+          `sim=${sim.toFixed(4)} reason=${COMMAND_GUARD_REASON} — downgraded to a pending proposal`,
+        );
+        const proposalId = insertGuardedMergeProposal(db, winner.id, loser.id, sim);
+        if (proposalId) summary.proposed.push({ winner: winner.id, loser: loser.id, similarity: sim });
+        return;
+      }
       // issue #190: same reasoning as the containment tier above.
       mergeAsSupersede(db, winner.id, loser.id, undefined, 'consolidation_auto');
       invalidatedThisRun.add(loser.id);
@@ -1388,10 +1548,12 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     summary.dupJudgeCallsExecuted = dupJudgeResult.callsExecuted;
     summary.dupJudgeCapReached = dupJudgeResult.capReached;
     summary.dupJudgeWallClockCapReached = dupJudgeResult.wallClockCapReached;
+    summary.dupJudgeCommandGuardBlocked = dupJudgeResult.guardBlocked;
     log(
       `[consolidate] dup-judge sweep: mode=${dupJudge.mode} calls=${summary.dupJudgeCallsExecuted} ` +
       `resolved=${summary.dupJudgeResolved.length} previewed=${summary.dupJudgeVerdictsPreviewed.length} ` +
-      `capReached=${summary.dupJudgeCapReached} wallClockCapReached=${summary.dupJudgeWallClockCapReached}`,
+      `capReached=${summary.dupJudgeCapReached} wallClockCapReached=${summary.dupJudgeWallClockCapReached} ` +
+      `commandGuardBlocked=${summary.dupJudgeCommandGuardBlocked}`,
     );
   }
 

@@ -25,7 +25,7 @@ function vecAt(axis: number, tilt = 0, tiltAxis = 1): Float32Array {
 
 async function seedEmbedded(
   db: DB, text: string, hash: string, vec: Float32Array,
-  opts: { type?: 'fact' | 'decision'; repo?: string; importance?: number } = {},
+  opts: { type?: 'fact' | 'decision' | 'command'; repo?: string; importance?: number } = {},
 ): Promise<string> {
   const id = new MemoryRepo(db).insert({
     type: opts.type ?? 'fact', text, normalized_text: text.toLowerCase(),
@@ -1226,5 +1226,210 @@ describe('cooperative yield in the pairwise scan (ADR-018 Tier 1, issue #347)', 
     expect(summaryDefault.merged[0]).toMatchObject({ winner: bDefault, loser: aDefault });
     expect(summaryFrequentYield.merged[0]).toMatchObject({ winner: bFrequent, loser: aFrequent });
     expect(summaryFrequentYield.merged[0]!.similarity).toBeCloseTo(summaryDefault.merged[0]!.similarity, 10);
+  });
+});
+
+// FEAT-552 sub-scope C (AC-C1): command-token merge guard integration —
+// measured basis is the 2026-07-18 prod audit (phi false-merged
+// `git checkout A.ts` vs `B.ts` at cosine 1.00). Pure token-comparison unit
+// tests live in tests/consolidate/command-guard.test.ts; this file exercises
+// the guard wired into the two real auto-merge points.
+describe('command-token merge guard (FEAT-552 sub-scope C, AC-C1)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('blocks the >=mergeThreshold auto-merge path for a command pair with differing tokens — downgraded to a pending proposal', async () => {
+    // Near-identical embeddings (sim ~0.999, comfortably >= mergeThreshold)
+    // but different command arguments — the exact false-merge shape the
+    // 2026-07-18 prod audit measured.
+    const a = await seedEmbedded(db, 'git checkout A.ts', 'h-cg-1', vecAt(0, 0.01), { type: 'command' });
+    const b = await seedEmbedded(db, 'git checkout B.ts', 'h-cg-2', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0); // never auto-merged
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    expect(summary.commandGuardBlocked[0]).toMatchObject({ reason: 'command-token-mismatch' });
+
+    // Downgraded to a pending manual proposal instead of being dropped.
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.kind).toBe('merge');
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean; command_guard_reason: string };
+    expect(metadata.command_guard_blocked).toBe(true);
+    expect(metadata.command_guard_reason).toBe('command-token-mismatch');
+
+    // Both atoms untouched — nothing lost.
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  it('does NOT block a command pair whose tokens are identical — merges normally', async () => {
+    const a = await seedEmbedded(db, 'git checkout A.ts', 'h-cg-3', vecAt(0, 0.01), { type: 'command' });
+    const b = await seedEmbedded(db, 'git checkout A.ts', 'h-cg-4', vecAt(0, 0.02), { type: 'command' });
+    recordRecallUsed(db, { atomId: b, surface: 'rest', signal: 'explicit' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(1);
+    expect(summary.commandGuardBlocked).toHaveLength(0);
+    void a;
+  });
+
+  it('non-command pairs are completely unaffected by the guard (byte-identical to a plain merge)', async () => {
+    const a = await seedEmbedded(db, 'port is 7777', 'h-cg-5', vecAt(0, 0.01));
+    const b = await seedEmbedded(db, 'the port is 7777', 'h-cg-6', vecAt(0, 0.02));
+    recordRecallUsed(db, { atomId: b, surface: 'rest', signal: 'explicit' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(1);
+    expect(summary.merged[0]).toMatchObject({ winner: b, loser: a });
+    expect(summary.commandGuardBlocked).toHaveLength(0);
+  });
+
+  // Review follow-up (MEDIUM-2, 2026-07-18): the containment auto-merge
+  // tier's aggressive text normalization treats `git checkout -- A.ts` as
+  // contained in/containing `git checkout -- A.ts --force` — a DIFFERENT
+  // command, not a paraphrase — and bypassed the guard entirely. Reviewer's
+  // exact repro pair, reproduced here as a regression test.
+  it("MEDIUM-2 repro: the containment auto-merge tier blocks a command pair the reviewer found bypassing the guard (`git checkout -- A.ts` vs `--force`)", async () => {
+    const a = await seedEmbedded(db, 'git checkout -- A.ts', 'h-cg-7', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'git checkout -- A.ts --force', 'h-cg-8', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0); // was auto-merging via containment before the fix
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    expect(summary.commandGuardBlocked[0]).toMatchObject({ reason: 'command-token-mismatch' });
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean };
+    expect(metadata.command_guard_blocked).toBe(true);
+
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  // LOW (2026-07-18 review): a compound/&&-chained command pair must also be
+  // blocked — the extra `&& git push` segment is a materially different
+  // command, not incidental formatting, and the containment check's
+  // aggressive normalization would otherwise treat it as a contained subset.
+  it('LOW: blocks a compound (&&-chained) command pair where one command has an extra chained step', async () => {
+    const a = await seedEmbedded(db, 'git add . && git commit -m wip', 'h-cg-9', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'git add . && git commit -m wip && git push', 'h-cg-10', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0);
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    void a; void b;
+  });
+
+  // MEDIUM-2: the SAME guard must also apply when sweepContainedProposals
+  // resolves an EXISTING pending proposal on a later run (not just at the
+  // moment the proposal is first created by the pairwise scan) — mirrors
+  // the pre-existing "sweeps EXISTING pending proposals" test's shape.
+  it('MEDIUM-2: sweepContainedProposals refuses to auto-accept an EXISTING pending command-atom proposal with differing tokens', async () => {
+    const winner = await seedEmbedded(db, 'git checkout -- A.ts --force', 'h-cg-11', vecAt(0), { type: 'command' });
+    const loser = await seedEmbedded(db, 'git checkout -- A.ts', 'h-cg-12', vecAt(0, 0.45), { type: 'command' });
+    recordRecallUsed(db, { atomId: winner, surface: 'rest', signal: 'explicit' }); // superset wins the row
+    const first = await runConsolidation(db, { autoMergeContained: false });
+    expect(first.proposed).toHaveLength(1);
+
+    const second = await runConsolidation(db); // autoMergeContained defaults true
+    expect(second.autoAcceptedProposals).toHaveLength(0); // refused, not swept
+    // Hit twice this run: once by sweepContainedProposals (the existing
+    // pending row), once more by the pairwise scan re-encountering the same
+    // still-valid, still-untouched pair via its own containment branch —
+    // both refuse the same pair, neither one merges or double-inserts
+    // (insertGuardedMergeProposal's dedup guard no-ops the second attempt).
+    expect(second.commandGuardBlocked).toHaveLength(2);
+    for (const hit of second.commandGuardBlocked) {
+      expect(hit).toMatchObject({ winner, loser, reason: 'command-token-mismatch' });
+    }
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1); // still pending — never auto-accepted
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean; source: string };
+    expect(metadata.command_guard_blocked).toBe(true);
+    expect(metadata.source).toBe('containment-sweep');
+    expect(new MemoryRepo(db).get(loser)!.superseded_by).toBeNull();
+  });
+
+  it("dup-judge sweep: refuses to resolve (either direction) a pending command-atom proposal with differing tokens, leaving it pending with a guard marker", async () => {
+    // Propose-tier similarity (~0.90) so the pairwise scan creates exactly
+    // one pending 'merge' proposal for the dup-judge sweep to see.
+    const a = await seedEmbedded(db, 'npm run build', 'h-cg-dj-1', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'npm run test', 'h-cg-dj-2', vecAt(0, 0.45), { type: 'command' });
+
+    const confidentMergeVerdict: LLMProvider = {
+      name: 'ollama',
+      model: 'test-dup-judge-model',
+      async chat(): Promise<ChatResult> {
+        return {
+          text: JSON.stringify({ verdicts: [{ index: 0, verdict: 'same-fact-merge', confidence: 0.99 }] }),
+          usage: { in: 10, out: 10, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-dup-judge-model', latency_ms: 0 };
+      },
+    };
+
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 60_000 },
+      dupJudgeProvider: confidentMergeVerdict,
+    });
+
+    expect(summary.dupJudgeCallsExecuted).toBe(1); // the judge WAS called and returned a confident verdict
+    expect(summary.dupJudgeResolved).toHaveLength(0); // but resolve was refused
+    expect(summary.dupJudgeCommandGuardBlocked).toBe(1);
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1); // still pending, neither merged nor rejected
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as {
+      command_guard_blocked: boolean; command_guard_reason: string; dup_judge_verdict: string;
+    };
+    expect(metadata.command_guard_blocked).toBe(true);
+    expect(metadata.command_guard_reason).toBe('command-token-mismatch');
+    expect(metadata.dup_judge_verdict).toBe('same-fact-merge');
+
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  it('dup-judge sweep: resolves normally when the pending proposal is a command pair with the SAME token SET (different word order)', async () => {
+    // Different word order -> different TEXT (so the containment tier's
+    // substring check doesn't fire and auto-merge this pair before it ever
+    // reaches the propose band / dup-judge sweep) but the SAME token SET
+    // (so the command guard does not block resolution).
+    const a = await seedEmbedded(db, 'run npm build', 'h-cg-dj-3', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'npm run build', 'h-cg-dj-4', vecAt(0, 0.45), { type: 'command' });
+
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 60_000 },
+      dupJudgeProvider: {
+        name: 'ollama',
+        model: 'test-dup-judge-model',
+        async chat(): Promise<ChatResult> {
+          return {
+            text: JSON.stringify({ verdicts: [{ index: 0, verdict: 'same-fact-merge', confidence: 0.95 }] }),
+            usage: { in: 10, out: 10, usd: 0 },
+          };
+        },
+        async health(): Promise<LLMHealth> {
+          return { ok: true, model: 'test-dup-judge-model', latency_ms: 0 };
+        },
+      },
+    });
+
+    expect(summary.dupJudgeCommandGuardBlocked).toBe(0);
+    expect(summary.dupJudgeResolved).toHaveLength(1);
+    expect(summary.dupJudgeResolved[0]).toMatchObject({ verdict: 'same-fact-merge', action: 'merged' });
+    void a; void b;
   });
 });
