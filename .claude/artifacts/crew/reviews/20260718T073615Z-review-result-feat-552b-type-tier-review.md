@@ -1,43 +1,37 @@
 ---
 findings: "🔴:0,🟡:1,❓:0"
 status: completed
-decision: rejected
+decision: approved_with_notes
 author_id: crew:fullstack-dev
 judge_id: crew:reviewer
 self_approval: false
 ---
 # Review Result: Review Result
 
-- Created: 2026-07-18T07:48:17.129Z
+- Created: 2026-07-18T07:57:48.556Z
 - Reviewer: reviewer
-- Decision: rejected
+- Decision: approved_with_notes
 - Status: completed
-- Summary: needs_fix: AC-B1's measured 100% command-hint precision does not hold in production - the census tests getTypeHint() against raw fixture text while both real call sites feed it entity-dict-canonicalized text, and ENTITY_DICT capitalizes bare 'bun' to 'Bun', silently defeating the case-sensitive command regex for every bun-led command atom (live-reproduced against dist/); isolated low-risk fix + regression test required before merge.
+- Summary: Round 2 (tip a75a7082, fix 56116f75): HIGH resolved. COMMAND_LEAD_RE is now case-insensitive; my exact original repro against the rebuilt dist now returns typeHintApplied={from:fact,to:command,matchedPattern:leading-shell-token} for a bun-led atom. 'make' was correctly dropped from COMMAND_TOKENS to avoid a real collision with the decision-imperative gate (verified: the only 'Make ...' gold atom is fx21's decision, not a command fixture). New regression tests exercise the REAL call sites (memoryNormalize, runTypeBackfillBatch via a normalizeText()-derived normalized_text seed) and assert the intermediate capitalized state, so they would fail without the fix. AC-B1 census now runs normalizeText() before getTypeHint(), matching production order; numbers unchanged (10/13/1 fires, 100% precision each, 0 ambiguous) as expected since the fix only restores previously-dropped fires. Full re-run: bun run build clean, 66 files / 1210 tests green. Approving with notes: the MEDIUM checkpoint-atomicity finding from round 1 remains open, explicitly deferred as a non-blocking follow-up in the fix commit message.
 - Evidence Checked:
-  - Live repro: node against dist/distill/stages/07-memory-normalize.js shows normalizeText('bun run test')==='Bun run test' and memoryNormalize(...) returns typeHintApplied:undefined (hint never fires). 3 of the 10 command-fires the AC-B1 census (tests/distill/type-hints.test.ts:139
-  - calls getTypeHint(atom.text) on RAW text) counts as correct are 'bun run ...' fixtures (fx12-command-heavy.json:17-19) that would NOT be corrected by the real pipeline (07-memory-normalize.ts:112-119
-  - backfill-types.ts:124 both call getTypeHint on normalized_text). Independently re-ran targeted suites: 5 files/164 tests green; tsc -p tsconfig.tests.json --noEmit clean. Confirmed by grep: usefulness.ts negative-signal queries all filter literal family='memory_corrected'
-  - so backfill's 'type_corrected' family is genuinely excluded. Confirmed both getTypeHint call sites and both config governance composition points (loadConfig + loadConfigFromDisk) are genuinely wired
-  - not orphaned.
+  - Live repro re-run against rebuilt dist/distill/stages/07-memory-normalize.js: normalizeText('bun run test')==='Bun run test'; memoryNormalize([{type:fact
+  - text:'bun run test'
+  - ...}]) now returns type='command'
+  - typeHintApplied={from:fact
+  - to:command
+  - matchedPattern:leading-shell-token} (previously undefined). git show 56116f75 -- src/distill/type-hints.ts: COMMAND_LEAD_RE gained 'i' flag; 'make' removed from COMMAND_TOKENS with inline rationale citing the real fx21 decision-atom collision. Verified via grep of scripts/eval/extraction-bench/fixtures/*.json: zero gold atoms have type=command with 'make'-led text; the sole 'Make ...' atom (fx21-deploy-incident-rollback.json:22) is type=decision. tests/distill/07-memory-normalize.test.ts gained 2 new tests asserting normalizedText==='Bun run test'/'Vitest run tests/foo.test.ts' THEN type==='command' via the real memoryNormalize() call. tests/storage/backfill-types.test.ts gained seedNormalized() (uses real normalizeText()) + a test asserting stored normalized_text==='Bun run test' THEN runTypeBackfillBatch --apply retypes to 'command'. tests/distill/type-hints.test.ts's AC-B1 census loop now calls normalizeText(atom.text) before getTypeHint(); re-ran via vitest --reporter=verbose: command fires=10/10 correct
+  - decision fires=13/13
+  - lesson fires=1/1
+  - event 0 fires
+  - 0 ambiguous - identical to round-1 numbers. unset ASTRA_SKIP_CONSOLIDATE; bun run build -> clean; npx vitest run tests/distill/ tests/storage/ tests/config/ -> 66 files / 1210 tests passed (exact expected count).
 - Files Reviewed:
   - src/distill/type-hints.ts
-  - src/distill/stages/07-memory-normalize.ts
-  - src/distill/pipeline.ts
-  - src/pipeline/handlers/distill-events.ts
-  - src/config/config.ts
-  - src/config/loader.ts
-  - src/config/writer.ts
-  - src/distill/backfill-types.ts
-  - src/cli/backfill-types.ts
-  - src/cli/index.ts
   - tests/distill/type-hints.test.ts
   - tests/distill/07-memory-normalize.test.ts
   - tests/storage/backfill-types.test.ts
-  - tests/config/config.test.ts
-  - tests/config/writer.test.ts
-- Test Adequacy: 164 targeted tests across 5 files independently re-run and green; strong coverage for override semantics/governance/backfill batching-resume-idempotency with real DB + real memories_vec row assertions; gap: no test seeds a bun-led command atom through the real memoryNormalize/runTypeBackfillBatch entry points, which is exactly what let the HIGH finding ship green.
+- Test Adequacy: 1210/1210 targeted tests green (independently re-run), including 3 new end-to-end regression tests that route through the real memoryNormalize()/runTypeBackfillBatch() call sites with asserted intermediate ENTITY_DICT-transformed state, closing exactly the coverage gap that let round-1's HIGH finding ship green. AC-B1 census methodology corrected to match production normalize-then-hint order.
 - Author: crew:fullstack-dev
 - Judge: crew:reviewer
-- Risks: HIGH (tracked as the sole blocking finding, not counted in the 🟡/🔴 tally above which uses this CLI's severity buckets loosely): command type-hint silently never fires for any 'bun'-led command atom in both live distill and backfill-types CLI, because ENTITY_DICT capitalizes 'bun'->'Bun' before the case-sensitive COMMAND_LEAD_RE runs; falsifies the AC-B1 census's claimed 100% command precision for the shipped code path. MEDIUM: backfill-types.ts checkpoint write (writeCheckpoint, line 59) is non-atomic (plain writeFileSync, not tmp+rename like writeConfig()) - self-healing via malformed-JSON-to-rowid-0 fallback but could force a full-corpus rescan after a crash-during-write on a large (48k-row) backfill.
-- Required Follow-up: Fix the bun/ENTITY_DICT vs COMMAND_LEAD_RE case-order bug (reorder hint-check before entity-dict canonicalization, or make the command check case-insensitive with verification against false-positive risk on capitalized narrative openers), add a regression test that seeds a bun-led command atom through memoryNormalize() end-to-end (not raw getTypeHint()), and correct or caveat the AC-B1 census methodology so it reflects the real normalizeText-then-getTypeHint production order. Optional follow-up (non-blocking): make backfill-types.ts's checkpoint write atomic (tmp+rename) to match writeConfig()'s established pattern.
+- Risks: MEDIUM (carried over from round 1, explicitly deferred, non-blocking): backfill-types.ts's checkpoint write (writeCheckpoint, non-atomic writeFileSync) still doesn't match writeConfig()'s tmp+rename pattern - self-heals via malformed-JSON-to-rowid-0 fallback, worst case is a full-corpus rescan after a crash mid-write, never data loss or a double-apply.
+- Required Follow-up: Optional follow-up: make backfill-types.ts's checkpoint write atomic (tmp+rename) to match writeConfig()'s established pattern for the identical hazard class. Not required before merge.
 

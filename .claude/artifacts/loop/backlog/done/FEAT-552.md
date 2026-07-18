@@ -1,6 +1,6 @@
 ---
 id: FEAT-552
-status: pending
+status: done
 priority: P1
 category: feature
 target_release: null
@@ -93,3 +93,18 @@ Three bounded sub-scopes (one worktree each):
   distinct reason codes asserted in DB rows.
 - ALL: build + tsc(tests,eval) clean; full targeted suites green; DB-row
   assertions for every counter (house rule).
+
+## Outcome (2026-07-18)
+
+SHIPPED — 3-worktree wave, all sub-scopes approved, merged A->B->C into
+chore/bench-onnx-embed at 439f52db (pushed). 1359 tests green on merged tip.
+- A (362f0ee3): salvage + dup-key detector + evidence-first sweeper prompt. Approved, zero findings.
+- B (a75a7082): type-hint tier (default ON) + backfill-types CLI. 1 review round: HIGH case-order
+  bug (ENTITY_DICT bun->Bun before hint; lowercase-only regex never fired in prod) -> fixed
+  case-insensitive + end-to-end tests through real call sites. approved_with_notes.
+  MEDIUM follow-up: backfill checkpoint write not atomic (plain writeFileSync).
+- C (8a3509da): command-token merge guard (threshold + dup-judge + containment tiers) + fuzzy
+  evidence tier. 1 review round: MEDIUM containment-tier guard bypass -> fixed both call sites.
+  Approved on re-review.
+Prod census (corrected, dry-run): 50,091 scanned, 419 would-change (fact->command 209,
+todo->decision 47); case fix restored 111 fires vs the 308 first census. --apply = operator decision.
