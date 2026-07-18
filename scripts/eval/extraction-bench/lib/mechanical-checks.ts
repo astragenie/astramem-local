@@ -15,6 +15,11 @@
  *    fixture's own source transcript.
  */
 import type { JudgeAtomIn, FixtureScore } from './judge.js';
+// FEAT-551: quote-verification promoted to a shared src/ util so the bench's
+// own measurement and the production stage-8 admission gate
+// (src/distill/evidence-gate.ts) can never drift apart — see that file's doc
+// comment and src/distill/evidence-verify.ts for the full rationale.
+import { verifyEvidenceQuote } from '../../../../src/distill/evidence-verify.js';
 
 // ---------------------------------------------------------------------------
 // Forbidden-item detection (AC-2, AC-6)
@@ -114,26 +119,25 @@ export interface EvidenceAccuracyResult {
   denominator: number;
 }
 
-function normalizeWhitespace(s: string): string {
-  return s.trim().replace(/\s+/g, ' ');
-}
-
 /**
  * Computes the mechanical evidence-accuracy inputs for one fixture: of the
  * atoms that carry a non-empty `evidence` excerpt, what fraction of those
  * quotes actually appear (whitespace-normalized only — no lowercasing, no
  * punctuation stripping, since a fabricated-but-similar quote should NOT
  * count as real evidence) in the fixture's own source transcript.
+ *
+ * Delegates the actual quote check to `verifyEvidenceQuote`
+ * (src/distill/evidence-verify.ts, FEAT-551) — the SAME function the
+ * production stage-8 admission gate calls, so this measurement can never
+ * silently drift from what the gate actually enforces.
  */
 export function computeEvidenceAccuracy(atoms: JudgeAtomIn[], transcriptText: string): EvidenceAccuracyResult {
-  const normTranscript = normalizeWhitespace(transcriptText);
   let numerator = 0;
   let denominator = 0;
   for (const atom of atoms) {
     if (typeof atom.evidence !== 'string' || atom.evidence.trim().length === 0) continue;
     denominator++;
-    const normQuote = normalizeWhitespace(atom.evidence);
-    if (normQuote.length > 0 && normTranscript.includes(normQuote)) numerator++;
+    if (verifyEvidenceQuote(atom.evidence, transcriptText)) numerator++;
   }
   return { numerator, denominator };
 }
