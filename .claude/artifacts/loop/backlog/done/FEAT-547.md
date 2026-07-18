@@ -1,6 +1,6 @@
 ---
 id: FEAT-547
-status: pending
+status: done
 priority: P1
 category: feature
 target_release: null
@@ -112,3 +112,7 @@ Measured guardrail: phi SELF-triage on its own atoms was recall-destructive (100
   enablement = its own gated decision with bench evidence)" — AC-3's bench
   A/B produces the evidence a FUTURE enablement decision needs, it does not
   authorize enablement itself.
+
+## Wave outcome (2026-07-18)
+
+2026-07-18 WAVE COMPLETE: built (SLICE-441, tip dd0e1a3a), review approved_with_notes (0 CRIT/HIGH). MEASURED (5fx A/B): keep/junk verdict costs ~40 recall with BOTH clerks (phi 94->54, 4b 94->58) — NO-ENABLE as-is; phi BEATS 4b at type-repair (typeAcc 58 vs 42; 4b forecast inverted). Follow-up: repair-only triage mode (apply corrected_type, skip keep/junk).

@@ -1,6 +1,6 @@
 ---
 id: FEAT-548
-status: in-progress
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -91,3 +91,7 @@ metered codex call. Measured phi cost: ~1-2s per chunk verdict locally.
   already the FEAT's own design (explicitly out of scope: "no content
   transformation"); no alternative considered here, confirming the FEAT
   body's scope fence is correct and should not be relaxed.
+
+## Wave outcome (2026-07-18)
+
+2026-07-18 WAVE COMPLETE: built (SLICE-441, tip e9d8b6c2 incl migration renumber 054->055 + rebase onto 547), review approved ZERO findings. Dry-run on 55 fixtures EXECUTED but telemetry lost to sandbox cleanup — follow-up: surface gatekeeper stats in bench summary.json pre-teardown, then re-measure. Latent compact-fallback positional bug fixed en route.

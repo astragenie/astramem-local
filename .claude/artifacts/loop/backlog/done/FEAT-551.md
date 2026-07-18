@@ -1,6 +1,6 @@
 ---
 id: FEAT-551
-status: pending
+status: done
 priority: P1
 category: feature
 target_release: null
@@ -136,3 +136,7 @@ Also atoms-stored + gate-drop-rate reported.
   top-line benchmark delta (+2-4 LoCoMo pts) and an adversarial-guard floor
   (>=0.87) neither of which the extraction-bench sweep alone measures;
   shipping without AC-5 would leave the FEAT's central claim unverified.
+
+## Wave outcome (2026-07-18)
+
+2026-07-18 WAVE COMPLETE: built (SLICE-440, tip e6c17156 after one needs_fix round — counters-never-persisted, fixed + DB-row tests), review PASS. MEASURED (LoCoMo conv-1): gate VINDICATED (+3.7 vs ungated, junk blocked, adversarial 0.70->0.85) but phi ignores evidence-field 77% -> net -2.7 vs champion 0.6002; adversarial 0.8511 < 0.87 guard -> FORMAL NO-ENABLE for passB=phi. Gate infra makes any future sweeper safe to test. Gate telemetry (191 attempted/165 dropped) worked exactly as designed.

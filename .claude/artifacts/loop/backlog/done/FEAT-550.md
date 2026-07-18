@@ -1,6 +1,6 @@
 ---
 id: FEAT-550
-status: in-progress
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -91,3 +91,7 @@ the ADR-005 harness floors (must not regress).
   rejected: this repo's own measured history (rerank-mock backfiring
   despite looking reasonable) is the direct precedent for why AC-4's
   measured gate is required before enablement, not optional.
+
+## Wave outcome (2026-07-18)
+
+2026-07-18 WAVE COMPLETE: built (SLICE-440, tip c6f339b1), review PASS high-confidence (abort traced to fetch; contract-freeze held; governance boot-path praised). LoCoMo --diagnose A/B deferred (next session); ADR-005 floors green with mode off.

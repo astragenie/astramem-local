@@ -1,6 +1,6 @@
 ---
 id: FEAT-549
-status: pending
+status: done
 priority: P2
 category: feature
 target_release: null
@@ -103,3 +103,7 @@ above 0.92 unaudited — issue #190). Add a batched LLM dup-judge over the propo
   explicitly out of scope: "No default enablement (off until the 543-eval
   shows weighted-error improvement)" — AC-3 produces that evidence, it does
   not substitute for the actual enablement decision.
+
+## Wave outcome (2026-07-18)
+
+2026-07-18 WAVE COMPLETE: built (SLICE-440, tip ac2e8c7b), review approved. Mock-judge eval delta=0 (honest: no gold-merge fixture in propose band — fixture-coverage follow-up filed in review). Real-LLM measurement deferred; enablement blocked until it runs.
