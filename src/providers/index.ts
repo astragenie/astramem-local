@@ -3,6 +3,7 @@ import type { LLMProvider } from '../contracts/llm.js';
 import type { EmbedProvider } from '../contracts/embed.js';
 import { resolveEmbedQueryPrefix } from '../contracts/embed.js';
 import type { Config } from '../config/config.js';
+import { resolveExtractionPassBTuning } from '../config/config.js';
 import { OllamaLLMProvider } from './llm/ollama.js';
 import { AzureOpenAILLMProvider } from './llm/azure-openai.js';
 import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
@@ -99,6 +100,9 @@ export function buildLLMProvider(
   providerName: Config['llm']['compaction']['provider'],
   model: string,
   config: Config,
+  /** Ollama-only per-instance tuning (clerk seats); ignored by every other
+   *  provider — see OllamaLLMConfig.numCtxCap. */
+  opts?: { numCtxCap?: number },
 ): LLMProvider {
   // Apply the optional daemon-side call-rate limiter around whichever concrete
   // provider we build (token bucket SHARED per provider name — see
@@ -114,7 +118,7 @@ export function buildLLMProvider(
   // src/search/decompose.ts) without any daemon-boot (serve.ts) changes.
   return trackProviderHealth(
     rateLimitLLMProvider(
-      buildRawLLMProvider(providerName, model, config),
+      buildRawLLMProvider(providerName, model, config, opts),
       config.llm.rateLimit?.callsPerMinute,
     ),
   );
@@ -124,9 +128,10 @@ function buildRawLLMProvider(
   providerName: Config['llm']['compaction']['provider'],
   model: string,
   config: Config,
+  opts?: { numCtxCap?: number },
 ): LLMProvider {
   if (providerName === 'ollama') {
-    return new OllamaLLMProvider({ baseUrl: config.ollama.baseUrl, model });
+    return new OllamaLLMProvider({ baseUrl: config.ollama.baseUrl, model, numCtxCap: opts?.numCtxCap });
   }
 
   if (providerName === 'openai-compatible') {
@@ -300,6 +305,12 @@ export function getProviders(config: Config): ProviderSet {
           passB.provider ?? config.llm.extraction.provider,
           passB.model ?? config.llm.extraction.model,
           config,
+          // Clerk-seat num_ctx ceiling (ollama-only; other providers ignore
+          // it) — resolved through the ONE central tuning resolver, never a
+          // literal here. Applied only on this explicit-override branch: the
+          // identity default below reuses the pass-A instance, which must
+          // keep author-seat sizing.
+          { numCtxCap: resolveExtractionPassBTuning(config.distill).numCtxCap },
         )
       : extraction;
   // Atom-triage provider override (FEAT-533): same identity-default shape

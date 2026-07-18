@@ -13,6 +13,8 @@ import {
   applyDupJudgeGovernance,
   applyRetentionGovernance,
   applyTypeHintsGovernance,
+  resolveExtractionPassBTuning,
+  EXTRACTION_PASS_B_DEFAULTS,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -134,11 +136,15 @@ describe('loadConfig', () => {
   // full-suite gain 0.4610 -> 0.5549; see Config['distill']['extractionPasses']'s
   // doc comment). A shipped default with no assertion is how it silently
   // drifts back — same rationale as the compaction/extraction provider test
-  // above.
+  // above. (2026-07-18: an uncommitted working-tree edit flipped this default
+  // to 1 AND rewrote this very test to lock the flip in — restored same day;
+  // the assertion below is the drift canary doing its job.)
   it('distill.extractionPasses defaults to 2 (dual-pass, shipped default)', () => {
     const cfg = loadConfig(undefined);
     expect(cfg.distill.extractionPasses).toBe(2);
+    expect(cfg.distill.compaction).toBe('auto');
     expect(defaultConfig().distill.extractionPasses).toBe(2);
+    expect(defaultConfig().distill.compaction).toBe('auto');
   });
 
   it('distill.extractionPasses: 1 can be overridden — an explicit single-pass opt-out round-trips', () => {
@@ -849,5 +855,35 @@ describe('applyExtractProfileGovernance', () => {
 
   it('defaultConfig ships extractProfile: "engineering" (byte-identical pre-FEAT-479 default)', () => {
     expect(defaultConfig().distill.extractProfile).toBe('engineering');
+  });
+});
+
+describe('extraction pass-B clerk tuning (2026-07-18, centrally resolved)', () => {
+  it('resolveExtractionPassBTuning returns the central defaults when config is unset', () => {
+    const r = resolveExtractionPassBTuning(undefined);
+    expect(r).toEqual(EXTRACTION_PASS_B_DEFAULTS);
+    const r2 = resolveExtractionPassBTuning(defaultConfig().distill);
+    expect(r2).toEqual(EXTRACTION_PASS_B_DEFAULTS);
+  });
+
+  it('config overrides win per-field, others keep the central default', () => {
+    const distill = { ...defaultConfig().distill, extractionPassB: { sweepOnlyBelowAtoms: 0, maxTokens: 900 } };
+    const r = resolveExtractionPassBTuning(distill);
+    expect(r.sweepOnlyBelowAtoms).toBe(0);
+    expect(r.maxTokens).toBe(900);
+    expect(r.numCtxCap).toBe(EXTRACTION_PASS_B_DEFAULTS.numCtxCap);
+  });
+
+  it('governance drops non-numeric / negative tuning values (non-fatal), falling back to defaults', () => {
+    const warnings: string[] = [];
+    const distill = applyExtractionPassBGovernance(
+      { ...defaultConfig().distill, extractionPassB: { sweepOnlyBelowAtoms: -3, maxTokens: 'lots' as unknown as number, numCtxCap: 8192 } },
+      { log: (m) => warnings.push(m) },
+    );
+    expect(distill.extractionPassB?.sweepOnlyBelowAtoms).toBeUndefined();
+    expect(distill.extractionPassB?.maxTokens).toBeUndefined();
+    expect(distill.extractionPassB?.numCtxCap).toBe(8192);
+    expect(warnings.some((w) => w.includes('sweepOnlyBelowAtoms'))).toBe(true);
+    expect(warnings.some((w) => w.includes('maxTokens'))).toBe(true);
   });
 });

@@ -1025,6 +1025,8 @@ Output STRICT JSON matching the SAME schema the first pass uses. "evidence" is l
 
 "evidence" is REQUIRED for EVERY atom you emit — not optional, unlike the first pass. Copy a short EXACT verbatim excerpt from the source chunk that this atom is directly based on; never paraphrase or summarize it. ATOMS WITHOUT A VERBATIM EVIDENCE QUOTE ARE DISCARDED — they are dropped before they are ever stored, so an atom you emit without one is wasted output, not a harmless omission. If you cannot point to an exact quote supporting a candidate item, do NOT emit that item as an atom at all — a specific detail you cannot quote is not one of the eight categories below, it is a guess.
 
+BE BRIEF AND SELECTIVE. Emit at MOST 8 atoms per chunk — the most valuable overlooked specifics, not everything you can restate. Do NOT re-emit the chunk's main facts, decisions, or events: the first pass already captured those, and a duplicate is deduplicated away as wasted output. Keep each atom's "text" compact — 10 to 30 words is the target; never pad. A handful of tightly-quoted specifics beats an exhaustive re-extraction every time.
+
 Extract ONLY items in these categories — this pass is deliberately narrow, not a second general-purpose pass:
 1. DATES/TIMES — any specific date, day, month, year, or time mentioned, even in passing.
 2. DURATIONS — how long something lasted or has been going on ("about three years", "for six months").

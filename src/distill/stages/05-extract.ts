@@ -162,6 +162,9 @@ export async function extractChunk(
    *  shape as the empty-text case above) and no `provider.chat()` call is
    *  made. */
   costCap?: DistillCostCapTracker,
+  /** See callExtract's maxTokensOverride doc — threaded verbatim; pass-B
+   * sweeper calls set it (extractSpecifics), pass A never does. */
+  maxTokensOverride?: number,
 ): Promise<ExtractResult> {
   if (!text.trim()) {
     return { chunkIndex, atoms: [], usageUsd: 0, retried: false, relationDropCounts: {}, entityDropCounts: {}, evidenceDropCounts: {} };
@@ -177,7 +180,7 @@ export async function extractChunk(
 
   budget.assertCanSpend(estimateUsd, capUsd);
 
-  const result = await callExtract(text, activePrompt, provider, sessionDateIso);
+  const result = await callExtract(text, activePrompt, provider, sessionDateIso, maxTokensOverride);
   costCap?.recordCall();
   budget.record(result.usageUsd);
 
@@ -219,6 +222,13 @@ async function callExtract(
    * empty line) when there is no real anchor value, so the user message is
    * byte-identical to pre-fix behavior for every caller without one. */
   sessionDateIso?: string,
+  /** Clerk-tuning output cap (2026-07-18): pass-B sweeper calls pass the
+   * centrally-resolved `distill.extractionPassB.maxTokens` here (see
+   * EXTRACTION_PASS_B_DEFAULTS, config.ts). A truncated response is safe
+   * post-FEAT-552A — parse-salvage recovers complete atoms — so the cap
+   * degrades to "first ~N atoms", not a lost call. `undefined` keeps the
+   * pass-A ceiling below, byte-identical for every existing caller. */
+  maxTokensOverride?: number,
 ): Promise<{ text: string; usageUsd: number }> {
   const userContent = sessionDateIso
     ? `Observation date: ${sessionDateIso}\n\nExtract knowledge atoms from this transcript chunk:\n\n${text}`
@@ -272,7 +282,7 @@ async function callExtract(
     // is whack-a-mole (#434's hardening list has the durable fix: reject
     // token-limit termination as retryable + chunk-split); 6000 buys headroom
     // for the densest observed dual-pass chunk until that lands.
-    maxTokens: 6000,
+    maxTokens: maxTokensOverride ?? 6000,
   });
 
   return { text: result.text, usageUsd: result.usage.usd };
@@ -796,14 +806,20 @@ export async function extractSpecifics(
   concurrency = 1,
   jobKey?: string,
   sessionDateIso?: string,
+  /** Clerk-tuning output cap for sweeper calls (2026-07-18) — the caller
+   * (runPipeline) resolves it centrally via resolveExtractionPassBTuning;
+   * `0`/undefined = no override (pass-A ceiling). */
+  maxTokens?: number,
 ): Promise<ExtractResult[]> {
   const variant = 'specifics-sweeper';
+  const maxTokensOverride = maxTokens !== undefined && maxTokens > 0 ? maxTokens : undefined;
 
   if (!jobKey) {
     return mapWithConcurrency(chunks, concurrency, (chk) =>
       extractChunk(
         chk.index, chk.text, provider, budget, capUsd,
         'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+        undefined, maxTokensOverride,
       ),
     );
   }
@@ -820,6 +836,7 @@ export async function extractSpecifics(
     const result = await extractChunk(
       chk.index, chk.text, provider, budget, capUsd,
       'engineering', sessionDateIso, EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
+      undefined, maxTokensOverride,
     );
     chunkCheckpoints.set(jobKey, 'extract', chk.index, result, variant);
     return result;

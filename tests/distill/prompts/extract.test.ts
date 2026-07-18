@@ -555,6 +555,12 @@ describe('conversational prompt — the exhaustiveness checklist is MECHANICAL, 
 // which scores 0 on the LoCoMo temporal category (see the WS4 test above,
 // same underlying finding).
 describe('EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER content (dual-pass extraction)', () => {
+  it('carries the 2026-07-18 brevity instruction (clerk speed tuning) — at most 8 atoms, compact text, no re-emission', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/BE BRIEF AND SELECTIVE/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/at MOST 8 atoms per chunk/);
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Do NOT re-emit/);
+  });
+
   it('states the same date-grounding rule V3/CONVERSATIONAL carry', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Ground relative dates/);
     expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/Observation date/);

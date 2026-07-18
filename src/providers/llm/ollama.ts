@@ -53,50 +53,27 @@ const NUM_CTX_SLACK_TOKENS = 512;
 export interface OllamaLLMConfig {
   baseUrl?: string;
   model?: string;
-  /** Ollama `think` flag for hybrid reasoning models (qwen3, deepseek-r1, …).
-   *  Left undefined -> ollama's per-model default (thinking ON for these
-   *  models), which conflicts with `format:json` extraction (reasoning
-   *  consumes the turn and `message.content` comes back empty -> parse
-   *  fail/poison). We therefore default it to `false` for every model in
-   *  KNOWN_THINKING_MODEL_PREFIXES below. Set explicitly to override.
-   *
-   *  Capability detection was investigated (issue #206 follow-up) before
-   *  writing this list: Ollama's `/api/show` returns a `capabilities` array
-   *  (see https://github.com/ollama/ollama/blob/main/docs/api.md), but every
-   *  documented example shows only entries like `["completion", "vision"]`
-   *  — "thinking" is not confirmed as a value that array ever contains, and
-   *  https://github.com/ollama/ollama/issues/10966 is an OPEN, unresolved
-   *  upstream issue from a user asking for exactly this signal, as of
-   *  2026-07-13. There is no reliable capability signal to query today, so
-   *  this is a hand-maintained, explicitly-sourced name list, not a regex —
-   *  each entry below is a real Ollama-documented thinking model, not a
-   *  guessed pattern. If ollama/ollama#10966 ever closes with a real
-   *  answer, prefer it over this list.
-   *
-   *  A list can only ever cover models we already know about. The name list
-   *  is the belt; `chat()`'s empty-content-under-format:json guard below is
-   *  the suspenders — it catches every thinking model we HAVEN'T met yet,
-   *  by making the failure loud and diagnosable instead of a silent parse
-   *  failure indistinguishable from "nothing to extract". */
+  /** Ollama `think` flag. This provider serves direct-answer extraction and
+   *  compaction calls, so every model defaults to `false`. A hand-maintained
+   *  model-name list was incomplete by construction; non-thinking models can
+   *  safely receive false, while new thinking models must not silently inherit
+   *  Ollama's thinking-on default. Explicit true remains available to callers
+   *  that genuinely want a reasoning trace. */
   think?: boolean;
-}
-
-/** Ollama model-name prefixes documented as hybrid-reasoning ("thinking")
- * capable, sourced from https://docs.ollama.com/capabilities/thinking
- * (checked 2026-07-13): Qwen 3, DeepSeek R1, DeepSeek V3.1, GPT-OSS. Matched
- * case-insensitively against the configured model name's prefix (tags like
- * `qwen3:8b` or `deepseek-r1:32b` still match). See OllamaLLMConfig.think
- * above for why this is an explicit list, not a regex or a capability query.
- */
-const KNOWN_THINKING_MODEL_PREFIXES = ['qwen3', 'deepseek-r1', 'deepseek-v3.1', 'gpt-oss'];
-
-function isKnownThinkingModel(model: string): boolean {
-  const lower = model.toLowerCase();
-  return KNOWN_THINKING_MODEL_PREFIXES.some((prefix) => lower.startsWith(prefix));
+  /** Optional per-instance ceiling on the dynamically-sized `num_ctx`,
+   *  clamped to [NUM_CTX_FLOOR, NUM_CTX_CAP]. Clerk-seat instances (passB
+   *  sweeper, atom-triage, dup-judge) pass 8192: their calls are batched
+   *  JSON verdicts over one chunk, never 16k of context, and the smaller KV
+   *  cache keeps an ~5.4GB-weights model (ministral-3:8b) fully
+   *  GPU-resident on an 8GB card instead of spilling ~11% to CPU (measured
+   *  2026-07-18, LoCoMo dual-pass leg). Unset = NUM_CTX_CAP, byte-identical
+   *  to prior behavior for every author-seat call path. */
+  numCtxCap?: number;
 }
 
 interface OllamaChatResponse {
   message?: { content?: string; thinking?: string };
+  done_reason?: string;
   prompt_eval_count?: number;
   eval_count?: number;
 }
@@ -156,6 +133,7 @@ export class OllamaLLMProvider implements LLMProvider {
   readonly model: string;
   private readonly baseUrl: string;
   private readonly think?: boolean;
+  private readonly numCtxCap: number;
 
   constructor(config: OllamaLLMConfig = {}) {
     this.baseUrl = (config.baseUrl ?? 'http://127.0.0.1:11434').replace(/\/$/, '');
@@ -170,11 +148,11 @@ export class OllamaLLMProvider implements LLMProvider {
     // this hardware class's VRAM ceiling; see CLAUDE.md's "Ollama 8GB VRAM
     // ceiling" note.
     this.model = config.model ?? 'qwen2.5:7b';
-    // Disable thinking by default for every known thinking model (see
-    // OllamaLLMConfig.think and KNOWN_THINKING_MODEL_PREFIXES above) so
-    // structured `format:json` extraction gets JSON in message.content instead
-    // of an empty body. Explicit config.think wins.
-    this.think = config.think ?? (isKnownThinkingModel(this.model) ? false : undefined);
+    // Direct-answer provider: reasoning requires explicit opt-in.
+    this.think = config.think ?? false;
+    // Clamp so a misconfigured cap can neither exceed the VRAM guard nor
+    // shrink below Ollama's own per-model default (see NUM_CTX_FLOOR).
+    this.numCtxCap = Math.min(NUM_CTX_CAP, Math.max(NUM_CTX_FLOOR, config.numCtxCap ?? NUM_CTX_CAP));
   }
 
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
@@ -220,7 +198,7 @@ export class OllamaLLMProvider implements LLMProvider {
     const estimatedInputTokens = messages.reduce((sum, m) => sum + m.content.length, 0) / CHARS_PER_TOKEN;
     const outputBudgetTokens = opts?.maxTokens ?? DEFAULT_OUTPUT_BUDGET_TOKENS;
     const numCtx = Math.min(
-      NUM_CTX_CAP,
+      this.numCtxCap,
       Math.max(NUM_CTX_FLOOR, Math.ceil(estimatedInputTokens + outputBudgetTokens + NUM_CTX_SLACK_TOKENS)),
     );
 
@@ -281,16 +259,24 @@ export class OllamaLLMProvider implements LLMProvider {
     const outTokens = data.eval_count ?? 0;
     const latency_ms = Date.now() - t0;
 
+    // Schema-constrained decoding cannot close a JSON object after Ollama
+    // stops at num_predict. Do not hand a known-partial document to salvage
+    // or parsing; the worker must retry with a smaller chunk/larger budget.
+    if (data.done_reason === 'length') {
+      log.warn({ latency_ms, tokens_out: outTokens }, 'ollama chat stopped at token limit');
+      throw new TransientError(
+        `Ollama stopped generation at the token limit for model "${this.model}"; response may be incomplete`,
+      );
+    }
+
     // Loud-failure guard (see OllamaLLMConfig.think doc comment above): under
     // format:json, an empty message.content is NEVER a legitimate answer —
     // the shortest possible valid JSON is 2 characters ("{}"), so a
     // zero-length content string can only mean the model produced nothing
     // parseable. The most common cause is a hybrid-reasoning model that
     // consumed its whole output budget on message.thinking and left none for
-    // message.content (the qwen3 incident KNOWN_THINKING_MODEL_PREFIXES
-    // exists to prevent) — but that name list can only cover models we
-    // already know about. This check fires for ANY model, known or not, so
-    // an unnamed thinking model fails loud on its very first call instead of
+    // message.content. This check fires for ANY model, so an endpoint that
+    // ignores think:false fails loud on its very first call instead of
     // falling through to 05-extract.ts's generic "Zod/JSON parse failed —
     // raw: " (empty, since raw IS empty) — a message with zero diagnostic
     // content that is indistinguishable from a stochastic one-off glitch.
@@ -305,7 +291,7 @@ export class OllamaLLMProvider implements LLMProvider {
       );
       throw new TransientError(
         `Ollama returned empty message.content under format:json for model "${this.model}" (${detail}). ` +
-        `If this model has a hybrid-reasoning ("thinking") mode, add it to KNOWN_THINKING_MODEL_PREFIXES in src/providers/llm/ollama.ts, or pass think:false explicitly.`,
+        `The provider sends think:false by default; verify that this model/runtime honors it.`,
       );
     }
 

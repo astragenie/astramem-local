@@ -979,6 +979,36 @@ export interface Config {
        * dropped (warn, never fatal) by `applyExtractionPassBGovernance`,
        * same non-fatal posture as this block's `provider` field. */
       evidenceGate?: 'on' | 'off';
+      /**
+       * Clerk speed tuning (2026-07-18, measured on the LoCoMo dual-pass
+       * ministral leg: 62s/call, 12x slower distill than codex-solo).
+       * Skip-chunk gate: pass B sweeps ONLY chunks where pass A extracted
+       * FEWER than this many atoms — a well-covered chunk has nothing left
+       * for a specifics sweeper to find, and every skipped chunk is a whole
+       * local-LLM call saved. Unset resolves to 8 (measured: champion
+       * conv-liberal averages ~13 atoms/chunk, the under-extraction failure
+       * class sits well below 8). `0` disables the gate (sweep every chunk,
+       * the pre-tuning behavior). Skips are logged per session with counts
+       * (`passB_chunks_skipped`) — never silent (ADR-015). */
+      sweepOnlyBelowAtoms?: number;
+      /**
+       * Output-token cap for pass-B sweeper calls (provider `maxTokens`).
+       * Unset resolves to 1500 — measured 2026-07-18: ministral-3:8b
+       * averaged 1961 output tokens/call re-emitting verbose full-atom
+       * JSON, ~26s of a 62s call at 55 tok/s. A truncated response is SAFE
+       * post-FEAT-552A: parse-salvage recovers every complete atom and logs
+       * `extract_salvage`, so the cap degrades to "keeps the first ~N
+       * atoms" rather than losing the call. `0` = no cap (provider
+       * default). */
+      maxTokens?: number;
+      /**
+       * Ollama-only `num_ctx` ceiling for the pass-B provider instance (see
+       * OllamaLLMConfig.numCtxCap). Unset resolves to 8192 for a
+       * mixed-provider pass B built on ollama — halves the KV cache so an
+       * ~5.4GB clerk model stays fully GPU-resident on an 8GB card
+       * (measured 11% CPU spill at the default 16384 cap). Ignored for
+       * non-ollama pass-B providers. */
+      numCtxCap?: number;
     };
     /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
      *  counted TOGETHER as one per-job budget — mirrors
@@ -2072,6 +2102,39 @@ export function applyExtractionPassesGovernance(
  * this only ever mutates the object when `provider` is BOTH present and
  * invalid.
  */
+/**
+ * SINGLE source of truth for the pass-B clerk tuning defaults (2026-07-18).
+ * Change a number HERE and every consumer (pipeline skip-gate, extract
+ * maxTokens, ollama num_ctx cap) follows — never re-declare these values at
+ * a call site (ADR-016). config.yaml's `distill.extractionPassB.*` fields
+ * override per-field; `0` means "disabled" for the gate/cap semantics
+ * documented on each field.
+ */
+export const EXTRACTION_PASS_B_DEFAULTS = {
+  /** Sweep only chunks where pass A extracted fewer than this many atoms; 0 = sweep all. */
+  sweepOnlyBelowAtoms: 8,
+  /** Output-token cap for sweeper calls; 0 = provider default (no cap). */
+  maxTokens: 1500,
+  /** Ollama num_ctx ceiling for a mixed-provider pass-B instance. */
+  numCtxCap: 8192,
+} as const;
+
+/**
+ * Effective pass-B clerk tuning: config override ?? central default. The
+ * ONLY place the `??` fallback happens — callers never touch
+ * EXTRACTION_PASS_B_DEFAULTS directly.
+ */
+export function resolveExtractionPassBTuning(distill: Config['distill'] | undefined): {
+  sweepOnlyBelowAtoms: number; maxTokens: number; numCtxCap: number;
+} {
+  const passB = distill?.extractionPassB;
+  return {
+    sweepOnlyBelowAtoms: passB?.sweepOnlyBelowAtoms ?? EXTRACTION_PASS_B_DEFAULTS.sweepOnlyBelowAtoms,
+    maxTokens: passB?.maxTokens ?? EXTRACTION_PASS_B_DEFAULTS.maxTokens,
+    numCtxCap: passB?.numCtxCap ?? EXTRACTION_PASS_B_DEFAULTS.numCtxCap,
+  };
+}
+
 export function applyExtractionPassBGovernance(
   distill: Config['distill'],
   opts: { log?: (message: string) => void } = {},
@@ -2103,6 +2166,22 @@ export function applyExtractionPassBGovernance(
       '(falls back to the mixed-provider default). See FEAT-551.',
     );
     next = { ...next, evidenceGate: undefined };
+  }
+
+  // Clerk-tuning numerics (2026-07-18): each must be a non-negative finite
+  // number; anything else (negative, NaN, string that YAML left as junk) is
+  // dropped so the documented default resolution applies — same non-fatal
+  // posture as `provider`/`evidenceGate` above.
+  for (const field of ['sweepOnlyBelowAtoms', 'maxTokens', 'numCtxCap'] as const) {
+    const value = next[field];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+      log(
+        `[extraction-pass-b-governance] distill.extractionPassB.${field}=` +
+        `${JSON.stringify(value)} is not a non-negative number — dropping the override ` +
+        '(falls back to the documented default).',
+      );
+      next = { ...next, [field]: undefined };
+    }
   }
 
   if (next === passB) return distill;

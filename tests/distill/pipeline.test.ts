@@ -1021,3 +1021,115 @@ describe('runPipeline — FEAT-548 ingest gatekeeper', () => {
     expect(skipRow.mode).toBe('enabled');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Pass-B clerk speed tuning (2026-07-18) — skip-chunk gate + sweeper
+// maxTokens cap, both centrally resolved via resolveExtractionPassBTuning
+// (EXTRACTION_PASS_B_DEFAULTS, config.ts). Measured motivation: ministral-3:8b
+// sweeper calls averaged 62s and 1961 output tokens on the LoCoMo dual-pass
+// leg; a chunk pass A already covered well has nothing left to sweep.
+// ---------------------------------------------------------------------------
+
+describe('pass-B clerk tuning (skip-chunk gate + maxTokens cap)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  // Pass A yields 8 atoms — AT the default sweepOnlyBelowAtoms threshold (8),
+  // so the gate (strictly-below semantics) must skip the chunk.
+  const RICH_PASS_A_RESPONSE = JSON.stringify({
+    atoms: Array.from({ length: 8 }, (_, i) => ({
+      type: 'fact',
+      text: `Distinct well-covered pass-A fact number ${i} about the system's design.`,
+      importance: 0.6,
+      confidence: 0.9,
+    })),
+  });
+
+  const SWEEPER_RESPONSE = JSON.stringify({
+    atoms: [
+      { type: 'fact', text: 'The team evaluated pgvector before choosing sqlite-vec.', importance: 0.5, confidence: 0.8 },
+    ],
+  });
+
+  /** Mock that answers RICH_PASS_A_RESPONSE for pass A and SWEEPER_RESPONSE
+   *  for pass B, recording each sweeper call's opts so the maxTokens cap is
+   *  assertable at the provider boundary (the only place it's real). */
+  function makeTuningMockLLM(passAResponse: string): {
+    llm: LLMProvider;
+    sweeperCalls: () => number;
+    sweeperOpts: () => (ChatOpts | undefined)[];
+  } {
+    let sweeperCalls = 0;
+    const sweeperOpts: (ChatOpts | undefined)[] = [];
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (!opts?.json) return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+        const system = msgs.find((m) => m.role === 'system')?.content ?? '';
+        if (system === EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER) {
+          sweeperCalls++;
+          sweeperOpts.push(opts);
+          return { text: SWEEPER_RESPONSE, usage: { in: 100, out: 50, usd: 0 } };
+        }
+        return { text: passAResponse, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    return { llm, sweeperCalls: () => sweeperCalls, sweeperOpts: () => sweeperOpts };
+  }
+
+  it('default gate skips pass B entirely for a chunk pass A covered with >= 8 atoms', async () => {
+    const { llm, sweeperCalls } = makeTuningMockLLM(RICH_PASS_A_RESPONSE);
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed: makeMockEmbed(),
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    expect(sweeperCalls()).toBe(0); // whole local-LLM call saved
+    expect(result.memoriesCreated).toBe(8); // pass A's atoms only
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('pgvector'))).toBe(false); // sweeper atom never produced
+  });
+
+  it('sweepOnlyBelowAtoms: 0 disables the gate — pass B sweeps even a well-covered chunk (legacy behavior)', async () => {
+    const { llm, sweeperCalls } = makeTuningMockLLM(RICH_PASS_A_RESPONSE);
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed: makeMockEmbed(),
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: {
+        ...defaultConfig(),
+        distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { sweepOnlyBelowAtoms: 0 } },
+      },
+    });
+
+    expect(sweeperCalls()).toBe(1);
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('pgvector'))).toBe(true);
+  });
+
+  it('under-extracted chunk (below threshold) IS swept, and the sweeper call carries the central maxTokens cap', async () => {
+    // EXTRACTION_RESPONSE has 3 atoms — below the default threshold of 8.
+    const { llm, sweeperCalls, sweeperOpts } = makeTuningMockLLM(EXTRACTION_RESPONSE);
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed: makeMockEmbed(),
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    expect(sweeperCalls()).toBe(1);
+    // The cap must be the CENTRAL default (1500), not pass A's 6000 ceiling —
+    // asserted at the provider boundary where it becomes num_predict.
+    expect(sweeperOpts()[0]?.maxTokens).toBe(1500);
+  });
+});

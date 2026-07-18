@@ -30,7 +30,7 @@ import { chunkCheckpoints } from './chunk-checkpoint.js';
 import type { SourcedAtom } from './prompts/extract.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
-import { defaultConfig, type Config } from '../config/config.js';
+import { defaultConfig, resolveExtractionPassBTuning, type Config } from '../config/config.js';
 import type { DurabilityGateMode } from './durability-gate.js';
 import { childLogger } from '../log/logger.js';
 import { recordRelationGuardDrops } from '../storage/relation-guard-log.js';
@@ -438,15 +438,30 @@ export async function runPipeline(
   const passBProvider = ctx.llmExtractionPassB ?? ctx.llmExtraction;
   let extractResultsSpecifics: typeof extractResults | undefined;
   if (resolvedExtractionPasses === 2) {
+    // Clerk speed tuning (2026-07-18, centrally resolved — see
+    // EXTRACTION_PASS_B_DEFAULTS in config.ts, never literals here):
+    // skip-chunk gate — a chunk pass A already covered well (>= threshold
+    // atoms) has nothing left for a specifics sweeper to find, and every
+    // skipped chunk is a whole local-LLM call saved (measured 62s/call for
+    // ministral-3:8b). Threshold 0 = sweep everything (legacy behavior).
+    // Skips are LOGGED with counts below — never silent (ADR-015).
+    const passBTuning = resolveExtractionPassBTuning(ctx.config?.distill);
+    const passAAtomsByChunk = new Map(extractResults.map((r) => [r.chunkIndex, r.atoms.length]));
+    const sweepChunks = passBTuning.sweepOnlyBelowAtoms > 0
+      ? compactedChunks.filter((chk) => (passAAtomsByChunk.get(chk.index) ?? 0) < passBTuning.sweepOnlyBelowAtoms)
+      : compactedChunks;
+    const skippedWellExtracted = compactedChunks.length - sweepChunks.length;
     pipeLog.info(
       {
-        stage: 'extract-specifics', chunk_count: compactedChunks.length, chunk_concurrency: chunkConcurrency,
+        stage: 'extract-specifics', chunk_count: sweepChunks.length, chunk_concurrency: chunkConcurrency,
         provider: passBProvider.name, model: passBProvider.model,
+        passB_chunks_skipped: skippedWellExtracted, passB_sweep_threshold: passBTuning.sweepOnlyBelowAtoms,
+        passB_max_tokens: passBTuning.maxTokens,
       },
       'stage start',
     );
     try {
-      extractResultsSpecifics = await extractSpecifics(compactedChunks, passBProvider, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso);
+      extractResultsSpecifics = await extractSpecifics(sweepChunks, passBProvider, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso, passBTuning.maxTokens);
       const specificsAtoms = extractResultsSpecifics.reduce((sum, r) => sum + r.atoms.length, 0);
       pipeLog.info(
         { stage: 'extract-specifics', atoms_extracted: specificsAtoms, provider: passBProvider.name, model: passBProvider.model },
