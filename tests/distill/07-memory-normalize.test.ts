@@ -105,3 +105,81 @@ describe('memoryNormalize', () => {
     expect(result[0]!.type).toBe('decision');
   });
 });
+
+// FEAT-552 sub-scope B: deterministic type-hint tier wiring.
+describe('memoryNormalize — type-hint tier (FEAT-552 sub-scope B)', () => {
+  // Regression (review finding, 2026-07-18): ENTITY_DICT capitalizes bare
+  // "bun" -> "Bun" (and "vitest" -> "Vitest") BEFORE the hint tier runs at
+  // this real call site. A case-sensitive lowercase-only command regex
+  // would silently never fire here — this test exercises the REAL
+  // end-to-end order (normalize, THEN hint), not a raw getTypeHint() call,
+  // which is exactly what let the bug ship green the first time.
+  it('fires command on a bun-led atom despite ENTITY_DICT capitalizing "bun" -> "Bun" first', () => {
+    const a = reducedAtom('bun run test');
+    a.type = 'fact'; // model mis-typed a command as a fact
+    const result = memoryNormalize([a]);
+    expect(result[0]!.normalizedText).toBe('Bun run test'); // confirms ENTITY_DICT ran first
+    expect(result[0]!.type).toBe('command');
+    expect(result[0]!.typeHintApplied).toEqual({
+      from: 'fact',
+      to: 'command',
+      matchedPattern: 'leading-shell-token',
+    });
+  });
+
+  it('fires command on a vitest-led atom despite ENTITY_DICT capitalizing "vitest" -> "Vitest" first', () => {
+    const a = reducedAtom('vitest run tests/foo.test.ts');
+    a.type = 'fact';
+    const result = memoryNormalize([a]);
+    expect(result[0]!.normalizedText).toBe('Vitest run tests/foo.test.ts');
+    expect(result[0]!.type).toBe('command');
+    expect(result[0]!.typeHintApplied?.matchedPattern).toBe('leading-shell-token');
+  });
+
+  it('overrides the model type when a strong pattern fires and disagrees (default typeHints: on)', () => {
+    const a = reducedAtom('Use SQLite instead of Postgres for local storage.');
+    a.type = 'fact'; // model mis-typed a decision as a fact
+    const result = memoryNormalize([a]);
+    expect(result[0]!.type).toBe('decision');
+    expect(result[0]!.typeHintApplied).toEqual({
+      from: 'fact',
+      to: 'decision',
+      matchedPattern: 'decision-comparative',
+    });
+  });
+
+  it('leaves type untouched when the hint agrees with the model (no override needed)', () => {
+    const a = reducedAtom('Use SQLite instead of Postgres for local storage.');
+    a.type = 'decision'; // already correct
+    const result = memoryNormalize([a]);
+    expect(result[0]!.type).toBe('decision');
+    expect(result[0]!.typeHintApplied).toBeUndefined();
+  });
+
+  it('leaves type untouched when no strong pattern fires', () => {
+    const a = reducedAtom('some ordinary text with no strong signal');
+    a.type = 'fact';
+    const result = memoryNormalize([a]);
+    expect(result[0]!.type).toBe('fact');
+    expect(result[0]!.typeHintApplied).toBeUndefined();
+  });
+
+  it('never overrides when typeHints is explicitly off', () => {
+    const a = reducedAtom('Use SQLite instead of Postgres for local storage.');
+    a.type = 'fact';
+    const result = memoryNormalize([a], { typeHints: 'off' });
+    expect(result[0]!.type).toBe('fact');
+    expect(result[0]!.typeHintApplied).toBeUndefined();
+  });
+
+  it('logs and does not override on an ambiguous (multi-pattern) atom', () => {
+    const logs: string[] = [];
+    const a = reducedAtom('git checkout main instead of the feature branch, Use it going forward.');
+    a.type = 'fact';
+    const result = memoryNormalize([a], { log: m => logs.push(m) });
+    if (logs.length > 0) {
+      expect(result[0]!.type).toBe('fact');
+      expect(result[0]!.typeHintApplied).toBeUndefined();
+    }
+  });
+});

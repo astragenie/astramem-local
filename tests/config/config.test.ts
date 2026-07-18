@@ -12,6 +12,7 @@ import {
   applyAtomTriageGovernance,
   applyDupJudgeGovernance,
   applyRetentionGovernance,
+  applyTypeHintsGovernance,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -349,13 +350,13 @@ describe('applyFusionGovernance', () => {
 describe('applyDurabilityGateGovernance', () => {
   it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
     for (const mode of ['strict', 'lenient', 'off'] as const) {
-      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
+      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
       expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to off and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
+    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
     const logs: string[] = [];
     const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -371,6 +372,43 @@ describe('applyDurabilityGateGovernance', () => {
   it('loadConfig leaves a valid distill.durabilityGate untouched', () => {
     const cfg = loadConfig({ distill: { durabilityGate: 'strict' } } as any);
     expect(cfg.distill.durabilityGate).toBe('strict');
+  });
+});
+
+// FEAT-552 sub-scope B: distill.typeHints is a closed 2-value enum, same
+// config.yaml-has-no-schema governance concern as durabilityGate — but
+// UNLIKE durabilityGate (and every other distill.* tier), the documented
+// shipped default is 'on', not 'off', so the invalid-value fallback must
+// restore 'on', not degrade below it.
+describe('applyTypeHintsGovernance', () => {
+  it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
+    for (const mode of ['on', 'off'] as const) {
+      const distill = { ...defaultConfig().distill, typeHints: mode };
+      expect(applyTypeHintsGovernance(distill)).toEqual(distill);
+    }
+  });
+
+  it('falls back to "on" (the shipped default, not "off") and logs why on an invalid/typo value', () => {
+    const distill = { ...defaultConfig().distill, typeHints: 'onn' as any };
+    const logs: string[] = [];
+    const governed = applyTypeHintsGovernance(distill, { log: (m) => logs.push(m) });
+
+    expect(governed.typeHints).toBe('on');
+    expect(logs.some(m => m.includes('typeHints') && m.includes('onn'))).toBe(true);
+  });
+
+  it('loadConfig wires applyTypeHintsGovernance in: an invalid override falls back to "on"', () => {
+    const cfg = loadConfig({ distill: { typeHints: 'bogus' as any } } as any);
+    expect(cfg.distill.typeHints).toBe('on');
+  });
+
+  it('loadConfig leaves an explicit "off" override untouched', () => {
+    const cfg = loadConfig({ distill: { typeHints: 'off' } } as any);
+    expect(cfg.distill.typeHints).toBe('off');
+  });
+
+  it('defaultConfig ships typeHints: "on"', () => {
+    expect(defaultConfig().distill.typeHints).toBe('on');
   });
 });
 
@@ -775,13 +813,13 @@ describe('applyRetentionGovernance', () => {
 describe('applyExtractProfileGovernance', () => {
   it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
     for (const profile of ['engineering', 'conversational'] as const) {
-      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
+      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
       expect(applyExtractProfileGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to engineering and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
+    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
     const logs: string[] = [];
     const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
 

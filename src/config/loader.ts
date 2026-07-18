@@ -52,6 +52,7 @@ import {
   applyAtomTriageGovernance,
   applyGatekeeperGovernance,
   applyDupJudgeGovernance,
+  applyTypeHintsGovernance,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -342,9 +343,13 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     // real boot path AND in loadConfig() (config.ts) — the 550/549 reviewers'
     // bar for a new distill.<tier> governance function is BOTH real
     // composition points, not just this one.
-    distill: applyGatekeeperGovernance(applyAtomTriageGovernance(
+    // FEAT-552: applyTypeHintsGovernance added the same way, on the same
+    // real boot path AND in loadConfig() — same "both composition points"
+    // bar. Outermost in the chain (order is safe regardless — each
+    // governance function only ever touches its own field).
+    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyAtomTriageGovernance(
       applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
-    )),
+    ))),
     multiHop: applyMultiHopGovernance(cfg.multiHop),
     retention: applyRetentionGovernance(cfg.retention),
     // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has

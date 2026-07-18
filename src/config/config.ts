@@ -768,6 +768,33 @@ export interface Config {
    * section) — no hot reload. */
   distill: {
     durabilityGate: 'strict' | 'lenient' | 'off';
+    /** FEAT-552 sub-scope B: deterministic (zero-LLM) type-hint tier applied
+     *  at stage 7 (`src/distill/stages/07-memory-normalize.ts`, rules in
+     *  `src/distill/type-hints.ts`). A small set of STRONG regex patterns
+     *  (leading shell-executable token -> command; comparative decision
+     *  language -> decision; root-cause/lesson markers -> lesson; past-tense
+     *  ship verbs -> event) OVERRIDES the model's own atom `type` ONLY when
+     *  a pattern fires and disagrees with the model — an atom with no firing
+     *  pattern, or one where multiple patterns fire ambiguously, is left
+     *  untouched. Measured basis: "X was chosen over Y" style decisions are
+     *  literally regexable, yet typeAcc measured 43-63% across every model
+     *  in the 2026-07-17/18 experiment series.
+     *
+     *  `'on'` is the SHIPPED DEFAULT (unlike every other distill.* tier in
+     *  this file, which ships `'off'`/opt-in) — this tier is deterministic,
+     *  covered by a >=95%-precision gold-set test
+     *  (tests/distill/type-hints.test.ts, AC-B1), fully reversible (flip to
+     *  'off' and the next distill run stops overriding; already-backfilled
+     *  rows are unaffected either way), and adds no LLM call, no latency
+     *  surface, and no new failure mode beyond "occasionally leaves a type
+     *  as the model said" — the FEAT-482 metered-LLM caution this file's own
+     *  CLAUDE.md documents does not apply here.
+     *
+     *  An invalid (non-'on'/'off') value is dropped (warn, never fatal) by
+     *  `applyTypeHintsGovernance` below, falling back to `'on'` (the
+     *  documented default) — NOT `'off'` like every other tier's governance
+     *  fallback, precisely because 'on' is what actually ships. */
+    typeHints: 'on' | 'off';
     /** FEAT-487: how many chunks stage 4 (compact) / stage 5 (extract) fan
      *  out to the LLM provider at once within a single pipeline run — see
      *  `mapWithConcurrency` / `resolveChunkConcurrency`
@@ -1516,6 +1543,11 @@ export function defaultConfig(): Config {
     distill: {
       durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto',
       maxChunkChars: 3200, extractionPasses: 2, costCap: { enabled: false },
+      // FEAT-552 sub-scope B: 'on' — shipped default (deterministic,
+      // zero-LLM, gold-set-tested, reversible). See
+      // Config['distill']['typeHints']'s own doc comment for why this is the
+      // one distill.* tier that ships on rather than off.
+      typeHints: 'on',
       // FEAT-533: 'off' — shipped default, BYTE-IDENTICAL to pre-FEAT-533
       // behavior (no triage batch call is ever made). Opt in to 'dry-run'
       // per-install via config.yaml; 'enabled' is gated on a reviewed
@@ -1687,6 +1719,38 @@ export function applyDurabilityGateGovernance(
       'See FEAT-441 / src/distill/durability-gate.ts.',
     );
     return { ...distill, durabilityGate: 'off' };
+  }
+  return distill;
+}
+
+/**
+ * FEAT-552 sub-scope B: `distill.typeHints` is a closed 2-value enum, same
+ * governance concern `applyDurabilityGateGovernance` documents — config.yaml
+ * is hand-parsed scalars with no schema, so a typo'd value would otherwise
+ * pass straight through `deepMerge` unchecked. Validated here, never fatal.
+ *
+ * Unlike every OTHER governance fallback in this file, the fallback on an
+ * invalid/missing value is `'on'`, not `'off'` — because `'on'` is the
+ * actually-documented shipped default for this field (see
+ * `Config['distill']['typeHints']`'s own doc comment for why this tier ships
+ * on: deterministic, zero-LLM, gold-set precision-tested, reversible).
+ * Falling back to 'off' here would silently downgrade a boot with a typo'd
+ * config.yaml BELOW the shipped default instead of restoring it.
+ */
+const VALID_TYPE_HINTS_MODES: ReadonlySet<Config['distill']['typeHints']> = new Set(['on', 'off']);
+
+export function applyTypeHintsGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  if (!VALID_TYPE_HINTS_MODES.has(distill.typeHints)) {
+    log(
+      `[type-hints-governance] distill.typeHints=${JSON.stringify(distill.typeHints)} is not one of ` +
+      "'on'|'off' — falling back to 'on' (the documented shipped default). See FEAT-552 / " +
+      'src/distill/type-hints.ts.',
+    );
+    return { ...distill, typeHints: 'on' };
   }
   return distill;
 }
@@ -2332,7 +2396,7 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
     // one with real production callers; applyAtomTriageGovernance itself is
     // still NOT wired into this loadConfig() chain — a pre-existing gap
     // predating this slice, out of scope here).
-    distill: applyGatekeeperGovernance(applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill))))),
+    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))))),
     consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation))),
     audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),
