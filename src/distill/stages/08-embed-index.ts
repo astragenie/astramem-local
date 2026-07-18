@@ -123,7 +123,7 @@ export interface EmbedIndexContext {
    * never sets this field is byte-identical: the triage batch loop below
    * is skipped entirely whenever this resolves to 'off'.
    */
-  atomTriageMode?: 'off' | 'dry-run' | 'enabled';
+  atomTriageMode?: 'off' | 'dry-run' | 'enabled' | 'repair-only';
   /**
    * Provider for the triage batch call — only consulted when
    * `atomTriageMode !== 'off'`. Real callers (distill/pipeline.ts) always
@@ -423,12 +423,18 @@ export async function embedAndIndex(
     //    provider ignoring that instruction) and is never itself gated by
     //    confidence (AC-2 states no confidence floor for this flag, only
     //    for corrected_type) — a queryable flag, never a rewrite.
+    // 'repair-only' (2026-07-18): applies the v2 signals exactly like
+    // 'enabled' while the drop branch above stays 'enabled'-gated — the
+    // measured verdict split (55fx: every clerk's discard verdict costs
+    // recall, phi −40 / 4b −36 / ministral −17, while ministral's typing
+    // raises typeAcc 43→52) gets a mode that keeps the half that earns.
+    const appliesV2Signals = atomTriageMode === 'enabled' || atomTriageMode === 'repair-only';
     const correctedTypeApplied =
-      atomTriageMode === 'enabled' &&
+      appliesV2Signals &&
       verdict?.corrected_type !== undefined &&
       verdict.confidence >= CORRECTED_TYPE_CONFIDENCE_GATE;
     const evidenceSupportedApplied =
-      atomTriageMode === 'enabled' &&
+      appliesV2Signals &&
       verdict?.evidence_supported !== undefined &&
       !!mem.evidence;
 
@@ -656,7 +662,9 @@ export async function embedAndIndex(
     //    observability, not a second gate).
     const hasV2Signal = verdict?.corrected_type !== undefined || verdict?.evidence_supported !== undefined;
     if (atomTriageMode !== 'off' && verdict !== undefined && (isNonKeepVerdict || hasV2Signal)) {
-      if (isNonKeepVerdict) atomsDroppedByTriage++; // only reachable for 'dry-run' here — see comment above
+      // Reachable for 'dry-run' AND 'repair-only' (both keep the atom): the
+      // counter records IGNORED discard verdicts — would-drops, not drops.
+      if (isNonKeepVerdict) atomsDroppedByTriage++;
       triageDropRows.push({
         reason: verdict.verdict,
         memoryId,

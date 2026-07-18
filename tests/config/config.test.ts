@@ -887,3 +887,11 @@ describe('extraction pass-B clerk tuning (2026-07-18, centrally resolved)', () =
     expect(warnings.some((w) => w.includes('maxTokens'))).toBe(true);
   });
 });
+
+describe("atomTriage 'repair-only' mode (2026-07-18)", () => {
+  it('governance accepts repair-only as a valid mode (no fallback to off)', () => {
+    const distill = { ...defaultConfig().distill, atomTriage: { ...defaultConfig().distill.atomTriage, mode: 'repair-only' as const } };
+    const out = applyAtomTriageGovernance(distill, { log: () => { throw new Error('should not warn'); } });
+    expect(out.atomTriage.mode).toBe('repair-only');
+  });
+});

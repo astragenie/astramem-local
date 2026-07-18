@@ -1103,9 +1103,18 @@ export interface Config {
      *  `contradictionDetection` carries (FEAT-482 lesson) — bounds THIS
      *  job's triage calls only. Once either caps, every remaining
      *  un-triaged atom in this job is treated as 'keep' (fails OPEN,
-     *  persists unfiltered) — never drop-by-timeout. */
+     *  persists unfiltered) — never drop-by-timeout.
+     *
+     *  `repair-only` (2026-07-18, the FEAT-547 follow-up): applies
+     *  `corrected_type` (and stores `evidence_supported`) exactly like
+     *  'enabled', but NEVER drops an atom — the keep/junk verdict is
+     *  logged (dry-run posture) and ignored. Measured basis: every clerk
+     *  tried at the discard seat cost real recall at 55fx scale (phi −40,
+     *  qwen3.5:4b −36, ministral-3:8b −17) while ministral's typing raised
+     *  typeAcc 43→52 with junk −17 — the typing half of the verdict earns
+     *  its keep, the discard half never has. */
     atomTriage: {
-      mode: 'off' | 'dry-run' | 'enabled';
+      mode: 'off' | 'dry-run' | 'enabled' | 'repair-only';
       provider?: LLMProviderName;
       model?: string;
       batchSize: number;
@@ -2201,7 +2210,7 @@ export function applyExtractionPassBGovernance(
  * fall-through on a boot-time typo" concern.
  */
 const VALID_ATOM_TRIAGE_MODES: ReadonlySet<Config['distill']['atomTriage']['mode']> =
-  new Set(['off', 'dry-run', 'enabled']);
+  new Set(['off', 'dry-run', 'enabled', 'repair-only']);
 
 const DEFAULT_ATOM_TRIAGE: Config['distill']['atomTriage'] =
   { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 };
@@ -2221,7 +2230,7 @@ export function applyAtomTriageGovernance(
     log(
       at
         ? `[atom-triage-governance] distill.atomTriage.mode=${JSON.stringify(at.mode)} is not one of ` +
-          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-533 / " +
+          "'off'|'dry-run'|'enabled'|'repair-only' — falling back to 'off' (the documented default). See FEAT-533 / " +
           'src/distill/atom-triage.ts.'
         : "[atom-triage-governance] distill.atomTriage is missing — falling back to defaults (mode: 'off'). " +
           'See FEAT-533 / src/distill/atom-triage.ts.',

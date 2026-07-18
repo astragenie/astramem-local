@@ -135,7 +135,7 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled'; triageModel?: string; gatekeeperMode?: 'off' | 'dry-run' | 'enabled' } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled' | 'repair-only'; triageModel?: string; gatekeeperMode?: 'off' | 'dry-run' | 'enabled' } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
   const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;

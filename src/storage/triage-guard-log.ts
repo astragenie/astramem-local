@@ -32,7 +32,7 @@ export interface TriageGuardDropRow {
   memoryId: string | null;
   model: string;
   confidence: number;
-  mode: 'dry-run' | 'enabled';
+  mode: 'dry-run' | 'enabled' | 'repair-only';
   sessionId: string | null;
   /** FEAT-547: the `corrected_type` this verdict proposed, when any —
    *  recorded regardless of whether the confidence gate actually applied it

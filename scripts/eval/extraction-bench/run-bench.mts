@@ -219,9 +219,9 @@ if (maxChunkChars !== undefined && (!Number.isInteger(maxChunkChars) || maxChunk
 // --atom-triage off|dry-run|enabled (additive, 2026-07-17): FEAT-533 post-
 // extraction keep/junk triage as a bench A/B lever; triage provider pinned to
 // the candidate extraction model itself (see daemon-runner). Daemon path only.
-const atomTriageMode = get('--atom-triage') as 'off' | 'dry-run' | 'enabled' | undefined;
-if (atomTriageMode !== undefined && !['off', 'dry-run', 'enabled'].includes(atomTriageMode)) {
-  console.error(`--atom-triage must be off|dry-run|enabled, got: ${atomTriageMode}`);
+const atomTriageMode = get('--atom-triage') as 'off' | 'dry-run' | 'enabled' | 'repair-only' | undefined;
+if (atomTriageMode !== undefined && !['off', 'dry-run', 'enabled', 'repair-only'].includes(atomTriageMode)) {
+  console.error(`--atom-triage must be off|dry-run|enabled|repair-only, got: ${atomTriageMode}`);
   process.exit(1);
 }
 // --triage-model NAME (additive, FEAT-547): pins the atom-triage tier's

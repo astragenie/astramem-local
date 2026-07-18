@@ -1329,3 +1329,72 @@ describe('embedAndIndex — FEAT-547 atom-triage v2 (corrected_type / evidence_s
     expect(typeAcc).toBeCloseTo(2 / 3, 5); // atoms 1-2 correct, atom 3 wrong
   });
 });
+
+// ---------------------------------------------------------------------------
+// 'repair-only' mode (2026-07-18, FEAT-547 follow-up): applies corrected_type/
+// evidence_supported exactly like 'enabled' but NEVER drops an atom — the
+// measured 55fx verdict split (every clerk's discard verdict costs recall:
+// phi −40 / qwen3.5:4b −36 / ministral −17, while ministral's typing raises
+// typeAcc 43→52) gets a mode that keeps only the half that earns.
+// ---------------------------------------------------------------------------
+
+describe("embedAndIndex — 'repair-only' atom-triage mode", () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('a junk verdict does NOT drop the atom, but its corrected_type IS applied (the defining split)', async () => {
+    const embed = makeMockEmbed();
+    const junkText = 'the deploy finished and everything looked fine afterwards';
+    const llmAtomTriage = makeTriageProvider({
+      [junkText]: { verdict: 'junk', confidence: 0.99, corrected_type: 'event' },
+    });
+
+    const results = await embedAndIndex([normalizedMem(junkText, 'r'.repeat(64))], {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'repair-only',
+      llmAtomTriage,
+    });
+
+    // Atom persisted despite the high-confidence junk verdict.
+    expect(results).toHaveLength(1);
+    const row = db.prepare('SELECT type, text FROM memories WHERE text = ?').get(junkText) as any;
+    expect(row).toBeTruthy();
+    // ...and the typing half of the same verdict was applied.
+    expect(row.type).toBe('event');
+    // The ignored discard verdict is observable in triage_guard_drops with a
+    // REAL memory_id (nothing was dropped) and mode 'repair-only'.
+    const drops = db.prepare('SELECT reason, memory_id, mode FROM triage_guard_drops').all() as any[];
+    expect(drops).toHaveLength(1);
+    expect(drops[0].reason).toBe('junk');
+    expect(drops[0].mode).toBe('repair-only');
+    expect(drops[0].memory_id).not.toBeNull();
+  });
+
+  it('below-gate corrected_type keeps the original type; evidence_supported applies on evidence-bearing atoms', async () => {
+    const embed = makeMockEmbed();
+    const lowConfText = 'the service settings were changed at some point';
+    const flagText = 'the team standardized on pnpm for workspace installs';
+    const llmAtomTriage = makeTriageProvider({
+      [lowConfText]: { verdict: 'keep', confidence: CORRECTED_TYPE_CONFIDENCE_GATE - 0.01, corrected_type: 'event' },
+      [flagText]: { verdict: 'keep', confidence: 0.9, evidence_supported: true },
+    });
+
+    await embedAndIndex([
+      normalizedMem(lowConfText, 's'.repeat(64)),
+      normalizedMem(flagText, 't'.repeat(64), 0.7, undefined, undefined, 'we standardized on pnpm'),
+    ], {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'repair-only',
+      llmAtomTriage,
+    });
+
+    const lowRow = db.prepare('SELECT type FROM memories WHERE text = ?').get(lowConfText) as any;
+    expect(lowRow.type).toBe('decision'); // fixture default kept — same confidence gate as 'enabled'
+    const flagRow = db.prepare('SELECT evidence_supported FROM memories WHERE text = ?').get(flagText) as any;
+    expect(flagRow.evidence_supported).toBe(1);
+  });
+});

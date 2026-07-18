@@ -174,7 +174,7 @@ export interface DoctorCheckOpts {
   ollamaBaseUrl?: string;
   /** FEAT-533: current `distill.atomTriage.mode`. Defaults to `'off'` (the
    * shipped default) when not supplied — see `checkAtomTriage`. */
-  atomTriageMode?: 'off' | 'dry-run' | 'enabled';
+  atomTriageMode?: 'off' | 'dry-run' | 'enabled' | 'repair-only';
   /** FEAT-548: current `distill.gatekeeper.mode`. Defaults to `'off'` (the
    * shipped default) when not supplied — see `checkGatekeeper`. */
   gatekeeperMode?: 'off' | 'dry-run' | 'enabled';
