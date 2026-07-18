@@ -1,0 +1,370 @@
+[
+  {
+    "model": "qwen2.5:7b",
+    "daemonBootMs": 2179,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 44822,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The default embedding model is mxbai-embed-large via Ollama (1024-dim, runs locally).",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "SQLite was chosen over Postgres for astramemory-local due to no server requirement, being a single file, and using synchronous fast access from Node via better-sqlite3.",
+            "evidence": "SQLite chosen over Postgres due to no server requirement; ships as a single file; uses synchronous fast access from Node via better-sqlite3."
+          },
+          {
+            "type": "fact",
+            "text": "sqlite-vec was selected for vector search because it is an SQLite extension that does not require a separate database and embeds into the same file.",
+            "evidence": "sqlite-vec selected as it is a SQLite extension for vector similarity search with no separate DB needed and embeds into the same file."
+          },
+          {
+            "type": "fact",
+            "text": "The embedding model default is set to mxbai-embed-large via Ollama, which runs locally and has 1024 dimensions.",
+            "evidence": "embedding model default: mxbai-embed-large via Ollama (1024-dim, runs locally)."
+          },
+          {
+            "type": "fact",
+            "text": "The vector store is configured as sqlite-vec backed by better-sqlite3.",
+            "evidence": "vector store configured as sqlite-vec backed by better-sqlite3."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "States the default embedding model is mxbai-embed-large via Ollama (1024-dim, local), matching the gold decision content though labeled as a fact."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Says SQLite via better-sqlite3 was chosen over Postgres for local/no-server use, matching the gold decision and type."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Indicates sqlite-vec was selected for vector search to avoid a separate DB, matching the gold decision content but labeled as a fact."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Specifies mxbai-embed-large has 1024 dimensions, directly matching the gold fact."
+              },
+              {
+                "index": 4,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Provides an additional useful configuration detail that the vector store is sqlite-vec backed by better-sqlite3, which isn't explicitly listed in the gold atoms."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 4
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 44924,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Ran 20 concurrent POSTs with the same `Idempotency-Key` against the ingest endpoint: before fix, 3 duplicate rows created; after fix, exactly 1 row created and other requests received a 200 idempotent replay status code.",
+            "evidence": null
+          },
+          {
+            "type": "todo",
+            "text": "Add a concurrency regression test (fire N parallel requests with the same `idempotency_key`, assert exactly one row is created) in the next session.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Ingest requests occasionally create two transcript rows for the same `session_id` when clients retry fast due to a check-then-act race condition (SELECT then INSERT).",
+            "evidence": "Issue: Ingest requests occasionally create two transcript rows for the same `session_id` when clients retry fast due to a check-then-act race condition (SELECT then INSERT)."
+          },
+          {
+            "type": "fact",
+            "text": "Switched from separate SELECT/INSERT steps to an atomic 'INSERT ... ON CONFLICT DO NOTHING' inside a transaction, followed by reading back the winning row.",
+            "evidence": "Fix Applied: Switched from separate SELECT/INSERT steps to an atomic 'INSERT ... ON CONFLICT DO NOTHING' inside a transaction, followed by reading back the winning row."
+          },
+          {
+            "type": "fact",
+            "text": "Ran 20 concurrent POSTs with the same `Idempotency-Key` against the ingest endpoint: Before fix: 3 duplicate rows created. After fix: Exactly 1 row created; other 19 requests correctly received a 200 idempotent replay status code.",
+            "evidence": "Testing Results: Ran 20 concurrent POSTs with the same `Idempotency-Key` against the ingest endpoint: Before fix: 3 duplicate rows created. After fix: Exactly 1 row created; other 19 requests correctly received a 200 idempotent replay status code."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.4,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Captures the verification run of 20 concurrent POSTs (gold event 2) but labeled as 'fact' rather than 'event'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Matches the regression test todo to fire N concurrent requests and assert one row."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Describes the SELECT-then-INSERT race condition (gold lesson 0) but is typed as a fact."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "States the switch to 'INSERT ... ON CONFLICT DO NOTHING' as the fix (gold decision 1) but labeled as a fact."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Restates the before/after counts from the 20 concurrent POSTs (gold fact 3) with correct typing."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 41135,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Extract shared `fetchWithRetry` logic into new module `src/providers/lib/fetch-retry.ts`. All four provider files (`ollama.ts`, `azure-openai.ts`, embed providers) now import this shared version instead of maintaining local copies. Retained identical behavior: same timeout, no retry on 4xx status codes, one retry allowed for 5xx or network errors/timeout. Ran existing provider tests; all pass unchanged.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Extracted shared `fetchWithRetry` logic into new module `src/providers/lib/fetch-retry.ts`. All four provider files (`ollama.ts`, `azure-openai.ts`, embed providers) now import this shared version instead of maintaining local copies.",
+            "evidence": "Extracted shared `fetchWithRetry` logic into new module `src/providers/lib/fetch-retry.ts`. All four provider files (`ollama.ts`, `azure-openai.ts`, embed providers) now import this shared version instead of maintaining local copies."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.25,
+          "precision": 0.5,
+          "junkRate": 0.5,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Describes the decision to extract fetchWithRetry into src/providers/lib/fetch-retry.ts with providers now importing it."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant repetition of the extraction fact already captured by extracted atom 0; no new durable information."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 38828,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Production 500s on /ingest/transcript due to missing OS keystore entry when `security.encryption.enabled` was set to true by default in new build; rollback completed successfully within 30 seconds. Root cause: deploy script lacks pre-flight step to provision keystore before enabling encryption.",
+            "evidence": "Root cause: deploy script lacks pre-flight step to provision keystore before enabling encryption"
+          },
+          {
+            "type": "fact",
+            "text": "Fix implemented: added required pre-flight provisioning step and doctor check that fails loudly if `security.encryption.enabled` is true without a corresponding keystore entry, preventing recurrence in prod.",
+            "evidence": "Fix implemented: added required pre-flight provisioning step and doctor check that fails loudly if `security.encryption.enabled` is true without a corresponding keystore entry, preventing recurrence in prod."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 2,
+          "recall": 0.4,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the production incident details and root cause (500s on /ingest/transcript after enabling encryption without keystore) matching the event, but type is 'lesson' not 'event'."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Describes adding the required pre-flight provisioning step (matches the decision about provisioning before flipping encryption), but type is 'fact' not 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2,
+              4
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 43405,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Add a boot-time WARN log if both `llm.compaction.provider`, `llm.extraction.provider`, and `embedding.provider` are set to `azure-openai`. The warning should suggest running at least the embedding step on local Ollama.",
+            "evidence": null
+          },
+          {
+            "type": "todo",
+            "text": "File an issue/task to implement stricter validation in a future release instead of just logging warnings, while maintaining backward compatibility for intentionally all-cloud configurations.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "Do not raise the default daily LLM budget cap ($10). Users hitting the cap are experiencing silent double-billing due to misconfigured `azure-openai` fallback when local Ollama is missing, rather than a sizing issue.",
+            "evidence": "Do not raise the default daily LLM budget cap ($10). Users hitting the cap are experiencing silent double-billing due to misconfigured `azure-openai` fallback when local Ollama is missing, rather than a sizing issue."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.6666666666666666,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Captures the decision to add a boot-time WARN when compaction, extraction, and embedding providers are all azure-openai and suggests using local Ollama for embedding."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Matches the todo to implement stricter validation for the all-azure-openai misconfiguration in a future release."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Matches the decision not to raise the $10 daily budget cap, attributing hits to an azure-openai misconfiguration rather than sizing."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0.6799999999999999,
+      "avgPrecision": 0.9,
+      "f1": 0.7746835443037974,
+      "avgJunkRate": 0.1,
+      "avgTypeAccuracy": 0.31333333333333335,
+      "overExtractionOnNothingFixture": null,
+      "failedFixtures": 0,
+      "avgWallMsPerSession": 42622.8,
+      "totalWallMs": 213114,
+      "azureUsd": 0,
+      "avgPassAAtomCount": null,
+      "avgPassBAtomCount": null,
+      "forbiddenItemHitsTotal": 0,
+      "evidenceAcc": 0,
+      "evidenceAccNumerator": 0,
+      "evidenceAccDenominator": 11
+    }
+  }
+]

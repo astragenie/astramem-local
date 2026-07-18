@@ -1,0 +1,347 @@
+[
+  {
+    "fixtureId": "fx01-clean-decision",
+    "repeats": 3,
+    "recall": {
+      "mean": 0.75,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    "precision": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "f1": {
+      "mean": 0.8571428571428571,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.8571428571428571,
+        0.8571428571428571,
+        0.8571428571428571
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 0.3333333333333333,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.3333333333333333,
+        0.3333333333333333,
+        0.3333333333333333
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 3,
+        "recall": 0.75,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.3333333333333333,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Captures the decision to use mxbai-embed-large via Ollama and notes 1024-dim embeddings, but is labeled 'fact' while gold is a 'decision'."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "States SQLite (better-sqlite3) was chosen over Postgres for local single-file/no-server operation, matching the decision gold atom."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Records that sqlite-vec was used instead of a separate vector DB, but is labeled as a 'fact' while gold lists it as a 'decision'."
+            }
+          ],
+          "unmatched_gold_indices": [
+            3
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 3,
+        "recall": 0.75,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.3333333333333333,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Captures the decision to use mxbai-embed-large via Ollama and notes 1024-dim, but extracted type is 'fact' while gold type is 'decision'."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "States SQLite via better-sqlite3 was chosen over Postgres for local single-file/no-server operation, matching the decision gold atom."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Describes using sqlite-vec for vector search, matching the decision but labeled as a 'fact' instead of 'decision'."
+            }
+          ],
+          "unmatched_gold_indices": [
+            3
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 3,
+        "recall": 0.75,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.3333333333333333,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Captures the decision to use mxbai-embed-large via Ollama as the default embedding model but is labeled as a fact instead of a decision."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "States the decision to use SQLite/better-sqlite3 instead of Postgres and gives the same rationale."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Records the decision to use sqlite-vec for vector search but is labeled as a fact rather than a decision."
+            }
+          ],
+          "unmatched_gold_indices": [
+            3
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "fixtureId": "fx02-debugging-race-condition",
+    "repeats": 3,
+    "recall": {
+      "mean": 0.5333333333333333,
+      "stdev": 0.11547005383792512,
+      "n": 3,
+      "raw": [
+        0.6,
+        0.4,
+        0.6
+      ]
+    },
+    "precision": {
+      "mean": 0.75,
+      "stdev": 0.25,
+      "n": 3,
+      "raw": [
+        0.75,
+        0.5,
+        1
+      ]
+    },
+    "f1": {
+      "mean": 0.6203703703703702,
+      "stdev": 0.15795113064103677,
+      "n": 3,
+      "raw": [
+        0.6666666666666665,
+        0.4444444444444445,
+        0.7499999999999999
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 0.38888888888888884,
+      "stdev": 0.09622504486493764,
+      "n": 3,
+      "raw": [
+        0.3333333333333333,
+        0.5,
+        0.3333333333333333
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 4,
+        "recall": 0.6,
+        "precision": 0.75,
+        "junkRate": 0.25,
+        "typeAccuracy": 0.3333333333333333,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant partial fact already covered by a better-matching extracted atom (duplicate of gold[3] content)."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Contains the post-fix outcome (1 row created, 19 idempotent replays), matching gold[3] which is a fact."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Describes the decision to use an atomic INSERT ... ON CONFLICT DO NOTHING and read back the winner, matching gold[1] though type is 'fact' not 'decision'."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Describes verifying the fix by running 20 concurrent POSTs against the ingest endpoint, matching gold[2] (event) though labeled as 'fact'."
+            }
+          ],
+          "unmatched_gold_indices": [
+            0,
+            4
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 4,
+        "recall": 0.4,
+        "precision": 0.5,
+        "junkRate": 0.5,
+        "typeAccuracy": 0.5,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant/statements already captured by a combined atom (duplicate of extracted[3]); does not add new durable content."
+            },
+            {
+              "index": 1,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant/detail already included in extracted[3]; no new distinct gold atom matched."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Describes switching from SELECT/INSERT to atomic INSERT ... ON CONFLICT DO NOTHING, matching the decision to use that approach, but type is 'fact' not 'decision'."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Summarizes the concurrent-run results before and after the fix (3 duplicates before, 1 row + 19 idempotent replays after), matching the factual gold atom."
+            }
+          ],
+          "unmatched_gold_indices": [
+            0,
+            2,
+            4
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 4,
+        "recall": 0.6,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.3333333333333333,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "States the pre-fix result (3 duplicate rows) which matches gold atom 3 (a fact) exactly."
+            },
+            {
+              "index": 1,
+              "verdict": "reasonable_extra",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Accurately restates the post-fix outcome but duplicates information already covered by gold atom 3, so it's a useful extra rather than a distinct gold item."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Describes the chosen atomic INSERT ... ON CONFLICT DO NOTHING fix, matching gold atom 1 (a decision) though extracted type is 'fact'."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Describes verifying the fix by running 20 concurrent POSTs, matching gold atom 2 (an event) though extracted type is 'fact'."
+            }
+          ],
+          "unmatched_gold_indices": [
+            0,
+            4
+          ]
+        }
+      }
+    ]
+  }
+]
