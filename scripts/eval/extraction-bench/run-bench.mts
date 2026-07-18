@@ -194,6 +194,24 @@ const skipJudgeAgreement = has('--skip-judge-agreement');
 // now one named default (lib/daemon-runner.ts's DEFAULT_COMPACTION_MODEL),
 // overridable here so a future model swap doesn't repeat the hunt.
 const compactionModel = get('--compaction-model') ?? DEFAULT_COMPACTION_MODEL;
+// --compaction-mode auto|always|never (additive, 2026-07-17): `never` = raw-turn
+// passthrough for the daemon-path candidates — isolates compaction-stage loss
+// from extractor quality. Omit to inherit the shipped default (auto). Daemon
+// path only; the azure:/codex: direct path keeps its own pipeline defaults.
+const compactionMode = get('--compaction-mode') as 'auto' | 'always' | 'never' | undefined;
+if (compactionMode !== undefined && !['auto', 'always', 'never'].includes(compactionMode)) {
+  console.error(`--compaction-mode must be auto|always|never, got: ${compactionMode}`);
+  process.exit(1);
+}
+// --max-chunk-chars N (additive, 2026-07-17): chunk-size A/B lever for the
+// daemon-path candidates — overrides config.distill.maxChunkChars (default 3200)
+// in the sandbox config. Daemon path only, like --compaction-mode.
+const maxChunkCharsRaw = get('--max-chunk-chars');
+const maxChunkChars = maxChunkCharsRaw !== undefined ? Number(maxChunkCharsRaw) : undefined;
+if (maxChunkChars !== undefined && (!Number.isInteger(maxChunkChars) || maxChunkChars < 400)) {
+  console.error(`--max-chunk-chars must be an integer >= 400, got: ${maxChunkCharsRaw}`);
+  process.exit(1);
+}
 
 interface ModelAtomsByFixture {
   model: string;
@@ -283,7 +301,7 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   }
 
   console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/${compactionModel}, extraction=ollama/${model}) ===`);
-  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel });
+  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}) });
   console.log(`  daemon boot: ${run.daemonBootMs}ms`);
   const perFixture: ModelAtomsByFixture['perFixture'] = {};
   for (const r of run.results as DaemonFixtureResult[]) {

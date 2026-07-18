@@ -148,6 +148,14 @@ if (extractionPassesFlag !== undefined && extractionPassesFlag !== 1 && extracti
   console.error(`--extraction-passes must be 1 or 2, got: ${extractionPassesRaw}`);
   process.exit(1);
 }
+// --compaction-mode auto|always|never (additive): `never` = raw-turn passthrough,
+// no compaction LLM call — the stage can summarize away facts extraction needs, so
+// disabling it isolates extraction quality. Omit to inherit the shipped default (auto).
+const compactionModeFlag = get('--compaction-mode') as 'auto' | 'always' | 'never' | undefined;
+if (compactionModeFlag !== undefined && !['auto', 'always', 'never'].includes(compactionModeFlag)) {
+  console.error(`--compaction-mode must be auto|always|never, got: ${compactionModeFlag}`);
+  process.exit(1);
+}
 // WS2 rerank-flip experiment (docs/specs/20260713-locomo-architect-design.md
 // workstream 2): `--cross-encoder` flips the isolated eval daemon's
 // crossEncoder.enabled via config only (src/search/rerank.ts's own logic is
@@ -215,6 +223,8 @@ async function runShard(opts: {
   extractProfile?: 'engineering' | 'conversational';
   /** Additive (W2 dual-pass A/B) — undefined inherits the shipped default (1). */
   extractionPasses?: 1 | 2;
+  /** Additive — distill.compaction mode; undefined inherits the shipped default (auto). */
+  compactionMode?: 'auto' | 'always' | 'never';
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -232,7 +242,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -243,7 +253,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -543,7 +553,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -710,7 +720,7 @@ async function runDryRunThroughput(): Promise<void> {
     buckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: effectiveShards, samples, runDir: join(runDir, `shards-${effectiveShards}`), concurrency, distillTimeoutMs, k,
       azureCfg: null, // ingest+distill only
-      modelOverrides, extractProfile: extractProfileFlag,
+      modelOverrides, extractProfile: extractProfileFlag, compactionMode: compactionModeFlag,
     })),
   );
   const ms = Date.now() - t0;

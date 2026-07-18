@@ -129,10 +129,15 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
   const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;
+  // Additive (2026-07-17): distill.compaction mode for the bench daemon —
+  // `never` = raw-turn passthrough (no compaction LLM call), mirroring the
+  // LoCoMo harness's --compaction-mode. Omit to inherit the shipped default
+  // (auto). Lets an A/B isolate compaction-stage loss from extractor quality.
+  const compactionMode = opts.compactionMode;
   const tag = opts.runTag ?? extractionModel.replace(/[^a-z0-9.-]/gi, '_');
   const isolated = makeIsolatedEvalEnv(`extraction-bench-${tag}`);
 
@@ -161,6 +166,15 @@ export async function runOllamaCandidate(
       '  provider: onnx',
       'onnxEmbed:',
       `  cacheDir: '${onnxCacheDir.replace(/\\/g, '/')}'`,
+    ] : []),
+    ...(compactionMode || opts.maxChunkChars ? [
+      'distill:',
+      ...(compactionMode ? [`  compaction: ${compactionMode}`] : []),
+      // Chunk-size A/B lever (2026-07-17): config.distill.maxChunkChars is a
+      // hardcoded 3200 default (NOT derived from ASTRA_CHUNK_TARGET_TOKENS, so
+      // the env var can't reach a config-driven daemon) — emit it here when the
+      // bench wants a different chunk size.
+      ...(opts.maxChunkChars ? [`  maxChunkChars: ${opts.maxChunkChars}`] : []),
     ] : []),
     'budget:',
     '  daily_usd: 50',
