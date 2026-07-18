@@ -356,6 +356,18 @@ export function configToYaml(cfg: Config): string {
     line(2, 'minConfidence', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).minConfidence),
     line(2, 'maxPerRun', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxPerRun),
     line(2, 'maxWallClockMs', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxWallClockMs),
+    // dupJudge (FEAT-549) — mode: 'off' is the shipped default,
+    // byte-identical to pre-FEAT-549 behavior. Same shape as
+    // contradictionDetection above: the optional provider/model override is
+    // a hand-edit-only field this writer doesn't round-trip either (an
+    // operator who sets one on disk keeps it via deepMerge; writeConfig()
+    // just never re-emits it).
+    line(1, 'dupJudge'),
+    line(2, 'mode', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).mode),
+    line(2, 'minConfidence', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).minConfidence),
+    line(2, 'batchSize', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).batchSize),
+    line(2, 'maxPerRun', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).maxPerRun),
+    line(2, 'maxWallClockMs', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).maxWallClockMs),
     // P2.1 stabilization — k-NN candidate selection. 'full'/30/null are the
     // shipped defaults (byte-identical to pre-P2.1 behavior); wired in from
     // day one so this never joins the FEAT-461 dropped-field list.

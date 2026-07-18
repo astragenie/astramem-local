@@ -75,6 +75,11 @@ function buildFullyPopulatedConfig(): Config {
     consolidation: {
       autoAcceptThreshold: 0.95,
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.5, minConfidence: 0.8, maxPerRun: 50, maxWallClockMs: 120_000 },
+      // dupJudge (FEAT-549) — provider/model deliberately unset, same
+      // round-trip gap contradictionDetection's own provider/model override
+      // already documents above (hand-edit-only field, writer.ts doesn't
+      // emit either).
+      dupJudge: { mode: 'enabled', minConfidence: 0.75, batchSize: 25, maxPerRun: 150, maxWallClockMs: 90_000 },
       candidateSelection: 'knn',
       knnK: 50,
       maxCandidatePairsPerRun: 5000,

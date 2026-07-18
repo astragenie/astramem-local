@@ -31,6 +31,7 @@ import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import { runConsolidation, cosine, type ConsolidateSummary } from '../../src/consolidate/consolidate.js';
+import type { LLMProvider, ChatMsg } from '../../src/contracts/llm.js';
 
 // ─── Gold fixture model ─────────────────────────────────────────────────────
 
@@ -391,8 +392,102 @@ async function runMode(mode: 'full' | 'knn'): Promise<{ results: FixtureResult[]
   return { results, report };
 }
 
+// ─── FEAT-549 AC-3: judge-enabled variant, SAME 15-fixture gold set ────────
+//
+// A DETERMINISTIC MOCK judge — no network, no real LLM (this eval must stay
+// CI-safe/zero-network; the real-LLM comparison is the measurement lane's
+// job, deliberately deferred). Closed-vocabulary table, same pattern
+// `mock-judge-pairs.ts` uses for the contradiction judge's own mock: keyed
+// on the EXACT fixture text (either order — winner/loser assignment for a
+// propose-tier pair depends on usefulness/importance/recency tie-breaks
+// that this eval harness doesn't control), falling back to
+// 'unclear-leave-pending' (confidence 0) for anything not in the table —
+// the same "don't guess on unknown input" posture `FALLBACK_VERDICT`
+// documents for the contradiction judge.
+//
+// Of the 15 fixtures, only F6 (cosine ~0.876) and F14 (cosine ~0.91, the
+// AC-7 fixture) actually land IN the propose band and produce a pending
+// `kind='merge'` proposal for the dup-judge to see — every merge/supersede
+// fixture clears mergeThreshold on its own (auto-merge tier, never a
+// pending proposal at all), and F7/F9/F10/F11 are exactly orthogonal
+// (cosine 0, untouched). Both F6 and F14 are gold='keep-separate', so the
+// correct verdict for both is 'distinct-keep-separate'.
+const DUP_JUDGE_MOCK_TABLE: ReadonlyMap<string, { verdict: 'same-fact-merge' | 'distinct-keep-separate' | 'unclear-leave-pending'; confidence: number }> = new Map([
+  [
+    'The API rate limit is 100 requests per minute.|The API rate limit resets at the top of every minute.',
+    { verdict: 'distinct-keep-separate', confidence: 0.9 },
+  ],
+  [
+    'The embedding model env var is EMBED_MODEL.|The embedding model env var is EMBED_PROVIDER.',
+    { verdict: 'distinct-keep-separate', confidence: 0.95 },
+  ],
+]);
+
+function mockDupJudgeVerdict(
+  winnerText: string, loserText: string,
+): { verdict: 'same-fact-merge' | 'distinct-keep-separate' | 'unclear-leave-pending'; confidence: number } {
+  return (
+    DUP_JUDGE_MOCK_TABLE.get(`${winnerText}|${loserText}`) ??
+    DUP_JUDGE_MOCK_TABLE.get(`${loserText}|${winnerText}`) ??
+    { verdict: 'unclear-leave-pending', confidence: 0 }
+  );
+}
+
+/** Parses the dup-judge's fixed batched user-content shape
+ *  (`[<idx>] A: <text>\nB: <text>` per pending proposal, one block per
+ *  line-pair) and answers with one verdict per parsed pair — mirrors how a
+ *  real batched LLM response would look, just deterministic. */
+function makeMockDupJudgeProvider(): LLMProvider {
+  return {
+    name: 'ollama',
+    model: 'mock-dup-judge-eval',
+    async chat(messages: ChatMsg[]) {
+      const userContent = messages.find((m) => m.role === 'user')?.content ?? '';
+      const verdicts: Array<{ index: number; verdict: string; confidence: number }> = [];
+      const lines = userContent.split('\n');
+      let pendingIndex = -1;
+      let pendingA = '';
+      for (const line of lines) {
+        const header = line.match(/^\[(\d+)\] A: (.*)$/);
+        if (header) {
+          pendingIndex = Number(header[1]);
+          pendingA = header[2] ?? '';
+          continue;
+        }
+        const bLine = line.match(/^B: (.*)$/);
+        if (bLine && pendingIndex >= 0) {
+          const v = mockDupJudgeVerdict(pendingA, bLine[1] ?? '');
+          verdicts.push({ index: pendingIndex, verdict: v.verdict, confidence: v.confidence });
+          pendingIndex = -1;
+          pendingA = '';
+        }
+      }
+      return { text: JSON.stringify({ verdicts }), usage: { in: 10, out: 10, usd: 0 } };
+    },
+    async health() {
+      return { ok: true, model: 'mock-dup-judge-eval', latency_ms: 0 };
+    },
+  };
+}
+
+async function runModeWithDupJudge(): Promise<{
+  results: FixtureResult[]; report: WeightedErrorReport; summary: ConsolidateSummary;
+}> {
+  const db = openDb(':memory:');
+  migrate(db);
+  const idsByFixture = await seedFixtures(db, FIXTURES);
+  const summary = await runConsolidation(db, {
+    dupJudge: { mode: 'enabled', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 60_000 },
+    dupJudgeProvider: makeMockDupJudgeProvider(),
+  });
+  const results = FIXTURES.map(fx => evaluateFixture(fx, idsByFixture.get(fx.id) as string[], summary));
+  const report = computeWeightedErrorReport(results);
+  return { results, report, summary };
+}
+
 let fullRun: { results: FixtureResult[]; report: WeightedErrorReport };
 let knnRun: { results: FixtureResult[]; report: WeightedErrorReport };
+let dupJudgeRun: { results: FixtureResult[]; report: WeightedErrorReport; summary: ConsolidateSummary };
 let savedSkipConsolidateEnv: string | undefined;
 
 const ARTIFACT_DIR = join(process.cwd(), 'scripts', 'eval', 'consolidation-bench', 'results');
@@ -408,6 +503,7 @@ beforeAll(async () => {
 
   fullRun = await runMode('full');
   knnRun = await runMode('knn');
+  dupJudgeRun = await runModeWithDupJudge();
 
   // AC-3: printed evidence, not just asserted silently.
   // eslint-disable-next-line no-console
@@ -417,6 +513,28 @@ beforeAll(async () => {
   console.log(
     `totalWeightedError=${fullRun.report.totalWeight} falseMergeCount=${fullRun.report.falseMergeCount} ` +
     `uniqueInfoLossCount=${fullRun.report.uniqueInfoLossCount} mismatches=${fullRun.report.mismatchCount}/${fullRun.report.fixtureCount}`,
+  );
+
+  // FEAT-549 AC-3: judge-enabled variant vs baseline, printed as its own
+  // evidence block — the hard gate any future dupJudge default-flip FEAT
+  // must cite (not a one-time measurement that goes stale).
+  const falseMergeDelta = dupJudgeRun.report.falseMergeCount - fullRun.report.falseMergeCount;
+  const weightedErrorDelta = dupJudgeRun.report.totalWeight - fullRun.report.totalWeight;
+  // eslint-disable-next-line no-console
+  console.log('\n=== FEAT-549 dup-judge-enabled variant vs no-judge baseline (SAME 15-fixture set) ===');
+  // eslint-disable-next-line no-console
+  console.log(
+    `baseline: totalWeightedError=${fullRun.report.totalWeight} falseMergeCount=${fullRun.report.falseMergeCount} | ` +
+    `dupJudge-enabled: totalWeightedError=${dupJudgeRun.report.totalWeight} falseMergeCount=${dupJudgeRun.report.falseMergeCount} | ` +
+    `delta: falseMerge=${falseMergeDelta >= 0 ? '+' : ''}${falseMergeDelta} weightedError=${weightedErrorDelta >= 0 ? '+' : ''}${weightedErrorDelta} | ` +
+    `dupJudgeCallsExecuted=${dupJudgeRun.summary.dupJudgeCallsExecuted} dupJudgeResolved=${dupJudgeRun.summary.dupJudgeResolved.length}`,
+  );
+  // eslint-disable-next-line no-console
+  console.log(
+    'NOTE: this 15-fixture gold set has no gold=\'merge\' pair sitting IN the propose band (every ' +
+    'merge/supersede fixture clears mergeThreshold on its own) — real weighted-error IMPROVEMENT can ' +
+    'only be measured against a corpus containing propose-band true duplicates, which is the real-LLM ' +
+    'measurement lane\'s job (deliberately deferred, mock judge only proves the wiring here).',
   );
 
   // AC-4/AC-8: structured JSON run artifact for this exact threshold pair,
@@ -436,6 +554,16 @@ beforeAll(async () => {
       uniqueInfoLossCount: fullRun.report.uniqueInfoLossCount,
       totalWeightedError: fullRun.report.totalWeight,
       allPass: fullRun.report.mismatchCount === 0,
+    },
+    // FEAT-549 AC-3: judge-enabled comparison, same gold set, mock judge
+    // (real-LLM measurement deferred — see the console note above).
+    dupJudgeEnabled: {
+      report: dupJudgeRun.report,
+      dupJudgeCallsExecuted: dupJudgeRun.summary.dupJudgeCallsExecuted,
+      dupJudgeResolvedCount: dupJudgeRun.summary.dupJudgeResolved.length,
+      falseMergeDelta,
+      weightedErrorDelta,
+      note: 'mock judge, wiring-only measurement — real-LLM comparison deferred to the measurement lane',
     },
   }, null, 2));
 });
@@ -581,6 +709,58 @@ it('AC-6: judge pass is skipped entirely (not attempted-and-caught) when CONSOLI
   if (!JUDGE_OPT_IN) {
     expect(process.env['CONSOLIDATION_EVAL_JUDGE']).not.toBe('1');
   }
+});
+
+// ─── FEAT-549 AC-3: dup-judge-enabled variant vs no-judge baseline ─────────
+//
+// Extends this shipped scoreboard with a judge-enabled run over the SAME
+// 15-fixture gold set (FEAT-549 AC-3's literal requirement), using a
+// DETERMINISTIC MOCK judge — this eval must stay CI-safe/zero-network; the
+// real-LLM comparison is a separate, explicitly deferred measurement-lane
+// concern (see the console note `beforeAll` prints and the `dupJudgeEnabled`
+// block in the JSON artifact). This is the hard gate any future
+// `dupJudge.mode: 'enabled'` default-flip FEAT must cite, not a one-time
+// measurement that goes stale.
+
+describe("FEAT-549 AC-3: dup-judge-enabled variant vs no-judge baseline (same 15-fixture set)", () => {
+  it('the dup-judge sweep actually ran and classified the propose-band pairs (F6, F14)', () => {
+    expect(dupJudgeRun.summary.dupJudgeCallsExecuted).toBeGreaterThan(0);
+    expect(dupJudgeRun.summary.dupJudgeResolved.length).toBeGreaterThan(0);
+  });
+
+  it('no false-merge regression vs the no-judge baseline', () => {
+    expect(dupJudgeRun.report.falseMergeCount).toBeLessThanOrEqual(fullRun.report.falseMergeCount);
+  });
+
+  it('no net weighted-error regression vs the no-judge baseline', () => {
+    expect(dupJudgeRun.report.totalWeight).toBeLessThanOrEqual(fullRun.report.totalWeight);
+  });
+
+  it('documents the (zero, by construction) weighted-error delta on THIS fixture set — see the note above for why', () => {
+    // No fixture in this 15-fixture set is a gold='merge' pair sitting IN
+    // the propose band (every merge/supersede fixture clears
+    // mergeThreshold on its own, auto-merging before any proposal ever
+    // exists) — so there is nothing for the dup-judge to FIX here. A
+    // nonzero delta here would mean the judge either broke something
+    // (regression, caught by the two assertions above) or the fixture set
+    // itself changed; either way this assertion is the tripwire.
+    expect(dupJudgeRun.report.totalWeight).toBe(fullRun.report.totalWeight);
+  });
+
+  it('all 15/15 fixtures still pass with the dup-judge enabled (F6/F14 correctly classified distinct-keep-separate)', () => {
+    const failing = dupJudgeRun.results.filter(r => !r.pass).map(r => `${r.fixtureId}:${r.errorType}`);
+    expect(failing, `failing fixtures: ${failing.join(', ')}`).toEqual([]);
+  });
+
+  it('writes the comparison into the same structured JSON artifact AC-4/AC-8 already produce', () => {
+    const written = JSON.parse(readFileSync(ARTIFACT_PATH, 'utf8')) as {
+      dupJudgeEnabled: { report: WeightedErrorReport; dupJudgeCallsExecuted: number; falseMergeDelta: number; weightedErrorDelta: number };
+    };
+    expect(written.dupJudgeEnabled).toBeDefined();
+    expect(written.dupJudgeEnabled.dupJudgeCallsExecuted).toBeGreaterThan(0);
+    expect(written.dupJudgeEnabled.falseMergeDelta).toBeLessThanOrEqual(0);
+    expect(written.dupJudgeEnabled.weightedErrorDelta).toBeLessThanOrEqual(0);
+  });
 });
 
 // ─── AC-7: dedicated 0.91-band false-merge probe ───────────────────────────

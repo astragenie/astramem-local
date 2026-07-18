@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-07-18T01:33:48.939Z",
+  "generatedAt": "2026-07-18T03:23:40.946Z",
   "thresholds": {
     "mergeThreshold": 0.92,
     "proposeThreshold": 0.85
@@ -151,5 +151,82 @@
     "uniqueInfoLossCount": 0,
     "totalWeightedError": 0,
     "allPass": true
+  },
+  "dupJudgeEnabled": {
+    "report": {
+      "fixtureCount": 15,
+      "mismatchCount": 0,
+      "totalWeight": 0,
+      "perErrorType": {},
+      "falseMergeCount": 0,
+      "uniqueInfoLossCount": 0,
+      "categoryBreakdown": {
+        "exact duplicate": {
+          "pass": 1,
+          "fail": 0
+        },
+        "paraphrased duplicate": {
+          "pass": 1,
+          "fail": 0
+        },
+        "alias duplicate": {
+          "pass": 1,
+          "fail": 0
+        },
+        "newer-status update": {
+          "pass": 1,
+          "fail": 0
+        },
+        "explicit correction": {
+          "pass": 1,
+          "fail": 0
+        },
+        "compatible partial facts": {
+          "pass": 1,
+          "fail": 0
+        },
+        "contradictory unresolved facts": {
+          "pass": 1,
+          "fail": 0
+        },
+        "hypothesis later confirmed": {
+          "pass": 1,
+          "fail": 0
+        },
+        "multiple unique facts (no merge)": {
+          "pass": 1,
+          "fail": 0
+        },
+        "same subject / different predicate": {
+          "pass": 1,
+          "fail": 0
+        },
+        "same predicate / different object": {
+          "pass": 1,
+          "fail": 0
+        },
+        "changed preference": {
+          "pass": 1,
+          "fail": 0
+        },
+        "completed vs planned": {
+          "pass": 1,
+          "fail": 0
+        },
+        "same-subject/different-predicate (AC-7 0.91 band)": {
+          "pass": 1,
+          "fail": 0
+        },
+        "exact duplicate (case-insensitive variant)": {
+          "pass": 1,
+          "fail": 0
+        }
+      }
+    },
+    "dupJudgeCallsExecuted": 1,
+    "dupJudgeResolvedCount": 2,
+    "falseMergeDelta": 0,
+    "weightedErrorDelta": 0,
+    "note": "mock judge, wiring-only measurement — real-LLM comparison deferred to the measurement lane"
   }
 }

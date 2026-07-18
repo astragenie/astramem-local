@@ -49,6 +49,18 @@ export interface ProviderSet {
      * meaningful when `distill.atomTriage.mode !== 'off'` — embedAndIndex
      * never calls it on the shipped default. */
     atomTriage?: LLMProvider;
+    /** Batched dup-judge over pending consolidation proposals (FEAT-549).
+     *  `getProviders` ALWAYS sets it, mirroring `judge`/`extractionPassB`/
+     *  `atomTriage` above exactly: the SAME INSTANCE as `extraction` when no
+     *  `consolidation.dupJudge.{provider,model}` override is configured
+     *  (identity — shared rate-limit bucket, byte-identical pre-override
+     *  behavior), or a distinct provider built from that override. Optional
+     *  in the TYPE only so hand-built test ProviderSets stay valid —
+     *  consumers fall back with `dupJudge ?? extraction`, exactly the
+     *  pre-override behavior. Only meaningful when
+     *  `consolidation.dupJudge.mode !== 'off'` — `runConsolidation` never
+     *  calls it on the shipped default. */
+    dupJudge?: LLMProvider;
   };
   embed: EmbedProvider;
 }
@@ -294,6 +306,21 @@ export function getProviders(config: Config): ProviderSet {
           config,
         )
       : extraction;
+  // Dup-judge provider override (FEAT-549): same identity-default shape as
+  // judge/extractionPassB/atomTriage above — only build a SECOND provider
+  // when at least one half is actually set, otherwise reuse the extraction
+  // INSTANCE. An invalid `provider` value was already dropped by
+  // applyDupJudgeGovernance on the boot path, so this can never hit
+  // buildLLMProvider's throwing Azure fall-through on a typo.
+  const dj = config.consolidation?.dupJudge;
+  const dupJudge =
+    dj?.provider !== undefined || dj?.model !== undefined
+      ? buildLLMProvider(
+          dj.provider ?? config.llm.extraction.provider,
+          dj.model ?? config.llm.extraction.model,
+          config,
+        )
+      : extraction;
   return {
     llm: {
       compaction: buildLLMProvider(
@@ -305,6 +332,7 @@ export function getProviders(config: Config): ProviderSet {
       judge,
       extractionPassB,
       atomTriage,
+      dupJudge,
     },
     embed: buildEmbedProvider(config),
   };

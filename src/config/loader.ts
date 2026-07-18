@@ -50,6 +50,7 @@ import {
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
   applyAtomTriageGovernance,
+  applyDupJudgeGovernance,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -349,9 +350,13 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     // override: an out-of-union `contradictionDetection.provider` typo would
     // reach buildLLMProvider's throwing Azure fall-through DURING BOOT,
     // before any runtime guard exists.
-    consolidation: applyCandidateSelectionGovernance(
+    // FEAT-549: applyDupJudgeGovernance added the same way, on the same real
+    // boot path — same reasoning as the review note above (an out-of-union
+    // `dupJudge.provider` typo must not reach buildLLMProvider's throwing
+    // Azure fall-through DURING BOOT either).
+    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(
       applyContradictionDetectionGovernance(cfg.consolidation),
-    ),
+    )),
   };
 }
 
