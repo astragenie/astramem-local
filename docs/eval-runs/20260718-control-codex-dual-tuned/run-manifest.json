@@ -1,0 +1,48 @@
+{
+  "run_dir": ".eval-data/locomo/runs/control-codex-dual-20260718",
+  "config": {
+    "datasetPath": ".eval-data/locomo/locomo10.json",
+    "n": 1,
+    "seed": 42,
+    "k": 15,
+    "concurrency": 4,
+    "distillTimeoutMs": 3600000,
+    "shards": 1,
+    "answererDeployment": "gpt-5-mini",
+    "models": {
+      "extraction": "gpt-5.4-mini",
+      "compaction": "gpt-5.4-mini",
+      "extractionProvider": "codex-subscription",
+      "compactionProvider": "codex-subscription"
+    },
+    "extractProfile": "conversational",
+    "crossEncoder": {
+      "enabled": false
+    },
+    "diagnosed": false
+  },
+  "counts": {
+    "sampled_conversations": 1,
+    "sampled_qa": 199,
+    "sessions_total": 19,
+    "ingest_ok": 19,
+    "ingest_failed": 0,
+    "distill_ready": 1,
+    "distill_timed_out": 0
+  },
+  "timings": {
+    "load_dataset_ms": 7,
+    "shards_wall_clock_ms": 551656,
+    "total_ms": 553506
+  },
+  "per_shard_timings": {
+    "shard_0": {
+      "daemon_boot_ms": 2159,
+      "ingest_ms": 51,
+      "distill_wait_ms": 461632,
+      "answer_ms": 87753
+    }
+  },
+  "failed_shards": [],
+  "timed_out_sample_ids": []
+}

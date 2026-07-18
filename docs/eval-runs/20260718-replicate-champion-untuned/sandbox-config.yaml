@@ -1,0 +1,18 @@
+security:
+  encryption:
+    enabled: false
+embedding:
+  provider: onnx
+onnxEmbed:
+  cacheDir: 'C:/Users/serge/AppData/Local/Astramem/models/onnx'
+llm:
+  extraction:
+    provider: codex-subscription
+    model: gpt-5.4-mini
+distill:
+  extractProfile: conversational
+  extractionPasses: 2
+  compaction: never
+  extractionPassB:
+    sweepOnlyBelowAtoms: 0
+    maxTokens: 0
