@@ -107,3 +107,7 @@ above 0.92 unaudited — issue #190). Add a batched LLM dup-judge over the propo
 ## Wave outcome (2026-07-18)
 
 2026-07-18 WAVE COMPLETE: built (SLICE-440, tip ac2e8c7b), review approved. Mock-judge eval delta=0 (honest: no gold-merge fixture in propose band — fixture-coverage follow-up filed in review). Real-LLM measurement deferred; enablement blocked until it runs.
+
+### Prod audit addendum (2026-07-18)
+
+Dry-run audit on 548/792 REAL pending propose-band pairs (read-only via API, phi judge, 80 calls): 213 merge / 219 keep / 116 unclear. 3/3 sampled high-confidence merge verdicts = FALSE MERGES (command atoms differing only in paths/args, conf 0.90-1.00). NO-ENABLE with phi. Follow-ups: type-aware guard (command type never auto-merges via judge), retry audit with qwen3.5:9b judge, add command-pair fixture to the 543 eval. Result artifact: scratchpad/dup-judge-audit-result.json (session-local).
