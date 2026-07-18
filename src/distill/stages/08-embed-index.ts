@@ -23,7 +23,7 @@ import { defaultConfig } from '../../config/config.js';
 import { redactIfEnabled } from '../../redact/index.js';
 import { childLogger } from '../../log/logger.js';
 import { gateDurability, type DurabilityGateMode, type GatedReason } from '../durability-gate.js';
-import { triageBatch, AtomTriageRunTracker, type TriageVerdict } from '../atom-triage.js';
+import { triageBatch, AtomTriageRunTracker, CORRECTED_TYPE_CONFIDENCE_GATE, type TriageVerdict } from '../atom-triage.js';
 import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
@@ -352,7 +352,11 @@ export async function embedAndIndex(
       tracker.recordCall();
       const verdicts = await triageBatch(
         ctx.llmAtomTriage,
-        batch.map((s) => ({ index: s.originalIndex, text: s.mem.text })),
+        // FEAT-547: thread each survivor's evidence quote (when it has one)
+        // so the batched call can also judge `evidence_supported` — an atom
+        // with no evidence omits the field, same as TriageableAtom.evidence's
+        // doc comment describes.
+        batch.map((s) => ({ index: s.originalIndex, text: s.mem.text, evidence: s.mem.evidence })),
         { log: triageLog },
       );
       for (const [index, verdict] of verdicts) triageVerdicts.set(index, verdict);
@@ -375,7 +379,10 @@ export async function embedAndIndex(
     if (isNonKeepVerdict && atomTriageMode === 'enabled') {
       // 'enabled': actually drop — never reaches insertWithCreateEvent, so
       // there is no memory_id to record (memoryId: null — see
-      // triage-guard-log.ts's doc comment).
+      // triage-guard-log.ts's doc comment). corrected_type/evidence_supported
+      // are recorded too (raw, not "applied" — a dropped atom is never
+      // persisted, so there is nothing to apply either to) purely so the
+      // manually reviewed agreement sample can see what the model proposed.
       atomsDroppedByTriage++;
       triageDropRows.push({
         reason: verdict!.verdict,
@@ -384,6 +391,8 @@ export async function embedAndIndex(
         confidence: verdict!.confidence,
         mode: 'enabled',
         sessionId: ctx.sessionId,
+        correctedType: verdict!.corrected_type ?? null,
+        evidenceSupported: verdict!.evidence_supported ?? null,
       });
       childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
         { triageVerdict: verdict!.verdict, confidence: verdict!.confidence, atom_type: mem.type },
@@ -391,6 +400,28 @@ export async function embedAndIndex(
       );
       continue;
     }
+
+    // FEAT-547 (atom-triage v2): corrected_type / evidence_supported are
+    // only ever APPLIED in 'enabled' mode — 'dry-run' logs but rewrites
+    // nothing (AC-5), same "safe-rollout mode" posture the junk/keep verdict
+    // itself already has. Gate placement mirrors AC-2 exactly:
+    //  - corrected_type overrides the stored type ONLY when its OWN verdict
+    //    confidence clears CORRECTED_TYPE_CONFIDENCE_GATE; under-gate or
+    //    absent keeps the atom's original type untouched.
+    //  - evidence_supported is only ever stored for an atom that actually
+    //    HAS an evidence quote (defense in depth — the triage prompt is
+    //    already instructed to omit it otherwise, this guards against a
+    //    provider ignoring that instruction) and is never itself gated by
+    //    confidence (AC-2 states no confidence floor for this flag, only
+    //    for corrected_type) — a queryable flag, never a rewrite.
+    const correctedTypeApplied =
+      atomTriageMode === 'enabled' &&
+      verdict?.corrected_type !== undefined &&
+      verdict.confidence >= CORRECTED_TYPE_CONFIDENCE_GATE;
+    const evidenceSupportedApplied =
+      atomTriageMode === 'enabled' &&
+      verdict?.evidence_supported !== undefined &&
+      !!mem.evidence;
 
     // Validity bounds (issue #205): parse, then GUARD. An implausible
     // `invalid_at` is refused and the atom kept unbounded rather than being
@@ -414,7 +445,12 @@ export async function embedAndIndex(
     // Insert + append a 'create' memory_event (ADR-002) in one transaction.
     // Dedup-aware: `created` is false when this hash already existed.
     const { id: memoryId, created } = memRepo.insertWithCreateEvent({
-      type: mem.type,
+      // FEAT-547 AC-2: overwrite the stored type with the triage verdict's
+      // corrected_type only when correctedTypeApplied gated it in — every
+      // other case (mode 'off'/'dry-run', no verdict, absent field, or
+      // under-gate confidence) keeps the atom's own extracted type,
+      // byte-identical to pre-FEAT-547 behavior.
+      type: correctedTypeApplied ? verdict!.corrected_type! : mem.type,
       text: mem.text,
       normalized_text: mem.normalizedText,
       hash: mem.finalHash,
@@ -448,6 +484,12 @@ export async function embedAndIndex(
       // because a bad `valid_to` makes the memory permanently unretrievable
       // (see guardValidTo's doc comment). Refusals are counted, not swallowed.
       valid_to: validTo,
+      // FEAT-547 AC-2: queryable evidence-support flag, applied ONLY when
+      // evidenceSupportedApplied gated it in (mode 'enabled', a verdict
+      // actually judged this atom's evidence). `null` (every other case —
+      // including 'dry-run', which never applies) means "not evaluated,"
+      // never "unsupported" — see Memory.evidence_supported's doc comment.
+      evidence_supported: evidenceSupportedApplied ? verdict!.evidence_supported! : null,
       // Every atom reaching this stage passed through AtomSchema, which now
       // carries valid_at/invalid_at for every extraction profile (issue
       // #205 AC-3) — so this write path always "looked," regardless of
@@ -588,21 +630,33 @@ export async function embedAndIndex(
       );
     }
 
-    // FEAT-533 dry-run: the atom persisted (dry-run drops NOTHING — see
-    // Config['distill']['atomTriage']'s doc comment), but a non-'keep'
-    // verdict is still recorded so the manually reviewed agreement sample
-    // this FEAT's own eval gate depends on has something to compare against
-    // the Azure judge's junk labels. `memoryId` is known here (unlike the
-    // 'enabled' branch above), so it rides along in the row.
-    if (isNonKeepVerdict && atomTriageMode === 'dry-run') {
-      atomsDroppedByTriage++;
+    // FEAT-533/FEAT-547: post-insert triage observability. `memoryId` is
+    // known here (unlike the early 'enabled'+non-'keep' drop branch above),
+    // so it rides along in every row this block writes:
+    //  - 'dry-run': a non-'keep' verdict OR either v2 signal (corrected_type/
+    //    evidence_supported) is logged so the manually reviewed agreement
+    //    sample this FEAT's own eval gate depends on has something to
+    //    compare against — dry-run APPLIES neither signal (AC-5); this row
+    //    is diagnostic only, never a record of a real mutation.
+    //  - 'enabled': only a 'keep' verdict that ALSO carried a v2 signal ever
+    //    reaches this point (a non-'keep' 'enabled' verdict was already
+    //    dropped-and-logged by the early branch above and never falls
+    //    through to here) — logged as the audit trail of what was actually
+    //    APPLIED to the persisted row (correctedTypeApplied/
+    //    evidenceSupportedApplied above decided that already; this is
+    //    observability, not a second gate).
+    const hasV2Signal = verdict?.corrected_type !== undefined || verdict?.evidence_supported !== undefined;
+    if (atomTriageMode !== 'off' && verdict !== undefined && (isNonKeepVerdict || hasV2Signal)) {
+      if (isNonKeepVerdict) atomsDroppedByTriage++; // only reachable for 'dry-run' here — see comment above
       triageDropRows.push({
-        reason: verdict!.verdict,
+        reason: verdict.verdict,
         memoryId,
         model: ctx.llmAtomTriage?.model ?? 'unknown',
-        confidence: verdict!.confidence,
-        mode: 'dry-run',
+        confidence: verdict.confidence,
+        mode: atomTriageMode,
         sessionId: ctx.sessionId,
+        correctedType: verdict.corrected_type ?? null,
+        evidenceSupported: verdict.evidence_supported ?? null,
       });
     }
 

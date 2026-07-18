@@ -135,7 +135,7 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled' } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled'; triageModel?: string } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
   const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;
@@ -182,14 +182,23 @@ export async function runOllamaCandidate(
       // bench wants a different chunk size.
       ...(opts.maxChunkChars ? [`  maxChunkChars: ${opts.maxChunkChars}`] : []),
       // FEAT-533 atom-triage A/B lever (2026-07-17): post-extraction batched
-      // keep/junk triage, shipped `mode: off`. The triage provider is pinned to
-      // the SAME extraction candidate model, so the experiment measures "model X
-      // extracting + triaging its own atoms", not a mixed-provider confound.
+      // keep/junk triage, shipped `mode: off`. Default (no --triage-model)
+      // pins the triage provider to the SAME extraction candidate model, so
+      // the experiment measures "model X extracting + triaging its own
+      // atoms", not a mixed-provider confound.
+      //
+      // FEAT-547 --triage-model override: lets the triage tier's model be
+      // pinned INDEPENDENTLY of the extraction candidate — needed for a
+      // cross-model A/B (e.g. phi4-mini or qwen2.5:7b triaging CODEX's
+      // atoms), which the plain --atom-triage lever alone can't express
+      // (it always pins triage to whatever `extractionModel` this call was
+      // invoked with). Provider stays 'ollama' either way — same
+      // daemon-HTTP-path-only constraint --atom-triage already carries.
       ...(opts.atomTriageMode ? [
         '  atomTriage:',
         `    mode: ${opts.atomTriageMode}`,
         '    provider: ollama',
-        `    model: '${extractionModel}'`,
+        `    model: '${opts.triageModel ?? extractionModel}'`,
       ] : []),
     ] : []),
     'budget:',

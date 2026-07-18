@@ -121,12 +121,22 @@ export interface InsertInput {
    * third-party-speaker capture source.
    */
   consent_disclosed?: boolean | null;
+  /**
+   * FEAT-547 (atom-triage v2): tri-state semantic evidence-support flag —
+   * see Memory.evidence_supported's doc comment. `undefined`/`null` (every
+   * pre-FEAT-547 caller, and any atom the triage batch had no evidence to
+   * judge, or triaged in 'dry-run' mode) stores `NULL` — "not evaluated,"
+   * never "unsupported." Only the distill pipeline's stage-8 write
+   * (src/distill/stages/08-embed-index.ts), in `atomTriageMode: 'enabled'`,
+   * ever passes an explicit `true`/`false` here.
+   */
+  evidence_supported?: boolean | null;
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
  *  string[] | null in get()); archived/validity_extracted/needs_vec_index
  *  are stored as SQLite INTEGER 0/1 (hydrated to boolean). */
-type MemoryRow = Omit<Memory, 'derived_from' | 'archived' | 'validity_extracted' | 'needs_vec_index' | 'consent_disclosed'> & {
+type MemoryRow = Omit<Memory, 'derived_from' | 'archived' | 'validity_extracted' | 'needs_vec_index' | 'consent_disclosed' | 'evidence_supported'> & {
   derived_from: string | null;
   archived: number;
   validity_extracted: number;
@@ -135,6 +145,9 @@ type MemoryRow = Omit<Memory, 'derived_from' | 'archived' | 'validity_extracted'
    *  boolean columns above, so hydration must preserve NULL distinctly from
    *  `false` (see Memory.consent_disclosed's doc comment). */
   consent_disclosed: number | null;
+  /** Raw SQLite INTEGER 0/1/NULL — same tri-state convention as
+   *  consent_disclosed above (see Memory.evidence_supported's doc comment). */
+  evidence_supported: number | null;
 };
 
 export interface FtsHit {
@@ -237,8 +250,8 @@ export class MemoryRepo {
         (id, type, text, normalized_text, repo, project, branch, agent, session_id,
          importance, confidence, hash, embedding_provider, embedding_model, embedding_dim,
          created_at, updated_at, source_hash, evidence, valid_from, valid_to, scope, capture_source,
-         validity_extracted, speaker_label, consent_disclosed)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         validity_extracted, speaker_label, consent_disclosed, evidence_supported)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.type, input.text, input.normalized_text,
       input.repo, input.project, input.branch, input.agent, input.session_id,
@@ -248,6 +261,7 @@ export class MemoryRepo {
       input.scope ?? 'private', input.capture_source ?? null, input.validity_extracted ? 1 : 0,
       input.speaker_label ?? null,
       input.consent_disclosed === undefined || input.consent_disclosed === null ? null : (input.consent_disclosed ? 1 : 0),
+      input.evidence_supported === undefined || input.evidence_supported === null ? null : (input.evidence_supported ? 1 : 0),
     );
     return id;
   }
@@ -266,6 +280,7 @@ export class MemoryRepo {
       validity_extracted: row.validity_extracted === 1,
       needs_vec_index: row.needs_vec_index === 1,
       consent_disclosed: row.consent_disclosed === null ? null : row.consent_disclosed === 1,
+      evidence_supported: row.evidence_supported === null ? null : row.evidence_supported === 1,
     };
   }
 

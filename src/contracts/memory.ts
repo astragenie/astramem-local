@@ -146,4 +146,14 @@ export interface Memory {
    *  retry.sql) picks it back up. See MemoryRepo.markNeedsVecIndex /
    *  clearNeedsVecIndex. */
   needs_vec_index: boolean;
+  /** FEAT-547 (atom-triage v2): tri-state semantic evidence-support flag —
+   *  `null` means "not evaluated" (every pre-FEAT-547 row; every row from a
+   *  write path other than the triage-enabled distill stage-8 insert; every
+   *  atom the triage batch had no evidence quote to judge; every atom
+   *  triaged in 'dry-run' mode, which logs but never applies). `true`/
+   *  `false` means an 'enabled'-mode atom-triage verdict judged this atom's
+   *  `evidence` quote as semantically supporting (or not supporting) its
+   *  claim. Purely additive/queryable — NEVER used to delete or rewrite the
+   *  atom itself (see src/distill/atom-triage.ts's doc comment). */
+  evidence_supported: boolean | null;
 }
