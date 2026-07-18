@@ -1,5 +1,5 @@
 /**
- * Persistence for the ingest gatekeeper (FEAT-548, migration 054). Two write
+ * Persistence for the ingest gatekeeper (FEAT-548, migration 055). Two write
  * paths, mirroring `triage-guard-log.ts`'s (migration 052) two-table split:
  *
  *  - `recordGatekeeperSkips` — one row per 'skip' verdict, carrying

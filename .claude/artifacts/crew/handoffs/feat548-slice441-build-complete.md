@@ -27,8 +27,10 @@ New:
 - `src/storage/gatekeeper-log.ts` — `recordGatekeeperSkips`,
   `recordGatekeeperRunLog`, `totalChunksEvaluated`, `totalChunksSkipped`,
   `gatekeeperSkipRate`.
-- `migrations/054-gatekeeper-skips.sql` — `gatekeeper_skips` +
+- `migrations/055-gatekeeper-skips.sql` — `gatekeeper_skips` +
   `gatekeeper_run_log` tables (mirrors migration 052's two-table split).
+  Renumbered from 054 -> 055 (see "Renumber" section below) after the
+  parallel FEAT-547 branch was found to also claim 054.
 - `src/doctor/checks/gatekeeper.ts` — `checkGatekeeper`, single-bound
   (>=95% skip-rate) alarm, tier `'full'`, gated on `MEANINGFUL_USAGE_THRESHOLD`.
 - `tests/distill/gatekeeper.test.ts`, `tests/config/gatekeeper-boot-governance.test.ts`.
@@ -121,6 +123,13 @@ lookup was fixed to a `Map<number, Chunk>` keyed by the chunk's real
   one in this repo's convention — checked via `tests/doctor/` sweep passing,
   not a regression, but worth a small follow-up for direct coverage of the
   95% alarm threshold logic).
-- Migration number 054 was free at commit time (base tip's last migration
-  was 053); re-verify against `origin/main` before this branch is rebased/
-  merged, per the repo's migration-number-collision lesson.
+- Migration number 054 was free at build-commit time (base tip's last
+  migration was 053) but collided with the parallel FEAT-547 branch
+  (`054-atom-triage-v2.sql`), which merges before 548 per the wave plan.
+  Renumbered 054 -> 055 (file + self-referenced header comment + the one
+  `storage/gatekeeper-log.ts` doc-comment reference) once the collision was
+  flagged. This is the repo's #229 nine-collisions-in-one-day class —
+  re-verify against the tip actually being merged onto (not just the
+  worktree's own base) before any future migration-bearing branch merges;
+  the wave plan should pre-assign migration numbers per branch to prevent
+  this recurring.

@@ -1,4 +1,4 @@
--- 054: ingest gatekeeper skip log + per-job gatekeeper run log (FEAT-548).
+-- 055: ingest gatekeeper skip log + per-job gatekeeper run log (FEAT-548).
 --
 -- Two tables, mirroring migration 052 (triage_guard_drops/triage_run_log)
 -- field-for-field for the same reason:
