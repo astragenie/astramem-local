@@ -6,8 +6,12 @@
 - **Owner**: crew:fullstack-dev (this build)
 - **Worktree**: `C:\work\mega\astramemory-local-wt548`
 - **Branch**: `feat/548-gatekeeper`
-- **Tip SHA**: `907552c3`
-- **Base**: wave-1 merged tip `51052874`
+- **Tip SHA**: `919a005f` (rebased onto `feat/547-triage-v2` to resolve the
+  migration 054 collision — see "Renumber" section below)
+- **Base**: `feat/547-triage-v2` tip `dd0e1a3a` (which itself sits on wave-1
+  merged tip `51052874`) — rebased from the original base after the
+  migration-number collision was found; this is also the actual wave-plan
+  merge order (547 lands before 548).
 
 ## Allowed scope
 - New gate module + storage + config + pipeline wiring + doctor check +
@@ -72,8 +76,46 @@ later chunk's array position away from its own `.index` value), so the
 lookup was fixed to a `Map<number, Chunk>` keyed by the chunk's real
 `.index` field.
 
+## Renumber: migration 054 -> 055 collision with FEAT-547
+
+The parallel `feat/547-triage-v2` branch also created a `migrations/054-*.sql`
+(`054-atom-triage-v2.sql`), and 547 merges before 548 per the wave plan.
+Sequence of fixes, in order:
+
+1. `git mv migrations/054-gatekeeper-skips.sql migrations/055-gatekeeper-skips.sql`
+   + fixed the file's own self-referenced header comment (`-- 054: ...` ->
+   `-- 055: ...`) + the one other hardcoded reference,
+   `src/storage/gatekeeper-log.ts`'s doc comment (`migration 054` ->
+   `migration 055`). Grepped the whole branch for any other `054` tied to
+   gatekeeper — none found (`SCHEMA_VERSION` is derived from the
+   `migrations/` directory listing, per `src/storage/schema-version.ts`,
+   never hand-declared — confirmed nothing hardcodes it).
+2. This alone made THIS branch non-contiguous in isolation (053 -> 055, no
+   local 054 — the repo enforces strict 1..N contiguity via
+   `tests/storage/migration-renumber.test.ts` and
+   `SCHEMA_VERSION`-row-count assertions in `migrate.test.ts`, both of which
+   went RED). The gap only makes sense once FEAT-547's own 054 migration is
+   present.
+3. Resolved by rebasing `feat/548-gatekeeper` onto `feat/547-triage-v2`
+   (`dd0e1a3a`) — this is also the actual wave-plan merge order, so the
+   rebase isn't a workaround, it's doing now what integration would do
+   later anyway. Two mechanical, additive conflicts (both branches append a
+   new bench-flag lever to the same options object/type in
+   `scripts/eval/extraction-bench/run-bench.mts` and
+   `lib/daemon-runner.ts` — FEAT-547's `--triage-model`, FEAT-548's
+   `--gatekeeper`); resolved by keeping both additions. All three original
+   commits replayed cleanly on top of 547's tip, migrations directory is
+   now contiguous 001..055, and the full targeted suite (see Evidence below)
+   went green.
+
+This is the repo's own #229 "nine collisions in one day" class (see
+`docs/specs/20260713-stability-wave-plan.md` §B4 / `schema-version.ts`'s
+doc comment) — the wave plan should pre-assign migration numbers per branch
+to avoid this recurring; noted here for the retro.
+
 ## Evidence
 
+Pre-rebase (original base `51052874`, migration `054-gatekeeper-skips.sql`):
 - `bun run build` — clean.
 - `npx tsc -p tsconfig.tests.json` — clean.
 - `npx tsc -p tsconfig.eval.json` — clean.
@@ -82,6 +124,19 @@ lookup was fixed to a `Map<number, Chunk>` keyed by the chunk's real
   977 tests green.
 - `npx vitest run tests/providers/` — 20 files / 402 passed, 14 skipped
   (pre-existing skips, unrelated to this change).
+
+Post-renumber + post-rebase onto `feat/547-triage-v2` (migration
+`055-gatekeeper-skips.sql`, contiguous after 547's own `054-atom-triage-v2.sql`):
+- `bun run build` — clean.
+- `npx tsc -p tsconfig.tests.json` — clean.
+- `npx tsc -p tsconfig.eval.json` — clean.
+- `npx vitest run tests/distill/ tests/config/ tests/storage/` — 64 files /
+  1180 tests green (includes `migration-renumber.test.ts`'s contiguity
+  invariant and `migrate.test.ts`'s `SCHEMA_VERSION` row-count assertions,
+  both of which were RED against the isolated pre-rebase branch alone —
+  see "Renumber" section below).
+- `npx vitest run tests/doctor/ tests/pipeline/ tests/providers/` — 84 files
+  / 967 passed, 14 pre-existing skips.
 - `ASTRA_SKIP_CONSOLIDATE` was unset before every test run per constraint.
 
 ## AC checklist
