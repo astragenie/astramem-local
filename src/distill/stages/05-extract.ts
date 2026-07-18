@@ -29,6 +29,7 @@ import { chunkCheckpoints } from '../chunk-checkpoint.js';
 import { normalizeEntityName } from '../../entity/normalize.js';
 import { childLogger } from '../../log/logger.js';
 import type { DistillCostCapTracker } from '../cost-cap.js';
+import { detectDuplicateKey, salvageTruncatedAtoms } from './parse-salvage.js';
 
 export type { ExtractProfile };
 
@@ -92,6 +93,18 @@ export interface ExtractResult {
    * relation triple or an entity).
    */
   evidenceDropCounts: Record<string, number>;
+  /**
+   * FEAT-552 AC-A1: present ONLY when this chunk's atoms were recovered via
+   * deterministic JSON-truncation salvage after a normal JSON.parse/Zod
+   * failure (see tryParseAtoms's salvage fallback, ./parse-salvage.ts).
+   * Absent (not merely zero-valued) on every chunk that parsed cleanly on
+   * the first attempt — the healthy path stays byte-identical to pre-
+   * FEAT-552 behavior. `recovered` counts atoms whose raw JSON object was
+   * successfully reconstructed and validated; `lost` counts fragments the
+   * salvage scanner could not use (a truncated trailing object, or one
+   * with a detected duplicate key — AC-A2).
+   */
+  salvage?: { recovered: number; lost: number };
 }
 
 /**
@@ -178,6 +191,7 @@ export async function extractChunk(
       relationDropCounts: parsed.relationDropCounts,
       entityDropCounts: parsed.entityDropCounts,
       evidenceDropCounts: parsed.evidenceDropCounts,
+      ...(parsed.salvage ? { salvage: parsed.salvage } : {}),
     };
   }
 
@@ -572,12 +586,49 @@ function requireEvidenceForRichTypes(atom: Atom, dropCounts: Record<string, numb
  * carrying no evidence — see that function's doc comment. Runs LAST, after
  * AtomSchema.safeParse has already validated shape, since it's a policy gate
  * on an already-valid Atom rather than a pre-parse shape repair.
+ *
+ * FEAT-552 AC-A1/AC-A2: before finally returning null (and therefore before
+ * the caller throws TransientError), a duplicate-key detection (AC-A2) or a
+ * JSON.parse/schema failure now falls through to `salvageTruncatedAtoms`
+ * (./parse-salvage.ts) — a deterministic best-effort recovery of whatever
+ * complete, duplicate-key-free atom objects the response DID contain before
+ * a token-limit cutoff or a collapse-prone duplicate key. A non-null return
+ * carries an extra `salvage: { recovered, lost }` field ONLY when this
+ * fallback fired; a response that parses cleanly on the first attempt never
+ * touches parse-salvage.ts and its return shape is byte-identical to pre-
+ * FEAT-552 behavior.
  */
+/**
+ * Shared tail of the parse pipeline: given raw (unvalidated) atom candidates
+ * — from a clean `JSON.parse` OR from salvage's reconstructed objects —
+ * repair/filter/drop exactly the same way, so a salvaged atom is held to the
+ * identical bar a cleanly-parsed one is. See coerceEntityKinds/
+ * filterAtomEntities/filterAtomRelations/requireEvidenceForRichTypes above.
+ */
+function runAtomFilterPipeline(rawAtoms: unknown[]): {
+  atoms: Atom[];
+  relationDropCounts: Record<string, number>;
+  entityDropCounts: Record<string, number>;
+  evidenceDropCounts: Record<string, number>;
+} {
+  const relationDropCounts: Record<string, number> = {};
+  const entityDropCounts: Record<string, number> = {};
+  const evidenceDropCounts: Record<string, number> = {};
+  const shapeValidAtoms = rawAtoms
+    .map(coerceEntityKinds)
+    .map((atom) => filterAtomEntities(atom, entityDropCounts))
+    .map((atom) => filterAtomRelations(atom, relationDropCounts))
+    .filter((a) => AtomSchema.safeParse(a).success) as Atom[];
+  const atoms = shapeValidAtoms.filter((a) => requireEvidenceForRichTypes(a, evidenceDropCounts));
+  return { atoms, relationDropCounts, entityDropCounts, evidenceDropCounts };
+}
+
 function tryParseAtoms(raw: string): {
   atoms: Atom[];
   relationDropCounts: Record<string, number>;
   entityDropCounts: Record<string, number>;
   evidenceDropCounts: Record<string, number>;
+  salvage?: { recovered: number; lost: number };
 } | null {
   try {
     let text = raw.trim();
@@ -587,30 +638,65 @@ function tryParseAtoms(raw: string): {
 
     // Find the outermost JSON object
     const start = text.indexOf('{');
+    if (start === -1) return null;
     const end = text.lastIndexOf('}');
-    if (start === -1 || end === -1) return null;
 
-    const jsonStr = text.slice(start, end + 1);
-    const parsed: unknown = JSON.parse(jsonStr);
+    if (end !== -1) {
+      const jsonStr = text.slice(start, end + 1);
 
-    // Use the lenient schema — only requires `atoms` to be an array
-    const wrapper = LenientExtractionSchema.safeParse(parsed);
-    if (!wrapper.success) return null;
+      // FEAT-552 AC-A2: duplicate-key pre-parse detector. A response like
+      // `{"text":"A","text":"B"}` is grammatically valid JSON — JSON.parse
+      // would silently keep only "B" (last-key-wins), indistinguishable from
+      // a genuine single-value atom. Catch it BEFORE handing the text to
+      // JSON.parse, log loudly, and fall through to the salvage attempt
+      // below (never the direct JSON.parse branch) so a duplicate key never
+      // silently collapses an atom.
+      const dupKey = detectDuplicateKey(jsonStr);
+      if (dupKey !== null) {
+        childLogger({ stage: 'extract' }).warn(
+          { duplicate_key: dupKey, raw_preview: jsonStr.slice(0, 200) },
+          'extract: duplicate key detected in raw JSON response — treating as parse failure',
+        );
+      } else {
+        try {
+          const parsed: unknown = JSON.parse(jsonStr);
+          // Use the lenient schema — only requires `atoms` to be an array
+          const wrapper = LenientExtractionSchema.safeParse(parsed);
+          if (wrapper.success) {
+            return runAtomFilterPipeline(wrapper.data.atoms);
+          }
+          // Valid JSON but the wrong shape (e.g. missing `atoms`) — fall
+          // through to the salvage attempt below; it looks for its own
+          // `"atoms":[` anchor and will find nothing here too, if there
+          // truly is nothing to recover.
+        } catch {
+          // JSON.parse itself failed — the normal path exhausted; fall
+          // through to salvage below.
+        }
+      }
+    }
 
-    // Filter atoms individually: drop those that fail strict AtomSchema
-    // (short text, unknown type, out-of-range numbers, etc.) — but first
-    // repair a recoverable per-entity issue (unknown kind) so it doesn't
-    // take the whole atom down with it.
-    const relationDropCounts: Record<string, number> = {};
-    const entityDropCounts: Record<string, number> = {};
-    const evidenceDropCounts: Record<string, number> = {};
-    const shapeValidAtoms = wrapper.data.atoms
-      .map(coerceEntityKinds)
-      .map((atom) => filterAtomEntities(atom, entityDropCounts))
-      .map((atom) => filterAtomRelations(atom, relationDropCounts))
-      .filter((a) => AtomSchema.safeParse(a).success) as Atom[];
-    const atoms = shapeValidAtoms.filter((a) => requireEvidenceForRichTypes(a, evidenceDropCounts));
-    return { atoms, relationDropCounts, entityDropCounts, evidenceDropCounts };
+    // FEAT-552 AC-A1: normal JSON.parse/Zod validation has already failed
+    // (or a duplicate key was detected pre-parse, AC-A2) — attempt
+    // deterministic salvage before giving up. Operates on `text` from the
+    // first '{' onward, UNBOUNDED by `end` above: a genuinely truncated
+    // response has no matching final '}' for the whole wrapper, so bounding
+    // by `lastIndexOf('}')` would silently discard the truncated tail this
+    // step exists to recover from.
+    const salvage = salvageTruncatedAtoms(text.slice(start));
+    if (salvage === null || salvage.recoveredCount === 0) return null;
+
+    const filtered = runAtomFilterPipeline(salvage.atoms);
+    childLogger({ stage: 'extract' }).warn(
+      {
+        event: 'extract_salvage',
+        recovered: salvage.recoveredCount,
+        lost: salvage.lostCount,
+        final_atom_count: filtered.atoms.length,
+      },
+      'extract: recovered atoms via deterministic JSON salvage after parse failure',
+    );
+    return { ...filtered, salvage: { recovered: salvage.recoveredCount, lost: salvage.lostCount } };
   } catch {
     return null;
   }

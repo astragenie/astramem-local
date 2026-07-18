@@ -1572,3 +1572,138 @@ describe('sessionDateIso temporal grounding (2026-07-13 fix)', () => {
     }
   });
 });
+
+// FEAT-552 sub-scope A — deterministic extraction-parse hardening.
+// AC-A1 (JSON truncation salvage) and AC-A2 (duplicate-key pre-parse
+// detector) live at the util level in tests/distill/stages/parse-salvage.test.ts;
+// this suite pins the INTEGRATION into extractChunk/tryParseAtoms — the
+// healthy path stays byte-identical, and a single extractChunk call still
+// only issues ONE LLM call either way (worker still owns retry policy,
+// unchanged from the pre-FEAT-552 invariant pinned above).
+describe('extract stage — FEAT-552 AC-A1/AC-A2 (parse salvage + duplicate-key detection)', () => {
+  it('AC-A1: recovers N-1 atoms from a response truncated mid-atom (maxTokens cutoff), with a salvage count on the result', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+
+    // Three atoms intended; cut off mid-way through the third atom's "text"
+    // value — the exact maxTokens mid-JSON poison shape (2026-07-17/18
+    // deterministic-hardening analysis).
+    const truncated =
+      '{"atoms":[' +
+      '{"type":"fact","text":"first recovered atom text here","importance":0.5,"confidence":0.5},' +
+      '{"type":"fact","text":"second recovered atom text here","importance":0.5,"confidence":0.5},' +
+      '{"type":"fact","text":"third atom got cut off mid-wa';
+
+    let callCount = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        callCount++;
+        return { text: truncated, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+
+    // The normal JSON.parse attempt still ran and still failed first (it
+    // must — this text is not valid JSON) before salvage kicked in; the
+    // proof it wasn't a second LLM call is that exactly one chat() happened.
+    expect(callCount).toBe(1);
+    expect(result.atoms).toHaveLength(2);
+    expect(result.atoms[0]!.text).toBe('first recovered atom text here');
+    expect(result.atoms[1]!.text).toBe('second recovered atom text here');
+    expect(result.salvage).toEqual({ recovered: 2, lost: 1 });
+  });
+
+  it('healthy path stays byte-identical: a cleanly-parsing response never sets `salvage` on the result', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const llm = makeMockLLM([VALID_EXTRACTION_JSON]);
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+
+    expect(result.atoms.length).toBe(2);
+    expect(result.salvage).toBeUndefined();
+    expect(Object.prototype.hasOwnProperty.call(result, 'salvage')).toBe(false);
+  });
+
+  it('AC-A1: truncated beyond recovery (cut off before even the first atom completes) still throws TransientError, same as today — no salvage possible', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const severelyTruncated = '{"atoms":[{"type":"fact","text":"cut off before finishi';
+    let callCount = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        callCount++;
+        return { text: severelyTruncated, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    await expect(extractChunk(0, 'chunk text', llm, budget, 10.0)).rejects.toBeInstanceOf(TransientError);
+    expect(callCount).toBe(1); // still no inline LLM retry — worker owns retry policy
+  });
+
+  it('AC-A2: the measured duplicate-key collapse shape ({"text":"A","text":"B"}) is treated as a parse failure, not silently collapsed to "B"', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    // Hand-built raw text (JSON.stringify cannot itself produce a duplicate
+    // key — JS object literals collapse it before we get here) reproducing
+    // the exact measured collapse shape nested inside one atom.
+    const duplicateKeyResponse =
+      '{"atoms":[{"type":"fact","text":"A","text":"B","importance":0.5,"confidence":0.5}]}';
+    let callCount = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        callCount++;
+        return { text: duplicateKeyResponse, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    // The only atom present has a duplicate key and nothing else to salvage
+    // -> zero atoms recoverable -> same TransientError path as any other
+    // parse failure (worker retries), never a silent last-key-wins "B".
+    await expect(extractChunk(0, 'chunk text', llm, budget, 10.0)).rejects.toBeInstanceOf(TransientError);
+    expect(callCount).toBe(1);
+  });
+
+  it('AC-A2 + AC-A1 interplay: a duplicate-keyed atom is dropped while sibling clean atoms in the same response are still recovered via salvage', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const mixedResponse =
+      '{"atoms":[' +
+      '{"type":"fact","text":"clean atom one","importance":0.5,"confidence":0.5},' +
+      '{"type":"fact","text":"A","text":"B","importance":0.5,"confidence":0.5},' + // duplicate key
+      '{"type":"fact","text":"clean atom two","importance":0.5,"confidence":0.5}' +
+      ']}';
+    let callCount = 0;
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        callCount++;
+        return { text: mixedResponse, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+
+    const result = await extractChunk(0, 'chunk text', llm, budget, 10.0);
+
+    expect(callCount).toBe(1);
+    expect(result.atoms).toHaveLength(2);
+    expect(result.atoms.map((a) => a.text)).toEqual(['clean atom one', 'clean atom two']);
+    expect(result.salvage).toEqual({ recovered: 2, lost: 1 });
+  });
+});

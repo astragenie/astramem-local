@@ -583,3 +583,53 @@ describe('EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER content (dual-pass extracti
     expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/1\. DATES\/TIMES/);
   });
 });
+
+// FEAT-552 AC-A3: measured basis — phi omitted the "evidence" field 77%
+// (165/191 gate drops) with the pre-fix prompt, which listed "evidence"
+// fifth in the illustrated schema and — worse — showed THREE of its six
+// few-shot examples emitting atoms with NO "evidence" field at all, directly
+// contradicting the prose rule that it's required for every atom. This
+// suite pins the fix: evidence-first schema ordering, an explicit discard
+// warning, and every non-empty few-shot example actually demonstrating a
+// verbatim evidence quote (so the examples reinforce the rule instead of
+// undermining it).
+describe('EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER evidence-compliance restructuring (FEAT-552 AC-A3)', () => {
+  it('lists "evidence" as the FIRST field in the illustrated atom schema', () => {
+    const schemaBlock = EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER.match(/\{\s*"atoms":\s*\[\s*\{([\s\S]*?)\}\s*\]\s*\}/);
+    expect(schemaBlock).not.toBeNull();
+    const firstFieldMatch = schemaBlock![1]!.match(/"(\w+)"\s*:/);
+    expect(firstFieldMatch).not.toBeNull();
+    expect(firstFieldMatch![1]).toBe('evidence');
+  });
+
+  it('states the explicit discard warning for atoms without a verbatim evidence quote', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(
+      /ATOMS WITHOUT A VERBATIM EVIDENCE QUOTE ARE DISCARDED/,
+    );
+  });
+
+  it('every non-empty few-shot example atom carries a non-empty "evidence" field', () => {
+    // Scope to the worked-examples section only (after the schema/prose,
+    // whose illustrated "evidence" placeholder is not itself an example) so
+    // nested entities[] braces inside an example atom don't confuse a
+    // brace-counting regex. Six numbered examples; #6 deliberately emits
+    // "atoms":[] and is exempt — there is nothing to quote for an empty
+    // output. A prior version of this prompt had examples 2, 4, and 5
+    // silently omit "evidence" despite the prose demanding it on every atom
+    // — exactly the mixed signal the measured 77% omission rate points at.
+    const examplesIdx = EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER.indexOf('Examples (illustrative only');
+    expect(examplesIdx).toBeGreaterThan(-1);
+    const examplesSection = EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER.slice(examplesIdx);
+
+    const evidenceValues = [...examplesSection.matchAll(/"evidence":"([^"]*)"/g)].map((m) => m[1]!);
+    // One evidence quote per non-empty numbered example (1 through 5).
+    expect(evidenceValues.length).toBeGreaterThanOrEqual(5);
+    for (const value of evidenceValues) {
+      expect(value.length).toBeGreaterThan(0);
+    }
+  });
+
+  it('example 6 (small talk) still legitimately emits no atoms at all — not a missed evidence case', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER).toMatch(/hey how's it going\?[\s\S]*?"atoms":\[\]/);
+  });
+});

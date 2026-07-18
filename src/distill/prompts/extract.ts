@@ -1007,15 +1007,15 @@ export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER = `You are the SECOND of
 
 Measured finding this pass exists to fix: in production runs, 36-47% of gold single-hop facts were never captured as ANY atom — and every one spot-checked was present verbatim in the source transcript. The missing facts were disproportionately: exact durations, frequencies, quantities, one-off events, verbatim quotes, and the less narratively-central speaker's own facts and advice. That is exactly what you are looking for.
 
-Output STRICT JSON matching the SAME schema the first pass uses:
+Output STRICT JSON matching the SAME schema the first pass uses. "evidence" is listed FIRST below deliberately — decide the verbatim quote before anything else, because an atom you cannot quote is not a valid atom for this pass:
 {
   "atoms": [
     {
+      "evidence": "<REQUIRED FIRST — an EXACT verbatim quote from the source text this atom is based on; copy, never paraphrase>",
       "type": "decision" | "fact" | "lesson" | "command" | "todo" | "note" | "event",
       "text": "<one self-contained sentence, roughly 10-80 words>",
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
-      "evidence": "<REQUIRED — an EXACT verbatim quote from the source text this atom is based on; copy, never paraphrase>",
       "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }],
       "valid_at": "<ISO-8601 date-time, only if the source text states when THIS fact started>",
       "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS fact stopped>"
@@ -1023,7 +1023,7 @@ Output STRICT JSON matching the SAME schema the first pass uses:
   ]
 }
 
-"evidence" is REQUIRED for EVERY atom you emit — not optional, unlike the first pass. Copy a short EXACT verbatim excerpt from the source chunk that this atom is directly based on; never paraphrase or summarize it. If you cannot point to an exact quote supporting a candidate item, do NOT emit that item as an atom at all — a specific detail you cannot quote is not one of the eight categories below, it is a guess.
+"evidence" is REQUIRED for EVERY atom you emit — not optional, unlike the first pass. Copy a short EXACT verbatim excerpt from the source chunk that this atom is directly based on; never paraphrase or summarize it. ATOMS WITHOUT A VERBATIM EVIDENCE QUOTE ARE DISCARDED — they are dropped before they are ever stored, so an atom you emit without one is wasted output, not a harmless omission. If you cannot point to an exact quote supporting a candidate item, do NOT emit that item as an atom at all — a specific detail you cannot quote is not one of the eight categories below, it is a guess.
 
 Extract ONLY items in these categories — this pass is deliberately narrow, not a second general-purpose pass:
 1. DATES/TIMES — any specific date, day, month, year, or time mentioned, even in passing.
@@ -1064,31 +1064,33 @@ Examples (illustrative only, not exhaustive):
 
 1. Input: "Caroline: We don't go often, usually only once or twice a year. Melanie: Makes sense, it's a long drive." ->
 {"atoms":[
-  {"type":"fact","text":"Caroline said they don't go often — usually only once or twice a year.","importance":0.6,"confidence":0.85,"evidence":"usually only once or twice a year"}
+  {"evidence":"usually only once or twice a year","type":"fact","text":"Caroline said they don't go often — usually only once or twice a year.","importance":0.6,"confidence":0.85}
 ]}
 
 2. Input: "Observation date: 2026-07-10\n\nMelanie: My son got into an accident last week, but he's okay, thank god." ->
 {"atoms":[
-  {"type":"event","text":"Melanie's son got into an accident on 3 July 2026 and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+  {"evidence":"My son got into an accident last week","type":"event","text":"Melanie's son got into an accident on 3 July 2026 and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
 ]}
 (The Observation date anchor resolves "last week" to a natural-language absolute date IN "text" —
-never a bare ISO date like "2026-07-03", and never left as the unresolved relative phrase.)
+never a bare ISO date like "2026-07-03", and never left as the unresolved relative phrase. "evidence"
+stays the untouched verbatim source quote — the relative phrase, not the resolved date — since it
+must be copyable from the transcript exactly as written.)
 
 3. Input: "Caroline: I saw a sign that said 'Trans Lives Matter' at the rally and took a photo of it." ->
 {"atoms":[
-  {"type":"fact","text":"Caroline saw and photographed a sign reading \\"Trans Lives Matter\\" at a rally she attended.","importance":0.6,"confidence":0.9,"evidence":"a sign that said 'Trans Lives Matter'"}
+  {"evidence":"a sign that said 'Trans Lives Matter'","type":"fact","text":"Caroline saw and photographed a sign reading \\"Trans Lives Matter\\" at a rally she attended.","importance":0.6,"confidence":0.9}
 ]}
 
 4. Input: "Melanie: Honestly, if you're thinking about adopting, my advice is to start the home study early — it took us almost 7 months just for that part." ->
 {"atoms":[
-  {"type":"note","text":"Melanie advised starting the adoption home study early, noting it took her family almost 7 months to complete that part alone.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+  {"evidence":"my advice is to start the home study early","type":"note","text":"Melanie advised starting the adoption home study early, noting it took her family almost 7 months to complete that part alone.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
 ]}
 
 5. Input: "Caroline: I used to go horseback riding with my dad when I was a kid." ->
 {"atoms":[
-  {"type":"fact","text":"Caroline used to go horseback riding with her dad when she was a kid.","importance":0.5,"confidence":0.85,"entities":[{"name":"Caroline","kind":"actor","subtype":"human"}]}
+  {"evidence":"I used to go horseback riding with my dad when I was a kid","type":"fact","text":"Caroline used to go horseback riding with her dad when she was a kid.","importance":0.5,"confidence":0.85,"entities":[{"name":"Caroline","kind":"actor","subtype":"human"}]}
 ]}
 
 6. Input: "Caroline: hey how's it going? Melanie: good, just tired, work's been busy." ->
 {"atoms":[]}
-(No date, duration, frequency, quantity, name, quote, one-off event, or advice — plain small talk, nothing in this pass's eight categories.)`;
+(No date, duration, frequency, quantity, name, quote, one-off event, or advice — plain small talk, nothing in this pass's eight categories. No evidence quote to point to either way -- empty output, not a guess.)`;
