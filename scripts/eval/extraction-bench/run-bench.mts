@@ -240,6 +240,12 @@ const triageModel = get('--triage-model');
 // lever AC-4's 55-fixture dry-run measurement runs through (`--gatekeeper
 // dry-run`): every substantive fixture must report a 0% false-skip rate.
 const gatekeeperMode = get('--gatekeeper') as 'off' | 'dry-run' | 'enabled' | undefined;
+// --passb-sweep untuned (2026-07-18): restore pre-tuning full sweep for replication legs.
+const passBSweep = get('--passb-sweep') as 'untuned' | undefined;
+if (passBSweep !== undefined && passBSweep !== 'untuned') {
+  console.error();
+  process.exit(1);
+}
 if (gatekeeperMode !== undefined && !['off', 'dry-run', 'enabled'].includes(gatekeeperMode)) {
   console.error(`--gatekeeper must be off|dry-run|enabled, got: ${gatekeeperMode}`);
   process.exit(1);
@@ -333,7 +339,7 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   }
 
   console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/${compactionModel}, extraction=ollama/${model}) ===`);
-  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}), ...(atomTriageMode ? { atomTriageMode } : {}), ...(triageModel ? { triageModel } : {}), ...(gatekeeperMode ? { gatekeeperMode } : {}) });
+  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}), ...(atomTriageMode ? { atomTriageMode } : {}), ...(triageModel ? { triageModel } : {}), ...(gatekeeperMode ? { gatekeeperMode } : {}), ...(passBSweep ? { passBSweep } : {}) });
   console.log(`  daemon boot: ${run.daemonBootMs}ms`);
   const perFixture: ModelAtomsByFixture['perFixture'] = {};
   for (const r of run.results as DaemonFixtureResult[]) {

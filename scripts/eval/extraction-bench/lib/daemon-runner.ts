@@ -135,7 +135,7 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled' | 'repair-only'; triageModel?: string; gatekeeperMode?: 'off' | 'dry-run' | 'enabled' } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled' | 'repair-only'; triageModel?: string; gatekeeperMode?: 'off' | 'dry-run' | 'enabled'; passBSweep?: 'untuned' } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
   const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;
@@ -173,7 +173,7 @@ export async function runOllamaCandidate(
       'onnxEmbed:',
       `  cacheDir: '${onnxCacheDir.replace(/\\/g, '/')}'`,
     ] : []),
-    ...(compactionMode || opts.maxChunkChars || opts.atomTriageMode || opts.gatekeeperMode ? [
+    ...(compactionMode || opts.maxChunkChars || opts.atomTriageMode || opts.gatekeeperMode || opts.passBSweep ? [
       'distill:',
       ...(compactionMode ? [`  compaction: ${compactionMode}`] : []),
       // Chunk-size A/B lever (2026-07-17): config.distill.maxChunkChars is a
@@ -212,6 +212,17 @@ export async function runOllamaCandidate(
         `    mode: ${opts.gatekeeperMode}`,
         '    provider: ollama',
         `    model: '${extractionModel}'`,
+      ] : []),
+      // Pass-B sweep tuning override (2026-07-18 root-cause work): 'untuned'
+      // restores the pre-tuning full sweep (gate off, no output cap) so a
+      // bench leg can replicate pre-2026-07-18 dual-pass behavior — without
+      // this the sandbox silently inherits EXTRACTION_PASS_B_DEFAULTS
+      // (skip-gate 8 + maxTokens 1500), the exact confound that invalidated
+      // the first 55fx clerk-vs-rebaseline comparison.
+      ...(opts.passBSweep === 'untuned' ? [
+        '  extractionPassB:',
+        '    sweepOnlyBelowAtoms: 0',
+        '    maxTokens: 0',
       ] : []),
     ] : []),
     'budget:',
