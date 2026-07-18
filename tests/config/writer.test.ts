@@ -100,6 +100,11 @@ function buildFullyPopulatedConfig(): Config {
       // round-trip gap atomTriage's own provider/model override already
       // documents above.
       gatekeeper: { mode: 'dry-run', batchSize: 10, maxPerRun: 80, maxWallClockMs: 45_000 },
+      // FEAT-552 sub-scope B — 'off' here (the non-default value, per this
+      // fixture's own stated design intent of a non-default value for EVERY
+      // field) so the round-trip assertion below actually exercises the
+      // emitter, not just the shipped 'on' default.
+      typeHints: 'off',
     },
     capture: {
       autoCapture: {

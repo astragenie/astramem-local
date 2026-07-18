@@ -9,10 +9,24 @@
 
 import { createHash } from 'node:crypto';
 import type { ReducedAtom } from './06-reduce.js';
+import { getTypeHint } from '../type-hints.js';
+
+export interface TypeHintApplied {
+  from: ReducedAtom['type'];
+  to: ReducedAtom['type'];
+  matchedPattern: string;
+}
 
 export interface NormalizedMemory extends ReducedAtom {
   normalizedText: string;
   finalHash: string;
+  /** FEAT-552 sub-scope B: set only when the deterministic type-hint tier
+   *  OVERRODE the model's own `type` (i.e. a strong pattern fired AND
+   *  disagreed with the model). Absent on every atom the hint left alone —
+   *  either no strong pattern fired, the pattern agreed with the model, or
+   *  `typeHints` is 'off'. Purely additive/observational; `type` on the
+   *  returned atom already reflects the override. */
+  typeHintApplied?: TypeHintApplied;
 }
 
 /**
@@ -65,14 +79,49 @@ export function computeHash(normalizedText: string): string {
   return createHash('sha256').update(normalizedText, 'utf8').digest('hex');
 }
 
+export interface MemoryNormalizeOptions {
+  /** `distill.typeHints` config passthrough. Defaults to `'on'` — the
+   *  documented shipped default (deterministic, tested, reversible). Callers
+   *  with a resolved Config should pass `cfg.distill.typeHints` explicitly;
+   *  omitting this option is only for call sites with no config in scope
+   *  (e.g. unit tests exercising normalize in isolation), where 'on' keeps
+   *  behavior consistent with production. */
+  typeHints?: 'on' | 'off';
+  log?: (message: string) => void;
+}
+
 /**
  * Apply memory normalization to all reduced atoms.
  * Returns atoms with `normalizedText` and `finalHash` added.
+ *
+ * FEAT-552 sub-scope B: when `typeHints` is 'on' (default), also runs the
+ * deterministic type-hint tier (src/distill/type-hints.ts) against each
+ * atom's normalized text. The hint OVERRIDES the model's `type` ONLY when it
+ * fired AND disagrees with the model — a hint that agrees, or an ambiguous/
+ * no-fire result, never touches `type`. This runs strictly after text
+ * normalization (so patterns match the canonicalized surface, e.g. "SQLite"
+ * not "sqlite") and before the hash is computed on that same normalized
+ * text, so a type override never invalidates `finalHash`/dedup identity.
  */
-export function memoryNormalize(atoms: ReducedAtom[]): NormalizedMemory[] {
+export function memoryNormalize(
+  atoms: ReducedAtom[],
+  opts: MemoryNormalizeOptions = {},
+): NormalizedMemory[] {
+  const typeHints = opts.typeHints ?? 'on';
   return atoms.map(atom => {
     const normalizedText = normalizeText(atom.text);
     const finalHash = computeHash(normalizedText);
-    return { ...atom, normalizedText, finalHash };
+
+    if (typeHints === 'off') {
+      return { ...atom, normalizedText, finalHash };
+    }
+
+    const hint = getTypeHint(normalizedText, { log: opts.log });
+    if (!hint || hint.hint === atom.type) {
+      return { ...atom, normalizedText, finalHash };
+    }
+
+    const typeHintApplied: TypeHintApplied = { from: atom.type, to: hint.hint, matchedPattern: hint.matchedPattern };
+    return { ...atom, type: hint.hint, normalizedText, finalHash, typeHintApplied };
   });
 }

@@ -142,8 +142,18 @@ export const distillEventsHandler: JobHandler = {
 
     // Stage 7: Memory-normalize
     pipeLog.info({ stage: 'memory-normalize' }, 'stage start');
-    const normalizedMemories = memoryNormalize(reducedAtoms);
-    pipeLog.info({ stage: 'memory-normalize', memories: normalizedMemories.length }, 'stage complete');
+    const normalizedMemories = memoryNormalize(reducedAtoms, {
+      typeHints: ctx.config.distill.typeHints,
+      log: message => pipeLog.warn({ stage: 'memory-normalize' }, message),
+    });
+    pipeLog.info(
+      {
+        stage: 'memory-normalize',
+        memories: normalizedMemories.length,
+        type_hints_applied: normalizedMemories.filter(m => m.typeHintApplied).length,
+      },
+      'stage complete',
+    );
 
     // Stage 8: Embed + index — session/repo/branch/agent come from the
     // session row; embedAndIndex appends a 'create' memory_event per new

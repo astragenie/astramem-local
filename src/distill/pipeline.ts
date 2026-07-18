@@ -649,8 +649,22 @@ export async function runPipeline(
 
   // Stage 7: Memory-normalize
   pipeLog.info({ stage: 'memory-normalize' }, 'stage start');
-  const normalizedMemories = memoryNormalize(groundResult.atoms);
-  pipeLog.info({ stage: 'memory-normalize', memories: normalizedMemories.length }, 'stage complete');
+  const normalizedMemories = memoryNormalize(groundResult.atoms, {
+    typeHints: ctx.config?.distill.typeHints,
+    log: message => pipeLog.warn({ stage: 'memory-normalize' }, message),
+  });
+  pipeLog.info(
+    {
+      stage: 'memory-normalize',
+      memories: normalizedMemories.length,
+      // FEAT-552 sub-scope B: how many atoms the deterministic type-hint
+      // tier actually overrode this run — the same "measure the rate, not
+      // just existence" posture every other distill-stage canary follows
+      // (ADR-015).
+      type_hints_applied: normalizedMemories.filter(m => m.typeHintApplied).length,
+    },
+    'stage complete',
+  );
 
   // FEAT-551: resolve the evidence-gated sweeper's on/off state. Explicit
   // config always wins; unset defaults to ON exactly when passB actually ran

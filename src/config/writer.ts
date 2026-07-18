@@ -468,6 +468,12 @@ export function configToYaml(cfg: Config): string {
     line(2, 'batchSize', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.batchSize),
     line(2, 'maxPerRun', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.maxPerRun),
     line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.maxWallClockMs),
+    // Deterministic type-hint tier (FEAT-552 sub-scope B) — 'on' is the
+    // shipped default (unlike every other distill.* tier above, which
+    // defaults 'off'). Must be explicitly round-tripped like every other
+    // field in this block (FEAT-461) — an operator who sets 'off' must not
+    // have it silently reset to 'on' the next time writeConfig() runs.
+    line(1, 'typeHints', (cfg.distill ?? EMIT_DEFAULTS.distill).typeHints),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes
