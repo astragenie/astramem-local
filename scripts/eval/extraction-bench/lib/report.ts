@@ -13,6 +13,7 @@
  */
 import { mean, computeStats, compareMeans, formatStatsPct, type Stats } from '../../shared/stats.js';
 import type { FixtureScore, JudgeAtomIn, JudgeAgreementReport } from './judge.js';
+import { renderGatesSection, type GatesConfig, type ModelGateResult } from './gates.js';
 
 export interface FixtureReportRow {
   fixtureId: string;
@@ -221,6 +222,10 @@ export function combineRuns(runs: SingleRunReport[]): ModelReport {
 export interface RenderOptions {
   judgeReasoningEffort?: string;
   agreement?: JudgeAgreementReport[];
+  /** FEAT-544: renders a "## Gates" section when supplied. `undefined`
+   *  (the default — e.g. no gates.json present on disk) omits the section
+   *  entirely, same as the pre-FEAT-544 report shape. */
+  gates?: { config: GatesConfig; results: ModelGateResult[]; actualFixtureCount: number };
 }
 
 export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: RenderOptions = {}): string {
@@ -289,6 +294,13 @@ export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: R
     for (const a of opts.agreement) {
       lines.push(`| ${a.fixtureId} | ${a.repeats} | ${formatStatsPct(a.recall)} | ${formatStatsPct(a.precision)} | ${formatStatsPct(a.f1)} |`);
     }
+  }
+
+  // FEAT-544: numeric quality-gate tiers — omitted entirely when no
+  // gates.json was loaded (opts.gates undefined), same additive-section
+  // pattern as Significance/Judge self-agreement above.
+  if (opts.gates) {
+    lines.push(...renderGatesSection(opts.gates.config, opts.gates.results, opts.gates.actualFixtureCount));
   }
 
   return lines.join('\n');

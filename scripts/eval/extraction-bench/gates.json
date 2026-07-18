@@ -1,0 +1,23 @@
+{
+  "calibration": {
+    "fixtureCount": 55,
+    "fixtureCorpusDate": "2026-07-18",
+    "provisional": true,
+    "note": "Floors below were seeded from the 2026-07-17/18 measured baselines (qwen2.5:7b 84-90 F1; qwen3.5:9b typeAcc 75-88; judge noise +/-7 F1), which were measured against the pre-FEAT-542 43-fixture corpus. This block is stamped against the now-55-fixture corpus (FEAT-542 landed the 12-fixture hard pack the same day) so the stale-calibration check has an accurate count to compare loadFixtures() against, but the floors themselves have NOT yet been re-measured on the 55-fixture set. Treat every floor here as provisional until a live --runs sweep re-baselines it (tracked as a followup, not this FEAT's AC-4 scope)."
+  },
+  "tiers": {
+    "local-viable": {
+      "f1": { "min": 0.80 },
+      "typeAcc": { "min": 0.60 },
+      "junk": { "max": 0.20 },
+      "overExtract": { "max": 0 },
+      "evidenceAcc": { "min": 0.90 }
+    },
+    "production-preferred": {
+      "f1": { "min": 0.88 },
+      "typeAcc": { "min": 0.75 },
+      "junk": { "max": 0.10 },
+      "evidenceAcc": { "min": 0.95 }
+    }
+  }
+}

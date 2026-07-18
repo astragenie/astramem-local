@@ -43,6 +43,7 @@ import { NuExtractAdapterProvider } from './lib/nuextract-adapter-provider.js';
 import { judgeFixture, judgeSelfAgreement, type FixtureScore, type JudgeAtomIn, type JudgeAgreementReport, type JudgeReasoningEffort } from './lib/judge.js';
 import { findForbiddenItemHits, applyForbiddenItemScoring, computeEvidenceAccuracy, fixtureTranscriptText } from './lib/mechanical-checks.js';
 import { aggregateFixtureScores, combineRuns, renderMarkdown, type ModelReport, type SingleRunReport } from './lib/report.js';
+import { loadGatesConfig, evaluateGates, staleCalibrationWarning, type GatesConfig } from './lib/gates.js';
 import { formatStatsPct } from '../shared/stats.js';
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { OllamaLLMProvider } from '../../../src/providers/llm/ollama.js';
@@ -464,11 +465,31 @@ function collectRunMetadata(fixtures: GoldFixture[]): Record<string, unknown> {
   };
 }
 
+/**
+ * FEAT-544: numeric quality-gate tiers. `gates.json` is optional — a missing
+ * file quietly disables the whole Gates section (no error, no gates-summary.json)
+ * rather than blocking the bench; a PRESENT-but-malformed file throws loudly
+ * (loadGatesConfig's own shape validation) since that's a real misconfiguration.
+ */
+const gatesConfig: GatesConfig | null = loadGatesConfig();
+
+/** Builds the `RenderOptions.gates` object (or `undefined` when no gates.json). */
+function buildGatesRenderOpts(reports: ModelReport[], actualFixtureCount: number) {
+  if (!gatesConfig) return undefined;
+  return { config: gatesConfig, results: evaluateGates(gatesConfig, reports), actualFixtureCount };
+}
+
 async function main(): Promise<void> {
   const fixtures = fixturesDir ? loadFixtures(fixturesDir) : loadFixtures();
   console.log(`Loaded ${fixtures.length} gold fixtures.`);
   console.log(`Models under test: ${models.join(', ')}`);
   if (runsCount > 1) console.log(`Runs per model: ${runsCount} (multi-run variance mode — FEAT-450)`);
+  if (gatesConfig) {
+    const warning = staleCalibrationWarning(gatesConfig, fixtures.length);
+    if (warning) console.log(`[gates] WARNING: ${warning}`);
+  } else {
+    console.log(`No gates.json found at default path — Gates section omitted from report.md.`);
+  }
 
   const runMetadataStart = Date.now();
   const runMetadata = collectRunMetadata(fixtures);
@@ -502,7 +523,7 @@ async function main(): Promise<void> {
     // to a separate judge-agreement.json below so this file's top-level
     // shape never changes.
     writeFileSync(join(outDir, 'results.json'), JSON.stringify(reports, null, 2));
-    writeFileSync(join(outDir, 'report.md'), renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort }));
+    writeFileSync(join(outDir, 'report.md'), renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort, gates: buildGatesRenderOpts(reports, fixtures.length) }));
     // FEAT-542 AC-7: raw per-model inputs behind Evidence-acc/forbidden-item
     // hits — closes the observability gap the FEAT calls out (the final
     // percentage alone doesn't tell you the sample size it was computed
@@ -522,6 +543,26 @@ async function main(): Promise<void> {
         2,
       ),
     );
+    // FEAT-544 AC-8: machine-readable gate verdicts alongside the prose
+    // Gates section in report.md — same "written after every model" crash
+    // safety as summary.json above. Omitted entirely (no file written) when
+    // no gates.json was loaded, mirroring the report.md section's own
+    // silent-omission behavior.
+    if (gatesConfig) {
+      writeFileSync(
+        join(outDir, 'gates-summary.json'),
+        JSON.stringify(
+          {
+            calibration: gatesConfig.calibration,
+            actualFixtureCount: fixtures.length,
+            staleCalibrationWarning: staleCalibrationWarning(gatesConfig, fixtures.length),
+            results: evaluateGates(gatesConfig, reports),
+          },
+          null,
+          2,
+        ),
+      );
+    }
   }
 
   // AC-4: judge self-agreement. Re-judges the SAME (model, fixture)
@@ -550,7 +591,7 @@ async function main(): Promise<void> {
     }
   }
 
-  const md = renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort, agreement });
+  const md = renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort, agreement, gates: buildGatesRenderOpts(reports, fixtures.length) });
   writeFileSync(join(outDir, 'report.md'), md);
 
   writeFileSync(

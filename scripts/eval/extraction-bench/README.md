@@ -49,7 +49,9 @@ lib/
   judge.ts               Azure gpt-5-mini semantic judge + self-agreement (FEAT-450)
   mechanical-checks.ts   forbidden-item matcher + evidence-accuracy (FEAT-542, judge-free) + mechanical-checks.test.ts
   report.ts              aggregation, multi-run combine, markdown rendering (FEAT-450) + report.test.ts
+  gates.ts               numeric quality-gate tiers: loader + evaluator + "## Gates" rendering (FEAT-544) + gates.test.ts
   bun-sqlite.d.ts        ambient type decl for bun:sqlite (no bun-types installed)
+gates.json            quality-gate tier floors + calibration stamp (FEAT-544, optional — see "Quality-gate tiers" below)
 run-bench.mts         CLI entry point
 results/              output dir (results.json + report.md per run)
 
@@ -177,6 +179,59 @@ Every run also writes `results/<run>/summary.json`: an array of
 `{ model, forbiddenItemHitsTotal, evidenceAccNumerator, evidenceAccDenominator, evidenceAcc }`
 per model — the raw sample sizes behind both new metrics, not just the final
 percentage/count (closing the observability gap FEAT-542 AC-7 calls out).
+
+### Quality-gate tiers (FEAT-544)
+
+`gates.json` (repo root of this bench, sibling to `run-bench.mts`) defines
+two numeric quality tiers a model's report is checked against every run —
+`local-viable` and `production-preferred` — so a run self-classifies instead
+of a human eyeballing report.md's raw percentages (as happened for #434's
+phi4-mini gates). Each tier gates a subset of: `f1` (min), `typeAcc` (min),
+`junk` (max), `overExtract` (max — `local-viable` only), `evidenceAcc`
+(min). Floors are stored on the same 0..1 fraction scale as the report's own
+aggregate fields (`overExtract` is the one exception — a raw atom count).
+
+`gates.json` also carries a `calibration` block (`fixtureCount`,
+`fixtureCorpusDate`) stamping the fixture corpus the floors were seeded
+against. When the bench's live `loadFixtures()` count differs from that
+stamp, `report.md`'s "## Gates" section prints an explicit stale-calibration
+warning above the per-model verdicts rather than silently applying floors
+calibrated on a different-difficulty corpus. `gates.json` is optional —
+delete or rename it and the whole Gates section (and `gates-summary.json`)
+is silently omitted, not an error; a *present but malformed* file throws
+loudly instead (see `lib/gates.ts`'s loader).
+
+Multi-run aware (`--runs N`, FEAT-450 noise-floor discipline): a min-floor
+metric only hard-FAILs when the mean itself sits below the floor; if
+mean-minus-stdev dips below the floor but the mean itself still clears it,
+the verdict renders `inconclusive` (straddling) instead of a false FAIL —
+symmetric (mean+stdev) for max-floor metrics. Only `f1`/`typeAcc` currently
+carry a multi-run stdev; `junk`/`overExtract`/`evidenceAcc` use a plain
+point comparison until a future change adds per-run stats for them.
+
+Every run additionally writes `results/<run>/gates-summary.json`: the same
+per-model, per-tier verdicts and named failing/straddling metrics as the
+prose "## Gates" section, as structured data — closing the observability
+gap a markdown-only report leaves for a future doctor canary or dashboard
+to consume.
+
+**Current floors are provisional, not sacred** (see `gates.json`'s own
+`calibration.note`): seeded from the 2026-07-17/18 measured baselines
+against the pre-FEAT-542 43-fixture corpus, then stamped against the now-55-
+fixture corpus (FEAT-542 landed the hard-fixture-pack the same window) —
+but NOT yet re-measured on the 55-fixture set. Revisit once a live `--runs`
+sweep re-baselines them.
+
+**Model-context note, and a flagged pre-existing staleness (out of scope
+here):** these floors target local Ollama extraction candidates — the
+daemon's Ollama sub-default is `qwen2.5:7b` (see CLAUDE.md's
+`qwen35-4b-2026-07-13` / `v0180-codex-is-default-provider` records); the
+daemon-wide shipped default provider is `codex-subscription/gpt-5.4-mini`,
+not any local Ollama model. This section deliberately does not rely on this
+README's own opening line ("current production default is `qwen3.5:4b`",
+dated 2026-07-14) — that line is now stale per the CLAUDE.md records above
+and is flagged here as a followup for separate correction; fixing it is out
+of this FEAT's scope.
 
 ### Statistical reliability (FEAT-450)
 
