@@ -80,6 +80,8 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
+import { resolveExtractionPassBTuning } from '../../../src/config/config.js';
 import { loadDataset, sampleLocomo, ensureDatasetDownloaded } from './lib/dataset.js';
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, sessionNumbers, type LoCoMoSample } from './lib/types.js';
 import {
@@ -679,6 +681,27 @@ async function runFull(): Promise<void> {
       // checkable against this field, not memory.
       crossEncoder: crossEncoderOverride ?? { enabled: false },
       diagnosed: diagnoseRequested,
+      // 2026-07-18 postmortem (the 0.5945-vs-0.5362 forensics failure): the
+      // knobs that actually explained a 5.8-pt gap — extraction passes,
+      // compaction mode, passB provider, prompt-env variant, pass-B sweep
+      // tuning, and the git state of the tree that built the running dist —
+      // were NONE of them recorded here, so "what changed between these two
+      // runs" was reconstruction, not record. An UNSET value is recorded as
+      // the string 'inherited-default' rather than omitted: inheriting
+      // defaultConfig through the sandbox is exactly how an uncommitted
+      // working-tree default flip poisoned a day of legs undetected.
+      extractionPasses: extractionPassesFlag ?? 'inherited-default',
+      compactionMode: compactionModeFlag ?? 'inherited-default',
+      extractionPassB: extractionPassBFlag ?? 'inherited-default',
+      extractPromptEnv: process.env.ASTRA_EXTRACT_PROMPT ?? null,
+      passBTuning: resolveExtractionPassBTuning(undefined),
+      gitState: (() => {
+        try {
+          const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+          const dirty = execSync('git status --porcelain -- src/', { encoding: 'utf8' }).trim().length > 0;
+          return { sha, srcDirty: dirty };
+        } catch { return null; }
+      })(),
     },
     counts: {
       sampled_conversations: sample.length,
