@@ -1,15 +1,43 @@
 ---
 kind: handoff
-objective: FEAT-551 evidence-gated sweeper implemented — AC-1/AC-2/AC-3 done, AC-4/AC-5 deferred to measurement lane
+objective: FEAT-551 evidence-gated sweeper implemented — AC-1/AC-2/AC-3 done + review HIGH fixed, AC-4/AC-5 deferred to measurement lane
 owner: fullstack-dev (builder)
 slice: SLICE-440
 feature: FEAT-551
 phase: null
 created_at: 2026-07-18
+updated_at: 2026-07-18
 confidence: high
-next_handoff: review-then-measurement-lane
+next_handoff: re-review-then-measurement-lane
 ---
 # Handoff — FEAT-551 evidence-gated sweeper, build complete
+
+## Update (post-review fix)
+
+First review pass (`crew:reviewer`, `.claude/artifacts/crew/reviews/20260718T031227Z-review-result-feat-551-evidence-gated-sweeper-review.md`)
+returned `needs_fix` with one HIGH finding: `08-embed-index.ts` imported
+`recordEvidenceGateDrops`/`recordEvidenceGateRunLog` but never called either
+— the loop-local counters (`passBAtomsAttempted`/`evidenceGateDrops`) were
+computed and discarded at `return`, so `evidence_gate_drops`/
+`evidence_gate_run_log` would have stayed permanently empty in production
+despite the gate actively dropping atoms (built-wired-never-invoked; AC-1's
+"counted" requirement unmet; AC-5's gate-drop-rate unmeasurable).
+
+**Fixed** in commit `f9e3997a`: added the missing persistence block at the
+end of `embedAndIndex`, mirroring the FEAT-533 atom-triage tier's own
+`recordTriageGuardDrops`/`recordTriageRunLog` block immediately above it in
+the same file (same isolated try/catch, same "only written when the gate
+actually ran this call" posture). Extended the existing FEAT-551 tests in
+`tests/distill/08-embed-index.test.ts` to assert real DB rows in
+`evidence_gate_drops`/`evidence_gate_run_log` (not just in-memory counts) —
+the exact test-adequacy gap the review flagged. Full build + both
+typechecks + `tests/distill/`+`tests/config/` re-run green (721/721) after
+the fix — see "Verification commands run" below, re-run post-fix.
+
+Reviewer's LOW/note items (carried forward, no code change required):
+- Mixed-provider default resolution is provider-`.name`-only (not model) —
+  see Risks section below, already flagged pre-fix and unchanged by this fix.
+- `sourceText` fidelity (pre-cleanup transcript) — same note, unchanged.
 
 **Feature:** FEAT-551 · **Slice:** SLICE-440 · **Branch:** `feat/551-evidence-gated-sweeper`
 **Worktree:** `C:\work\mega\astramemory-local-wt551`
@@ -59,7 +87,11 @@ single promoted `src/` implementation shared with the extraction bench.
   — `evidence_gate_drops` (reason+count) and `evidence_gate_run_log`
   (atoms_attempted/atoms_dropped) so a future doctor canary or the AC-5
   measurement lane can compute a drop RATE, not just an existence check
-  (canary-must-measure-rate-not-existence discipline).
+  (canary-must-measure-rate-not-existence discipline). **Now actually
+  called** (post-review fix, commit `f9e3997a`) — `embedAndIndex` persists
+  both tables at the end of the function, mirroring the FEAT-533 atom-triage
+  block; verified by DB-row assertions in
+  `tests/distill/08-embed-index.test.ts`.
 
 ## Test evidence
 
@@ -70,7 +102,12 @@ single promoted `src/` implementation shared with the extraction bench.
   `checkEvidenceGate` agree on a shared fixture.
 - `tests/distill/08-embed-index.test.ts` — new `describe('evidence gate
   (FEAT-551)')` block (8 tests): AC-1 drop-reason + admission cases, AC-2
-  pass-A bypass / gate-off / gate-omitted / mixed-batch cases.
+  pass-A bypass / gate-off / gate-omitted / mixed-batch cases. **Post-review
+  fix:** every AC-1/AC-2 case in this block now also asserts real
+  `evidence_gate_drops`/`evidence_gate_run_log` DB rows (reason, count,
+  session_id, atoms_attempted, atoms_dropped) — not just in-memory
+  `results`/`warnCalls` — closing the test-adequacy gap the review named as
+  "why the missing-persistence HIGH finding stayed green."
 - `tests/distill/pipeline.test.ts` — new `describe('evidence-gated sweeper
   wiring')` block (4 tests): mixed-provider default resolution, explicit
   `'off'` override, explicit `'on'` forcing the gate in a same-provider run,
@@ -78,10 +115,13 @@ single promoted `src/` implementation shared with the extraction bench.
   atom count/content byte-identical whether the gate is explicitly on or off.
 - `tests/config/config.test.ts` — 5 new `applyExtractionPassBGovernance`
   cases for `evidenceGate` validation.
-- **Full run:** `tests/distill/` + `tests/config/` — **36 test files, 721
-  tests, all green.** No pre-existing test was modified to make this pass.
+- **Full run (post-review-fix):** `tests/distill/` + `tests/config/` — **36
+  test files, 721 tests, all green** (same file/test count as pre-fix — the
+  fix extended existing test BODIES with DB-row assertions rather than
+  adding new `it()` blocks). No pre-existing test was modified to make this
+  pass.
 
-## Verification commands run
+## Verification commands run (re-run after the review fix)
 
 ```
 bun run build                      # tsc -p . — clean
@@ -135,15 +175,18 @@ Tests:
 2. `420c1eae` feat(distill): FEAT-551 — tag atoms by extraction pass, wire gate through the pipeline
 3. `f07b165d` refactor(bench): FEAT-551 — mechanical-checks.ts delegates quote-check to shared util
 4. `240ec18d` test(distill): FEAT-551 evidence-gated sweeper coverage (AC-1/AC-2/AC-3)
+5. `4f4cf9d8` docs(handoff): FEAT-551 SLICE-440 build-complete handoff
+6. `f9e3997a` fix(distill): FEAT-551 review fix — persist evidence-gate drop counters (HIGH)
 
-Branch tip: `240ec18d2eca843d4198b57240ef59c8d76aae91`
+Branch tip: `f9e3997a4c0c84705f2af7e6a3ca2aba81a135b8`
 
 ## Confidence
 
 High for AC-1/AC-2/AC-3 — mechanically verified end-to-end (unit, stage-8
-integration, full-pipeline wiring) with 721 green tests and clean
-build/typecheck on all three tsconfigs. AC-4/AC-5 are unmeasured by design
-(deferred to the serial measurement lane, GPU-owned by the rebaseline run).
+integration, full-pipeline wiring, DB-row persistence) with 721 green tests
+and clean build/typecheck on all three tsconfigs, including the post-review
+persistence fix. AC-4/AC-5 are unmeasured by design (deferred to the serial
+measurement lane, GPU-owned by the rebaseline run).
 
 ## Risks / open questions
 
@@ -171,7 +214,9 @@ build/typecheck on all three tsconfigs. AC-4/AC-5 are unmeasured by design
 
 ## Suggested next handoff
 
-1. Reviewer pass on this diff (11 source files + 4 test files across 4 commits).
+1. Re-review pass on the fix commit (`f9e3997a`) — first review returned
+   `needs_fix` (one HIGH, now fixed); confirm the persistence block +
+   DB-row test assertions close it.
 2. Once reviewed, hand to the serial measurement lane for AC-4 (extraction
    bench, codex+phi4-mini, gate on vs the 12% ungated junk baseline) and
    AC-5 (LoCoMo conv-1 A/B vs 0.6002, adversarial ≥0.87 floor,
