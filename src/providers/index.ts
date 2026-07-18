@@ -61,6 +61,17 @@ export interface ProviderSet {
      *  `consolidation.dupJudge.mode !== 'off'` — `runConsolidation` never
      *  calls it on the shipped default. */
     dupJudge?: LLMProvider;
+    /** Ingest gatekeeper (FEAT-548). `getProviders` ALWAYS sets it, mirroring
+     *  `judge`/`extractionPassB`/`atomTriage`/`dupJudge` above exactly: the
+     *  SAME INSTANCE as `extraction` when no `distill.gatekeeper.{provider,
+     *  model}` override is configured (identity — shared rate-limit bucket,
+     *  byte-identical pre-override behavior), or a distinct provider built
+     *  from that override. Optional in the TYPE only so hand-built test
+     *  ProviderSets stay valid — consumers fall back with
+     *  `gatekeeper ?? extraction`, exactly the pre-override behavior. Only
+     *  meaningful when `distill.gatekeeper.mode !== 'off'` — runPipeline
+     *  never calls it on the shipped default. */
+    gatekeeper?: LLMProvider;
   };
   embed: EmbedProvider;
 }
@@ -321,6 +332,21 @@ export function getProviders(config: Config): ProviderSet {
           config,
         )
       : extraction;
+  // Gatekeeper provider override (FEAT-548): same identity-default shape as
+  // judge/extractionPassB/atomTriage/dupJudge above — only build a SECOND
+  // provider when at least one half is actually set, otherwise reuse the
+  // extraction INSTANCE. An invalid `provider` value was already dropped by
+  // applyGatekeeperGovernance on the boot path, so this can never hit
+  // buildLLMProvider's throwing Azure fall-through on a typo.
+  const gk = config.distill?.gatekeeper;
+  const gatekeeper =
+    gk?.provider !== undefined || gk?.model !== undefined
+      ? buildLLMProvider(
+          gk.provider ?? config.llm.extraction.provider,
+          gk.model ?? config.llm.extraction.model,
+          config,
+        )
+      : extraction;
   return {
     llm: {
       compaction: buildLLMProvider(
@@ -333,6 +359,7 @@ export function getProviders(config: Config): ProviderSet {
       extractionPassB,
       atomTriage,
       dupJudge,
+      gatekeeper,
     },
     embed: buildEmbedProvider(config),
   };

@@ -349,13 +349,13 @@ describe('applyFusionGovernance', () => {
 describe('applyDurabilityGateGovernance', () => {
   it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
     for (const mode of ['strict', 'lenient', 'off'] as const) {
-      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
       expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to off and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
     const logs: string[] = [];
     const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -775,13 +775,13 @@ describe('applyRetentionGovernance', () => {
 describe('applyExtractProfileGovernance', () => {
   it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
     for (const profile of ['engineering', 'conversational'] as const) {
-      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
       expect(applyExtractProfileGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to engineering and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper };
     const logs: string[] = [];
     const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
 

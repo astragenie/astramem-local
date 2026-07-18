@@ -1,12 +1,15 @@
 /**
- * Persistence for the LLM atom-triage tier (FEAT-533, migration 052). Two
- * write paths, mirroring the migration's own two-table split:
+ * Persistence for the LLM atom-triage tier (FEAT-533, migration 052; FEAT-547
+ * v2 multi-verdict, migration 054). Two write paths, mirroring the
+ * migration's own two-table split:
  *
- *  - `recordTriageGuardDrops` — one row per non-'keep' verdict, carrying
- *    memory_id/model/confidence (unlike src/storage/evidence-guard-log.ts
- *    and siblings, which only ever aggregate reason+count — this table
- *    needs per-atom detail for the manually reviewed dry-run agreement
- *    sample FEAT-533's own eval gate depends on).
+ *  - `recordTriageGuardDrops` — one row per non-'keep' verdict OR per atom
+ *    carrying a v2 signal (`corrected_type`/`evidence_supported` — FEAT-547),
+ *    carrying memory_id/model/confidence (unlike
+ *    src/storage/evidence-guard-log.ts and siblings, which only ever
+ *    aggregate reason+count — this table needs per-atom detail for the
+ *    manually reviewed dry-run agreement sample FEAT-533's own eval gate
+ *    depends on).
  *  - `recordTriageRunLog` — one row per embedAndIndex call where triage
  *    actually ran, recording atoms_triaged/atoms_dropped so the doctor
  *    "Atom triage" canary can compute a RATE over a window
@@ -17,17 +20,29 @@
 import type { DB } from './db.js';
 
 export interface TriageGuardDropRow {
-  /** The verdict label itself (e.g. 'junk', 'meta-echo') — never 'keep',
-   *  since only non-'keep' verdicts are ever written here. */
+  /** The verdict label itself (e.g. 'junk', 'meta-echo', or 'keep' — FEAT-547
+   *  v2: a 'keep' verdict IS written here when it carries a `corrected_type`
+   *  or `evidence_supported` signal worth recording; pre-FEAT-547 callers
+   *  only ever wrote non-'keep' reasons). */
   reason: string;
-  /** Set when the atom persisted anyway (mode 'dry-run'); NULL when the
-   *  atom was actually dropped (mode 'enabled' — never inserted, no id
-   *  exists to record). */
+  /** Set when the atom persisted (mode 'dry-run', or any 'enabled'-mode row
+   *  reaching this point — dropped 'enabled' junk/meta-echo atoms never
+   *  reach insertWithCreateEvent); NULL when the atom was actually dropped
+   *  (mode 'enabled' junk/meta-echo — no id exists to record). */
   memoryId: string | null;
   model: string;
   confidence: number;
   mode: 'dry-run' | 'enabled';
   sessionId: string | null;
+  /** FEAT-547: the `corrected_type` this verdict proposed, when any —
+   *  recorded regardless of whether the confidence gate actually applied it
+   *  (see migrations/054-atom-triage-v2.sql's doc comment). `null`/omitted
+   *  for every verdict that proposed no re-label. */
+  correctedType?: string | null;
+  /** FEAT-547: the `evidence_supported` verdict this atom's evidence quote
+   *  received, when judged. `null`/omitted for every atom with no evidence
+   *  quote to judge (or no verdict at all). */
+  evidenceSupported?: boolean | null;
 }
 
 /** Write one `triage_guard_drops` row per entry. No-op on an empty array —
@@ -35,17 +50,25 @@ export interface TriageGuardDropRow {
  *  table uses for an empty event list). Unlike the count-only guard-drop
  *  tables, this one writes ONE ROW PER VERDICT (not aggregated by reason),
  *  so there is no "count > 0" filter to apply here — every entry passed in
- *  is, by construction, a real non-'keep' verdict the caller already
- *  decided to record. */
+ *  is, by construction, a real verdict the caller already decided to
+ *  record (a non-'keep' label, or a 'keep' label carrying a FEAT-547 v2
+ *  signal). */
 export function recordTriageGuardDrops(db: DB, drops: TriageGuardDropRow[]): void {
   if (drops.length === 0) return;
   const now = Date.now();
-  const stmt = db.prepare<[string, string | null, string, number, string, string | null, number]>(
-    'INSERT INTO triage_guard_drops (reason, memory_id, model, confidence, mode, session_id, created_at) ' +
-    'VALUES (?, ?, ?, ?, ?, ?, ?)',
+  const stmt = db.prepare<
+    [string, string | null, string, number, string, string | null, number, string | null, number | null]
+  >(
+    'INSERT INTO triage_guard_drops ' +
+    '(reason, memory_id, model, confidence, mode, session_id, created_at, corrected_type, evidence_supported) ' +
+    'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
   );
   for (const row of drops) {
-    stmt.run(row.reason, row.memoryId, row.model, row.confidence, row.mode, row.sessionId, now);
+    stmt.run(
+      row.reason, row.memoryId, row.model, row.confidence, row.mode, row.sessionId, now,
+      row.correctedType ?? null,
+      row.evidenceSupported === undefined || row.evidenceSupported === null ? null : (row.evidenceSupported ? 1 : 0),
+    );
   }
 }
 

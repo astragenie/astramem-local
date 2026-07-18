@@ -224,6 +224,26 @@ if (atomTriageMode !== undefined && !['off', 'dry-run', 'enabled'].includes(atom
   console.error(`--atom-triage must be off|dry-run|enabled, got: ${atomTriageMode}`);
   process.exit(1);
 }
+// --triage-model NAME (additive, FEAT-547): pins the atom-triage tier's
+// model INDEPENDENTLY of the candidate extraction model — the existing
+// --atom-triage lever alone always pins triage to the extraction candidate
+// itself (see daemon-runner's runOllamaCandidate), which can't express a
+// phi4-mini/qwen2.5:7b-triaging-CODEX's-atoms A/B (FEAT-547 AC-3). Only
+// meaningful alongside --atom-triage (ignored otherwise — no atomTriage
+// config block is ever emitted when --atom-triage is unset). Daemon path
+// only, same constraint --atom-triage itself already carries.
+const triageModel = get('--triage-model');
+// --gatekeeper off|dry-run|enabled (additive, 2026-07-18): FEAT-548
+// pre-extraction chunk-level substantiveness gate as a bench A/B lever;
+// gatekeeper provider pinned to the candidate extraction model itself (see
+// daemon-runner). Daemon path only, mirroring --atom-triage. This is the
+// lever AC-4's 55-fixture dry-run measurement runs through (`--gatekeeper
+// dry-run`): every substantive fixture must report a 0% false-skip rate.
+const gatekeeperMode = get('--gatekeeper') as 'off' | 'dry-run' | 'enabled' | undefined;
+if (gatekeeperMode !== undefined && !['off', 'dry-run', 'enabled'].includes(gatekeeperMode)) {
+  console.error(`--gatekeeper must be off|dry-run|enabled, got: ${gatekeeperMode}`);
+  process.exit(1);
+}
 
 interface ModelAtomsByFixture {
   model: string;
@@ -313,7 +333,7 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   }
 
   console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/${compactionModel}, extraction=ollama/${model}) ===`);
-  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}), ...(atomTriageMode ? { atomTriageMode } : {}) });
+  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}), ...(atomTriageMode ? { atomTriageMode } : {}), ...(triageModel ? { triageModel } : {}), ...(gatekeeperMode ? { gatekeeperMode } : {}) });
   console.log(`  daemon boot: ${run.daemonBootMs}ms`);
   const perFixture: ModelAtomsByFixture['perFixture'] = {};
   for (const r of run.results as DaemonFixtureResult[]) {

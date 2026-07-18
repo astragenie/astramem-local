@@ -459,6 +459,15 @@ export function configToYaml(cfg: Config): string {
     line(2, 'batchSize', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.batchSize),
     line(2, 'maxPerRun', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.maxPerRun),
     line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.maxWallClockMs),
+    // Ingest gatekeeper (FEAT-548) — mode: 'off' is the shipped default,
+    // byte-identical to pre-FEAT-548 behavior. Same shape as atomTriage
+    // above: the optional provider/model override is a hand-edit-only field
+    // this writer never round-trips either.
+    line(1, 'gatekeeper'),
+    line(2, 'mode', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.mode),
+    line(2, 'batchSize', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.batchSize),
+    line(2, 'maxPerRun', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.maxPerRun),
+    line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.maxWallClockMs),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes

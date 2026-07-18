@@ -8,7 +8,8 @@ import type { DB } from '../../src/storage/db.js';
 import { EntityRepo } from '../../src/storage/entities.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { defaultConfig } from '../../src/config/config.js';
-import { ATOM_TRIAGE_MARKER, type TriageVerdictLabel } from '../../src/distill/atom-triage.js';
+import { ATOM_TRIAGE_MARKER, CORRECTED_TYPE_CONFIDENCE_GATE, type TriageVerdictLabel } from '../../src/distill/atom-triage.js';
+import type { MemoryType } from '../../src/contracts/index.js';
 
 // AC-7: capture what the gate actually logs (via a mocked childLogger)
 // instead of asserting on source-code shape — proves the redacted text, not
@@ -53,6 +54,7 @@ function normalizedMem(
   importance = 0.7,
   entities?: NormalizedMemory['entities'],
   relations?: NormalizedMemory['relations'],
+  evidence?: string,
 ): NormalizedMemory {
   return {
     type: 'decision',
@@ -62,7 +64,7 @@ function normalizedMem(
     confidence: 0.8,
     contentHash: hash.slice(0, 16),
     finalHash: hash,
-    evidence: undefined,
+    evidence,
     entities,
     relations,
   };
@@ -900,8 +902,19 @@ describe('embedAndIndex stage', () => {
  *  from `verdictByText` (missing entries default to 'keep'), same
  *  closed-table posture MOCK_EXTRACTION_VOCAB uses for extraction. Verifies
  *  the marker is present so a misrouted (non-triage) call is caught. */
+/** FEAT-547: per-verdict entry may additionally carry a `corrected_type`
+ *  and/or `evidence_supported` — both omitted (undefined) reproduces the
+ *  pre-v2 single-verdict shape exactly, so every pre-FEAT-547 caller of
+ *  this helper is unaffected. */
+interface MockVerdict {
+  verdict: TriageVerdictLabel;
+  confidence: number;
+  corrected_type?: MemoryType;
+  evidence_supported?: boolean;
+}
+
 function makeTriageProvider(
-  verdictByText: Record<string, { verdict: TriageVerdictLabel; confidence: number }>,
+  verdictByText: Record<string, MockVerdict>,
 ): LLMProvider {
   return {
     name: 'ollama',
@@ -912,14 +925,25 @@ function makeTriageProvider(
         throw new Error('test provider received a non-triage call (missing ATOM_TRIAGE_MARKER)');
       }
       const user = messages.find(m => m.role === 'user')?.content ?? '';
-      const verdicts: Array<{ index: number; verdict: string; confidence: number }> = [];
+      const verdicts: Array<{
+        index: number; verdict: string; confidence: number;
+        corrected_type?: string; evidence_supported?: boolean;
+      }> = [];
+      // FEAT-547: an atom line may carry a trailing ` [evidence: "..."]`
+      // suffix (see atom-triage.ts's triageBatch userContent builder) — the
+      // non-greedy text group stops before that optional suffix so a plain
+      // `verdictByText` lookup by the atom's own text still matches.
       for (const line of user.split('\n')) {
-        const m = line.match(/^\[(\d+)\]\s(.*)$/);
+        const m = line.match(/^\[(\d+)\]\s(.*?)(?:\s\[evidence: ".*"\])?$/);
         if (!m) continue;
         const index = Number(m[1]);
         const text = m[2]!;
         const v = verdictByText[text] ?? { verdict: 'keep' as const, confidence: 1 };
-        verdicts.push({ index, verdict: v.verdict, confidence: v.confidence });
+        verdicts.push({
+          index, verdict: v.verdict, confidence: v.confidence,
+          ...(v.corrected_type !== undefined ? { corrected_type: v.corrected_type } : {}),
+          ...(v.evidence_supported !== undefined ? { evidence_supported: v.evidence_supported } : {}),
+        });
       }
       return { text: JSON.stringify({ verdicts }), usage: { in: 1, out: 1, usd: 0 } };
     },
@@ -1122,5 +1146,186 @@ describe('embedAndIndex — FEAT-533 atom-triage tier', () => {
     expect(results).toHaveLength(1); // only the durable fact survives to persist
     // The triage provider only ever saw the ONE survivor, not the gated atom.
     expect(triageCallCount).toBe(1);
+  });
+});
+
+// ─── FEAT-547: atom-triage v2 — corrected_type / evidence_supported ─────────
+
+describe('embedAndIndex — FEAT-547 atom-triage v2 (corrected_type / evidence_supported)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it("mode 'enabled': a corrected_type verdict AT the confidence gate overwrites the stored type; below-gate keeps the original", async () => {
+    const embed = makeMockEmbed();
+    const highConfText = 'the deadline moved to next Friday';
+    const lowConfText = 'the deadline is next Friday';
+    const llmAtomTriage = makeTriageProvider({
+      [highConfText]: { verdict: 'keep', confidence: CORRECTED_TYPE_CONFIDENCE_GATE, corrected_type: 'event' },
+      [lowConfText]: { verdict: 'keep', confidence: CORRECTED_TYPE_CONFIDENCE_GATE - 0.01, corrected_type: 'event' },
+    });
+    const mems = [
+      normalizedMem(highConfText, 'm'.repeat(64)),
+      normalizedMem(lowConfText, 'n'.repeat(64)),
+    ];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'enabled',
+      llmAtomTriage,
+    });
+
+    expect(results).toHaveLength(2);
+    const highRow = db.prepare('SELECT type FROM memories WHERE text = ?').get(highConfText) as any;
+    const lowRow = db.prepare('SELECT type FROM memories WHERE text = ?').get(lowConfText) as any;
+    // At-gate (>=) applies; the original NormalizedMemory.type in this test
+    // fixture is 'decision' (see normalizedMem's default) — the AC-2
+    // "confidence >= 0.8" wording is inclusive of the boundary itself.
+    expect(highRow.type).toBe('event');
+    // Below-gate: original type ('decision') is kept, corrected_type dropped.
+    expect(lowRow.type).toBe('decision');
+  });
+
+  it("mode 'enabled': evidence_supported is applied as a queryable flag on the memory row, on an evidence-bearing atom only", async () => {
+    const embed = makeMockEmbed();
+    const supportedText = 'the team migrated to PostgreSQL for ACID guarantees';
+    const unsupportedText = 'the team migrated to MongoDB for flexibility';
+    const noEvidenceText = 'a durable fact about the architecture';
+    const llmAtomTriage = makeTriageProvider({
+      [supportedText]: { verdict: 'keep', confidence: 0.9, evidence_supported: true },
+      [unsupportedText]: { verdict: 'keep', confidence: 0.9, evidence_supported: false },
+    });
+    const mems = [
+      normalizedMem(supportedText, 'o'.repeat(64), 0.7, undefined, undefined, 'we chose PostgreSQL for ACID'),
+      normalizedMem(unsupportedText, 'p'.repeat(64), 0.7, undefined, undefined, 'we chose PostgreSQL for ACID'),
+      normalizedMem(noEvidenceText, 'q'.repeat(64)), // no evidence field at all
+    ];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'enabled',
+      llmAtomTriage,
+    });
+
+    expect(results).toHaveLength(3);
+    const supportedRow = db.prepare('SELECT evidence_supported FROM memories WHERE text = ?').get(supportedText) as any;
+    const unsupportedRow = db.prepare('SELECT evidence_supported FROM memories WHERE text = ?').get(unsupportedText) as any;
+    const noEvidenceRow = db.prepare('SELECT evidence_supported FROM memories WHERE text = ?').get(noEvidenceText) as any;
+    expect(supportedRow.evidence_supported).toBe(1);
+    expect(unsupportedRow.evidence_supported).toBe(0);
+    // Never atoms deleted or mutated for a false verdict — text is intact.
+    expect(db.prepare('SELECT text FROM memories WHERE text = ?').get(unsupportedText)).toBeTruthy();
+    // No evidence field on the atom at all -> flag stays NULL even though
+    // this atom's index has no verdict entry either (defense-in-depth gate).
+    expect(noEvidenceRow.evidence_supported).toBeNull();
+
+    // Observability: both applied signals are recorded in triage_guard_drops
+    // for the manually reviewed agreement sample, keyed by the real memory_id.
+    const rows = db.prepare('SELECT reason, memory_id, evidence_supported FROM triage_guard_drops ORDER BY memory_id').all() as any[];
+    expect(rows).toHaveLength(2);
+    expect(rows.every(r => r.reason === 'keep')).toBe(true);
+    expect(rows.every(r => r.memory_id !== null)).toBe(true);
+  });
+
+  it("mode 'dry-run': corrected_type and evidence_supported are LOGGED but never applied — atom persists byte-unchanged apart from the diagnostic row", async () => {
+    const embed = makeMockEmbed();
+    const text = 'the deadline moved to next Friday';
+    const llmAtomTriage = makeTriageProvider({
+      [text]: { verdict: 'keep', confidence: 0.95, corrected_type: 'event', evidence_supported: true },
+    });
+    const mems = [normalizedMem(text, 'r'.repeat(64), 0.7, undefined, undefined, 'the deadline moved to Friday')];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'dry-run',
+      llmAtomTriage,
+    });
+
+    expect(results).toHaveLength(1);
+    const row = db.prepare('SELECT type, evidence_supported FROM memories WHERE text = ?').get(text) as any;
+    // Neither signal applied — dry-run rewrites nothing (AC-5).
+    expect(row.type).toBe('decision');
+    expect(row.evidence_supported).toBeNull();
+
+    const logRows = db.prepare('SELECT reason, corrected_type, evidence_supported, mode, memory_id FROM triage_guard_drops').all() as any[];
+    expect(logRows).toHaveLength(1);
+    expect(logRows[0].reason).toBe('keep');
+    expect(logRows[0].corrected_type).toBe('event');
+    expect(logRows[0].evidence_supported).toBe(1);
+    expect(logRows[0].mode).toBe('dry-run');
+    expect(logRows[0].memory_id).toBe(results[0]!.memoryId);
+  });
+
+  it("mode 'off': no corrected_type/evidence_supported fields are ever requested or parsed — byte-identical to pre-FEAT-547 (AC-5)", async () => {
+    const embed = makeMockEmbed();
+    let seenUserContent = '';
+    const base = makeTriageProvider({});
+    const capturing: LLMProvider = {
+      ...base,
+      chat: async (messages, opts) => {
+        seenUserContent = messages.find(m => m.role === 'user')?.content ?? '';
+        return base.chat(messages, opts);
+      },
+    };
+    const mems = [normalizedMem('a durable fact about the architecture', 's'.repeat(64), 0.7, undefined, undefined, 'some evidence')];
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      llmAtomTriage: capturing,
+      // atomTriageMode intentionally omitted -> 'off'
+    });
+
+    expect(seenUserContent).toBe(''); // provider never called at all
+    expect(results).toHaveLength(1);
+    const row = db.prepare('SELECT type, evidence_supported FROM memories WHERE text = ?').get('a durable fact about the architecture') as any;
+    expect(row.type).toBe('decision');
+    expect(row.evidence_supported).toBeNull();
+    expect((db.prepare('SELECT COUNT(*) AS n FROM triage_guard_drops').get() as any).n).toBe(0);
+  });
+
+  // AC-4: a labeled fixture set with known-correct types, asserting typeAcc
+  // on the GATE-APPLIED corrections directly — not just end-to-end recall.
+  // Closes the exact pre-mortem gap: this test would fail if corrected_type
+  // silently mis-typed a high-confidence atom, which a recall-only assertion
+  // would never catch.
+  it('AC-4: typeAcc over gate-applied corrected_type verdicts matches the fixture-derived expectation', async () => {
+    const embed = makeMockEmbed();
+    const fixture: Array<{ text: string; hash: string; originalType: NormalizedMemory['type']; verdict: MockVerdict }> = [
+      { text: 'atom 1', hash: 'a1'.repeat(32), originalType: 'note', verdict: { verdict: 'keep', confidence: 0.9, corrected_type: 'decision' } }, // correct, applied
+      { text: 'atom 2', hash: 'a2'.repeat(32), originalType: 'note', verdict: { verdict: 'keep', confidence: 0.85, corrected_type: 'fact' } },     // correct, applied
+      { text: 'atom 3', hash: 'a3'.repeat(32), originalType: 'note', verdict: { verdict: 'keep', confidence: 0.81, corrected_type: 'event' } },    // WRONG gold is 'lesson', applied anyway (measures typeAcc, not perfection)
+      { text: 'atom 4', hash: 'a4'.repeat(32), originalType: 'note', verdict: { verdict: 'keep', confidence: 0.79, corrected_type: 'todo' } },     // under-gate, never applied — excluded from typeAcc denominator
+    ];
+    const goldType: Record<string, MemoryType> = {
+      'atom 1': 'decision', 'atom 2': 'fact', 'atom 3': 'lesson', 'atom 4': 'todo',
+    };
+    const verdictByText: Record<string, MockVerdict> = {};
+    for (const f of fixture) verdictByText[f.text] = f.verdict;
+    const llmAtomTriage = makeTriageProvider(verdictByText);
+    const mems = fixture.map(f => ({ ...normalizedMem(f.text, f.hash), type: f.originalType }));
+
+    await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      atomTriageMode: 'enabled',
+      llmAtomTriage,
+    });
+
+    // Recompute typeAcc directly against the DB's applied `type` column —
+    // ONLY over atoms whose verdict actually cleared the gate (atom 4 never
+    // applied, so it is not part of the denominator).
+    let applied = 0;
+    let correct = 0;
+    for (const f of fixture) {
+      if (f.verdict.confidence < CORRECTED_TYPE_CONFIDENCE_GATE) continue;
+      applied++;
+      const row = db.prepare('SELECT type FROM memories WHERE text = ?').get(f.text) as any;
+      if (row.type === goldType[f.text]) correct++;
+    }
+    expect(applied).toBe(3); // atoms 1-3 cleared the gate; atom 4 did not
+    const typeAcc = correct / applied;
+    expect(typeAcc).toBeCloseTo(2 / 3, 5); // atoms 1-2 correct, atom 3 wrong
   });
 });

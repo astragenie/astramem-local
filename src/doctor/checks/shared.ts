@@ -58,6 +58,8 @@ export interface DoctorCheckOpts {
     extractionPassB?: LLMProvider;
     /** Atom-triage override (FEAT-533). */
     atomTriage?: LLMProvider;
+    /** Ingest gatekeeper override (FEAT-548). */
+    gatekeeper?: LLMProvider;
   };
   /** Embed provider to real-embed-probe. */
   embedProvider?: EmbedProvider;
@@ -173,6 +175,9 @@ export interface DoctorCheckOpts {
   /** FEAT-533: current `distill.atomTriage.mode`. Defaults to `'off'` (the
    * shipped default) when not supplied — see `checkAtomTriage`. */
   atomTriageMode?: 'off' | 'dry-run' | 'enabled';
+  /** FEAT-548: current `distill.gatekeeper.mode`. Defaults to `'off'` (the
+   * shipped default) when not supplied — see `checkGatekeeper`. */
+  gatekeeperMode?: 'off' | 'dry-run' | 'enabled';
 }
 
 // ─── Shared: open the real memory.sqlite read-only, key-aware ───────────────

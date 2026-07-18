@@ -1,28 +1,18 @@
 ---
 id: FEAT-548
-status: pending
+status: in-progress
 priority: P2
 category: feature
 target_release: null
 created: 2026-07-18
 updated: 2026-07-18
 depends_on: []
-slices: []
+slices: [SLICE-441]
 derived_from: 2026-07-18 phi-role analysis
 cross_product: [astramem-local]
 autonomous_safe: true
 triage_notes: |
-  Filed 2026-07-18. 2026-07-18 phi-role analysis.
-  ---
-  2026-07-18 PM deep triage: P2, autonomous_safe=true. customer_impact 0.45
-  (real, immediate quota-saving value; narrow, cost-only scope), effort 0.40
-  (5 pts, analog SLICE-437/438/439), strategic_alignment 0.55 (FEAT-482 caps
-  posture), technical_risk 0.30 (copies established atomTriage/
-  contradictionDetection config pattern verbatim, no schema change),
-  dependency_depth 0.10 (genuinely independent — pre-extraction, no type-
-  quality coupling to FEAT-547). Recommended build order: fully independent,
-  can slot anywhere; suggested after FEAT-551/547 (P1s) as a fast, low-risk,
-  immediate-ROI item.
+started_at: 2026-07-18
 ---
 ## Description
 

@@ -637,6 +637,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
     durabilityGateMode: cfg.distill.durabilityGate,
     extractProfile: cfg.distill.extractProfile,
     atomTriageMode: cfg.distill.atomTriage.mode,
+    gatekeeperMode: cfg.distill.gatekeeper.mode,
     dailyBudgetUsd: cfg.budget.daily_usd,
     codexSubscriptionInUse,
     autoCaptureEnabled: cfg.capture.autoCapture.enabled,
@@ -674,6 +675,7 @@ export async function serve(opts: ServeOpts): Promise<void> {
       judge: providers.llm.judge,
       extractionPassB: providers.llm.extractionPassB,
       atomTriage: providers.llm.atomTriage,
+      gatekeeper: providers.llm.gatekeeper,
     },
     embedProvider: providers.embed,
   };

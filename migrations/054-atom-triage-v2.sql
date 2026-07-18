@@ -1,0 +1,47 @@
+-- 054: atom-triage v2 multi-verdict storage (FEAT-547).
+--
+-- Extends migration 052's triage_guard_drops table (extend, don't fork —
+-- same "single triage-effects log" pattern FEAT-533 established) with two
+-- additive, nullable columns so a per-atom observability row can also carry
+-- a `corrected_type` re-label and/or an `evidence_supported` judgment
+-- alongside (or independent of) the existing junk/keep `reason`:
+--
+--   corrected_type -- the 7-class re-label a verdict proposed for this
+--   atom, when one was proposed (NULL otherwise). Recorded regardless of
+--   whether the confidence gate (CORRECTED_TYPE_CONFIDENCE_GATE,
+--   src/distill/atom-triage.ts) actually applied it, so the manually
+--   reviewed agreement sample this FEAT's own eval gate depends on can see
+--   what the model PROPOSED, not just what got APPLIED (the applied value
+--   lives on the memories row itself, see below).
+--
+--   evidence_supported -- the semantic evidence-support verdict proposed
+--   for this atom (0/1), when the atom carried an evidence quote AND the
+--   model judged it. NULL for every other row -- both "atom had no evidence
+--   to judge" and "mode was 'off'/verdict omitted the field" collapse to
+--   the same NULL, which is fine: this column's ONLY job is diagnostic
+--   recall of what a 'dry-run'/'enabled' verdict proposed, not a query-path
+--   input (memories.evidence_supported below is the queryable one).
+--
+-- Both columns are backward-compatible additions -- every pre-FEAT-547 row
+-- already has NULL here (SQLite ADD COLUMN with no DEFAULT clause defaults
+-- to NULL for existing rows), and every pre-FEAT-547 write path (which
+-- never sets these) continues to insert NULL, byte-identical.
+ALTER TABLE triage_guard_drops ADD COLUMN corrected_type TEXT NULL;
+ALTER TABLE triage_guard_drops ADD COLUMN evidence_supported INTEGER NULL;
+
+-- New queryable flag on the memories row itself (AC-2: "the atom is
+-- flagged (a queryable field) and NEVER deleted or mutated"). Tri-state,
+-- same convention as `consent_disclosed` (migrations/048-audio-transcribe-
+-- consent.sql) rather than the always-0/1 boolean columns elsewhere:
+--   NULL -- not evaluated (every pre-FEAT-547 row; every row from a write
+--          path other than the distill pipeline's triage-enabled stage-8
+--          insert; every atom the triage batch had no evidence quote to
+--          judge; every atom triaged in 'dry-run' mode, which logs but
+--          never applies -- see 08-embed-index.ts's mode gate).
+--   1    -- an 'enabled'-mode triage verdict judged this atom's evidence
+--          quote as genuinely supporting its claim.
+--   0    -- an 'enabled'-mode triage verdict judged this atom's evidence
+--          quote as NOT supporting its claim -- a queryable signal for a
+--          future consumer (e.g. a recall-time down-weight or a doctor
+--          canary), never a delete/rewrite of the atom itself.
+ALTER TABLE memories ADD COLUMN evidence_supported INTEGER NULL;

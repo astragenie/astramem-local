@@ -1055,6 +1055,56 @@ export interface Config {
       maxPerRun: number;
       maxWallClockMs: number;
     };
+    /** Ingest gatekeeper (FEAT-548) — an optional pre-extraction
+     *  substantiveness gate inserted right after stage 3 (chunk), BEFORE
+     *  stage 4 (compact) and stage 5 (extract) ever run. A cheap local model
+     *  answers "does this chunk contain anything durably memorable?" for
+     *  each chunk; a `skip` verdict bypasses the metered extraction (and
+     *  compaction) LLM call for that chunk entirely — the opposite chokepoint
+     *  from `atomTriage` above, which filters ATOMS a call has already
+     *  produced. This tier exists to avoid spending the call in the first
+     *  place, not to clean up after it.
+     *
+     *  `off` (shipped default) is BYTE-IDENTICAL to pre-FEAT-548 behavior —
+     *  the gate is never called and every chunk reaches compact/extract
+     *  exactly as before (AC-1). `dry-run` calls the model and logs every
+     *  would-have-skipped verdict + a running skip-rate counter to
+     *  `gatekeeper_skips`/`gatekeeper_run_log`, but drops NOTHING — every
+     *  chunk still proceeds to extraction unmodified (AC-3); this is the
+     *  measurement mode an operator uses before ever flipping to `enabled`.
+     *  `enabled` actually removes `skip`-verdicted chunks from the
+     *  compact/extract input.
+     *
+     *  Fail-open (ADR-015), same posture as `atomTriage`/`contradictionDetection`:
+     *  a parse failure, thrown/rejected `chat()` call, or a chunk with no
+     *  verdict entry at all is treated as an implicit `keep` — a gatekeeper
+     *  outage must degrade to today's behavior exactly, never silently drop a
+     *  chunk.
+     *
+     *  `provider`/`model` default to `llm.extraction` (identity — same
+     *  provider INSTANCE, shared rate-limit bucket) when unset, exactly like
+     *  `atomTriage`'s own override shape — overridable to a local
+     *  phi4-mini-class model so the gate stays free on a metered
+     *  (codex-subscription) extraction install. An invalid `provider` value
+     *  is dropped (warn, never fatal) by `applyGatekeeperGovernance`.
+     *
+     *  `batchSize`/`maxPerRun`/`maxWallClockMs` mirror `atomTriage`'s shape
+     *  exactly (FEAT-482 lesson: call-count cap alone doesn't bound
+     *  wall-clock time against a slow/rate-limited provider) — batched over
+     *  the WHOLE JOB's chunk list (chunks are already discrete units at this
+     *  insertion point, unlike atomTriage's post-reduce atom stream, but
+     *  batching still caps total call count on a session with many chunks).
+     *  Once either cap trips, every remaining un-gated chunk falls through
+     *  un-gated (implicit 'keep', persist/extract unfiltered — never
+     *  drop-by-timeout). */
+    gatekeeper: {
+      mode: 'off' | 'dry-run' | 'enabled';
+      provider?: LLMProviderName;
+      model?: string;
+      batchSize: number;
+      maxPerRun: number;
+      maxWallClockMs: number;
+    };
   };
   /** Memory-health score (FEAT-444). `llmJudgedJunkSample` is the ONLY
    *  memory-health metric that ever calls an LLM — off by default (AC-5):
@@ -1472,6 +1522,11 @@ export function defaultConfig(): Config {
       // dry-run agreement sample (see Config['distill']['atomTriage']'s doc
       // comment) and is not shipped as a default by this slice.
       atomTriage: { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 },
+      // FEAT-548: 'off' — shipped default, BYTE-IDENTICAL to pre-FEAT-548
+      // behavior (no gate call is ever made). Opt in to 'dry-run' per-install
+      // via config.yaml to measure a skip-rate before ever considering
+      // 'enabled' — see Config['distill']['gatekeeper']'s own doc comment.
+      gatekeeper: { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 },
     },
     capture: {
       autoCapture: {
@@ -2053,6 +2108,67 @@ export function applyAtomTriageGovernance(
 }
 
 /**
+ * FEAT-548: `distill.gatekeeper.mode` is a closed 3-value enum, same
+ * governance concern `applyAtomTriageGovernance` already documents —
+ * config.yaml is hand-parsed scalars with no schema, so a typo'd mode value
+ * would otherwise pass straight through `deepMerge` unchecked. Validated
+ * here, never fatal; an invalid or missing block falls back to `'off'` (the
+ * documented default) and is logged. Reuses `VALID_JUDGE_PROVIDERS` (declared
+ * above for the contradiction-judge override) — `distill.gatekeeper.provider`
+ * is the same closed provider union with the same "must not reach
+ * buildLLMProvider's throwing Azure fall-through on a boot-time typo" concern.
+ */
+const VALID_GATEKEEPER_MODES: ReadonlySet<Config['distill']['gatekeeper']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+const DEFAULT_GATEKEEPER: Config['distill']['gatekeeper'] =
+  { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 };
+
+export function applyGatekeeperGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const gk = distill.gatekeeper;
+  // `loadConfig`'s top-level override merge is shallow, so a partial
+  // override that only touches a sibling `distill` field can drop
+  // `gatekeeper` entirely — a missing object gets the same non-fatal
+  // fallback as an invalid `mode` (mirrors applyAtomTriageGovernance's
+  // identical guard).
+  if (!gk || !VALID_GATEKEEPER_MODES.has(gk.mode)) {
+    log(
+      gk
+        ? `[gatekeeper-governance] distill.gatekeeper.mode=${JSON.stringify(gk.mode)} is not one of ` +
+          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-548 / " +
+          'src/distill/gatekeeper.ts.'
+        : "[gatekeeper-governance] distill.gatekeeper is missing — falling back to defaults (mode: 'off'). " +
+          'See FEAT-548 / src/distill/gatekeeper.ts.',
+    );
+    return { ...distill, gatekeeper: { ...DEFAULT_GATEKEEPER, ...gk, mode: 'off' } };
+  }
+  // Provider override: an out-of-union value must not reach buildLLMProvider
+  // (whose fall-through arm is Azure and THROWS on a missing endpoint) DURING
+  // BOOT. Drop the override, keep the ride-extraction default, warn — same
+  // posture as applyAtomTriageGovernance.
+  if (gk.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(gk.provider)) {
+    log(
+      `[gatekeeper-governance] distill.gatekeeper.provider=${JSON.stringify(gk.provider)} is not one of ` +
+      `${LLM_PROVIDER_NAMES_DISPLAY} — dropping the override (gatekeeper rides ` +
+      'llm.extraction). See FEAT-548.',
+    );
+    return { ...distill, gatekeeper: { ...gk, provider: undefined } };
+  }
+  if (!Number.isInteger(gk.batchSize) || gk.batchSize < 1) {
+    log(
+      `[gatekeeper-governance] distill.gatekeeper.batchSize=${JSON.stringify(gk.batchSize)} is not a positive ` +
+      `integer — falling back to ${DEFAULT_GATEKEEPER.batchSize}.`,
+    );
+    return { ...distill, gatekeeper: { ...gk, batchSize: DEFAULT_GATEKEEPER.batchSize } };
+  }
+  return distill;
+}
+
+/**
  * FEAT-549: `consolidation.dupJudge.mode` is a closed 3-value enum, same
  * governance concern `applyContradictionDetectionGovernance`/
  * `applyAtomTriageGovernance` already document — config.yaml is hand-parsed
@@ -2209,7 +2325,14 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
   return {
     ...merged,
     search: applyQueryRewriteGovernance(applyFusionGovernance(merged.search)),
-    distill: applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))),
+    // FEAT-548: applyGatekeeperGovernance composed here too, not just in
+    // loadConfigFromDisk() — mirrors applyExtractionPassBGovernance's own
+    // "wired into BOTH real paths" bar (the 2026-07-16 review note on
+    // applyExtractionPassesGovernance documents why loadConfigFromDisk is the
+    // one with real production callers; applyAtomTriageGovernance itself is
+    // still NOT wired into this loadConfig() chain — a pre-existing gap
+    // predating this slice, out of scope here).
+    distill: applyGatekeeperGovernance(applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill))))),
     consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation))),
     audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),

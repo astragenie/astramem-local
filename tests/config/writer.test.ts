@@ -96,6 +96,10 @@ function buildFullyPopulatedConfig(): Config {
       // setting them here would fail the round-trip assertion below for a
       // reason unrelated to what that assertion is actually checking.
       atomTriage: { mode: 'dry-run', batchSize: 15, maxPerRun: 100, maxWallClockMs: 60_000 },
+      // gatekeeper (FEAT-548) — provider/model deliberately unset, same
+      // round-trip gap atomTriage's own provider/model override already
+      // documents above.
+      gatekeeper: { mode: 'dry-run', batchSize: 10, maxPerRun: 80, maxWallClockMs: 45_000 },
     },
     capture: {
       autoCapture: {
