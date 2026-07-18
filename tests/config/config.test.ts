@@ -446,6 +446,42 @@ describe('applyExtractionPassBGovernance — pass-B provider override', () => {
     expect(out.extractionPassB!.model).toBe('qwen3:8b');
     expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
   });
+
+  // FEAT-551: evidenceGate governance — same non-fatal drop-and-fall-back
+  // posture as `provider` above, independently validated.
+  it("evidenceGate: 'on' passes through untouched", () => {
+    const input = distillOf({ evidenceGate: 'on' });
+    expect(applyExtractionPassBGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it("evidenceGate: 'off' passes through untouched", () => {
+    const input = distillOf({ evidenceGate: 'off' });
+    expect(applyExtractionPassBGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('evidenceGate unset (no extractionPassB.evidenceGate at all) is unchanged — documented default', () => {
+    const input = distillOf({ provider: 'ollama' });
+    const out = applyExtractionPassBGovernance(input, { log: () => {} });
+    expect(out.extractionPassB!.evidenceGate).toBeUndefined();
+  });
+
+  it('an invalid evidenceGate value is DROPPED with a warning, never fatal', () => {
+    const log = vi.fn();
+    const input = distillOf({ evidenceGate: 'yes' });
+    const out = applyExtractionPassBGovernance(input, { log });
+    expect(out.extractionPassB!.evidenceGate).toBeUndefined();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('evidenceGate'));
+  });
+
+  it('an invalid provider AND an invalid evidenceGate are both dropped in one pass', () => {
+    const log = vi.fn();
+    const input = distillOf({ provider: 'olama', evidenceGate: 'maybe', model: 'qwen3:8b' });
+    const out = applyExtractionPassBGovernance(input, { log });
+    expect(out.extractionPassB!.provider).toBeUndefined();
+    expect(out.extractionPassB!.evidenceGate).toBeUndefined();
+    expect(out.extractionPassB!.model).toBe('qwen3:8b');
+    expect(log).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('applyAtomTriageGovernance — FEAT-533', () => {

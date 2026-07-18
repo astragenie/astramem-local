@@ -29,14 +29,22 @@
 
 import type { Atom } from './prompts/extract.js';
 
+// FEAT-551: mergeDualPassAtoms is generic over T (rather than fixed to Atom)
+// so a caller that pre-tags passA/passB atoms with SourcedAtom's
+// `extractionSource` field (src/distill/prompts/extract.ts) gets that tag
+// back on the merged output — this function never spreads/reconstructs an
+// atom object (see `kept.push({ atom, norm })` below), so the tag survives
+// automatically. Every pre-FEAT-551 caller passing plain `Atom[]` is
+// unaffected: T is inferred as `Atom` and behavior is unchanged.
+
 /** Lowercase, strip everything but letters/digits (Unicode-aware) — collapses
  *  case and punctuation/whitespace variants to the same key for comparison. */
 export function normalizeAtomText(text: string): string {
   return text.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }
 
-export interface MergeDualPassResult {
-  merged: Atom[];
+export interface MergeDualPassResult<T extends Atom = Atom> {
+  merged: T[];
   /** Count of atoms dropped as exact or substring duplicates (from either
    *  pass) — the per-chunk observability signal the pipeline logs. */
   dedupedAway: number;
@@ -47,8 +55,8 @@ export interface MergeDualPassResult {
  * for the exact-duplicate / substring-duplicate / keep-longer / keep-disjoint
  * rules.
  */
-export function mergeDualPassAtoms(passA: Atom[], passB: Atom[]): MergeDualPassResult {
-  const kept: Array<{ atom: Atom; norm: string }> = [];
+export function mergeDualPassAtoms<T extends Atom = Atom>(passA: T[], passB: T[]): MergeDualPassResult<T> {
+  const kept: Array<{ atom: T; norm: string }> = [];
   let dedupedAway = 0;
 
   for (const atom of [...passA, ...passB]) {

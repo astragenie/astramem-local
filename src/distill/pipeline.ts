@@ -27,7 +27,7 @@ import { BudgetTracker } from '../budget/tracker.js';
 import { resolveChunkConcurrency } from './concurrency.js';
 import { DistillCostCapTracker, resolveDistillCostCap } from './cost-cap.js';
 import { chunkCheckpoints } from './chunk-checkpoint.js';
-import type { Atom } from './prompts/extract.js';
+import type { SourcedAtom } from './prompts/extract.js';
 import type { LLMProvider, EmbedProvider } from '../contracts/index.js';
 import type { DB } from '../storage/db.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -453,15 +453,24 @@ export async function runPipeline(
   // run before stage 6, which merges by content hash, not by the
   // normalized-substring rules dual-pass needs). Single-pass (the default):
   // byte-identical to pre-dual-pass behavior — just pass A's atoms flattened.
-  let allAtoms: Atom[];
+  //
+  // FEAT-551: each atom is tagged with its originating pass
+  // (SourcedAtom.extractionSource) BEFORE the merge — mergeDualPassAtoms
+  // never spreads/reconstructs an atom (see its own doc comment), so the tag
+  // rides through the merge, reduce, and memory-normalize stages unchanged,
+  // all the way to stage 8's evidence gate. Pass-A atoms are tagged 'passA'
+  // explicitly (not left untagged) purely so both arrays share one concrete
+  // type at the mergeDualPassAtoms call site — the gate itself only ever
+  // acts on 'passB' (AC-2: 'passA' is bypassed identically to "untagged").
+  let allAtoms: SourcedAtom[];
   if (extractResultsSpecifics) {
     const specificsByChunk = new Map(extractResultsSpecifics.map(r => [r.chunkIndex, r]));
-    const mergedAtoms: Atom[] = [];
+    const mergedAtoms: SourcedAtom[] = [];
     for (const passAResult of extractResults) {
       const passBResult = specificsByChunk.get(passAResult.chunkIndex);
-      const passAAtoms = passAResult.atoms;
-      const passBAtoms = passBResult?.atoms ?? [];
-      const { merged, dedupedAway } = mergeDualPassAtoms(passAAtoms, passBAtoms);
+      const passAAtoms: SourcedAtom[] = passAResult.atoms.map(a => ({ ...a, extractionSource: 'passA' as const }));
+      const passBAtoms: SourcedAtom[] = (passBResult?.atoms ?? []).map(a => ({ ...a, extractionSource: 'passB' as const }));
+      const { merged, dedupedAway } = mergeDualPassAtoms<SourcedAtom>(passAAtoms, passBAtoms);
       pipeLog.info(
         {
           stage: 'extract-dual-pass-merge',
@@ -541,8 +550,24 @@ export async function runPipeline(
   const normalizedMemories = memoryNormalize(groundResult.atoms);
   pipeLog.info({ stage: 'memory-normalize', memories: normalizedMemories.length }, 'stage complete');
 
+  // FEAT-551: resolve the evidence-gated sweeper's on/off state. Explicit
+  // config always wins; unset defaults to ON exactly when passB actually ran
+  // on a DIFFERENT provider than pass A — the mixed-provider case is exactly
+  // where the junk-crowding risk was measured (see FEAT-551 spec). Computed
+  // unconditionally (cheap, two string comparisons) even on a single-pass
+  // run — harmless, since checkEvidenceGate only ever acts on an atom tagged
+  // `extractionSource: 'passB'`, which a single-pass run never produces.
+  const evidenceGateSetting = ctx.config?.distill.extractionPassB?.evidenceGate;
+  const evidenceGateEnabled =
+    evidenceGateSetting === 'on' ? true
+    : evidenceGateSetting === 'off' ? false
+    : resolvedExtractionPasses === 2 && passBProvider.name !== ctx.llmExtraction.name;
+
   // Stage 8: Embed + index
-  pipeLog.info({ stage: 'embed-index', memories: normalizedMemories.length }, 'stage start');
+  pipeLog.info(
+    { stage: 'embed-index', memories: normalizedMemories.length, evidence_gate_enabled: evidenceGateEnabled },
+    'stage start',
+  );
   const gatedOutCounter = { count: 0 };
   const indexResults = await embedAndIndex(normalizedMemories, {
     db: ctx.db,
@@ -559,6 +584,8 @@ export async function runPipeline(
     durabilityGateMode: ctx.durabilityGateMode,
     redactConfig: ctx.config,
     gatedOutCounter,
+    // FEAT-551: see evidenceGateEnabled's own resolution comment above.
+    evidenceGateEnabled,
     // FEAT-533: mode/caps resolved from config (falls back to 'off'/the
     // documented defaults when ctx.config is omitted — same convention
     // ctx.config's other stage-8 consumers above use), provider from
