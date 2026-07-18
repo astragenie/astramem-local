@@ -71,7 +71,24 @@ export const NDCG_FLOOR = 0.7;
  * ADR-005-harness run showing eta active does not regress the floors)
  * before shipping any config with eta > 0.
  */
-export const RECORDED_EVAL_EVIDENCE: FusionEvalEvidence[] = [];
+export const RECORDED_EVAL_EVIDENCE: FusionEvalEvidence[] = [
+  // implicitPositive (issue #190 / FEAT-428 gate): 2026-07-18 evidence run on
+  // merged tip 6f6c826c — tests/eval/retrieval-eval.test.ts +
+  // tests/search/usefulness-rank.test.ts 23/23 green with the pass's ranking
+  // surface active; mean recall@10 0.955, mean NDCG@10 0.840, both clear the
+  // ADR-005 floors. Mechanism note: the pass writes heuristic recall_used
+  // events on the CLEANUP cadence only (weight 0.35 vs explicit 1.0) and
+  // never touches weights/fusion/request path — ranking impact flows solely
+  // through the epsilon·usefulness term the harness covers. Full artifact:
+  // .claude/artifacts/crew/validations/20260718T051500Z-eval-evidence-implicit-positive-usefulness.md
+  {
+    component: 'implicitPositive',
+    recordedAt: '2026-07-18',
+    meanRecall: 0.955,
+    meanNdcg: 0.84,
+    evidenceRef: '.claude/artifacts/crew/validations/20260718T051500Z-eval-evidence-implicit-positive-usefulness.md (tip 6f6c826c)',
+  },
+];
 
 /**
  * True if `RECORDED_EVAL_EVIDENCE` contains an entry for `component` that

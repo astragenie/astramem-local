@@ -214,12 +214,14 @@ describe('applyFusionGovernance', () => {
     expect(governed.eta).toBe(0.3);
   });
 
-  it('eta=0 (default) never consults eval evidence at all — the gate only fires for eta>0', () => {
+  it('eta=0 (default) never consults eval evidence for eta — the gate only fires for eta>0', () => {
     const search = baseSearch();
     const checkEvalEvidence = vi.fn(() => false);
-    const governed = applyFusionGovernance(search, { checkEvalEvidence });
+    const governed = applyFusionGovernance(search, { checkEvalEvidence, log: () => {} });
     expect(governed.eta).toBe(0);
-    expect(checkEvalEvidence).not.toHaveBeenCalled();
+    // implicitPositive ships enabled (2026-07-18) so ITS gate legitimately
+    // consults — the assertion here is only that eta's never does.
+    expect(checkEvalEvidence).not.toHaveBeenCalledWith('eta');
   });
 
   it('the real (uninjected) evidence lookup also refuses eta>0 today (no evidence recorded yet)', () => {
@@ -260,12 +262,13 @@ describe('applyFusionGovernance', () => {
     expect(governed.theta).toBe(0.3);
   });
 
-  it('theta=0 (default) never consults eval evidence at all — the gate only fires for theta>0', () => {
+  it('theta=0 (default) never consults eval evidence for theta — the gate only fires for theta>0', () => {
     const search = baseSearch();
     const checkEvalEvidence = vi.fn(() => false);
-    const governed = applyFusionGovernance(search, { checkEvalEvidence });
+    const governed = applyFusionGovernance(search, { checkEvalEvidence, log: () => {} });
     expect(governed.theta).toBe(0);
-    expect(checkEvalEvidence).not.toHaveBeenCalled();
+    // See the eta twin above — implicitPositive's own gate may consult.
+    expect(checkEvalEvidence).not.toHaveBeenCalledWith('theta');
   });
 
   it('the real (uninjected) evidence lookup also refuses theta>0 today (no evidence recorded yet)', () => {
@@ -315,28 +318,32 @@ describe('applyFusionGovernance', () => {
       expect(governed.usefulness.implicitPositive.enabled).toBe(true);
     });
 
-    it('enabled:false (default) never consults eval evidence at all — the gate only fires when enabled', () => {
-      const search = baseSearch();
+    it('enabled:false (explicit opt-out) never consults eval evidence at all — the gate only fires when enabled', () => {
+      const search = {
+        ...baseSearch(),
+        usefulness: { implicitPositive: { ...baseSearch().usefulness.implicitPositive, enabled: false } },
+      };
       const checkEvalEvidence = vi.fn(() => false);
       const governed = applyFusionGovernance(search, { checkEvalEvidence });
       expect(governed.usefulness.implicitPositive.enabled).toBe(false);
       expect(checkEvalEvidence).not.toHaveBeenCalled();
     });
 
-    it('the real (uninjected) evidence lookup also refuses enabled:true today (no evidence recorded yet)', () => {
+    // Flipped 2026-07-18: RECORDED_EVAL_EVIDENCE now carries the
+    // implicitPositive entry (recall@10 0.955 / NDCG@10 0.840, tip 6f6c826c)
+    // — the real lookup PERMITS activation. The gate stays armed: the
+    // injected-empty-evidence test above still proves removal of the entry
+    // force-reverts to false.
+    it('the real (uninjected) evidence lookup permits enabled:true (2026-07-18 evidence entry)', () => {
       const search = searchWithImplicitEnabled();
       const governed = applyFusionGovernance(search, { log: () => {} });
-      expect(governed.usefulness.implicitPositive.enabled).toBe(false);
+      expect(governed.usefulness.implicitPositive.enabled).toBe(true);
     });
 
-    it('loadConfig wires the gate in: an override setting enabled:true without evidence comes back false', () => {
-      const cfg = loadConfig({
-        search: {
-          ...defaultConfig().search,
-          usefulness: { implicitPositive: { ...defaultConfig().search.usefulness.implicitPositive, enabled: true } },
-        },
-      } as any);
-      expect(cfg.search.usefulness.implicitPositive.enabled).toBe(false);
+    it('loadConfig honors the shipped enabled:true default now that evidence is recorded', () => {
+      const cfg = loadConfig(undefined);
+      expect(defaultConfig().search.usefulness.implicitPositive.enabled).toBe(true);
+      expect(cfg.search.usefulness.implicitPositive.enabled).toBe(true);
     });
 
     it('does not mutate the caller-supplied search.usefulness object (governed is a fresh copy)', () => {

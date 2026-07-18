@@ -215,7 +215,8 @@ describe('cleanupHandler', () => {
 
   // issue #190 build-sequence phase 3 / AC-5: implicit positive-usefulness
   // sweep runs on this same cadence, gated behind
-  // config.search.usefulness.implicitPositive.enabled (default false).
+  // config.search.usefulness.implicitPositive.enabled (default TRUE since
+  // 2026-07-18 — eval-evidence gate satisfied, see RECORDED_EVAL_EVIDENCE).
   describe('implicit positive-usefulness sweep (issue #190)', () => {
     function insertFact(db: DB, hash: string): string {
       return new MemoryRepo(db).insert({
@@ -231,14 +232,27 @@ describe('cleanupHandler', () => {
       events.append({ event_type: 'usefulness', atom_id: atomId, payload: { family: 'recall_served', query_hash: 'q2', score: null, surface: 'rest', mode: null } });
     }
 
-    // AC-5: default-off is a true no-op — a fixture that would otherwise
+    // AC-5: explicit opt-out is a true no-op — a fixture that would otherwise
     // qualify gets no grant, and no heuristic recall_used event appears.
-    it('AC-5: enabled:false (default) never invokes the pass — a qualifying atom gets no grant', async () => {
+    // (Was "default off" until the 2026-07-18 flip; the off-case is now
+    // exercised via an explicit enabled:false ctx, mirroring the enabled:true
+    // ctx below, so the test no longer depends on which way the default points.)
+    it('AC-5: enabled:false (explicit opt-out) never invokes the pass — a qualifying atom gets no grant', async () => {
       const atomId = insertFact(db, 'implicit-cleanup-off');
       servedTwice(db, atomId);
 
+      const disabledCtx: HandlerCtx = {
+        db,
+        config: {
+          ...defaultConfig(),
+          search: {
+            ...defaultConfig().search,
+            usefulness: { implicitPositive: { ...defaultConfig().search.usefulness.implicitPositive, enabled: false } },
+          },
+        },
+      };
       const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
-      await cleanupHandler.handle(payload, ctx); // ctx uses defaultConfig() — implicitPositive.enabled === false
+      await cleanupHandler.handle(payload, disabledCtx);
 
       const grants = new MemoryEventRepo(db).listForAtom(atomId).filter(e => {
         const p = JSON.parse(e.payload_json ?? '{}');

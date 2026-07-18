@@ -238,9 +238,16 @@ export interface Config {
      * ADR-005 harness entry before a loaded config may honor `enabled: true`. */
     usefulness: {
       implicitPositive: {
-        /** OFF by default (ADR-014 posture: ζ/η both shipped weight-0/OFF
-         *  until eval-evidenced) — see `applyFusionGovernance`'s
-         *  'implicitPositive' eval-evidence gate below. */
+        /** ON by default since 2026-07-18 — the ADR-005 eval-evidence gate
+         *  is satisfied (RECORDED_EVAL_EVIDENCE 'implicitPositive' entry:
+         *  recall@10 0.955 / NDCG@10 0.840 on tip 6f6c826c; see
+         *  src/eval/eval-evidence.ts). Motivating prod telemetry: 48,740
+         *  atoms, 5.8% used-rate with ZERO heuristic grants ever — the rate
+         *  structurally undercounts without this pass. The trailing-30d
+         *  window means the number becomes honest within one cleanup tick
+         *  of enablement, no accrual wait. `applyFusionGovernance` still
+         *  force-reverts to false if the evidence entry is ever removed —
+         *  the gate stays armed, it just passes now. */
         enabled: boolean;
         /** Trailing lookback, in days, for distinct-query-hash counting. */
         windowDays: number;
@@ -1438,7 +1445,9 @@ export function defaultConfig(): Config {
       governance: { maxComponentWeight: 1.0 },
       usefulness: {
         implicitPositive: {
-          enabled: false, windowDays: 30, minDistinctQueries: 2, weight: 0.35, maxGrantsPerRun: 500,
+          // enabled: true (2026-07-18) — eval-evidence gate satisfied; see the
+          // Config type's doc comment + RECORDED_EVAL_EVIDENCE for the run.
+          enabled: true, windowDays: 30, minDistinctQueries: 2, weight: 0.35, maxGrantsPerRun: 500,
         },
       },
       queryRewrite: { mode: 'off', provider: 'mock', maxVariants: 3, timeoutMs: 1500, maxCandidates: 200 },

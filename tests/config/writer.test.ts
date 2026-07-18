@@ -327,9 +327,10 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     //  - search.theta: issue #352B's θ component is gated the identical way
     //    — same reasoning as eta above.
     //  - search.usefulness.implicitPositive.enabled: issue #190's own
-    //    eval-evidence gate (same applyFusionGovernance call), same reason —
-    //    this fixture's enabled:true has no recorded evidence, so it is
-    //    forced back to false regardless of round-trip fidelity.
+    //    eval-evidence gate (same applyFusionGovernance call). Since
+    //    2026-07-18 RECORDED_EVAL_EVIDENCE carries a passing
+    //    'implicitPositive' entry, so the fixture's enabled:true now
+    //    round-trips INTACT — the gate consults and permits.
     const { sync: loadedSync, search: loadedSearch, ...loadedRest } = loaded;
     const { sync: cfgSync, search: cfgSearch, ...cfgRest } = cfg;
     expect(loadedRest).toEqual(cfgRest);
@@ -337,7 +338,6 @@ describe('FEAT-461: configToYaml emit completeness', () => {
       ...cfgSearch,
       eta: 0,
       theta: 0,
-      usefulness: { implicitPositive: { ...cfgSearch.usefulness.implicitPositive, enabled: false } },
     });
 
     expect(loadedSync).toEqual({ ...defaultConfig().sync, experimental: cfgSync.experimental });
