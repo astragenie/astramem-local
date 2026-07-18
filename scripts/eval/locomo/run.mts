@@ -118,6 +118,10 @@ const answerConcurrency = Number(get('--answer-concurrency') ?? '8');
 // and default runs (unset) stay byte-identical to every prior recorded
 // score. See answer.mts's buildAnswerPrompt/formatSignalBreakdown.
 const answererIncludeSignals = process.env.ANSWERER_SIGNALS === '1';
+// --answerer <ollama-tag> (additive, 2026-07-18 local-answerer A/B): swap the
+// fixed cheap Azure answerer for a local Ollama model on the SAME stored
+// memories — pairs with --resume for a re-answer-only pass. Omit -> Azure.
+const answererFlag = get('--answerer');
 const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
@@ -369,7 +373,7 @@ async function runShard(opts: {
         { baseUrl: daemon.baseUrl, token },
         azureCfg,
         samples,
-        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency, includeSignals: answererIncludeSignals },
+        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency, includeSignals: answererIncludeSignals, ...(answererFlag ? { ollamaAnswerer: { model: answererFlag } } : {}) },
       );
       timings.answer_ms = Date.now() - t;
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);

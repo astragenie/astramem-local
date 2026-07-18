@@ -517,9 +517,32 @@ export function resolveExtractionPrompt(
 ): string {
   if (envOverride === 'v2') return EXTRACTION_SYSTEM_PROMPT_V2;
   if (envOverride === 'v1') return EXTRACTION_SYSTEM_PROMPT;
+  // 'conv-liberal' (2026-07-18, LoCoMo not-in-db experiment): the conversational
+  // prompt with an appended exhaustiveness push — 55% of measured LoCoMo misses
+  // are atoms never stored, and the codex extractor is measurably conservative
+  // (sparse-dense). A/B lever only; never the default.
+  if (envOverride === 'conv-liberal') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL;
   if (profile === 'conversational') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL;
   return EXTRACTION_SYSTEM_PROMPT_V3;
 }
+
+/** conv-liberal A/B variant — see resolveExtractionPrompt's comment. Base
+ *  conversational prompt + an explicit exhaustiveness push targeting the
+ *  measured miss classes (durations, quantities, one-off events, the less
+ *  central speaker's facts). Recall-biased BY DESIGN; junk cost accepted for
+ *  the A/B because the extractor under test (codex) measures ~0% junk. */
+export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL = `${EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL}
+
+EXHAUSTIVENESS OVERRIDE (this run only): err on the side of MORE atoms.
+- Enumerate EVERY distinct durable item — including exact durations ("twice a
+  year"), quantities, named one-off events (a trip, a purchase, an accident),
+  verbatim commitments, and BOTH speakers' facts equally (the less
+  narratively-central speaker's details are the most commonly missed).
+- If unsure whether an item is durable, EXTRACT IT — a borderline atom is
+  recoverable later, a missing one is not.
+- A typical substantive session here yields 6-12 atoms. Fewer than 4 for a
+  substantive session almost certainly means under-extraction — re-scan before
+  finishing. The "atoms": [] empty case remains valid ONLY for pure small talk.`;
 
 // ---------------------------------------------------------------------------
 // v2 (2026-07-09) — a/b candidate against EXTRACTION_SYSTEM_PROMPT. Adds the
