@@ -156,6 +156,18 @@ if (compactionModeFlag !== undefined && !['auto', 'always', 'never'].includes(co
   console.error(`--compaction-mode must be auto|always|never, got: ${compactionModeFlag}`);
   process.exit(1);
 }
+// --passb-provider/--passb-model (additive, FEAT-534 A/B): route the dual-pass
+// specifics-sweeper Pass B to a different provider/model than Pass A via
+// distill.extractionPassB. Both flags required together.
+const passBProviderFlag = get('--passb-provider');
+const passBModelFlag = get('--passb-model');
+if ((passBProviderFlag === undefined) !== (passBModelFlag === undefined)) {
+  console.error('--passb-provider and --passb-model must be set together');
+  process.exit(1);
+}
+const extractionPassBFlag = passBProviderFlag !== undefined && passBModelFlag !== undefined
+  ? { provider: passBProviderFlag, model: passBModelFlag }
+  : undefined;
 // WS2 rerank-flip experiment (docs/specs/20260713-locomo-architect-design.md
 // workstream 2): `--cross-encoder` flips the isolated eval daemon's
 // crossEncoder.enabled via config only (src/search/rerank.ts's own logic is
@@ -225,6 +237,8 @@ async function runShard(opts: {
   extractionPasses?: 1 | 2;
   /** Additive — distill.compaction mode; undefined inherits the shipped default (auto). */
   compactionMode?: 'auto' | 'always' | 'never';
+  /** Additive (FEAT-534 A/B) — distill.extractionPassB; undefined = both passes on Pass A's provider. */
+  extractionPassB?: { provider: string; model: string };
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -242,7 +256,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, compactionMode, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, extractionPassB, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -253,7 +267,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -553,7 +567,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,

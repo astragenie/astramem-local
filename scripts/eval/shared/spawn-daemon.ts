@@ -168,7 +168,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never' },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string } },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -221,7 +221,7 @@ export function makeIsolatedEvalEnv(
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
   }
-  if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined) {
+  if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined || opts?.extractionPassB !== undefined) {
     configLines.push('distill:');
     if (opts.extractProfile !== undefined) configLines.push(`  extractProfile: ${opts.extractProfile}`);
     if (opts.extractionPasses !== undefined) configLines.push(`  extractionPasses: ${opts.extractionPasses}`);
@@ -229,6 +229,13 @@ export function makeIsolatedEvalEnv(
     // stage that can summarize away facts extraction needs). auto|always|never
     // per Config['distill']['compaction'].
     if (opts.compactionMode !== undefined) configLines.push(`  compaction: ${opts.compactionMode}`);
+    // FEAT-534 mixed-provider dual-pass (2026-07-17 A/B lever): route the
+    // specifics-sweeper Pass B to a different provider/model than Pass A —
+    // measured 2026-07-17 (5-fixture bench): codex-A + phi4-mini-B scored
+    // 85/85/85 junk 12, the best balanced config of the sweep.
+    if (opts.extractionPassB !== undefined) {
+      configLines.push('  extractionPassB:', `    provider: ${opts.extractionPassB.provider}`, `    model: '${opts.extractionPassB.model}'`);
+    }
   }
   writeFileSync(join(configDir, 'config.yaml'), configLines.join('\n') + '\n', 'utf8');
 

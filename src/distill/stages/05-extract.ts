@@ -251,7 +251,14 @@ async function callExtract(
     // (inputChars/4 + maxTokens + 512, ollama.ts), so the window scales with
     // it; on hybrid-recurrent models the KV cost of the larger window is
     // negligible. Same cost note as above: ceiling, not spend.
-    maxTokens: 4000,
+    //
+    // 4000 -> 6000 (2026-07-18): dual-pass no-compaction found the next edge —
+    // LoCoMo conv-26-s14 chunk 1 deterministically truncated at 4000 (3/3
+    // attempts) and the poison invalidated a whole eval leg. A fixed ceiling
+    // is whack-a-mole (#434's hardening list has the durable fix: reject
+    // token-limit termination as retryable + chunk-split); 6000 buys headroom
+    // for the densest observed dual-pass chunk until that lands.
+    maxTokens: 6000,
   });
 
   return { text: result.text, usageUsd: result.usage.usd };
