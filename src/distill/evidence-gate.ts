@@ -29,8 +29,16 @@
  * `verifyEvidenceQuote` util (src/distill/evidence-verify.ts) — see AC-3 and
  * that file's own doc comment for why this must be exactly one
  * implementation, not two kept in sync by hand.
+ *
+ * FEAT-552 sub-scope C (AC-C2): calls `verifyEvidenceQuoteTier` (not the
+ * plain boolean `verifyEvidenceQuote`) so an admitted passB atom's
+ * `matchTier` ('exact' | 'fuzzy') is observable to the caller — see
+ * `EvidenceGateCheckResult.matchTier` and its production write site,
+ * src/distill/stages/08-embed-index.ts, which counts fuzzy admissions
+ * separately (distinct DB-row reason `evidence-fuzzy-matched`) so the gate's
+ * integrity stays observable even as the fuzzy tier admits more atoms.
  */
-import { verifyEvidenceQuote } from './evidence-verify.js';
+import { verifyEvidenceQuoteTier } from './evidence-verify.js';
 
 /** Which extraction pass produced an atom — see
  *  `src/distill/prompts/extract.ts`'s `SourcedAtom`/`AtomExtractionSource`
@@ -45,6 +53,15 @@ export type EvidenceGateDropReason = 'no-evidence-field' | 'evidence-not-found';
 export interface EvidenceGateCheckResult {
   admitted: boolean;
   reason: EvidenceGateDropReason | null;
+  /**
+   * FEAT-552 sub-scope C (AC-C2): which tier admitted a passB atom's quote
+   * — `'exact'` (whitespace-normalized substring, unchanged FEAT-551
+   * behavior) or `'fuzzy'` (token-window >=90% overlap fallback, new this
+   * FEAT). `null` for every non-admitted-via-quote case: pass-A atoms /
+   * untagged atoms (the bypass never even checks a quote), and any dropped
+   * atom (`no-evidence-field` | `evidence-not-found`).
+   */
+  matchTier: 'exact' | 'fuzzy' | null;
 }
 
 /**
@@ -65,15 +82,20 @@ export function checkEvidenceGate(
   atom: { evidence?: string | null; extractionSource?: AtomExtractionSource },
   transcriptText: string | null | undefined,
 ): EvidenceGateCheckResult {
-  if (atom.extractionSource !== 'passB') return { admitted: true, reason: null };
+  if (atom.extractionSource !== 'passB') return { admitted: true, reason: null, matchTier: null };
 
   if (typeof atom.evidence !== 'string' || atom.evidence.trim().length === 0) {
-    return { admitted: false, reason: 'no-evidence-field' };
+    return { admitted: false, reason: 'no-evidence-field', matchTier: null };
   }
 
-  if (!transcriptText || !verifyEvidenceQuote(atom.evidence, transcriptText)) {
-    return { admitted: false, reason: 'evidence-not-found' };
+  if (!transcriptText) {
+    return { admitted: false, reason: 'evidence-not-found', matchTier: null };
   }
 
-  return { admitted: true, reason: null };
+  const tier = verifyEvidenceQuoteTier(atom.evidence, transcriptText);
+  if (tier === 'none') {
+    return { admitted: false, reason: 'evidence-not-found', matchTier: null };
+  }
+
+  return { admitted: true, reason: null, matchTier: tier };
 }

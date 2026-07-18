@@ -28,7 +28,7 @@ import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
 import { recordTriageGuardDrops, recordTriageRunLog, type TriageGuardDropRow } from '../../storage/triage-guard-log.js';
-import { recordEvidenceGateDrops, recordEvidenceGateRunLog } from '../../storage/evidence-gate-log.js';
+import { recordEvidenceGateDrops, recordEvidenceGateRunLog, EVIDENCE_FUZZY_MATCHED_REASON } from '../../storage/evidence-gate-log.js';
 import { checkEvidenceGate, type EvidenceGateDropReason } from '../evidence-gate.js';
 import { attributeSpeaker } from '../attribute-speaker.js';
 
@@ -224,6 +224,12 @@ export async function embedAndIndex(
     'no-evidence-field': 0,
     'evidence-not-found': 0,
   };
+  // FEAT-552 sub-scope C (AC-C2): passB atoms admitted via the fuzzy
+  // token-window tier (not exact substring) — a PASS, never added to
+  // evidenceGateDrops/atomsDropped, but counted+logged separately so the
+  // gate's integrity stays observable (canary-must-measure-rate-not-
+  // existence: a rising fuzzy-match rate is its own signal).
+  let passBFuzzyMatched = 0;
 
   // ─── Phase A: erasure-replay filter + regex durability gate ─────────────
   // Same two "last line of defense, never persisted" checks the original
@@ -315,6 +321,9 @@ export async function embedAndIndex(
         );
         continue;
       }
+      // FEAT-552 sub-scope C (AC-C2): admitted, but via the fuzzy tier
+      // rather than an exact substring match — count it distinctly.
+      if (gateResult.matchTier === 'fuzzy') passBFuzzyMatched++;
     }
 
     survivors.push({ originalIndex: i, mem, vec });
@@ -770,8 +779,15 @@ export async function embedAndIndex(
     try {
       recordEvidenceGateDrops(
         ctx.db,
-        (Object.entries(evidenceGateDrops) as Array<[EvidenceGateDropReason, number]>)
-          .map(([reason, count]) => ({ reason, count })),
+        [
+          ...(Object.entries(evidenceGateDrops) as Array<[EvidenceGateDropReason, number]>)
+            .map(([reason, count]) => ({ reason, count })),
+          // FEAT-552 sub-scope C (AC-C2): PASS-tier row, not a drop — see
+          // evidence-gate-log.ts's module doc comment for why this rides
+          // the same table/column. recordEvidenceGateDrops already no-ops
+          // rows with count === 0.
+          { reason: EVIDENCE_FUZZY_MATCHED_REASON, count: passBFuzzyMatched },
+        ],
         ctx.sessionId,
       );
       recordEvidenceGateRunLog(ctx.db, {
