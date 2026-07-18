@@ -1,0 +1,21 @@
+{
+  "id": "fx47-negation-legacy-api-decommissioned",
+  "title": "Explicit negation: legacy v1 API is NOT supported anymore",
+  "difficulty": "negation",
+  "notes": "Tests meaning-reversal resistance on a decommission announcement — the transcript names the v1 API only to state it is no longer supported. An extractor that drops the negation and records 'v1 is supported' inverts the fact entirely.",
+  "turns": [
+    { "role": "user", "text": "Just confirming: we do NOT support the legacy v1 API anymore — it was fully decommissioned last quarter." },
+    { "role": "assistant", "text": "Understood, v1 is gone. Is v2 the only supported surface now?" },
+    { "role": "user", "text": "Yes, v2 only. Anyone still hitting v1 endpoints gets a 410 Gone." },
+    { "role": "assistant", "text": "Noted — v1 decommissioned, 410 Gone on any v1 hit, v2 is the sole supported API." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "The legacy v1 API is NOT supported anymore — it was decommissioned last quarter." },
+    { "type": "fact", "text": "Requests to v1 endpoints now return HTTP 410 Gone." },
+    { "type": "fact", "text": "v2 is the only currently-supported API surface." }
+  ],
+  "forbidden_items": [
+    "The v1 API is still supported",
+    "v1 API is supported"
+  ]
+}

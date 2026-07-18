@@ -41,6 +41,7 @@ import { runDirectPipeline } from './lib/pipeline-direct.js';
 import { AzureReasoningLLMProvider } from './lib/azure-reasoning-provider.js';
 import { NuExtractAdapterProvider } from './lib/nuextract-adapter-provider.js';
 import { judgeFixture, judgeSelfAgreement, type FixtureScore, type JudgeAtomIn, type JudgeAgreementReport, type JudgeReasoningEffort } from './lib/judge.js';
+import { findForbiddenItemHits, applyForbiddenItemScoring, computeEvidenceAccuracy, fixtureTranscriptText } from './lib/mechanical-checks.js';
 import { aggregateFixtureScores, combineRuns, renderMarkdown, type ModelReport, type SingleRunReport } from './lib/report.js';
 import { formatStatsPct } from '../shared/stats.js';
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
@@ -135,7 +136,9 @@ async function collectDirect(
         ...(passB ? { extractionPasses: 2 as const, llmExtractionPassB: passB.provider } : {}),
       });
       perFixture[fixture.id] = {
-        atoms: result.atoms.map(a => ({ type: a.type, text: a.text })),
+        // FEAT-542: evidence now threaded through (was dropped here before —
+        // pipeline-direct.ts's DirectRunResult.atoms already carries it).
+        atoms: result.atoms.map(a => ({ type: a.type, text: a.text, evidence: a.evidence })),
         wallMs: result.wallMs,
         status: 'ready',
         poisonJobs: 0,
@@ -212,6 +215,14 @@ if (maxChunkChars !== undefined && (!Number.isInteger(maxChunkChars) || maxChunk
   console.error(`--max-chunk-chars must be an integer >= 400, got: ${maxChunkCharsRaw}`);
   process.exit(1);
 }
+// --atom-triage off|dry-run|enabled (additive, 2026-07-17): FEAT-533 post-
+// extraction keep/junk triage as a bench A/B lever; triage provider pinned to
+// the candidate extraction model itself (see daemon-runner). Daemon path only.
+const atomTriageMode = get('--atom-triage') as 'off' | 'dry-run' | 'enabled' | undefined;
+if (atomTriageMode !== undefined && !['off', 'dry-run', 'enabled'].includes(atomTriageMode)) {
+  console.error(`--atom-triage must be off|dry-run|enabled, got: ${atomTriageMode}`);
+  process.exit(1);
+}
 
 interface ModelAtomsByFixture {
   model: string;
@@ -285,7 +296,7 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
       try {
         const result = await runDirectPipeline(fixture.turns, { llmCompaction, llmExtraction });
         perFixture[fixture.id] = {
-          atoms: result.atoms.map(a => ({ type: a.type, text: a.text })),
+          atoms: result.atoms.map(a => ({ type: a.type, text: a.text, evidence: a.evidence })),
           wallMs: result.wallMs,
           status: 'ready',
           poisonJobs: 0,
@@ -301,13 +312,17 @@ async function collectAtomsForModel(model: string, fixtures: GoldFixture[]): Pro
   }
 
   console.log(`\n=== ${model} (daemon HTTP path; compaction=ollama/${compactionModel}, extraction=ollama/${model}) ===`);
-  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}) });
+  const run = await runOllamaCandidate(model, fixtures, { perSessionTimeoutMs, compactionModel, ...(compactionMode ? { compactionMode } : {}), ...(maxChunkChars ? { maxChunkChars } : {}), ...(atomTriageMode ? { atomTriageMode } : {}) });
   console.log(`  daemon boot: ${run.daemonBootMs}ms`);
   const perFixture: ModelAtomsByFixture['perFixture'] = {};
   for (const r of run.results as DaemonFixtureResult[]) {
     console.log(`  ${r.fixtureId}: ${r.status} — ${r.atoms.length} atoms in ${r.wallMs}ms${r.poisonJobs > 0 ? ` (${r.poisonJobs} poison jobs)` : ''}`);
     perFixture[r.fixtureId] = {
-      atoms: r.atoms.map(a => ({ type: a.type, text: a.text })),
+      // FEAT-542: evidence now flows from DaemonAtom (digest route additively
+      // exposes it — src/server/queries/provenance.ts) instead of being
+      // dropped here, so Ollama daemon-path candidates get real Evidence-acc
+      // numbers too, not a permanent dash.
+      atoms: r.atoms.map(a => ({ type: a.type, text: a.text, evidence: a.evidence })),
       wallMs: r.wallMs,
       status: r.status,
       poisonJobs: r.poisonJobs,
@@ -359,6 +374,22 @@ async function runModelOnce(
       }
     }
 
+    // FEAT-542 AC-2/AC-6: mechanical forbidden-item scoring — runs whether or
+    // not the LLM judge ran (skip-judge smoke passes still get precision-
+    // relevant signal for free), and never touches judge.ts's own logic.
+    let forbiddenHitCount: number | undefined;
+    if (fixture.forbidden_items && fixture.forbidden_items.length > 0) {
+      const hits = findForbiddenItemHits(entry.atoms, fixture.forbidden_items);
+      forbiddenHitCount = hits.length;
+      if (score) {
+        score = applyForbiddenItemScoring(score, entry.atoms, fixture.forbidden_items).score;
+      }
+    }
+
+    // FEAT-542 AC-3: mechanical evidence-accuracy — judge-free, so this is
+    // computed unconditionally (including --skip-judge runs).
+    const evidenceResult = computeEvidenceAccuracy(entry.atoms, fixtureTranscriptText(fixture.turns));
+
     fixtureReports.push({
       fixtureId: fixture.id,
       difficulty: fixture.difficulty,
@@ -372,6 +403,9 @@ async function runModelOnce(
       // `entry`), same optional shape FixtureReportRow documents.
       passAAtomCount: entry.passAAtomCount,
       passBAtomCount: entry.passBAtomCount,
+      forbiddenItemHits: forbiddenHitCount,
+      evidenceAccNumerator: evidenceResult.denominator > 0 ? evidenceResult.numerator : undefined,
+      evidenceAccDenominator: evidenceResult.denominator > 0 ? evidenceResult.denominator : undefined,
     });
   }
 
@@ -469,6 +503,25 @@ async function main(): Promise<void> {
     // shape never changes.
     writeFileSync(join(outDir, 'results.json'), JSON.stringify(reports, null, 2));
     writeFileSync(join(outDir, 'report.md'), renderMarkdown(reports, totalAzureJudgeUsd, { judgeReasoningEffort }));
+    // FEAT-542 AC-7: raw per-model inputs behind Evidence-acc/forbidden-item
+    // hits — closes the observability gap the FEAT calls out (the final
+    // percentage alone doesn't tell you the sample size it was computed
+    // from). Written after every model, same crash-safety reasoning as
+    // results.json/report.md above.
+    writeFileSync(
+      join(outDir, 'summary.json'),
+      JSON.stringify(
+        reports.map(r => ({
+          model: r.model,
+          forbiddenItemHitsTotal: r.aggregate.forbiddenItemHitsTotal,
+          evidenceAccNumerator: r.aggregate.evidenceAccNumerator,
+          evidenceAccDenominator: r.aggregate.evidenceAccDenominator,
+          evidenceAcc: r.aggregate.evidenceAcc,
+        })),
+        null,
+        2,
+      ),
+    );
   }
 
   // AC-4: judge self-agreement. Re-judges the SAME (model, fixture)

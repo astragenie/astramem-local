@@ -1,0 +1,29 @@
+{
+  "id": "fx56-crosschunk-vendor-budget-correction",
+  "title": "Vendor evaluation owner, trigger, and budget ceiling spread across turns, with a late correction",
+  "difficulty": "cross-chunk",
+  "notes": "Owner (Marcus) and the trigger (pricing tripled) appear early; the budget ceiling appears mid-session; a correction to the ceiling appears at the very end, separated by an unrelated noise turn — tests whether the extractor keeps the correction attached to the right entity across the gap.",
+  "turns": [
+    { "role": "user", "text": "We're evaluating a new logging vendor for the platform." },
+    { "role": "assistant", "text": "What's driving that?" },
+    { "role": "user", "text": "Current vendor's pricing tripled at renewal." },
+    { "role": "assistant", "text": "Ouch. Who's leading the evaluation?" },
+    { "role": "user", "text": "Marcus is running the vendor eval." },
+    { "role": "assistant", "text": "Got it, Marcus." },
+    { "role": "user", "text": "Oh by the way, unrelated: the office coffee machine is finally fixed." },
+    { "role": "assistant", "text": "Great news." },
+    { "role": "user", "text": "Back to logging — budget ceiling for the new vendor is $2,000/month." },
+    { "role": "assistant", "text": "Noted, $2k/month ceiling." },
+    { "role": "user", "text": "One more thing before I forget — Marcus flagged that the ceiling actually needs to be $2,500/month, finance approved a bit more headroom after he pushed back." },
+    { "role": "assistant", "text": "Updated: $2,500/month is the real ceiling now, not $2,000." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "Marcus is leading the logging-vendor evaluation." },
+    { "type": "fact", "text": "The vendor evaluation was triggered by the current vendor tripling its pricing at renewal." },
+    { "type": "fact", "text": "The budget ceiling for the new logging vendor is $2,500/month — finance approved more headroom after Marcus pushed back on the original $2,000/month figure." }
+  ],
+  "forbidden_items": [
+    "The budget ceiling for the new vendor is $2,000/month",
+    "budget ceiling is $2,000 per month"
+  ]
+}

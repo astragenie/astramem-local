@@ -85,6 +85,17 @@ export interface DigestMemRow {
   id: string;
   type: string;
   text: string;
+  /** FEAT-542: additive pass-through of the atom's own `evidence` excerpt
+   *  (verbatim source quote, same column `remember()` already writes — see
+   *  storage/memories.ts's InsertInput.evidence), when non-null. Added so
+   *  the extraction-bench's "Evidence acc" metric (mechanical whitespace-
+   *  normalized quote-in-transcript check) is measurable for EVERY
+   *  candidate model via the real daemon HTTP path, not just the Azure/
+   *  codex direct-pipeline reference — same additive-field pattern as
+   *  `poison_jobs`/`pending_contradictions` below. `null` (not omitted) when
+   *  the atom carries no evidence, so existing consumers reading only
+   *  `id`/`type`/`text` are unaffected. */
+  evidence: string | null;
 }
 
 export interface SessionDigest {
@@ -143,7 +154,7 @@ export function buildSessionDigest(db: DB, sessionId: string): SessionDigest {
   `).get(sessionId) as { n: number }).n;
 
   const rows = db.prepare(
-    'SELECT id, type, text FROM memories WHERE session_id = ? ORDER BY created_at ASC'
+    'SELECT id, type, text, evidence FROM memories WHERE session_id = ? ORDER BY created_at ASC'
   ).all(sessionId) as DigestMemRow[];
 
   const counts: Record<string, number> = {};

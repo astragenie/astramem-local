@@ -23,6 +23,11 @@ with nothing worth remembering — an **over-extraction count**. Aggregated
 per model: recall / precision / F1 / junk-rate / avg wall-clock per session,
 optionally as **mean ± stdev across N runs** with `--runs N` (FEAT-450).
 
+Two more metrics are computed MECHANICALLY (no LLM call, no judge involvement
+at all — see "Mechanical scoring: forbidden items + evidence accuracy" below,
+FEAT-542): a **forbidden-item precision penalty** and an **Evidence acc**
+column.
+
 `llm.compaction` is held constant (default `ollama/qwen3.5:4b`, the current
 production default — overridable via `--compaction-model`, see
 `lib/daemon-runner.ts`'s `DEFAULT_COMPACTION_MODEL`) for every candidate —
@@ -35,13 +40,14 @@ that didn't pass `--compaction-model` explicitly.)
 ## Layout
 
 ```
-fixtures/            42 gold transcript fixtures (JSON) — see "Fixtures" below
+fixtures/            55 gold transcript fixtures (JSON) — see "Fixtures" below
 lib/
-  fixtures.ts           fixture types + loader
+  fixtures.ts           fixture types + loader + fixtures.test.ts
   daemon-runner.ts       Ollama candidates: real daemon HTTP path
   pipeline-direct.ts     Azure gpt-5-mini reference: in-process pipeline path
   azure-reasoning-provider.ts   LLMProvider adapter for gpt-5-mini (see below)
   judge.ts               Azure gpt-5-mini semantic judge + self-agreement (FEAT-450)
+  mechanical-checks.ts   forbidden-item matcher + evidence-accuracy (FEAT-542, judge-free) + mechanical-checks.test.ts
   report.ts              aggregation, multi-run combine, markdown rendering (FEAT-450) + report.test.ts
   bun-sqlite.d.ts        ambient type decl for bun:sqlite (no bun-types installed)
 run-bench.mts         CLI entry point
@@ -141,6 +147,37 @@ no cache the ONNX embed probe fails and `/health` reports `degraded`.
   down embedder does not affect the measured atoms. A real extraction/compaction
   outage still fails the run loudly.
 
+### Evidence accuracy (FEAT-542)
+
+For every atom that carries a non-empty `evidence` excerpt (an "EXACT
+verbatim quote from the source turn", per `src/distill/prompts/extract.ts`'s
+`AtomSchema` doc comment), the **Evidence acc** column reports the percentage
+of those quotes that actually string-match (whitespace-normalized only — no
+lowercasing, no punctuation stripping, since a fabricated-but-similar quote
+must NOT count as real) somewhere in that fixture's own source transcript
+(`lib/mechanical-checks.ts`'s `computeEvidenceAccuracy`). An atom with NO
+`evidence` field is excluded from the denominator entirely — it is not
+scored as a failure, since not every atom is expected to carry one. Pooled
+across every fixture in a run (sum of numerators / sum of denominators, not
+a mean of per-fixture percentages — see `results/<run>/summary.json` below
+for the raw counts).
+
+This is judge-free and additive on both extraction paths: the azure:/codex:/
+openai: direct-pipeline path already carried `evidence` through
+(`lib/pipeline-direct.ts`'s `DirectRunResult.atoms`); the Ollama daemon-HTTP
+path did not until FEAT-542 additively extended `DigestMemRow`
+(`src/server/queries/provenance.ts`) and `GET /sessions/:id/digest` with an
+optional `evidence?: string` field (same additive pattern as
+`poison_jobs`/`pending_contradictions` in that file) — without that change,
+Evidence acc would only ever be real for the one Azure reference model and a
+permanent dash for every local Ollama candidate, defeating the point of the
+comparison.
+
+Every run also writes `results/<run>/summary.json`: an array of
+`{ model, forbiddenItemHitsTotal, evidenceAccNumerator, evidenceAccDenominator, evidenceAcc }`
+per model — the raw sample sizes behind both new metrics, not just the final
+percentage/count (closing the observability gap FEAT-542 AC-7 calls out).
+
 ### Statistical reliability (FEAT-450)
 
 Before FEAT-450, every config here was run **once**, over 15 fixtures,
@@ -203,12 +240,11 @@ is API-compatible for the handful of calls `BudgetTracker` actually makes.
 
 ## Fixtures
 
-42 synthetic Claude-Code-style sessions (expanded from the original 15 —
-FEAT-450 AC-3, more per-difficulty replicates to shrink per-run F1
-variance), each a JSON file with `turns` (the transcript) and `gold_atoms`
-(the hand-authored answer key: the facts/decisions/lessons/commands/todos/
-notes/events a perfect extractor should produce). Difficulty spread across
-all 42 (original 15 + 27 new, same tag set, roughly proportional counts):
+55 synthetic Claude-Code-style sessions (42 from FEAT-450's expansion + 12
+new "hard fixture pack" additions, FEAT-542), each a JSON file with `turns`
+(the transcript) and `gold_atoms` (the hand-authored answer key: the facts/
+decisions/lessons/commands/todos/notes/events a perfect extractor should
+produce). Difficulty spread across all 55:
 
 | Difficulty | Count | Tests |
 |---|---|---|
@@ -222,13 +258,46 @@ all 42 (original 15 + 27 new, same tag set, roughly proportional counts):
 | entity-rich | 2 | many named products/orgs/people/vendors in one session |
 | secrets | 2 | contains a fake secret — extractor must skip the secret itself while still capturing the incident lesson |
 | ambiguous | 2 | very low-signal musing — tests restraint / confidence calibration |
+| **negation** (FEAT-542) | 3 | a fact is stated in NEGATED form ("we are NOT using Redis") — the extractor must preserve the negative polarity, not drop it and record the positive opposite. Example: `fx46-negation-not-using-redis.json` |
+| **uncertainty** (FEAT-542) | 3 | a hypothesis/speculation ("might be DNS") vs a logs-CONFIRMED cause — speculation must not harden into an asserted fact, and a later confirmation must not be left as merely a guess. Example: `fx49-uncertainty-dns-vs-cert.json` |
+| **status-transition** (FEAT-542) | 3 | a value/state passes through multiple states in one session (blocked -> unblocked -> running) — the LATEST state must win as the standing fact without deleting the transition history. Example: `fx52-status-transition-blocked-unblocked-running.json` |
+| **cross-chunk** (FEAT-542) | 3 | owner/task/deadline (or root-cause/fix) stated in separate turns far apart, interleaved with unrelated noise turns, with a correction landing near the end — targets the measured LoCoMo not-in-db miss class (55%, see `docs/research/` recall-vs-extraction findings). Example: `fx55-crosschunk-owner-task-deadline.json` |
 
 The original 15 (`fx01`-`fx15`) are listed individually in git history / the
 pre-FEAT-450 README revision; `fx16`-`fx42` follow the identical schema and
 difficulty tags (see file names in `fixtures/` — each is self-descriptive,
 e.g. `fx32-contradiction-port-number.json`, `fx37-secrets-present-webhook-
-secret.json`). No loader changes were needed — `lib/fixtures.ts` already
-picks up every `*.json` file in the directory.
+secret.json`). `fx46`-`fx57` are the FEAT-542 hard-fixture-pack additions
+(3 per new difficulty tag). No loader changes were needed for either
+expansion — `lib/fixtures.ts` already picks up every `*.json` file in the
+directory.
+
+### `forbidden_items` (FEAT-542)
+
+An optional `forbidden_items: string[]` array on a fixture names claims that
+must NEVER be extracted as an active/standing fact — typically the
+superseded value of a corrected number/date, or the positive-polarity
+restatement of a fact the transcript explicitly negates. Scoring is
+MECHANICAL (`lib/mechanical-checks.ts`'s `findForbiddenItemHits` /
+`applyForbiddenItemScoring`): a normalized (lowercased, whitespace-collapsed,
+light-punctuation-stripped) full-claim-text containment check against every
+extracted atom, run entirely AFTER the LLM judge and completely independent
+of it — `judge.ts`'s prompt and `JudgeResult` schema are never touched (a
+deterministic match is judge-free and zero-cost; coupling a new failure mode
+to judge non-determinism would reintroduce the +/-7 F1 noise FEAT-450 already
+had to correct for). Any atom that matches a `forbidden_items` entry counts
+as a precision failure in that fixture's `FixtureScore`, whether or not the
+judge itself flagged it.
+
+A short/bare forbidden phrase (fewer than 3 words, e.g. a single superseded
+date like `"Friday"`) requires the phrase to dominate the atom's own text
+(>=60% of the normalized length) before it counts as a hit — otherwise a
+short forbidden phrase incidentally present inside a much longer, unrelated,
+legitimately-correct atom would wrongly fail precision. `fx53-status-
+transition-release-date-moved.json` is exactly this adversarial shape (a
+correct later atom legitimately mentions "Friday" again, for an unrelated
+release) and `lib/mechanical-checks.test.ts` pins the matcher's behavior on
+it directly.
 
 ### Adding a gold transcript
 
@@ -240,7 +309,8 @@ picks up every `*.json` file in the directory.
      "difficulty": "clean|noisy|long|nothing|contradiction|...",
      "notes": "what this fixture is specifically testing",
      "turns": [{ "role": "user", "text": "..." }, { "role": "assistant", "text": "..." }],
-     "gold_atoms": [{ "type": "decision", "text": "..." }]
+     "gold_atoms": [{ "type": "decision", "text": "..." }],
+     "forbidden_items": ["<optional, FEAT-542 — claims that must NEVER be extracted as active/standing facts>"]
    }
    ```
 2. `type` must be one of the 7 values in `src/distill/prompts/extract.ts`'s
@@ -250,6 +320,10 @@ picks up every `*.json` file in the directory.
 4. Gold atom `text` should be the durable claim in your own words — the judge
    matches semantically, not by string equality, so paraphrasing an
    extractor's output is expected and fine.
+5. `forbidden_items` is optional (see "`forbidden_items` (FEAT-542)" above) —
+   only add it when the fixture specifically tests a superseded value or a
+   negated fact's positive-polarity restatement; most fixtures omit it
+   entirely, same as every pre-FEAT-542 fixture still does.
 
 ### Adding a model
 
@@ -304,12 +378,15 @@ picks up every `*.json` file in the directory.
   pre-existing compaction-stage quirk that affects every candidate equally
   (out of scope to fix as part of this bench — flagged here for whoever
   looks at compaction quality next).
-- Atoms sourced from the daemon path carry only `{id, type, text}` (that's
-  all `GET /sessions/:id/digest` exposes — see
-  `src/server/queries/provenance.ts`'s `DigestMemRow`); atoms from the direct
-  path additionally carry `importance`/`confidence`. Scoring only uses
-  `type`+`text`, so this doesn't affect recall/precision/type-accuracy, but
-  it means importance/confidence calibration isn't compared across paths.
+- Atoms sourced from the daemon path carry `{id, type, text, evidence}` —
+  `evidence` was additively added by FEAT-542 (see "Evidence accuracy"
+  above); atoms from the direct path additionally carry `importance`/
+  `confidence`, which the daemon path still does not expose (`GET
+  /sessions/:id/digest` — see `src/server/queries/provenance.ts`'s
+  `DigestMemRow`). Scoring uses `type`+`text` (judge) and `evidence`
+  (mechanical Evidence-acc), so this residual gap doesn't affect any scored
+  metric, but it means importance/confidence calibration still isn't
+  compared across paths.
 - The daemon path's per-session wall-clock includes HTTP + job-queue-poll
   overhead (750ms poll interval), not just raw LLM latency — this is
   deliberate (it's what a real caller of `/ingest/transcript` actually

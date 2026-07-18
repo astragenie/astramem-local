@@ -87,6 +87,12 @@ export interface DaemonAtom {
   id: string;
   type: string;
   text: string;
+  /** FEAT-542: additive pass-through of DigestMemRow's `evidence` field
+   *  (src/server/queries/provenance.ts) — now that the digest route exposes
+   *  it, the daemon-HTTP path (every Ollama candidate) carries real evidence
+   *  quotes into the bench, not just the azure:/codex: direct-pipeline path.
+   *  `null` when the atom has no evidence (matches the DB column). */
+  evidence?: string | null;
 }
 
 export interface DaemonFixtureResult {
@@ -110,7 +116,7 @@ function authHeaders(token: string): Record<string, string> {
 interface DigestBody {
   status: 'pending' | 'ready' | 'partial';
   poison_jobs: number;
-  memories: Array<{ id: string; type: string; text: string }>;
+  memories: Array<{ id: string; type: string; text: string; evidence?: string | null }>;
 }
 
 async function fetchDigest(baseUrl: string, token: string, sessionId: string): Promise<DigestBody | null> {
@@ -129,7 +135,7 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled' } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
   const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;
@@ -167,7 +173,7 @@ export async function runOllamaCandidate(
       'onnxEmbed:',
       `  cacheDir: '${onnxCacheDir.replace(/\\/g, '/')}'`,
     ] : []),
-    ...(compactionMode || opts.maxChunkChars ? [
+    ...(compactionMode || opts.maxChunkChars || opts.atomTriageMode ? [
       'distill:',
       ...(compactionMode ? [`  compaction: ${compactionMode}`] : []),
       // Chunk-size A/B lever (2026-07-17): config.distill.maxChunkChars is a
@@ -175,6 +181,16 @@ export async function runOllamaCandidate(
       // the env var can't reach a config-driven daemon) — emit it here when the
       // bench wants a different chunk size.
       ...(opts.maxChunkChars ? [`  maxChunkChars: ${opts.maxChunkChars}`] : []),
+      // FEAT-533 atom-triage A/B lever (2026-07-17): post-extraction batched
+      // keep/junk triage, shipped `mode: off`. The triage provider is pinned to
+      // the SAME extraction candidate model, so the experiment measures "model X
+      // extracting + triaging its own atoms", not a mixed-provider confound.
+      ...(opts.atomTriageMode ? [
+        '  atomTriage:',
+        `    mode: ${opts.atomTriageMode}`,
+        '    provider: ollama',
+        `    model: '${extractionModel}'`,
+      ] : []),
     ] : []),
     'budget:',
     '  daily_usd: 50',
