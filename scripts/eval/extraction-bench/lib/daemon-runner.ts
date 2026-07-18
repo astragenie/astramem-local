@@ -223,6 +223,14 @@ export async function runOllamaCandidate(
         '  extractionPassB:',
         '    sweepOnlyBelowAtoms: 0',
         '    maxTokens: 0',
+        // numCtxCap must ALSO be restored: unset resolves to the tuned 8192
+        // default (EXTRACTION_PASS_B_DEFAULTS), and sweeper prompt + chunk
+        // + a 6000-token output budget overflows 8192 — ollama then silently
+        // truncates input, cutting pass-B yield. The first "untuned" 55fx
+        // leg (2026-07-18) ran with this gap and was only a partial
+        // replication. 16384 = the provider's own NUM_CTX_CAP, the
+        // pre-tuning ceiling (ollama.ts).
+        '    numCtxCap: 16384',
       ] : []),
     ] : []),
     'budget:',
