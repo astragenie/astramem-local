@@ -678,3 +678,189 @@ describe('dual-pass extraction (distill.extractionPasses)', () => {
     expect(result.memoriesCreated).toBe(4);
   });
 });
+
+// ---------------------------------------------------------------------------
+// FEAT-551: evidence-gated sweeper — wiring at the runPipeline level. The
+// gate itself (checkEvidenceGate) is unit-tested in
+// tests/distill/evidence-gate.test.ts; these tests prove the end-to-end
+// resolution (mixed-provider default, explicit override, pass-A bypass)
+// actually reaches stage 8 through the real pipeline.
+// ---------------------------------------------------------------------------
+describe('evidence-gated sweeper wiring (distill.extractionPassB.evidenceGate)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  /** A named mock provider — same shape as the dual-pass suite's
+   *  makeNamedMockLLM, but with a caller-chosen provider `name` (not always
+   *  'ollama') so a test can construct a genuine mixed-PROVIDER case, not
+   *  just a mixed-model one. */
+  function makeProvider(name: LLMProvider['name'], model: string, extractionReply: string): LLMProvider {
+    return {
+      name,
+      model,
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        const reply = opts?.json ? extractionReply : 'compressed content';
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model, latency_ms: 0 };
+      },
+    };
+  }
+
+  // One real (verifiable) passB atom + one fabricated one, so a run can
+  // distinguish "gate admitted the real one" from "gate dropped the fake one"
+  // in a single call.
+  const MIXED_SPECIFICS_RESPONSE = JSON.stringify({
+    atoms: [
+      {
+        type: 'fact',
+        text: 'the default daemon port avoids conflicts with common dev tools',
+        importance: 0.5,
+        confidence: 0.8,
+        // Real substring of FIXTURE_TRANSCRIPT — verifies (whitespace-normalized).
+        evidence: 'It avoids conflicts with common dev tools on 3000/8080.',
+      },
+      {
+        type: 'fact',
+        text: 'a fabricated passB claim nobody actually said',
+        importance: 0.5,
+        confidence: 0.8,
+        evidence: 'this exact sentence never appears anywhere in the transcript',
+      },
+    ],
+  });
+
+  it('mixed-provider case (unset evidenceGate): defaults ON — the fabricated passB atom is dropped, the verifiable one survives, pass-A atoms are untouched', async () => {
+    const passA = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passB = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: passA, llmExtraction: passA, llmExtractionPassB: passB, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      // evidenceGate deliberately unset — exercises the mixed-provider default.
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { provider: 'ollama', model: 'phi4-mini' } } },
+    });
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    // Pass A's 3 atoms all present, untouched.
+    expect(texts.some((t: string) => t.includes('sqlite-vec'))).toBe(true);
+    expect(texts.some((t: string) => t.includes('7777'))).toBe(true);
+    expect(texts.some((t: string) => t.includes('better-sqlite3'))).toBe(true);
+    // The verifiable passB atom survived.
+    expect(texts.some((t: string) => t.includes('avoids conflicts with common dev tools'))).toBe(true);
+    // The fabricated passB atom was dropped by the gate.
+    expect(texts.some((t: string) => t.includes('fabricated passb claim'))).toBe(false);
+    expect(result.memoriesCreated).toBe(4); // 3 pass-A + 1 surviving pass-B
+  });
+
+  it("explicit evidenceGate: 'off' overrides the mixed-provider default — the fabricated passB atom survives too", async () => {
+    const passA = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passB = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: passA, llmExtraction: passA, llmExtractionPassB: passB, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: {
+        ...defaultConfig(),
+        distill: {
+          ...defaultConfig().distill, extractionPasses: 2,
+          extractionPassB: { provider: 'ollama', model: 'phi4-mini', evidenceGate: 'off' },
+        },
+      },
+    });
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('fabricated passb claim'))).toBe(true);
+    expect(result.memoriesCreated).toBe(5); // 3 pass-A + BOTH pass-B atoms
+  });
+
+  it("explicit evidenceGate: 'on' forces the gate even in the SAME-provider case (no mixed-provider default would otherwise apply)", async () => {
+    // Same provider INSTANCE drives BOTH passes (no llmExtractionPassB
+    // override) — the default resolution alone would leave the gate OFF (no
+    // provider mismatch). Explicit 'on' must still force it. Distinguishes
+    // pass A's call from pass B's by system prompt (same technique
+    // makeDualPassMockLLM above uses) so pass A's own atoms never
+    // exact-duplicate pass B's fabricated atom and get merge-deduped into
+    // masquerading as a pass-A survivor.
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'same-model',
+      async chat(msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (!opts?.json) return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+        const system = msgs.find((m) => m.role === 'system')?.content ?? '';
+        const reply = system === EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER ? MIXED_SPECIFICS_RESPONSE : EXTRACTION_RESPONSE;
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'same-model', latency_ms: 0 };
+      },
+    };
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: {
+        ...defaultConfig(),
+        distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { evidenceGate: 'on' } },
+      },
+    });
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('fabricated passb claim'))).toBe(false);
+    expect(texts.some((t: string) => t.includes('avoids conflicts with common dev tools'))).toBe(true);
+  });
+
+  // AC-2: "an integration test asserts pass-A atom count and content are
+  // unaffected by the gate being on or off" — run the SAME mixed-provider
+  // setup twice, gate explicitly 'on' then explicitly 'off', and diff only
+  // the pass-A atoms between the two runs.
+  it('AC-2: pass-A atom count and content are byte-identical whether the gate is explicitly on or off', async () => {
+    const passAOn = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passBOn = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const embed = makeMockEmbed();
+
+    const dbOn = openDb(':memory:');
+    migrate(dbOn);
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db: dbOn, llmCompaction: passAOn, llmExtraction: passAOn, llmExtractionPassB: passBOn, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { provider: 'ollama', model: 'phi4-mini', evidenceGate: 'on' } } },
+    });
+
+    const passAOff = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passBOff = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const dbOff = openDb(':memory:');
+    migrate(dbOff);
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db: dbOff, llmCompaction: passAOff, llmExtraction: passAOff, llmExtractionPassB: passBOff, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { provider: 'ollama', model: 'phi4-mini', evidenceGate: 'off' } } },
+    });
+
+    const PASS_A_TEXTS = [
+      'use sqlite-vec for vector storage in v1',
+      'default daemon port is 7777',
+      'bun does not support better-sqlite3 on windows without prebuilt binaries',
+    ];
+    const textsOn = (dbOn.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    const textsOff = (dbOff.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    for (const passAText of PASS_A_TEXTS) {
+      expect(textsOn.some((t) => t.includes(passAText))).toBe(true);
+      expect(textsOff.some((t) => t.includes(passAText))).toBe(true);
+    }
+    // Count of pass-A-attributable rows is identical across both runs — only
+    // the passB fabricated atom's fate differs (dropped on / kept off).
+    const passARowCountOn = textsOn.filter((t) => PASS_A_TEXTS.some((p) => t.includes(p))).length;
+    const passARowCountOff = textsOff.filter((t) => PASS_A_TEXTS.some((p) => t.includes(p))).length;
+    expect(passARowCountOn).toBe(passARowCountOff);
+    expect(passARowCountOn).toBe(3);
+  });
+});
