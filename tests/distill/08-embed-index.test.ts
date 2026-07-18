@@ -580,6 +580,18 @@ describe('embedAndIndex stage', () => {
       expect(count).toBe(0);
       const gateWarn = warnCalls.find(w => w.msg.includes('evidence gate'));
       expect(gateWarn?.fields.reason).toBe('no-evidence-field');
+
+      // Persistence (review fix): the drop must be a real DB row, not just
+      // an in-memory counter — evidence_gate_drops/evidence_gate_run_log are
+      // the tables a future doctor canary or the AC-5 measurement lane reads.
+      const dropRows = db.prepare('SELECT reason, count, session_id FROM evidence_gate_drops').all() as any[];
+      expect(dropRows).toHaveLength(1);
+      expect(dropRows[0].reason).toBe('no-evidence-field');
+      expect(dropRows[0].count).toBe(1);
+      expect(dropRows[0].session_id).toBeNull();
+      const runLog = db.prepare('SELECT atoms_attempted, atoms_dropped FROM evidence_gate_run_log').get() as any;
+      expect(runLog.atoms_attempted).toBe(1);
+      expect(runLog.atoms_dropped).toBe(1);
     });
 
     // AC-1: a passB atom whose evidence does NOT mechanically verify against
@@ -600,6 +612,15 @@ describe('embedAndIndex stage', () => {
       expect(results).toHaveLength(0);
       const gateWarn = warnCalls.find(w => w.msg.includes('evidence gate'));
       expect(gateWarn?.fields.reason).toBe('evidence-not-found');
+
+      // Persistence (review fix): distinct reason, its own DB row.
+      const dropRows = db.prepare('SELECT reason, count FROM evidence_gate_drops').all() as any[];
+      expect(dropRows).toHaveLength(1);
+      expect(dropRows[0].reason).toBe('evidence-not-found');
+      expect(dropRows[0].count).toBe(1);
+      const runLog = db.prepare('SELECT atoms_attempted, atoms_dropped FROM evidence_gate_run_log').get() as any;
+      expect(runLog.atoms_attempted).toBe(1);
+      expect(runLog.atoms_dropped).toBe(1);
     });
 
     // AC-1: a passB atom whose evidence DOES verify (whitespace-normalized)
@@ -619,6 +640,13 @@ describe('embedAndIndex stage', () => {
       expect(results).toHaveLength(1);
       const row = db.prepare('SELECT text FROM memories WHERE id = ?').get(results[0]!.memoryId) as any;
       expect(row.text).toBe('a real passB fact');
+
+      // Persistence (review fix): an admitted atom is still ATTEMPTED (rate
+      // denominator), just not dropped — evidence_gate_drops stays empty.
+      expect((db.prepare('SELECT COUNT(*) AS n FROM evidence_gate_drops').get() as any).n).toBe(0);
+      const runLog = db.prepare('SELECT atoms_attempted, atoms_dropped FROM evidence_gate_run_log').get() as any;
+      expect(runLog.atoms_attempted).toBe(1);
+      expect(runLog.atoms_dropped).toBe(0);
     });
 
     // AC-2: pass-A atoms are NEVER gated, regardless of evidence or gate
@@ -651,6 +679,10 @@ describe('embedAndIndex stage', () => {
       });
 
       expect(results).toHaveLength(1);
+      // Gate off — the tables stay a real zero, no phantom row (mirrors
+      // atom-triage's "mode off never writes a run-log row" posture).
+      expect((db.prepare('SELECT COUNT(*) AS n FROM evidence_gate_drops').get() as any).n).toBe(0);
+      expect((db.prepare('SELECT COUNT(*) AS n FROM evidence_gate_run_log').get() as any).n).toBe(0);
     });
 
     // AC-2: omitting evidenceGateEnabled entirely behaves exactly like "off"
@@ -684,6 +716,7 @@ describe('embedAndIndex stage', () => {
         sourceText: TRANSCRIPT,
       });
       expect(withGateOff).toHaveLength(2); // both admitted — gate off
+      expect((db.prepare('SELECT COUNT(*) AS n FROM evidence_gate_run_log').get() as any).n).toBe(0);
 
       // Fresh DB for the gate-on run so dedup doesn't interfere with counting.
       const db2 = openDb(':memory:');
@@ -696,6 +729,16 @@ describe('embedAndIndex stage', () => {
       expect(withGateOn).toHaveLength(1); // only the passA atom survives
       const row = db2.prepare('SELECT text FROM memories WHERE id = ?').get(withGateOn[0]!.memoryId) as any;
       expect(row.text).toBe('a stable passA fact');
+
+      // Persistence (review fix): only the ONE passB atom counts toward the
+      // attempted/dropped denominator — the passA atom in the same batch
+      // never touches these tables at all.
+      const runLog = db2.prepare('SELECT atoms_attempted, atoms_dropped FROM evidence_gate_run_log').get() as any;
+      expect(runLog.atoms_attempted).toBe(1);
+      expect(runLog.atoms_dropped).toBe(1);
+      const dropRows = db2.prepare('SELECT reason FROM evidence_gate_drops').all() as any[];
+      expect(dropRows).toHaveLength(1);
+      expect(dropRows[0].reason).toBe('evidence-not-found');
     });
   });
 

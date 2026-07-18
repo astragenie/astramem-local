@@ -702,6 +702,37 @@ export async function embedAndIndex(
     }
   }
 
+  // FEAT-551: same isolation, same reasoning, same "only written when the
+  // gate actually ran this call" posture as the atom-triage write directly
+  // above — a call with the gate off (the shipped default) IS a real zero
+  // and must not pollute the evidence_gate_run_log rate denominator with a
+  // phantom 0/0 row for every ordinary call. This is the persistence step
+  // that was MISSING before this fix (review finding): passBAtomsAttempted/
+  // evidenceGateDrops were computed above but never written, so
+  // evidence_gate_drops/evidence_gate_run_log stayed permanently empty
+  // regardless of real gate activity — exactly the built-wired-never-
+  // invoked class this repo's own doctor canaries exist to catch.
+  if (ctx.evidenceGateEnabled) {
+    try {
+      recordEvidenceGateDrops(
+        ctx.db,
+        (Object.entries(evidenceGateDrops) as Array<[EvidenceGateDropReason, number]>)
+          .map(([reason, count]) => ({ reason, count })),
+        ctx.sessionId,
+      );
+      recordEvidenceGateRunLog(ctx.db, {
+        sessionId: ctx.sessionId,
+        atomsAttempted: passBAtomsAttempted,
+        atomsDropped: evidenceGateDrops['no-evidence-field'] + evidenceGateDrops['evidence-not-found'],
+      });
+    } catch (err) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err) },
+        'evidence-gate counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
+      );
+    }
+  }
+
   return results;
 }
 
