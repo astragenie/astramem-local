@@ -241,7 +241,17 @@ async function callExtract(
     // not a clear cause). Cost is driven by the provider's actual usage.usd,
     // not this ceiling, so raising it does not change the per-call budget
     // estimate above.
-    maxTokens: 2500,
+    //
+    // 2500 -> 4000 (2026-07-17, `distill.compaction: never` support): with
+    // compaction off, chunks arrive as RAW dense conversation and the
+    // conversational profile emits many atoms + entities + relations per
+    // chunk — measured live: a LoCoMo session's chunk-0 extraction (qwen3.5:9b,
+    // temp 0.1) deterministically truncated mid-JSON at 2500 on all 3 attempts
+    // -> Zod parse fail -> poison. num_ctx is sized dynamically off this value
+    // (inputChars/4 + maxTokens + 512, ollama.ts), so the window scales with
+    // it; on hybrid-recurrent models the KV cost of the larger window is
+    // negligible. Same cost note as above: ceiling, not spend.
+    maxTokens: 4000,
   });
 
   return { text: result.text, usageUsd: result.usage.usd };
