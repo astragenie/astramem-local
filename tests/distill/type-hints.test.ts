@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { getTypeHint, type TypeHint } from '../../src/distill/type-hints.js';
+import { normalizeText } from '../../src/distill/stages/07-memory-normalize.js';
 
 interface GoldAtom {
   type: string;
@@ -136,7 +137,14 @@ describe('AC-B1: gold-set precision census (scripts/eval/extraction-bench/fixtur
     const wrongFires: string[] = [];
 
     for (const atom of goldAtoms) {
-      const hint = getTypeHint(atom.text, { log: () => { ambiguousCount++; } });
+      // Review finding (2026-07-18): must run through normalizeText() FIRST,
+      // exactly like both real call sites do (07-memory-normalize.ts,
+      // backfill-types.ts both feed getTypeHint() normalized_text, never the
+      // raw atom text) — normalizeText's ENTITY_DICT canonicalization
+      // changes case ("bun" -> "Bun", "vitest" -> "Vitest") and this census
+      // must measure the SAME order production runs, not raw fixture text.
+      const normalized = normalizeText(atom.text);
+      const hint = getTypeHint(normalized, { log: () => { ambiguousCount++; } });
       if (!hint) {
         noFireCount++;
         continue;
@@ -145,7 +153,7 @@ describe('AC-B1: gold-set precision census (scripts/eval/extraction-bench/fixtur
       if (hint.hint === atom.type) {
         census[hint.hint].correct++;
       } else {
-        wrongFires.push(`[${hint.hint} via ${hint.matchedPattern}] actual=${atom.type}: ${atom.text.slice(0, 80)}`);
+        wrongFires.push(`[${hint.hint} via ${hint.matchedPattern}] actual=${atom.type}: ${normalized.slice(0, 80)}`);
       }
     }
 

@@ -12,6 +12,7 @@ import { MemoryRepo } from '../../src/storage/memories.js';
 import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import { runTypeBackfillBatch } from '../../src/distill/backfill-types.js';
+import { normalizeText } from '../../src/distill/stages/07-memory-normalize.js';
 
 const DIM = 1024;
 
@@ -26,6 +27,24 @@ async function seed(
 ): Promise<string> {
   const id = new MemoryRepo(db).insert({
     type: type as 'fact', text, normalized_text: text,
+    repo: 'r1', project: null, branch: null, agent: null,
+    session_id: null, hash, source_hash: null,
+  });
+  await new SqliteVecStore(db, DIM).upsert(id, fakeVec(seedNum));
+  return id;
+}
+
+/** Seeds `normalized_text` via the REAL normalizeText() (ENTITY_DICT
+ *  canonicalization applied), matching what the distill pipeline actually
+ *  stores — unlike `seed()` above, which stores the raw text verbatim as a
+ *  shortcut for candidates that don't interact with ENTITY_DICT. Needed for
+ *  the bun/vitest case-order regression below: normalized_text is what
+ *  runTypeBackfillBatch actually reads. */
+async function seedNormalized(
+  db: DB, text: string, hash: string, type: string, seedNum: number,
+): Promise<string> {
+  const id = new MemoryRepo(db).insert({
+    type: type as 'fact', text, normalized_text: normalizeText(text),
     repo: 'r1', project: null, branch: null, agent: null,
     session_id: null, hash, source_hash: null,
   });
@@ -77,6 +96,26 @@ describe('runTypeBackfillBatch — AC-B2', () => {
     // Sanity: the already-correct and no-signal atoms produced no candidates.
     expect(result.candidates.some(c => c.id === alreadyCorrectId)).toBe(false);
     expect(result.candidates.some(c => c.id === noSignalId)).toBe(false);
+  });
+
+  // Regression (review finding, 2026-07-18): normalized_text is what this
+  // module reads (never raw text) — and normalizeText()'s ENTITY_DICT
+  // capitalizes bare "bun" -> "Bun" before this code ever sees it. A
+  // case-sensitive command regex would silently never detect this
+  // candidate. Uses seedNormalized() (real normalizeText() output), not the
+  // seed() shortcut, so this actually exercises the same column value
+  // production writes.
+  it('detects a bun-led command atom stored via the real normalizeText() output ("Bun", not "bun")', async () => {
+    const db = setupDb();
+    const events = new MemoryEventRepo(db);
+    const id = await seedNormalized(db, 'bun run test', 'h-bun', 'fact', 41);
+
+    const row = db.prepare('SELECT normalized_text FROM memories WHERE id = ?').get(id) as { normalized_text: string };
+    expect(row.normalized_text).toBe('Bun run test'); // confirms ENTITY_DICT ran, same as production
+
+    const result = runTypeBackfillBatch(db, events, { apply: true, batchSize: 100 });
+    expect(result.changed).toBe(1);
+    expect(memoriesRow(db, id).type).toBe('command');
   });
 
   it('--apply mutates memories.type and appends a type_corrected audit event, never touching text/hash/vec', async () => {

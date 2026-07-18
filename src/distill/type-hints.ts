@@ -47,12 +47,33 @@ interface HintRule {
 // SECOND token isn't a common English auxiliary/modal verb. The trailing
 // `(?:\s|$)` (not `\b`) on the leading-token match additionally guards
 // against a hyphenated compound word like "aws-sdk" matching bare "aws".
+//
+// CASE-INSENSITIVE by construction (review finding, 2026-07-18): both real
+// call sites (07-memory-normalize.ts, backfill-types.ts) feed this function
+// text that has ALREADY passed through normalizeText()'s ENTITY_DICT
+// canonicalization — which capitalizes bare "bun" -> "Bun" and "vitest" ->
+// "Vitest" (case-preserving replacement for other tokens like "npm"). A
+// case-SENSITIVE lowercase-only match silently never fires for any
+// bun-/vitest-led command atom in production, even though a raw-text-only
+// unit test would show it firing — exactly the bug this comment now
+// documents so it isn't reintroduced. Matching case-insensitively is robust
+// to that (and any future) ENTITY_DICT addition, rather than hard-coupling
+// this module to normalizeText()'s current rule set.
+//
+// 'make' deliberately excluded from this list even though it's a real CLI
+// tool: it collides with "Make" in DECISION_IMPERATIVE_FIRST_RE below (a
+// genuine decision atom opening "Make the feature-flag lookup default to
+// false... instead of throwing" would fire BOTH command and decision once
+// this match goes case-insensitive, which getTypeHint's ambiguity guard
+// correctly resolves to null rather than a wrong single fire — but that
+// silently drops real decision recall for a token no gold fixture in this
+// corpus ever needs as a command). Not gold-tested; cut rather than risk it.
 const COMMAND_TOKENS = [
   'git', 'npm', 'bun', 'npx', 'kubectl', 'curl', 'docker', 'dotnet', 'az', 'gh',
   'vitest', 'tsc', 'pg_dump', 'pg_restore', 'psql', 'aws', 'node', 'ssh', 'scp',
-  'make', 'systemctl', 'journalctl', 'schtasks', 'launchctl',
+  'systemctl', 'journalctl', 'schtasks', 'launchctl',
 ] as const;
-const COMMAND_LEAD_RE = new RegExp(`^(?:${COMMAND_TOKENS.join('|')})(?:\\s|$)`);
+const COMMAND_LEAD_RE = new RegExp(`^(?:${COMMAND_TOKENS.join('|')})(?:\\s|$)`, 'i');
 const COMMAND_AUX_STOPWORDS = new Set([
   'is', 'was', 'are', 'were', 'does', 'did', 'do', 'has', 'have', 'had',
   'will', 'would', 'should', 'could', 'can', 'not', 'no',
