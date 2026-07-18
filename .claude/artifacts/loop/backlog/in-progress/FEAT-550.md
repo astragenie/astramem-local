@@ -1,29 +1,18 @@
 ---
 id: FEAT-550
-status: pending
+status: in-progress
 priority: P2
 category: feature
 target_release: null
 created: 2026-07-18
 updated: 2026-07-18
 depends_on: []
-slices: []
+slices: [SLICE-440]
 derived_from: 2026-07-18 phi-role analysis
 cross_product: [astramem-local]
 autonomous_safe: true
 triage_notes: |
-  Filed 2026-07-18. 2026-07-18 phi-role analysis.
-  ---
-  2026-07-18 PM deep triage: P2, autonomous_safe=true. customer_impact 0.45
-  (real but smaller measured bucket — 13% rank-miss vs FEAT-551's 55%
-  not-in-db; repo's own locomo-recall-vs-extraction-measured lesson
-  deprioritizes ranking-side work), effort 0.40 (5 pts, analog SLICE-437/
-  438/439), strategic_alignment 0.50, technical_risk 0.40 (only FEAT in this
-  batch touching the interactive/latency-sensitive recall path directly —
-  banded at the top of the low-risk range for that reason), dependency_depth
-  0.15 (genuinely independent). Recommended build order: lowest strategic
-  urgency of the seven in this 2026-07-18 batch — build last, after the
-  extraction-side levers (FEAT-551/547) and the other independent P2s.
+started_at: 2026-07-18
 ---
 ## Description
 

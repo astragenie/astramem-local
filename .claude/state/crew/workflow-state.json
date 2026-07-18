@@ -1,20 +1,16 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-18T02:22:57.307Z",
+  "updatedAt": "2026-07-18T02:51:02.834Z",
   "currentRun": {
-    "title": "FEAT544 SLICE439: Implement FEAT-544",
+    "title": "FEAT550 SLICE440: Implement FEAT-550",
     "goal": "",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-18T02:08:56.619Z",
-    "updatedAt": "2026-07-18T02:22:57.307Z",
-    "next": "Non-blocking: (1) either reject dual min+max floors at load time or implement combined-bound evaluation before any gates.json author adds one; (2) optional synthetic test for the ceiling+noise sign behavior before junk/overExtract gain per-run stats",
+    "startedAt": "2026-07-18T02:51:02.834Z",
+    "updatedAt": "2026-07-18T02:51:02.834Z",
+    "next": "Begin implementation",
     "gates": {
-      "review": {
-        "status": "passed",
-        "updatedAt": "2026-07-18T02:22:57.307Z",
-        "note": "SLICE-439 (FEAT-544) reviewed. tsc -p tsconfig.eval.json clean; vitest run gates.test.ts+report.test.ts+mechanical-checks.test.ts = 50/50 passed. Noise-floor sign logic hand-verified correct for BOTH min-floor (f1/typeAcc) and max-floor/ceiling (junk) directions across pass/inconclusive/hard-fail cases. AC-2 stale-calibration warning correctly derives actualFixtureCount from live fixtures.length at runtime (run-bench.mts), not a second hardcoded constant. AC-3 n/a rendering correct; evidenceAcc confirmed live (FEAT-542 merged at 3f08cf18, predates this slice). gates.json floors match dispatch's seeded values exactly, provisional:true + note present, stamped 55 matching live `ls fixtures/*.json | wc -l` = 55. Report shape: Gates section appended additively at the very end in renderMarkdown; no existing report.test.ts assertion (indexOf/toContain) depends on absence of trailing content, confirmed no regression. Unrelated uncommitted changes (answer.mts/run.mts/extract.ts) confirmed non-overlapping, different subsystem."
-      },
+      "review": null,
       "validation": null,
       "deployment": {
         "dev": null,
@@ -26,9 +22,9 @@
       "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260718T020856Z-run-brief-feat544-slice439-implement-feat-544.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local-wt550\\.claude\\artifacts\\crew\\runs\\20260718T025102Z-run-brief-feat550-slice440-implement-feat-550.md",
       "handoffs": [],
-      "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260718T021946Z-review-result-slice-439-review.md",
+      "reviewResult": null,
       "validationPlan": null,
       "validationResult": null,
       "deploymentChecks": {
@@ -39,6 +35,44 @@
     }
   },
   "recentRuns": [
+    {
+      "title": "FEAT544 SLICE439: Implement FEAT-544",
+      "goal": "",
+      "mode": "autonomous",
+      "status": "active",
+      "startedAt": "2026-07-18T02:08:56.619Z",
+      "updatedAt": "2026-07-18T02:22:57.307Z",
+      "completedAt": "2026-07-18T02:22:57.307Z",
+      "next": "Non-blocking: (1) either reject dual min+max floors at load time or implement combined-bound evaluation before any gates.json author adds one; (2) optional synthetic test for the ceiling+noise sign behavior before junk/overExtract gain per-run stats",
+      "gates": {
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-18T02:22:57.307Z",
+          "note": "SLICE-439 (FEAT-544) reviewed. tsc -p tsconfig.eval.json clean; vitest run gates.test.ts+report.test.ts+mechanical-checks.test.ts = 50/50 passed. Noise-floor sign logic hand-verified correct for BOTH min-floor (f1/typeAcc) and max-floor/ceiling (junk) directions across pass/inconclusive/hard-fail cases. AC-2 stale-calibration warning correctly derives actualFixtureCount from live fixtures.length at runtime (run-bench.mts), not a second hardcoded constant. AC-3 n/a rendering correct; evidenceAcc confirmed live (FEAT-542 merged at 3f08cf18, predates this slice). gates.json floors match dispatch's seeded values exactly, provisional:true + note present, stamped 55 matching live `ls fixtures/*.json | wc -l` = 55. Report shape: Gates section appended additively at the very end in renderMarkdown; no existing report.test.ts assertion (indexOf/toContain) depends on absence of trailing content, confirmed no regression. Unrelated uncommitted changes (answer.mts/run.mts/extract.ts) confirmed non-overlapping, different subsystem."
+        },
+        "validation": null,
+        "deployment": {
+          "dev": null,
+          "prod": null
+        },
+        "blocked": null,
+        "escalation": null,
+        "incident": null,
+        "help": null
+      },
+      "artifacts": {
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260718T020856Z-run-brief-feat544-slice439-implement-feat-544.md",
+        "handoffs": [],
+        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260718T021946Z-review-result-slice-439-review.md",
+        "validationPlan": null,
+        "validationResult": null,
+        "deploymentChecks": {
+          "dev": null,
+          "prod": null
+        },
+        "finalSynthesis": null
+      }
+    },
     {
       "title": "FEAT542 SLICE438: Implement FEAT-542",
       "goal": "",
@@ -179,40 +213,6 @@
       },
       "artifacts": {
         "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T125856Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
-        "handoffs": [],
-        "reviewResult": null,
-        "validationPlan": null,
-        "validationResult": null,
-        "deploymentChecks": {
-          "dev": null,
-          "prod": null
-        },
-        "finalSynthesis": null
-      }
-    },
-    {
-      "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
-      "goal": "**Memories should be self-contained explanations, not trivia.**",
-      "mode": "autonomous",
-      "status": "active",
-      "startedAt": "2026-07-13T12:17:57.475Z",
-      "updatedAt": "2026-07-13T12:17:57.475Z",
-      "completedAt": "2026-07-13T12:17:57.475Z",
-      "next": "Begin implementation",
-      "gates": {
-        "review": null,
-        "validation": null,
-        "deployment": {
-          "dev": null,
-          "prod": null
-        },
-        "blocked": null,
-        "escalation": null,
-        "incident": null,
-        "help": null
-      },
-      "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T121757Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
         "handoffs": [],
         "reviewResult": null,
         "validationPlan": null,

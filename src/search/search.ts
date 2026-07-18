@@ -23,6 +23,7 @@ import { usefulnessScores, DEFAULT_IMPLICIT_POSITIVE_WEIGHT } from '../storage/u
 import { EntityRepo } from '../storage/entities.js';
 import { applyRerank, type RerankOpts } from './rerank.js';
 import { getSubQueries, type DecomposeOpts } from './decompose.js';
+import { getQueryVariants, mergeVariantHits, type QueryRewriteOpts } from './query-rewrite.js';
 // FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
@@ -300,6 +301,24 @@ export interface SearchOpts {
    * escape it via decomposition.
    */
   mode?: 'keyword' | 'semantic' | 'hybrid';
+  /**
+   * Optional pre-recall query rewrite/expansion stage (FEAT-550,
+   * src/search/query-rewrite.ts). `undefined` (the default — see
+   * config.search.queryRewrite.mode / resolveQueryRewriteOpts) means the
+   * stage is never invoked and search() is byte-identical to pre-FEAT-550
+   * behavior (AC-1). Even when present, the stage only actually runs when
+   * `expand` (below) is also `true` this call — this FEAT's latency-gating
+   * requirement ("No default-on for interactive recall until latency
+   * measured") means an enabled config makes the capability AVAILABLE, not
+   * default-on for every search() call.
+   */
+  queryRewrite?: QueryRewriteOpts;
+  /**
+   * Per-call opt-in for the query-rewrite stage above (FEAT-550 AC-1).
+   * `undefined`/`false` (the default) never invokes the rewrite call even
+   * when `queryRewrite` is configured — see that field's doc comment.
+   */
+  expand?: boolean;
 }
 
 /**
@@ -721,8 +740,37 @@ export async function search(
     }
   }
 
+  // FEAT-550: query rewrite/expansion — gather candidates for each rewrite
+  // variant the SAME way the primary query was gathered above (same
+  // entity-filter scoping, same gatherCandidates degrade behavior). Gated on
+  // BOTH `opts.expand: true` AND a resolved `opts.queryRewrite` (config
+  // `mode: 'enabled'`) — see SearchOpts.queryRewrite's doc comment for why
+  // enabling the config alone never triggers this. Unlike WS6's sub-query
+  // gathering above, variant hits are NOT excluded when their id already
+  // appeared in the primary pass — AC-3's max-score merge (below, after
+  // fusion) needs each variant's OWN fused score for every id it found,
+  // including ids the primary pass also found, so it can keep whichever is
+  // higher. Kept in separate per-variant arrays (not flattened) for the same
+  // reason WS6 keeps its supplemental hits in their own fuseHits() call:
+  // each variant needs its OWN min-max normalization pass, untouched by the
+  // primary candidates' own normalization.
+  const rewriteFtsByVariant: Array<Array<{ id: string; bm25: number }>> = [];
+  const rewriteVecByVariant: Array<Array<{ id: string; cosine: number }>> = [];
+  if (opts.expand && opts.queryRewrite) {
+    const variants = await getQueryVariants(query, opts.queryRewrite);
+    for (const variant of variants) {
+      const gathered = await gatherCandidates(db, embed, variant, vecK, mode);
+      const { ftsHits: vFts, vecHits: vVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
+      rewriteFtsByVariant.push(vFts);
+      rewriteVecByVariant.push(vVec);
+    }
+  }
+
   // 3. Load meta for all candidate ids (importance + created_at for freshness)
-  const allIds = new Set([...primaryIds, ...subFtsHits.map(h => h.id), ...subVecHits.map(h => h.id)]);
+  const allIds = new Set([
+    ...primaryIds, ...subFtsHits.map(h => h.id), ...subVecHits.map(h => h.id),
+    ...rewriteFtsByVariant.flat().map(h => h.id), ...rewriteVecByVariant.flat().map(h => h.id),
+  ]);
   if (allIds.size === 0) return [];
 
   const placeholders = Array.from(allIds).map(() => '?').join(',');
@@ -803,6 +851,23 @@ export async function search(
         return { ...h, score: raw * opts.decompose!.supplementalWeight };
       });
     rankedFused = [...fused, ...capped].sort((a, b) => b.score - a.score);
+  }
+
+  // FEAT-550 merge (AC-3): fuse each rewrite variant's own gathered
+  // candidates (same weights/usefulness/entity/agent/uncontested inputs as
+  // the primary + WS6 passes above) in its OWN fuseHits() call — never mixed
+  // into another call's normalization — then merge the whole set by atom id
+  // keeping the MAX score (mergeVariantHits, src/search/query-rewrite.ts).
+  // Composes with WS6 above: `rankedFused` already reflects any WS6
+  // supplemental candidates by this point, so a rewrite variant can raise
+  // (never lower) an id WS6 also touched. The original query's hits are
+  // always part of the union (mergeVariantHits seeds them first) even when
+  // every variant returns zero hits.
+  if (rewriteFtsByVariant.length > 0) {
+    const rewriteFusedLists = rewriteFtsByVariant.map((vFts, i) =>
+      fuseHits(vFts, rewriteVecByVariant[i] ?? [], metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus, uncontestedBonus),
+    );
+    rankedFused = mergeVariantHits(rankedFused, rewriteFusedLists, opts.queryRewrite!.maxCandidates);
   }
 
   // 5. Apply post-fusion SQL filters then join full memory records

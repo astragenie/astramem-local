@@ -275,6 +275,16 @@ export function configToYaml(cfg: Config): string {
     line(3, 'minDistinctQueries', cfg.search.usefulness.implicitPositive.minDistinctQueries),
     line(3, 'weight', cfg.search.usefulness.implicitPositive.weight),
     line(3, 'maxGrantsPerRun', cfg.search.usefulness.implicitPositive.maxGrantsPerRun),
+    // FEAT-550: pre-recall query rewrite/expansion — a sibling of
+    // governance/usefulness above, same round-trip requirement (a hand-set
+    // search.queryRewrite must not be silently dropped on the next write-back).
+    line(1, 'queryRewrite'),
+    line(2, 'mode', cfg.search.queryRewrite.mode),
+    line(2, 'provider', cfg.search.queryRewrite.provider),
+    ...(cfg.search.queryRewrite.model ? [line(2, 'model', cfg.search.queryRewrite.model)] : []),
+    line(2, 'maxVariants', cfg.search.queryRewrite.maxVariants),
+    line(2, 'timeoutMs', cfg.search.queryRewrite.timeoutMs),
+    line(2, 'maxCandidates', cfg.search.queryRewrite.maxCandidates),
     '',
     // Cross-encoder rerank stage (issue #26, ADR-005) — OFF by default. See
     // docs/runbooks/cross-encoder-rerank.md before flipping `enabled: true`.
