@@ -274,6 +274,12 @@ async function runShard(opts: {
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
   const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB });
+  // 2026-07-18 traceability: persist the sandbox's EXACT boot config into the
+  // run dir — the sandbox datadir is deleted on cleanup, and everything not in
+  // this file fell through to defaultConfig() (see run-manifest's gitState for
+  // which tree built that dist). Sandbox config contains no secrets by
+  // construction (bearer travels via env, never config.yaml).
+  writeFileSync(join(shardDir, 'sandbox-config.yaml'), isolated.configYaml, 'utf8');
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';

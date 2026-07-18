@@ -77,6 +77,12 @@ export interface IsolatedEvalEnv {
     extraction: string; compaction: string;
     extractionProvider: string; compactionProvider: string;
   };
+  /** The EXACT config.yaml text this sandbox's daemon boots with (2026-07-18
+   *  traceability fix). Everything NOT in this text falls through to
+   *  defaultConfig() at whatever git state built the running dist — record
+   *  BOTH (this + git sha/dirty) in the run manifest, or "what changed
+   *  between these two runs" becomes reconstruction again. */
+  configYaml: string;
 }
 
 /** Cross-encoder rerank override for one isolated eval daemon (LoCoMo WS2,
@@ -237,9 +243,10 @@ export function makeIsolatedEvalEnv(
       configLines.push('  extractionPassB:', `    provider: ${opts.extractionPassB.provider}`, `    model: '${opts.extractionPassB.model}'`);
     }
   }
-  writeFileSync(join(configDir, 'config.yaml'), configLines.join('\n') + '\n', 'utf8');
+  const configYaml = configLines.join('\n') + '\n';
+  writeFileSync(join(configDir, 'config.yaml'), configYaml, 'utf8');
 
-  return { root, configDir, env: dirEnvOverrides, resolvedModels: resolved };
+  return { root, configDir, env: dirEnvOverrides, resolvedModels: resolved, configYaml };
 }
 
 export function cleanupIsolatedEvalEnv(isolated: IsolatedEvalEnv): void {
