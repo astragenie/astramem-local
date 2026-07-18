@@ -1,0 +1,9 @@
+[
+  {
+    "model": "qwen2.5:7b",
+    "forbiddenItemHitsTotal": 0,
+    "evidenceAccNumerator": 27,
+    "evidenceAccDenominator": 155,
+    "evidenceAcc": 0.17419354838709677
+  }
+]
