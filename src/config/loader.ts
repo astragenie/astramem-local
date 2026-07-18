@@ -41,6 +41,7 @@ import {
   type Config,
   defaultConfig,
   applyFusionGovernance,
+  applyQueryRewriteGovernance,
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
   applyMultiHopGovernance,
@@ -321,7 +322,11 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
   const cfg = loadConfigFromDiskRaw(configDir, reader);
   return {
     ...cfg,
-    search: applyFusionGovernance(cfg.search),
+    // FEAT-550: applyQueryRewriteGovernance composed here too, not just in
+    // loadConfig() — see the 2026-07-16 review note a few lines below on why
+    // this real boot path needs its OWN governance composition rather than
+    // relying on loadConfig()'s (which has zero production callers).
+    search: applyQueryRewriteGovernance(applyFusionGovernance(cfg.search)),
     // FEAT-534: extractionPassB provider governance added here — this IS the
     // real boot path (the 2026-07-16 review comment below explains why that
     // matters: loadConfig() has zero production callers). Note

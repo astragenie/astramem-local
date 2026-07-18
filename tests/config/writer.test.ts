@@ -41,6 +41,7 @@ function buildFullyPopulatedConfig(): Config {
       usefulness: {
         implicitPositive: { enabled: true, windowDays: 45, minDistinctQueries: 3, weight: 0.5, maxGrantsPerRun: 250 },
       },
+      queryRewrite: { mode: 'enabled', provider: 'llm', model: 'rewrite-model', maxVariants: 5, timeoutMs: 2000, maxCandidates: 150 },
     },
     crossEncoder: {
       enabled: true, provider: 'http', topK: 77, timeoutMs: 450,

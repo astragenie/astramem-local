@@ -261,6 +261,45 @@ export interface Config {
         maxGrantsPerRun: number;
       };
     };
+    /**
+     * FEAT-550: optional pre-recall query rewrite/expansion — an opt-in local
+     * LLM call that produces up to `maxVariants` alias/synonym/decomposition
+     * query strings before retrieval. OFF by default (`mode: 'off'`). Even
+     * when `mode: 'enabled'`, this only makes the stage AVAILABLE —
+     * `search()` (src/search/search.ts) only actually invokes it when the
+     * caller ALSO passes `SearchOpts.expand: true` this call, per this FEAT's
+     * explicit latency-gating requirement ("No default-on for interactive
+     * recall until latency measured"). Mirrors crossEncoder/multiHop's
+     * config-flagged-seam governance style.
+     *
+     * `provider: 'mock'` is a deterministic, network-free variant generator
+     * (no semantic understanding — see MockQueryRewriter's doc comment),
+     * useful for tests and for exercising the stage without an LLM.
+     * `provider: 'llm'` reuses `config.llm.extraction`'s provider (`model`
+     * optionally overrides just the model) — no separate provider-selection
+     * surface, same posture as multiHop.
+     *
+     * `maxVariants` caps how many rewritten query strings one call can ever
+     * produce. `timeoutMs` is a hard per-call budget (a real enforced
+     * timeout, not a soft target) — a slow/hung rewrite call degrades to the
+     * ORIGINAL QUERY ONLY (fail-open, AC-2/AC-5) rather than blocking the
+     * request, same fallback posture as multiHop.timeoutMs/
+     * crossEncoder.timeoutMs. `maxCandidates` bounds the total fused
+     * candidate set after the original query + every variant's own hits are
+     * merged by atom id (max-score union, see
+     * src/search/query-rewrite.ts's mergeVariantHits) — a cost bound, not a
+     * ranking model.
+     */
+    queryRewrite: {
+      mode: 'off' | 'enabled';
+      provider: 'mock' | 'llm';
+      /** Optional model override when provider === 'llm'; defaults to
+       *  config.llm.extraction.model on config.llm.extraction.provider. */
+      model?: string;
+      maxVariants: number;
+      timeoutMs: number;
+      maxCandidates: number;
+    };
   };
   /** Cross-encoder rerank stage (issue #26, ADR-005). OFF by default — ADR-005
    * ruled "no reranker in v1 (CPU budget)" for local, so this is a
@@ -1230,6 +1269,7 @@ export function defaultConfig(): Config {
           enabled: false, windowDays: 30, minDistinctQueries: 2, weight: 0.35, maxGrantsPerRun: 500,
         },
       },
+      queryRewrite: { mode: 'off', provider: 'mock', maxVariants: 3, timeoutMs: 1500, maxCandidates: 200 },
     },
     crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
     multiHop: {
@@ -1991,12 +2031,50 @@ export function applyMultiHopGovernance(
   return { ...multiHop, supplementalWeight: clampedWeight };
 }
 
+const VALID_QUERY_REWRITE_MODES: ReadonlySet<Config['search']['queryRewrite']['mode']> = new Set(['off', 'enabled']);
+const VALID_QUERY_REWRITE_PROVIDERS: ReadonlySet<Config['search']['queryRewrite']['provider']> = new Set(['mock', 'llm']);
+
+/**
+ * FEAT-550 governance (mirrors `applyMultiHopGovernance`'s shape exactly):
+ * config.yaml is hand-parsed scalars with no schema, so a typo'd
+ * `queryRewrite.mode`/`provider` would otherwise pass straight through
+ * `deepMerge` unchecked. Never fatal — an invalid/missing block falls back
+ * to `mode: 'off'` (the documented default) plus the rest of
+ * `defaultConfig().search.queryRewrite`, logged, rather than risk booting
+ * with `mode: 'enabled'` and a broken provider selection. Applied AFTER
+ * `applyFusionGovernance` in `loadConfig` below — both operate on
+ * `Config['search']` but are independent concerns (fusion weight ceilings
+ * vs. this stage's own closed enums), same composition style as
+ * `distill`'s multi-governance chain.
+ */
+export function applyQueryRewriteGovernance(
+  search: Config['search'],
+  opts: { log?: (message: string) => void } = {},
+): Config['search'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().search.queryRewrite;
+  const qr = search.queryRewrite;
+
+  if (!qr || !VALID_QUERY_REWRITE_MODES.has(qr.mode) || !VALID_QUERY_REWRITE_PROVIDERS.has(qr.provider)) {
+    log(
+      qr
+        ? `[query-rewrite-governance] search.queryRewrite.mode=${JSON.stringify(qr.mode)}/provider=` +
+          `${JSON.stringify(qr.provider)} is not a valid mode ('off'|'enabled') / provider ('mock'|'llm') ` +
+          "— falling back to defaults (mode: 'off'). See FEAT-550 / src/search/query-rewrite.ts."
+        : '[query-rewrite-governance] search.queryRewrite is missing — falling back to defaults ' +
+          "(mode: 'off'). See FEAT-550 / src/search/query-rewrite.ts.",
+    );
+    return { ...search, queryRewrite: { ...fallback, ...qr, mode: 'off', provider: fallback.provider } };
+  }
+  return search;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
   return {
     ...merged,
-    search: applyFusionGovernance(merged.search),
+    search: applyQueryRewriteGovernance(applyFusionGovernance(merged.search)),
     distill: applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))),
     consolidation: applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation)),
     audio: applyAudioModeGovernance(merged.audio),
