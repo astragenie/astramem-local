@@ -174,7 +174,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string } },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned' },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -241,6 +241,15 @@ export function makeIsolatedEvalEnv(
     // 85/85/85 junk 12, the best balanced config of the sweep.
     if (opts.extractionPassB !== undefined) {
       configLines.push('  extractionPassB:', `    provider: ${opts.extractionPassB.provider}`, `    model: '${opts.extractionPassB.model}'`);
+    }
+    // Pass-B sweep tuning override (2026-07-18): without this, the sandbox
+    // inherits EXTRACTION_PASS_B_DEFAULTS (skip-gate 8 + maxTokens 1500) —
+    // which means a replication of any pre-tuning run (e.g. the 0.6002
+    // champion, untuned full sweep) is silently NOT a replication. `untuned`
+    // writes explicit zeros (gate off, no cap).
+    if (opts.passBSweep === 'untuned') {
+      if (opts.extractionPassB === undefined) configLines.push('  extractionPassB:');
+      configLines.push('    sweepOnlyBelowAtoms: 0', '    maxTokens: 0');
     }
   }
   const configYaml = configLines.join('\n') + '\n';

@@ -165,6 +165,15 @@ if (compactionModeFlag !== undefined && !['auto', 'always', 'never'].includes(co
 // --passb-provider/--passb-model (additive, FEAT-534 A/B): route the dual-pass
 // specifics-sweeper Pass B to a different provider/model than Pass A via
 // distill.extractionPassB. Both flags required together.
+// --passb-sweep untuned (2026-07-18): restore the pre-tuning full sweep
+// (gate off, no output cap) — required for any faithful replication of a
+// pre-2026-07-18 dual-pass number (e.g. the 0.6002 champion). Omit = the
+// shipped EXTRACTION_PASS_B_DEFAULTS tuning applies.
+const passBSweepFlag = get('--passb-sweep') as 'untuned' | undefined;
+if (passBSweepFlag !== undefined && passBSweepFlag !== 'untuned') {
+  console.error(`--passb-sweep only supports 'untuned', got: ${passBSweepFlag}`);
+  process.exit(1);
+}
 const passBProviderFlag = get('--passb-provider');
 const passBModelFlag = get('--passb-model');
 if ((passBProviderFlag === undefined) !== (passBModelFlag === undefined)) {
@@ -245,6 +254,10 @@ async function runShard(opts: {
   compactionMode?: 'auto' | 'always' | 'never';
   /** Additive (FEAT-534 A/B) — distill.extractionPassB; undefined = both passes on Pass A's provider. */
   extractionPassB?: { provider: string; model: string };
+  /** Additive (2026-07-18) — 'untuned' restores the pre-tuning full sweep
+   *  (gate off, no output cap) for faithful replication of pre-tuning runs;
+   *  undefined inherits EXTRACTION_PASS_B_DEFAULTS. */
+  passBSweep?: 'untuned';
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -262,7 +275,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, compactionMode, extractionPassB, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -273,7 +286,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep });
   // 2026-07-18 traceability: persist the sandbox's EXACT boot config into the
   // run dir — the sandbox datadir is deleted on cleanup, and everything not in
   // this file fell through to defaultConfig() (see run-manifest's gitState for
@@ -579,7 +592,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -699,6 +712,7 @@ async function runFull(): Promise<void> {
       extractionPasses: extractionPassesFlag ?? 'inherited-default',
       compactionMode: compactionModeFlag ?? 'inherited-default',
       extractionPassB: extractionPassBFlag ?? 'inherited-default',
+      passBSweep: passBSweepFlag ?? 'tuned-default',
       extractPromptEnv: process.env.ASTRA_EXTRACT_PROMPT ?? null,
       passBTuning: resolveExtractionPassBTuning(undefined),
       gitState: (() => {
