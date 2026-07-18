@@ -10,6 +10,7 @@ import {
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
   applyAtomTriageGovernance,
+  applyDupJudgeGovernance,
   applyRetentionGovernance,
 } from '../../src/config/config.js';
 
@@ -504,10 +505,76 @@ describe('applyAtomTriageGovernance — FEAT-533', () => {
   });
 });
 
+describe('applyDupJudgeGovernance — FEAT-549', () => {
+  const consolidationOf = (dupJudge: Record<string, unknown> | undefined) =>
+    ({ ...defaultConfig().consolidation, dupJudge }) as any;
+
+  it("shipped default is 'off' — byte-identical, unchanged by governance", () => {
+    const input = defaultConfig().consolidation;
+    expect(input.dupJudge.mode).toBe('off');
+    expect(applyDupJudgeGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('a valid mode + provider override passes through untouched', () => {
+    const input = consolidationOf({ mode: 'dry-run', provider: 'ollama', model: 'qwen2.5:7b', minConfidence: 0.6, batchSize: 10, maxPerRun: 100, maxWallClockMs: 60_000 });
+    expect(applyDupJudgeGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('missing dupJudge block falls back to defaults (mode: off), never throws', () => {
+    const log = vi.fn();
+    const input = consolidationOf(undefined);
+    const out = applyDupJudgeGovernance(input, { log });
+    expect(out.dupJudge.mode).toBe('off');
+    expect(out.dupJudge.minConfidence).toBe(0.7);
+    expect(out.dupJudge.batchSize).toBe(20);
+    expect(out.dupJudge.maxPerRun).toBe(200);
+    expect(out.dupJudge.maxWallClockMs).toBe(300_000);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('dupJudge is missing'));
+  });
+
+  it("an invalid mode falls back to 'off' with a warning, never fatal", () => {
+    const log = vi.fn();
+    const input = consolidationOf({ mode: 'enable', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+    const out = applyDupJudgeGovernance(input, { log });
+    expect(out.dupJudge.mode).toBe('off');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('enable'));
+  });
+
+  it('an invalid provider is DROPPED with a warning, never fatal — boot survives a typo', () => {
+    const log = vi.fn();
+    const input = consolidationOf({ mode: 'dry-run', provider: 'olama', model: 'qwen2.5:7b', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+    const out = applyDupJudgeGovernance(input, { log });
+    expect(out.dupJudge.provider).toBeUndefined();
+    expect(out.dupJudge.model).toBe('qwen2.5:7b');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
+  });
+
+  it('an out-of-range minConfidence falls back to 0.7, logged', () => {
+    for (const bad of [-0.1, 1.1]) {
+      const log = vi.fn();
+      const input = consolidationOf({ mode: 'dry-run', minConfidence: bad, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+      const out = applyDupJudgeGovernance(input, { log });
+      expect(out.dupJudge.minConfidence).toBe(0.7);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('minConfidence'));
+    }
+  });
+
+  it('a non-positive-integer batchSize falls back to 20, logged', () => {
+    for (const bad of [0, -5, 2.5]) {
+      const log = vi.fn();
+      const input = consolidationOf({ mode: 'dry-run', minConfidence: 0.7, batchSize: bad, maxPerRun: 200, maxWallClockMs: 300_000 });
+      const out = applyDupJudgeGovernance(input, { log });
+      expect(out.dupJudge.batchSize).toBe(20);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('batchSize'));
+    }
+  });
+});
+
 describe('applyCandidateSelectionGovernance', () => {
   const base = {
     autoAcceptThreshold: null,
     contradictionDetection: { mode: 'off' as const, minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 300_000 },
+    dupJudge: defaultConfig().consolidation.dupJudge,
     candidateSelection: 'full' as const,
     knnK: 30,
     maxCandidatePairsPerRun: null,

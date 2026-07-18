@@ -8,6 +8,7 @@
 import type { DB } from '../storage/db.js';
 import type { SupersedeProvenance, CorrectionSource } from '../storage/memory-events.js';
 import { mergeAsSupersede } from './consolidate.js';
+import type { DupVerdictLabel } from './dup-judge.js';
 
 export interface ConsolidationProposal {
   id: string;
@@ -18,11 +19,18 @@ export interface ConsolidationProposal {
   status: 'pending' | 'accepted' | 'rejected';
   created_at: number;
   resolved_at: number | null;
-  /** FEAT-456 SLICE-1: additive nullable column (migration 022). `NULL`
-   *  forever for `kind='merge'` rows. `kind='contradiction'` rows populate
-   *  it with the judge's verdict/confidence + excerpts captured at judge
-   *  time — see {@link ContradictionMetadata} and
-   *  `parseContradictionMetadata`. */
+  /** FEAT-456 SLICE-1: additive nullable column (migration 022).
+   *  `kind='contradiction'` rows populate it with the judge's
+   *  verdict/confidence + excerpts captured at judge time — see
+   *  {@link ContradictionMetadata} and `parseContradictionMetadata`.
+   *  `kind='merge'` rows were `NULL` forever until FEAT-549: a proposal
+   *  auto-resolved by the dup-judge (either direction) now also populates
+   *  this column with `resolved_by: 'dup-judge'` provenance — see
+   *  {@link DupJudgeMetadata} and `parseDupJudgeMetadata`. A human-resolved
+   *  `kind='merge'` proposal (`resolve_consolidation_proposal` with no
+   *  `metadata` passed) still leaves it `NULL` — that absence IS the
+   *  audit signal distinguishing a human resolution from an automated one,
+   *  queryable in the same `SELECT`. */
   metadata_json: string | null;
 }
 
@@ -38,6 +46,27 @@ export interface ContradictionMetadata {
 }
 
 /**
+ * FEAT-549: parsed shape of a `kind='merge'` row's `metadata_json` when it
+ * was auto-resolved by the dup-judge (either direction — `same-fact-merge`
+ * via `accept()`, `distinct-keep-separate` via `reject()`). Absent (`NULL`
+ * metadata_json, or a JSON object without `resolved_by: 'dup-judge'`) for a
+ * human-resolved or containment-swept `kind='merge'` row — see
+ * {@link ConsolidationProposal.metadata_json}'s doc comment for why that
+ * absence is itself the audit signal.
+ */
+export interface DupJudgeMetadata {
+  resolved_by: 'dup-judge';
+  verdict: DupVerdictLabel;
+  confidence: number;
+  /** Judge provider/model actually used — `LLMProvider.name`/`.model` at
+   *  judge-call time, captured for audit (AC-4: "distinguishable... in the
+   *  same query" — includes WHICH model made the call, not just that some
+   *  automated judge did). */
+  provider: string;
+  model: string;
+}
+
+/**
  * Typed accessor for callers (MCP, dashboard — slice 2) that want the
  * structured shape instead of raw JSON text. Returns `null` for `kind=
  * 'merge'` rows (metadata_json is NULL) or an unparsable value — never
@@ -47,6 +76,24 @@ export function parseContradictionMetadata(p: ConsolidationProposal): Contradict
   if (!p.metadata_json) return null;
   try {
     return JSON.parse(p.metadata_json) as ContradictionMetadata;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * FEAT-549: typed accessor for a dup-judge-resolved proposal's provenance.
+ * Returns `null` for anything that isn't a dup-judge resolution (no
+ * metadata_json, unparsable JSON, or a `resolved_by` other than
+ * `'dup-judge'` — e.g. a `kind='contradiction'` row, whose `metadata_json`
+ * has no `resolved_by` field at all) — never throws.
+ */
+export function parseDupJudgeMetadata(p: ConsolidationProposal): DupJudgeMetadata | null {
+  if (!p.metadata_json) return null;
+  try {
+    const parsed = JSON.parse(p.metadata_json) as Record<string, unknown>;
+    if (parsed['resolved_by'] !== 'dup-judge') return null;
+    return parsed as unknown as DupJudgeMetadata;
   } catch {
     return null;
   }
@@ -166,22 +213,31 @@ export class ProposalRepo {
    * why this is a separate, additive mechanism from `provenance`.
    *
    * `opts.correctionSource` (issue #190) defaults to `'external'` — this
-   * method is called from THREE places: the two automatic consolidate.ts
-   * sweeps (which explicitly pass `'consolidation_auto'`) and the human
-   * REST/MCP/dashboard `resolve_consolidation_proposal` path (which passes
-   * nothing at all). Defaulting to `'external'` here means a human accepting
-   * a proposal is correctly counted as genuine feedback in
-   * `feedbackLoopSummary()`, distinct from the two unattended sweeps.
+   * method is called from FOUR places: the two automatic consolidate.ts
+   * sweeps and the FEAT-549 dup-judge sweep (all three explicitly pass
+   * `'consolidation_auto'`), and the human REST/MCP/dashboard
+   * `resolve_consolidation_proposal` path (which passes nothing at all).
+   * Defaulting to `'external'` here means a human accepting a proposal is
+   * correctly counted as genuine feedback in `feedbackLoopSummary()`,
+   * distinct from the automated sweeps.
+   *
+   * `opts.metadata` (FEAT-549): when supplied, patches `metadata_json` on
+   * the resolved row in the SAME transaction — used by the dup-judge sweep
+   * to record `resolved_by: 'dup-judge'` provenance on an auto-accepted
+   * `kind='merge'` row (see {@link DupJudgeMetadata}). Omitted by every
+   * other caller, so `metadata_json` stays untouched (NULL for a fresh
+   * `kind='merge'` row, or its judge-time value for `kind='contradiction'`)
+   * exactly as before this field existed.
    */
   accept(
     id: string, provenance?: SupersedeProvenance,
-    opts?: { bulkAccepted?: boolean; correctionSource?: CorrectionSource },
+    opts?: { bulkAccepted?: boolean; correctionSource?: CorrectionSource; metadata?: Record<string, unknown> },
   ): ConsolidationProposal {
     const tx = this.db.transaction((): ConsolidationProposal => {
       const p = this.mustBePending(id);
       mergeAsSupersede(this.db, p.winner_id, p.loser_id, provenance, opts?.correctionSource ?? 'external');
       if (opts?.bulkAccepted) this.markBulkAccepted(p.loser_id);
-      return this.resolve(p.id, 'accepted');
+      return this.resolve(p.id, 'accepted', opts?.metadata);
     });
     return tx();
   }
@@ -218,11 +274,20 @@ export class ProposalRepo {
       .run(JSON.stringify(payload), row.seq);
   }
 
-  /** Reject: mark rejected, nothing else changes. */
-  reject(id: string): ConsolidationProposal {
+  /**
+   * Reject: mark rejected, nothing else changes.
+   *
+   * `opts.metadata` (FEAT-549): same additive patch-in-transaction shape as
+   * `accept()`'s own `opts.metadata` — used by the dup-judge sweep to
+   * record `resolved_by: 'dup-judge'` provenance when a `kind='merge'`
+   * proposal is auto-rejected as `distinct-keep-separate`. Omitted by every
+   * other caller (human reject via REST/MCP/dashboard), so `metadata_json`
+   * stays untouched exactly as before this field existed.
+   */
+  reject(id: string, opts?: { metadata?: Record<string, unknown> }): ConsolidationProposal {
     const tx = this.db.transaction((): ConsolidationProposal => {
       const p = this.mustBePending(id);
-      return this.resolve(p.id, 'rejected');
+      return this.resolve(p.id, 'rejected', opts?.metadata);
     });
     return tx();
   }
@@ -234,10 +299,26 @@ export class ProposalRepo {
     return p;
   }
 
-  private resolve(id: string, status: 'accepted' | 'rejected'): ConsolidationProposal {
-    this.db.prepare(
-      'UPDATE consolidation_proposals SET status = ?, resolved_at = ? WHERE id = ?',
-    ).run(status, Date.now(), id);
+  /**
+   * `metadata` (FEAT-549), when supplied, is JSON-stringified into
+   * `metadata_json` in the SAME UPDATE as the status/resolved_at change —
+   * omitted (the default, every pre-FEAT-549 call site), `metadata_json` is
+   * left completely untouched rather than overwritten with `NULL`, so a
+   * `kind='contradiction'` row's judge-time metadata (written at INSERT,
+   * never at resolve) survives a human accept/reject unchanged.
+   */
+  private resolve(
+    id: string, status: 'accepted' | 'rejected', metadata?: Record<string, unknown>,
+  ): ConsolidationProposal {
+    if (metadata !== undefined) {
+      this.db.prepare(
+        'UPDATE consolidation_proposals SET status = ?, resolved_at = ?, metadata_json = ? WHERE id = ?',
+      ).run(status, Date.now(), JSON.stringify(metadata), id);
+    } else {
+      this.db.prepare(
+        'UPDATE consolidation_proposals SET status = ?, resolved_at = ? WHERE id = ?',
+      ).run(status, Date.now(), id);
+    }
     return this.get(id) as ConsolidationProposal;
   }
 }

@@ -44,6 +44,7 @@ import { MemoryEventRepo, type SupersedeProvenance, type CorrectionSource } from
 import { usefulnessScores } from '../storage/usefulness.js';
 import { ProposalRepo } from './proposals.js';
 import { judgeContradiction, type JudgeVerdict } from './contradiction-judge.js';
+import { dupJudgeBatch, DupJudgeRunTracker, type DupVerdictLabel } from './dup-judge.js';
 import { recordConsolidationJudgeRun } from '../storage/consolidation-judge-log.js';
 import { getConsolidationCursor, setConsolidationCursor } from '../storage/consolidation-cursor.js';
 import { recordConsolidationRun } from '../storage/consolidation-run-log.js';
@@ -102,6 +103,23 @@ export interface ConsolidateOpts {
    * capability" governance pattern, see `resolveAutoAcceptThreshold`).
    */
   judgeProvider?: LLMProvider;
+  /**
+   * FEAT-549: batched dup-judge sweep config for this run. Mirrors
+   * `Config['consolidation']['dupJudge']` exactly (the job handler forwards
+   * the running config's value verbatim, same as `contradictionDetection`).
+   * Omitted, or `mode: 'off'` (the default), is BYTE-IDENTICAL to
+   * pre-FEAT-549 output — the sweep is never run and pending `kind='merge'`
+   * proposals are left exactly as the pairwise scan created them.
+   */
+  dupJudge?: Config['consolidation']['dupJudge'];
+  /**
+   * LLMProvider for the dup-judge sweep — reuses `ProviderSet.llm.extraction`
+   * by default (no new provider role), same identity-default shape
+   * `judgeProvider` uses. Required only when `dupJudge.mode !== 'off'`; a
+   * missing provider with mode on disables the sweep for THIS run only
+   * (logged, non-fatal — matches `resolveContradictionDetection`'s posture).
+   */
+  dupJudgeProvider?: LLMProvider;
   /** Injectable logger seam for tests; defaults to `console.warn`. */
   log?: (message: string) => void;
   /**
@@ -264,6 +282,34 @@ export interface ConsolidateSummary {
    * stage-2 short-circuit would be gated on.
    */
   judgeCallsNearThreshold: number;
+  /**
+   * FEAT-549 `dupJudge.mode: 'dry-run'`: verdicts produced by the batched
+   * dup-judge sweep over pending `kind='merge'` proposals, previewed but
+   * NOT resolved — always `[]` when `dupJudge.mode !== 'dry-run'`.
+   */
+  dupJudgeVerdictsPreviewed: Array<{
+    proposalId: string; similarity: number; verdict: DupVerdictLabel; confidence: number;
+  }>;
+  /**
+   * FEAT-549 `dupJudge.mode: 'enabled'`: pending `kind='merge'` proposals
+   * actually auto-resolved this sweep, either direction — `action: 'merged'`
+   * for a confident `same-fact-merge` (via `ProposalRepo.accept`),
+   * `action: 'kept-separate'` for a confident `distinct-keep-separate` (via
+   * `ProposalRepo.reject`). Always `[]` when `dupJudge.mode !== 'enabled'`.
+   */
+  dupJudgeResolved: Array<{
+    proposalId: string; verdict: DupVerdictLabel; confidence: number; action: 'merged' | 'kept-separate';
+  }>;
+  /** FEAT-549: total dup-judge LLM calls (batches, not proposals) actually
+   *  dispatched this sweep — 0 whenever `dupJudge` was off/disabled. */
+  dupJudgeCallsExecuted: number;
+  /** FEAT-549: true when `dupJudge.maxPerRun` calls were exhausted before
+   *  every pending eligible proposal was judged this sweep. */
+  dupJudgeCapReached: boolean;
+  /** FEAT-549: true when `dupJudge.maxWallClockMs` elapsed before the sweep
+   *  finished — a SEPARATE guard from `dupJudgeCapReached`, same rationale
+   *  as `contradictionWallClockCapReached` (FEAT-482 lesson). */
+  dupJudgeWallClockCapReached: boolean;
 }
 
 // Exported (not just for internal use) so buildFullPairs/buildKnnCandidatePairs
@@ -615,6 +661,181 @@ function resolveContradictionDetection(
   };
 }
 
+interface ResolvedDupJudge {
+  mode: 'dry-run' | 'enabled';
+  minConfidence: number;
+  batchSize: number;
+  maxPerRun: number;
+  maxWallClockMs: number;
+  judgeProvider: LLMProvider;
+}
+
+/**
+ * FEAT-549: resolve+validate `dupJudge` for THIS run, mirroring
+ * `resolveContradictionDetection`'s "never fatal, disable for this run and
+ * log" shape exactly. Returns `null` (dup-judge off for this run) when:
+ * mode is `'off'`/unset, `minConfidence` is out of `[0, 1]`, `batchSize` is
+ * not a positive integer, or no `judgeProvider` was supplied despite mode
+ * being on.
+ *
+ * Deliberately does NOT gate on a dollar budget — same FEAT-482 rationale
+ * `resolveContradictionDetection` documents (every shipped LLM provider
+ * reports `usage.usd: 0`). `maxPerRun`/`maxWallClockMs` are the real caps.
+ */
+function resolveDupJudge(
+  raw: ConsolidateOpts['dupJudge'],
+  judgeProvider: LLMProvider | undefined,
+  log: (message: string) => void,
+): ResolvedDupJudge | null {
+  if (!raw || raw.mode === 'off') return null;
+  if (raw.minConfidence < 0 || raw.minConfidence > 1) {
+    log(
+      `[consolidate] dupJudge.minConfidence=${raw.minConfidence} is invalid (must be in [0, 1]) — ` +
+      'dup-judge disabled for this run.',
+    );
+    return null;
+  }
+  if (!Number.isInteger(raw.batchSize) || raw.batchSize < 1) {
+    log(
+      `[consolidate] dupJudge.batchSize=${raw.batchSize} is invalid (must be a positive integer) — ` +
+      'dup-judge disabled for this run.',
+    );
+    return null;
+  }
+  if (!judgeProvider) {
+    log(
+      `[consolidate] dupJudge.mode=${JSON.stringify(raw.mode)} but no dupJudgeProvider was supplied — ` +
+      'dup-judge disabled for this run.',
+    );
+    return null;
+  }
+  return {
+    mode: raw.mode, minConfidence: raw.minConfidence, batchSize: raw.batchSize,
+    maxPerRun: raw.maxPerRun, maxWallClockMs: raw.maxWallClockMs, judgeProvider,
+  };
+}
+
+interface PendingMergeProposalRow {
+  id: string;
+  winner_id: string;
+  loser_id: string;
+  similarity: number;
+  winner_text: string;
+  loser_text: string;
+}
+
+interface DupJudgeSweepResult {
+  verdictsPreviewed: ConsolidateSummary['dupJudgeVerdictsPreviewed'];
+  resolved: ConsolidateSummary['dupJudgeResolved'];
+  callsExecuted: number;
+  capReached: boolean;
+  wallClockCapReached: boolean;
+}
+
+/**
+ * FEAT-549: the batched dup-judge sweep itself — runs ONCE per
+ * `runConsolidation()` call, AFTER the pairwise scan above, over every
+ * `status='pending' AND kind='merge'` proposal currently sitting in the
+ * propose band [proposeThreshold, mergeThreshold) (AC-1's exact band) —
+ * this picks up BOTH proposals created earlier runs and ones the pairwise
+ * scan above just created THIS run, in one pass.
+ *
+ * `mode: 'dry-run'`: every verdict is recorded in `verdictsPreviewed`, never
+ * resolves a proposal (AC-2). `mode: 'enabled'`: a confident (>=
+ * `minConfidence`) `same-fact-merge` accepts the proposal (merge-as-
+ * supersede, same non-destructive path a human accept uses);
+ * `distinct-keep-separate` rejects it (marks resolved, no merge) — both
+ * directions record `resolved_by: 'dup-judge'` provenance via
+ * `ProposalRepo`'s additive `metadata` option (AC-4). `unclear-leave-
+ * pending`, or ANY verdict below `minConfidence`, leaves the proposal
+ * untouched. A proposal with no verdict entry at all (batch call failed —
+ * AC-1's fail-open path) is likewise left untouched — indistinguishable
+ * from "judge said unclear" from the proposal's own perspective, which is
+ * exactly the fail-open contract this FEAT mirrors from
+ * `contradiction-judge.ts`.
+ */
+async function runDupJudgeSweep(
+  db: DB,
+  resolved: ResolvedDupJudge,
+  proposeThreshold: number,
+  mergeThreshold: number,
+  log: (message: string) => void,
+): Promise<DupJudgeSweepResult> {
+  const rows = db.prepare(`
+    SELECT p.id, p.winner_id, p.loser_id, p.similarity, w.text AS winner_text, l.text AS loser_text
+    FROM consolidation_proposals p
+    JOIN memories w ON w.id = p.winner_id
+    JOIN memories l ON l.id = p.loser_id
+    WHERE p.status = 'pending' AND p.kind = 'merge'
+      AND p.similarity >= ? AND p.similarity < ?
+    ORDER BY p.created_at ASC
+  `).all(proposeThreshold, mergeThreshold) as PendingMergeProposalRow[];
+
+  const verdictsPreviewed: ConsolidateSummary['dupJudgeVerdictsPreviewed'] = [];
+  const resolvedOut: ConsolidateSummary['dupJudgeResolved'] = [];
+  if (rows.length === 0) {
+    return { verdictsPreviewed, resolved: resolvedOut, callsExecuted: 0, capReached: false, wallClockCapReached: false };
+  }
+
+  const tracker = new DupJudgeRunTracker({ maxPerRun: resolved.maxPerRun, maxWallClockMs: resolved.maxWallClockMs }, log);
+  const proposalRepo = new ProposalRepo(db);
+
+  for (let batchStart = 0; batchStart < rows.length; batchStart += resolved.batchSize) {
+    if (tracker.shouldStop()) break;
+    const batchRows = rows.slice(batchStart, batchStart + resolved.batchSize);
+    const pairs = batchRows.map((r, i) => ({
+      index: batchStart + i, winnerText: r.winner_text, loserText: r.loser_text,
+    }));
+    tracker.recordCall();
+    const verdicts = await dupJudgeBatch(resolved.judgeProvider, pairs, { log });
+
+    for (let i = 0; i < batchRows.length; i++) {
+      const row = batchRows[i] as PendingMergeProposalRow;
+      const v = verdicts.get(batchStart + i);
+      if (!v) continue; // no verdict for this proposal — stays pending (fail-open, per-item)
+
+      if (resolved.mode === 'dry-run') {
+        verdictsPreviewed.push({ proposalId: row.id, similarity: row.similarity, verdict: v.verdict, confidence: v.confidence });
+        continue;
+      }
+
+      // 'enabled': unclear or under-confident verdicts leave the proposal
+      // pending, unchanged — same "no action on ambiguity" posture the
+      // contradiction judge's minConfidence gate uses.
+      if (v.verdict === 'unclear-leave-pending' || v.confidence < resolved.minConfidence) continue;
+
+      const metadata = {
+        resolved_by: 'dup-judge' as const,
+        verdict: v.verdict,
+        confidence: v.confidence,
+        provider: resolved.judgeProvider.name,
+        model: resolved.judgeProvider.model,
+      };
+      try {
+        if (v.verdict === 'same-fact-merge') {
+          // issue #190: automatic, no human step — 'consolidation_auto',
+          // same as the pairwise scan's own auto-accept/merge tiers.
+          proposalRepo.accept(row.id, undefined, { correctionSource: 'consolidation_auto', metadata });
+          resolvedOut.push({ proposalId: row.id, verdict: v.verdict, confidence: v.confidence, action: 'merged' });
+        } else {
+          // 'distinct-keep-separate'
+          proposalRepo.reject(row.id, { metadata });
+          resolvedOut.push({ proposalId: row.id, verdict: v.verdict, confidence: v.confidence, action: 'kept-separate' });
+        }
+      } catch {
+        // 409-style race (already resolved by another path since the SELECT
+        // above) — leave it as whatever it already resolved to.
+      }
+    }
+  }
+
+  const state = tracker.state();
+  return {
+    verdictsPreviewed, resolved: resolvedOut,
+    callsExecuted: state.callsExecuted, capReached: state.capReached, wallClockCapReached: state.wallClockCapReached,
+  };
+}
+
 /**
  * FEAT-499 stage 1 (instrument-first, competitive-teardown steal #2, Mnemon
  * internal/search/diff.go, Apache-2.0). The judge is already gated to pairs
@@ -734,6 +955,8 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
       contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
       judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
+      dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
+      dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
     };
   }
   // 0.92 default (was 0.95): live corpus showed the 0.92–0.95 band is
@@ -754,6 +977,8 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
   const contradictionDetection = resolveContradictionDetection(
     opts.contradictionDetection, opts.judgeProvider, mergeThreshold, log,
   );
+  // FEAT-549 — see ConsolidateOpts.dupJudge doc comment above.
+  const dupJudge = resolveDupJudge(opts.dupJudge, opts.dupJudgeProvider, log);
   // P2.1 stabilization — see ConsolidateOpts doc comments above.
   const candidateSelection = resolveCandidateSelection(opts.candidateSelection, log);
   const knnK = resolveKnnK(opts.knnK, log);
@@ -769,6 +994,8 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
     contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
     judgeCallsNearThreshold: 0, setupBudgetExceeded: false,
+    dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
+    dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
   };
 
   if (autoMergeContained) {
@@ -1145,6 +1372,27 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       judgeErrors: judgeErrorsThisRun,
       judgeCallsNearThreshold: judgeCallsNearThresholdThisRun,
     });
+  }
+
+  // FEAT-549: batched dup-judge sweep over PENDING kind='merge' proposals in
+  // the propose band — runs AFTER the pairwise scan above so it also sees
+  // proposals the scan just created this run, in the SAME pass as any
+  // still-pending proposals from earlier runs. Only when dupJudge is
+  // actually active; an 'off'/disabled run makes zero dup-judge calls and
+  // leaves every pending proposal exactly as the scan created it —
+  // BYTE-IDENTICAL to pre-FEAT-549 behavior.
+  if (dupJudge) {
+    const dupJudgeResult = await runDupJudgeSweep(db, dupJudge, proposeThreshold, mergeThreshold, log);
+    summary.dupJudgeVerdictsPreviewed = dupJudgeResult.verdictsPreviewed;
+    summary.dupJudgeResolved = dupJudgeResult.resolved;
+    summary.dupJudgeCallsExecuted = dupJudgeResult.callsExecuted;
+    summary.dupJudgeCapReached = dupJudgeResult.capReached;
+    summary.dupJudgeWallClockCapReached = dupJudgeResult.wallClockCapReached;
+    log(
+      `[consolidate] dup-judge sweep: mode=${dupJudge.mode} calls=${summary.dupJudgeCallsExecuted} ` +
+      `resolved=${summary.dupJudgeResolved.length} previewed=${summary.dupJudgeVerdictsPreviewed.length} ` +
+      `capReached=${summary.dupJudgeCapReached} wallClockCapReached=${summary.dupJudgeWallClockCapReached}`,
+    );
   }
 
   return summary;

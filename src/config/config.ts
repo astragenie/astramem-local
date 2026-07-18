@@ -611,6 +611,62 @@ export interface Config {
       model?: string;
     };
     /**
+     * FEAT-549: batched LLM dup-judge over PENDING `kind='merge'`
+     * consolidation_proposals rows sitting in the propose band
+     * [proposeThreshold, mergeThreshold) — mirrors
+     * `contradictionDetection`'s 3-state-enum + provider-override shape
+     * exactly (same rationale: avoid an ambiguous `enabled:false,
+     * dryRun:true` combination, and the same FEAT-482 caps/fail-open
+     * lesson — never a dollar cap, every shipped provider reports
+     * `usage.usd: 0`).
+     *
+     * `off` (shipped default) is BYTE-IDENTICAL to pre-FEAT-549 behavior —
+     * the judge (`src/consolidate/dup-judge.ts`) is never called; pending
+     * `kind='merge'` proposals behave exactly as before. `dry-run` runs the
+     * judge in batches and logs every verdict (proposal id + verdict +
+     * confidence) but changes NOTHING. `enabled` auto-resolves a
+     * >=`minConfidence` verdict in EITHER direction: `same-fact-merge`
+     * accepts the proposal via the existing non-destructive
+     * merge-as-supersede path (same as a human accept);
+     * `distinct-keep-separate` rejects it (marks resolved, no merge) — both
+     * record `resolved_by: 'dup-judge'` provenance in the resolved row's
+     * `metadata_json` (see `src/consolidate/proposals.ts`'s
+     * `DupJudgeMetadata`/`parseDupJudgeMetadata`). `unclear-leave-pending`,
+     * or a verdict below `minConfidence`, leaves the proposal pending,
+     * unchanged.
+     *
+     * The `>=mergeThreshold` auto-merge tier is untouched — this only ever
+     * looks at ALREADY-PENDING `kind='merge'` proposals, never the pairwise
+     * scan's own merge/propose decision. Opt-in only until eval'd (see
+     * `tests/eval/consolidation-eval.test.ts`'s judge-enabled variant) — do
+     * not change this default casually, same caveat `contradictionDetection`
+     * carries.
+     */
+    dupJudge: {
+      mode: 'off' | 'dry-run' | 'enabled';
+      /** Judge confidence floor to act on a verdict in `'enabled'` mode.
+       *  Must be in `[0, 1]`. */
+      minConfidence: number;
+      /** Proposals per LLM call — batched, never one call per proposal.
+       *  Mirrors `distill.atomTriage.batchSize`'s shape exactly. */
+      batchSize: number;
+      /** Cap on dup-judge LLM calls (batches, not proposals) per
+       *  `runConsolidation()` call. */
+      maxPerRun: number;
+      /** Wall-clock cap (ms) on the entire dup-judge sweep within a single
+       *  `runConsolidation()` call — FEAT-482 lesson, same rationale as
+       *  `contradictionDetection.maxWallClockMs`. */
+      maxWallClockMs: number;
+      /** Optional judge provider/model override — unset rides
+       *  `llm.extraction` (same provider INSTANCE, byte-identical
+       *  pre-override behavior), same shape as
+       *  `contradictionDetection.provider`/`.model`. An invalid `provider`
+       *  value is dropped (warn, never fatal) by
+       *  `applyDupJudgeGovernance`. */
+      provider?: LLMProviderName;
+      model?: string;
+    };
+    /**
      * P2.1 stabilization: candidate-pair selection strategy for the
      * pairwise scan in `runConsolidation` (src/consolidate/consolidate.ts).
      * `'full'` (default) is BYTE-IDENTICAL to pre-P2.1 behavior — every
@@ -1288,6 +1344,14 @@ export function defaultConfig(): Config {
         // per call) never hits it in practice.
         maxWallClockMs: 300_000,
       },
+      // FEAT-549: dup-judge over pending 'merge' proposals — 'off' is the
+      // shipped default (BYTE-IDENTICAL to pre-FEAT-549 behavior), pending
+      // the same kind of eval-before-enable gate contradictionDetection
+      // went through (tests/eval/consolidation-eval.test.ts's judge-enabled
+      // variant). minConfidence=0.7/batchSize=20/maxPerRun=200/
+      // maxWallClockMs=300_000 mirror contradictionDetection's/atomTriage's
+      // own numeric defaults — no evidence yet to justify a different bar.
+      dupJudge: { mode: 'off', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 },
       // P2.1 stabilization: 'full' stays the shipped default — BYTE-
       // IDENTICAL to pre-P2.1 behavior, including the binary maxGroupSize
       // skip. Promote to 'knn' per-install only after the soak test (P2.1
@@ -1897,6 +1961,76 @@ export function applyAtomTriageGovernance(
   return distill;
 }
 
+/**
+ * FEAT-549: `consolidation.dupJudge.mode` is a closed 3-value enum, same
+ * governance concern `applyContradictionDetectionGovernance`/
+ * `applyAtomTriageGovernance` already document — config.yaml is hand-parsed
+ * scalars with no schema, so a typo'd mode value would otherwise pass
+ * straight through `deepMerge` unchecked. Validated here, never fatal; an
+ * invalid or missing block falls back to `'off'` (the documented default)
+ * and is logged. Reuses `VALID_JUDGE_PROVIDERS` (declared above for the
+ * contradiction-judge override) — `consolidation.dupJudge.provider` is the
+ * same closed provider union with the same "must not reach
+ * buildLLMProvider's throwing Azure fall-through on a boot-time typo"
+ * concern.
+ */
+const VALID_DUP_JUDGE_MODES: ReadonlySet<Config['consolidation']['dupJudge']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+const DEFAULT_DUP_JUDGE: Config['consolidation']['dupJudge'] =
+  { mode: 'off', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 };
+
+export function applyDupJudgeGovernance(
+  consolidation: Config['consolidation'],
+  opts: { log?: (message: string) => void } = {},
+): Config['consolidation'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const dj = consolidation.dupJudge;
+  // `loadConfig`'s top-level override merge is shallow, so a partial
+  // override that only touches a sibling `consolidation` field can drop
+  // `dupJudge` entirely — a missing object gets the same non-fatal
+  // fallback as an invalid `mode` (mirrors
+  // applyContradictionDetectionGovernance's/applyAtomTriageGovernance's
+  // identical guard).
+  if (!dj || !VALID_DUP_JUDGE_MODES.has(dj.mode)) {
+    log(
+      dj
+        ? `[dup-judge-governance] consolidation.dupJudge.mode=${JSON.stringify(dj.mode)} is not one of ` +
+          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-549 / " +
+          'src/consolidate/dup-judge.ts.'
+        : "[dup-judge-governance] consolidation.dupJudge is missing — falling back to defaults (mode: 'off'). " +
+          'See FEAT-549 / src/consolidate/dup-judge.ts.',
+    );
+    return { ...consolidation, dupJudge: { ...DEFAULT_DUP_JUDGE, ...dj, mode: 'off' } };
+  }
+  // Provider override: an out-of-union value must not reach buildLLMProvider
+  // (whose fall-through arm is Azure and THROWS on a missing endpoint) DURING
+  // BOOT. Drop the override, keep the ride-extraction default, warn — same
+  // posture as applyContradictionDetectionGovernance/applyAtomTriageGovernance.
+  if (dj.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(dj.provider)) {
+    log(
+      `[dup-judge-governance] consolidation.dupJudge.provider=${JSON.stringify(dj.provider)} is not one of ` +
+      `${LLM_PROVIDER_NAMES_DISPLAY} — dropping the override (dup-judge rides llm.extraction). See FEAT-549.`,
+    );
+    return { ...consolidation, dupJudge: { ...dj, provider: undefined } };
+  }
+  if (dj.minConfidence < 0 || dj.minConfidence > 1) {
+    log(
+      `[dup-judge-governance] consolidation.dupJudge.minConfidence=${dj.minConfidence} is invalid (must be in ` +
+      `[0, 1]) — falling back to ${DEFAULT_DUP_JUDGE.minConfidence}.`,
+    );
+    return { ...consolidation, dupJudge: { ...dj, minConfidence: DEFAULT_DUP_JUDGE.minConfidence } };
+  }
+  if (!Number.isInteger(dj.batchSize) || dj.batchSize < 1) {
+    log(
+      `[dup-judge-governance] consolidation.dupJudge.batchSize=${JSON.stringify(dj.batchSize)} is not a positive ` +
+      `integer — falling back to ${DEFAULT_DUP_JUDGE.batchSize}.`,
+    );
+    return { ...consolidation, dupJudge: { ...dj, batchSize: DEFAULT_DUP_JUDGE.batchSize } };
+  }
+  return consolidation;
+}
+
 const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = new Set(['mock', 'llm']);
 
 /**
@@ -1947,7 +2081,7 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
     ...merged,
     search: applyFusionGovernance(merged.search),
     distill: applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))),
-    consolidation: applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation)),
+    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation))),
     audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),
     retention: applyRetentionGovernance(merged.retention),
