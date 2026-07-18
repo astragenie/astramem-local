@@ -825,6 +825,38 @@ export interface Config {
     extractionPassB?: {
       provider?: LLMProviderName;
       model?: string;
+      /**
+       * FEAT-551: mechanical admission gate for passB atoms at stage-8
+       * (src/distill/stages/08-embed-index.ts, src/distill/evidence-gate.ts).
+       * Motivating measurement (2026-07-17/18 LoCoMo experiment series): a
+       * raw mixed-provider passB sweep (phi4-mini as passB, a different
+       * provider than pass A) measured ~100% recall on its own narrow recall
+       * task but LOST 5.8 points end-to-end — its junk atoms crowded top-k
+       * retrieval (the adversarial category alone dropped 14.9 points, since
+       * junk read as fake "evidence" for questions the answerer should have
+       * abstained on). This gate makes mixed-provider passB SAFE by dropping
+       * any passB atom whose `evidence` quote does not mechanically verify
+       * (whitespace-normalized) against the source transcript, before it
+       * ever reaches the index — junk cannot crowd retrieval if junk cannot
+       * enter.
+       *
+       * Unset (the documented default) resolves to `'on'` exactly when
+       * passB's RESOLVED provider differs from pass A's (the mixed-provider
+       * case is exactly where the junk-crowding risk was measured) and
+       * `'off'` otherwise (a same-provider passB run has no measured
+       * junk-crowding evidence justifying the gate's admission-loss cost).
+       * See `runPipeline`'s `evidenceGateEnabled` resolution
+       * (src/distill/pipeline.ts) for the exact precedence. Explicit `'on'`/
+       * `'off'` always wins over the default. Pass-A atoms are NEVER gated
+       * regardless of this setting (src/distill/evidence-gate.ts's own
+       * `extractionSource !== 'passB'` bypass).
+       *
+       * Mechanical quote-match only — no semantic/LLM support-judgment on
+       * this hot admission path (that's FEAT-547's separate
+       * `evidence_supported` layer). An invalid (non-'on'/'off') value is
+       * dropped (warn, never fatal) by `applyExtractionPassBGovernance`,
+       * same non-fatal posture as this block's `provider` field. */
+      evidenceGate?: 'on' | 'off';
     };
     /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
      *  counted TOGETHER as one per-job budget — mirrors
@@ -1823,16 +1855,35 @@ export function applyExtractionPassBGovernance(
 ): Config['distill'] {
   const log = opts.log ?? ((message: string) => console.warn(message));
   const passB = distill.extractionPassB;
-  if (!passB || passB.provider === undefined) return distill;
-  if (!VALID_JUDGE_PROVIDERS.has(passB.provider)) {
+  if (!passB) return distill;
+
+  let next = passB;
+
+  if (passB.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(passB.provider)) {
     log(
       `[extraction-pass-b-governance] distill.extractionPassB.provider=` +
       `${JSON.stringify(passB.provider)} is not one of ${LLM_PROVIDER_NAMES_DISPLAY}` +
       ' — dropping the override (pass B rides llm.extraction). See FEAT-534.',
     );
-    return { ...distill, extractionPassB: { ...passB, provider: undefined } };
+    next = { ...next, provider: undefined };
   }
-  return distill;
+
+  // FEAT-551: `evidenceGate` is a closed 2-value enum with no schema
+  // enforcement on the hand-parsed config.yaml path — same non-fatal
+  // drop-and-fall-back-to-default posture as `provider` above, so a typo
+  // here degrades to the documented mixed-provider-default resolution
+  // (runPipeline's evidenceGateEnabled) rather than throwing during boot.
+  if (next.evidenceGate !== undefined && next.evidenceGate !== 'on' && next.evidenceGate !== 'off') {
+    log(
+      `[extraction-pass-b-governance] distill.extractionPassB.evidenceGate=` +
+      `${JSON.stringify(next.evidenceGate)} is not one of 'on'|'off' — dropping the override ` +
+      '(falls back to the mixed-provider default). See FEAT-551.',
+    );
+    next = { ...next, evidenceGate: undefined };
+  }
+
+  if (next === passB) return distill;
+  return { ...distill, extractionPassB: next };
 }
 
 /**

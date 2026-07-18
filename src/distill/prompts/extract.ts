@@ -130,6 +130,31 @@ export const ExtractionSchema = z.object({
 export type Atom = z.infer<typeof AtomSchema>;
 export type Extraction = z.infer<typeof ExtractionSchema>;
 
+/**
+ * FEAT-551: which extraction pass produced an atom. Assigned
+ * PROGRAMMATICALLY by the pipeline (src/distill/pipeline.ts, right where
+ * pass B's atoms are read back from `extractSpecifics`) — NEVER part of
+ * `AtomSchema`/`ExtractionSchema`, so it never appears in the structured-
+ * output JSON schema sent to a provider and is never something the model
+ * itself emits or could hallucinate.
+ */
+export type AtomExtractionSource = 'passA' | 'passB';
+
+/**
+ * `Atom` widened with the FEAT-551 pass tag. `Atom` is structurally
+ * assignable to `SourcedAtom` (the extra field is optional), so every
+ * existing single-pass caller that still deals in plain `Atom[]` keeps
+ * working unchanged — the tag is simply absent (`undefined`), which
+ * `checkEvidenceGate` (src/distill/evidence-gate.ts) treats as "not passB,
+ * bypass" (AC-2). `ReducedAtom` (06-reduce.ts) and `NormalizedMemory`
+ * (07-memory-normalize.ts) both extend this chain, and both stages spread
+ * (`{ ...atom, ... }`) rather than reconstruct their inputs, so the tag
+ * rides through reduce/memory-normalize to stage 8 for free.
+ */
+export interface SourcedAtom extends Atom {
+  extractionSource?: AtomExtractionSource;
+}
+
 export const EXTRACTION_SYSTEM_PROMPT = `You extract durable knowledge from AI coding agent transcripts.
 
 Output STRICT JSON matching:
@@ -990,13 +1015,15 @@ Output STRICT JSON matching the SAME schema the first pass uses:
       "text": "<one self-contained sentence, roughly 10-80 words>",
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
-      "evidence": "<optional, short excerpt from source>",
+      "evidence": "<REQUIRED — an EXACT verbatim quote from the source text this atom is based on; copy, never paraphrase>",
       "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }],
       "valid_at": "<ISO-8601 date-time, only if the source text states when THIS fact started>",
       "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS fact stopped>"
     }
   ]
 }
+
+"evidence" is REQUIRED for EVERY atom you emit — not optional, unlike the first pass. Copy a short EXACT verbatim excerpt from the source chunk that this atom is directly based on; never paraphrase or summarize it. If you cannot point to an exact quote supporting a candidate item, do NOT emit that item as an atom at all — a specific detail you cannot quote is not one of the eight categories below, it is a guess.
 
 Extract ONLY items in these categories — this pass is deliberately narrow, not a second general-purpose pass:
 1. DATES/TIMES — any specific date, day, month, year, or time mentioned, even in passing.

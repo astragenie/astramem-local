@@ -28,6 +28,8 @@ import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
 import { recordTriageGuardDrops, recordTriageRunLog, type TriageGuardDropRow } from '../../storage/triage-guard-log.js';
+import { recordEvidenceGateDrops, recordEvidenceGateRunLog } from '../../storage/evidence-gate-log.js';
+import { checkEvidenceGate, type EvidenceGateDropReason } from '../evidence-gate.js';
 import { attributeSpeaker } from '../attribute-speaker.js';
 
 export interface IndexResult {
@@ -144,6 +146,25 @@ export interface EmbedIndexContext {
   /** Wall-clock cap (ms) on the triage sweep for this job — falls back to
    *  300000 (5 min) when omitted. See `AtomTriageRunTracker`. */
   atomTriageMaxWallClockMs?: number;
+  /**
+   * FEAT-551: evidence-gated sweeper. Undefined/omitted behaves as `false`
+   * — every pre-FEAT-551 caller (and the existing test suite) that never
+   * sets this field is byte-identical (AC-2): the gate check below is
+   * skipped entirely, so a `NormalizedMemory` tagged
+   * `extractionSource: 'passB'` is admitted exactly like any other atom.
+   * Real callers (distill/pipeline.ts's `runPipeline`) resolve this from
+   * `config.distill.extractionPassB.evidenceGate`, defaulting to `true`
+   * exactly when passB's resolved provider differs from pass A's (the
+   * mixed-provider case FEAT-551's own measurement targeted) — see
+   * `runPipeline`'s `evidenceGateEnabled` local for the exact precedence.
+   * When `true`, every atom with `extractionSource === 'passB'` must carry
+   * an `evidence` quote that mechanically verifies (whitespace-normalized)
+   * against `sourceText`, or it is dropped pre-index (never embedded, never
+   * indexed) — see `checkEvidenceGate` (../evidence-gate.js). Pass-A atoms
+   * (or any atom with no `extractionSource` tag, e.g. a single-pass run)
+   * are NEVER gated regardless of this setting.
+   */
+  evidenceGateEnabled?: boolean;
 }
 
 /**
@@ -193,6 +214,16 @@ export async function embedAndIndex(
   // Lane 1 / E1b, deliberately out of scope here to avoid colliding with
   // PR #231's checks.ts split).
   let vecUpsertDrops = 0;
+  // FEAT-551: counts + reasons for the evidence-gated sweeper below.
+  // `passBAtomsAttempted` is the RATE denominator (canary-must-measure-rate-
+  // not-existence) — only incremented for atoms actually tagged
+  // `extractionSource: 'passB'` while the gate is enabled, so it means
+  // exactly "passB atoms the gate evaluated," never "atoms in this batch."
+  let passBAtomsAttempted = 0;
+  const evidenceGateDrops: Record<EvidenceGateDropReason, number> = {
+    'no-evidence-field': 0,
+    'evidence-not-found': 0,
+  };
 
   // ─── Phase A: erasure-replay filter + regex durability gate ─────────────
   // Same two "last line of defense, never persisted" checks the original
@@ -261,6 +292,29 @@ export async function embedAndIndex(
     if (gatedForReason) {
       if (ctx.gatedOutCounter) ctx.gatedOutCounter.count += 1;
       continue;
+    }
+
+    // Evidence-gated sweeper (FEAT-551): third continue-style "last line of
+    // defense" filter, same ordering position as the two above. `false`/
+    // omitted (AC-2) skips this block entirely — checkEvidenceGate is never
+    // even called, so an atom tagged `extractionSource: 'passB'` is admitted
+    // exactly like pre-FEAT-551 behavior. Only ever gates a passB atom
+    // (checkEvidenceGate's own bypass for every other atom) — see that
+    // function's doc comment for the full mixed-provider-junk-crowding
+    // rationale this gate exists to close.
+    if (ctx.evidenceGateEnabled) {
+      if (mem.extractionSource === 'passB') passBAtomsAttempted++;
+      const gateResult = checkEvidenceGate(mem, ctx.sourceText);
+      if (!gateResult.admitted) {
+        const reason = gateResult.reason as EvidenceGateDropReason;
+        evidenceGateDrops[reason] += 1;
+        const { text: redactedText } = redactIfEnabled(mem.text, ctx.redactConfig ?? defaultConfig());
+        childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+          { reason, atom_type: mem.type, text: redactedText.slice(0, 500) },
+          'evidence gate: passB atom rejected — never passed to insertWithCreateEvent',
+        );
+        continue;
+      }
     }
 
     survivors.push({ originalIndex: i, mem, vec });
