@@ -142,6 +142,7 @@ import { checkAudioAddon } from './audio-addon.js';
 import { checkModelFitCanary } from './model-fit.js';
 import { checkTaskRepetitionDormancy } from './task-repetition-dormancy.js';
 import { checkOllamaOrphans } from './ollama-orphans.js';
+import { checkCaptureFreshness } from './capture-freshness.js';
 
 export type { Check, CheckResult };
 export { openProductionDbReadonly, type DoctorCheckOpts } from './shared.js';
@@ -266,6 +267,11 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     // doc comment for why this exists alongside, not instead of, the richer
     // CLI diagnostic.
     checkOllamaOrphans(),
+    // FEAT-483 SLICE-7: extends checkAutoCapture's hook_close/auto_capture
+    // canary with the freshness dimension — age of the most-recent
+    // successful capture vs a staleness threshold, not just a rate over the
+    // trailing week. See capture-freshness.ts's module doc comment.
+    checkCaptureFreshness(dataDir, encryptionEnabled),
   ];
 
   // LLM chat probes — real 1-token call, replaces surface-only /api/tags checks.
