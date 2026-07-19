@@ -1371,6 +1371,43 @@ export interface Config {
   };
 }
 
+/**
+ * Provider-aware distill defaults (2026-07-19, codex-only tuning). Called by
+ * the loader BEFORE deepMerge, so it adjusts the BASE the user's config.yaml
+ * merges over — any key explicitly present on disk always wins.
+ *
+ * Rationale: several distill defaults encode small-local-model/GPU tradeoffs
+ * that are wrong for a cloud extractor. When the EFFECTIVE extraction
+ * provider (disk value if present, else the shipped default) is
+ * codex-subscription:
+ *   - `compaction: 'never'` — compaction exists to fit small context
+ *     windows; on codex it is one wasted metered call per chunk AND measured
+ *     harm (no-compaction lifted typeAcc +23/+13/+29 across every model
+ *     tested 2026-07-17; every top LoCoMo run used compactionMode never).
+ *   - `chunkConcurrency: 3` — the sequential-ish default protects a
+ *     single-GPU box; codex is cloud. 3 stays under the provider's 20/min
+ *     client rate limit at observed ~10-12s call latency (~15-18 calls/min).
+ *
+ * `maxChunkChars` is deliberately NOT flipped here yet: larger codex chunks
+ * (12800) are enabled (MAX_CHUNK_CHARS_CEILING raised, 03-chunk.ts) but the
+ * default flip waits on a same-day A/B — the recency-bias hazard the old
+ * ceiling encoded is model-independent (see the ceiling's doc comment).
+ */
+export function applyProviderAwareDistillDefaults(
+  base: Config,
+  effectiveExtractionProvider: string | undefined,
+): Config {
+  if (effectiveExtractionProvider !== 'codex-subscription') return base;
+  return {
+    ...base,
+    distill: {
+      ...base.distill,
+      compaction: 'never',
+      chunkConcurrency: 3,
+    },
+  };
+}
+
 export function defaultConfig(): Config {
   return {
     port: 7777,

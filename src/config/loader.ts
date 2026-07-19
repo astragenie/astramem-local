@@ -53,6 +53,7 @@ import {
   applyGatekeeperGovernance,
   applyDupJudgeGovernance,
   applyTypeHintsGovernance,
+  applyProviderAwareDistillDefaults,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -374,7 +375,10 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
  * `loadConfigFromDisk` wrapper above, which is the single place governance
  * is applied. Do not call this directly outside that wrapper. */
 function loadConfigFromDiskRaw(configDir: string, reader?: (path: string) => string): Config {
-  const base = defaultConfig();
+  // Provider-aware defaults (2026-07-19): the no-file / torn-read paths pass
+  // undefined (no disk override), so the shipped default provider
+  // (codex-subscription) gets its codex-optimized distill defaults too.
+  const base = applyProviderAwareDistillDefaults(defaultConfig(), defaultConfig().llm.extraction.provider);
   const path = join(configDir, 'config.yaml');
   let text: string;
   try {
@@ -410,7 +414,17 @@ function loadConfigFromDiskRaw(configDir: string, reader?: (path: string) => str
         'Using defaults for this boot; check the file and restart to pick up your config.',
       );
     }
-    return deepMerge(base, parsed);
+    // Re-derive the provider-aware base against what the DISK actually says
+    // the extraction provider is: an explicit `llm.extraction.provider` on
+    // disk (e.g. ollama) must get the NEUTRAL small-model defaults, not the
+    // codex-optimized ones the shipped default provider implies — and vice
+    // versa. Explicit distill keys on disk still win via deepMerge.
+    const diskProvider = ((parsed as { llm?: { extraction?: { provider?: unknown } } }).llm?.extraction?.provider);
+    const providerAwareBase = applyProviderAwareDistillDefaults(
+      defaultConfig(),
+      typeof diskProvider === 'string' ? diskProvider : defaultConfig().llm.extraction.provider,
+    );
+    return deepMerge(providerAwareBase, parsed);
   } catch (err) {
     console.warn(`[astramem-local] WARNING: config.yaml could not be parsed (${String(err)}) — using defaults.`);
     return base;

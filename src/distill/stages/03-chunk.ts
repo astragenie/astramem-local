@@ -60,7 +60,15 @@ export const DEFAULT_MAX_CHUNK_CHARS = TARGET_TOKENS * CHARS_PER_TOKEN;
  *  hold a handful of short turns; MAX=8000 is generous headroom above the
  *  historical 3200 default, not a claim that larger is better (see #273 sweep). */
 export const MIN_CHUNK_CHARS = 400;
-export const MAX_CHUNK_CHARS_CEILING = 8000;
+/** Raised 8000 → 16000 (2026-07-19, codex-only tuning): the old ceiling
+ * assumed small-local-model context windows. A cloud extractor legitimately
+ * runs 12800-char (~3200-token) chunks — BUT the recency-bias hazard the old
+ * ceiling encoded (a long chunk approaching the cap loses content from its
+ * first ~80%, measured on conv-26/conv-44) is model-independent and still
+ * real: do not raise config.distill.maxChunkChars past 8000 without a
+ * same-day A/B on the target extractor. The ceiling only bounds what config
+ * may ASK for; the default remains DEFAULT_MAX_CHUNK_CHARS. */
+export const MAX_CHUNK_CHARS_CEILING = 16000;
 
 /** Turn boundary patterns */
 const TURN_BOUNDARY_RE = /^(user|assistant|system|human|ai)\s*:/i;

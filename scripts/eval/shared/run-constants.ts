@@ -14,7 +14,7 @@
  * overrides (flags like --passb-sweep) are recorded separately by each
  * harness; this block is the BASELINE those overrides act on.
  */
-import { defaultConfig, resolveExtractionPassBTuning, EXTRACTION_PASS_B_DEFAULTS } from '../../../src/config/config.js';
+import { defaultConfig, resolveExtractionPassBTuning, EXTRACTION_PASS_B_DEFAULTS, applyProviderAwareDistillDefaults } from '../../../src/config/config.js';
 import { DEFAULT_MAX_CHUNK_CHARS } from '../../../src/distill/stages/03-chunk.js';
 import { EXTRACT_TEMPERATURE, PASS_A_MAX_TOKENS } from '../../../src/distill/stages/05-extract.js';
 import { CHARS_PER_TOKEN, NUM_CTX_FLOOR, NUM_CTX_CAP } from '../../../src/providers/llm/ollama.js';
@@ -55,12 +55,25 @@ export interface RunConstants {
     extractionProvider: string;
     atomTriageMode: string;
     gatekeeperMode: string;
+    /** Provider-aware EFFECTIVE values (2026-07-19): what a daemon booted
+     *  with the shipped default provider actually resolves — codex gets
+     *  compaction 'never' + chunkConcurrency 3 via
+     *  applyProviderAwareDistillDefaults, not the neutral base values. */
+    compactionMode: string;
+    chunkConcurrency: number;
   };
   ollamaEnv: Record<string, string | undefined>;
+  /** Which knobs are DEAD on the codex-subscription provider — it does not
+   *  forward them (endpoint 400s on both; codex-subscription.ts ~618-624).
+   *  Recorded so run forensics never chases a knob that cannot have moved a
+   *  codex number: temperature and every maxTokens-derived ceiling
+   *  (pass-A 6000, pass-B tuning cap 1500) are no-ops on codex; the pass-B
+   *  skip-gate and numCtxCap remain live only for ollama-backed stages. */
+  codexDeadKnobs: string[];
 }
 
 export function collectRunConstants(): RunConstants {
-  const cfg = defaultConfig();
+  const cfg = applyProviderAwareDistillDefaults(defaultConfig(), defaultConfig().llm.extraction.provider);
   const tuning = resolveExtractionPassBTuning(undefined);
   return {
     chunking: {
@@ -95,7 +108,10 @@ export function collectRunConstants(): RunConstants {
       extractionProvider: cfg.llm?.extraction?.provider ?? '?',
       atomTriageMode: cfg.distill?.atomTriage?.mode ?? 'off',
       gatekeeperMode: cfg.distill?.gatekeeper?.mode ?? 'off',
+      compactionMode: cfg.distill?.compaction ?? 'auto',
+      chunkConcurrency: cfg.distill?.chunkConcurrency ?? 2,
     },
+    codexDeadKnobs: ['temperature', 'maxTokens (pass-A ceiling + pass-B tuning cap)'],
     ollamaEnv: {
       OLLAMA_FLASH_ATTENTION: process.env.OLLAMA_FLASH_ATTENTION,
       OLLAMA_KV_CACHE_TYPE: process.env.OLLAMA_KV_CACHE_TYPE,
