@@ -20,7 +20,7 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { DistillCostCapTracker, resolveDistillCostCap } from '../../src/distill/cost-cap.js';
 import { compact, compactChunk } from '../../src/distill/stages/04-compact.js';
-import { extract, extractChunk } from '../../src/distill/stages/05-extract.js';
+import { extract, extractChunk, extractSpecifics } from '../../src/distill/stages/05-extract.js';
 import { BudgetTracker } from '../../src/budget/tracker.js';
 import { defaultConfig, type Config } from '../../src/config/config.js';
 import type { LLMProvider, ChatMsg, ChatOpts, ChatResult, LLMHealth } from '../../src/contracts/index.js';
@@ -237,5 +237,59 @@ describe('compact() / extract() — costCap stops dispatch across multiple chunk
 
     expect(callCount()).toBe(3);
     expect(results.every((r) => r.text === 'compressed')).toBe(true);
+  });
+
+  // issue #396 (fast-follow, dual-pass sweeper cost-cap gap): extractSpecifics
+  // (stage 5b, the `distill.extractionPasses: 2` sweeper pass) previously had
+  // NO costCap parameter at all, so pipeline.ts had no way to bound it even
+  // with config.distill.costCap enabled — the sweeper ran fully unbounded
+  // while pass A (extract()) correctly stopped. These mirror the equivalent
+  // extract() coverage above.
+  it('extractSpecifics(): chunks beyond the cap contribute zero atoms instead of failing the job', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, callCount } = makeCountingLLM(VALID_EXTRACTION_JSON);
+    const tracker = new DistillCostCapTracker({ enabled: true, maxCallsPerJob: 1 }, () => {});
+    const chunks = [0, 1, 2].map((i) => ({ index: i, text: `chunk ${i}` }));
+
+    const results = await extractSpecifics(chunks, llm, budget, 10.0, 1, undefined, undefined, tracker);
+
+    expect(callCount()).toBe(1);
+    expect(results.filter((r) => r.atoms.length > 0)).toHaveLength(1);
+    expect(results.filter((r) => r.atoms.length === 0)).toHaveLength(2);
+  });
+
+  it('a SHARED tracker bounds extract() pass A + extractSpecifics() pass B TOGETHER (the pipeline.ts call shape)', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm: passA, callCount: passACalls } = makeCountingLLM(VALID_EXTRACTION_JSON);
+    const { llm: passB, callCount: passBCalls } = makeCountingLLM(VALID_EXTRACTION_JSON);
+    const tracker = new DistillCostCapTracker({ enabled: true, maxCallsPerJob: 2 }, () => {});
+    const chunks = [0, 1, 2].map((i) => ({ index: i, text: `chunk ${i}` }));
+
+    const passAResults = await extract(chunks, passA, budget, 10.0, 'engineering', 1, undefined, undefined, tracker);
+    expect(passACalls()).toBe(2); // spends the whole shared budget
+
+    const passBResults = await extractSpecifics(chunks, passB, budget, 10.0, 1, undefined, undefined, tracker);
+    // No budget left — the sweeper pass makes zero LLM calls of its own.
+    expect(passBCalls()).toBe(0);
+    expect(passBResults.every((r) => r.atoms.length === 0)).toBe(true);
+    expect(passAResults.filter((r) => r.atoms.length > 0)).toHaveLength(2);
+    expect(tracker.state()).toEqual({ callsExecuted: 2, capReached: true, wallClockCapReached: false });
+  });
+
+  it('extractSpecifics() with no costCap passed behaves exactly as before (byte-identical, no skips)', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const budget = new BudgetTracker(db);
+    const { llm, callCount } = makeCountingLLM(VALID_EXTRACTION_JSON);
+    const chunks = [0, 1, 2].map((i) => ({ index: i, text: `chunk ${i}` }));
+
+    const results = await extractSpecifics(chunks, llm, budget, 10.0, 1, undefined, undefined);
+
+    expect(callCount()).toBe(3);
+    expect(results.every((r) => r.atoms.length === 1)).toBe(true);
   });
 });

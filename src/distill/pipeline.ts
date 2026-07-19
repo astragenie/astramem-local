@@ -461,7 +461,7 @@ export async function runPipeline(
       'stage start',
     );
     try {
-      extractResultsSpecifics = await extractSpecifics(sweepChunks, passBProvider, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso, passBTuning.maxTokens);
+      extractResultsSpecifics = await extractSpecifics(sweepChunks, passBProvider, budget, ctx.capUsd, chunkConcurrency, checkpointJobKey, sessionDateIso, costCap, passBTuning.maxTokens);
       const specificsAtoms = extractResultsSpecifics.reduce((sum, r) => sum + r.atoms.length, 0);
       pipeLog.info(
         { stage: 'extract-specifics', atoms_extracted: specificsAtoms, provider: passBProvider.name, model: passBProvider.model },

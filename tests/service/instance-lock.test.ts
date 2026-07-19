@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createServer, type Server } from 'node:net';
 import {
-  acquireInstanceLock, AlreadyRunningError, ZombieLockTakeoverError, lockPath, stopLockHolder,
+  acquireInstanceLock, AlreadyRunningError, StillBootingError, ZombieLockTakeoverError, lockPath, stopLockHolder,
   getProcessStartTime, isPortInUse, acquiringLockPath, MutexTimeoutError, type InstanceLock,
 } from '../../src/service/instance-lock.js';
 
@@ -192,6 +192,143 @@ describe('instance-lock', () => {
     lock.release();
     // The stolen lock must survive the old holder's release.
     expect(existsSync(lockPath(dir))).toBe(true);
+  });
+});
+
+// issue #396: a lock holder recorded as started too recently must not be
+// treated as a zombie on 3 failed health probes alone — the probe loop has
+// no sleep between attempts, so a not-yet-listening holder fails all 3
+// almost instantly (ECONNREFUSED, not the 2s timeout), long before it could
+// plausibly have reached app.listen(). These tests inject `signal` and
+// `processStartTime` spies purely to prove they are NEVER CALLED — the grace
+// check must short-circuit before stopLockHolder is ever reached.
+describe('boot-grace zombie deferral (issue #396)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-lock-bootgrace-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('holder started moments ago + probes fail -> throws StillBootingError, never signals, never overwrites the lock', async () => {
+    const recentStart = new Date().toISOString();
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9200, startedAt: recentStart, version: '0.6.0' }),
+    );
+    const signaled: number[] = [];
+    let startTimeCalls = 0;
+    await expect(
+      acquireInstanceLock(dir, 7777, '0.6.0', {
+        healthProbe: async () => false, // not yet bound — every probe fails
+        signal: pid => { signaled.push(pid); },
+        processStartTime: async () => { startTimeCalls++; return new Date(recentStart); },
+      }),
+    ).rejects.toThrow(StillBootingError);
+    expect(signaled).toEqual([]); // stopLockHolder must never be reached
+    expect(startTimeCalls).toBe(0);
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.ppid); // lock untouched
+  });
+
+  it('an injected bootGraceMs override widens the grace window beyond the 30s default', async () => {
+    // Started 100ms ago — well past a real boot, but still inside a widened
+    // 5-minute override, proving opts.bootGraceMs actually reaches the check.
+    const start = new Date(Date.now() - 100).toISOString();
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9201, startedAt: start, version: '0.6.0' }),
+    );
+    const signaled: number[] = [];
+    await expect(
+      acquireInstanceLock(dir, 7777, '0.6.0', {
+        healthProbe: async () => false,
+        signal: pid => { signaled.push(pid); },
+        bootGraceMs: 5 * 60 * 1000,
+      }),
+    ).rejects.toThrow(StillBootingError);
+    expect(signaled).toEqual([]);
+  });
+
+  it('an injected bootGraceMs of 0 disables the grace window -> falls through to the existing zombie/stop logic unchanged', async () => {
+    const recentStart = new Date().toISOString();
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9202, startedAt: recentStart, version: '0.6.0' }),
+    );
+    const signaled: number[] = [];
+    const lock = await acquireInstanceLock(dir, 7777, '0.6.0', {
+      healthProbe: async () => false,
+      signal: pid => { signaled.push(pid); },
+      processStartTime: async () => new Date(recentStart), // identity matches -> stop succeeds
+      bootGraceMs: 0,
+    });
+    expect(signaled).toEqual([process.ppid]); // fell through to the real zombie-stop path and signaled it
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it('missing/invalid startedAt cannot grant grace -> falls through to the existing zombie logic unchanged (fail-closed, not fail-open)', async () => {
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9203, startedAt: '', version: '0.6.0' }),
+    );
+    const signaled: number[] = [];
+    const lock = await acquireInstanceLock(dir, 7777, '0.6.0', {
+      healthProbe: async () => false,
+      signal: pid => { signaled.push(pid); },
+      processStartTime: async () => new Date(), // identity check passes (no recorded start to compare against is handled by stopLockHolder itself)
+    });
+    // stopLockHolder itself refuses (no valid startedAt) — proves the boot-grace
+    // check stepped aside rather than silently granting grace, not that it stole.
+    expect(signaled).toEqual([]);
+    // Zombie-stop couldn't confirm the holder stopped AND (no real listener
+    // bound here) the port is free -> takeover proceeds per issue #389's logic.
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.pid);
+    lock.release();
+  });
+
+  it('holder started well outside the default 30s grace window + probes fail -> falls through to existing zombie logic (regression guard)', async () => {
+    const oldStart = new Date(Date.now() - 60_000).toISOString(); // 60s ago > 30s default
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9204, startedAt: oldStart, version: '0.6.0' }),
+    );
+    const signaled: number[] = [];
+    const lock = await acquireInstanceLock(dir, 7777, '0.6.0', {
+      healthProbe: async () => false,
+      signal: pid => { signaled.push(pid); },
+      processStartTime: async () => new Date(oldStart),
+    });
+    expect(signaled).toEqual([process.ppid]);
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.pid);
+    lock.release();
+  });
+
+  // End-to-end proof against the REAL (non-injected) health-probe network
+  // path — port 9205 has nothing listening on it, so real `fetch` calls
+  // ECONNREFUSED near-instantly on all 3 probes, exactly reproducing the
+  // "boot hasn't bound the port yet" race from a second real launcher's
+  // perspective. Only `signal` is injected, purely so a real kill is never
+  // sent to process.ppid (the test runner's own parent) if this regresses.
+  it('REAL health-probe network path: a just-started holder whose port genuinely has nothing listening is still deferred, not killed', async () => {
+    const recentStart = new Date().toISOString();
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9205, startedAt: recentStart, version: '0.6.0' }),
+    );
+    const signaled: number[] = [];
+    const start = Date.now();
+    await expect(
+      acquireInstanceLock(dir, 7777, '0.6.0', { signal: pid => { signaled.push(pid); } }),
+    ).rejects.toThrow(StillBootingError);
+    // Proves the probes failed FAST (ECONNREFUSED), not via the 2s timeout —
+    // the exact mechanism that makes "3 probes = 6s of protection" false.
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(signaled).toEqual([]);
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(process.ppid);
   });
 });
 

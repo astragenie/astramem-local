@@ -10,7 +10,7 @@ import { startShipper, getOrCreateDeviceId, shouldStartShipper, type ShipperHand
 import { encryptIfPlaintext } from '../storage/migrate-encrypt.js';
 import { defaultConfigDir } from '../config/datadir.js';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
-import { acquireInstanceLock, AlreadyRunningError, type InstanceLock } from '../service/instance-lock.js';
+import { acquireInstanceLock, AlreadyRunningError, StillBootingError, type InstanceLock } from '../service/instance-lock.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { createHealthState, type HealthState } from '../server/health-state.js';
 import type { EmbedProvider } from '../contracts/embed.js';
@@ -509,6 +509,14 @@ export async function serve(opts: ServeOpts): Promise<void> {
     } catch (err) {
       if (err instanceof AlreadyRunningError) {
         console.log(`${ts()} [astramem-local] ${err.message} — exiting (single-instance).`);
+        process.exit(0);
+      }
+      // issue #396: a second launcher (schtasks keepalive/watchdog) racing a
+      // genuinely-alive holder still mid-boot (before app.listen()) must
+      // defer, not steal — same cheap-no-op exit AlreadyRunningError already
+      // gives a confirmed-healthy holder. See StillBootingError's doc comment.
+      if (err instanceof StillBootingError) {
+        console.log(`${ts()} [astramem-local] ${err.message} — exiting (single-instance boot race).`);
         process.exit(0);
       }
       if (err instanceof SchemaNewerThanDaemonError) {

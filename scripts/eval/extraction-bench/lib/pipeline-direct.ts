@@ -176,6 +176,7 @@ export async function runDirectPipeline(
         : compactedChunks;
       const specificsResults = await extractSpecifics(
         sweepChunks, passBProvider, budget, capUsd, 1, undefined, undefined,
+        undefined, // costCap — the eval harness has no dollar-cap tracker
         opts.passBSweep !== 'untuned' ? passBTuning.maxTokens : undefined,
       );
       usageUsd += specificsResults.reduce((s, r) => s + r.usageUsd, 0);
