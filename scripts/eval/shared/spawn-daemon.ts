@@ -174,7 +174,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned' },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -227,8 +227,12 @@ export function makeIsolatedEvalEnv(
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
   }
-  if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined || opts?.extractionPassB !== undefined) {
+  if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined || opts?.extractionPassB !== undefined || opts?.maxChunkChars !== undefined) {
     configLines.push('distill:');
+    // Chunk-size A/B lever (2026-07-19, codex-only tuning): explicit
+    // distill.maxChunkChars for the sandbox daemon. Values > 8000 require
+    // the raised MAX_CHUNK_CHARS_CEILING (03-chunk.ts) in the daemon build.
+    if (opts.maxChunkChars !== undefined) configLines.push(`  maxChunkChars: ${opts.maxChunkChars}`);
     if (opts.extractProfile !== undefined) configLines.push(`  extractProfile: ${opts.extractProfile}`);
     if (opts.extractionPasses !== undefined) configLines.push(`  extractionPasses: ${opts.extractionPasses}`);
     // `compaction: never` = raw-turn passthrough, no compaction LLM call (the

@@ -170,6 +170,12 @@ if (compactionModeFlag !== undefined && !['auto', 'always', 'never'].includes(co
 // (gate off, no output cap) — required for any faithful replication of a
 // pre-2026-07-18 dual-pass number (e.g. the 0.6002 champion). Omit = the
 // shipped EXTRACTION_PASS_B_DEFAULTS tuning applies.
+const maxChunkCharsFlagRaw = get('--max-chunk-chars');
+const maxChunkCharsFlag = maxChunkCharsFlagRaw !== undefined ? Number(maxChunkCharsFlagRaw) : undefined;
+if (maxChunkCharsFlag !== undefined && (!Number.isFinite(maxChunkCharsFlag) || maxChunkCharsFlag <= 0)) {
+  console.error(`--max-chunk-chars must be a positive number, got: ${maxChunkCharsFlagRaw}`);
+  process.exit(1);
+}
 const passBSweepFlag = get('--passb-sweep') as 'untuned' | undefined;
 if (passBSweepFlag !== undefined && passBSweepFlag !== 'untuned') {
   console.error(`--passb-sweep only supports 'untuned', got: ${passBSweepFlag}`);
@@ -259,6 +265,7 @@ async function runShard(opts: {
    *  (gate off, no output cap) for faithful replication of pre-tuning runs;
    *  undefined inherits EXTRACTION_PASS_B_DEFAULTS. */
   passBSweep?: 'untuned';
+  maxChunkChars?: number;
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -276,7 +283,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -287,7 +294,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars });
   // 2026-07-18 traceability: persist the sandbox's EXACT boot config into the
   // run dir — the sandbox datadir is deleted on cleanup, and everything not in
   // this file fell through to defaultConfig() (see run-manifest's gitState for
@@ -593,7 +600,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -714,6 +721,7 @@ async function runFull(): Promise<void> {
       compactionMode: compactionModeFlag ?? 'inherited-default',
       extractionPassB: extractionPassBFlag ?? 'inherited-default',
       passBSweep: passBSweepFlag ?? 'tuned-default',
+      maxChunkChars: maxChunkCharsFlag ?? 'inherited-default',
       extractPromptEnv: process.env.ASTRA_EXTRACT_PROMPT ?? null,
       passBTuning: resolveExtractionPassBTuning(undefined),
       // 2026-07-19 operator directive (0.5346 replication review): every
