@@ -1,0 +1,352 @@
+[
+  {
+    "fixtureId": "fx01-clean-decision",
+    "repeats": 3,
+    "recall": {
+      "mean": 0.75,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.75,
+        0.75,
+        0.75
+      ]
+    },
+    "precision": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "f1": {
+      "mean": 0.8571428571428571,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.8571428571428571,
+        0.8571428571428571,
+        0.8571428571428571
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 0.6666666666666666,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.6666666666666666,
+        0.6666666666666666,
+        0.6666666666666666
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 3,
+        "recall": 0.75,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.6666666666666666,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Captures the decision to use SQLite via better-sqlite3 instead of Postgres for a local-first daemon."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": true,
+              "reason": "States the decision to use sqlite-vec for vector similarity search to avoid a separate vector DB."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Captures the default embedding model (mxbai-embed-large via Ollama, 1024-dim) but labels it as a fact rather than the gold atom's decision type."
+            }
+          ],
+          "unmatched_gold_indices": [
+            3
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 3,
+        "recall": 0.75,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.6666666666666666,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Captures the decision to use SQLite via better-sqlite3 instead of Postgres for local/no-server storage."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": true,
+              "reason": "Directly corresponds to choosing sqlite-vec for vector search to avoid a separate vector DB."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "States the default embedding model is mxbai-embed-large via Ollama (1024-dim) but is labeled as a fact while the gold atom is a decision."
+            }
+          ],
+          "unmatched_gold_indices": [
+            3
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 3,
+        "recall": 0.75,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.6666666666666666,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Captures the decision to use SQLite/better-sqlite3 instead of Postgres for local-first storage."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": true,
+              "reason": "States the decision to use sqlite-vec for vector similarity search without a separate DB."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Identifies mxbai-embed-large via Ollama as the default embedding model (matches decision) but is labeled as a fact rather than a decision."
+            }
+          ],
+          "unmatched_gold_indices": [
+            3
+          ]
+        }
+      }
+    ]
+  },
+  {
+    "fixtureId": "fx02-debugging-race-condition",
+    "repeats": 3,
+    "recall": {
+      "mean": 0.20000000000000004,
+      "stdev": 3.3993498887762956e-17,
+      "n": 3,
+      "raw": [
+        0.2,
+        0.2,
+        0.2
+      ]
+    },
+    "precision": {
+      "mean": 0.25,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.25,
+        0.25,
+        0.25
+      ]
+    },
+    "f1": {
+      "mean": 0.22222222222222224,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.22222222222222224,
+        0.22222222222222224,
+        0.22222222222222224
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 4,
+        "recall": 0.2,
+        "precision": 0.25,
+        "junkRate": 0.75,
+        "typeAccuracy": 1,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "States that before the fix 3 duplicate rows were created when firing 20 concurrent POSTs, matching gold atom 3 (fact about duplicates before/after)."
+            },
+            {
+              "index": 1,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant restatement of the after-fix fact already covered by another extracted atom; no new durable content."
+            },
+            {
+              "index": 2,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Duplicate of extracted atom 0 (same fact about 3 duplicate rows before the fix), redundant."
+            },
+            {
+              "index": 3,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Duplicate of extracted atom 1 (same after-fix fact), redundant and does not add new durable content."
+            }
+          ],
+          "unmatched_gold_indices": [
+            0,
+            1,
+            2,
+            4
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 4,
+        "recall": 0.2,
+        "precision": 0.25,
+        "junkRate": 0.75,
+        "typeAccuracy": 1,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Captures the gold fact that 3 duplicate rows were created during 20 concurrent POSTs (same content and type)."
+            },
+            {
+              "index": 1,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant restatement of the same gold fact (after-fix outcome) already covered by gold atom 3; not a new durable atom."
+            },
+            {
+              "index": 2,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Duplicate restatement of the pre-fix fact already matched to gold atom 3; redundant."
+            },
+            {
+              "index": 3,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Another redundant restatement of the post-fix outcome; not an additional distinct gold atom."
+            }
+          ],
+          "unmatched_gold_indices": [
+            0,
+            1,
+            2,
+            4
+          ]
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 4,
+        "recall": 0.2,
+        "precision": 0.25,
+        "junkRate": 0.75,
+        "typeAccuracy": 1,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Captures the same factual verification that before the fix 3 duplicate rows were created from 20 concurrent POSTs."
+            },
+            {
+              "index": 1,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant duplicate of the same fact already captured by extracted atom 0; no new durable content."
+            },
+            {
+              "index": 2,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Duplicate of the same pre-fix fact (redundant), not a distinct gold atom."
+            },
+            {
+              "index": 3,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Duplicate of the same post-fix fact already matched to gold atom 3; no new information."
+            }
+          ],
+          "unmatched_gold_indices": [
+            0,
+            1,
+            2,
+            4
+          ]
+        }
+      }
+    ]
+  }
+]

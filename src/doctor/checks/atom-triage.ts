@@ -38,7 +38,7 @@ import { openProductionDbReadonly, SEVEN_DAYS_MS, MEANINGFUL_USAGE_THRESHOLD } f
 const NEAR_ZERO_RATE_FLOOR = 0.02;
 const HIGH_RATE_ALARM = 0.5;
 
-export function checkAtomTriage(dataDir: string, mode: 'off' | 'dry-run' | 'enabled', encryptionEnabled: boolean): Check {
+export function checkAtomTriage(dataDir: string, mode: 'off' | 'dry-run' | 'enabled' | 'repair-only', encryptionEnabled: boolean): Check {
   return {
     name: 'Atom triage',
     // 'full' — triage_run_log is a corpus-scale table (grows with every

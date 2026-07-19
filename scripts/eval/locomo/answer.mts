@@ -36,6 +36,32 @@ import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 const ANSWER_MAX_COMPLETION_TOKENS = 150;
 
 /**
+ * Local-answerer A/B (2026-07-18, additive): swap the fixed cheap Azure
+ * answerer for a local Ollama model (e.g. phi4-mini) — measures whether a
+ * free local answerer can hold the score the Azure one sets, on the SAME
+ * stored memories (pairs with run.mts --resume for a re-answer-only pass).
+ * The prompt, k, token budget, and abstention phrasing are unchanged; only
+ * the completion transport differs. Omitted -> byte-identical Azure path.
+ */
+export interface OllamaAnswerer { model: string; baseUrl?: string }
+
+async function ollamaChatComplete(o: OllamaAnswerer, prompt: string): Promise<string> {
+  const res = await fetch(`${o.baseUrl ?? 'http://127.0.0.1:11434'}/api/chat`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      model: o.model,
+      messages: [{ role: 'user', content: prompt }],
+      stream: false,
+      options: { temperature: 0, num_predict: ANSWER_MAX_COMPLETION_TOKENS },
+    }),
+  });
+  if (!res.ok) throw new Error(`ollama answerer HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const body = (await res.json()) as { message?: { content?: string } };
+  return body.message?.content ?? '';
+}
+
+/**
  * FEAT-500 answerer-prompt A/B prep. `hit.explanation` (per-signal scores +
  * `top_signal` argmax) has been on the wire since 2026-07-13 but never
  * reached the answerer -- 46% of measured LoCoMo losses are answerer-side,
@@ -130,7 +156,7 @@ export async function answerConversations(
   daemonClient: DaemonClientOpts,
   azureCfg: AzureConfig,
   samples: LoCoMoSample[],
-  opts: { k?: number; readySampleIds?: Set<string>; concurrency?: number; includeSignals?: boolean } = {},
+  opts: { k?: number; readySampleIds?: Set<string>; concurrency?: number; includeSignals?: boolean; ollamaAnswerer?: OllamaAnswerer } = {},
 ): Promise<AnswerOutcome[]> {
   const k = opts.k ?? 10;
   const concurrency = Math.max(1, opts.concurrency ?? DEFAULT_ANSWER_CONCURRENCY);
@@ -169,12 +195,14 @@ export async function answerConversations(
     // same prompt, same deployment, same token budget, same reasoning effort.
     const hits = await recall(daemonClient, { text: t.qa.question, limit: k, filters: { project: projectIdFor(t.sampleId) } });
     const prompt = buildAnswerPrompt(t.qa.question, hits, { includeSignals });
-    const hypothesis = await azureChatComplete(azureCfg, {
-      deployment: azureCfg.answererDeployment,
-      messages: [{ role: 'user', content: prompt }],
-      maxCompletionTokens: ANSWER_MAX_COMPLETION_TOKENS,
-      reasoningEffort: 'minimal',
-    });
+    const hypothesis = opts.ollamaAnswerer
+      ? await ollamaChatComplete(opts.ollamaAnswerer, prompt)
+      : await azureChatComplete(azureCfg, {
+          deployment: azureCfg.answererDeployment,
+          messages: [{ role: 'user', content: prompt }],
+          maxCompletionTokens: ANSWER_MAX_COMPLETION_TOKENS,
+          reasoningEffort: 'minimal',
+        });
     return { qa_id: t.id, sample_id: t.sampleId, category: t.qa.category, hypothesis: hypothesis.trim(), hit_count: hits.length };
   });
 

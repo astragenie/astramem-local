@@ -678,3 +678,458 @@ describe('dual-pass extraction (distill.extractionPasses)', () => {
     expect(result.memoriesCreated).toBe(4);
   });
 });
+
+// ---------------------------------------------------------------------------
+// FEAT-551: evidence-gated sweeper — wiring at the runPipeline level. The
+// gate itself (checkEvidenceGate) is unit-tested in
+// tests/distill/evidence-gate.test.ts; these tests prove the end-to-end
+// resolution (mixed-provider default, explicit override, pass-A bypass)
+// actually reaches stage 8 through the real pipeline.
+// ---------------------------------------------------------------------------
+describe('evidence-gated sweeper wiring (distill.extractionPassB.evidenceGate)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  /** A named mock provider — same shape as the dual-pass suite's
+   *  makeNamedMockLLM, but with a caller-chosen provider `name` (not always
+   *  'ollama') so a test can construct a genuine mixed-PROVIDER case, not
+   *  just a mixed-model one. */
+  function makeProvider(name: LLMProvider['name'], model: string, extractionReply: string): LLMProvider {
+    return {
+      name,
+      model,
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        const reply = opts?.json ? extractionReply : 'compressed content';
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model, latency_ms: 0 };
+      },
+    };
+  }
+
+  // One real (verifiable) passB atom + one fabricated one, so a run can
+  // distinguish "gate admitted the real one" from "gate dropped the fake one"
+  // in a single call.
+  const MIXED_SPECIFICS_RESPONSE = JSON.stringify({
+    atoms: [
+      {
+        type: 'fact',
+        text: 'the default daemon port avoids conflicts with common dev tools',
+        importance: 0.5,
+        confidence: 0.8,
+        // Real substring of FIXTURE_TRANSCRIPT — verifies (whitespace-normalized).
+        evidence: 'It avoids conflicts with common dev tools on 3000/8080.',
+      },
+      {
+        type: 'fact',
+        text: 'a fabricated passB claim nobody actually said',
+        importance: 0.5,
+        confidence: 0.8,
+        evidence: 'this exact sentence never appears anywhere in the transcript',
+      },
+    ],
+  });
+
+  it('mixed-provider case (unset evidenceGate): defaults ON — the fabricated passB atom is dropped, the verifiable one survives, pass-A atoms are untouched', async () => {
+    const passA = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passB = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: passA, llmExtraction: passA, llmExtractionPassB: passB, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      // evidenceGate deliberately unset — exercises the mixed-provider default.
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { provider: 'ollama', model: 'phi4-mini' } } },
+    });
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    // Pass A's 3 atoms all present, untouched.
+    expect(texts.some((t: string) => t.includes('sqlite-vec'))).toBe(true);
+    expect(texts.some((t: string) => t.includes('7777'))).toBe(true);
+    expect(texts.some((t: string) => t.includes('better-sqlite3'))).toBe(true);
+    // The verifiable passB atom survived.
+    expect(texts.some((t: string) => t.includes('avoids conflicts with common dev tools'))).toBe(true);
+    // The fabricated passB atom was dropped by the gate.
+    expect(texts.some((t: string) => t.includes('fabricated passb claim'))).toBe(false);
+    expect(result.memoriesCreated).toBe(4); // 3 pass-A + 1 surviving pass-B
+  });
+
+  it("explicit evidenceGate: 'off' overrides the mixed-provider default — the fabricated passB atom survives too", async () => {
+    const passA = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passB = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: passA, llmExtraction: passA, llmExtractionPassB: passB, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: {
+        ...defaultConfig(),
+        distill: {
+          ...defaultConfig().distill, extractionPasses: 2,
+          extractionPassB: { provider: 'ollama', model: 'phi4-mini', evidenceGate: 'off' },
+        },
+      },
+    });
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('fabricated passb claim'))).toBe(true);
+    expect(result.memoriesCreated).toBe(5); // 3 pass-A + BOTH pass-B atoms
+  });
+
+  it("explicit evidenceGate: 'on' forces the gate even in the SAME-provider case (no mixed-provider default would otherwise apply)", async () => {
+    // Same provider INSTANCE drives BOTH passes (no llmExtractionPassB
+    // override) — the default resolution alone would leave the gate OFF (no
+    // provider mismatch). Explicit 'on' must still force it. Distinguishes
+    // pass A's call from pass B's by system prompt (same technique
+    // makeDualPassMockLLM above uses) so pass A's own atoms never
+    // exact-duplicate pass B's fabricated atom and get merge-deduped into
+    // masquerading as a pass-A survivor.
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'same-model',
+      async chat(msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (!opts?.json) return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+        const system = msgs.find((m) => m.role === 'system')?.content ?? '';
+        const reply = system === EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER ? MIXED_SPECIFICS_RESPONSE : EXTRACTION_RESPONSE;
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'same-model', latency_ms: 0 };
+      },
+    };
+    const embed = makeMockEmbed();
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: {
+        ...defaultConfig(),
+        distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { evidenceGate: 'on' } },
+      },
+    });
+
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('fabricated passb claim'))).toBe(false);
+    expect(texts.some((t: string) => t.includes('avoids conflicts with common dev tools'))).toBe(true);
+  });
+
+  // AC-2: "an integration test asserts pass-A atom count and content are
+  // unaffected by the gate being on or off" — run the SAME mixed-provider
+  // setup twice, gate explicitly 'on' then explicitly 'off', and diff only
+  // the pass-A atoms between the two runs.
+  it('AC-2: pass-A atom count and content are byte-identical whether the gate is explicitly on or off', async () => {
+    const passAOn = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passBOn = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const embed = makeMockEmbed();
+
+    const dbOn = openDb(':memory:');
+    migrate(dbOn);
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db: dbOn, llmCompaction: passAOn, llmExtraction: passAOn, llmExtractionPassB: passBOn, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { provider: 'ollama', model: 'phi4-mini', evidenceGate: 'on' } } },
+    });
+
+    const passAOff = makeProvider('codex-subscription', 'gpt-5.4-mini', EXTRACTION_RESPONSE);
+    const passBOff = makeProvider('ollama', 'phi4-mini', MIXED_SPECIFICS_RESPONSE);
+    const dbOff = openDb(':memory:');
+    migrate(dbOff);
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db: dbOff, llmCompaction: passAOff, llmExtraction: passAOff, llmExtractionPassB: passBOff, embed,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { provider: 'ollama', model: 'phi4-mini', evidenceGate: 'off' } } },
+    });
+
+    const PASS_A_TEXTS = [
+      'use sqlite-vec for vector storage in v1',
+      'default daemon port is 7777',
+      'bun does not support better-sqlite3 on windows without prebuilt binaries',
+    ];
+    const textsOn = (dbOn.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    const textsOff = (dbOff.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    for (const passAText of PASS_A_TEXTS) {
+      expect(textsOn.some((t) => t.includes(passAText))).toBe(true);
+      expect(textsOff.some((t) => t.includes(passAText))).toBe(true);
+    }
+    // Count of pass-A-attributable rows is identical across both runs — only
+    // the passB fabricated atom's fate differs (dropped on / kept off).
+    const passARowCountOn = textsOn.filter((t) => PASS_A_TEXTS.some((p) => t.includes(p))).length;
+    const passARowCountOff = textsOff.filter((t) => PASS_A_TEXTS.some((p) => t.includes(p))).length;
+    expect(passARowCountOn).toBe(passARowCountOff);
+    expect(passARowCountOn).toBe(3);
+  });
+});
+
+// ─── FEAT-548: ingest gatekeeper ─────────────────────────────────────────────
+
+describe('runPipeline — FEAT-548 ingest gatekeeper', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  /** Deterministic fake gatekeeper provider: applies ONE fixed verdict to
+   *  every numbered chunk in the batch — every test in this describe block
+   *  produces exactly one chunk (FIXTURE_TRANSCRIPT fits well under the
+   *  default maxChunkChars), so there is no need to key by the chunk's exact
+   *  post-cleanup/normalize/pack text (which can legitimately differ from
+   *  the raw fixture string's own newline layout — packTurns rejoins turns
+   *  with '\n\n', not the original single '\n'). Verifies the marker is
+   *  present so a misrouted (non-gatekeeper) call is caught, same posture
+   *  makeTriageProvider (08-embed-index.test.ts) uses for its own marker. */
+  function makeGatekeeperProvider(verdict: 'keep' | 'skip', confidence = 0.9): LLMProvider {
+    return {
+      name: 'ollama',
+      model: 'test-gatekeeper-model',
+      async chat(messages: ChatMsg[], _opts?: ChatOpts) {
+        const system = messages.find((m) => m.role === 'system')?.content ?? '';
+        if (!system.includes('astramem-gatekeeper-v1')) {
+          throw new Error('test provider received a non-gatekeeper call (missing GATEKEEPER_MARKER)');
+        }
+        const user = messages.find((m) => m.role === 'user')?.content ?? '';
+        const verdicts: Array<{ index: number; verdict: string; confidence: number }> = [];
+        for (const line of user.split('\n')) {
+          const m = line.match(/^\[(\d+)\]\s/);
+          if (!m) continue;
+          verdicts.push({ index: Number(m[1]), verdict, confidence });
+        }
+        return { text: JSON.stringify({ verdicts }), usage: { in: 1, out: 1, usd: 0 } };
+      },
+      async health() {
+        return { ok: true, model: 'test-gatekeeper-model', latency_ms: 0 };
+      },
+    };
+  }
+
+  function makeThrowingGatekeeperProvider(message: string): LLMProvider {
+    return {
+      name: 'ollama',
+      model: 'unreachable-gatekeeper-model',
+      async chat() {
+        throw new Error(message);
+      },
+      async health() {
+        return { ok: false, model: 'unreachable-gatekeeper-model', latency_ms: 0, error: message };
+      },
+    };
+  }
+
+  it("AC-1: mode 'off' (default, including omitted config) never calls the gatekeeper provider — byte-identical to pre-FEAT-548", async () => {
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+    let gatekeeperCalled = false;
+    const llmGatekeeper: LLMProvider = {
+      name: 'ollama', model: 'unused-gatekeeper-model',
+      async chat() { gatekeeperCalled = true; return { text: JSON.stringify({ verdicts: [] }), usage: { in: 1, out: 1, usd: 0 } }; },
+      async health() { return { ok: true, model: 'unused-gatekeeper-model', latency_ms: 0 }; },
+    };
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      // config intentionally omitted — mode resolves to 'off' via the
+      // `ctx.config?.distill.gatekeeper.mode ?? 'off'` fallback.
+    });
+
+    expect(gatekeeperCalled).toBe(false);
+    expect(result.memoriesCreated).toBe(3); // unfiltered, same as the base fixture
+    expect((db.prepare('SELECT COUNT(*) AS n FROM gatekeeper_skips').get() as any).n).toBe(0);
+    expect((db.prepare('SELECT COUNT(*) AS n FROM gatekeeper_run_log').get() as any).n).toBe(0);
+  });
+
+  it("AC-3: mode 'dry-run' — a 'skip' verdict is logged (DB rows) with a running skip-rate counter but the chunk still reaches extraction unmodified", async () => {
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+    const llmGatekeeper = makeGatekeeperProvider('skip', 0.95);
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, gatekeeper: { mode: 'dry-run', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 } } },
+    });
+
+    // Dry-run never filters — the chunk still reaches extraction unmodified.
+    expect(result.memoriesCreated).toBe(3);
+
+    const runLog = db.prepare('SELECT session_id, chunks_evaluated, chunks_skipped FROM gatekeeper_run_log').get() as any;
+    expect(runLog).toBeDefined();
+    expect(runLog.chunks_evaluated).toBe(1);
+    expect(runLog.chunks_skipped).toBe(1);
+
+    const skipRow = db.prepare('SELECT model, confidence, mode FROM gatekeeper_skips').get() as any;
+    expect(skipRow).toBeDefined();
+    expect(skipRow.mode).toBe('dry-run');
+    expect(skipRow.confidence).toBeCloseTo(0.95);
+  });
+
+  it('AC-2: a throwing gatekeeper provider fails OPEN under mode "enabled" — the chunk is extracted exactly as if verdicted keep', async () => {
+    const llm = makeMockLLM();
+    const embed = makeMockEmbed();
+    const llmGatekeeper = makeThrowingGatekeeperProvider('gatekeeper provider down');
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, gatekeeper: { mode: 'enabled', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 } } },
+    });
+
+    // Fail-open, ADR-015: the chunk WAS extracted — not silently dropped.
+    expect(result.memoriesCreated).toBe(3);
+
+    const runLog = db.prepare('SELECT chunks_evaluated, chunks_skipped FROM gatekeeper_run_log').get() as any;
+    expect(runLog.chunks_evaluated).toBe(1); // attempted, counted toward the rate denominator
+    expect(runLog.chunks_skipped).toBe(0); // no verdict entry -> implicit keep, never recorded as a skip
+    expect((db.prepare('SELECT COUNT(*) AS n FROM gatekeeper_skips').get() as any).n).toBe(0);
+  });
+
+  it("mode 'enabled' — a real 'skip' verdict removes the chunk from extraction entirely (extraction never called, zero memories)", async () => {
+    let extractionCalls = 0;
+    const llm: LLMProvider = {
+      name: 'ollama', model: 'test-model',
+      async chat(_msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (opts?.json) extractionCalls++;
+        const reply = opts?.json ? EXTRACTION_RESPONSE : 'compressed content';
+        return { text: reply, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> { return { ok: true, model: 'test-model', latency_ms: 0 }; },
+    };
+    const embed = makeMockEmbed();
+    const llmGatekeeper = makeGatekeeperProvider('skip', 0.9);
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed, llmGatekeeper,
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, gatekeeper: { mode: 'enabled', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 } } },
+    });
+
+    expect(extractionCalls).toBe(0); // the metered extraction call was never made
+    expect(result.memoriesCreated).toBe(0);
+    expect(result.chunksProcessed).toBe(1); // chunking itself is unaffected — this is the gate's own count, not the raw chunk count
+
+    const runLog = db.prepare('SELECT chunks_evaluated, chunks_skipped FROM gatekeeper_run_log').get() as any;
+    expect(runLog.chunks_evaluated).toBe(1);
+    expect(runLog.chunks_skipped).toBe(1);
+
+    const skipRow = db.prepare('SELECT mode FROM gatekeeper_skips').get() as any;
+    expect(skipRow.mode).toBe('enabled');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Pass-B clerk speed tuning (2026-07-18) — skip-chunk gate + sweeper
+// maxTokens cap, both centrally resolved via resolveExtractionPassBTuning
+// (EXTRACTION_PASS_B_DEFAULTS, config.ts). Measured motivation: ministral-3:8b
+// sweeper calls averaged 62s and 1961 output tokens on the LoCoMo dual-pass
+// leg; a chunk pass A already covered well has nothing left to sweep.
+// ---------------------------------------------------------------------------
+
+describe('pass-B clerk tuning (skip-chunk gate + maxTokens cap)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  // Pass A yields 8 atoms — AT the default sweepOnlyBelowAtoms threshold (8),
+  // so the gate (strictly-below semantics) must skip the chunk.
+  const RICH_PASS_A_RESPONSE = JSON.stringify({
+    atoms: Array.from({ length: 8 }, (_, i) => ({
+      type: 'fact',
+      text: `Distinct well-covered pass-A fact number ${i} about the system's design.`,
+      importance: 0.6,
+      confidence: 0.9,
+    })),
+  });
+
+  const SWEEPER_RESPONSE = JSON.stringify({
+    atoms: [
+      { type: 'fact', text: 'The team evaluated pgvector before choosing sqlite-vec.', importance: 0.5, confidence: 0.8 },
+    ],
+  });
+
+  /** Mock that answers RICH_PASS_A_RESPONSE for pass A and SWEEPER_RESPONSE
+   *  for pass B, recording each sweeper call's opts so the maxTokens cap is
+   *  assertable at the provider boundary (the only place it's real). */
+  function makeTuningMockLLM(passAResponse: string): {
+    llm: LLMProvider;
+    sweeperCalls: () => number;
+    sweeperOpts: () => (ChatOpts | undefined)[];
+  } {
+    let sweeperCalls = 0;
+    const sweeperOpts: (ChatOpts | undefined)[] = [];
+    const llm: LLMProvider = {
+      name: 'ollama' as const,
+      model: 'test-model',
+      async chat(msgs: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {
+        if (!opts?.json) return { text: 'compressed content', usage: { in: 100, out: 50, usd: 0 } };
+        const system = msgs.find((m) => m.role === 'system')?.content ?? '';
+        if (system === EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER) {
+          sweeperCalls++;
+          sweeperOpts.push(opts);
+          return { text: SWEEPER_RESPONSE, usage: { in: 100, out: 50, usd: 0 } };
+        }
+        return { text: passAResponse, usage: { in: 100, out: 50, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    return { llm, sweeperCalls: () => sweeperCalls, sweeperOpts: () => sweeperOpts };
+  }
+
+  it('default gate skips pass B entirely for a chunk pass A covered with >= 8 atoms', async () => {
+    const { llm, sweeperCalls } = makeTuningMockLLM(RICH_PASS_A_RESPONSE);
+
+    const result = await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed: makeMockEmbed(),
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    expect(sweeperCalls()).toBe(0); // whole local-LLM call saved
+    expect(result.memoriesCreated).toBe(8); // pass A's atoms only
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('pgvector'))).toBe(false); // sweeper atom never produced
+  });
+
+  it('sweepOnlyBelowAtoms: 0 disables the gate — pass B sweeps even a well-covered chunk (legacy behavior)', async () => {
+    const { llm, sweeperCalls } = makeTuningMockLLM(RICH_PASS_A_RESPONSE);
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed: makeMockEmbed(),
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: {
+        ...defaultConfig(),
+        distill: { ...defaultConfig().distill, extractionPasses: 2, extractionPassB: { sweepOnlyBelowAtoms: 0 } },
+      },
+    });
+
+    expect(sweeperCalls()).toBe(1);
+    const texts = (db.prepare('SELECT text FROM memories').all() as any[]).map((r) => r.text.toLowerCase());
+    expect(texts.some((t: string) => t.includes('pgvector'))).toBe(true);
+  });
+
+  it('under-extracted chunk (below threshold) IS swept, and the sweeper call carries the central maxTokens cap', async () => {
+    // EXTRACTION_RESPONSE has 3 atoms — below the default threshold of 8.
+    const { llm, sweeperCalls, sweeperOpts } = makeTuningMockLLM(EXTRACTION_RESPONSE);
+
+    await runPipeline(FIXTURE_TRANSCRIPT, {
+      db, llmCompaction: llm, llmExtraction: llm, embed: makeMockEmbed(),
+      capUsd: 10.0, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      config: { ...defaultConfig(), distill: { ...defaultConfig().distill, extractionPasses: 2 } },
+    });
+
+    expect(sweeperCalls()).toBe(1);
+    // The cap must be the CENTRAL default (1500), not pass A's 6000 ceiling —
+    // asserted at the provider boundary where it becomes num_predict.
+    expect(sweeperOpts()[0]?.maxTokens).toBe(1500);
+  });
+});

@@ -1,0 +1,20 @@
+{
+  "id": "fx48-negation-flag-disabled-in-prod",
+  "title": "Explicit negation: batch-prefetch flag is NOT enabled in prod",
+  "difficulty": "negation",
+  "notes": "Tests negation across two environments at once — the flag is explicitly OFF in prod but explicitly ON in staging. An extractor must not conflate the two or drop either polarity.",
+  "turns": [
+    { "role": "user", "text": "For the record, the experimental batch-prefetch flag is NOT enabled in prod — we turned it off after the regression last week." },
+    { "role": "assistant", "text": "So batch-prefetch is off in production. Is it still on in staging?" },
+    { "role": "user", "text": "Yes, still on in staging so we can keep testing the fix, just disabled in prod until we're confident." },
+    { "role": "assistant", "text": "Clear: prod = disabled, staging = enabled, pending confidence before re-enabling in prod." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "The experimental batch-prefetch flag is NOT enabled in production — it was disabled after a regression." },
+    { "type": "fact", "text": "The batch-prefetch flag remains enabled in staging for continued testing." }
+  ],
+  "forbidden_items": [
+    "The batch-prefetch flag is enabled in production",
+    "batch-prefetch flag is enabled in prod"
+  ]
+}

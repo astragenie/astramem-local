@@ -1,0 +1,216 @@
+{
+  "batch": "pm-results-2026-07-18-feat-545-551",
+  "reviewedAt": "2026-07-18",
+  "mode": "--deep",
+  "results": [
+    {
+      "featureId": "FEAT-545",
+      "scores": {
+        "customer_impact": 0.50,
+        "effort_estimate": 0.62,
+        "strategic_alignment": 0.65,
+        "technical_risk": 0.45,
+        "dependency_depth": 0.40
+      },
+      "compositePriority": "P2",
+      "autonomousSafe": false,
+      "demandEvidence": "Operator triage_notes only ('memory only answers when ASKED... this FEAT makes it VOLUNTEER'). No user quote. Countervailing: live prod recall-usefulness 5.8% (80/1379) and search_memory typeAcc 63 (~1/3 decisions missed under type filter) mean the signal this FEAT surfaces is currently noisy.",
+      "scopeNotes": "Practically (not formally) depends on FEAT-547's type-quality per this session's own context. Open architect question: does get_suggestions replace/wrap/run-alongside session_digest? effort_points=8 (0.6-0.8 band) triggers the FEAT-168 decomposition gate — decomposed below, landmine (ranking/confidence design) isolated into SLICE-1 per runner#393 policy (a). Weak grade dimensions (loop-snapshot.md 2026-07-13, last-5 avg, all below 0.80: architecture_quality 0.686, reliability 0.425, observability 0.325, production_readiness 0.51, security 0.6, test_confidence 0.637, product_completeness 0.51; fresher SLICE-437/438/439 grades show security/test_confidence trending up to 0.80-0.95 but architecture_quality/reliability/production_readiness/product_completeness at 0.00 in the two newest — likely template under-fill, not a true new regression, but corroborates observability/reliability as the binding weak dims) — AC-2 and AC-4 target observability/reliability explicitly.",
+      "risks": [
+        "A noisy suggester (per the FEAT's own words) trains users to ignore it if confidence gating is under-specified — AC-2 makes the threshold and silent-drop behavior testable rather than aspirational.",
+        "Undeclared practical dependency on FEAT-547's type-quality could surface wrong-category suggestions if built first.",
+        "Manifest drift risk: contracts/manifests/mcp-tools.v1.json is the cross-repo tool-name SoT; tests/contracts/mcp-tool-manifest-parity.test.ts must stay green."
+      ],
+      "reasoning": "P2: impact 0.50 fails the P1 bar (needs >=0.7). effort 0.62 -> 8 points -> decomposition required; also breaks autonomous_safe (effort>0.6). No cost analog found for the full 5-touch-point scope; nearest analogs (SLICE-437-439) were narrower single-surface eval work.",
+      "acs": [
+        "AC-1: Given a repo/project with stored user_profile/agent_profile aggregates, entity relations, and a fixture set of decisions/lessons/todos, When the get_suggestions MCP tool is called scoped to that repo, Then it returns at most 5 ranked suggestions, each citing the memory id(s) it derives from, ranked by the existing fuse signals (recency/importance/usefulness) with no new ranking model introduced.",
+        "AC-2: Given the same tool call, When the top-ranked candidate's confidence score falls below a configured threshold (e.g. suggestions.minConfidence: 0.5), Then that suggestion is silently dropped (not down-ranked); Given every candidate falls below threshold, Then get_suggestions returns an empty list, and the drop event is logged as a structured entry (observability).",
+        "AC-3: Given contracts/manifests/mcp-tools.v1.json, When get_suggestions is added, Then tests/contracts/mcp-tool-manifest-parity.test.ts and tests/mcp/server.test.ts both pass against the live tools/list wire response.",
+        "AC-4: Given a config-gated session-start integration point (suggestions.sessionStart.enabled, default true, cap <=5, silent below threshold), When a new session starts with no suggestions clearing the confidence bar, Then no suggestion payload is emitted at all; Given the flag is false, Then the session-start path is byte-identical to pre-FEAT-545 behavior (reliability).",
+        "AC-5: Given a small gold fixture set under tests/, When the suggestion assembly logic runs against each fixture, Then the actual suggestion set matches the gold set for every fixture, and at least one fixture asserts the AC-2 silent-below-threshold behavior explicitly.",
+        "AC-6: Given a user acts on or dismisses a suggestion, When that action is recorded, Then the existing recall_used/correction-style usefulness signal is emitted with the cited memory id(s); Given a suggestion is dismissed 3 consecutive times for the same memory id, Then a regression test proves that memory id's suggestion-ranking score decays."
+      ],
+      "proposedSlices": [
+        { "id_suffix": "-SLICE-1", "title": "Suggestion assembly core + ranking/confidence design", "points": 2 },
+        { "id_suffix": "-SLICE-2", "title": "get_suggestions MCP tool + manifest parity", "points": 2 },
+        { "id_suffix": "-SLICE-3", "title": "Session-start integration point (config-gated)", "points": 2 },
+        { "id_suffix": "-SLICE-4", "title": "Gold fixture suggestion-quality eval", "points": 2 },
+        { "id_suffix": "-SLICE-5", "title": "Usefulness feedback loop wiring", "points": 2 }
+      ]
+    },
+    {
+      "featureId": "FEAT-546",
+      "scores": {
+        "customer_impact": 0.55,
+        "effort_estimate": 0.45,
+        "strategic_alignment": 0.60,
+        "technical_risk": 0.30,
+        "dependency_depth": 0.15
+      },
+      "compositePriority": "P2",
+      "autonomousSafe": true,
+      "demandEvidence": "Repo's own memory (canary-must-measure-rate-not-existence.md): 'entity extraction was 87% broken for WEEKS behind a green existence-check; the rate canary is what made the fix provable.' This FEAT generalizes that proven fix pattern to the content stream. No end-user quote; internal/operator-facing.",
+      "scopeNotes": "Soft coupling: the type-mix-shift detector reads the same noisy `type` classification FEAT-547 targets — recommend building the other 3+ detectors first if sequencing before FEAT-547 lands. Reuses existing Check/CheckResult doctor shape (tier: 'cheap'/'full', per spool-quarantine.ts). Weak dimension: observability (avg 0.325, worst of the last-5 snapshot) is this FEAT's entire purpose — AC-3/AC-5 make the JSON/CLI/structured-log surface a first-class tested requirement.",
+      "risks": [
+        "False-positive alarms on legitimate baseline drift if the MAD tolerance is mis-tuned — AC-4 requires both a fires-on-anomaly and stays-silent-on-normal-variance test in the same file.",
+        "Type-mix detector accuracy is bounded by FEAT-547's unresolved type-classification noise.",
+        "No auto-remediation (explicitly out of scope) means a detected anomaly still requires human action — value is fully gated on someone reading the CLI/doctor output."
+      ],
+      "reasoning": "P2: impact 0.55 fails the P1 bar (needs >=0.7). effort 0.45 -> 5 points, no decomposition gate. autonomous_safe true: all of risk/effort/dep <=0.6.",
+      "acs": [
+        "AC-1: Given a seeded 28-day history of ingest sessions, When each of at least 4 detectors runs (ingest-shape collapse, contradiction/correction-rate spike, duplicate-pressure surge, provenance/capture-source-mix shift), Then each computes a rate against its own trailing-window baseline (28-day median +/- MAD) rather than a hardcoded absolute threshold.",
+        "AC-2: Given fewer than a configured minimum number of historical windows, When a detector runs, Then it reports inconclusive: true with reason ('denominator unavailable') rather than a false-negative or false-positive alarm off an unstable baseline.",
+        "AC-3: Given the anomaly detectors, When doctor runs, Then each is registered as a Check tagged tier: 'cheap' or 'full' appropriately, and When `astramem-local memory anomalies` CLI runs, Then it lists every firing anomaly with the numbers behind each plus a structured JSON output mode.",
+        "AC-4: Given a seeded history engineered to contain exactly one anomaly, When the corresponding detector runs, Then it fires; given a seeded history with normal variance within learned MAD tolerance, When the same detector runs, Then it stays silent — both asserted in the same test file.",
+        "AC-5: Given a detector fires, When it logs, Then the log entry is structured and includes detector name, measured rate, learned baseline, and deviation magnitude (in MADs)."
+      ]
+    },
+    {
+      "featureId": "FEAT-547",
+      "scores": {
+        "customer_impact": 0.70,
+        "effort_estimate": 0.40,
+        "strategic_alignment": 0.75,
+        "technical_risk": 0.35,
+        "dependency_depth": 0.10
+      },
+      "compositePriority": "P1",
+      "autonomousSafe": true,
+      "demandEvidence": "Live prod, this session's own briefing: 'recall-usefulness 5.8% (80/1379), 0 heuristic grants; search_memory type-filters silently miss ~1/3 of decisions (typeAcc 63 on codex).' Measured cross-model forecast: 'qwen3.5:4b typeAcc 67 vs phi 31-48 (taxonomy grasp survives its authoring failure).'",
+      "scopeNotes": "Foundational: FEAT-545 (practically) and FEAT-546's type-mix detector both consume this FEAT's output quality — correct build-first candidate among the P2/P1 cohort, validating and extending the operator's '547 before 545/546' hypothesis. Extends existing shipped src/distill/atom-triage.ts (TriageVerdictLabel, TriageVerdict, AtomTriageRunTracker all confirmed present) — additive optional schema fields, not a new subsystem.",
+      "risks": [
+        "Two weeks later, failed review/validation — most likely cause: the corrected_type confidence-gate threshold is picked without a measured calibration curve, over- or under-applying the re-typing fix in practice.",
+        "This merged and broke the loop — rollback requirement: plain git revert only; mode:off/dry-run are byte-identical or log-only per the existing atomTriage doc comment, no schema/migration, no cross-plugin coordination.",
+        "Existing test that would NOT catch a regression: current atom-triage unit tests (single keep/junk verdict) would pass even if corrected_type silently re-typed every atom to the same wrong label with high self-reported confidence — AC-4 closes this gap."
+      ],
+      "reasoning": "P1: impact 0.70>=0.7 AND alignment 0.75>=0.6. effort 0.40 -> 5 points, no decomposition. Pre-mortem completed per the P1 mandatory gate. autonomous_safe true.",
+      "acs": [
+        "AC-1: Given the existing TriageBatchSchema/LenientTriageBatchSchema, When extended to accept optional corrected_type (7-class taxonomy) and evidence_supported (boolean) per verdict, Then a batch response missing either parses successfully with those fields undefined; When the whole batch fails to parse, Then the existing fail-open behavior (empty Map, every atom implicit-keep) is unchanged.",
+        "AC-2: Given a corrected_type verdict with confidence >= 0.8 (a named constant), When atoms are applied post-triage, Then the atom's stored type updates to corrected_type; given confidence < 0.8 or absent, Then the original type is kept. Given evidence_supported: false on an evidence-bearing atom, When applied, Then the atom is flagged (queryable) and never deleted or mutated.",
+        "AC-3: Given the extraction-bench's --atom-triage lever, When a phi-triage-over-codex-atoms A/B run executes on the 55-fixture set with --triage-model pinned to at least phi4-mini AND qwen2.5:7b, Then both runs report typeAcc delta vs the 63% codex baseline AND recall-held (>=95% of pre-triage baseline).",
+        "AC-4: Given a labeled fixture set with known-correct types, When the triage batch runs, Then a unit test asserts typeAcc on that fixture set directly, not just end-to-end recall.",
+        "AC-5: Given mode: 'off' (shipped default), When embedAndIndex runs, Then behavior is byte-identical to pre-FEAT-547. Given mode: 'dry-run', When a non-keep verdict or new-field value is produced, Then it is logged (structured, per-atom) but drops/rewrites nothing.",
+        "AC-6: Given a single malformed verdict entry missing corrected_type/evidence_supported or containing an invalid type label within an otherwise-valid batch, Then that entry is dropped on its own — every other real verdict in the same batch still lands."
+      ]
+    },
+    {
+      "featureId": "FEAT-548",
+      "scores": {
+        "customer_impact": 0.45,
+        "effort_estimate": 0.40,
+        "strategic_alignment": 0.55,
+        "technical_risk": 0.30,
+        "dependency_depth": 0.10
+      },
+      "compositePriority": "P2",
+      "autonomousSafe": true,
+      "demandEvidence": "Operator/cost-owner: codex extraction is metered on ChatGPT quota (CLAUDE.md: v0.18.0 default provider). FEAT triage_notes: 'a free local pre-gate that skips extraction on non-substantive chunks pays for itself immediately.' No per-user quote; real, narrow cost-hygiene value against an existing metered-cost concern.",
+      "scopeNotes": "Distinct chokepoint from FEAT-533's atom-triage (post-extraction) — this FEAT gates PRE-extraction on raw chunks, before any metered call. Genuinely independent of every other FEAT in this batch (no type-quality coupling). Reuses the established mode: off|dry-run|enabled + provider/model override + maxPerRun/maxWallClockMs cap shape verbatim from atomTriage/contradictionDetection.",
+      "risks": [
+        "The one real data-loss risk is a confident-but-wrong skip verdict on genuinely substantive content — AC-4's zero-false-skip bench requirement must be a hard gate before any enabled rollout, not a nice-to-have number.",
+        "A gate with no rate visibility repeats the exact shape that hid the entity-extraction breakage for weeks (canary-must-measure-rate-not-existence) — AC-5 makes skip-rate a loud, doctor-consumable WARN, not optional telemetry.",
+        "Fail-open contract (provider down -> extract anyway) must be regression-tested with an induced-failure test, not just asserted in prose (reliability weak dimension)."
+      ],
+      "reasoning": "P2: impact 0.45 fails the P1 bar. effort 0.40 -> 5 points, no decomposition. autonomous_safe true: risk/effort/dep all <=0.6.",
+      "acs": [
+        "AC-1: Given distill.gatekeeper.mode: 'off' (shipped default), When a distill job runs post-chunking, Then every chunk proceeds to extraction exactly as pre-FEAT-548 — byte-identical pipeline.",
+        "AC-2: Given mode: 'enabled' and the provider throws, times out, or returns unparsable output, When the gate call fails, Then the chunk proceeds to extraction as if verdicted keep; a test forcing the provider to throw asserts the chunk WAS extracted.",
+        "AC-3: Given mode: 'dry-run', When the gate returns a skip verdict, Then the chunk still proceeds to extraction unmodified AND the would-have-skipped verdict is logged with a running skip-rate counter.",
+        "AC-4: Given the extraction-bench's 55-fixture set run with the gate in dry-run mode, When the sweep completes, Then every substantive fixture reports a false-skip rate of exactly 0% (hard gate, not a warning) and every nothing/noisy fixture correctly verdicts skip.",
+        "AC-5: Given mode is dry-run or enabled, When a distill job completes, Then skip-rate is exposed as a structured log field and doctor-consumable health stat; When skip-rate >=95% over a meaningful-usage window, Then this is surfaced as a loud WARN."
+      ]
+    },
+    {
+      "featureId": "FEAT-549",
+      "scores": {
+        "customer_impact": 0.60,
+        "effort_estimate": 0.40,
+        "strategic_alignment": 0.70,
+        "technical_risk": 0.30,
+        "dependency_depth": 0.20
+      },
+      "compositePriority": "P2",
+      "autonomousSafe": true,
+      "demandEvidence": "Same lineage as FEAT-543 (done, P1): issue #190, '334 consolidation-auto corrections with no quality signal.' FEAT-543 audited the >=0.92 auto-merge band; this FEAT extends the concern to the 0.85-0.92 propose band, where pairs 'pile up as pending proposals' today with no automated resolution.",
+      "scopeNotes": "depends_on: [FEAT-543] CONFIRMED satisfied — FEAT-543 is in backlog/done/, its tests/eval/consolidation-eval.test.ts scoreboard is real (grade SLICE-437: 8/8 ACs evidenced). Mirrors src/consolidate/contradiction-judge.ts's exact fail-open/cap/provider-override shape rather than inventing a parallel pattern. Real threshold constants confirmed in src/consolidate/consolidate.ts: mergeThreshold default 0.92, proposeThreshold default 0.85, NEAR_MERGE_THRESHOLD_MIN 0.90.",
+      "risks": [
+        "A badly-calibrated judge on the propose band could make things WORSE than today's do-nothing-and-queue behavior by false-merging distinct facts — AC-3's before/after weighted-error comparison against FEAT-543's own gold set is a hard gate, not informative-only.",
+        "Fail-open on judge-down (proposals stay pending) must be regression-tested with an induced-failure test, not asserted in prose (reliability weak dimension).",
+        "Provenance recording (AC-4) must distinguish judge-resolved from human-resolved proposals in the same query surface, or audit trails for issue #190-class incidents become ambiguous."
+      ],
+      "reasoning": "P2: impact 0.60 fails the P1 bar narrowly (needs >=0.7). effort 0.40 -> 5 points, no decomposition. Lowest net-new-pattern surface of the batch (double reuse of FEAT-543's eval + contradiction-judge.ts's shape). autonomous_safe true.",
+      "acs": [
+        "AC-1: Given pending ConsolidationProposal rows with similarity in [proposeThreshold, mergeThreshold) (default [0.85, 0.92)), When the dup-judge runs in a batch, Then it returns same-fact-merge | distinct-keep-separate | unclear-leave-pending per proposal; given the provider throws or is unparsable, Then every proposal in the batch remains pending, proven by a forced-throw test.",
+        "AC-2: Given consolidation.dupJudge.mode: 'off' (shipped default), When consolidation runs, Then no dup-judge call is made, byte-identical to pre-FEAT-549. Given 'dry-run', Then verdicts are logged but no status changes. Given 'enabled', Then high-confidence same-fact-merge/distinct-keep-separate verdicts auto-resolve accordingly (both directions); unclear-leave-pending or low confidence leaves the proposal pending.",
+        "AC-3: Given tests/eval/consolidation-eval.test.ts (FEAT-543's shipped scoreboard), When a judge-enabled variant is added alongside the no-judge baseline on the same 15-fixture gold set, Then it reports the false-merge (weight 5) and missed-merge (weight 1) delta, and the enablement criterion (no false-merge regressions AND net weighted-error improvement) is documented in the test's own output.",
+        "AC-4: Given a proposal resolved by the dup-judge, When its metadata_json is inspected, Then it records resolver provenance (resolved_by: 'dup-judge', verdict, confidence, model/provider) in the same additive-JSON-column shape ContradictionMetadata already uses, distinguishable from a human-resolved proposal."
+      ]
+    },
+    {
+      "featureId": "FEAT-550",
+      "scores": {
+        "customer_impact": 0.45,
+        "effort_estimate": 0.40,
+        "strategic_alignment": 0.50,
+        "technical_risk": 0.40,
+        "dependency_depth": 0.15
+      },
+      "compositePriority": "P2",
+      "autonomousSafe": true,
+      "demandEvidence": "This session's briefing: 'rank-miss bucket (13% of LoCoMo misses).' Countervailing repo lesson (locomo-recall-vs-extraction-measured.md): 'not-in-db=55% (EXTRACTION dominant), rank-miss=13% (recall ranking small)... invest extraction not ranking' and 'rerank-mock BACKFIRE' — FEAT-550 avoids the specific backfired mechanism (stays query-side, explicitly fenced from reranking) but targets the smaller measured bucket.",
+      "scopeNotes": "Genuinely independent of every other FEAT in this batch. The ONLY FEAT touching the interactive, latency-sensitive recall hot path directly (search.ts's search() entrypoint) rather than a background/batch job — technical_risk banded slightly above the FEAT-546/548/549 cluster for that reason. Fusion rule (max-score-by-atom-id, no new ranking model) must be a hard AC, not a design note, to avoid re-introducing the rerank-mock failure mode under a different name.",
+      "risks": [
+        "Timeout/latency regression on the interactive recall path if the ~1-2s cap is a soft target rather than an enforced hard timeout — would degrade every recall call's perceived latency, not just this FEAT's own scope.",
+        "Conflating rewrite (input expansion) with rerank (output re-ordering) would reintroduce the exact rerank-mock backfire this session already measured under a new name.",
+        "Fail-open contract (AC-2/AC-5: rewrite fails or returns nothing useful -> original query only) must be regression-tested with an induced-timeout test, not asserted in prose."
+      ],
+      "reasoning": "P2: impact 0.45 and alignment 0.50 both fail the P1 bar. effort 0.40 -> 5 points, no decomposition. Lowest strategic urgency of the seven per this repo's own measured extraction-over-ranking guidance. autonomous_safe true.",
+      "acs": [
+        "AC-1: Given search.queryRewrite.mode: 'off' (shipped default), When search() is called, Then no rewrite call is made, byte-identical to pre-FEAT-550. Given mode: 'enabled' and expand: true, When the rewrite call succeeds, Then it produces at most maxVariants query strings.",
+        "AC-2: Given the rewrite call throws, times out, or exceeds a hard ~1-2s cap, When search() proceeds, Then retrieval runs over the ORIGINAL query only; a test forcing the provider to hang past the cap asserts bounded total time and original-query-only hits.",
+        "AC-3: Given the original query and N rewritten variants each produce their own hit set, When results are fused, Then hits merge by atom id keeping the MAX score across variant hit sets (no reranking), capped at a configured total; the original query's hits are ALWAYS included even when a variant returns zero hits.",
+        "AC-4: Given the LoCoMo --diagnose harness, When an A/B run compares query-rewrite-enabled vs baseline, Then the rank-miss bucket size is reported before/after AND the ADR-005 recall@10/NDCG@10 floors (>=0.9/>=0.7) are asserted to hold or improve; a regression on either floor is a hard stop on enablement.",
+        "AC-5: Given mode: 'enabled' but no rewrite variant clears a minimum relevance bar, When search() runs, Then it falls back to the original-query-only path silently (not an error)."
+      ]
+    },
+    {
+      "featureId": "FEAT-551",
+      "scores": {
+        "customer_impact": 0.75,
+        "effort_estimate": 0.45,
+        "strategic_alignment": 0.80,
+        "technical_risk": 0.40,
+        "dependency_depth": 0.15
+      },
+      "compositePriority": "P1",
+      "autonomousSafe": true,
+      "demandEvidence": "This session's own measured negative result, quoted from the FEAT body: '55% of LoCoMo misses = the fact was never stored (largest bucket)... phi4-mini passB recall ~100%, but raw passB LOST -5.8 end-to-end: its junk atoms crowded top-k retrieval (adversarial -14.9).' Operator triage_notes: 'push to 0.65... Est +2-4 LoCoMo pts.'",
+      "scopeNotes": "Both real prerequisite subsystems (FEAT-534 passB machinery, FEAT-542 mechanical quote checker) are confirmed done in backlog/done/. Weighted composite (same formula as FEAT-543's reference): 0.715 — the highest of the seven FEATs in this batch, narrowly ahead of FEAT-547's 0.70. Explicitly and correctly distinguished from FEAT-547's evidence_supported flag (semantic/LLM) in its own out-of-scope section — this gate is mechanical/string-match only.",
+      "risks": [
+        "It is two weeks later and this slice failed review or validation — most likely cause: the LoCoMo A/B shows a net positive overall delta but the adversarial guard drops below the 0.87 floor (over-strict or under-strict gating), the single measurable claim the FEAT rides on.",
+        "This merged and broke the loop — rollback requirement: plain git revert plus a config flip (evidenceGate: off); no migration, no schema, no cross-plugin coordination.",
+        "Existing test that would NOT catch a regression: mechanical-checks.test.ts tests computeEvidenceAccuracy in isolation — it would NOT catch the gate being wired at the wrong pipeline stage (e.g. after indexing instead of before); needs its own integration-level order test."
+      ],
+      "reasoning": "P1: impact 0.75>=0.7 AND alignment 0.80>=0.6 (P0 needs impact>=0.8, fails narrowly at 0.75). Weighted composite 0.715, highest of the batch -> recommended build-first. Pre-mortem completed per the P1 mandatory gate. effort 0.45 -> 5 points, no decomposition. autonomous_safe true.",
+      "acs": [
+        "AC-1: Given distill.extractionPassB configured with a provider different from pass-A's (mixed-provider case), When a passB atom lacks a verbatim evidence quote field, Then it is dropped before stage-8 admission and the drop is counted/logged (reason: no-evidence-field); given an evidence field that does not mechanically verify against the transcript, Then it is dropped with reason evidence-not-found.",
+        "AC-2: Given evidenceGate: 'off' OR pass-A atoms regardless of gate setting, When stage-8 admission runs, Then behavior is byte-identical to pre-FEAT-551 single-pass behavior; an integration test asserts pass-A atom count/content are unaffected by the gate setting.",
+        "AC-3: Given FEAT-542's existing computeEvidenceAccuracy/normalizeWhitespace implementation, When this FEAT's stage-8 gate verifies quotes, Then it calls the SAME implementation (promoted to a shared src/ util or single-source import) — a test asserts the bench's computeEvidenceAccuracy and the production gate agree on at least one shared fixture.",
+        "AC-4: Given an extraction-bench run with codex (pass-A) + passB=phi4-mini and the gate on, When the sweep completes, Then it reports the junk rate with the gate on versus the previously-measured ungated 12% baseline, AND the recall retention percentage.",
+        "AC-5: Given the gate wired end-to-end, When a LoCoMo conv-1 A/B run executes against the 0.6002 baseline, Then it reports the overall F1 delta AND the adversarial-category score, required to hold >=0.87; a positive overall delta with a sub-0.87 adversarial score is recorded as a FAILED enablement case, not a partial success; gate-drop-rate is also reported."
+      ]
+    }
+  ],
+  "buildOrderRecommendation": {
+    "validatesOperatorHypothesis": "Partially confirmed and extended. FEAT-547 IS correctly ahead of FEAT-545/546 (both consume its type-quality output), but FEAT-551 — not named in the operator's '547 before 545/546' framing — scores highest of all seven (weighted composite 0.715 vs FEAT-547's 0.70) and should build FIRST, ahead of FEAT-547.",
+    "order": [
+      { "rank": 1, "featureId": "FEAT-551", "reason": "Highest weighted composite (0.715). Targets the largest measured LoCoMo loss bucket (55% not-in-db) with the strongest quantified upside (+2-4 pts), reusing two already-shipped subsystems (FEAT-534, FEAT-542) — lowest realized implementation risk for the highest claimed payoff." },
+      { "rank": 2, "featureId": "FEAT-547", "reason": "Second-highest composite (0.70). Foundational: FEAT-545 (practical dependency) and FEAT-546 (type-mix detector) both consume its clean-type output. Build before either." },
+      { "rank": 3, "featureId": "FEAT-548", "reason": "Fully independent, cheapest, immediate quota-saving ROI, zero coupling to anything else in the batch — good filler between the two P1s and the remaining P2s." },
+      { "rank": 4, "featureId": "FEAT-549", "reason": "depends_on FEAT-543, already satisfied. Reuses contradiction-judge.ts's shape verbatim (lowest net-new-pattern surface). Closes the same issue-#190 lineage FEAT-543 started." },
+      { "rank": 5, "featureId": "FEAT-546", "reason": "3 of its 4+ detectors are fully independent and can build anytime; sequenced after FEAT-547 so the type-mix-shift detector reads clean types from day one instead of alarming on FEAT-547's own noise." },
+      { "rank": 6, "featureId": "FEAT-545", "reason": "Practically depends on FEAT-547's clean types (undeclared in frontmatter) and is the most decomposition-heavy scope (8 points, 5 slices) in the batch — build after type-quality lands to avoid shipping a suggestion surface on noisy input." },
+      { "rank": 7, "featureId": "FEAT-550", "reason": "Fully independent recall-side lever, but this repo's own measured lesson (locomo-recall-vs-extraction-measured) explicitly deprioritizes ranking/recall investment relative to extraction — lowest strategic urgency of the seven; also the only FEAT touching the latency-sensitive interactive recall path, so the extra caution costs nothing by going last." }
+    ]
+  }
+}

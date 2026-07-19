@@ -3,6 +3,8 @@ import {
   triageBatch,
   AtomTriageRunTracker,
   ATOM_TRIAGE_MARKER,
+  CORRECTED_TYPE_LABELS,
+  CORRECTED_TYPE_CONFIDENCE_GATE,
 } from '../../src/distill/atom-triage.js';
 import type { LLMProvider, ChatMsg, ChatOpts } from '../../src/contracts/llm.js';
 
@@ -132,6 +134,92 @@ describe('triageBatch', () => {
     expect(result.has(0)).toBe(false);
     expect(result.get(1)).toEqual({ index: 1, verdict: 'keep', confidence: 0.5 });
     expect(result.has(2)).toBe(false);
+  });
+});
+
+// ─── FEAT-547: atom-triage v2 — corrected_type / evidence_supported ─────────
+
+describe('triageBatch — FEAT-547 v2 multi-verdict', () => {
+  it('CORRECTED_TYPE_CONFIDENCE_GATE is exported as a named constant (AC-2)', () => {
+    expect(CORRECTED_TYPE_CONFIDENCE_GATE).toBe(0.8);
+  });
+
+  it('parses corrected_type + evidence_supported when the provider supplies both (AC-1)', async () => {
+    const provider = makeProvider(() =>
+      JSON.stringify({
+        verdicts: [
+          { index: 0, verdict: 'keep', confidence: 0.9, corrected_type: 'event', evidence_supported: true },
+        ],
+      }),
+    );
+    const result = await triageBatch(provider, [{ index: 0, text: 'the deadline moved to Friday', evidence: 'moved to Friday' }]);
+    expect(result.get(0)).toEqual({
+      index: 0, verdict: 'keep', confidence: 0.9, corrected_type: 'event', evidence_supported: true,
+    });
+  });
+
+  it('a response omitting BOTH optional fields parses successfully with them left undefined — backward-compatible (AC-1)', async () => {
+    const provider = makeProvider(() =>
+      JSON.stringify({ verdicts: [{ index: 0, verdict: 'keep', confidence: 0.5 }] }),
+    );
+    const result = await triageBatch(provider, [{ index: 0, text: 'x' }]);
+    const verdict = result.get(0);
+    expect(verdict).toEqual({ index: 0, verdict: 'keep', confidence: 0.5 });
+    expect(verdict?.corrected_type).toBeUndefined();
+    expect(verdict?.evidence_supported).toBeUndefined();
+  });
+
+  it('a verdict entry with an invalid corrected_type label is dropped on its own — sibling entries still land (AC-6)', async () => {
+    const provider = makeProvider(() =>
+      JSON.stringify({
+        verdicts: [
+          { index: 0, verdict: 'keep', confidence: 0.9, corrected_type: 'not-a-real-type' }, // invalid enum
+          { index: 1, verdict: 'keep', confidence: 0.9, corrected_type: 'fact' }, // valid
+        ],
+      }),
+    );
+    const result = await triageBatch(provider, [
+      { index: 0, text: 'a' },
+      { index: 1, text: 'b' },
+    ]);
+    expect(result.has(0)).toBe(false);
+    expect(result.get(1)).toEqual({ index: 1, verdict: 'keep', confidence: 0.9, corrected_type: 'fact' });
+  });
+
+  it('a verdict entry with a non-boolean evidence_supported is dropped on its own — sibling entries still land (AC-6)', async () => {
+    const provider = makeProvider(() =>
+      JSON.stringify({
+        verdicts: [
+          { index: 0, verdict: 'keep', confidence: 0.9, evidence_supported: 'yes' }, // wrong type
+          { index: 1, verdict: 'keep', confidence: 0.9, evidence_supported: false }, // valid
+        ],
+      }),
+    );
+    const result = await triageBatch(provider, [
+      { index: 0, text: 'a', evidence: 'q1' },
+      { index: 1, text: 'b', evidence: 'q2' },
+    ]);
+    expect(result.has(0)).toBe(false);
+    expect(result.get(1)).toEqual({ index: 1, verdict: 'keep', confidence: 0.9, evidence_supported: false });
+  });
+
+  it('CORRECTED_TYPE_LABELS is the closed 7-class atom-type taxonomy, not the wider 10-value MEMORY_TYPES union', () => {
+    expect(CORRECTED_TYPE_LABELS).toEqual(['decision', 'fact', 'lesson', 'command', 'todo', 'note', 'event']);
+  });
+
+  it('an atom with an evidence quote shows it inline in the user content; an atom with none omits the suffix entirely', async () => {
+    let seenUser = '';
+    const provider = makeProvider((messages) => {
+      seenUser = messages.find((m) => m.role === 'user')?.content ?? '';
+      return JSON.stringify({ verdicts: [] });
+    });
+    await triageBatch(provider, [
+      { index: 0, text: 'has evidence', evidence: 'the quote' },
+      { index: 1, text: 'no evidence' },
+    ]);
+    expect(seenUser).toContain('[0] has evidence [evidence: "the quote"]');
+    expect(seenUser).toContain('[1] no evidence');
+    expect(seenUser).not.toContain('[1] no evidence [evidence:');
   });
 });
 

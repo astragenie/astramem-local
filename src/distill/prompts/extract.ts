@@ -130,6 +130,31 @@ export const ExtractionSchema = z.object({
 export type Atom = z.infer<typeof AtomSchema>;
 export type Extraction = z.infer<typeof ExtractionSchema>;
 
+/**
+ * FEAT-551: which extraction pass produced an atom. Assigned
+ * PROGRAMMATICALLY by the pipeline (src/distill/pipeline.ts, right where
+ * pass B's atoms are read back from `extractSpecifics`) — NEVER part of
+ * `AtomSchema`/`ExtractionSchema`, so it never appears in the structured-
+ * output JSON schema sent to a provider and is never something the model
+ * itself emits or could hallucinate.
+ */
+export type AtomExtractionSource = 'passA' | 'passB';
+
+/**
+ * `Atom` widened with the FEAT-551 pass tag. `Atom` is structurally
+ * assignable to `SourcedAtom` (the extra field is optional), so every
+ * existing single-pass caller that still deals in plain `Atom[]` keeps
+ * working unchanged — the tag is simply absent (`undefined`), which
+ * `checkEvidenceGate` (src/distill/evidence-gate.ts) treats as "not passB,
+ * bypass" (AC-2). `ReducedAtom` (06-reduce.ts) and `NormalizedMemory`
+ * (07-memory-normalize.ts) both extend this chain, and both stages spread
+ * (`{ ...atom, ... }`) rather than reconstruct their inputs, so the tag
+ * rides through reduce/memory-normalize to stage 8 for free.
+ */
+export interface SourcedAtom extends Atom {
+  extractionSource?: AtomExtractionSource;
+}
+
 export const EXTRACTION_SYSTEM_PROMPT = `You extract durable knowledge from AI coding agent transcripts.
 
 Output STRICT JSON matching:
@@ -517,9 +542,32 @@ export function resolveExtractionPrompt(
 ): string {
   if (envOverride === 'v2') return EXTRACTION_SYSTEM_PROMPT_V2;
   if (envOverride === 'v1') return EXTRACTION_SYSTEM_PROMPT;
+  // 'conv-liberal' (2026-07-18, LoCoMo not-in-db experiment): the conversational
+  // prompt with an appended exhaustiveness push — 55% of measured LoCoMo misses
+  // are atoms never stored, and the codex extractor is measurably conservative
+  // (sparse-dense). A/B lever only; never the default.
+  if (envOverride === 'conv-liberal') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL;
   if (profile === 'conversational') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL;
   return EXTRACTION_SYSTEM_PROMPT_V3;
 }
+
+/** conv-liberal A/B variant — see resolveExtractionPrompt's comment. Base
+ *  conversational prompt + an explicit exhaustiveness push targeting the
+ *  measured miss classes (durations, quantities, one-off events, the less
+ *  central speaker's facts). Recall-biased BY DESIGN; junk cost accepted for
+ *  the A/B because the extractor under test (codex) measures ~0% junk. */
+export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL = `${EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL}
+
+EXHAUSTIVENESS OVERRIDE (this run only): err on the side of MORE atoms.
+- Enumerate EVERY distinct durable item — including exact durations ("twice a
+  year"), quantities, named one-off events (a trip, a purchase, an accident),
+  verbatim commitments, and BOTH speakers' facts equally (the less
+  narratively-central speaker's details are the most commonly missed).
+- If unsure whether an item is durable, EXTRACT IT — a borderline atom is
+  recoverable later, a missing one is not.
+- A typical substantive session here yields 6-12 atoms. Fewer than 4 for a
+  substantive session almost certainly means under-extraction — re-scan before
+  finishing. The "atoms": [] empty case remains valid ONLY for pure small talk.`;
 
 // ---------------------------------------------------------------------------
 // v2 (2026-07-09) — a/b candidate against EXTRACTION_SYSTEM_PROMPT. Adds the
@@ -959,21 +1007,25 @@ export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER = `You are the SECOND of
 
 Measured finding this pass exists to fix: in production runs, 36-47% of gold single-hop facts were never captured as ANY atom — and every one spot-checked was present verbatim in the source transcript. The missing facts were disproportionately: exact durations, frequencies, quantities, one-off events, verbatim quotes, and the less narratively-central speaker's own facts and advice. That is exactly what you are looking for.
 
-Output STRICT JSON matching the SAME schema the first pass uses:
+Output STRICT JSON matching the SAME schema the first pass uses. "evidence" is listed FIRST below deliberately — decide the verbatim quote before anything else, because an atom you cannot quote is not a valid atom for this pass:
 {
   "atoms": [
     {
+      "evidence": "<REQUIRED FIRST — an EXACT verbatim quote from the source text this atom is based on; copy, never paraphrase>",
       "type": "decision" | "fact" | "lesson" | "command" | "todo" | "note" | "event",
       "text": "<one self-contained sentence, roughly 10-80 words>",
       "importance": 0.0-1.0,
       "confidence": 0.0-1.0,
-      "evidence": "<optional, short excerpt from source>",
       "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }],
       "valid_at": "<ISO-8601 date-time, only if the source text states when THIS fact started>",
       "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS fact stopped>"
     }
   ]
 }
+
+"evidence" is REQUIRED for EVERY atom you emit — not optional, unlike the first pass. Copy a short EXACT verbatim excerpt from the source chunk that this atom is directly based on; never paraphrase or summarize it. ATOMS WITHOUT A VERBATIM EVIDENCE QUOTE ARE DISCARDED — they are dropped before they are ever stored, so an atom you emit without one is wasted output, not a harmless omission. If you cannot point to an exact quote supporting a candidate item, do NOT emit that item as an atom at all — a specific detail you cannot quote is not one of the eight categories below, it is a guess.
+
+BE BRIEF AND SELECTIVE. Emit at MOST 8 atoms per chunk — the most valuable overlooked specifics, not everything you can restate. Do NOT re-emit the chunk's main facts, decisions, or events: the first pass already captured those, and a duplicate is deduplicated away as wasted output. Keep each atom's "text" compact — 10 to 30 words is the target; never pad. A handful of tightly-quoted specifics beats an exhaustive re-extraction every time.
 
 Extract ONLY items in these categories — this pass is deliberately narrow, not a second general-purpose pass:
 1. DATES/TIMES — any specific date, day, month, year, or time mentioned, even in passing.
@@ -1014,31 +1066,33 @@ Examples (illustrative only, not exhaustive):
 
 1. Input: "Caroline: We don't go often, usually only once or twice a year. Melanie: Makes sense, it's a long drive." ->
 {"atoms":[
-  {"type":"fact","text":"Caroline said they don't go often — usually only once or twice a year.","importance":0.6,"confidence":0.85,"evidence":"usually only once or twice a year"}
+  {"evidence":"usually only once or twice a year","type":"fact","text":"Caroline said they don't go often — usually only once or twice a year.","importance":0.6,"confidence":0.85}
 ]}
 
 2. Input: "Observation date: 2026-07-10\n\nMelanie: My son got into an accident last week, but he's okay, thank god." ->
 {"atoms":[
-  {"type":"event","text":"Melanie's son got into an accident on 3 July 2026 and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+  {"evidence":"My son got into an accident last week","type":"event","text":"Melanie's son got into an accident on 3 July 2026 and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
 ]}
 (The Observation date anchor resolves "last week" to a natural-language absolute date IN "text" —
-never a bare ISO date like "2026-07-03", and never left as the unresolved relative phrase.)
+never a bare ISO date like "2026-07-03", and never left as the unresolved relative phrase. "evidence"
+stays the untouched verbatim source quote — the relative phrase, not the resolved date — since it
+must be copyable from the transcript exactly as written.)
 
 3. Input: "Caroline: I saw a sign that said 'Trans Lives Matter' at the rally and took a photo of it." ->
 {"atoms":[
-  {"type":"fact","text":"Caroline saw and photographed a sign reading \\"Trans Lives Matter\\" at a rally she attended.","importance":0.6,"confidence":0.9,"evidence":"a sign that said 'Trans Lives Matter'"}
+  {"evidence":"a sign that said 'Trans Lives Matter'","type":"fact","text":"Caroline saw and photographed a sign reading \\"Trans Lives Matter\\" at a rally she attended.","importance":0.6,"confidence":0.9}
 ]}
 
 4. Input: "Melanie: Honestly, if you're thinking about adopting, my advice is to start the home study early — it took us almost 7 months just for that part." ->
 {"atoms":[
-  {"type":"note","text":"Melanie advised starting the adoption home study early, noting it took her family almost 7 months to complete that part alone.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+  {"evidence":"my advice is to start the home study early","type":"note","text":"Melanie advised starting the adoption home study early, noting it took her family almost 7 months to complete that part alone.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
 ]}
 
 5. Input: "Caroline: I used to go horseback riding with my dad when I was a kid." ->
 {"atoms":[
-  {"type":"fact","text":"Caroline used to go horseback riding with her dad when she was a kid.","importance":0.5,"confidence":0.85,"entities":[{"name":"Caroline","kind":"actor","subtype":"human"}]}
+  {"evidence":"I used to go horseback riding with my dad when I was a kid","type":"fact","text":"Caroline used to go horseback riding with her dad when she was a kid.","importance":0.5,"confidence":0.85,"entities":[{"name":"Caroline","kind":"actor","subtype":"human"}]}
 ]}
 
 6. Input: "Caroline: hey how's it going? Melanie: good, just tired, work's been busy." ->
 {"atoms":[]}
-(No date, duration, frequency, quantity, name, quote, one-off event, or advice — plain small talk, nothing in this pass's eight categories.)`;
+(No date, duration, frequency, quantity, name, quote, one-off event, or advice — plain small talk, nothing in this pass's eight categories. No evidence quote to point to either way -- empty output, not a guess.)`;

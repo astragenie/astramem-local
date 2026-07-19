@@ -13,6 +13,7 @@
  */
 import { mean, computeStats, compareMeans, formatStatsPct, type Stats } from '../../shared/stats.js';
 import type { FixtureScore, JudgeAtomIn, JudgeAgreementReport } from './judge.js';
+import { renderGatesSection, type GatesConfig, type ModelGateResult } from './gates.js';
 
 export interface FixtureReportRow {
   fixtureId: string;
@@ -32,6 +33,19 @@ export interface FixtureReportRow {
    *  adopting hybrid as default" needs them persisted, not just printed. */
   passAAtomCount?: number;
   passBAtomCount?: number;
+  /** FEAT-542 AC-2/AC-6: count of extracted atoms in this fixture that
+   *  mechanically matched one of the fixture's `forbidden_items` entries.
+   *  `undefined` on every fixture with no `forbidden_items` (the overwhelming
+   *  majority) — same optional-when-not-applicable shape as passA/BAtomCount. */
+  forbiddenItemHits?: number;
+  /** FEAT-542 AC-3: mechanical evidence-accuracy inputs for this fixture —
+   *  evidence-bearing atoms whose quote string-matched (whitespace-
+   *  normalized) the fixture's own source transcript, out of all evidence-
+   *  bearing atoms. Both `undefined` when the fixture produced zero
+   *  evidence-bearing atoms (excluded from the denominator, not a failure —
+   *  same convention AC-3 states for the per-atom case). */
+  evidenceAccNumerator?: number;
+  evidenceAccDenominator?: number;
 }
 
 export interface RunAggregate {
@@ -51,6 +65,18 @@ export interface RunAggregate {
    *  of runs). See FixtureReportRow.passAAtomCount/passBAtomCount. */
   avgPassAAtomCount: number | null;
   avgPassBAtomCount: number | null;
+  /** FEAT-542 AC-2/AC-6/AC-7: total mechanical forbidden-item hits across
+   *  every fixture in this run — a raw observability count (AC-7), not a
+   *  rate; the precision penalty itself is already folded into each
+   *  fixture's own FixtureScore.precision before aggregation. */
+  forbiddenItemHitsTotal: number;
+  /** FEAT-542 AC-3/AC-7: pooled (sum-of-numerators / sum-of-denominators,
+   *  not mean-of-per-fixture-percentages — avoids NaN/skew from fixtures with
+   *  a tiny denominator) evidence accuracy across every fixture in this run.
+   *  `null` when no fixture in the run produced any evidence-bearing atom. */
+  evidenceAcc: number | null;
+  evidenceAccNumerator: number;
+  evidenceAccDenominator: number;
 }
 
 /** One model, one run — the pre-FEAT-450 report shape. */
@@ -106,6 +132,14 @@ export function aggregateFixtureScores(fixtureReports: FixtureReportRow[], azure
   const passAAtomCounts = fixtureReports.map(f => f.passAAtomCount).filter((n): n is number => n !== undefined);
   const passBAtomCounts = fixtureReports.map(f => f.passBAtomCount).filter((n): n is number => n !== undefined);
 
+  // FEAT-542 AC-2/AC-3/AC-7: forbidden-item hits (raw sum) and evidence
+  // accuracy (pooled numerator/denominator, not averaged percentages) across
+  // every fixture in this run.
+  const forbiddenItemHitsTotal = fixtureReports.reduce((s, f) => s + (f.forbiddenItemHits ?? 0), 0);
+  const evidenceAccNumerator = fixtureReports.reduce((s, f) => s + (f.evidenceAccNumerator ?? 0), 0);
+  const evidenceAccDenominator = fixtureReports.reduce((s, f) => s + (f.evidenceAccDenominator ?? 0), 0);
+  const evidenceAcc = evidenceAccDenominator > 0 ? evidenceAccNumerator / evidenceAccDenominator : null;
+
   return {
     avgRecall,
     avgPrecision,
@@ -119,6 +153,10 @@ export function aggregateFixtureScores(fixtureReports: FixtureReportRow[], azure
     azureUsd,
     avgPassAAtomCount: mean(passAAtomCounts),
     avgPassBAtomCount: mean(passBAtomCounts),
+    forbiddenItemHitsTotal,
+    evidenceAcc,
+    evidenceAccNumerator,
+    evidenceAccDenominator,
   };
 }
 
@@ -157,6 +195,18 @@ export function combineRuns(runs: SingleRunReport[]): ModelReport {
     // pass split at all.
     avgPassAAtomCount: mean(aggregates.map(a => a.avgPassAAtomCount ?? NaN)),
     avgPassBAtomCount: mean(aggregates.map(a => a.avgPassBAtomCount ?? NaN)),
+    // FEAT-542: sum raw counts across runs (not mean-of-per-run-percentages)
+    // so evidenceAcc stays a true pooled fraction over every atom the model
+    // produced across all N runs, and forbiddenItemHitsTotal stays an actual
+    // total observed count (AC-7), matching how totalWallMs/azureUsd sum above.
+    forbiddenItemHitsTotal: aggregates.reduce((s, a) => s + a.forbiddenItemHitsTotal, 0),
+    evidenceAccNumerator: aggregates.reduce((s, a) => s + a.evidenceAccNumerator, 0),
+    evidenceAccDenominator: aggregates.reduce((s, a) => s + a.evidenceAccDenominator, 0),
+    evidenceAcc: (() => {
+      const denom = aggregates.reduce((s, a) => s + a.evidenceAccDenominator, 0);
+      const num = aggregates.reduce((s, a) => s + a.evidenceAccNumerator, 0);
+      return denom > 0 ? num / denom : null;
+    })(),
   };
 
   return {
@@ -172,6 +222,10 @@ export function combineRuns(runs: SingleRunReport[]): ModelReport {
 export interface RenderOptions {
   judgeReasoningEffort?: string;
   agreement?: JudgeAgreementReport[];
+  /** FEAT-544: renders a "## Gates" section when supplied. `undefined`
+   *  (the default — e.g. no gates.json present on disk) omits the section
+   *  entirely, same as the pre-FEAT-544 report shape. */
+  gates?: { config: GatesConfig; results: ModelGateResult[]; actualFixtureCount: number };
 }
 
 export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: RenderOptions = {}): string {
@@ -184,8 +238,11 @@ export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: R
   // "—" for every single-pass row (avgPassAAtomCount/avgPassBAtomCount both
   // null) keeps the table's shape unchanged for the overwhelming majority
   // of runs that never use `+passB=`.
-  lines.push('| Model | Recall | Precision | F1 | Junk rate | Type acc | Over-extract (nothing fx) | Avg s/session | Failed fixtures | Azure $ | Pass A atoms | Pass B atoms |');
-  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|');
+  // FEAT-542 AC-3: "Evidence acc" inserted after Type acc — the tail
+  // (Over-extract .. Pass B atoms) keeps its existing column order so
+  // pre-existing suffix-anchored assertions (report.test.ts) still hold.
+  lines.push('| Model | Recall | Precision | F1 | Junk rate | Type acc | Evidence acc | Over-extract (nothing fx) | Avg s/session | Failed fixtures | Azure $ | Pass A atoms | Pass B atoms |');
+  lines.push('|---|---|---|---|---|---|---|---|---|---|---|---|---|');
   const fmtPct = (n: number | null) => (n === null ? '—' : `${(n * 100).toFixed(0)}%`);
   const fmtCount = (n: number | null) => (n === null ? '—' : n.toFixed(1));
   for (const r of reports) {
@@ -196,7 +253,7 @@ export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: R
     const typeAccCell = r.stats ? formatStatsPct(r.stats.typeAccuracy) : fmtPct(a.avgTypeAccuracy);
     const modelCell = r.runs ? `${r.model} (n=${r.runs.length})` : r.model;
     lines.push(
-      `| ${modelCell} | ${recallCell} | ${precisionCell} | ${f1Cell} | ${fmtPct(a.avgJunkRate)} | ${typeAccCell} | ${a.overExtractionOnNothingFixture ?? '—'} | ${(a.avgWallMsPerSession / 1000).toFixed(1)}s | ${a.failedFixtures} | $${a.azureUsd.toFixed(4)} | ${fmtCount(a.avgPassAAtomCount)} | ${fmtCount(a.avgPassBAtomCount)} |`,
+      `| ${modelCell} | ${recallCell} | ${precisionCell} | ${f1Cell} | ${fmtPct(a.avgJunkRate)} | ${typeAccCell} | ${fmtPct(a.evidenceAcc)} | ${a.overExtractionOnNothingFixture ?? '—'} | ${(a.avgWallMsPerSession / 1000).toFixed(1)}s | ${a.failedFixtures} | $${a.azureUsd.toFixed(4)} | ${fmtCount(a.avgPassAAtomCount)} | ${fmtCount(a.avgPassBAtomCount)} |`,
     );
   }
   lines.push('', `_Judge: Azure gpt-5-mini (reasoning_effort=${opts.judgeReasoningEffort ?? 'minimal'}). Estimated judge spend this run: ~$${judgeUsd.toFixed(3)}._`);
@@ -237,6 +294,13 @@ export function renderMarkdown(reports: ModelReport[], judgeUsd: number, opts: R
     for (const a of opts.agreement) {
       lines.push(`| ${a.fixtureId} | ${a.repeats} | ${formatStatsPct(a.recall)} | ${formatStatsPct(a.precision)} | ${formatStatsPct(a.f1)} |`);
     }
+  }
+
+  // FEAT-544: numeric quality-gate tiers — omitted entirely when no
+  // gates.json was loaded (opts.gates undefined), same additive-section
+  // pattern as Significance/Judge self-agreement above.
+  if (opts.gates) {
+    lines.push(...renderGatesSection(opts.gates.config, opts.gates.results, opts.gates.actualFixtureCount));
   }
 
   return lines.join('\n');

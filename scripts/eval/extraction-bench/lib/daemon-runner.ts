@@ -87,6 +87,12 @@ export interface DaemonAtom {
   id: string;
   type: string;
   text: string;
+  /** FEAT-542: additive pass-through of DigestMemRow's `evidence` field
+   *  (src/server/queries/provenance.ts) — now that the digest route exposes
+   *  it, the daemon-HTTP path (every Ollama candidate) carries real evidence
+   *  quotes into the bench, not just the azure:/codex: direct-pipeline path.
+   *  `null` when the atom has no evidence (matches the DB column). */
+  evidence?: string | null;
 }
 
 export interface DaemonFixtureResult {
@@ -110,7 +116,7 @@ function authHeaders(token: string): Record<string, string> {
 interface DigestBody {
   status: 'pending' | 'ready' | 'partial';
   poison_jobs: number;
-  memories: Array<{ id: string; type: string; text: string }>;
+  memories: Array<{ id: string; type: string; text: string; evidence?: string | null }>;
 }
 
 async function fetchDigest(baseUrl: string, token: string, sessionId: string): Promise<DigestBody | null> {
@@ -129,10 +135,15 @@ async function fetchDigest(baseUrl: string, token: string, sessionId: string): P
 export async function runOllamaCandidate(
   extractionModel: string,
   fixtures: GoldFixture[],
-  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string } = {},
+  opts: { perSessionTimeoutMs?: number; runTag?: string; compactionModel?: string; compactionMode?: 'auto' | 'always' | 'never'; maxChunkChars?: number; atomTriageMode?: 'off' | 'dry-run' | 'enabled' | 'repair-only'; triageModel?: string; gatekeeperMode?: 'off' | 'dry-run' | 'enabled'; passBSweep?: 'untuned' } = {},
 ): Promise<DaemonRunResult> {
   const perSessionTimeoutMs = opts.perSessionTimeoutMs ?? 3 * 60_000;
   const compactionModel = opts.compactionModel ?? DEFAULT_COMPACTION_MODEL;
+  // Additive (2026-07-17): distill.compaction mode for the bench daemon —
+  // `never` = raw-turn passthrough (no compaction LLM call), mirroring the
+  // LoCoMo harness's --compaction-mode. Omit to inherit the shipped default
+  // (auto). Lets an A/B isolate compaction-stage loss from extractor quality.
+  const compactionMode = opts.compactionMode;
   const tag = opts.runTag ?? extractionModel.replace(/[^a-z0-9.-]/gi, '_');
   const isolated = makeIsolatedEvalEnv(`extraction-bench-${tag}`);
 
@@ -161,6 +172,66 @@ export async function runOllamaCandidate(
       '  provider: onnx',
       'onnxEmbed:',
       `  cacheDir: '${onnxCacheDir.replace(/\\/g, '/')}'`,
+    ] : []),
+    ...(compactionMode || opts.maxChunkChars || opts.atomTriageMode || opts.gatekeeperMode || opts.passBSweep ? [
+      'distill:',
+      ...(compactionMode ? [`  compaction: ${compactionMode}`] : []),
+      // Chunk-size A/B lever (2026-07-17): config.distill.maxChunkChars is a
+      // hardcoded 3200 default (NOT derived from ASTRA_CHUNK_TARGET_TOKENS, so
+      // the env var can't reach a config-driven daemon) — emit it here when the
+      // bench wants a different chunk size.
+      ...(opts.maxChunkChars ? [`  maxChunkChars: ${opts.maxChunkChars}`] : []),
+      // FEAT-533 atom-triage A/B lever (2026-07-17): post-extraction batched
+      // keep/junk triage, shipped `mode: off`. Default (no --triage-model)
+      // pins the triage provider to the SAME extraction candidate model, so
+      // the experiment measures "model X extracting + triaging its own
+      // atoms", not a mixed-provider confound.
+      //
+      // FEAT-547 --triage-model override: lets the triage tier's model be
+      // pinned INDEPENDENTLY of the extraction candidate — needed for a
+      // cross-model A/B (e.g. phi4-mini or qwen2.5:7b triaging CODEX's
+      // atoms), which the plain --atom-triage lever alone can't express
+      // (it always pins triage to whatever `extractionModel` this call was
+      // invoked with). Provider stays 'ollama' either way — same
+      // daemon-HTTP-path-only constraint --atom-triage already carries.
+      ...(opts.atomTriageMode ? [
+        '  atomTriage:',
+        `    mode: ${opts.atomTriageMode}`,
+        '    provider: ollama',
+        `    model: '${opts.triageModel ?? extractionModel}'`,
+      ] : []),
+      // FEAT-548 ingest gatekeeper A/B lever (2026-07-18): pre-extraction
+      // chunk-level substantiveness gate, shipped `mode: off`. Same
+      // same-model-pinning rationale as atomTriage above — the gatekeeper
+      // provider is pinned to the SAME extraction candidate model, so the
+      // experiment measures "model X gate-screening + extracting its own
+      // chunks", not a mixed-provider confound. AC-4's 55-fixture dry-run
+      // measurement is the intended use of this lever.
+      ...(opts.gatekeeperMode ? [
+        '  gatekeeper:',
+        `    mode: ${opts.gatekeeperMode}`,
+        '    provider: ollama',
+        `    model: '${extractionModel}'`,
+      ] : []),
+      // Pass-B sweep tuning override (2026-07-18 root-cause work): 'untuned'
+      // restores the pre-tuning full sweep (gate off, no output cap) so a
+      // bench leg can replicate pre-2026-07-18 dual-pass behavior — without
+      // this the sandbox silently inherits EXTRACTION_PASS_B_DEFAULTS
+      // (skip-gate 8 + maxTokens 1500), the exact confound that invalidated
+      // the first 55fx clerk-vs-rebaseline comparison.
+      ...(opts.passBSweep === 'untuned' ? [
+        '  extractionPassB:',
+        '    sweepOnlyBelowAtoms: 0',
+        '    maxTokens: 0',
+        // numCtxCap must ALSO be restored: unset resolves to the tuned 8192
+        // default (EXTRACTION_PASS_B_DEFAULTS), and sweeper prompt + chunk
+        // + a 6000-token output budget overflows 8192 — ollama then silently
+        // truncates input, cutting pass-B yield. The first "untuned" 55fx
+        // leg (2026-07-18) ran with this gap and was only a partial
+        // replication. 16384 = the provider's own NUM_CTX_CAP, the
+        // pre-tuning ceiling (ollama.ts).
+        '    numCtxCap: 16384',
+      ] : []),
     ] : []),
     'budget:',
     '  daily_usd: 50',

@@ -1,0 +1,4108 @@
+[
+  {
+    "model": "qwen2.5:7b",
+    "daemonBootMs": 1818,
+    "fixtures": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 47971,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "SQLite was chosen over Postgres for astramemory-local due to no server requirement, being a single file, and using synchronous fast access from Node via better-sqlite3.",
+            "evidence": "SQLite chosen over Postgres due to no server requirement; ships as a single file; uses synchronous fast access from Node via better-sqlite3."
+          },
+          {
+            "type": "fact",
+            "text": "sqlite-vec was selected for vector search as it is an SQLite extension with no separate vector DB needed and embeds into the same file.",
+            "evidence": "sqlite-vec selected as it is a SQLite extension with no separate vector DB needed and embeds into the same file."
+          },
+          {
+            "type": "fact",
+            "text": "The embedding model default is mxbai-embed-large via Ollama (1024-dim, runs locally).",
+            "evidence": "Embedding model default: mxbai-embed-large via Ollama (1024-dim, runs locally)."
+          },
+          {
+            "type": "fact",
+            "text": "The default embed provider is set to Ollama with mxbai-embed-large; vector store configured as sqlite-vec backed by better-sqlite3.",
+            "evidence": "Default embed provider set to Ollama with mxbai-embed-large; vector store configured as sqlite-vec backed by better-sqlite3."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx01-clean-decision",
+          "goldCount": 4,
+          "extractedCount": 4,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision to use SQLite/better-sqlite3 instead of Postgres, but labels it as a fact rather than a decision."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Captures the decision to use sqlite-vec for vector search, but is typed as a fact instead of a decision."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "States the default embedding model is mxbai-embed-large via Ollama with 1024-dim and local run, but is labeled as a fact rather than a decision."
+              },
+              {
+                "index": 3,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Provides a useful consolidated note that the embed provider is Ollama and the vector store is sqlite-vec backed by better-sqlite3, which is not a separate gold atom but is a helpful synthesis."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 4
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 50997,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Ran 20 concurrent POSTs with the same `Idempotency-Key` against the ingest endpoint: before fix, 3 duplicate rows created; after fix, exactly 1 row created and other requests correctly received a 200 idempotent replay status code.",
+            "evidence": null
+          },
+          {
+            "type": "todo",
+            "text": "Add a concurrency regression test (fire N parallel requests with the same `idempotency_key`, assert exactly one row is created) in the next session.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Ingest requests occasionally create two transcript rows for the same `session_id` when clients retry fast due to a check-then-act race condition (SELECT then INSERT).",
+            "evidence": "Issue: Ingest requests occasionally create two transcript rows for the same `session_id` when clients retry fast due to a check-then-act race condition (SELECT then INSERT)."
+          },
+          {
+            "type": "decision",
+            "text": "Switched from separate SELECT/INSERT steps to an atomic 'INSERT ... ON CONFLICT DO NOTHING' inside a transaction, followed by reading back the winning row.",
+            "evidence": "Fix Applied: Switched from separate SELECT/INSERT steps to an atomic 'INSERT ... ON CONFLICT DO NOTHING' inside a transaction, followed by reading back the winning row."
+          },
+          {
+            "type": "fact",
+            "text": "Ran 20 concurrent POSTs with the same `Idempotency-Key` against the ingest endpoint: Before fix: 3 duplicate rows created; After fix: Exactly 1 row created; other 19 requests correctly received a 200 idempotent replay status code.",
+            "evidence": "Testing Results: Ran 20 concurrent POSTs with the same `Idempotency-Key` against the ingest endpoint: Before fix: 3 duplicate rows created; After fix: Exactly 1 row created; other 19 requests correctly received a 200 idempotent replay status code."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx02-debugging-race-condition",
+          "goldCount": 5,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.6,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Describes running 20 concurrent POSTs to verify the fix (event), but is labeled as a fact."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Specifies adding a concurrency regression test that fires N parallel requests and asserts one row."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Explains the check-then-act (SELECT then INSERT) race causing duplicate rows, but is labeled as a fact rather than a lesson."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States the decision to use INSERT ... ON CONFLICT DO NOTHING inside a transaction and read back the winning row."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Repeats the measured outcome: before fix 3 duplicates, after fix exactly 1 row and other requests got 200 idempotent replay (fact)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx03-refactor-extract-module",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 40378,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Extract shared fetchWithRetry logic into src/providers/lib/fetch-retry.ts to eliminate duplication across ollama.ts, azure-openai.ts, and embed providers (four total call sites). Retained identical behavior: same signature (url, init, timeoutMs), no retry on 4xx, one retry on 5xx or network error/timeout. Ran existing provider tests; all pass unchanged.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Extracted shared fetchWithRetry logic into src/providers/lib/fetch-retry.ts to eliminate duplication across ollama.ts, azure-openai.ts, and embed providers (four total call sites).",
+            "evidence": "Extracted shared fetchWithRetry logic into src/providers/lib/fetch-retry.ts to eliminate duplication across ollama.ts, azure-openai.ts, and embed providers (four total call sites)."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx03-refactor-extract-module",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.25,
+          "precision": 0.5,
+          "junkRate": 0.5,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Describes extracting fetchWithRetry into src/providers/lib/fetch-retry.ts for the same provider files, matching the decision to extract duplication."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant duplicate of extracted atom 0 with no additional durable content."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx04-deploy-incident",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 40390,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Production 500s on /ingest/transcript due to missing OS keystore entry when security.encryption.enabled was set to true.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Add a pre-flight step in deploy script to provision keystore before enabling encryption, plus a doctor check that fails loudly if security.encryption.enabled is true without an existing keystore entry.",
+            "evidence": null
+          },
+          {
+            "type": "event",
+            "text": "Rolled back to v0.7.3; issue resolved within 30 seconds.",
+            "evidence": "Rolled back to v0.7.3; issue resolved within 30 seconds."
+          },
+          {
+            "type": "command",
+            "text": "Add pre-flight step in deploy script to provision keystore before enabling encryption, plus a doctor check that fails loudly if security.encryption.enabled is true without an existing keystore entry.",
+            "evidence": "Fix: Add pre-flight step in deploy script to provision keystore before enabling encryption, plus a doctor check that fails loudly if `security.encryption.enabled` is true without an existing keystore entry."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx04-deploy-incident",
+          "goldCount": 5,
+          "extractedCount": 4,
+          "recall": 0.8,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.25,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Captures the lesson that enabling encryption without keystore caused production 500s/DB-open failures (lesson->lesson)."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Describes adding a deploy pre-flight step to provision the keystore before enabling encryption, matching the decision about the required pre-flight step (type is command vs decision)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Records the rollback to v0.7.3 and that 500s stopped within ~30s, matching the rollback decision (type is event vs decision)."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Duplicates the instruction to add a doctor check that fails if encryption is enabled without a keystore, matching the decision to add such a check (type is command vs decision)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx05-config-decision",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 73136,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Do not raise the default daily LLM budget cap ($10). Users hitting the cap are experiencing silent double-billing due to misconfiguration where `azure-openai` is set as a fallback for both compaction/extraction and embedding, while local Ollama should be used.",
+            "evidence": "Do not raise the default daily LLM budget cap ($10). Users hitting the cap are experiencing silent double-billing due to misconfiguration where `azure-openai` is set as a fallback for both compaction/extraction and embedding, while local Ollama should be used."
+          },
+          {
+            "type": "fact",
+            "text": "Onboarding days typically spend $1-$2 per user (30-40 sessions at $0.02-$0.05/call on Azure), well under the cap limit.",
+            "evidence": "Onboarding days typically spend $1-$2 per user (30-40 sessions at $0.02-$0.05/call on Azure), well under the cap limit."
+          },
+          {
+            "type": "fact",
+            "text": "The issue is specific to users with `azure-openai` misconfigured as a fallback without local Ollama configured, leading to double-billing via compaction and extraction stages pointing to the same provider.",
+            "evidence": "The issue is specific to users with `azure-openai` misconfigured as a fallback without local Ollama configured, leading to double-billing via compaction and extraction stages pointing to the same provider."
+          },
+          {
+            "type": "decision",
+            "text": "Add a boot-time warning instead of raising the budget or changing defaults immediately.",
+            "evidence": "Add a boot-time warning instead of raising the budget or changing defaults immediately."
+          },
+          {
+            "type": "fact",
+            "text": "If both `llm.compaction.provider` and `llm.extraction.provider` are set to `azure-openai`, AND `embedding.provider` is also `azure-openai`.",
+            "evidence": "If both `llm.compaction.provider` and `llm.extraction.provider` are set to `azure-openai`, AND `embedding.provider` is also `azure-openai`."
+          },
+          {
+            "type": "command",
+            "text": "Log a WARN suggesting the user should run at least the embedding step on local Ollama.",
+            "evidence": "Log a WARN suggesting the user should run at least the embedding step on local Ollama."
+          },
+          {
+            "type": "lesson",
+            "text": "The warning avoids breaking intentionally all-cloud configurations while highlighting the misconfiguration gap.",
+            "evidence": "The warning avoids breaking intentionally all-cloud configurations while highlighting the misconfiguration gap."
+          },
+          {
+            "type": "todo",
+            "text": "A stricter validation pass will be added in a later release to prevent this issue entirely.",
+            "evidence": "A stricter validation pass will be added in a later release to prevent this issue entirely."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx05-config-decision",
+          "goldCount": 4,
+          "extractedCount": 8,
+          "recall": 1,
+          "precision": 0.75,
+          "junkRate": 0.25,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Decision not to raise the $10 cap and the misconfiguration cause matches gold atom 1."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Onboarding cost estimate matches the gold fact about $1-2 per onboarding day."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant restatement of the misconfiguration cause already covered by a matched gold atom."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Adds the boot-time warning decision which corresponds to gold atom 2."
+              },
+              {
+                "index": 4,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Trivial fragment reiterating the misconfiguration conditions; redundant with other atoms."
+              },
+              {
+                "index": 5,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Actionable suggestion for the WARN message content (recommend running embedding on local Ollama) not present in gold."
+              },
+              {
+                "index": 6,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Useful rationale explaining why the warning is preferred, which is not listed in the gold atoms."
+              },
+              {
+                "index": 7,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Todo to add a stricter validation pass later matches gold atom 3."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 8
+      },
+      {
+        "fixtureId": "fx06-tool-failure-permission",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 50273,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Run `node dist/cli/index.js reinstall` on a non-admin Windows account to test the service reinstall path — this completed without elevation prompts, confirming the fix.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "Add /F to the `schtasks /delete` command in the uninstall path, to force deletion without interactive confirmation — this resolved hanging issues in non-interactive scripts.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "The service install step was failing with 'Access is denied' when registering scheduled tasks due to `<RunLevel>HighestAvailable</RunLevel>` forcing elevation on per-user task configurations.",
+            "evidence": "The service install step was failing with 'Access is denied' when registering scheduled tasks due to `<RunLevel>HighestAvailable</RunLevel>` forcing elevation on per-user task configurations."
+          },
+          {
+            "type": "fact",
+            "text": "This was resolved by removing the tag (or setting it to `LeastPrivilege`), allowing registration without admin rights.",
+            "evidence": "This was resolved by removing the tag (or setting it to `LeastPrivilege`), allowing registration without admin rights."
+          },
+          {
+            "type": "fact",
+            "text": "Tested successfully on a non-admin Windows account: `node dist/cli/index.js reinstall` completed, daemon started with no elevation prompt.",
+            "evidence": "`node dist/cli/index.js reinstall` completed, daemon started with no elevation prompt."
+          },
+          {
+            "type": "fact",
+            "text": "The uninstall path also required changes; calling `schtasks /delete` without `/F` prompted for interactive confirmation and would hang in non-interactive scripts.",
+            "evidence": "calling `schtasks /delete` without `/F` prompted for interactive confirmation and would hang in non-interactive scripts."
+          },
+          {
+            "type": "fact",
+            "text": "Added `/F` to the command.",
+            "evidence": "Added `/F` to the command."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx06-tool-failure-permission",
+          "goldCount": 5,
+          "extractedCount": 7,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.2,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Reports the successful reinstall test (gold event 2) but labels it a lesson rather than an event."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Records the decision to add /F to schtasks /delete to avoid interactive prompts (gold decision 4) with correct type."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States that <RunLevel>HighestAvailable forced elevation causing 'Access is denied' (gold lesson 0) but is typed as a fact not a lesson."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Says the issue was resolved by removing or setting the tag to LeastPrivilege, matching the decision to use LeastPrivilege (gold decision 1) but typed as a fact."
+              },
+              {
+                "index": 4,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate successful test report (reiterates the reinstall success); useful but redundant with gold event 2 already matched."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Notes that schtasks /delete without /F prompts for confirmation and would hang non-interactive scripts, matching the lesson (gold 3) but typed as a fact."
+              },
+              {
+                "index": 6,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "States that /F was added; useful confirmation but redundant with the matched decision to add /F (gold 4)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 5
+      },
+      {
+        "fixtureId": "fx07-noisy-tool-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 47261,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Run tests with bun using the test runner — tests pass, taking 38.2 seconds.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "The CI job duration increased from 4 minutes to 11 minutes due to `--reporter=verbose` triggering full stack traces and missing `.vitest-cache` in the cache key.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "Updated CI config by adding `.vitest-cache` to the cache key path and removing `--reporter=verbose` from the default run (kept it available via a manual workflow_dispatch flag for debugging).",
+            "evidence": "Updated CI config by adding `.vitest-cache` to the cache key path and removing `--reporter=verbose` from the default run (kept it available via a manual workflow_dispatch flag for debugging)."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx07-noisy-tool-spam",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.5,
+          "precision": 0.6666666666666666,
+          "junkRate": 0.3333333333333333,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Contains details (bun, 38.2s) not present in the gold atoms and appears to be unsupported/hallucinated relative to the gold list."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Captures the lesson that missing .vitest-cache and the verbose reporter inflated CI time, matching gold atom 2, but is labeled as a fact rather than a lesson."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Describes the CI decision to add .vitest-cache to the cache and remove the global reporter flag while keeping a manual option, matching gold atom 3 with correct type."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx08-long-multitopic",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 63962,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Users logged out after ~15 minutes despite 'remember me' being checked, because the refresh-token cookie's `maxAge` was set in seconds but interpreted as milliseconds by the browser (cookie library expects ms), causing expiration to be 1000x sooner (~15 min instead of ~10 days).",
+            "evidence": "Refresh-token cookie `maxAge` set in seconds but interpreted as milliseconds by the browser (cookie library expects ms), causing expiration to be 1000x sooner (~15 min instead of ~10 days)."
+          },
+          {
+            "type": "decision",
+            "text": "Converted `maxAge` from days to milliseconds explicitly using a named constant `REFRESH_TOKEN_MAX_AGE_MS`. Added test asserting the `Set-Cookie` header's `max-age` attribute matches the expected value. Note: Browsers read `Set-Cookie max-age` in seconds, so the boundary units require separate awareness (value stored as ms for calculation, sent as s to browser).",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Refresh-token cookie maxAge set in seconds but interpreted as milliseconds by the browser, causing expiration to be 1000x sooner (~15 min instead of ~10 days).",
+            "evidence": "Refresh-token cookie `maxAge` set in seconds but interpreted as milliseconds by the browser (cookie library expects ms), causing expiration to be 1000x sooner (~15 min instead of ~10 days)."
+          },
+          {
+            "type": "decision",
+            "text": "Converted days to milliseconds explicitly using a named constant REFRESH_TOKEN_MAX_AGE_MS.",
+            "evidence": "Converted days to milliseconds explicitly using a named constant `REFRESH_TOKEN_MAX_AGE_MS`."
+          },
+          {
+            "type": "decision",
+            "text": "Split single 'build' job into parallel 'lint' and 'test' jobs dependent only on 'install'.",
+            "evidence": "Split single 'build' job into parallel 'lint' and 'test' jobs dependent only on 'install'."
+          },
+          {
+            "type": "fact",
+            "text": "Expected result: Cut wall-clock CI time roughly in half (~9 min -> ~4.5 min), as lint was previously the bottleneck at ~3 minutes.",
+            "evidence": "Expected result: Cut wall-clock CI time roughly in half (~9 min -> ~4.5 min), as lint was previously the bottleneck at ~3 minutes."
+          },
+          {
+            "type": "note",
+            "text": "Configuration: Both jobs run independently; neither blocks the other's outcome.",
+            "evidence": "Configuration: Both jobs run independently; neither blocks the other's outcome."
+          },
+          {
+            "type": "note",
+            "text": "Only the final 'gate' job requires both to pass before allowing merge.",
+            "evidence": "Only the final 'gate' job requires both to pass before allowing merge."
+          },
+          {
+            "type": "fact",
+            "text": "Checked zod and fastify; `zod` already on v4 (specifically v4.4.3 per overrides section). No upgrade needed.",
+            "evidence": "`zod`: Already on v4 (specifically v4.4.3 per overrides section). No upgrade needed."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx08-long-multitopic",
+          "goldCount": 7,
+          "extractedCount": 9,
+          "recall": 1,
+          "precision": 0.7777777777777778,
+          "junkRate": 0.2222222222222222,
+          "typeAccuracy": 0.5714285714285714,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the refresh-token ms vs seconds expiration lesson but labels it as a fact rather than a lesson."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Describes the added test and the Set-Cookie max-age/units boundary (gold note) but is typed as a decision."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate/redundant restatement of the refresh-token bug already captured by index 0."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Explicitly states converting days to milliseconds via REFRESH_TOKEN_MAX_AGE_MS (decision)."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "States splitting the build job into lint and test dependent only on install (decision)."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Captures the CI time improvement expectation and lint being ~3 minutes of the pipeline (fact)."
+              },
+              {
+                "index": 6,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant note about jobs running independently; duplicates aspects of the CI decision and gate behavior."
+              },
+              {
+                "index": 7,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": false,
+                "reason": "States that only the final gate requires both to pass (matches decision) but is labeled as a note rather than a decision."
+              },
+              {
+                "index": 8,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": true,
+                "reason": "Accurately reports zod v4.4.3 and fastify v5.9.0 status (fact)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 8
+      },
+      {
+        "fixtureId": "fx09-nothing-worth-remembering",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 12960,
+        "poisonJobs": 0,
+        "atoms": [],
+        "score": {
+          "fixtureId": "fx09-nothing-worth-remembering",
+          "goldCount": 0,
+          "extractedCount": 0,
+          "recall": null,
+          "precision": null,
+          "junkRate": 0,
+          "typeAccuracy": null,
+          "overExtractionCount": 0,
+          "judge": {
+            "extracted_verdicts": [],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx10-contradiction-correction",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 34229,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Set search ranking fusion weight epsilon (usefulness) to 0.1; initial value of 0.3 was reverted as too aggressive because it allowed early memory usage signals to permanently outrank more relevant fresh results.",
+            "evidence": "Set search ranking fusion weight epsilon (usefulness) to 0.1; initial value of 0.3 was reverted as too aggressive because it allowed early memory usage signals to permanently outrank more relevant fresh results."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx10-contradiction-correction",
+          "goldCount": 3,
+          "extractedCount": 1,
+          "recall": 0.3333333333333333,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the decision to set epsilon to 0.1 and notes the 0.3 value was reverted as too aggressive (matching gold 0)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx11-todo-heavy",
+        "difficulty": "todo-heavy",
+        "status": "ready",
+        "wallMs": 42728,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "Write migration documentation for the new archival tiers feature.",
+            "evidence": null
+          },
+          {
+            "type": "todo",
+            "text": "Backfill CHANGELOG entries for the last three merged PRs.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "The team decided whether the new archival feature should default to enabled or stay opt-in for existing installs, prioritizing this over documentation tasks due to upgrade risks.",
+            "evidence": "New requirement added: decide whether archival defaults to enabled or stays opt-in for existing installs; currently set as opt-in/false."
+          },
+          {
+            "type": "fact",
+            "text": "The decision on the default state of the new archival feature was marked higher priority than writing migration documents.",
+            "evidence": "Rationale: flipping it silently could archive memories users didn't expect to lose."
+          },
+          {
+            "type": "decision",
+            "text": "The team reordered priorities, moving the archival-default decision and Windows uninstall verification to top tier.",
+            "evidence": "Priority reordering executed: archival-default decision and Windows uninstall verification moved to top tier; docs writing and CHANGELOG backfill allowed to slip a day if necessary."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx11-todo-heavy",
+          "goldCount": 7,
+          "extractedCount": 5,
+          "recall": 0.42857142857142855,
+          "precision": 0.6,
+          "junkRate": 0.4,
+          "typeAccuracy": 0.6666666666666666,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the todo to write migration docs for archival tiers; both are 'todo' items."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Matches the todo to backfill CHANGELOG entries for the last three merged PRs; both are 'todo' items."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Claims the team decided the archival default (a concrete decision), but the gold atom only records this as a pending todo; this contradicts the gold and appears unsupported."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate/redundant statement about prioritization already covered by gold atom 6; not a new durable fact."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": false,
+                "reason": "Matches the note that the archival-default decision and Windows uninstall verification were reprioritized, but extracted type 'decision' differs from gold type 'note'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              3,
+              4,
+              5
+            ]
+          }
+        },
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx12-command-heavy",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 51076,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Validate contracts using the command: `bun run contracts:validate`.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Bump version and tag for CI gate parity with the commands: `npm version 0.9.0 --no-git-tag-version`, then `git tag v0.9.0 && git push origin v0.9.0`.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Publish the package once CI is green on the tag using the command: `npm publish --access public`.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Rollback procedure for an unavailable release after 72 hours involves deprecating the package with the command: `npm deprecate @astragenie/astramemory-local@0.9.0 ",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Bump version and tag with the commands: `npm version 0.9.0 --no-git-tag-version`, then `git tag v0.9.0 && git push origin v0.9.0`.",
+            "evidence": "`npm version 0.9.0 --no-git-tag-version`, then `git tag v0.9.0 && git push origin v0.9.0`"
+          },
+          {
+            "type": "command",
+            "text": "Publish after CI is green on the tag with the command: `npm publish --access public`.",
+            "evidence": "`npm publish --access public`"
+          },
+          {
+            "type": "command",
+            "text": "Deprecate package using the command: `npm deprecate @astragenie/astramemory-local@0.9.0 ",
+            "evidence": "`npm deprecate @astragenie/astramemory-local@0.9.0 \"broken release, use 0.8.1\"`"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx12-command-heavy",
+          "goldCount": 8,
+          "extractedCount": 7,
+          "recall": 0.625,
+          "precision": 0.7142857142857143,
+          "junkRate": 0.2857142857142857,
+          "typeAccuracy": 0.8,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Exact match of the contracts validation command."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Contains the npm version and git tag commands from the gold atom."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": true,
+                "reason": "Exact match of the npm publish command."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 7,
+                "type_correct": false,
+                "reason": "States the rollback-by-deprecate lesson (but is typed as a command rather than a lesson)."
+              },
+              {
+                "index": 4,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate of the npm version/tag commands already captured by another extracted atom."
+              },
+              {
+                "index": 5,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate of the npm publish command already captured by another extracted atom."
+              },
+              {
+                "index": 6,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": true,
+                "reason": "Exact match of the npm deprecate command."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              4
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx13-entity-rich",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 48005,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "astramemory-local connects to astramem-plugin (same team) and cloud sync backend (ASP.NET Core + PostgreSQL hosted on Azure). Wire format is versioned per FEAT-4a design doc by Sergey.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Security dependencies include Ollama (local inference, no data leaves machine); Azure OpenAI gpt-5-mini (SaaS-side judging/answering path only if cloud sync opted-in). sqlite-vec is a local library dependency; no external service/data-flow concern.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "claude-code counts as a supported agent client under wire contract alongside cursor and GitHub github-copilot, identified via the `agent` field on ingest; all speak canonical envelope with no special-casing needed.",
+            "evidence": null
+          }
+        ],
+        "score": {
+          "fixtureId": "fx13-entity-rich",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures astramemory-local integration with astramem-plugin and cloud sync backend (ASP.NET Core + PostgreSQL on Azure), matching gold fact 0."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Lists security-relevant dependencies Ollama and Azure OpenAI gpt-5-mini (cloud-sync only); also mentions sqlite-vec but primarily corresponds to gold fact 1 about external deps."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "States that Claude Code, Cursor, and GitHub Copilot are supported agent clients identified via the agent field and use the canonical envelope, matching gold fact 3."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx14-secrets-present",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 44939,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "The old Azure key was hardcoded in a script and treated as compromised, requiring immediate rotation.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "The old Azure key was hardcoded in a script instead of read from az cli.",
+            "evidence": "const key = '[REDACTED:openai_key:4ebde3bd]'"
+          },
+          {
+            "type": "decision",
+            "text": "The key is treated as compromised and rotated immediately, regardless of code fixes.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Changed the script to call `resolveAzureKey()` (using `az` cli lookup or `AZURE_OPENAI_KEY` env var) like the rest of the eval harness does.",
+            "evidence": null
+          },
+          {
+            "type": "todo",
+            "text": "Removed the literal key from the file and git history.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Added a pre-commit check that scans for the `sk-` prefix pattern to catch this class of mistake before it's committed.",
+            "evidence": null
+          }
+        ],
+        "score": {
+          "fixtureId": "fx14-secrets-present",
+          "goldCount": 4,
+          "extractedCount": 6,
+          "recall": 1,
+          "precision": 0.8333333333333334,
+          "junkRate": 0.16666666666666666,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the lesson that a hardcoded Azure key is compromised and must be rotated (gold 0), but type differs (decision vs lesson)."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Usefully notes the key was hardcoded instead of being read from az CLI; not explicitly listed as a separate gold atom."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate of the compromised-and-rotate fact already captured by other atoms; trivial repetition."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "States the decision to replace the hardcoded key with resolveAzureKey()/az or env var, matching gold 1, but type is 'command' not 'decision'."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Indicates the literal key was removed (and git history cleaned), matching the event that the compromised key was rotated and script confirmed clean (gold 2), but type differs."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Records adding a pre-commit scan for the sk- prefix, matching the decision in gold 3, but type is 'command' rather than 'decision'."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx15-short-ambiguous",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 25947,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "user suggested looking into caching search results but did not prioritize it due to current performance.",
+            "evidence": null
+          }
+        ],
+        "score": {
+          "fixtureId": "fx15-short-ambiguous",
+          "goldCount": 1,
+          "extractedCount": 1,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the same fact about caching search results being suggested but not prioritized, though the type label differs."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        }
+      },
+      {
+        "fixtureId": "fx16-clean-decision-caching",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 44214,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Decided on an in-process LRU cache for `getCatalogItem` due to a small hot set and read-heavy workload.",
+            "evidence": "Decided on an in-process LRU cache for `getCatalogItem` due to a small hot set and read-heavy workload;"
+          },
+          {
+            "type": "fact",
+            "text": "Capped the LRU cache at 500 entries based on access logs.",
+            "evidence": "capped at 500 entries based on access logs."
+          },
+          {
+            "type": "lesson",
+            "text": "Chosen plain LRU over LFU because the pattern is recency-biased, not frequency-biased.",
+            "evidence": "Chosen plain LRU over LFU because the pattern is recency-biased, not frequency-biased."
+          },
+          {
+            "type": "fact",
+            "text": "Added a 5-minute TTL as a safety net against stale catalog items edited by admins.",
+            "evidence": "Added a 5-minute TTL as a safety net against stale catalog items edited by admins, alongside size-based eviction."
+          },
+          {
+            "type": "event",
+            "text": "Implemented: LRU cache wrapping `getCatalogItem` with 500-entry cap and 5-min TTL; misses fall through to the original query unchanged.",
+            "evidence": "Implemented: LRU cache wrapping `getCatalogItem` with 500-entry cap and 5-min TTL; misses fall through to the original query unchanged."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx16-clean-decision-caching",
+          "goldCount": 4,
+          "extractedCount": 5,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.3333333333333333,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the decision to add an in-process LRU cache for getCatalogItem (matches gold 0)."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Restates the 500-entry cap from the decision already matched by extracted atom 0; useful detail but the gold for that decision is already matched."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Expresses the decision to prefer LRU over LFU due to recency bias but uses type 'lesson' instead of 'decision'."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Records adding a 5-minute TTL to avoid staleness, matching gold 2, but labels it as a 'fact' rather than a 'decision'."
+              },
+              {
+                "index": 4,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Implementation/event detail (misses fall through to original query) that is useful but not present in the gold atoms."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 5
+      },
+      {
+        "fixtureId": "fx17-clean-decision-auth-strategy",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 41895,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "The billing-service authentication decision was to use session cookies over JWTs due to same-origin scope and easier revocation (server-side deletion).",
+            "evidence": "Session cookies over JWTs due to same-origin scope and easier revocation (server-side deletion)."
+          },
+          {
+            "type": "fact",
+            "text": "The chosen approach uses httpOnly, Secure, SameSite=Strict cookies with Redis-backed server-side session storage.",
+            "evidence": "Chosen approach uses httpOnly, Secure, SameSite=Strict cookies with Redis-backed server-side session storage."
+          },
+          {
+            "type": "note",
+            "text": "Horizontal scaling via shared session store is noted as a future consideration if the service scales out significantly; currently acceptable at single-region scale.",
+            "evidence": "Horizontal scaling via shared session store is noted as a future consideration if the service scales out significantly; currently acceptable at single-region scale."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx17-clean-decision-auth-strategy",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the decision to use session cookies (httpOnly/Secure/SameSite) over JWTs for same-origin billing-service and notes easier revocation via server-side deletion."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Adds the specific detail that server-side sessions are Redis-backed and bundles cookie attributes into a single fact not explicitly stated together in a single gold atom."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "States the note that shared session storage for horizontal scaling (a future consideration) is noted and currently acceptable at single-region scale."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx18-debugging-memory-leak",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 49562,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "Worker process RSS climbed from 150MB to over 1.2GB in ~6 hours due to a memory leak; restarted for investigation.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Heap snapshot diff revealed growing retained 'jobCompleted' listener closures on the shared EventEmitter, exceeding active job counts.",
+            "evidence": null
+          },
+          {
+            "type": "lesson",
+            "text": "Root cause: `processJob()` calls `emitter.on('jobCompleted', handler)` at start but never `emitter.off()`, attaching listeners permanently per job.",
+            "evidence": "Root cause: `processJob()` calls `emitter.on('jobCompleted', handler)` at start but never `emitter.off()`, attaching listeners permanently per job."
+          },
+          {
+            "type": "decision",
+            "text": "Switched to `emitter.once('jobCompleted', handler)` so Node removes handlers automatically after invocation; added explicit `emitter.off()` in error path for jobs that fail or hang without completion.",
+            "evidence": "Switched to `emitter.once('jobCompleted', handler)` so Node removes handlers automatically after invocation; added explicit `emitter.off()` in error path for jobs that fail or hang without completion."
+          },
+          {
+            "type": "fact",
+            "text": "Verified fix by running 6 hours under same load—RSS stabilized at 160-180MB, confirming leak resolved.",
+            "evidence": "Verified fix by running 6 hours under same load—RSS stabilized at 160-180MB, confirming leak resolved."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx18-debugging-memory-leak",
+          "goldCount": 4,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Describes the same RSS growth and restart incident as gold atom 2, but labels it an event while gold marks it a fact."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Heap-snapshot evidence is a useful supporting detail not present in the gold atoms."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "States the root cause that processJob used emitter.on without emitter.off, matching the lesson gold atom."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Describes switching to once and adding emitter.off in the error path, matching the decision gold atom."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Reports the verified stable RSS after the fix, matching gold atom 3 but labeled as a fact instead of an event."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx19-debugging-flaky-test",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 54109,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "The tests/orders.test.ts file is flaky in CI because all three tests import and mutate the same module-level `baseOrder` object instead of using fresh copies; Test 1 and 2 push items onto baseOrder.items, causing Test 3's assertion to fail when CI workers run in different orders than local execution. Fix applied: each test now calls structuredClone(baseOrder) or builds its own order object. Ran the suite 50 times locally with randomized order; stayed green.",
+            "evidence": "Root cause: all three tests import and mutate the same module-level `baseOrder` object instead of using fresh copies; Test 1 and 2 push items onto baseOrder.items, causing Test 3's assertion to fail when CI workers run in different orders than local execution."
+          },
+          {
+            "type": "todo",
+            "text": "Audit other test files for module-level fixture objects that get mutated instead of cloned to prevent similar issues from arising elsewhere in the codebase.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "tests/orders.test.ts is flaky in CI (1/10 runs), failing on the third test while passing locally every time.",
+            "evidence": "tests/orders.test.ts is flaky in CI (1/10 runs), failing on the third test while passing locally every time."
+          },
+          {
+            "type": "fact",
+            "text": "Root cause: all three tests import and mutate the same module-level `baseOrder` object instead of using fresh copies.",
+            "evidence": "Root cause: all three tests import and mutate the same module-level `baseOrder` object instead of using fresh copies;"
+          },
+          {
+            "type": "decision",
+            "text": "Fix applied: each test now calls a structuredClone(baseOrder) helper (or builds its own order object).",
+            "evidence": "Fix applied: each test now calls a structuredClone(baseOrder) helper (or builds its own order object)."
+          },
+          {
+            "type": "command",
+            "text": "Audit other test files for module-level fixture objects that get mutated instead of cloned, as this pattern likely exists elsewhere but was not fully checked in orders.test.ts only.",
+            "evidence": "Follow-up plan: Audit other test files for module-level fixture objects that get mutated instead of cloned, as this pattern likely exists elsewhere but was not fully checked in orders.test.ts only."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx19-debugging-flaky-test",
+          "goldCount": 5,
+          "extractedCount": 6,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.6,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Contains the verification event (ran suite 50 times) matching gold atom 3, though labeled as a decision rather than event."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Todo to audit other test files matches gold atom 4 exactly."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States the flakiness occurred in CI and passed locally, matching gold atom 1."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Describes the root cause (shared mutated baseOrder) matching gold atom 0, but is typed as a fact instead of a lesson."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Describes the fix using structuredClone/building fresh objects, matching gold atom 2 (decision)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 5
+      },
+      {
+        "fixtureId": "fx20-refactor-dedupe-validation",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 43375,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Consolidated duplicate email/phone/zip validation logic into `validateContactFields()` helper at `src/lib/validation.ts`. All three handlers (signup, checkout, profile-update) now call the shared function instead of maintaining local copies to eliminate drift risk. Preserved exact user-facing error message strings per handler as required by support documentation; implemented a messages override parameter in the helper so each site retains its specific wording while sharing core regex/logic.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Ran existing test suite for all three handlers; all error message assertions passed verbatim.",
+            "evidence": "Ran existing test suite for all three handlers; all error message assertions passed verbatim."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx20-refactor-dedupe-validation",
+          "goldCount": 4,
+          "extractedCount": 2,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Describes extracting validateContactFields() into src/lib/validation.ts and replacing per-handler copies (decision)."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Reports running the test suite with all error message assertions passing (matches the event about tests), but extracted type is 'fact' not 'event'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx21-deploy-incident-rollback",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 57151,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Error rate on checkout jumped from ~0.2% to ~9% right after 2:15pm deploy; most errors are 'undefined is not a function' on getShippingEstimate() due to express-shipping feature flag lookup throwing instead of returning false when the key doesn't exist in the flag store yet.",
+            "evidence": null
+          },
+          {
+            "type": "lesson",
+            "text": "New code assumed express-shipping flag key would already exist (defaulting to false), but the flag was never created before this deploy—the flag-store entry and reading code were supposed to ship together, but creation step got missed. Root cause: a missing feature-flag key in the store led to runtime errors when the flag wasn't yet defined.",
+            "evidence": "Root cause: new code assumed express-shipping flag key would already exist (defaulting to false), but the flag was never created before this deploy—the flag-store entry and reading code were supposed to ship together, but creation step got missed."
+          },
+          {
+            "type": "todo",
+            "text": "Added todo: audit deploy checklist to require confirming any new feature-flag key exists in the flag store before code referencing it ships, not after.",
+            "evidence": "Added todo: audit deploy checklist to require confirming any new feature-flag key exists in the flag store before code referencing it ships, not after."
+          },
+          {
+            "type": "fact",
+            "text": "Rolled back to previous deploy; error rate dropped to ~0.2% within 90 seconds.",
+            "evidence": "Rolled back to previous deploy; error rate dropped to ~0.2% within 90 seconds."
+          },
+          {
+            "type": "lesson",
+            "text": "Root cause: new code assumed express-shipping flag key would already exist (defaulting to false), but the flag was never created before this deploy.",
+            "evidence": "Root cause: new code assumed express-shipping flag key would already exist (defaulting to false), but the flag was never created before this deploy—the flag-store entry and reading code were supposed to ship together, but creation step got missed."
+          },
+          {
+            "type": "decision",
+            "text": "Fix implemented: make flag lookup default to false when key is missing AND create express-shipping flag entry in flag store now so intended behavior is available on redeploy.",
+            "evidence": "Fix implemented: make flag lookup default to false when key is missing (defense in depth) AND create express-shipping flag entry in flag store now so intended behavior is available on redeploy."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx21-deploy-incident-rollback",
+          "goldCount": 5,
+          "extractedCount": 6,
+          "recall": 1,
+          "precision": 0.8333333333333334,
+          "junkRate": 0.16666666666666666,
+          "typeAccuracy": 0.6,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Describes the checkout error spike after the 2:15pm deploy and attributes it to getShippingEstimate() throwing on the missing express-shipping flag, matching the event content but labeled as a lesson instead of event."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Captures the lesson that the deploy assumed the express-shipping flag existed and that its absence caused runtime errors, matching the gold lesson."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Records the TODO to audit the deploy checklist to confirm new feature-flag keys exist before shipping, matching the gold todo."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "States the rollback and rapid recovery of error rate, matching the decision/event but is typed as a fact rather than a decision."
+              },
+              {
+                "index": 4,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant duplicate of the root-cause lesson already captured by extracted atom 1; no new durable content."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Describes the decision to default flag lookup to false and create the missing flag before redeploying, matching the gold decision."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 5
+      },
+      {
+        "fixtureId": "fx22-config-decision-connection-pool",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 49498,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "Active connections monotonically climb and never drop back down, indicating a connection leak rather than undersizing; correctly sized pools should oscillate under real load.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Active connections monotonically climb and never drop back down, indicating a leak rather than undersizing.",
+            "evidence": "Active connections monotonically climb and never drop back down, indicating a leak rather than undersizing;"
+          },
+          {
+            "type": "fact",
+            "text": "`reportGeneration()` code path acquires a connection but returns early on validation error without releasing it (connection leak).",
+            "evidence": "`reportGeneration()` code path acquires a connection but returns early on validation error without releasing it (connection leak)."
+          },
+          {
+            "type": "decision",
+            "text": "Do not raise pool size as a stopgap to avoid masking the issue and delaying exhaustion detection. Fix is required instead of increasing capacity.",
+            "evidence": "Decision: Do not raise pool size as a stopgap to avoid masking the issue and delaying exhaustion detection. Fix is required instead of increasing capacity."
+          },
+          {
+            "type": "command",
+            "text": "Wrap connection acquire/release in `try/finally` block within `reportGeneration()` regardless of validation outcome; leave pool size at 20.",
+            "evidence": "Action Plan: Wrap connection acquire/release in `try/finally` block within `reportGeneration()` regardless of validation outcome; leave pool size at 20."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx22-config-decision-connection-pool",
+          "goldCount": 4,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 0.8,
+          "junkRate": 0.2,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States the same observed monotonic active-connection increase and interprets it as a leak (gold fact 1)."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant duplicate of extracted atom 0; no additional durable information."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the reportGeneration() early-return leak, matching the lesson but labeled as a fact instead of lesson."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "States the decision not to raise the pool and to fix the leak instead, matching gold decision 2."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Specifies wrapping acquire/release in try/finally to fix reportGeneration(), matching gold decision 3 but labeled as a command not decision."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 4
+      },
+      {
+        "fixtureId": "fx23-tool-failure-disk-space",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 50240,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Build server failing with 'ENOSPC: no space left on device' during compile step due to unbounded growth of build-agent.log in /var/log (94GB used, installed 8 months ago without log rotation).",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Truncated build-agent.log immediately to free space and restore builds.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Three consecutive build jobs completed successfully after fixes; /var/log usage dropped from ~94GB to under 2GB and remained flat across runs.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "Architectural fix implemented: Added logrotate config for build-agent.log with daily rotation, compression, retention of 14 days; added disk-space check to build agent health check to fail loudly on future exhaustion instead of cryptic ENOSPC errors.",
+            "evidence": "Architectural fix implemented: Added logrotate config for build-agent.log with daily rotation, compression, retention of 14 days; added disk-space check to build agent health check to fail loudly on future exhaustion instead of cryptic ENOSPC errors."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx23-tool-failure-disk-space",
+          "goldCount": 5,
+          "extractedCount": 4,
+          "recall": 0.8,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures that build-agent.log grew to ~94GB with no rotation causing ENOSPC; labeled as a lesson."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Records immediate truncation to free space, matching the decision to truncate but labeled as a command rather than decision."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Describes verification by three successful builds and /var/log dropping under 2GB, matching the event but labeled as a fact."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "States the addition of a logrotate config (daily, compress, keep 14 days), matching the logrotate decision; also mentions disk-space check but matched to the logrotate gold atom."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx24-decision-logging-library",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 50228,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Adopt Pino over manual JSON.stringify(console.log) for Node.js logging.",
+            "evidence": "Decision: Adopt pino as the Node.js logging library over manual JSON.stringify(console.log)."
+          },
+          {
+            "type": "fact",
+            "text": "Pino emits structured JSON by default for queryability in log aggregators.",
+            "evidence": "Pino emits structured JSON by default for queryability in log aggregators;"
+          },
+          {
+            "type": "fact",
+            "text": "Pino is one of the fastest libraries with minimal overhead on hot paths.",
+            "evidence": "it is one of the fastest libraries with minimal overhead on hot paths,"
+          },
+          {
+            "type": "fact",
+            "text": "Pino supports debug/info/warn/error levels.",
+            "evidence": "supports debug/info/warn/error levels"
+          },
+          {
+            "type": "fact",
+            "text": "Pino automatically propagates request-scoped context via child loggers (e.g., requestId).",
+            "evidence": "supports automatic request-scoped context propagation (e.g., requestId) via child loggers"
+          },
+          {
+            "type": "fact",
+            "text": "Migration approach is incremental replacement using a wrapper.",
+            "evidence": "Migration approach: Incremental replacement using a wrapper to maintain existing console.log call sites"
+          },
+          {
+            "type": "fact",
+            "text": "No big-bang rewrite is required for migration.",
+            "evidence": "no big-bang rewrite required."
+          },
+          {
+            "type": "note",
+            "text": "LOG_LEVEL set per environment, with pino configured as the primary logging library and request-scoped child loggers attaching requestId to every line.",
+            "evidence": "Configuration: LOG_LEVEL set per environment, with pino configured as the primary logging library and request-scoped child loggers attaching requestId to every line."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx24-decision-logging-library",
+          "goldCount": 4,
+          "extractedCount": 8,
+          "recall": 1,
+          "precision": 0.625,
+          "junkRate": 0.375,
+          "typeAccuracy": 0.25,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Decision to adopt Pino over manual console logging matches gold decision to adopt pino as the structured logging library."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant/detail already covered by the gold rationale for adopting pino (emits queryable JSON)."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant claim about minimal overhead already reflected in the gold decision to adopt pino."
+              },
+              {
+                "index": 3,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Useful additional fact about log levels supported by pino not explicitly listed in the gold atoms."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "States that pino propagates request-scoped context via child loggers, matching the gold decision to use pino child loggers (type is 'fact' vs gold 'decision')."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Describes incremental replacement migration approach, matching the gold decision to migrate incrementally (type 'fact' vs gold 'decision')."
+              },
+              {
+                "index": 6,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant statement that no big-bang rewrite is required, duplicate of the incremental migration decision."
+              },
+              {
+                "index": 7,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Mentions LOG_LEVEL set per environment which matches the gold fact about LOG_LEVEL, though labeled as a note rather than a fact."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 8
+      },
+      {
+        "fixtureId": "fx25-decision-retry-backoff",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 45661,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Switched payments-provider client from immediate triple-retry strategy to exponential backoff with jitter: base delay of 200ms, doubling each attempt (200ms, 400ms, 800ms...), plus randomized jitter up to 100ms added per delay.",
+            "evidence": "Switched payments-provider client from immediate triple-retry strategy to exponential backoff with jitter: base delay of 200ms, doubling each attempt (200ms, 400ms, 800ms...), plus randomized jitter up to 100ms added per delay to prevent retry storms."
+          },
+          {
+            "type": "decision",
+            "text": "Set maximum retries at 5; beyond this threshold, failures are treated as genuine provider outages rather than transient issues and surfaced directly to the caller (total backoff time ~3-4 seconds).",
+            "evidence": "Set maximum retries at 5; beyond this threshold, failures are treated as genuine provider outages rather than transient issues and surfaced directly to the caller (total backoff time ~3-4 seconds)."
+          },
+          {
+            "type": "decision",
+            "text": "Retry logic restricted to HTTP 5xx responses and network-level errors only (timeout, connection reset); 4xx responses no longer retried since they indicate invalid requests or validation rejections that retrying would not resolve.",
+            "evidence": "Retry logic restricted to HTTP 5xx responses and network-level errors only (timeout, connection reset); 4xx responses no longer retried since they indicate invalid requests or validation rejections that retrying would not resolve."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx25-decision-retry-backoff",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Describes exponential backoff with 200ms base, doubling, and up to 100ms jitter — same decision as gold 0."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Specifies capping retries at 5 and surfacing failures to the caller, matching gold 1."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Limits retries to 5xx and network errors and excludes 4xx, matching gold 2."
+              }
+            ],
+            "unmatched_gold_indices": [
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx26-noisy-build-log-spam",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 55587,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Ran `eslint .` across the whole repo.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "The ESLint run reported 342 no-console warnings, all in utility and CLI files.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Action taken: Added overrides block for `src/cli/**/*.{ts,json}` and `src/utils/**/*.{ts,json}`, then re-ran `eslint .`.",
+            "evidence": "Action taken: Added overrides block for `src/cli/**/*.{ts,json}` and `src/utils/**/*.{ts,json}`, then re-ran `eslint .`."
+          },
+          {
+            "type": "fact",
+            "text": "Result: Down to 6 remaining warnings, all located outside the CLI/utils scope and flagged as worth investigating separately.",
+            "evidence": "Result: Down to 6 remaining warnings, all located outside the CLI/utils scope and flagged as worth investigating separately."
+          },
+          {
+            "type": "fact",
+            "text": "Output included repeated near-identical lines for multiple files in `src/utils/`.",
+            "evidence": "Output included repeated near-identical lines for multiple files in `src/utils/`:"
+          },
+          {
+            "type": "fact",
+            "text": "Total count: 342 problems (0 errors, 342 warnings). All were `no-console` warnings.",
+            "evidence": "Total count: 342 problems (0 errors, 342 warnings). All were `no-console` warnings."
+          },
+          {
+            "type": "lesson",
+            "text": "Rationale for approach: Most console.log calls are deliberate CLI output in utility folders rather than debug leftovers.",
+            "evidence": "Rationale for approach: Most console.log calls are deliberate CLI output in utility folders rather than debug leftovers."
+          },
+          {
+            "type": "fact",
+            "text": "Plan to add an eslint overrides block scoped specifically to `src/cli/**/*.ts` and `src/utils/**/*.ts` to disable the `no-console` rule there, while keeping it enabled (as a warning) everywhere else in the repo.",
+            "evidence": "Plan to add an eslint overrides block scoped specifically to `src/cli/**/*.ts` and `src/utils/**/*.ts` to disable the `no-console` rule there, while keeping it enabled (as a warning) everywhere else in the repo."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx26-noisy-build-log-spam",
+          "goldCount": 3,
+          "extractedCount": 8,
+          "recall": 1,
+          "precision": 0.625,
+          "junkRate": 0.375,
+          "typeAccuracy": 0.3333333333333333,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Records the actual command run (eslint .), a useful durable action not explicitly listed in the gold atoms."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant with other extracted atoms (duplicates the 342 no-console warning claim) and duplicates a gold fact already matched."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Overlaps the gold decision/event but adds unverified .json globs and duplicates the add-and-rerun claim already captured elsewhere."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "States the post-override result (warnings dropped to 6 outside CLI/utils), matching the gold event though tagged as a fact rather than an event."
+              },
+              {
+                "index": 4,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Notes repeated near-identical output lines in src/utils, a useful diagnostic detail not present in the gold atoms."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Gives the precise lint totals (342 warnings, 0 errors) and that all were no-console warnings, matching the gold fact."
+              },
+              {
+                "index": 6,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Restates the rationale already covered by the gold fact (deliberate console.log usage); redundant with matched gold."
+              },
+              {
+                "index": 7,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Describes adding an eslint overrides block scoped to src/cli and src/utils to disable no-console, matching the gold decision though labeled as a lesson rather than a decision."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 6
+      },
+      {
+        "fixtureId": "fx27-noisy-repeated-health-checks",
+        "difficulty": "noisy",
+        "status": "ready",
+        "wallMs": 40434,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "Polling GET /health on notifications-service every 3 seconds to investigate intermittent notification delays reported by users.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Service health logs show the service status flipping to 'degraded' with reason 'queue-consumer-lag' roughly every 15 polls (~45 seconds).",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Service health logs show stable periods of uptime from 841 to 874 seconds.",
+            "evidence": "- {"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx27-noisy-repeated-health-checks",
+          "goldCount": 3,
+          "extractedCount": 3,
+          "recall": 0.3333333333333333,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "A useful investigative action (polling /health every 3s) not present in the gold atoms."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "States the same fact: health flips to 'degraded' with reason 'queue-consumer-lag' roughly every 15 polls (~45s)."
+              },
+              {
+                "index": 2,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Reports an additional log-derived uptime interval (841–874s) that is not present in the gold atoms."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              2
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx28-long-threetopics-infra",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 47997,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The `aws-sdk` was replaced with `@aws-sdk/client-s3` during the March dependency sweep and is already current.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "Changed `maxmemory-policy` from `allkeys-lru` to `volatile-lru`. Added a default 7-day TTL to `analytics-events` writes (previously untimed). Sessions with their 24h TTL will now only be evicted if every key with a TTL is gone.",
+            "evidence": "Changed `maxmemory-policy` from `allkeys-lru` to `volatile-lru`. Added a default 7-day TTL to `analytics-events` writes (previously untimed). Sessions with their 24h TTL will now only be evicted if every key with a TTL is gone."
+          },
+          {
+            "type": "decision",
+            "text": "Configured a PagerDuty alert that fires if the backup-job's completion marker in the metrics store hasn't been updated within 25 hours (providing an hour of slack past the expected 24h cadence). Alerts on job exit code alone were deemed insufficient due to potential silent failures.",
+            "evidence": "Configured a PagerDuty alert that fires if the backup-job's completion marker in the metrics store hasn't been updated within 25 hours (providing an hour of slack past the expected 24h cadence). Alerts on job exit code alone were deemed insufficient due to potential silent failures."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx28-long-threetopics-infra",
+          "goldCount": 5,
+          "extractedCount": 3,
+          "recall": 0.6,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "States aws-sdk was replaced with @aws-sdk/client-s3 in the March sweep, matching gold fact."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Describes switching maxmemory-policy to volatile-lru and adding a 7-day TTL to analytics-events, matching the decision."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Describes adding a PagerDuty alert on missing backup completion marker within 25 hours, matching the decision."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              2
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx29-long-multitopic-review",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 44944,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Renamed `getUsrPrefs()` to `getUserPreferences()` across three call sites to align with existing naming conventions and improve grepability.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Added a regression test asserting a 403 response when one user attempts to export another user's data; existing happy-path test for self-export retained.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "Fixed IDOR vulnerability in `/api/export` endpoint: added an authorization check verifying that the requesting user's ID matches the account being exported, returning 403 if they do not match before executing export logic.",
+            "evidence": "`Fixed IDOR vulnerability in /api/export endpoint: added an authorization check verifying that the requesting user's ID matches the account being exported, returning 403 if they do not match before executing export logic.`"
+          },
+          {
+            "type": "command",
+            "text": "Added regression test asserting a 403 response when one user attempts to export another user's data; existing happy-path test for self-export retained.",
+            "evidence": "`Added regression test asserting a 403 response when one user attempts to export another user's data; existing happy-path test for self-export retained.`"
+          },
+          {
+            "type": "decision",
+            "text": "Deferred CSV format support for `/api/export` due to lack of urgency and scope creep concerns, marking it as a future PR item based on occasional user requests.",
+            "evidence": "`Deferred CSV format support for /api/export due to lack of urgency and scope creep concerns, marking it as a future PR item based on occasional user requests.`"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx29-long-multitopic-review",
+          "goldCount": 5,
+          "extractedCount": 5,
+          "recall": 0.8,
+          "precision": 0.8,
+          "junkRate": 0.2,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Renaming getUsrPrefs to getUserPreferences across call sites matches the decision to standardize the name."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Adds the regression test asserting a 403 for cross-user export, matching the decision to add that test (type labeled command vs decision)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Describes adding the ownership/authorization check and returning 403 before export logic, matching the security-fix decision."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate of extracted atom 1 (redundant regression-test note), so it does not add new durable content."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Notes deferring CSV support to a future PR, matching the note about postponing CSV (type labeled decision vs note)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx30-nothing-smalltalk-weather",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 22849,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "note",
+            "text": "User expected rain all week and was taking a break.",
+            "evidence": "supposed to rain all week apparently"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx30-nothing-smalltalk-weather",
+          "goldCount": 0,
+          "extractedCount": 1,
+          "recall": null,
+          "precision": 0,
+          "junkRate": 1,
+          "typeAccuracy": null,
+          "overExtractionCount": 1,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Gold list is empty; any extracted durable fact is an over-extraction not supported as a gold atom."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx31-nothing-offtopic-joke",
+        "difficulty": "nothing",
+        "status": "ready",
+        "wallMs": 22093,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Programmers prefer dark mode because light attracts bugs.",
+            "evidence": "user: why do programmers prefer dark mode? because light attracts bugs"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx31-nothing-offtopic-joke",
+          "goldCount": 0,
+          "extractedCount": 1,
+          "recall": null,
+          "precision": 0,
+          "junkRate": 1,
+          "typeAccuracy": null,
+          "overExtractionCount": 1,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Gold list is empty — any extracted durable fact is an over-extraction and thus junk."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx32-contradiction-port-number",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 36532,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "metrics-exporter listens on port 7777.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "user suggested setting metrics-exporter to listen on port 8080 initially.",
+            "evidence": "Let's have the new metrics-exporter service listen on port 8080."
+          },
+          {
+            "type": "decision",
+            "text": "user realized 8080 was already used by admin-console and suggested changing to 7777.",
+            "evidence": "Wait, actually hold on — 8080 is already used by the admin-console service on the same box, that'll conflict. Let's use 7777 instead."
+          },
+          {
+            "type": "command",
+            "text": "assistant confirmed metrics-exporter will listen on port 7777.",
+            "evidence": "Confirmed: metrics-exporter listens on port 7777."
+          },
+          {
+            "type": "lesson",
+            "text": "8080 was a mistake that was caught before deployment.",
+            "evidence": "Right, and just to be clear for anyone reading this later — 7777 is final, 8080 was a mistake we caught before it shipped."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx32-contradiction-port-number",
+          "goldCount": 2,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 0.6,
+          "junkRate": 0.4,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the decision that metrics-exporter listens on port 7777, but type is 'fact' instead of 'decision'."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Notes that the user initially suggested port 8080, a useful detail not present in the gold atoms."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Conveys the lesson that 8080 was already used by admin-console and led to switching to 7777, but is labeled 'decision' instead of 'lesson'."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant confirmation of the already-captured decision and adds no new durable information."
+              },
+              {
+                "index": 4,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant restatement of the same lesson already matched by another extracted atom."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 4,
+        "evidenceAccDenominator": 4
+      },
+      {
+        "fixtureId": "fx33-contradiction-cache-ttl",
+        "difficulty": "contradiction",
+        "status": "ready",
+        "wallMs": 41930,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "Document the flash-sale reasoning in config comments to prevent accidental reversion of the cache TTL from 5 minutes back to 1 hour.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Product-price cache TTL set to 5 minutes (reduced from initial proposal of 1 hour).",
+            "evidence": "Product-price cache TTL set to 5 minutes (reduced from initial proposal of 1 hour)."
+          },
+          {
+            "type": "lesson",
+            "text": "Rationale: Flash sales require price updates within 1-2 minutes; a 1-hour TTL causes stale pricing during flash sale launches, while 5 minutes balances staleness risk with cache hit rate.",
+            "evidence": "Rationale: Flash sales require price updates within 1-2 minutes; a 1-hour TTL causes stale pricing during flash sale launches, while 5 minutes balances staleness risk with cache hit rate."
+          },
+          {
+            "type": "fact",
+            "text": "Final decision confirmed as 5 minutes.",
+            "evidence": "Final decision confirmed as 5 minutes."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx33-contradiction-cache-ttl",
+          "goldCount": 2,
+          "extractedCount": 4,
+          "recall": 1,
+          "precision": 0.75,
+          "junkRate": 0.25,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Documentation todo is a useful actionable item not present in the gold atoms."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States the decision to set the TTL to 5 minutes (reduced from 1 hour), matching the gold decision content though labeled as a fact rather than a decision."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Captures the lesson about 1-2 minute flash-sale expectations and why 5 minutes balances staleness and cache hit rate, matching the gold lesson."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant repetition of the final decision already captured by another extracted atom."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx34-todo-heavy-launch-checklist",
+        "difficulty": "todo-heavy",
+        "status": "ready",
+        "wallMs": 48751,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "Load-test push-notification service at 10x expected launch traffic.",
+            "evidence": null
+          },
+          {
+            "type": "todo",
+            "text": "Write support team's FAQ for new subscription tiers.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "The team is deciding on the day-one phased-rollout percentage for mobile-app v2.0 release (options: 10%, 25%, or 100%).",
+            "evidence": "decide day-one phased-rollout percentage (options: 10%, 25%, or 100%)"
+          },
+          {
+            "type": "event",
+            "text": "A push-notification load test will be conducted at 10x expected launch traffic.",
+            "evidence": "Load-test push-notification service at 10x expected launch traffic."
+          },
+          {
+            "type": "note",
+            "text": "The top priority items are the rollout-percentage decision and push-notification load test.",
+            "evidence": "Top priority items (must complete first): Rollout-percentage decision and push-notification load test"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx34-todo-heavy-launch-checklist",
+          "goldCount": 8,
+          "extractedCount": 5,
+          "recall": 0.5,
+          "precision": 0.8,
+          "junkRate": 0.2,
+          "typeAccuracy": 0.75,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Directly captures the todo to load-test push notifications at 10x traffic (gold 1)."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Matches the todo to write the support team's FAQ for new subscription tiers (gold 2)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 5,
+                "type_correct": false,
+                "reason": "Captures the rollout-percentage decision and options but labels it as a 'decision' rather than a todo (gold 5)."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant restatement of the push-notification load-test already captured by extracted atom 0 / gold 1."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 7,
+                "type_correct": true,
+                "reason": "Matches the note that rollout-percentage decision and push-notification load test were reprioritized as top priorities (gold 7)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              3,
+              4,
+              6
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx35-command-heavy-db-backup",
+        "difficulty": "command-heavy",
+        "status": "ready",
+        "wallMs": 61626,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "command",
+            "text": "Use `pg_dump -Fc -h prod-db.internal -U backup_user memories_db -f backup_2026_07_09.dump` to create a compressed backup of the Postgres Prod DB, enabling parallel restore; plain SQL dumps do not support this.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Upload the compressed backup to S3 using `aws s3 cp backup_2026_07_09.dump s3://prod-db-backups/daily/backup_2026_07_09.dump`, with `/daily/` required for lifecycle policies.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Download the backup from S3 using `aws s3 cp s3://prod-db-backups/daily/backup_2026_07_09.dump ./restore.dump`.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Restore the backup into a new database using `pg_restore -h prod-db.internal -U backup_user -d memories_db_restore_test -j 4 restore.dump`, parallelizing across four jobs.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Verify the restore by running a row-count sanity check on key tables using `psql -h prod-db.internal -U backup_user -d memories_db_restore_test -c 'SELECT count(*) FROM memories;'` and comparing with production data.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "The compressed backup command uses `pg_dump -Fc` to enable parallel restore.",
+            "evidence": "`pg_dump -Fc -h prod-db.internal -U backup_user memories_db -f backup_2026_07_09.dump`"
+          },
+          {
+            "type": "fact",
+            "text": "The storage location for the compressed backup is S3 with a `/daily/` prefix.",
+            "evidence": "`aws s3 cp backup_2026_07_09.dump s3://prod-db-backups/daily/backup_2026_07_09.dump`"
+          },
+          {
+            "type": "fact",
+            "text": "The restore command uses `pg_restore -j 4` to parallelize the process across four jobs.",
+            "evidence": "`pg_restore -h prod-db.internal -U backup_user -d memories_db_restore_test -j 4 restore.dump`"
+          },
+          {
+            "type": "command",
+            "text": "The verification step involves running a row-count sanity check against the `memories` table.",
+            "evidence": "`psql -h prod-db.internal -U backup_user -d memories_db_restore_test -c 'SELECT count(*) FROM memories;'`"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx35-command-heavy-db-backup",
+          "goldCount": 7,
+          "extractedCount": 9,
+          "recall": 0.8571428571428571,
+          "precision": 0.7777777777777778,
+          "junkRate": 0.2222222222222222,
+          "typeAccuracy": 0.8333333333333334,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the pg_dump -Fc backup command and intent; matches gold command 0."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Matches the S3 upload command including the /daily/ prefix; corresponds to gold command 1."
+              },
+              {
+                "index": 2,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Provides a useful download command from S3 not present in the gold atoms."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Matches the pg_restore into a new DB with -j 4; corresponds to gold command 3."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 6,
+                "type_correct": true,
+                "reason": "Matches the verification psql command to count rows in the restored DB; corresponds to gold command 6."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Captures the lesson that -Fc enables parallel restore (gold 4) but labels it as a fact rather than a lesson."
+              },
+              {
+                "index": 6,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "States the storage location is S3 with a /daily/ prefix, matching gold fact 2."
+              },
+              {
+                "index": 7,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate/redundant fact about -j 4 already covered by the matched restore command and lesson."
+              },
+              {
+                "index": 8,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant verification step duplicate of the matched psql verification command."
+              }
+            ],
+            "unmatched_gold_indices": [
+              5
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 4
+      },
+      {
+        "fixtureId": "fx36-entity-rich-vendor-comparison",
+        "difficulty": "entity-rich",
+        "status": "ready",
+        "wallMs": 35021,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Postmark was selected as the provider because it has a 98% inbox rate, EU data residency support, and a transactional-focused feature set.",
+            "evidence": "Selected provider: Postmark. Rationale: Best deliverability (Priya's tests showed 98% inbox rate vs SendGrid's 91%), confirmed EU data residency support per Marcus from security, and transactional-focused feature set aligns better with needs than SendGrid's marketing-oriented platform or SES manual setup requirements."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx36-entity-rich-vendor-comparison",
+          "goldCount": 5,
+          "extractedCount": 1,
+          "recall": 0.2,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": true,
+                "reason": "Captures the decision to choose Postmark with the same justification (98% inbox rate, EU residency, transactional focus)."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0,
+              1,
+              2,
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx37-secrets-present-webhook-secret",
+        "difficulty": "secrets",
+        "status": "ready",
+        "wallMs": 34264,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Rotated the webhook signing secret on the provider dashboard and updated code handler to read from a new high-entropy key, replacing the hardcoded literal.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "Updated deploy config to inject secrets at runtime using `[REDACTED:high_entropy:b1b7a32e]` instead of hardcoding them.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Added a pre-commit secret-scanning hook (`gitleaks`) to prevent future commits with hardcoded credentials.",
+            "evidence": null
+          }
+        ],
+        "score": {
+          "fixtureId": "fx37-secrets-present-webhook-secret",
+          "goldCount": 4,
+          "extractedCount": 3,
+          "recall": 0.75,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.3333333333333333,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Describes rotation of the compromised signing secret and replacing the hardcoded literal/handler update, which matches the event that the secret was rotated and handler cleaned (gold 2); the extracted atom is labeled as a decision rather than an event."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Describes replacing hardcoded secret with runtime-injected secret (deploy config/env), matching the decision to use process.env and inject from secrets manager (gold 1)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": false,
+                "reason": "Adds a pre-commit secret-scanning hook (gitleaks), which matches the decision to add such a hook (gold 3); the extracted atom is labeled as a command rather than a decision."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        }
+      },
+      {
+        "fixtureId": "fx38-ambiguous-vague-monitoring-idea",
+        "difficulty": "ambiguous",
+        "status": "ready",
+        "wallMs": 28941,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "user suggested having more monitoring on background jobs, noting it's not urgent but could be useful eventually.",
+            "evidence": "We should probably have more monitoring on the background jobs at some point, right?"
+          },
+          {
+            "type": "fact",
+            "text": "assistant stated that current logging has been sufficient to debug issues and background jobs haven't caused any incidents.",
+            "evidence": "the current logging has been enough to debug the couple of issues we've had. I wouldn't prioritize building out dedicated monitoring for them right now."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx38-ambiguous-vague-monitoring-idea",
+          "goldCount": 1,
+          "extractedCount": 2,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the suggestion to add monitoring as a non-urgent future improvement, matching the gold atom's content though type differs."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Restates that current logging has been sufficient—useful corroborating detail but not matched to the gold atom already claimed."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 2,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx39-clean-decision-api-versioning",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 39653,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Decided on URL-path versioning (/v1/orders) over header-based for the public API to improve visibility in logs, browser address bars, and docs.",
+            "evidence": "Decided on URL-path versioning (/v1/orders) over header-based for the public API to improve visibility in logs, browser address bars, and docs;"
+          },
+          {
+            "type": "fact",
+            "text": "This avoids cacheability issues requiring special Vary-header configuration and prevents silent fallback incidents caused by missing headers.",
+            "evidence": "this avoids cacheability issues requiring special Vary-header configuration and prevents silent fallback incidents caused by missing headers."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx39-clean-decision-api-versioning",
+          "goldCount": 3,
+          "extractedCount": 2,
+          "recall": 0.6666666666666666,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the decision to use URL-path versioning (/v1/...) instead of header-based versioning."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Conveys the lesson about avoiding Vary-header cache issues and preventing silent fallback incidents when headers are omitted, but labels it as a 'fact' rather than a 'lesson'."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx40-clean-decision-testing-strategy",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 44968,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "PaymentGatewayClient currently lacks sufficient unit tests; heavy mocking is deemed low value since it only verifies SDK argument passing without testing real behavior.",
+            "evidence": "PaymentGatewayClient currently lacks sufficient unit tests; heavy mocking is deemed low value since it only verifies SDK argument passing without testing real behavior."
+          },
+          {
+            "type": "fact",
+            "text": "Priority shifted to integration tests against the provider's sandbox environment instead: these exercise the actual request/response contract and catch assumptions errors (e.g., decimal-vs-cents field misreading) that mocked units miss.",
+            "evidence": "Priority shifted to integration tests against the provider's sandbox environment instead: these exercise the actual request/response contract and catch assumptions errors (e.g., decimal-vs-cents field misreading) that mocked units miss."
+          },
+          {
+            "type": "fact",
+            "text": "Sandbox stability is considered sufficient despite minor slowness; module surface area (~8 methods) allows a manageable suite where well-chosen integrations provide more confidence than larger mock suites.",
+            "evidence": "Sandbox stability is considered sufficient despite minor slowness; module surface area (~8 methods) allows a manageable suite where well-chosen integrations provide more confidence than larger mock suites."
+          },
+          {
+            "type": "decision",
+            "text": "Decision made: build integration tests covering all 8 happy paths and the known edge case, treating unit tests as optional for this thin wrapper module.",
+            "evidence": "Decision made: build integration tests covering all 8 happy paths and the known edge case, treating unit tests as optional for this thin wrapper module."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx40-clean-decision-testing-strategy",
+          "goldCount": 3,
+          "extractedCount": 4,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.3333333333333333,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Captures the lesson that unit-testing a thin SDK wrapper is low value/mocks-only (gold [1]) but labels it a decision rather than a lesson."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States the priority shift to integration tests against the sandbox and why (matches gold [0]) but is typed as a fact rather than a decision."
+              },
+              {
+                "index": 2,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Provides extra useful details about sandbox stability and that the module has ~8 methods making integrations manageable, which are not explicitly in the gold atoms."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Specifies building integration tests covering all 8 happy paths plus the known edge case and treating unit tests as optional, directly matching gold [2]."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 4
+      },
+      {
+        "fixtureId": "fx41-debugging-race-condition-cache",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 52538,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "The homepage-stats cache expiration triggers huge DB CPU spikes every 10 minutes because of classic cache stampede behavior, where hundreds of concurrent requests independently recompute the same expensive query instead of sharing results.",
+            "evidence": "Homepage-stats cache expiration triggers huge DB CPU spikes every 10 minutes due to classic cache stampede behavior"
+          },
+          {
+            "type": "decision",
+            "text": "Added an in-process single-flight lock around the recomputation logic to mitigate cache stampede behavior. The first request acquiring a miss acquires the lock and executes the actual DB query; subsequent concurrent misses wait on the same in-flight promise before receiving the result, reducing concurrent DB hits by approximately 100x within each server instance.",
+            "evidence": "Added an in-process single-flight lock around the recomputation logic"
+          },
+          {
+            "type": "todo",
+            "text": "Evaluate and implement a distributed Redis-based lock if the remaining per-instance spike (up to 3x due to one request per server instance) causes noticeable DB load.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "In-process locks only deduplicate requests per single process/instance.",
+            "evidence": "In-process locks only deduplicate requests per single process/instance."
+          },
+          {
+            "type": "fact",
+            "text": "With multiple instances behind a load balancer (3 total), independent stampedes can still occur across different servers.",
+            "evidence": "With multiple instances behind a load balancer (3 total), independent stampedes can still occur across different servers."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx41-debugging-race-condition-cache",
+          "goldCount": 4,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 0.8,
+          "junkRate": 0.2,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the cache-stampede explanation for the 10-minute homepage-stats DB CPU spike (lesson)."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Describes adding an in-process single-flight lock so only the first request queries the DB (decision)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 3,
+                "type_correct": true,
+                "reason": "Records the TODO to evaluate/implement a distributed Redis-based lock if per-instance spikes persist (todo)."
+              },
+              {
+                "index": 3,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "States that in-process locks only deduplicate within a single process/instance (fact)."
+              },
+              {
+                "index": 4,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant restatement of the multi-instance stampede fact already covered by a matched gold atom."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 4
+      },
+      {
+        "fixtureId": "fx42-long-multitopic-mixed",
+        "difficulty": "long",
+        "status": "ready",
+        "wallMs": 41868,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "Added GIN index on `to_tsvector(title)` and rewrote query using `@@` operator for `/api/search`. Latency dropped from 1.8s average to ~90ms (confirmed via EXPLAIN ANALYZE showing full sequential scan previously).",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "Fixed typo 'Save Prefrences' to 'Save Preferences'.",
+            "evidence": "'Fixed typo 'Save Prefrences' to 'Save Preferences''"
+          },
+          {
+            "type": "decision",
+            "text": "Deferred CSV export of search history feature request due to low demand; not being built in this session.",
+            "evidence": "'Deferred CSV export of search history feature request due to low demand; not being built in this session.'"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx42-long-multitopic-mixed",
+          "goldCount": 5,
+          "extractedCount": 3,
+          "recall": 0.6,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.3333333333333333,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": true,
+                "reason": "Describes the added GIN index on to_tsvector(title) and query rewrite; includes latency improvement and EXPLAIN ANALYZE evidence, matching the decision to add the index and rewrite the search."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the fixed typo ('Save Prefrences' → 'Save Preferences'), matching the gold decision but labeled as a factual note rather than a decision."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 4,
+                "type_correct": false,
+                "reason": "Records deferral of the CSV export feature due to low demand, matching the gold note about deferring the CSV export but labeled as a decision instead of a note."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1,
+              3
+            ]
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+        "difficulty": "clean",
+        "status": "ready",
+        "wallMs": 41102,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "Redeploying with a fresh cache directory caused Ollama to hit parallel cold misses, taking down the daemon's embed queue for ~40 seconds.",
+            "evidence": "redeploying with a fresh cache directory caused Ollama to hit parallel cold misses instead of using an existing 'warm' but empty-on-disk-cache for the current model's shard files, taking down the daemon's embed queue for ~40 seconds."
+          },
+          {
+            "type": "decision",
+            "text": "The fix involved checking for the specific model's shard file existence rather than just the directory and adding a single-flight lock.",
+            "evidence": "The fix involved checking for the specific model's shard file existence rather than just the directory and adding a single-flight lock"
+          },
+          {
+            "type": "decision",
+            "text": "A 10-second timeout was added to the lock wait to prevent wedging if the populator crashes.",
+            "evidence": "A 10-second timeout was added to the lock wait to prevent wedging if the populator crashes."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx43-rich-lesson-embed-cache-stampede",
+          "goldCount": 2,
+          "extractedCount": 3,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the lesson that a fresh cache dir caused parallel cold misses and stalled the embed queue for ~40s."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "Describes the fix to check for the model shard file and add a single-flight lock as in the decision."
+              },
+              {
+                "index": 2,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "States the 10s timeout on the lock wait; useful detail though it duplicates part of the matched decision."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx46-negation-not-using-redis",
+        "difficulty": "negation",
+        "status": "ready",
+        "wallMs": 25927,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "user said they are not using Redis for the session store and are instead using an in-process LRU cache.",
+            "evidence": "Plain in-process LRU cache for now. It's simpler and we don't have multi-instance session sharing yet."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx46-negation-not-using-redis",
+          "goldCount": 2,
+          "extractedCount": 1,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures that the session store uses an in-process LRU cache rather than Redis."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1
+            ]
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx47-negation-legacy-api-decommissioned",
+        "difficulty": "negation",
+        "status": "ready",
+        "wallMs": 29649,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The user confirmed that the legacy v1 API was fully decommissioned last quarter and anyone hitting v1 endpoints now gets a 410 Gone error.",
+            "evidence": "we do NOT support the legacy v1 API anymore — it was fully decommissioned last quarter."
+          },
+          {
+            "type": "fact",
+            "text": "The user stated that anyone hitting v1 endpoints now gets a 410 Gone error.",
+            "evidence": "Anyone still hitting v1 endpoints gets a 410 Gone."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx47-negation-legacy-api-decommissioned",
+          "goldCount": 3,
+          "extractedCount": 2,
+          "recall": 0.6666666666666666,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures that v1 was fully decommissioned last quarter (matches gold 0) and is a factual statement."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States that requests to v1 endpoints return 410 Gone, directly matching gold 1."
+              }
+            ],
+            "unmatched_gold_indices": [
+              2
+            ]
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 2,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx48-negation-flag-disabled-in-prod",
+        "difficulty": "negation",
+        "status": "ready",
+        "wallMs": 28148,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "The experimental batch-prefetch flag is off in production but still on in staging.",
+            "evidence": "the experimental batch-prefetch flag is NOT enabled in prod — we turned it off after the regression last week."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx48-negation-flag-disabled-in-prod",
+          "goldCount": 2,
+          "extractedCount": 1,
+          "recall": 0.5,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "States the flag is off in production, matching gold atom 0; the type 'fact' is correct."
+              }
+            ],
+            "unmatched_gold_indices": [
+              1
+            ]
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx49-uncertainty-dns-vs-cert",
+        "difficulty": "uncertainty",
+        "status": "ready",
+        "wallMs": 31179,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "lesson",
+            "text": "The intermittent TLS handshake failures in prod were caused by an expired certificate, not a DNS resolution flake — logs confirmed the cert had expired 2 hours ago. The initial hypothesis of a DNS issue was incorrect and turned out to be a red herring.",
+            "evidence": "logs confirm the cert actually expired 2 hours ago"
+          },
+          {
+            "type": "fact",
+            "text": "The user checked the logs and found that the certificate actually expired 2 hours ago, which was the real cause of the TLS handshake failures.",
+            "evidence": "logs confirm the cert actually expired 2 hours ago"
+          },
+          {
+            "type": "lesson",
+            "text": "DNS resolution was initially suspected but turned out to be a red herring.",
+            "evidence": "DNS was just a hypothesis and turned out to be a red herring"
+          }
+        ],
+        "score": {
+          "fixtureId": "fx49-uncertainty-dns-vs-cert",
+          "goldCount": 2,
+          "extractedCount": 3,
+          "recall": 1,
+          "precision": 0.6666666666666666,
+          "junkRate": 0.3333333333333333,
+          "typeAccuracy": 1,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": true,
+                "reason": "Captures the lesson that DNS was a red herring and the real cause was an expired cert (lesson), matching gold atom 0."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States the factual log-confirmed expiry ~2 hours prior, matching gold atom 1."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant restatement of the lesson already captured by extracted atom 0 / gold atom 0."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 3,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx50-uncertainty-suspected-memory-leak",
+        "difficulty": "uncertainty",
+        "status": "ready",
+        "wallMs": 32725,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "Run a heap snapshot diff overnight to confirm or rule out the memory leak suspicion in the worker pool.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "user suspected there might be a memory leak in the worker pool, with memory climbing steadily over 6 hours but not yet proven.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "user will run a heap snapshot diff overnight to confirm or rule out the memory leak suspicion.",
+            "evidence": null
+          },
+          {
+            "type": "lesson",
+            "text": "assistant advised to treat the memory leak suspicion as unconfirmed until the heap diff comes back.",
+            "evidence": null
+          }
+        ],
+        "score": {
+          "fixtureId": "fx50-uncertainty-suspected-memory-leak",
+          "goldCount": 1,
+          "extractedCount": 4,
+          "recall": 1,
+          "precision": 0.25,
+          "junkRate": 0.75,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the planned overnight heap snapshot diff to verify the suspected worker-pool memory leak, matching the gold atom's content though type differs."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant restatement of the suspected but unconfirmed memory leak and its 6-hour climb; duplicates gold content."
+              },
+              {
+                "index": 2,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate command to run the same overnight heap diff already captured by extracted atom 0 and the gold atom."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant advisory that the leak is unconfirmed until the heap diff returns, already covered by the gold atom."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "forbiddenItemHits": 0
+      },
+      {
+        "fixtureId": "fx51-uncertainty-theory-confirmed-by-repro",
+        "difficulty": "uncertainty",
+        "status": "ready",
+        "wallMs": 29662,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "fact",
+            "text": "user added a sleep before the assertion and it passed 50/50 times, suggesting it is a race condition.",
+            "evidence": "I just added a sleep before the assertion and it passed 50/50 times."
+          },
+          {
+            "type": "fact",
+            "text": "assistant confirmed that the flaky test is now a race condition based on user's repro evidence.",
+            "evidence": "Good, so it's moved from a hypothesis to a confirmed race condition given the sleep-based repro evidence."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx51-uncertainty-theory-confirmed-by-repro",
+          "goldCount": 1,
+          "extractedCount": 2,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the same durable fact that adding a sleep made the failure reproduce 50/50, indicating the theory became confirmed as a race condition."
+              },
+              {
+                "index": 1,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Restates that the assistant confirmed the race-condition diagnosis based on the user's repro evidence; useful but not an additional gold atom."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "evidenceAccNumerator": 2,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx52-status-transition-blocked-unblocked-running",
+        "difficulty": "status-transition",
+        "status": "ready",
+        "wallMs": 27426,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "The migration job was BLOCKED waiting on DBA permissions, then UNBLOCKED and queued to start after the DBA granted them.",
+            "evidence": null
+          },
+          {
+            "type": "event",
+            "text": "The migration job is now RUNNING, having kicked off five minutes ago with an ETA of two hours.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "The migration job is currently running and has been queued for five minutes with an estimated two-hour runtime.",
+            "evidence": "It's now actually RUNNING — kicked off five minutes ago, ETA 2 hours."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx52-status-transition-blocked-unblocked-running",
+          "goldCount": 2,
+          "extractedCount": 3,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the BLOCKED -> UNBLOCKED -> queued progression exactly."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "States the job is RUNNING with ~2 hour ETA and start time (five minutes ago), matching the current status/ETA gold atom."
+              },
+              {
+                "index": 2,
+                "verdict": "reasonable_extra",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant restatement of the job running and queued for five minutes with a two-hour estimate; useful but duplicates gold content."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 1
+      },
+      {
+        "fixtureId": "fx53-status-transition-release-date-moved",
+        "difficulty": "status-transition",
+        "status": "ready",
+        "wallMs": 35775,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "The v3 release was originally targeted for this Friday but is now delayed to next Wednesday due to a QA blocker.",
+            "evidence": "the v3 release was originally targeted for this Friday. Change of plans: we're slipping it to next Wednesday instead, QA found a blocker in late Thursday review."
+          },
+          {
+            "type": "fact",
+            "text": "The release after the current one is still planned for its normal Friday slot.",
+            "evidence": "the release AFTER this one is still planned for its normal Friday slot as usual."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx53-status-transition-release-date-moved",
+          "goldCount": 2,
+          "extractedCount": 2,
+          "recall": 1,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Content matches gold atom about v3 delay and QA blocker, but type differs (event vs fact)."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States that the subsequent release remains on the normal Friday cadence, matching the gold atom."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 1,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx54-status-transition-ticket-todo-to-done",
+        "difficulty": "status-transition",
+        "status": "ready",
+        "wallMs": 32709,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "todo",
+            "text": "ASTRA-812 is TODO right now, nobody's picked it up.",
+            "evidence": null
+          },
+          {
+            "type": "event",
+            "text": "I've started working on ASTRA-812, so it's now IN PROGRESS.",
+            "evidence": null
+          },
+          {
+            "type": "event",
+            "text": "Finished and merged ASTRA-812 — it is now DONE.",
+            "evidence": null
+          },
+          {
+            "type": "todo",
+            "text": "user marked the ticket ASTRA-812 as TODO when nobody had picked it up.",
+            "evidence": "Ticket ASTRA-812 is TODO right now, nobody's picked it up."
+          },
+          {
+            "type": "event",
+            "text": "user started working on the ticket ASTRA-812, changing its status to IN PROGRESS.",
+            "evidence": "Update — I've started it, so it's now IN PROGRESS."
+          },
+          {
+            "type": "event",
+            "text": "user finished and merged the ticket ASTRA-812, changing its status to DONE.",
+            "evidence": "Finished and merged — ASTRA-812 is now DONE."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx54-status-transition-ticket-todo-to-done",
+          "goldCount": 1,
+          "extractedCount": 6,
+          "recall": 1,
+          "precision": 0.16666666666666666,
+          "junkRate": 0.8333333333333334,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant/partial statement repeating TODO status already covered by other extracts; does not uniquely match the single gold atom."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Partial event (started/IN PROGRESS) redundant with other extracts; gold is a single combined fact, so this is duplicate."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "Captures the final DONE/merged state of ASTRA-812 which is part of the gold atom's progression, but type is 'event' rather than gold's 'fact'."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate of extracted atom 0; redundant and does not add new durable content beyond the gold atom."
+              },
+              {
+                "index": 4,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate/rewriting of the IN PROGRESS event already present; redundant with other extracts."
+              },
+              {
+                "index": 5,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicate of the DONE/merged event; redundant given the matched extract."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 3,
+        "evidenceAccDenominator": 3
+      },
+      {
+        "fixtureId": "fx55-crosschunk-owner-task-deadline",
+        "difficulty": "cross-chunk",
+        "status": "ready",
+        "wallMs": 42658,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "CI flaked twice on an unrelated repo, noted as irrelevant.",
+            "evidence": null
+          },
+          {
+            "type": "event",
+            "text": "The search-reindex project planning was initiated and Priya was assigned as the owner.",
+            "evidence": null
+          },
+          {
+            "type": "note",
+            "text": "The task involves migrating the vector index to new HNSW parameters.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "The initial deadline for the project was set for the end of next sprint, which is two weeks from now.",
+            "evidence": null
+          },
+          {
+            "type": "decision",
+            "text": "The deadline was corrected to this Friday per leadership request.",
+            "evidence": null
+          }
+        ],
+        "score": {
+          "fixtureId": "fx55-crosschunk-owner-task-deadline",
+          "goldCount": 3,
+          "extractedCount": 5,
+          "recall": 1,
+          "precision": 0.6,
+          "junkRate": 0.4,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Irrelevant CI flake event not in gold and not durable project fact."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States Priya was assigned owner of search-reindex, matching gold fact 0 but type differs (event vs fact)."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Describes migrating the vector index to new HNSW parameters, matching gold fact 1 but type differs (note vs fact)."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Restates the original two-week/end-of-sprint deadline already covered by gold and is redundant."
+              },
+              {
+                "index": 4,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Says the deadline was changed to this Friday, matching gold fact 2 but type differs (decision vs fact)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "forbiddenItemHits": 0
+      },
+      {
+        "fixtureId": "fx56-crosschunk-vendor-budget-correction",
+        "difficulty": "cross-chunk",
+        "status": "ready",
+        "wallMs": 28943,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "decision",
+            "text": "The budget ceiling for the new logging vendor was initially set at $2,000/month but was updated to $2,500/month after finance approved more headroom.",
+            "evidence": "the ceiling actually needs to be $2,500/month, finance approved a bit more headroom after he pushed back."
+          },
+          {
+            "type": "fact",
+            "text": "The current vendor's pricing tripled at renewal.",
+            "evidence": "Current vendor's pricing tripled at renewal."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx56-crosschunk-vendor-budget-correction",
+          "goldCount": 3,
+          "extractedCount": 2,
+          "recall": 0.6666666666666666,
+          "precision": 1,
+          "junkRate": 0,
+          "typeAccuracy": 0.5,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "matches_gold",
+                "matched_gold_index": 2,
+                "type_correct": false,
+                "reason": "Captures the $2,500/month budget ceiling and that finance approved more headroom, but labels it a decision rather than a fact and omits Marcus's pushback."
+              },
+              {
+                "index": 1,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": true,
+                "reason": "States the current vendor's pricing tripled at renewal, matching the gold fact with the same type."
+              }
+            ],
+            "unmatched_gold_indices": [
+              0
+            ]
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 2,
+        "evidenceAccDenominator": 2
+      },
+      {
+        "fixtureId": "fx57-crosschunk-incident-fix-correction",
+        "difficulty": "cross-chunk",
+        "status": "ready",
+        "wallMs": 44148,
+        "poisonJobs": 0,
+        "atoms": [
+          {
+            "type": "event",
+            "text": "P2 incident: checkout latency spiked 3x starting around 09:00.",
+            "evidence": null
+          },
+          {
+            "type": "command",
+            "text": "Bump the connection pool size from 10 to 40 connections on the payments DB — an initial attempt to resolve checkout latency issues.",
+            "evidence": null
+          },
+          {
+            "type": "lesson",
+            "text": "Resolution achieved only after killing a stuck long-running query holding connections open, which was the root cause of connection-pool exhaustion on the payments DB.",
+            "evidence": null
+          },
+          {
+            "type": "fact",
+            "text": "User assigned as Incident Commander (IC).",
+            "evidence": "User assigned as Incident Commander (IC)."
+          },
+          {
+            "type": "fact",
+            "text": "Root cause identified as connection-pool exhaustion on payments DB.",
+            "evidence": "Root cause identified as connection-pool exhaustion on payments DB."
+          },
+          {
+            "type": "event",
+            "text": "Initial attempt to resolve by bumping pool size from 10 to 40 connections failed; latency remained elevated.",
+            "evidence": "Initial attempt to resolve by bumping pool size from 10 to 40 connections failed; latency remained elevated."
+          }
+        ],
+        "score": {
+          "fixtureId": "fx57-crosschunk-incident-fix-correction",
+          "goldCount": 2,
+          "extractedCount": 6,
+          "recall": 1,
+          "precision": 0.3333333333333333,
+          "junkRate": 0.6666666666666666,
+          "typeAccuracy": 0,
+          "overExtractionCount": null,
+          "judge": {
+            "extracted_verdicts": [
+              {
+                "index": 0,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Duplicates event already covered by gold atom (incident spike) and adds no new durable info."
+              },
+              {
+                "index": 1,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Describes an attempted remediation already captured by gold atom 1 and adds no new durable content."
+              },
+              {
+                "index": 2,
+                "verdict": "matches_gold",
+                "matched_gold_index": 0,
+                "type_correct": false,
+                "reason": "States the stuck long-running query caused connection-pool exhaustion (root cause of the P2 incident); type differs (lesson vs fact)."
+              },
+              {
+                "index": 3,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "User-assignment (IC) is not present in the gold atoms and is ephemeral/trivial relative to the gold facts."
+              },
+              {
+                "index": 4,
+                "verdict": "junk",
+                "matched_gold_index": null,
+                "type_correct": null,
+                "reason": "Redundant with extracted atom 2 and the gold cause; does not add new durable detail."
+              },
+              {
+                "index": 5,
+                "verdict": "matches_gold",
+                "matched_gold_index": 1,
+                "type_correct": false,
+                "reason": "Explicitly records that bumping pool size from 10 to 40 failed to fix the issue (matches gold 1); type differs (event vs fact)."
+              }
+            ],
+            "unmatched_gold_indices": []
+          }
+        },
+        "forbiddenItemHits": 0,
+        "evidenceAccNumerator": 0,
+        "evidenceAccDenominator": 3
+      }
+    ],
+    "aggregate": {
+      "avgRecall": 0.8005265567765568,
+      "avgPrecision": 0.8198118753674308,
+      "f1": 0.8100544488401078,
+      "avgJunkRate": 0.17691197691197694,
+      "avgTypeAccuracy": 0.5343864468864468,
+      "overExtractionOnNothingFixture": 0,
+      "failedFixtures": 0,
+      "avgWallMsPerSession": 41640.58181818182,
+      "totalWallMs": 2290232,
+      "azureUsd": 0,
+      "avgPassAAtomCount": null,
+      "avgPassBAtomCount": null,
+      "forbiddenItemHitsTotal": 0,
+      "evidenceAcc": 0.18055555555555555,
+      "evidenceAccNumerator": 26,
+      "evidenceAccDenominator": 144
+    }
+  }
+]

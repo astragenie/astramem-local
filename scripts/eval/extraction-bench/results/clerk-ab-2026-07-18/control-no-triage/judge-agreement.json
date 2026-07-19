@@ -1,0 +1,394 @@
+[
+  {
+    "fixtureId": "fx01-clean-decision",
+    "repeats": 3,
+    "recall": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "precision": {
+      "mean": 0.9333333333333332,
+      "stdev": 0.11547005383792512,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        0.8
+      ]
+    },
+    "f1": {
+      "mean": 0.9629629629629629,
+      "stdev": 0.06415002990995838,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        0.888888888888889
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 0.5,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.5,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "States the default model is mxbai-embed-large via Ollama with 1024 dims, matching gold atom 2 but labels it as a fact rather than a decision."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Says SQLite via better-sqlite3 was chosen over Postgres for local/no-server reasons, matching gold atom 0 with correct type."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Indicates sqlite-vec was selected for vector search and embedded in the same file, matching gold atom 1 but labeled as a fact instead of a decision."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "States mxbai-embed-large has 1024 dimensions, matching gold atom 3 with correct type."
+            },
+            {
+              "index": 4,
+              "verdict": "reasonable_extra",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Combines that the vector store is sqlite-vec backed by better-sqlite3, a useful synthesized detail not listed as a single gold atom."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.5,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "States the default embedding model is mxbai-embed-large via Ollama (1024-dim) — matches the decision about default model but extracted type is 'fact' not 'decision'."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Says SQLite/better-sqlite3 was chosen over Postgres for local no-server single-file reasons — matches the decision about storage."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Identifies sqlite-vec for vector search as an SQLite extension avoiding a separate DB — matches the decision to use sqlite-vec, but extracted type is 'fact' not 'decision'."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Explicitly states the embedding dimensionality is 1024 — matches the 1024-dim fact."
+            },
+            {
+              "index": 4,
+              "verdict": "reasonable_extra",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Combines that the vector store uses sqlite-vec backed by better-sqlite3 — useful summary not separately listed in the gold atoms."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 0.8,
+        "junkRate": 0.2,
+        "typeAccuracy": 0.5,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "States default embedding model mxbai-embed-large via Ollama and 1024-dim, matching gold decision but extracted type is 'fact' not 'decision'."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Describes choosing SQLite/better-sqlite3 over Postgres for a local single-file daemon, matching the gold decision."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Says sqlite-vec was selected for vector search and embeds into the same file, matching the gold decision but labeled as 'fact' instead of 'decision'."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Repeats that mxbai-embed-large runs locally and has 1024 dimensions, matching the gold fact about embedding dimensionality."
+            },
+            {
+              "index": 4,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant summary combining sqlite-vec and better-sqlite3 already covered by other extractions."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      }
+    ]
+  },
+  {
+    "fixtureId": "fx02-debugging-race-condition",
+    "repeats": 3,
+    "recall": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "precision": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "f1": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 0.4000000000000001,
+      "stdev": 6.798699777552591e-17,
+      "n": 3,
+      "raw": [
+        0.4,
+        0.4,
+        0.4
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.4,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Describes the 20-concurrent-POST test results (before/after counts and 200 replay) which matches gold fact [3]."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 4,
+              "type_correct": true,
+              "reason": "Proposes adding a concurrency regression test asserting one row — matches gold todo [4]."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": false,
+              "reason": "States the SELECT-then-INSERT check-then-act race causing duplicate rows, matching the lesson [0] but labeled as a fact rather than a lesson."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Describes switching to atomic INSERT ... ON CONFLICT DO NOTHING and reading back the winning row, matching the decision [1] but labeled as a fact."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Records that 20 concurrent POSTs were run verifying the fix and the resulting counts; matches the verification event [2] though labeled as a fact rather than an event."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.4,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Captures the verification run (firing 20 concurrent POSTs) but is labeled as a fact while gold atom 2 is an event."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 4,
+              "type_correct": true,
+              "reason": "Proposes adding a concurrency regression test, matching the todo to add such a test."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": false,
+              "reason": "Describes the check-then-act SELECT then INSERT race condition (lesson) but is typed as a fact."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Describes switching to INSERT ... ON CONFLICT DO NOTHING and reading back the winning row (decision) but is labeled as a fact."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Records the before/after results of the 20 concurrent POSTs (counts and idempotent replays), matching the factual outcome."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.4,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "States the 20-concurrent-POST experiment results (before/after), matching the fact about duplicate rows and idempotent replay."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 4,
+              "type_correct": true,
+              "reason": "Proposes adding a concurrency regression test that fires N parallel requests and asserts one row, matching the todo."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": false,
+              "reason": "Describes the check-then-act race (SELECT then INSERT) causing duplicate rows, matching the lesson content but labeled as a fact instead of a lesson."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Describes switching to atomic INSERT ... ON CONFLICT DO NOTHING and reading back the winning row, matching the decision but labeled as a fact."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Repeats the 20-concurrent-POST verification of the fix; matches the event but is labeled as a fact rather than an event."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      }
+    ]
+  }
+]

@@ -1,0 +1,28 @@
+{
+  "id": "fx57-crosschunk-incident-fix-correction",
+  "title": "Incident owner, root cause, and fix spread across turns, with the wrong fix corrected at the end",
+  "difficulty": "cross-chunk",
+  "notes": "Root cause and an initial (WRONG) fix are stated several turns apart; the true fix is only revealed in a correction near the end, separated from the root cause by an unrelated noise turn. Tests that the extractor doesn't stop at the first-mentioned fix and does capture that it did not actually work.",
+  "turns": [
+    { "role": "user", "text": "We've got a P2 incident: checkout latency spiked 3x starting around 09:00." },
+    { "role": "assistant", "text": "Who's incident commander?" },
+    { "role": "user", "text": "I'm taking IC for this one — assigning myself." },
+    { "role": "assistant", "text": "Got it, you're IC." },
+    { "role": "user", "text": "Quick unrelated note, the standup got moved to 15 minutes later today." },
+    { "role": "assistant", "text": "Noted, standup moved." },
+    { "role": "user", "text": "Back to the incident — root cause looks like connection-pool exhaustion on the payments DB." },
+    { "role": "assistant", "text": "Makes sense given the latency pattern." },
+    { "role": "user", "text": "Applied a fix: bumped the pool size from 10 to 40 connections." },
+    { "role": "assistant", "text": "That should help. Any confirmation yet?" },
+    { "role": "user", "text": "Correction on the fix — bumping the pool size alone didn't work, latency was still elevated. What actually fixed it was killing a stuck long-running query that was holding connections open." },
+    { "role": "assistant", "text": "Got it — the pool-size bump wasn't the real fix; killing the stuck query was." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "A P2 incident (checkout latency 3x spike from around 09:00) was caused by connection-pool exhaustion on the payments DB, driven by a stuck long-running query holding connections open." },
+    { "type": "fact", "text": "Killing the stuck long-running query resolved the incident — merely bumping the connection pool size from 10 to 40 did NOT fix it." }
+  ],
+  "forbidden_items": [
+    "Bumping the connection pool size to 40 fixed the incident",
+    "Increasing the pool size resolved the latency spike"
+  ]
+}

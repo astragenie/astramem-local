@@ -41,6 +41,7 @@ function buildFullyPopulatedConfig(): Config {
       usefulness: {
         implicitPositive: { enabled: true, windowDays: 45, minDistinctQueries: 3, weight: 0.5, maxGrantsPerRun: 250 },
       },
+      queryRewrite: { mode: 'enabled', provider: 'llm', model: 'rewrite-model', maxVariants: 5, timeoutMs: 2000, maxCandidates: 150 },
     },
     crossEncoder: {
       enabled: true, provider: 'http', topK: 77, timeoutMs: 450,
@@ -74,6 +75,11 @@ function buildFullyPopulatedConfig(): Config {
     consolidation: {
       autoAcceptThreshold: 0.95,
       contradictionDetection: { mode: 'enabled', minSimilarity: 0.5, minConfidence: 0.8, maxPerRun: 50, maxWallClockMs: 120_000 },
+      // dupJudge (FEAT-549) — provider/model deliberately unset, same
+      // round-trip gap contradictionDetection's own provider/model override
+      // already documents above (hand-edit-only field, writer.ts doesn't
+      // emit either).
+      dupJudge: { mode: 'enabled', minConfidence: 0.75, batchSize: 25, maxPerRun: 150, maxWallClockMs: 90_000 },
       candidateSelection: 'knn',
       knnK: 50,
       maxCandidatePairsPerRun: 5000,
@@ -90,6 +96,15 @@ function buildFullyPopulatedConfig(): Config {
       // setting them here would fail the round-trip assertion below for a
       // reason unrelated to what that assertion is actually checking.
       atomTriage: { mode: 'dry-run', batchSize: 15, maxPerRun: 100, maxWallClockMs: 60_000 },
+      // gatekeeper (FEAT-548) — provider/model deliberately unset, same
+      // round-trip gap atomTriage's own provider/model override already
+      // documents above.
+      gatekeeper: { mode: 'dry-run', batchSize: 10, maxPerRun: 80, maxWallClockMs: 45_000 },
+      // FEAT-552 sub-scope B — 'off' here (the non-default value, per this
+      // fixture's own stated design intent of a non-default value for EVERY
+      // field) so the round-trip assertion below actually exercises the
+      // emitter, not just the shipped 'on' default.
+      typeHints: 'off',
     },
     capture: {
       autoCapture: {
@@ -312,9 +327,10 @@ describe('FEAT-461: configToYaml emit completeness', () => {
     //  - search.theta: issue #352B's θ component is gated the identical way
     //    — same reasoning as eta above.
     //  - search.usefulness.implicitPositive.enabled: issue #190's own
-    //    eval-evidence gate (same applyFusionGovernance call), same reason —
-    //    this fixture's enabled:true has no recorded evidence, so it is
-    //    forced back to false regardless of round-trip fidelity.
+    //    eval-evidence gate (same applyFusionGovernance call). Since
+    //    2026-07-18 RECORDED_EVAL_EVIDENCE carries a passing
+    //    'implicitPositive' entry, so the fixture's enabled:true now
+    //    round-trips INTACT — the gate consults and permits.
     const { sync: loadedSync, search: loadedSearch, ...loadedRest } = loaded;
     const { sync: cfgSync, search: cfgSearch, ...cfgRest } = cfg;
     expect(loadedRest).toEqual(cfgRest);
@@ -322,7 +338,6 @@ describe('FEAT-461: configToYaml emit completeness', () => {
       ...cfgSearch,
       eta: 0,
       theta: 0,
-      usefulness: { implicitPositive: { ...cfgSearch.usefulness.implicitPositive, enabled: false } },
     });
 
     expect(loadedSync).toEqual({ ...defaultConfig().sync, experimental: cfgSync.experimental });

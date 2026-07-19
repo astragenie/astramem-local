@@ -1,0 +1,16 @@
+{
+  "id": "fx51-uncertainty-theory-confirmed-by-repro",
+  "title": "Working theory (race condition) upgraded to confirmed via repro evidence",
+  "difficulty": "uncertainty",
+  "notes": "Tests the OTHER direction from fx49/fx50: a hypothesis that DOES get confirmed within the same session, via concrete repro evidence. A good extractor should capture the final CONFIRMED state, ideally also noting it started as an unconfirmed theory.",
+  "turns": [
+    { "role": "user", "text": "The flaky test might be a race condition between the writer and the indexer — that's my working theory, not confirmed." },
+    { "role": "assistant", "text": "Any repro yet?" },
+    { "role": "user", "text": "Not reliably. Actually hold on — I just added a sleep before the assertion and it passed 50/50 times. That's pretty strong evidence it IS a race condition now, not just a theory." },
+    { "role": "assistant", "text": "Good, so it's moved from a hypothesis to a confirmed race condition given the sleep-based repro evidence." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "The flaky test's root cause moved from a working THEORY (possible race condition between the writer and indexer) to CONFIRMED, once a sleep-before-assertion fix passed 50/50 repro runs." }
+  ],
+  "forbidden_items": []
+}

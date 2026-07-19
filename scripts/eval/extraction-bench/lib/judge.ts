@@ -17,6 +17,13 @@ export type JudgeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high';
 export interface JudgeAtomIn {
   type: string;
   text: string;
+  /** FEAT-542: additive pass-through of the atom's own `evidence` excerpt,
+   *  when the source (daemon digest or direct pipeline) provided one. Not
+   *  read by the judge prompt itself (buildUserPrompt below only ever sends
+   *  type+text) — purely a carrier so run-bench.mts can compute the
+   *  mechanical "Evidence acc" metric (lib/mechanical-checks.ts) without a
+   *  second data path. `undefined`/`null` when the atom has no evidence. */
+  evidence?: string | null;
 }
 
 export type ExtractedVerdict = 'matches_gold' | 'reasonable_extra' | 'junk';

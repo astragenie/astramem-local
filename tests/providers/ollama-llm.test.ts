@@ -296,11 +296,8 @@ describe('ollama-llm', () => {
   });
 
   // ---------------------------------------------------------------------------
-  // Capability detection: explicit name-prefix list, not a regex (see
-  // KNOWN_THINKING_MODEL_PREFIXES in ollama.ts — no reliable capability
-  // signal exists from Ollama's API today; ollama/ollama#10966 is open and
-  // unresolved). deepseek-r1 previously reproduced the qwen3 incident
-  // exactly because the guard was `/^qwen3/i` only.
+  // Direct-answer policy: every model gets think:false unless explicitly
+  // overridden. This avoids an incomplete model-name capability registry.
   // ---------------------------------------------------------------------------
   describe('known thinking models — think:false default', () => {
     async function capturedThinkField(model: string) {
@@ -337,8 +334,8 @@ describe('ollama-llm', () => {
       expect(await capturedThinkField('DeepSeek-R1:32b')).toBe(false);
     });
 
-    it('omits think entirely for a model not in the known list (per-model Ollama default applies)', async () => {
-      expect(await capturedThinkField('qwen2.5-coder:7b')).toBeUndefined();
+    it('sends think:false for an ordinary non-thinking model too', async () => {
+      expect(await capturedThinkField('qwen2.5-coder:7b')).toBe(false);
     });
 
     it('explicit config.think overrides the known-list default', async () => {
@@ -408,6 +405,17 @@ describe('ollama-llm', () => {
       globalThis.fetch = mockFetch([thinkingChatResponse('some hidden reasoning trace', '')]) as unknown as typeof fetch;
       const p = new OllamaLLMProvider({ model: 'brand-new-model-nobody-has-heard-of:4b' });
       await expect(p.chat([{ role: 'user', content: 'x' }], { json: true })).rejects.toThrow(TransientError);
+    });
+  });
+
+  describe('token-limit termination', () => {
+    it('rejects a response Ollama marks done_reason:length', async () => {
+      const response = chatResponse('{"atoms":[');
+      (response.body as Record<string, unknown>).done_reason = 'length';
+      globalThis.fetch = mockFetch([response]) as unknown as typeof fetch;
+      const p = new OllamaLLMProvider({ model: 'test-model' });
+      await expect(p.chat([{ role: 'user', content: 'x' }], { json: true, maxTokens: 10 }))
+        .rejects.toThrow(/token limit/);
     });
   });
 

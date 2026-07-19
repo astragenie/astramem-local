@@ -80,6 +80,9 @@ import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { execSync } from 'node:child_process';
+import { resolveExtractionPassBTuning } from '../../../src/config/config.js';
+import { collectRunConstants } from '../shared/run-constants.js';
 import { loadDataset, sampleLocomo, ensureDatasetDownloaded } from './lib/dataset.js';
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, sessionNumbers, type LoCoMoSample } from './lib/types.js';
 import {
@@ -118,6 +121,10 @@ const answerConcurrency = Number(get('--answer-concurrency') ?? '8');
 // and default runs (unset) stay byte-identical to every prior recorded
 // score. See answer.mts's buildAnswerPrompt/formatSignalBreakdown.
 const answererIncludeSignals = process.env.ANSWERER_SIGNALS === '1';
+// --answerer <ollama-tag> (additive, 2026-07-18 local-answerer A/B): swap the
+// fixed cheap Azure answerer for a local Ollama model on the SAME stored
+// memories — pairs with --resume for a re-answer-only pass. Omit -> Azure.
+const answererFlag = get('--answerer');
 const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
@@ -148,6 +155,35 @@ if (extractionPassesFlag !== undefined && extractionPassesFlag !== 1 && extracti
   console.error(`--extraction-passes must be 1 or 2, got: ${extractionPassesRaw}`);
   process.exit(1);
 }
+// --compaction-mode auto|always|never (additive): `never` = raw-turn passthrough,
+// no compaction LLM call — the stage can summarize away facts extraction needs, so
+// disabling it isolates extraction quality. Omit to inherit the shipped default (auto).
+const compactionModeFlag = get('--compaction-mode') as 'auto' | 'always' | 'never' | undefined;
+if (compactionModeFlag !== undefined && !['auto', 'always', 'never'].includes(compactionModeFlag)) {
+  console.error(`--compaction-mode must be auto|always|never, got: ${compactionModeFlag}`);
+  process.exit(1);
+}
+// --passb-provider/--passb-model (additive, FEAT-534 A/B): route the dual-pass
+// specifics-sweeper Pass B to a different provider/model than Pass A via
+// distill.extractionPassB. Both flags required together.
+// --passb-sweep untuned (2026-07-18): restore the pre-tuning full sweep
+// (gate off, no output cap) — required for any faithful replication of a
+// pre-2026-07-18 dual-pass number (e.g. the 0.6002 champion). Omit = the
+// shipped EXTRACTION_PASS_B_DEFAULTS tuning applies.
+const passBSweepFlag = get('--passb-sweep') as 'untuned' | undefined;
+if (passBSweepFlag !== undefined && passBSweepFlag !== 'untuned') {
+  console.error(`--passb-sweep only supports 'untuned', got: ${passBSweepFlag}`);
+  process.exit(1);
+}
+const passBProviderFlag = get('--passb-provider');
+const passBModelFlag = get('--passb-model');
+if ((passBProviderFlag === undefined) !== (passBModelFlag === undefined)) {
+  console.error('--passb-provider and --passb-model must be set together');
+  process.exit(1);
+}
+const extractionPassBFlag = passBProviderFlag !== undefined && passBModelFlag !== undefined
+  ? { provider: passBProviderFlag, model: passBModelFlag }
+  : undefined;
 // WS2 rerank-flip experiment (docs/specs/20260713-locomo-architect-design.md
 // workstream 2): `--cross-encoder` flips the isolated eval daemon's
 // crossEncoder.enabled via config only (src/search/rerank.ts's own logic is
@@ -215,6 +251,14 @@ async function runShard(opts: {
   extractProfile?: 'engineering' | 'conversational';
   /** Additive (W2 dual-pass A/B) — undefined inherits the shipped default (1). */
   extractionPasses?: 1 | 2;
+  /** Additive — distill.compaction mode; undefined inherits the shipped default (auto). */
+  compactionMode?: 'auto' | 'always' | 'never';
+  /** Additive (FEAT-534 A/B) — distill.extractionPassB; undefined = both passes on Pass A's provider. */
+  extractionPassB?: { provider: string; model: string };
+  /** Additive (2026-07-18) — 'untuned' restores the pre-tuning full sweep
+   *  (gate off, no output cap) for faithful replication of pre-tuning runs;
+   *  undefined inherits EXTRACTION_PASS_B_DEFAULTS. */
+  passBSweep?: 'untuned';
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
@@ -232,7 +276,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, crossEncoderOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -243,7 +287,13 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep });
+  // 2026-07-18 traceability: persist the sandbox's EXACT boot config into the
+  // run dir — the sandbox datadir is deleted on cleanup, and everything not in
+  // this file fell through to defaultConfig() (see run-manifest's gitState for
+  // which tree built that dist). Sandbox config contains no secrets by
+  // construction (bearer travels via env, never config.yaml).
+  writeFileSync(join(shardDir, 'sandbox-config.yaml'), isolated.configYaml, 'utf8');
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -345,7 +395,7 @@ async function runShard(opts: {
         { baseUrl: daemon.baseUrl, token },
         azureCfg,
         samples,
-        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency, includeSignals: answererIncludeSignals },
+        { k, readySampleIds: new Set(distillResult.ready_sample_ids), concurrency: answerConcurrency, includeSignals: answererIncludeSignals, ...(answererFlag ? { ollamaAnswerer: { model: answererFlag } } : {}) },
       );
       timings.answer_ms = Date.now() - t;
       console.log(`${tag}answered ${outcomes.length} QA pairs in ${timings.answer_ms}ms`);
@@ -543,7 +593,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, crossEncoderOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -651,6 +701,34 @@ async function runFull(): Promise<void> {
       // checkable against this field, not memory.
       crossEncoder: crossEncoderOverride ?? { enabled: false },
       diagnosed: diagnoseRequested,
+      // 2026-07-18 postmortem (the 0.5945-vs-0.5362 forensics failure): the
+      // knobs that actually explained a 5.8-pt gap — extraction passes,
+      // compaction mode, passB provider, prompt-env variant, pass-B sweep
+      // tuning, and the git state of the tree that built the running dist —
+      // were NONE of them recorded here, so "what changed between these two
+      // runs" was reconstruction, not record. An UNSET value is recorded as
+      // the string 'inherited-default' rather than omitted: inheriting
+      // defaultConfig through the sandbox is exactly how an uncommitted
+      // working-tree default flip poisoned a day of legs undetected.
+      extractionPasses: extractionPassesFlag ?? 'inherited-default',
+      compactionMode: compactionModeFlag ?? 'inherited-default',
+      extractionPassB: extractionPassBFlag ?? 'inherited-default',
+      passBSweep: passBSweepFlag ?? 'tuned-default',
+      extractPromptEnv: process.env.ASTRA_EXTRACT_PROMPT ?? null,
+      passBTuning: resolveExtractionPassBTuning(undefined),
+      // 2026-07-19 operator directive (0.5346 replication review): every
+      // constant that can move an eval number, derived from live source —
+      // chunk size, temps, pass-A token ceiling, num_ctx formula, embed
+      // dim, config-default models/modes, ollama env. Shared template with
+      // extraction-bench's run-metadata.json (run-constants.ts).
+      runConstants: collectRunConstants(),
+      gitState: (() => {
+        try {
+          const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
+          const dirty = execSync('git status --porcelain -- src/', { encoding: 'utf8' }).trim().length > 0;
+          return { sha, srcDirty: dirty };
+        } catch { return null; }
+      })(),
     },
     counts: {
       sampled_conversations: sample.length,
@@ -710,7 +788,7 @@ async function runDryRunThroughput(): Promise<void> {
     buckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: effectiveShards, samples, runDir: join(runDir, `shards-${effectiveShards}`), concurrency, distillTimeoutMs, k,
       azureCfg: null, // ingest+distill only
-      modelOverrides, extractProfile: extractProfileFlag,
+      modelOverrides, extractProfile: extractProfileFlag, compactionMode: compactionModeFlag,
     })),
   );
   const ms = Date.now() - t0;

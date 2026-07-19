@@ -9,6 +9,9 @@
  *                 { mode? }                FEAT-532 L2: 'keyword'|'semantic'|'hybrid', see
  *                                           src/search/search.ts's gatherCandidates() doc comment.
  *                                           Omitted = 'hybrid'.
+ *                 { expand? }              FEAT-550: opt this call into the query-rewrite/expansion
+ *                                           stage (only takes effect when search.queryRewrite.mode
+ *                                           is 'enabled'; omitted/false = pre-FEAT-550 behavior).
  *   POST /remember { text, type, project?, agent?, metadata? }
  *                 project/agent (#341): flat top-level canonical fields —
  *                 preferred over the deprecated nested metadata.project/
@@ -36,7 +39,6 @@
  * the envelope in this slice.
  */
 
-import { randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../storage/db.js';
@@ -49,6 +51,7 @@ import { JobRepo } from '../../pipeline/job-repo.js';
 import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
 import { resolveRerankOpts } from '../../search/rerank.js';
 import { resolveDecomposeOpts } from '../../search/decompose.js';
+import { resolveQueryRewriteOpts } from '../../search/query-rewrite.js';
 import { buildLLMProvider } from '../../providers/index.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
@@ -132,7 +135,11 @@ const RecallBodySchema = z.object({
    *  search() runs. Omitted = 'hybrid', byte-identical to pre-FEAT-532
    *  behavior (both legs always ran). See src/search/search.ts's
    *  gatherCandidates() doc comment for the exact per-mode behavior. */
-  mode: RetrievalModeEnum.optional()
+  mode: RetrievalModeEnum.optional(),
+  /** FEAT-550 AC-1: opt this call into the query-rewrite/expansion stage —
+   *  only takes effect when search.queryRewrite.mode is 'enabled'. Omitted
+   *  or false = pre-FEAT-550 behavior. */
+  expand: z.boolean().optional()
 }).refine((body) => (body.text ?? body.query) !== undefined, {
   // #112 AC-2: at least one of the canonical/legacy query-text spellings
   // is required — mirrors the pre-#112 `query: z.string().min(1)` required
@@ -181,6 +188,11 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
   // WS6: multi-hop query decomposition — undefined (search() takes zero
   // extra branches) unless multiHop.enabled is set. See src/search/decompose.ts.
   const decompose = resolveDecomposeOpts(config, buildLLMProvider);
+  // FEAT-550: query rewrite/expansion — undefined unless
+  // search.queryRewrite.mode is 'enabled'. Even then, a real invocation also
+  // requires the per-request `expand: true` opt-in below (AC-1's latency
+  // gate) — see src/search/query-rewrite.ts.
+  const queryRewrite = resolveQueryRewriteOpts(config, buildLLMProvider);
 
   return async (app: FastifyInstance) => {
     // GET /search
@@ -239,7 +251,12 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
       const weights = resolvePresetWeights(preset, baseWeights);
 
-      const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose });
+      // FEAT-550 AC-1: `expand=true` opts THIS call into the query-rewrite
+      // stage (only takes effect when queryRewrite is also resolved, i.e.
+      // search.queryRewrite.mode: 'enabled'). Omitted/anything else = false,
+      // byte-identical to pre-FEAT-550 behavior.
+      const expand = params.expand === 'true';
+      const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, queryRewrite, expand });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
         query: q,
@@ -309,8 +326,12 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       // chain returns a clean 504 instead of hanging to the client's cap.
       // See src/server/lib/deadline.ts's doc comment for what this does and
       // does NOT protect against (it does not close #347 — 1a does).
+      // FEAT-550 AC-1: `expand: true` opts THIS call into the query-rewrite
+      // stage (only takes effect when queryRewrite is also resolved).
+      const expand = parsed.data.expand ?? false;
+
       return withDeadline('POST /recall', reply, async () => {
-        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose, mode: retrievalMode });
+        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand });
         // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
         recordRecallServed(db, {
           query,

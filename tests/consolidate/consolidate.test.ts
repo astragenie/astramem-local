@@ -8,7 +8,7 @@ import { MemoryEventRepo } from '../../src/storage/memory-events.js';
 import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import { recordRecallUsed } from '../../src/storage/usefulness.js';
 import { runConsolidation, mergeAsSupersede } from '../../src/consolidate/consolidate.js';
-import { ProposalRepo, parseContradictionMetadata } from '../../src/consolidate/proposals.js';
+import { ProposalRepo, parseContradictionMetadata, parseDupJudgeMetadata } from '../../src/consolidate/proposals.js';
 import { buildApp } from '../../src/server/app.js';
 import { defaultConfig } from '../../src/config/config.js';
 import { makeMockProviders } from '../../src/pipeline/mock-providers.js';
@@ -25,7 +25,7 @@ function vecAt(axis: number, tilt = 0, tiltAxis = 1): Float32Array {
 
 async function seedEmbedded(
   db: DB, text: string, hash: string, vec: Float32Array,
-  opts: { type?: 'fact' | 'decision'; repo?: string; importance?: number } = {},
+  opts: { type?: 'fact' | 'decision' | 'command'; repo?: string; importance?: number } = {},
 ): Promise<string> {
   const id = new MemoryRepo(db).insert({
     type: opts.type ?? 'fact', text, normalized_text: text.toLowerCase(),
@@ -852,6 +852,329 @@ describe('contradiction detection (FEAT-456 SLICE-1)', () => {
   });
 });
 
+describe('dup-judge sweep (FEAT-549)', () => {
+  let db: DB;
+  const MAX_WALL_CLOCK_MS = 60_000;
+  const DEFAULT_CAPS = { batchSize: 20, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS };
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  /** Seeds two atoms at propose-tier cosine similarity (~0.90, inside
+   *  [0.85, 0.92)) so the pairwise scan creates exactly one pending
+   *  `kind='merge'` proposal for the dup-judge sweep to see. */
+  async function seedProposeTierPair(
+    textA: string, textB: string, hashPrefix: string, axis = 0,
+  ): Promise<{ a: string; b: string }> {
+    const a = await seedEmbedded(db, textA, `${hashPrefix}-a`, vecAt(axis));
+    const b = await seedEmbedded(db, textB, `${hashPrefix}-b`, vecAt(axis, 0.45));
+    return { a, b };
+  }
+
+  function verdictProvider(
+    verdict: 'same-fact-merge' | 'distinct-keep-separate' | 'unclear-leave-pending',
+    confidence: number,
+  ): LLMProvider {
+    return {
+      name: 'ollama',
+      model: 'test-dup-judge-model',
+      async chat(_messages: ChatMsg[], _opts?: ChatOpts): Promise<ChatResult> {
+        return {
+          text: JSON.stringify({ verdicts: [{ index: 0, verdict, confidence }] }),
+          usage: { in: 10, out: 10, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-dup-judge-model', latency_ms: 0 };
+      },
+    };
+  }
+
+  it("AC-2: mode 'off' (default) makes no dup-judge call — pending proposal untouched, byte-identical to pre-FEAT-549", async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-off');
+    const summary = await runConsolidation(db); // no dupJudge opt at all
+    expect(summary.dupJudgeCallsExecuted).toBe(0);
+    expect(summary.dupJudgeResolved).toHaveLength(0);
+    expect(summary.dupJudgeVerdictsPreviewed).toHaveLength(0);
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.kind).toBe('merge');
+    expect(pending[0]!.metadata_json).toBeNull();
+  });
+
+  it("AC-2: mode 'dry-run' previews the verdict but changes NOTHING", async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-dryrun');
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'dry-run', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('same-fact-merge', 0.95),
+    });
+    expect(summary.dupJudgeCallsExecuted).toBe(1);
+    expect(summary.dupJudgeVerdictsPreviewed).toHaveLength(1);
+    expect(summary.dupJudgeVerdictsPreviewed[0]).toMatchObject({ verdict: 'same-fact-merge', confidence: 0.95 });
+    expect(summary.dupJudgeResolved).toHaveLength(0);
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1); // still pending — dry-run never resolves
+    expect(pending[0]!.metadata_json).toBeNull();
+  });
+
+  it("AC-2: mode 'enabled' + confident 'same-fact-merge' auto-accepts (merges) the proposal", async () => {
+    const { a, b } = await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-merge');
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('same-fact-merge', 0.95),
+    });
+    expect(summary.dupJudgeResolved).toHaveLength(1);
+    expect(summary.dupJudgeResolved[0]).toMatchObject({ verdict: 'same-fact-merge', confidence: 0.95, action: 'merged' });
+    expect(new ProposalRepo(db).list('pending')).toHaveLength(0);
+    const accepted = new ProposalRepo(db).list('accepted')[0]!;
+    expect(accepted.status).toBe('accepted');
+    // One of the two atoms is now superseded (merge-as-supersede executed).
+    const repo = new MemoryRepo(db);
+    const aRow = repo.get(a)!, bRow = repo.get(b)!;
+    expect(aRow.valid_to !== null || bRow.valid_to !== null).toBe(true);
+  });
+
+  it("AC-2: mode 'enabled' + confident 'distinct-keep-separate' rejects (keeps separate) without merging", async () => {
+    const { a, b } = await seedProposeTierPair('The API rate limit is 100 rpm.', 'The API rate limit resets every minute.', 'h-keepsep');
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('distinct-keep-separate', 0.9),
+    });
+    expect(summary.dupJudgeResolved).toHaveLength(1);
+    expect(summary.dupJudgeResolved[0]).toMatchObject({ verdict: 'distinct-keep-separate', confidence: 0.9, action: 'kept-separate' });
+    expect(new ProposalRepo(db).list('pending')).toHaveLength(0);
+    const rejected = new ProposalRepo(db).list('rejected')[0]!;
+    expect(rejected.status).toBe('rejected');
+    // Neither atom was merged/superseded — both stay independently valid.
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  it("AC-2: 'unclear-leave-pending' leaves the proposal pending, unchanged", async () => {
+    await seedProposeTierPair('Config lives in %APPDATA%.', 'Ollama runs locally.', 'h-unclear');
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('unclear-leave-pending', 0.99),
+    });
+    expect(summary.dupJudgeResolved).toHaveLength(0);
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.metadata_json).toBeNull();
+  });
+
+  it('AC-2: a verdict below minConfidence leaves the proposal pending, unchanged', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-lowconf');
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.95, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('same-fact-merge', 0.8), // below the 0.95 bar
+    });
+    expect(summary.dupJudgeResolved).toHaveLength(0);
+    expect(new ProposalRepo(db).list('pending')).toHaveLength(1);
+  });
+
+  it("AC-4: a same-fact-merge resolution records resolved_by/verdict/confidence/provider/model provenance in metadata_json", async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-ac4-merge');
+    await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('same-fact-merge', 0.95),
+    });
+    const accepted = new ProposalRepo(db).list('accepted')[0]!;
+    const meta = parseDupJudgeMetadata(accepted);
+    expect(meta).toMatchObject({
+      resolved_by: 'dup-judge', verdict: 'same-fact-merge', confidence: 0.95,
+      provider: 'ollama', model: 'test-dup-judge-model',
+    });
+  });
+
+  it("AC-4: a distinct-keep-separate resolution records the same provenance shape, and is distinguishable from a human resolve in the same query", async () => {
+    await seedProposeTierPair('The API rate limit is 100 rpm.', 'The API rate limit resets every minute.', 'h-ac4-keepsep');
+    await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('distinct-keep-separate', 0.9),
+    });
+    const rejected = new ProposalRepo(db).list('rejected')[0]!;
+    const meta = parseDupJudgeMetadata(rejected);
+    expect(meta).toMatchObject({ resolved_by: 'dup-judge', verdict: 'distinct-keep-separate', confidence: 0.9 });
+
+    // Contrast: a human-resolved proposal (no dup-judge involved at all)
+    // has metadata_json NULL — the absence IS the audit signal (AC-4).
+    await seedProposeTierPair('Human resolved pair.', 'Human resolved pair variant.', 'h-ac4-human', 50);
+    await runConsolidation(db); // dupJudge off — creates a second pending proposal
+    const humanPending = new ProposalRepo(db).list('pending')[0]!;
+    new ProposalRepo(db).reject(humanPending.id); // no metadata passed — human path
+    const humanResolved = new ProposalRepo(db).get(humanPending.id)!;
+    expect(parseDupJudgeMetadata(humanResolved)).toBeNull();
+    expect(humanResolved.metadata_json).toBeNull();
+  });
+
+  // AC-1's fail-open contract: a judge provider that throws must leave
+  // every proposal in the affected batch pending, unchanged — proven
+  // directly here (not just at the dupJudgeBatch unit-test level).
+  it('AC-1: a dup-judge provider that always throws leaves the proposal pending, unchanged (fail-open)', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-fail-open');
+    const throwingProvider: LLMProvider = {
+      name: 'ollama',
+      model: 'broken-test-model',
+      chat: async () => { throw new Error('dup-judge provider unreachable (test)'); },
+      health: async () => ({ ok: true, model: 'broken-test-model', latency_ms: 0 }),
+    };
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: throwingProvider,
+    });
+    expect(summary.dupJudgeCallsExecuted).toBe(1);
+    expect(summary.dupJudgeResolved).toHaveLength(0);
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.status).toBe('pending');
+    expect(pending[0]!.metadata_json).toBeNull();
+  });
+
+  it('AC-1: an unparsable dup-judge response leaves the proposal pending, unchanged (fail-open)', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-fail-open-parse');
+    const unparsableProvider: LLMProvider = {
+      name: 'ollama',
+      model: 'broken-test-model',
+      chat: async () => ({ text: 'not json', usage: { in: 1, out: 1, usd: 0 } }),
+      health: async () => ({ ok: true, model: 'broken-test-model', latency_ms: 0 }),
+    };
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: unparsableProvider,
+    });
+    expect(summary.dupJudgeResolved).toHaveLength(0);
+    expect(new ProposalRepo(db).list('pending')).toHaveLength(1);
+  });
+
+  it('dup-judge calls are capped at maxPerRun; remaining pending proposals fall through, cap flag set', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-cap-r1', 0);
+    await seedProposeTierPair('The daemon binds to port 7777.', 'The daemon still binds to port 7777.', 'h-cap-r2', 60);
+    // batchSize=1 forces two separate calls (one per proposal); maxPerRun=1
+    // caps the sweep after the first.
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'dry-run', minConfidence: 0.7, batchSize: 1, maxPerRun: 1, maxWallClockMs: MAX_WALL_CLOCK_MS },
+      dupJudgeProvider: verdictProvider('same-fact-merge', 0.9),
+    });
+    expect(summary.dupJudgeCallsExecuted).toBe(1);
+    expect(summary.dupJudgeVerdictsPreviewed).toHaveLength(1); // only the first proposal got judged
+    expect(summary.dupJudgeCapReached).toBe(true);
+    expect(summary.dupJudgeWallClockCapReached).toBe(false);
+  });
+
+  it('FEAT-482 mirror: dup-judge sweep is halted once maxWallClockMs elapses; remaining proposals fall through, wall-clock flag set', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-wallclock-r1', 0);
+    await seedProposeTierPair('The daemon binds to port 7777.', 'The daemon still binds to port 7777.', 'h-wallclock-r2', 60);
+    const slowProvider: LLMProvider = {
+      name: 'ollama',
+      model: 'test-model',
+      async chat(_messages: ChatMsg[], _opts?: ChatOpts): Promise<ChatResult> {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        return { text: JSON.stringify({ verdicts: [{ index: 0, verdict: 'same-fact-merge', confidence: 0.9 }] }), usage: { in: 10, out: 10, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'dry-run', minConfidence: 0.7, batchSize: 1, maxPerRun: 200, maxWallClockMs: 25 },
+      dupJudgeProvider: slowProvider,
+    });
+    expect(summary.dupJudgeVerdictsPreviewed).toHaveLength(1); // only the first proposal got judged
+    expect(summary.dupJudgeCapReached).toBe(false);
+    expect(summary.dupJudgeWallClockCapReached).toBe(true);
+  });
+
+  it('batches multiple pending proposals into ONE call when batchSize allows it', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-batch-r1', 0);
+    await seedProposeTierPair('The daemon binds to port 7777.', 'The daemon still binds to port 7777.', 'h-batch-r2', 60);
+    let callCount = 0;
+    let lastUserContent = '';
+    const provider: LLMProvider = {
+      name: 'ollama',
+      model: 'test-model',
+      async chat(messages: ChatMsg[], _opts?: ChatOpts): Promise<ChatResult> {
+        callCount++;
+        lastUserContent = messages.find((m) => m.role === 'user')?.content ?? '';
+        return {
+          text: JSON.stringify({
+            verdicts: [
+              { index: 0, verdict: 'same-fact-merge', confidence: 0.9 },
+              { index: 1, verdict: 'distinct-keep-separate', confidence: 0.9 },
+            ],
+          }),
+          usage: { in: 10, out: 10, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
+      dupJudgeProvider: provider,
+    });
+    expect(callCount).toBe(1); // both proposals batched into a single call
+    expect(summary.dupJudgeCallsExecuted).toBe(1);
+    expect(summary.dupJudgeResolved).toHaveLength(2);
+    expect(lastUserContent).toContain('[0]');
+    expect(lastUserContent).toContain('[1]');
+  });
+
+  it('an invalid minConfidence (out of [0,1]) disables dup-judge for the run, logged non-fatal', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-inv-conf');
+    const logs: string[] = [];
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 1.5, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('same-fact-merge', 0.9),
+      log: (m) => logs.push(m),
+    });
+    expect(summary.dupJudgeCallsExecuted).toBe(0);
+    expect(logs.some((m) => m.includes('minConfidence'))).toBe(true);
+  });
+
+  it('an invalid batchSize disables dup-judge for the run, logged non-fatal', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-inv-batch');
+    const logs: string[] = [];
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, batchSize: 0, maxPerRun: 200, maxWallClockMs: MAX_WALL_CLOCK_MS },
+      dupJudgeProvider: verdictProvider('same-fact-merge', 0.9),
+      log: (m) => logs.push(m),
+    });
+    expect(summary.dupJudgeCallsExecuted).toBe(0);
+    expect(logs.some((m) => m.includes('batchSize'))).toBe(true);
+  });
+
+  it('a missing dupJudgeProvider with mode on disables dup-judge for the run, logged non-fatal', async () => {
+    await seedProposeTierPair('Deploys run at midnight.', 'Deploys run nightly.', 'h-inv-provider');
+    const logs: string[] = [];
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      // no dupJudgeProvider
+      log: (m) => logs.push(m),
+    });
+    expect(summary.dupJudgeCallsExecuted).toBe(0);
+    expect(logs.some((m) => m.includes('dupJudgeProvider'))).toBe(true);
+  });
+
+  it("does not touch the >=mergeThreshold auto-merge tier — a pair at sim >= 0.92 is auto-merged before any proposal (or dup-judge call) exists", async () => {
+    // Near-identical pair (sim ~0.999) — auto-merges immediately, never
+    // becomes a pending 'merge' proposal at all.
+    const a = await seedEmbedded(db, 'port is 7777', 'h-automerge-a', vecAt(0, 0.01));
+    const b = await seedEmbedded(db, 'the port is 7777', 'h-automerge-b', vecAt(0, 0.02));
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, ...DEFAULT_CAPS },
+      dupJudgeProvider: verdictProvider('distinct-keep-separate', 0.99), // would reject it if it ever saw it
+    });
+    expect(summary.merged).toHaveLength(1);
+    expect(summary.dupJudgeCallsExecuted).toBe(0); // never even called — nothing pending to judge
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to !== null || repo.get(b)!.valid_to !== null).toBe(true);
+  });
+});
+
 describe('cooperative yield in the pairwise scan (ADR-018 Tier 1, issue #347)', () => {
   let db: DB;
 
@@ -903,5 +1226,210 @@ describe('cooperative yield in the pairwise scan (ADR-018 Tier 1, issue #347)', 
     expect(summaryDefault.merged[0]).toMatchObject({ winner: bDefault, loser: aDefault });
     expect(summaryFrequentYield.merged[0]).toMatchObject({ winner: bFrequent, loser: aFrequent });
     expect(summaryFrequentYield.merged[0]!.similarity).toBeCloseTo(summaryDefault.merged[0]!.similarity, 10);
+  });
+});
+
+// FEAT-552 sub-scope C (AC-C1): command-token merge guard integration —
+// measured basis is the 2026-07-18 prod audit (phi false-merged
+// `git checkout A.ts` vs `B.ts` at cosine 1.00). Pure token-comparison unit
+// tests live in tests/consolidate/command-guard.test.ts; this file exercises
+// the guard wired into the two real auto-merge points.
+describe('command-token merge guard (FEAT-552 sub-scope C, AC-C1)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('blocks the >=mergeThreshold auto-merge path for a command pair with differing tokens — downgraded to a pending proposal', async () => {
+    // Near-identical embeddings (sim ~0.999, comfortably >= mergeThreshold)
+    // but different command arguments — the exact false-merge shape the
+    // 2026-07-18 prod audit measured.
+    const a = await seedEmbedded(db, 'git checkout A.ts', 'h-cg-1', vecAt(0, 0.01), { type: 'command' });
+    const b = await seedEmbedded(db, 'git checkout B.ts', 'h-cg-2', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0); // never auto-merged
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    expect(summary.commandGuardBlocked[0]).toMatchObject({ reason: 'command-token-mismatch' });
+
+    // Downgraded to a pending manual proposal instead of being dropped.
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    expect(pending[0]!.kind).toBe('merge');
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean; command_guard_reason: string };
+    expect(metadata.command_guard_blocked).toBe(true);
+    expect(metadata.command_guard_reason).toBe('command-token-mismatch');
+
+    // Both atoms untouched — nothing lost.
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  it('does NOT block a command pair whose tokens are identical — merges normally', async () => {
+    const a = await seedEmbedded(db, 'git checkout A.ts', 'h-cg-3', vecAt(0, 0.01), { type: 'command' });
+    const b = await seedEmbedded(db, 'git checkout A.ts', 'h-cg-4', vecAt(0, 0.02), { type: 'command' });
+    recordRecallUsed(db, { atomId: b, surface: 'rest', signal: 'explicit' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(1);
+    expect(summary.commandGuardBlocked).toHaveLength(0);
+    void a;
+  });
+
+  it('non-command pairs are completely unaffected by the guard (byte-identical to a plain merge)', async () => {
+    const a = await seedEmbedded(db, 'port is 7777', 'h-cg-5', vecAt(0, 0.01));
+    const b = await seedEmbedded(db, 'the port is 7777', 'h-cg-6', vecAt(0, 0.02));
+    recordRecallUsed(db, { atomId: b, surface: 'rest', signal: 'explicit' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(1);
+    expect(summary.merged[0]).toMatchObject({ winner: b, loser: a });
+    expect(summary.commandGuardBlocked).toHaveLength(0);
+  });
+
+  // Review follow-up (MEDIUM-2, 2026-07-18): the containment auto-merge
+  // tier's aggressive text normalization treats `git checkout -- A.ts` as
+  // contained in/containing `git checkout -- A.ts --force` — a DIFFERENT
+  // command, not a paraphrase — and bypassed the guard entirely. Reviewer's
+  // exact repro pair, reproduced here as a regression test.
+  it("MEDIUM-2 repro: the containment auto-merge tier blocks a command pair the reviewer found bypassing the guard (`git checkout -- A.ts` vs `--force`)", async () => {
+    const a = await seedEmbedded(db, 'git checkout -- A.ts', 'h-cg-7', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'git checkout -- A.ts --force', 'h-cg-8', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0); // was auto-merging via containment before the fix
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    expect(summary.commandGuardBlocked[0]).toMatchObject({ reason: 'command-token-mismatch' });
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1);
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean };
+    expect(metadata.command_guard_blocked).toBe(true);
+
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  // LOW (2026-07-18 review): a compound/&&-chained command pair must also be
+  // blocked — the extra `&& git push` segment is a materially different
+  // command, not incidental formatting, and the containment check's
+  // aggressive normalization would otherwise treat it as a contained subset.
+  it('LOW: blocks a compound (&&-chained) command pair where one command has an extra chained step', async () => {
+    const a = await seedEmbedded(db, 'git add . && git commit -m wip', 'h-cg-9', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'git add . && git commit -m wip && git push', 'h-cg-10', vecAt(0, 0.02), { type: 'command' });
+
+    const summary = await runConsolidation(db);
+    expect(summary.merged).toHaveLength(0);
+    expect(summary.commandGuardBlocked).toHaveLength(1);
+    void a; void b;
+  });
+
+  // MEDIUM-2: the SAME guard must also apply when sweepContainedProposals
+  // resolves an EXISTING pending proposal on a later run (not just at the
+  // moment the proposal is first created by the pairwise scan) — mirrors
+  // the pre-existing "sweeps EXISTING pending proposals" test's shape.
+  it('MEDIUM-2: sweepContainedProposals refuses to auto-accept an EXISTING pending command-atom proposal with differing tokens', async () => {
+    const winner = await seedEmbedded(db, 'git checkout -- A.ts --force', 'h-cg-11', vecAt(0), { type: 'command' });
+    const loser = await seedEmbedded(db, 'git checkout -- A.ts', 'h-cg-12', vecAt(0, 0.45), { type: 'command' });
+    recordRecallUsed(db, { atomId: winner, surface: 'rest', signal: 'explicit' }); // superset wins the row
+    const first = await runConsolidation(db, { autoMergeContained: false });
+    expect(first.proposed).toHaveLength(1);
+
+    const second = await runConsolidation(db); // autoMergeContained defaults true
+    expect(second.autoAcceptedProposals).toHaveLength(0); // refused, not swept
+    // Hit twice this run: once by sweepContainedProposals (the existing
+    // pending row), once more by the pairwise scan re-encountering the same
+    // still-valid, still-untouched pair via its own containment branch —
+    // both refuse the same pair, neither one merges or double-inserts
+    // (insertGuardedMergeProposal's dedup guard no-ops the second attempt).
+    expect(second.commandGuardBlocked).toHaveLength(2);
+    for (const hit of second.commandGuardBlocked) {
+      expect(hit).toMatchObject({ winner, loser, reason: 'command-token-mismatch' });
+    }
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1); // still pending — never auto-accepted
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as { command_guard_blocked: boolean; source: string };
+    expect(metadata.command_guard_blocked).toBe(true);
+    expect(metadata.source).toBe('containment-sweep');
+    expect(new MemoryRepo(db).get(loser)!.superseded_by).toBeNull();
+  });
+
+  it("dup-judge sweep: refuses to resolve (either direction) a pending command-atom proposal with differing tokens, leaving it pending with a guard marker", async () => {
+    // Propose-tier similarity (~0.90) so the pairwise scan creates exactly
+    // one pending 'merge' proposal for the dup-judge sweep to see.
+    const a = await seedEmbedded(db, 'npm run build', 'h-cg-dj-1', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'npm run test', 'h-cg-dj-2', vecAt(0, 0.45), { type: 'command' });
+
+    const confidentMergeVerdict: LLMProvider = {
+      name: 'ollama',
+      model: 'test-dup-judge-model',
+      async chat(): Promise<ChatResult> {
+        return {
+          text: JSON.stringify({ verdicts: [{ index: 0, verdict: 'same-fact-merge', confidence: 0.99 }] }),
+          usage: { in: 10, out: 10, usd: 0 },
+        };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-dup-judge-model', latency_ms: 0 };
+      },
+    };
+
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 60_000 },
+      dupJudgeProvider: confidentMergeVerdict,
+    });
+
+    expect(summary.dupJudgeCallsExecuted).toBe(1); // the judge WAS called and returned a confident verdict
+    expect(summary.dupJudgeResolved).toHaveLength(0); // but resolve was refused
+    expect(summary.dupJudgeCommandGuardBlocked).toBe(1);
+
+    const pending = new ProposalRepo(db).list('pending');
+    expect(pending).toHaveLength(1); // still pending, neither merged nor rejected
+    const metadata = JSON.parse(pending[0]!.metadata_json as string) as {
+      command_guard_blocked: boolean; command_guard_reason: string; dup_judge_verdict: string;
+    };
+    expect(metadata.command_guard_blocked).toBe(true);
+    expect(metadata.command_guard_reason).toBe('command-token-mismatch');
+    expect(metadata.dup_judge_verdict).toBe('same-fact-merge');
+
+    const repo = new MemoryRepo(db);
+    expect(repo.get(a)!.valid_to).toBeNull();
+    expect(repo.get(b)!.valid_to).toBeNull();
+  });
+
+  it('dup-judge sweep: resolves normally when the pending proposal is a command pair with the SAME token SET (different word order)', async () => {
+    // Different word order -> different TEXT (so the containment tier's
+    // substring check doesn't fire and auto-merge this pair before it ever
+    // reaches the propose band / dup-judge sweep) but the SAME token SET
+    // (so the command guard does not block resolution).
+    const a = await seedEmbedded(db, 'run npm build', 'h-cg-dj-3', vecAt(0), { type: 'command' });
+    const b = await seedEmbedded(db, 'npm run build', 'h-cg-dj-4', vecAt(0, 0.45), { type: 'command' });
+
+    const summary = await runConsolidation(db, {
+      dupJudge: { mode: 'enabled', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 60_000 },
+      dupJudgeProvider: {
+        name: 'ollama',
+        model: 'test-dup-judge-model',
+        async chat(): Promise<ChatResult> {
+          return {
+            text: JSON.stringify({ verdicts: [{ index: 0, verdict: 'same-fact-merge', confidence: 0.95 }] }),
+            usage: { in: 10, out: 10, usd: 0 },
+          };
+        },
+        async health(): Promise<LLMHealth> {
+          return { ok: true, model: 'test-dup-judge-model', latency_ms: 0 };
+        },
+      },
+    });
+
+    expect(summary.dupJudgeCommandGuardBlocked).toBe(0);
+    expect(summary.dupJudgeResolved).toHaveLength(1);
+    expect(summary.dupJudgeResolved[0]).toMatchObject({ verdict: 'same-fact-merge', action: 'merged' });
+    void a; void b;
   });
 });

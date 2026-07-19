@@ -1,0 +1,20 @@
+{
+  "id": "fx49-uncertainty-dns-vs-cert",
+  "title": "Hypothesis (DNS) later ruled out; confirmed cause (expired cert)",
+  "difficulty": "uncertainty",
+  "notes": "Tests hypothesis-vs-confirmed preservation: DNS is floated as a first guess and explicitly ruled out; the certificate expiry is the LOGS-CONFIRMED cause. An extractor must not harden the DNS guess into a fact, and must capture the confirmed cause distinctly.",
+  "turns": [
+    { "role": "user", "text": "Prod is throwing intermittent TLS handshake failures. My first guess is it might be a DNS resolution flake — we've seen that before." },
+    { "role": "assistant", "text": "Could be. Let's check the cert too just in case." },
+    { "role": "user", "text": "Ok I just checked — logs confirm the cert actually expired 2 hours ago. That's the real cause, not DNS." },
+    { "role": "assistant", "text": "Got it, so DNS was just a hypothesis and turned out to be a red herring — confirmed root cause is the expired cert." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "TLS handshake failures were hypothesized to be a DNS resolution flake at first, but logs confirmed the actual cause was an expired certificate, not DNS." },
+    { "type": "fact", "text": "The certificate had expired about 2 hours before the incident was investigated (confirmed via logs)." }
+  ],
+  "forbidden_items": [
+    "DNS resolution was confirmed as the cause of the TLS failures",
+    "The cause was confirmed to be DNS"
+  ]
+}

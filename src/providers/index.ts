@@ -3,6 +3,7 @@ import type { LLMProvider } from '../contracts/llm.js';
 import type { EmbedProvider } from '../contracts/embed.js';
 import { resolveEmbedQueryPrefix } from '../contracts/embed.js';
 import type { Config } from '../config/config.js';
+import { resolveExtractionPassBTuning } from '../config/config.js';
 import { OllamaLLMProvider } from './llm/ollama.js';
 import { AzureOpenAILLMProvider } from './llm/azure-openai.js';
 import { OpenAICompatibleLLMProvider } from './llm/openai-compatible.js';
@@ -49,6 +50,29 @@ export interface ProviderSet {
      * meaningful when `distill.atomTriage.mode !== 'off'` — embedAndIndex
      * never calls it on the shipped default. */
     atomTriage?: LLMProvider;
+    /** Batched dup-judge over pending consolidation proposals (FEAT-549).
+     *  `getProviders` ALWAYS sets it, mirroring `judge`/`extractionPassB`/
+     *  `atomTriage` above exactly: the SAME INSTANCE as `extraction` when no
+     *  `consolidation.dupJudge.{provider,model}` override is configured
+     *  (identity — shared rate-limit bucket, byte-identical pre-override
+     *  behavior), or a distinct provider built from that override. Optional
+     *  in the TYPE only so hand-built test ProviderSets stay valid —
+     *  consumers fall back with `dupJudge ?? extraction`, exactly the
+     *  pre-override behavior. Only meaningful when
+     *  `consolidation.dupJudge.mode !== 'off'` — `runConsolidation` never
+     *  calls it on the shipped default. */
+    dupJudge?: LLMProvider;
+    /** Ingest gatekeeper (FEAT-548). `getProviders` ALWAYS sets it, mirroring
+     *  `judge`/`extractionPassB`/`atomTriage`/`dupJudge` above exactly: the
+     *  SAME INSTANCE as `extraction` when no `distill.gatekeeper.{provider,
+     *  model}` override is configured (identity — shared rate-limit bucket,
+     *  byte-identical pre-override behavior), or a distinct provider built
+     *  from that override. Optional in the TYPE only so hand-built test
+     *  ProviderSets stay valid — consumers fall back with
+     *  `gatekeeper ?? extraction`, exactly the pre-override behavior. Only
+     *  meaningful when `distill.gatekeeper.mode !== 'off'` — runPipeline
+     *  never calls it on the shipped default. */
+    gatekeeper?: LLMProvider;
   };
   embed: EmbedProvider;
 }
@@ -76,6 +100,9 @@ export function buildLLMProvider(
   providerName: Config['llm']['compaction']['provider'],
   model: string,
   config: Config,
+  /** Ollama-only per-instance tuning (clerk seats); ignored by every other
+   *  provider — see OllamaLLMConfig.numCtxCap. */
+  opts?: { numCtxCap?: number },
 ): LLMProvider {
   // Apply the optional daemon-side call-rate limiter around whichever concrete
   // provider we build (token bucket SHARED per provider name — see
@@ -91,7 +118,7 @@ export function buildLLMProvider(
   // src/search/decompose.ts) without any daemon-boot (serve.ts) changes.
   return trackProviderHealth(
     rateLimitLLMProvider(
-      buildRawLLMProvider(providerName, model, config),
+      buildRawLLMProvider(providerName, model, config, opts),
       config.llm.rateLimit?.callsPerMinute,
     ),
   );
@@ -101,9 +128,10 @@ function buildRawLLMProvider(
   providerName: Config['llm']['compaction']['provider'],
   model: string,
   config: Config,
+  opts?: { numCtxCap?: number },
 ): LLMProvider {
   if (providerName === 'ollama') {
-    return new OllamaLLMProvider({ baseUrl: config.ollama.baseUrl, model });
+    return new OllamaLLMProvider({ baseUrl: config.ollama.baseUrl, model, numCtxCap: opts?.numCtxCap });
   }
 
   if (providerName === 'openai-compatible') {
@@ -277,6 +305,12 @@ export function getProviders(config: Config): ProviderSet {
           passB.provider ?? config.llm.extraction.provider,
           passB.model ?? config.llm.extraction.model,
           config,
+          // Clerk-seat num_ctx ceiling (ollama-only; other providers ignore
+          // it) — resolved through the ONE central tuning resolver, never a
+          // literal here. Applied only on this explicit-override branch: the
+          // identity default below reuses the pass-A instance, which must
+          // keep author-seat sizing.
+          { numCtxCap: resolveExtractionPassBTuning(config.distill).numCtxCap },
         )
       : extraction;
   // Atom-triage provider override (FEAT-533): same identity-default shape
@@ -294,6 +328,36 @@ export function getProviders(config: Config): ProviderSet {
           config,
         )
       : extraction;
+  // Dup-judge provider override (FEAT-549): same identity-default shape as
+  // judge/extractionPassB/atomTriage above — only build a SECOND provider
+  // when at least one half is actually set, otherwise reuse the extraction
+  // INSTANCE. An invalid `provider` value was already dropped by
+  // applyDupJudgeGovernance on the boot path, so this can never hit
+  // buildLLMProvider's throwing Azure fall-through on a typo.
+  const dj = config.consolidation?.dupJudge;
+  const dupJudge =
+    dj?.provider !== undefined || dj?.model !== undefined
+      ? buildLLMProvider(
+          dj.provider ?? config.llm.extraction.provider,
+          dj.model ?? config.llm.extraction.model,
+          config,
+        )
+      : extraction;
+  // Gatekeeper provider override (FEAT-548): same identity-default shape as
+  // judge/extractionPassB/atomTriage/dupJudge above — only build a SECOND
+  // provider when at least one half is actually set, otherwise reuse the
+  // extraction INSTANCE. An invalid `provider` value was already dropped by
+  // applyGatekeeperGovernance on the boot path, so this can never hit
+  // buildLLMProvider's throwing Azure fall-through on a typo.
+  const gk = config.distill?.gatekeeper;
+  const gatekeeper =
+    gk?.provider !== undefined || gk?.model !== undefined
+      ? buildLLMProvider(
+          gk.provider ?? config.llm.extraction.provider,
+          gk.model ?? config.llm.extraction.model,
+          config,
+        )
+      : extraction;
   return {
     llm: {
       compaction: buildLLMProvider(
@@ -305,6 +369,8 @@ export function getProviders(config: Config): ProviderSet {
       judge,
       extractionPassB,
       atomTriage,
+      dupJudge,
+      gatekeeper,
     },
     embed: buildEmbedProvider(config),
   };

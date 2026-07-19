@@ -1,0 +1,21 @@
+{
+  "id": "fx54-status-transition-ticket-todo-to-done",
+  "title": "Ticket status progression: todo -> in progress -> done",
+  "difficulty": "status-transition",
+  "notes": "Simple three-state ticket-tracker progression, testing that the FINAL state (done/merged) is what survives as the standing fact rather than an earlier snapshot.",
+  "turns": [
+    { "role": "user", "text": "Ticket ASTRA-812 is TODO right now, nobody's picked it up." },
+    { "role": "assistant", "text": "Got it, marked todo." },
+    { "role": "user", "text": "Update — I've started it, so it's now IN PROGRESS." },
+    { "role": "assistant", "text": "Noted, in progress." },
+    { "role": "user", "text": "Finished and merged — ASTRA-812 is now DONE." },
+    { "role": "assistant", "text": "Great, marking it done." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "ASTRA-812 progressed from TODO -> IN PROGRESS -> DONE (merged)." }
+  ],
+  "forbidden_items": [
+    "ASTRA-812 is still todo",
+    "ASTRA-812 is not done"
+  ]
+}

@@ -58,6 +58,14 @@ export const consolidateHandler: JobHandler = {
       knnK: ctx.config.consolidation.knnK,
       maxCandidatePairsPerRun: ctx.config.consolidation.maxCandidatePairsPerRun,
       vectorStore: isExtendedCtx(ctx) ? ctx.vecStore : undefined,
+      // FEAT-549: scheduled/enqueued runs pick up the configured dup-judge
+      // mode too (default 'off', byte-identical to pre-FEAT-549 behavior).
+      // Same identity-default provider fallback as the contradiction judge
+      // above.
+      dupJudge: ctx.config.consolidation.dupJudge,
+      dupJudgeProvider: isExtendedCtx(ctx)
+        ? ctx.providers.llm.dupJudge ?? ctx.providers.llm.extraction
+        : undefined,
     });
   },
 };

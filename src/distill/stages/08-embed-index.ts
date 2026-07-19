@@ -23,11 +23,13 @@ import { defaultConfig } from '../../config/config.js';
 import { redactIfEnabled } from '../../redact/index.js';
 import { childLogger } from '../../log/logger.js';
 import { gateDurability, type DurabilityGateMode, type GatedReason } from '../durability-gate.js';
-import { triageBatch, AtomTriageRunTracker, type TriageVerdict } from '../atom-triage.js';
+import { triageBatch, AtomTriageRunTracker, CORRECTED_TYPE_CONFIDENCE_GATE, type TriageVerdict } from '../atom-triage.js';
 import { recordRelationGuardDrops } from '../../storage/relation-guard-log.js';
 import { recordValidityGuardDrops } from '../../storage/validity-guard-log.js';
 import { recordEntityLinkDrops } from '../../storage/entity-link-log.js';
 import { recordTriageGuardDrops, recordTriageRunLog, type TriageGuardDropRow } from '../../storage/triage-guard-log.js';
+import { recordEvidenceGateDrops, recordEvidenceGateRunLog, EVIDENCE_FUZZY_MATCHED_REASON } from '../../storage/evidence-gate-log.js';
+import { checkEvidenceGate, type EvidenceGateDropReason } from '../evidence-gate.js';
 import { attributeSpeaker } from '../attribute-speaker.js';
 
 export interface IndexResult {
@@ -121,7 +123,7 @@ export interface EmbedIndexContext {
    * never sets this field is byte-identical: the triage batch loop below
    * is skipped entirely whenever this resolves to 'off'.
    */
-  atomTriageMode?: 'off' | 'dry-run' | 'enabled';
+  atomTriageMode?: 'off' | 'dry-run' | 'enabled' | 'repair-only';
   /**
    * Provider for the triage batch call — only consulted when
    * `atomTriageMode !== 'off'`. Real callers (distill/pipeline.ts) always
@@ -144,6 +146,25 @@ export interface EmbedIndexContext {
   /** Wall-clock cap (ms) on the triage sweep for this job — falls back to
    *  300000 (5 min) when omitted. See `AtomTriageRunTracker`. */
   atomTriageMaxWallClockMs?: number;
+  /**
+   * FEAT-551: evidence-gated sweeper. Undefined/omitted behaves as `false`
+   * — every pre-FEAT-551 caller (and the existing test suite) that never
+   * sets this field is byte-identical (AC-2): the gate check below is
+   * skipped entirely, so a `NormalizedMemory` tagged
+   * `extractionSource: 'passB'` is admitted exactly like any other atom.
+   * Real callers (distill/pipeline.ts's `runPipeline`) resolve this from
+   * `config.distill.extractionPassB.evidenceGate`, defaulting to `true`
+   * exactly when passB's resolved provider differs from pass A's (the
+   * mixed-provider case FEAT-551's own measurement targeted) — see
+   * `runPipeline`'s `evidenceGateEnabled` local for the exact precedence.
+   * When `true`, every atom with `extractionSource === 'passB'` must carry
+   * an `evidence` quote that mechanically verifies (whitespace-normalized)
+   * against `sourceText`, or it is dropped pre-index (never embedded, never
+   * indexed) — see `checkEvidenceGate` (../evidence-gate.js). Pass-A atoms
+   * (or any atom with no `extractionSource` tag, e.g. a single-pass run)
+   * are NEVER gated regardless of this setting.
+   */
+  evidenceGateEnabled?: boolean;
 }
 
 /**
@@ -193,6 +214,22 @@ export async function embedAndIndex(
   // Lane 1 / E1b, deliberately out of scope here to avoid colliding with
   // PR #231's checks.ts split).
   let vecUpsertDrops = 0;
+  // FEAT-551: counts + reasons for the evidence-gated sweeper below.
+  // `passBAtomsAttempted` is the RATE denominator (canary-must-measure-rate-
+  // not-existence) — only incremented for atoms actually tagged
+  // `extractionSource: 'passB'` while the gate is enabled, so it means
+  // exactly "passB atoms the gate evaluated," never "atoms in this batch."
+  let passBAtomsAttempted = 0;
+  const evidenceGateDrops: Record<EvidenceGateDropReason, number> = {
+    'no-evidence-field': 0,
+    'evidence-not-found': 0,
+  };
+  // FEAT-552 sub-scope C (AC-C2): passB atoms admitted via the fuzzy
+  // token-window tier (not exact substring) — a PASS, never added to
+  // evidenceGateDrops/atomsDropped, but counted+logged separately so the
+  // gate's integrity stays observable (canary-must-measure-rate-not-
+  // existence: a rising fuzzy-match rate is its own signal).
+  let passBFuzzyMatched = 0;
 
   // ─── Phase A: erasure-replay filter + regex durability gate ─────────────
   // Same two "last line of defense, never persisted" checks the original
@@ -263,6 +300,32 @@ export async function embedAndIndex(
       continue;
     }
 
+    // Evidence-gated sweeper (FEAT-551): third continue-style "last line of
+    // defense" filter, same ordering position as the two above. `false`/
+    // omitted (AC-2) skips this block entirely — checkEvidenceGate is never
+    // even called, so an atom tagged `extractionSource: 'passB'` is admitted
+    // exactly like pre-FEAT-551 behavior. Only ever gates a passB atom
+    // (checkEvidenceGate's own bypass for every other atom) — see that
+    // function's doc comment for the full mixed-provider-junk-crowding
+    // rationale this gate exists to close.
+    if (ctx.evidenceGateEnabled) {
+      if (mem.extractionSource === 'passB') passBAtomsAttempted++;
+      const gateResult = checkEvidenceGate(mem, ctx.sourceText);
+      if (!gateResult.admitted) {
+        const reason = gateResult.reason as EvidenceGateDropReason;
+        evidenceGateDrops[reason] += 1;
+        const { text: redactedText } = redactIfEnabled(mem.text, ctx.redactConfig ?? defaultConfig());
+        childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+          { reason, atom_type: mem.type, text: redactedText.slice(0, 500) },
+          'evidence gate: passB atom rejected — never passed to insertWithCreateEvent',
+        );
+        continue;
+      }
+      // FEAT-552 sub-scope C (AC-C2): admitted, but via the fuzzy tier
+      // rather than an exact substring match — count it distinctly.
+      if (gateResult.matchTier === 'fuzzy') passBFuzzyMatched++;
+    }
+
     survivors.push({ originalIndex: i, mem, vec });
   }
 
@@ -298,7 +361,11 @@ export async function embedAndIndex(
       tracker.recordCall();
       const verdicts = await triageBatch(
         ctx.llmAtomTriage,
-        batch.map((s) => ({ index: s.originalIndex, text: s.mem.text })),
+        // FEAT-547: thread each survivor's evidence quote (when it has one)
+        // so the batched call can also judge `evidence_supported` — an atom
+        // with no evidence omits the field, same as TriageableAtom.evidence's
+        // doc comment describes.
+        batch.map((s) => ({ index: s.originalIndex, text: s.mem.text, evidence: s.mem.evidence })),
         { log: triageLog },
       );
       for (const [index, verdict] of verdicts) triageVerdicts.set(index, verdict);
@@ -321,7 +388,10 @@ export async function embedAndIndex(
     if (isNonKeepVerdict && atomTriageMode === 'enabled') {
       // 'enabled': actually drop — never reaches insertWithCreateEvent, so
       // there is no memory_id to record (memoryId: null — see
-      // triage-guard-log.ts's doc comment).
+      // triage-guard-log.ts's doc comment). corrected_type/evidence_supported
+      // are recorded too (raw, not "applied" — a dropped atom is never
+      // persisted, so there is nothing to apply either to) purely so the
+      // manually reviewed agreement sample can see what the model proposed.
       atomsDroppedByTriage++;
       triageDropRows.push({
         reason: verdict!.verdict,
@@ -330,6 +400,8 @@ export async function embedAndIndex(
         confidence: verdict!.confidence,
         mode: 'enabled',
         sessionId: ctx.sessionId,
+        correctedType: verdict!.corrected_type ?? null,
+        evidenceSupported: verdict!.evidence_supported ?? null,
       });
       childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
         { triageVerdict: verdict!.verdict, confidence: verdict!.confidence, atom_type: mem.type },
@@ -337,6 +409,34 @@ export async function embedAndIndex(
       );
       continue;
     }
+
+    // FEAT-547 (atom-triage v2): corrected_type / evidence_supported are
+    // only ever APPLIED in 'enabled' mode — 'dry-run' logs but rewrites
+    // nothing (AC-5), same "safe-rollout mode" posture the junk/keep verdict
+    // itself already has. Gate placement mirrors AC-2 exactly:
+    //  - corrected_type overrides the stored type ONLY when its OWN verdict
+    //    confidence clears CORRECTED_TYPE_CONFIDENCE_GATE; under-gate or
+    //    absent keeps the atom's original type untouched.
+    //  - evidence_supported is only ever stored for an atom that actually
+    //    HAS an evidence quote (defense in depth — the triage prompt is
+    //    already instructed to omit it otherwise, this guards against a
+    //    provider ignoring that instruction) and is never itself gated by
+    //    confidence (AC-2 states no confidence floor for this flag, only
+    //    for corrected_type) — a queryable flag, never a rewrite.
+    // 'repair-only' (2026-07-18): applies the v2 signals exactly like
+    // 'enabled' while the drop branch above stays 'enabled'-gated — the
+    // measured verdict split (55fx: every clerk's discard verdict costs
+    // recall, phi −40 / 4b −36 / ministral −17, while ministral's typing
+    // raises typeAcc 43→52) gets a mode that keeps the half that earns.
+    const appliesV2Signals = atomTriageMode === 'enabled' || atomTriageMode === 'repair-only';
+    const correctedTypeApplied =
+      appliesV2Signals &&
+      verdict?.corrected_type !== undefined &&
+      verdict.confidence >= CORRECTED_TYPE_CONFIDENCE_GATE;
+    const evidenceSupportedApplied =
+      appliesV2Signals &&
+      verdict?.evidence_supported !== undefined &&
+      !!mem.evidence;
 
     // Validity bounds (issue #205): parse, then GUARD. An implausible
     // `invalid_at` is refused and the atom kept unbounded rather than being
@@ -360,7 +460,12 @@ export async function embedAndIndex(
     // Insert + append a 'create' memory_event (ADR-002) in one transaction.
     // Dedup-aware: `created` is false when this hash already existed.
     const { id: memoryId, created } = memRepo.insertWithCreateEvent({
-      type: mem.type,
+      // FEAT-547 AC-2: overwrite the stored type with the triage verdict's
+      // corrected_type only when correctedTypeApplied gated it in — every
+      // other case (mode 'off'/'dry-run', no verdict, absent field, or
+      // under-gate confidence) keeps the atom's own extracted type,
+      // byte-identical to pre-FEAT-547 behavior.
+      type: correctedTypeApplied ? verdict!.corrected_type! : mem.type,
       text: mem.text,
       normalized_text: mem.normalizedText,
       hash: mem.finalHash,
@@ -394,6 +499,12 @@ export async function embedAndIndex(
       // because a bad `valid_to` makes the memory permanently unretrievable
       // (see guardValidTo's doc comment). Refusals are counted, not swallowed.
       valid_to: validTo,
+      // FEAT-547 AC-2: queryable evidence-support flag, applied ONLY when
+      // evidenceSupportedApplied gated it in (mode 'enabled', a verdict
+      // actually judged this atom's evidence). `null` (every other case —
+      // including 'dry-run', which never applies) means "not evaluated,"
+      // never "unsupported" — see Memory.evidence_supported's doc comment.
+      evidence_supported: evidenceSupportedApplied ? verdict!.evidence_supported! : null,
       // Every atom reaching this stage passed through AtomSchema, which now
       // carries valid_at/invalid_at for every extraction profile (issue
       // #205 AC-3) — so this write path always "looked," regardless of
@@ -534,21 +645,35 @@ export async function embedAndIndex(
       );
     }
 
-    // FEAT-533 dry-run: the atom persisted (dry-run drops NOTHING — see
-    // Config['distill']['atomTriage']'s doc comment), but a non-'keep'
-    // verdict is still recorded so the manually reviewed agreement sample
-    // this FEAT's own eval gate depends on has something to compare against
-    // the Azure judge's junk labels. `memoryId` is known here (unlike the
-    // 'enabled' branch above), so it rides along in the row.
-    if (isNonKeepVerdict && atomTriageMode === 'dry-run') {
-      atomsDroppedByTriage++;
+    // FEAT-533/FEAT-547: post-insert triage observability. `memoryId` is
+    // known here (unlike the early 'enabled'+non-'keep' drop branch above),
+    // so it rides along in every row this block writes:
+    //  - 'dry-run': a non-'keep' verdict OR either v2 signal (corrected_type/
+    //    evidence_supported) is logged so the manually reviewed agreement
+    //    sample this FEAT's own eval gate depends on has something to
+    //    compare against — dry-run APPLIES neither signal (AC-5); this row
+    //    is diagnostic only, never a record of a real mutation.
+    //  - 'enabled': only a 'keep' verdict that ALSO carried a v2 signal ever
+    //    reaches this point (a non-'keep' 'enabled' verdict was already
+    //    dropped-and-logged by the early branch above and never falls
+    //    through to here) — logged as the audit trail of what was actually
+    //    APPLIED to the persisted row (correctedTypeApplied/
+    //    evidenceSupportedApplied above decided that already; this is
+    //    observability, not a second gate).
+    const hasV2Signal = verdict?.corrected_type !== undefined || verdict?.evidence_supported !== undefined;
+    if (atomTriageMode !== 'off' && verdict !== undefined && (isNonKeepVerdict || hasV2Signal)) {
+      // Reachable for 'dry-run' AND 'repair-only' (both keep the atom): the
+      // counter records IGNORED discard verdicts — would-drops, not drops.
+      if (isNonKeepVerdict) atomsDroppedByTriage++;
       triageDropRows.push({
-        reason: verdict!.verdict,
+        reason: verdict.verdict,
         memoryId,
         model: ctx.llmAtomTriage?.model ?? 'unknown',
-        confidence: verdict!.confidence,
-        mode: 'dry-run',
+        confidence: verdict.confidence,
+        mode: atomTriageMode,
         sessionId: ctx.sessionId,
+        correctedType: verdict.corrected_type ?? null,
+        evidenceSupported: verdict.evidence_supported ?? null,
       });
     }
 
@@ -644,6 +769,44 @@ export async function embedAndIndex(
       childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
         { error_message: err instanceof Error ? err.message : String(err) },
         'atom-triage counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
+      );
+    }
+  }
+
+  // FEAT-551: same isolation, same reasoning, same "only written when the
+  // gate actually ran this call" posture as the atom-triage write directly
+  // above — a call with the gate off (the shipped default) IS a real zero
+  // and must not pollute the evidence_gate_run_log rate denominator with a
+  // phantom 0/0 row for every ordinary call. This is the persistence step
+  // that was MISSING before this fix (review finding): passBAtomsAttempted/
+  // evidenceGateDrops were computed above but never written, so
+  // evidence_gate_drops/evidence_gate_run_log stayed permanently empty
+  // regardless of real gate activity — exactly the built-wired-never-
+  // invoked class this repo's own doctor canaries exist to catch.
+  if (ctx.evidenceGateEnabled) {
+    try {
+      recordEvidenceGateDrops(
+        ctx.db,
+        [
+          ...(Object.entries(evidenceGateDrops) as Array<[EvidenceGateDropReason, number]>)
+            .map(([reason, count]) => ({ reason, count })),
+          // FEAT-552 sub-scope C (AC-C2): PASS-tier row, not a drop — see
+          // evidence-gate-log.ts's module doc comment for why this rides
+          // the same table/column. recordEvidenceGateDrops already no-ops
+          // rows with count === 0.
+          { reason: EVIDENCE_FUZZY_MATCHED_REASON, count: passBFuzzyMatched },
+        ],
+        ctx.sessionId,
+      );
+      recordEvidenceGateRunLog(ctx.db, {
+        sessionId: ctx.sessionId,
+        atomsAttempted: passBAtomsAttempted,
+        atomsDropped: evidenceGateDrops['no-evidence-field'] + evidenceGateDrops['evidence-not-found'],
+      });
+    } catch (err) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { error_message: err instanceof Error ? err.message : String(err) },
+        'evidence-gate counter write failed (non-fatal, diagnostic only — embed-index already succeeded)',
       );
     }
   }

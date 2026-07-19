@@ -1,0 +1,31 @@
+{
+  "id": "fx55-crosschunk-owner-task-deadline",
+  "title": "Owner, task, and deadline spread across many turns, with noise and a late correction",
+  "difficulty": "cross-chunk",
+  "notes": "Tests the measured LoCoMo not-in-db miss class (55%): owner named in one turn, the task described several turns later, the deadline stated even later, interleaved with unrelated noise turns, plus a correction to the deadline near the end. An extractor must connect all three facts to the SAME project and honor the corrected deadline.",
+  "turns": [
+    { "role": "user", "text": "Kicking off planning for the search-reindex project." },
+    { "role": "assistant", "text": "Sounds good, who's the owner?" },
+    { "role": "user", "text": "Priya is the owner for search-reindex." },
+    { "role": "assistant", "text": "Got it, Priya owns it." },
+    { "role": "user", "text": "Random aside — anyone seen the new Grafana dashboard theme? Kind of nice." },
+    { "role": "assistant", "text": "Yeah, noticed that too." },
+    { "role": "user", "text": "Back to reindex — the task itself is migrating the vector index to the new HNSW params." },
+    { "role": "assistant", "text": "Understood, migrating to new HNSW params." },
+    { "role": "user", "text": "Another quick note: CI flaked twice this morning on an unrelated repo, not important here." },
+    { "role": "assistant", "text": "Noted, unrelated." },
+    { "role": "user", "text": "Deadline for the reindex migration is end of next sprint, two weeks out." },
+    { "role": "assistant", "text": "Two weeks, got it — Priya, HNSW migration, due end of next sprint." },
+    { "role": "user", "text": "Correction: actually the deadline moved up — it's now this Friday, not two weeks out, leadership wants it faster." },
+    { "role": "assistant", "text": "Updated: deadline is now this Friday, not two weeks out." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "Priya owns the search-reindex project." },
+    { "type": "fact", "text": "The search-reindex task is migrating the vector index to new HNSW parameters." },
+    { "type": "fact", "text": "The search-reindex deadline was moved up to this Friday — NOT the originally stated two-weeks-out end-of-sprint date." }
+  ],
+  "forbidden_items": [
+    "The search-reindex deadline is end of next sprint",
+    "search-reindex deadline is two weeks out"
+  ]
+}

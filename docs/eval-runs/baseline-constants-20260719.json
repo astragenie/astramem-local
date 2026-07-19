@@ -1,0 +1,54 @@
+{
+  "chunking": {
+    "maxChunkChars": 3200,
+    "targetTokensEnv": null
+  },
+  "extraction": {
+    "temperature": 0.1,
+    "tempEnv": null,
+    "passAMaxTokens": 6000,
+    "promptEnv": null,
+    "defaultPasses": 2
+  },
+  "passBTuning": {
+    "sweepOnlyBelowAtoms": 8,
+    "maxTokens": 1500,
+    "numCtxCap": 8192,
+    "shippedDefaults": {
+      "sweepOnlyBelowAtoms": 8,
+      "maxTokens": 1500,
+      "numCtxCap": 8192
+    }
+  },
+  "ollamaNumCtx": {
+    "formula": "clamp(inputChars/4 + maxTokens + 512, 4096, min(16384, provider numCtxCap))",
+    "charsPerToken": 4,
+    "floor": 4096,
+    "cap": 16384
+  },
+  "embedding": {
+    "defaultProvider": "onnx",
+    "defaultModel": "mxbai-embed-large",
+    "dim": 1024
+  },
+  "configDefaults": {
+    "compactionModel": "codex-subscription/gpt-5.4-mini",
+    "extractionModel": "gpt-5.4-mini",
+    "extractionProvider": "codex-subscription",
+    "atomTriageMode": "off",
+    "gatekeeperMode": "off",
+    "compactionMode": "never",
+    "chunkConcurrency": 3
+  },
+  "codexDeadKnobs": [
+    "temperature",
+    "maxTokens (pass-A ceiling + pass-B tuning cap)"
+  ],
+  "ollamaEnv": {
+    "OLLAMA_FLASH_ATTENTION": "1",
+    "OLLAMA_KV_CACHE_TYPE": "q8_0",
+    "OLLAMA_NUM_PARALLEL": "2",
+    "OLLAMA_MAX_LOADED_MODELS": "2",
+    "OLLAMA_KEEP_ALIVE": "-1"
+  }
+}

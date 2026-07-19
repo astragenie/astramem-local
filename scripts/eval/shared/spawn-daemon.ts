@@ -33,8 +33,8 @@
  */
 import { spawn, type ChildProcess } from 'node:child_process';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir, platform, homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defaultConfigDir } from '../../../src/config/datadir.js';
@@ -77,6 +77,12 @@ export interface IsolatedEvalEnv {
     extraction: string; compaction: string;
     extractionProvider: string; compactionProvider: string;
   };
+  /** The EXACT config.yaml text this sandbox's daemon boots with (2026-07-18
+   *  traceability fix). Everything NOT in this text falls through to
+   *  defaultConfig() at whatever git state built the running dist — record
+   *  BOTH (this + git sha/dirty) in the run manifest, or "what changed
+   *  between these two runs" becomes reconstruction again. */
+  configYaml: string;
 }
 
 /** Cross-encoder rerank override for one isolated eval daemon (LoCoMo WS2,
@@ -150,9 +156,25 @@ function withEnvOverrides<T>(overrides: Record<string, string>, fn: () => T): T 
  *  two-config rerun: the first LoCoMo run silently used the engineering
  *  profile against conversational data and starved extraction to ~0.5
  *  atoms/session). */
+/**
+ * Resolve the machine's real ONNX embed-model cache so an isolated eval daemon
+ * loads it OFFLINE, matching prod (ADR-018). Returns null when absent — callers
+ * then leave embedding at the bare default. Override via ASTRA_EVAL_ONNX_CACHE;
+ * seed a fresh box with `node dist/cli/index.js model fetch`. See the cacheDir
+ * block in makeIsolatedEvalEnv for the full rationale.
+ */
+export function resolveEvalOnnxCacheDir(): string | null {
+  const override = process.env['ASTRA_EVAL_ONNX_CACHE'];
+  if (override) return existsSync(override) ? override : null;
+  const dir = platform() === 'win32'
+    ? join(process.env['LOCALAPPDATA'] ?? '', 'Astramem', 'models', 'onnx')
+    : join(homedir(), '.local', 'share', 'astra-memory', 'models', 'onnx');
+  return existsSync(dir) ? dir : null;
+}
+
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2 },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned' },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -174,6 +196,20 @@ export function makeIsolatedEvalEnv(
   const resolved = resolveEvalModels(opts?.models);
 
   const configLines = ['security:', '  encryption:', '    enabled: false'];
+
+  // ONNX embed (ADR-018): since 2026-07-15 defaultConfig().embedding.provider is
+  // 'onnx' (in-process ONNX Runtime). This sandbox has a FRESH dataDir, so its own
+  // ONNX cache is empty and transformers.js can't fetch offline (HF blocked) — the
+  // embedder then fails, which for retrieval-scoring harnesses (LoCoMo/LongMemEval)
+  // silently breaks recall, not just a boot probe. Point onnxEmbed.cacheDir at the
+  // machine's real (prod) cache so the model loads offline exactly like prod.
+  // Override with ASTRA_EVAL_ONNX_CACHE; when no cache exists the block is omitted
+  // (embed left at the bare default) — seed a fresh box with `model fetch`.
+  const onnxCacheDir = resolveEvalOnnxCacheDir();
+  if (onnxCacheDir) {
+    configLines.push('embedding:', '  provider: onnx', 'onnxEmbed:', `  cacheDir: '${onnxCacheDir.replace(/\\/g, '/')}'`);
+  }
+
   const m = opts?.models;
   if (m?.extraction !== undefined || m?.compaction !== undefined || m?.extractionProvider !== undefined || m?.compactionProvider !== undefined) {
     configLines.push('llm:');
@@ -191,14 +227,35 @@ export function makeIsolatedEvalEnv(
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
   }
-  if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined) {
+  if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined || opts?.extractionPassB !== undefined) {
     configLines.push('distill:');
     if (opts.extractProfile !== undefined) configLines.push(`  extractProfile: ${opts.extractProfile}`);
     if (opts.extractionPasses !== undefined) configLines.push(`  extractionPasses: ${opts.extractionPasses}`);
+    // `compaction: never` = raw-turn passthrough, no compaction LLM call (the
+    // stage that can summarize away facts extraction needs). auto|always|never
+    // per Config['distill']['compaction'].
+    if (opts.compactionMode !== undefined) configLines.push(`  compaction: ${opts.compactionMode}`);
+    // FEAT-534 mixed-provider dual-pass (2026-07-17 A/B lever): route the
+    // specifics-sweeper Pass B to a different provider/model than Pass A —
+    // measured 2026-07-17 (5-fixture bench): codex-A + phi4-mini-B scored
+    // 85/85/85 junk 12, the best balanced config of the sweep.
+    if (opts.extractionPassB !== undefined) {
+      configLines.push('  extractionPassB:', `    provider: ${opts.extractionPassB.provider}`, `    model: '${opts.extractionPassB.model}'`);
+    }
+    // Pass-B sweep tuning override (2026-07-18): without this, the sandbox
+    // inherits EXTRACTION_PASS_B_DEFAULTS (skip-gate 8 + maxTokens 1500) —
+    // which means a replication of any pre-tuning run (e.g. the 0.6002
+    // champion, untuned full sweep) is silently NOT a replication. `untuned`
+    // writes explicit zeros (gate off, no cap).
+    if (opts.passBSweep === 'untuned') {
+      if (opts.extractionPassB === undefined) configLines.push('  extractionPassB:');
+      configLines.push('    sweepOnlyBelowAtoms: 0', '    maxTokens: 0');
+    }
   }
-  writeFileSync(join(configDir, 'config.yaml'), configLines.join('\n') + '\n', 'utf8');
+  const configYaml = configLines.join('\n') + '\n';
+  writeFileSync(join(configDir, 'config.yaml'), configYaml, 'utf8');
 
-  return { root, configDir, env: dirEnvOverrides, resolvedModels: resolved };
+  return { root, configDir, env: dirEnvOverrides, resolvedModels: resolved, configYaml };
 }
 
 export function cleanupIsolatedEvalEnv(isolated: IsolatedEvalEnv): void {

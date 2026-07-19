@@ -275,6 +275,16 @@ export function configToYaml(cfg: Config): string {
     line(3, 'minDistinctQueries', cfg.search.usefulness.implicitPositive.minDistinctQueries),
     line(3, 'weight', cfg.search.usefulness.implicitPositive.weight),
     line(3, 'maxGrantsPerRun', cfg.search.usefulness.implicitPositive.maxGrantsPerRun),
+    // FEAT-550: pre-recall query rewrite/expansion — a sibling of
+    // governance/usefulness above, same round-trip requirement (a hand-set
+    // search.queryRewrite must not be silently dropped on the next write-back).
+    line(1, 'queryRewrite'),
+    line(2, 'mode', cfg.search.queryRewrite.mode),
+    line(2, 'provider', cfg.search.queryRewrite.provider),
+    ...(cfg.search.queryRewrite.model ? [line(2, 'model', cfg.search.queryRewrite.model)] : []),
+    line(2, 'maxVariants', cfg.search.queryRewrite.maxVariants),
+    line(2, 'timeoutMs', cfg.search.queryRewrite.timeoutMs),
+    line(2, 'maxCandidates', cfg.search.queryRewrite.maxCandidates),
     '',
     // Cross-encoder rerank stage (issue #26, ADR-005) — OFF by default. See
     // docs/runbooks/cross-encoder-rerank.md before flipping `enabled: true`.
@@ -346,6 +356,18 @@ export function configToYaml(cfg: Config): string {
     line(2, 'minConfidence', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).minConfidence),
     line(2, 'maxPerRun', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxPerRun),
     line(2, 'maxWallClockMs', (cfg.consolidation.contradictionDetection ?? EMIT_DEFAULTS.consolidation.contradictionDetection).maxWallClockMs),
+    // dupJudge (FEAT-549) — mode: 'off' is the shipped default,
+    // byte-identical to pre-FEAT-549 behavior. Same shape as
+    // contradictionDetection above: the optional provider/model override is
+    // a hand-edit-only field this writer doesn't round-trip either (an
+    // operator who sets one on disk keeps it via deepMerge; writeConfig()
+    // just never re-emits it).
+    line(1, 'dupJudge'),
+    line(2, 'mode', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).mode),
+    line(2, 'minConfidence', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).minConfidence),
+    line(2, 'batchSize', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).batchSize),
+    line(2, 'maxPerRun', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).maxPerRun),
+    line(2, 'maxWallClockMs', (cfg.consolidation.dupJudge ?? EMIT_DEFAULTS.consolidation.dupJudge).maxWallClockMs),
     // P2.1 stabilization — k-NN candidate selection. 'full'/30/null are the
     // shipped defaults (byte-identical to pre-P2.1 behavior); wired in from
     // day one so this never joins the FEAT-461 dropped-field list.
@@ -437,6 +459,21 @@ export function configToYaml(cfg: Config): string {
     line(2, 'batchSize', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.batchSize),
     line(2, 'maxPerRun', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.maxPerRun),
     line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).atomTriage.maxWallClockMs),
+    // Ingest gatekeeper (FEAT-548) — mode: 'off' is the shipped default,
+    // byte-identical to pre-FEAT-548 behavior. Same shape as atomTriage
+    // above: the optional provider/model override is a hand-edit-only field
+    // this writer never round-trips either.
+    line(1, 'gatekeeper'),
+    line(2, 'mode', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.mode),
+    line(2, 'batchSize', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.batchSize),
+    line(2, 'maxPerRun', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.maxPerRun),
+    line(2, 'maxWallClockMs', (cfg.distill ?? EMIT_DEFAULTS.distill).gatekeeper.maxWallClockMs),
+    // Deterministic type-hint tier (FEAT-552 sub-scope B) — 'on' is the
+    // shipped default (unlike every other distill.* tier above, which
+    // defaults 'off'). Must be explicitly round-tripped like every other
+    // field in this block (FEAT-461) — an operator who sets 'off' must not
+    // have it silently reset to 'on' the next time writeConfig() runs.
+    line(1, 'typeHints', (cfg.distill ?? EMIT_DEFAULTS.distill).typeHints),
     '',
     // Memory-health score (FEAT-444) — previously dropped on every
     // writeConfig() call (FEAT-461). enabled: false (default) makes

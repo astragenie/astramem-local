@@ -68,6 +68,7 @@ import { recordRecallServed, recordRecallUsed } from '../storage/usefulness.js';
 import { search, parseAsOf, type SearchFilters } from '../search/search.js';
 import { resolveRerankOpts } from '../search/rerank.js';
 import { resolveDecomposeOpts } from '../search/decompose.js';
+import { resolveQueryRewriteOpts } from '../search/query-rewrite.js';
 import { buildLLMProvider } from '../providers/index.js';
 import { clampScores } from '../server/lib/score-contract.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -134,6 +135,11 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
   // WS6: multi-hop query decomposition — undefined unless multiHop.enabled
   // is set. See src/search/decompose.ts.
   const decompose = resolveDecomposeOpts(cfg, buildLLMProvider);
+  // FEAT-550: query rewrite/expansion — undefined unless
+  // search.queryRewrite.mode is 'enabled'. Even then, a real invocation also
+  // requires the per-call `expand: true` opt-in argument below (AC-1's
+  // latency gate) — see src/search/query-rewrite.ts.
+  const queryRewrite = resolveQueryRewriteOpts(cfg, buildLLMProvider);
 
   const server = new McpServer(
     { name: 'astramemory-local', version: PKG_VERSION },
@@ -186,6 +192,13 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             "similarity. 'entity': requires the entity filter to also be supplied (400 otherwise). " +
             "'temporal': requires the as_of filter to also be supplied (400 otherwise)."
           ),
+        expand: z
+          .boolean()
+          .optional()
+          .describe(
+            "FEAT-550: opt this call into the pre-recall query-rewrite/expansion stage — only takes " +
+            "effect when search.queryRewrite.mode is 'enabled'. Omitted/false = pre-FEAT-550 behavior."
+          ),
       }),
     },
     async (args) => {
@@ -228,6 +241,8 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         weights,
         rerank,
         decompose,
+        queryRewrite,
+        expand: args.expand ?? false,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
@@ -292,6 +307,13 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             "similarity. 'entity': requires the entity filter to also be supplied (400 otherwise). " +
             "'temporal': requires the as_of filter to also be supplied (400 otherwise)."
           ),
+        expand: z
+          .boolean()
+          .optional()
+          .describe(
+            "FEAT-550: opt this call into the pre-recall query-rewrite/expansion stage — only takes " +
+            "effect when search.queryRewrite.mode is 'enabled'. Omitted/false = pre-FEAT-550 behavior."
+          ),
       }),
     },
     async (args) => {
@@ -334,6 +356,8 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         weights,
         rerank,
         decompose,
+        queryRewrite,
+        expand: args.expand ?? false,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {

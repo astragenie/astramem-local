@@ -1,20 +1,16 @@
 {
   "version": "1.0",
-  "updatedAt": "2026-07-14T18:32:42.477Z",
+  "updatedAt": "2026-07-18T03:35:06.172Z",
   "currentRun": {
-    "title": "FEAT479 SLICE435: Relations[] additive output field (FEAT-481 SLICE-428 rides this)",
-    "goal": "**Memories should be self-contained explanations, not trivia.**",
+    "title": "FEAT548 SLICE441: Implement FEAT-548",
+    "goal": "",
     "mode": "autonomous",
     "status": "active",
-    "startedAt": "2026-07-13T13:00:44.412Z",
-    "updatedAt": "2026-07-14T18:32:42.477Z",
-    "next": "Product/dispatcher decision on the readPersistedEnvVars shape-validation gap above (optional hardening, not blocking). No other follow-up.",
+    "startedAt": "2026-07-18T03:35:06.172Z",
+    "updatedAt": "2026-07-18T03:35:06.172Z",
+    "next": "Begin implementation",
     "gates": {
-      "review": {
-        "status": "passed",
-        "updatedAt": "2026-07-14T18:32:42.477Z",
-        "note": "starting investigation"
-      },
+      "review": null,
       "validation": null,
       "deployment": {
         "dev": null,
@@ -26,11 +22,9 @@
       "help": null
     },
     "artifacts": {
-      "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T130044Z-run-brief-feat479-slice435-relations-additive-output-field-feat-481-sl.md",
-      "handoffs": [
-        "C:\\work\\mega\\astramemory-local-worktrees\\integrate\\.claude\\artifacts\\crew\\handoffs\\20260713T143939Z-handoff-close-2-test-coverage-gaps-gpu-vram-probe-readpersistedenvva.md"
-      ],
-      "reviewResult": "C:\\work\\mega\\astramemory-local-worktrees\\fix-305\\.claude\\artifacts\\crew\\reviews\\20260714T183242Z-review-result-fix-305-review.md",
+      "runBrief": "C:\\work\\mega\\astramemory-local-wt548\\.claude\\artifacts\\crew\\runs\\20260718T033506Z-run-brief-feat548-slice441-implement-feat-548.md",
+      "handoffs": [],
+      "reviewResult": null,
       "validationPlan": null,
       "validationResult": null,
       "deploymentChecks": {
@@ -42,13 +36,13 @@
   },
   "recentRuns": [
     {
-      "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
-      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "title": "FEAT550 SLICE440: Implement FEAT-550",
+      "goal": "",
       "mode": "autonomous",
       "status": "active",
-      "startedAt": "2026-07-13T12:58:56.347Z",
-      "updatedAt": "2026-07-13T12:58:56.347Z",
-      "completedAt": "2026-07-13T12:58:56.347Z",
+      "startedAt": "2026-07-18T02:51:02.834Z",
+      "updatedAt": "2026-07-18T02:51:02.834Z",
+      "completedAt": "2026-07-18T02:51:02.834Z",
       "next": "Begin implementation",
       "gates": {
         "review": null,
@@ -63,7 +57,7 @@
         "help": null
       },
       "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T125856Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
+        "runBrief": "C:\\work\\mega\\astramemory-local-wt550\\.claude\\artifacts\\crew\\runs\\20260718T025102Z-run-brief-feat550-slice440-implement-feat-550.md",
         "handoffs": [],
         "reviewResult": null,
         "validationPlan": null,
@@ -76,16 +70,20 @@
       }
     },
     {
-      "title": "FEAT479 SLICE434: Conversational profile + few-shots + redaction-posture disclosure",
-      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "title": "FEAT544 SLICE439: Implement FEAT-544",
+      "goal": "",
       "mode": "autonomous",
       "status": "active",
-      "startedAt": "2026-07-13T12:17:57.475Z",
-      "updatedAt": "2026-07-13T12:17:57.475Z",
-      "completedAt": "2026-07-13T12:17:57.475Z",
-      "next": "Begin implementation",
+      "startedAt": "2026-07-18T02:08:56.619Z",
+      "updatedAt": "2026-07-18T02:22:57.307Z",
+      "completedAt": "2026-07-18T02:22:57.307Z",
+      "next": "Non-blocking: (1) either reject dual min+max floors at load time or implement combined-bound evaluation before any gates.json author adds one; (2) optional synthetic test for the ceiling+noise sign behavior before junk/overExtract gain per-run stats",
       "gates": {
-        "review": null,
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-18T02:22:57.307Z",
+          "note": "SLICE-439 (FEAT-544) reviewed. tsc -p tsconfig.eval.json clean; vitest run gates.test.ts+report.test.ts+mechanical-checks.test.ts = 50/50 passed. Noise-floor sign logic hand-verified correct for BOTH min-floor (f1/typeAcc) and max-floor/ceiling (junk) directions across pass/inconclusive/hard-fail cases. AC-2 stale-calibration warning correctly derives actualFixtureCount from live fixtures.length at runtime (run-bench.mts), not a second hardcoded constant. AC-3 n/a rendering correct; evidenceAcc confirmed live (FEAT-542 merged at 3f08cf18, predates this slice). gates.json floors match dispatch's seeded values exactly, provisional:true + note present, stamped 55 matching live `ls fixtures/*.json | wc -l` = 55. Report shape: Gates section appended additively at the very end in renderMarkdown; no existing report.test.ts assertion (indexOf/toContain) depends on absence of trailing content, confirmed no regression. Unrelated uncommitted changes (answer.mts/run.mts/extract.ts) confirmed non-overlapping, different subsystem."
+        },
         "validation": null,
         "deployment": {
           "dev": null,
@@ -97,9 +95,9 @@
         "help": null
       },
       "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T121757Z-run-brief-feat479-slice434-conversational-profile-few-shots-redaction-.md",
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260718T020856Z-run-brief-feat544-slice439-implement-feat-544.md",
         "handoffs": [],
-        "reviewResult": null,
+        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260718T021946Z-review-result-slice-439-review.md",
         "validationPlan": null,
         "validationResult": null,
         "deploymentChecks": {
@@ -110,16 +108,20 @@
       }
     },
     {
-      "title": "FEAT479 SLICE433: Engineering-rich prompt + type-conditioned richness + AtomSchema cap bump",
-      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "title": "FEAT542 SLICE438: Implement FEAT-542",
+      "goal": "",
       "mode": "autonomous",
       "status": "active",
-      "startedAt": "2026-07-13T11:20:24.258Z",
-      "updatedAt": "2026-07-13T11:20:24.258Z",
-      "completedAt": "2026-07-13T11:20:24.258Z",
-      "next": "Begin implementation",
+      "startedAt": "2026-07-18T01:41:57.581Z",
+      "updatedAt": "2026-07-18T02:06:27.057Z",
+      "completedAt": "2026-07-18T02:06:27.057Z",
+      "next": "none blocking; optionally correct the handoff's KNN-failure note for the record",
       "gates": {
-        "review": null,
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-18T02:06:27.057Z",
+          "note": "## SLICE-438 (FEAT-542) hard-fixture pack + evidence-accuracy - review result\n\nreview_decision: PASS\n\n### Scope verified\nDiff read in full for: src/server/queries/provenance.ts, scripts/eval/extraction-bench run-bench.mts, README.md, and lib/fixtures.ts, judge.ts, daemon-runner.ts, report.ts, report.test.ts, mechanical-checks.ts, mechanical-checks.test.ts, fixtures.test.ts, plus all 12 new fixtures fx46 through fx57 (5 read in full: fx46 negation, fx49 uncertainty, fx52 status-transition, fx53 adversarial, fx55 cross-chunk).\n\n### Focus 1 - judge.ts discipline (AC-2): CONFIRMED\nEntire diff to judge.ts is the single additive evidence field (optional, string or null) on JudgeAtomIn plus its doc comment. Grepped the file for every other evidence occurrence; the only other hit is an unrelated pre-existing comment about triage-note F1 variance. buildUserPrompt, tryParseJudge, judgeFixture, judgeSelfAgreement are untouched. All forbidden-item and evidence-accuracy logic lives in the new mechanical-checks.ts, invoked from run-bench.mts strictly after judgeFixture returns. applyForbiddenItemScoring takes an already-computed FixtureScore. Matches the AC-2 architect-plus-reviewer decision.\n\n### Focus 2 - fixture gold quality: PASS\n5 of 12 new fixtures spot-checked (fx46, fx49, fx52, fx53, fx55) plus the fx53 adversarial shape specifically. All semantically sound:\n- fx46 (negation): gold atom correctly preserves the NOT-using-Redis fact; forbidden_items are the positive-polarity restatements.\n- fx49 (uncertainty): gold atom correctly frames DNS as a ruled-out hypothesis, cert expiry as logs-confirmed; forbidden_items block the DNS-confirmed false claim.\n- fx52 (status-transition): gold captures latest state (RUNNING) as current plus a history atom; forbidden_items are the superseded blocked claims.\n- fx53 (AC-6 adversarial): forbidden_items are full sentences (The v3 release is scheduled for Friday / v3 release is set for this Friday), not the bare word Friday, correctly avoiding collision with the legitimate second gold atom that also mentions Friday for the following release.\n- fx55 (cross-chunk): owner, task, and deadline spread across turns with noise plus a late correction; gold atom captures the corrected deadline; forbidden_items are the superseded deadline.\n\n### Focus 3 - mechanical-checks.ts correctness: PASS\n- findForbiddenItemHits normalizes text (lowercase, collapse whitespace, strip light punctuation), then requires full containment; for forbidden items under 3 words it additionally requires the phrase to be at least 60 percent of the atom own normalized length (dominance ratio) - exactly what prevents the Friday substring trap from AC-6. Verified via mechanical-checks.test.ts dedicated bare-phrase-does-not-trigger and bare-phrase-does-trigger-when-dominant pair, both passing.\n- applyForbiddenItemScoring recomputes precision from the union of judge-flagged-junk indices and forbidden-item-hit indices, so an atom is never double counted; it returns the same object reference when there are no forbidden_items (the majority case, no extra allocation). Tests cover the no-op passthrough, a judge-missed hit being penalized, and no double counting when the judge already flagged the same atom junk.\n- computeEvidenceAccuracy excludes atoms with no or blank evidence from the denominator entirely, matching AC-3 exactly (never counted as a failure). Whitespace-only normalization (no lowercasing or punctuation stripping) is a deliberate choice so a fabricated-but-similar quote does not count as real evidence; the test suite proves this distinction directly (tolerates a whitespace difference, rejects a fabricated quote).\n\n### Focus 4 - report.ts and FEAT-450 multi-run combine: PASS\naggregateFixtureScores sums forbidden-item hits and pools evidenceAcc as sum of numerators over sum of denominators, not mean of percentages - the correct choice, avoiding skew from fixtures with tiny denominators, consistent with FEAT-450 own noise-floor discipline. combineRuns re-derives the same pooled fraction across runs by re-summing the per-run aggregates raw numerator and denominator rather than averaging per-run percentages - mathematically sound. renderMarkdown new Evidence-acc column is inserted between Type-acc and Over-extract; the tail column order (Over-extract through Pass-B atoms) is unchanged, so pre-existing suffix-anchored assertions still hold. The legacy single-run shape (runs equal 1) is preserved, aggregate fields default to 0 or null when absent and render as an em-dash.\n\n### Focus 5 - digest-wire additive check: PASS, with one nit\nDigestMemRow.evidence is typed as required-but-nullable (string or null), not optional as AC-3 prose literally states - a minor deviation from the spec exact wording. Functionally this is fine and arguably safer: the only place that constructs a DigestMemRow is the SQL-row type assertion inside buildSessionDigest (src/server/queries/provenance.ts line 158, now selecting id, type, text, evidence), so no other call site breaks; bun run build is clean. Grepped all consumers (mcp/server.ts, server/routes/digest.ts) - both just pass the whole object through unaffected by the added field. null (not omitted) is used consistently between the route and daemon-runner.ts DaemonAtom and DigestBody types. LOW severity, no fix required.\n\n### Focus 6 - re-run verification (fresh, this review)\nAll run with ASTRA_SKIP_CONSOLIDATE explicitly unset:\n- bun run build - clean, 0 errors.\n- npx tsc -p tsconfig.eval.json - clean, 0 errors.\n- bun run typecheck:tests - clean, 0 errors.\n- npx vitest run of the report, mechanical-checks, and fixtures test files under scripts/eval/extraction-bench/lib - 3 files, 36 tests, all pass.\n- npx vitest run tests/mcp/server.test.ts (full file) - 55 of 55 pass, including both KNN-consolidation tests the handoff flagged as pre-existing failures. Finding: those 2 tests are NOT actually broken - with the env var unset they pass. The handoff Risks section attributes them to a pre-existing, unrelated bug; the real cause was a leftover ASTRA_SKIP_CONSOLIDATE shell var in whatever session ran them, exactly as this dispatch suspected. This is a documentation-accuracy gap in the handoff (would have sent a future triage cycle chasing a phantom bug), not a code defect - MEDIUM note, does not block approval since the underlying code has zero real regressions.\n- npx vitest run of the why-digest-conformance, smoke, entity-relations-conformance, and recall pack test files - 34 of 34 pass (the smoke test doctor-FAILED lines are expected environmental warnings for budget, encryption, and plugin-config, unrelated to this diff and already present before this change).\n\n### Out-of-scope contamination check\nConfirmed uncommitted src/distill/stages/05-extract.ts (maxTokens 4000 to 6000, dual-pass no-compaction tuning) is present in the tree but is NOT part of this slice diff (not mentioned in the handoff changed-files list, not touched by any FEAT-542 acceptance criterion) - same class as the locomo and spawn-daemon pre-existing-experiment changes the dispatch already called out, just not named in that list. It coexists cleanly (build, typecheck, and tests all green with it present). Process note: the handoff CAUTION list should have named this file too for completeness, but it does not affect this slice correctness.\n\n### AC coverage\nAC-1 pass (55 fixtures, 2 or more per new tag, schema-valid, README table updated); AC-2 pass; AC-3 pass (evidence wired additively end to end, verified by fresh build, typecheck, and tests); AC-4 correctly skipped as an operator step; AC-5 pass (README reviewed, documents all 4 tags plus forbidden_items semantics plus the evidence-acc cross-reference); AC-6 pass (adversarial fx53 plus matcher dominance-ratio logic verified); AC-7 pass (summary.json shape confirmed in the run-bench.mts diff, raw counts not just percentages).\n\n### Confidence\nHigh - full diff read for every changed and new file in scope, all new fixtures difficulty categories spot-checked (5 of 12, one per category plus the adversarial), all specified verification commands re-run fresh with the correct environment and independently confirmed, wire-consumer grep performed for the one src touch."
+        },
         "validation": null,
         "deployment": {
           "dev": null,
@@ -131,9 +133,9 @@
         "help": null
       },
       "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T112024Z-run-brief-feat479-slice433-engineering-rich-prompt-type-conditioned-ri.md",
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260718T014157Z-run-brief-feat542-slice438-implement-feat-542.md",
         "handoffs": [],
-        "reviewResult": null,
+        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260718T015939Z-review-result-slice-438-review.md",
         "validationPlan": null,
         "validationResult": null,
         "deploymentChecks": {
@@ -144,16 +146,20 @@
       }
     },
     {
-      "title": "FEAT479 SLICE432: Prompt architecture + extractProfile config/envelope surface",
-      "goal": "**Memories should be self-contained explanations, not trivia.**",
+      "title": "FEAT543 SLICE437: Implement FEAT-543",
+      "goal": "",
       "mode": "autonomous",
       "status": "active",
-      "startedAt": "2026-07-13T10:35:20.075Z",
-      "updatedAt": "2026-07-13T10:35:20.075Z",
-      "completedAt": "2026-07-13T10:35:20.075Z",
-      "next": "Begin implementation",
+      "startedAt": "2026-07-18T01:14:45.906Z",
+      "updatedAt": "2026-07-18T01:39:28.387Z",
+      "completedAt": "2026-07-18T01:39:28.387Z",
+      "next": "Optional follow-up: source MERGE_THRESHOLD/PROPOSE_THRESHOLD from an exported consolidate.ts constant (or assert equality against it) so a future threshold retune can't silently stale the eval's own metadata. No blocking fix required before merge.",
       "gates": {
-        "review": null,
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-18T01:39:28.387Z",
+          "note": "SLICE-437 (FEAT-543 consolidation eval): tests+fixtures-only deliverable is correct and well-verified. All 8 ACs have real, honest coverage - independently re-derived the AC-7 tilt math and hand-verified gold labels for all 15 fixtures (not just 5), including checking consolidate.ts's SECOND auto-merge path (text containment) doesn't silently false-merge any keep-separate fixture. One MEDIUM drift-risk finding on threshold sourcing; two LOW cosmetic notes; one non-blocking risk note about unrelated dirty-worktree files. approved_with_notes."
+        },
         "validation": null,
         "deployment": {
           "dev": null,
@@ -165,9 +171,9 @@
         "help": null
       },
       "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T103520Z-run-brief-feat479-slice432-prompt-architecture-extractprofile-config-e.md",
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260718T011445Z-run-brief-feat543-slice437-implement-feat-543.md",
         "handoffs": [],
-        "reviewResult": null,
+        "reviewResult": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\reviews\\20260718T013006Z-review-result-slice-437-review.md",
         "validationPlan": null,
         "validationResult": null,
         "deploymentChecks": {
@@ -178,21 +184,21 @@
       }
     },
     {
-      "title": "FEAT479 SLICE431: codex-subscription empty-SSE-text hardening (pre-req, independent)",
-      "goal": "Prompt architecture + extractProfile config/envelope surface (skip SSE slice — already shipped 04143c7/ecd8c5f)",
+      "title": "FEAT479 SLICE435: Relations[] additive output field (FEAT-481 SLICE-428 rides this)",
+      "goal": "**Memories should be self-contained explanations, not trivia.**",
       "mode": "autonomous",
       "status": "active",
-      "startedAt": "2026-07-13T10:34:59.840Z",
-      "updatedAt": "2026-07-13T10:35:17.673Z",
-      "completedAt": "2026-07-13T10:35:17.673Z",
-      "next": "Begin implementation",
+      "startedAt": "2026-07-13T13:00:44.412Z",
+      "updatedAt": "2026-07-18T01:02:45.239Z",
+      "completedAt": "2026-07-18T01:02:45.239Z",
+      "next": "Product/dispatcher decision on the readPersistedEnvVars shape-validation gap above (optional hardening, not blocking). No other follow-up.",
       "gates": {
-        "review": null,
-        "validation": {
-          "status": "skipped",
-          "updatedAt": "2026-07-13T10:35:17.673Z",
-          "note": "work shipped pre-slice: empty-SSE json-mode gate commit 04143c7 (review NEEDS_FIX->PASS, 27 tests) + json-opt-in compaction fix ecd8c5f (sibling session); no new code needed"
+        "review": {
+          "status": "passed",
+          "updatedAt": "2026-07-18T01:02:45.239Z",
+          "note": "Independent adversarial review of FEAT-542/543/544 (extraction-bench hard fixtures +\nevidence-accuracy, consolidation semantic-quality eval, numeric quality-gate tiers).\nVerdict: approved_with_notes for FEAT-542 and FEAT-543; approved_with_notes for FEAT-544\nwith the heaviest residual condition. All three fail the Options-Considered structural\nauto-reject check (no such section exists in any of them) -- this is the one item that\nshould block movement past triage until fixed. Substantively all three are sound,\nH2-doctrine-compliant, and cite real reusable infra. 4 Critical findings, 3 non-blocking,\n3 open questions. The parallel architect's 2026-07-17 corrections (FEAT-542 digest-wire\nfix, FEAT-543 CI-location + judge fencing, FEAT-544 softened dependency) are verified good\nand independently resolve 3 of my original concerns; 2 concerns (FEAT-542 AC-2 forbidden_items\njudge-prompt scope, FEAT-544 gate-floor provenance predating the harder fixture set) remain\nopen and unaddressed by those corrections."
         },
+        "validation": null,
         "deployment": {
           "dev": null,
           "prod": null
@@ -203,9 +209,12 @@
         "help": null
       },
       "artifacts": {
-        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T103459Z-run-brief-feat479-slice431-codex-subscription-empty-sse-text-hardening.md",
-        "handoffs": [],
-        "reviewResult": null,
+        "runBrief": "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\runs\\20260713T130044Z-run-brief-feat479-slice435-relations-additive-output-field-feat-481-sl.md",
+        "handoffs": [
+          "C:\\work\\mega\\astramemory-local-worktrees\\integrate\\.claude\\artifacts\\crew\\handoffs\\20260713T143939Z-handoff-close-2-test-coverage-gaps-gpu-vram-probe-readpersistedenvva.md",
+          "C:\\work\\mega\\astramemory-local\\.claude\\artifacts\\crew\\handoffs\\20260718T005907Z-handoff-eval-harness-feat-542-543-544-design-review.md"
+        ],
+        "reviewResult": ".claude/artifacts/crew/reviews/20260718T005440Z-review-result-feat-542-543-544-eval-surface-design-review.md",
         "validationPlan": null,
         "validationResult": null,
         "deploymentChecks": {

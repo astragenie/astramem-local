@@ -238,9 +238,16 @@ export interface Config {
      * ADR-005 harness entry before a loaded config may honor `enabled: true`. */
     usefulness: {
       implicitPositive: {
-        /** OFF by default (ADR-014 posture: ζ/η both shipped weight-0/OFF
-         *  until eval-evidenced) — see `applyFusionGovernance`'s
-         *  'implicitPositive' eval-evidence gate below. */
+        /** ON by default since 2026-07-18 — the ADR-005 eval-evidence gate
+         *  is satisfied (RECORDED_EVAL_EVIDENCE 'implicitPositive' entry:
+         *  recall@10 0.955 / NDCG@10 0.840 on tip 6f6c826c; see
+         *  src/eval/eval-evidence.ts). Motivating prod telemetry: 48,740
+         *  atoms, 5.8% used-rate with ZERO heuristic grants ever — the rate
+         *  structurally undercounts without this pass. The trailing-30d
+         *  window means the number becomes honest within one cleanup tick
+         *  of enablement, no accrual wait. `applyFusionGovernance` still
+         *  force-reverts to false if the evidence entry is ever removed —
+         *  the gate stays armed, it just passes now. */
         enabled: boolean;
         /** Trailing lookback, in days, for distinct-query-hash counting. */
         windowDays: number;
@@ -260,6 +267,45 @@ export interface Config {
          *  background pass, not an unbounded one. */
         maxGrantsPerRun: number;
       };
+    };
+    /**
+     * FEAT-550: optional pre-recall query rewrite/expansion — an opt-in local
+     * LLM call that produces up to `maxVariants` alias/synonym/decomposition
+     * query strings before retrieval. OFF by default (`mode: 'off'`). Even
+     * when `mode: 'enabled'`, this only makes the stage AVAILABLE —
+     * `search()` (src/search/search.ts) only actually invokes it when the
+     * caller ALSO passes `SearchOpts.expand: true` this call, per this FEAT's
+     * explicit latency-gating requirement ("No default-on for interactive
+     * recall until latency measured"). Mirrors crossEncoder/multiHop's
+     * config-flagged-seam governance style.
+     *
+     * `provider: 'mock'` is a deterministic, network-free variant generator
+     * (no semantic understanding — see MockQueryRewriter's doc comment),
+     * useful for tests and for exercising the stage without an LLM.
+     * `provider: 'llm'` reuses `config.llm.extraction`'s provider (`model`
+     * optionally overrides just the model) — no separate provider-selection
+     * surface, same posture as multiHop.
+     *
+     * `maxVariants` caps how many rewritten query strings one call can ever
+     * produce. `timeoutMs` is a hard per-call budget (a real enforced
+     * timeout, not a soft target) — a slow/hung rewrite call degrades to the
+     * ORIGINAL QUERY ONLY (fail-open, AC-2/AC-5) rather than blocking the
+     * request, same fallback posture as multiHop.timeoutMs/
+     * crossEncoder.timeoutMs. `maxCandidates` bounds the total fused
+     * candidate set after the original query + every variant's own hits are
+     * merged by atom id (max-score union, see
+     * src/search/query-rewrite.ts's mergeVariantHits) — a cost bound, not a
+     * ranking model.
+     */
+    queryRewrite: {
+      mode: 'off' | 'enabled';
+      provider: 'mock' | 'llm';
+      /** Optional model override when provider === 'llm'; defaults to
+       *  config.llm.extraction.model on config.llm.extraction.provider. */
+      model?: string;
+      maxVariants: number;
+      timeoutMs: number;
+      maxCandidates: number;
     };
   };
   /** Cross-encoder rerank stage (issue #26, ADR-005). OFF by default — ADR-005
@@ -611,6 +657,62 @@ export interface Config {
       model?: string;
     };
     /**
+     * FEAT-549: batched LLM dup-judge over PENDING `kind='merge'`
+     * consolidation_proposals rows sitting in the propose band
+     * [proposeThreshold, mergeThreshold) — mirrors
+     * `contradictionDetection`'s 3-state-enum + provider-override shape
+     * exactly (same rationale: avoid an ambiguous `enabled:false,
+     * dryRun:true` combination, and the same FEAT-482 caps/fail-open
+     * lesson — never a dollar cap, every shipped provider reports
+     * `usage.usd: 0`).
+     *
+     * `off` (shipped default) is BYTE-IDENTICAL to pre-FEAT-549 behavior —
+     * the judge (`src/consolidate/dup-judge.ts`) is never called; pending
+     * `kind='merge'` proposals behave exactly as before. `dry-run` runs the
+     * judge in batches and logs every verdict (proposal id + verdict +
+     * confidence) but changes NOTHING. `enabled` auto-resolves a
+     * >=`minConfidence` verdict in EITHER direction: `same-fact-merge`
+     * accepts the proposal via the existing non-destructive
+     * merge-as-supersede path (same as a human accept);
+     * `distinct-keep-separate` rejects it (marks resolved, no merge) — both
+     * record `resolved_by: 'dup-judge'` provenance in the resolved row's
+     * `metadata_json` (see `src/consolidate/proposals.ts`'s
+     * `DupJudgeMetadata`/`parseDupJudgeMetadata`). `unclear-leave-pending`,
+     * or a verdict below `minConfidence`, leaves the proposal pending,
+     * unchanged.
+     *
+     * The `>=mergeThreshold` auto-merge tier is untouched — this only ever
+     * looks at ALREADY-PENDING `kind='merge'` proposals, never the pairwise
+     * scan's own merge/propose decision. Opt-in only until eval'd (see
+     * `tests/eval/consolidation-eval.test.ts`'s judge-enabled variant) — do
+     * not change this default casually, same caveat `contradictionDetection`
+     * carries.
+     */
+    dupJudge: {
+      mode: 'off' | 'dry-run' | 'enabled';
+      /** Judge confidence floor to act on a verdict in `'enabled'` mode.
+       *  Must be in `[0, 1]`. */
+      minConfidence: number;
+      /** Proposals per LLM call — batched, never one call per proposal.
+       *  Mirrors `distill.atomTriage.batchSize`'s shape exactly. */
+      batchSize: number;
+      /** Cap on dup-judge LLM calls (batches, not proposals) per
+       *  `runConsolidation()` call. */
+      maxPerRun: number;
+      /** Wall-clock cap (ms) on the entire dup-judge sweep within a single
+       *  `runConsolidation()` call — FEAT-482 lesson, same rationale as
+       *  `contradictionDetection.maxWallClockMs`. */
+      maxWallClockMs: number;
+      /** Optional judge provider/model override — unset rides
+       *  `llm.extraction` (same provider INSTANCE, byte-identical
+       *  pre-override behavior), same shape as
+       *  `contradictionDetection.provider`/`.model`. An invalid `provider`
+       *  value is dropped (warn, never fatal) by
+       *  `applyDupJudgeGovernance`. */
+      provider?: LLMProviderName;
+      model?: string;
+    };
+    /**
      * P2.1 stabilization: candidate-pair selection strategy for the
      * pairwise scan in `runConsolidation` (src/consolidate/consolidate.ts).
      * `'full'` (default) is BYTE-IDENTICAL to pre-P2.1 behavior — every
@@ -673,6 +775,33 @@ export interface Config {
    * section) — no hot reload. */
   distill: {
     durabilityGate: 'strict' | 'lenient' | 'off';
+    /** FEAT-552 sub-scope B: deterministic (zero-LLM) type-hint tier applied
+     *  at stage 7 (`src/distill/stages/07-memory-normalize.ts`, rules in
+     *  `src/distill/type-hints.ts`). A small set of STRONG regex patterns
+     *  (leading shell-executable token -> command; comparative decision
+     *  language -> decision; root-cause/lesson markers -> lesson; past-tense
+     *  ship verbs -> event) OVERRIDES the model's own atom `type` ONLY when
+     *  a pattern fires and disagrees with the model — an atom with no firing
+     *  pattern, or one where multiple patterns fire ambiguously, is left
+     *  untouched. Measured basis: "X was chosen over Y" style decisions are
+     *  literally regexable, yet typeAcc measured 43-63% across every model
+     *  in the 2026-07-17/18 experiment series.
+     *
+     *  `'on'` is the SHIPPED DEFAULT (unlike every other distill.* tier in
+     *  this file, which ships `'off'`/opt-in) — this tier is deterministic,
+     *  covered by a >=95%-precision gold-set test
+     *  (tests/distill/type-hints.test.ts, AC-B1), fully reversible (flip to
+     *  'off' and the next distill run stops overriding; already-backfilled
+     *  rows are unaffected either way), and adds no LLM call, no latency
+     *  surface, and no new failure mode beyond "occasionally leaves a type
+     *  as the model said" — the FEAT-482 metered-LLM caution this file's own
+     *  CLAUDE.md documents does not apply here.
+     *
+     *  An invalid (non-'on'/'off') value is dropped (warn, never fatal) by
+     *  `applyTypeHintsGovernance` below, falling back to `'on'` (the
+     *  documented default) — NOT `'off'` like every other tier's governance
+     *  fallback, precisely because 'on' is what actually ships. */
+    typeHints: 'on' | 'off';
     /** FEAT-487: how many chunks stage 4 (compact) / stage 5 (extract) fan
      *  out to the LLM provider at once within a single pipeline run — see
      *  `mapWithConcurrency` / `resolveChunkConcurrency`
@@ -825,6 +954,68 @@ export interface Config {
     extractionPassB?: {
       provider?: LLMProviderName;
       model?: string;
+      /**
+       * FEAT-551: mechanical admission gate for passB atoms at stage-8
+       * (src/distill/stages/08-embed-index.ts, src/distill/evidence-gate.ts).
+       * Motivating measurement (2026-07-17/18 LoCoMo experiment series): a
+       * raw mixed-provider passB sweep (phi4-mini as passB, a different
+       * provider than pass A) measured ~100% recall on its own narrow recall
+       * task but LOST 5.8 points end-to-end — its junk atoms crowded top-k
+       * retrieval (the adversarial category alone dropped 14.9 points, since
+       * junk read as fake "evidence" for questions the answerer should have
+       * abstained on). This gate makes mixed-provider passB SAFE by dropping
+       * any passB atom whose `evidence` quote does not mechanically verify
+       * (whitespace-normalized) against the source transcript, before it
+       * ever reaches the index — junk cannot crowd retrieval if junk cannot
+       * enter.
+       *
+       * Unset (the documented default) resolves to `'on'` exactly when
+       * passB's RESOLVED provider differs from pass A's (the mixed-provider
+       * case is exactly where the junk-crowding risk was measured) and
+       * `'off'` otherwise (a same-provider passB run has no measured
+       * junk-crowding evidence justifying the gate's admission-loss cost).
+       * See `runPipeline`'s `evidenceGateEnabled` resolution
+       * (src/distill/pipeline.ts) for the exact precedence. Explicit `'on'`/
+       * `'off'` always wins over the default. Pass-A atoms are NEVER gated
+       * regardless of this setting (src/distill/evidence-gate.ts's own
+       * `extractionSource !== 'passB'` bypass).
+       *
+       * Mechanical quote-match only — no semantic/LLM support-judgment on
+       * this hot admission path (that's FEAT-547's separate
+       * `evidence_supported` layer). An invalid (non-'on'/'off') value is
+       * dropped (warn, never fatal) by `applyExtractionPassBGovernance`,
+       * same non-fatal posture as this block's `provider` field. */
+      evidenceGate?: 'on' | 'off';
+      /**
+       * Clerk speed tuning (2026-07-18, measured on the LoCoMo dual-pass
+       * ministral leg: 62s/call, 12x slower distill than codex-solo).
+       * Skip-chunk gate: pass B sweeps ONLY chunks where pass A extracted
+       * FEWER than this many atoms — a well-covered chunk has nothing left
+       * for a specifics sweeper to find, and every skipped chunk is a whole
+       * local-LLM call saved. Unset resolves to 8 (measured: champion
+       * conv-liberal averages ~13 atoms/chunk, the under-extraction failure
+       * class sits well below 8). `0` disables the gate (sweep every chunk,
+       * the pre-tuning behavior). Skips are logged per session with counts
+       * (`passB_chunks_skipped`) — never silent (ADR-015). */
+      sweepOnlyBelowAtoms?: number;
+      /**
+       * Output-token cap for pass-B sweeper calls (provider `maxTokens`).
+       * Unset resolves to 1500 — measured 2026-07-18: ministral-3:8b
+       * averaged 1961 output tokens/call re-emitting verbose full-atom
+       * JSON, ~26s of a 62s call at 55 tok/s. A truncated response is SAFE
+       * post-FEAT-552A: parse-salvage recovers every complete atom and logs
+       * `extract_salvage`, so the cap degrades to "keeps the first ~N
+       * atoms" rather than losing the call. `0` = no cap (provider
+       * default). */
+      maxTokens?: number;
+      /**
+       * Ollama-only `num_ctx` ceiling for the pass-B provider instance (see
+       * OllamaLLMConfig.numCtxCap). Unset resolves to 8192 for a
+       * mixed-provider pass B built on ollama — halves the KV cache so an
+       * ~5.4GB clerk model stays fully GPU-resident on an 8GB card
+       * (measured 11% CPU spill at the default 16384 cap). Ignored for
+       * non-ollama pass-B providers. */
+      numCtxCap?: number;
     };
     /** Opt-in cost cap on stage 4 (compact) + stage 5 (extract) LLM calls,
      *  counted TOGETHER as one per-job budget — mirrors
@@ -919,8 +1110,67 @@ export interface Config {
      *  `contradictionDetection` carries (FEAT-482 lesson) — bounds THIS
      *  job's triage calls only. Once either caps, every remaining
      *  un-triaged atom in this job is treated as 'keep' (fails OPEN,
-     *  persists unfiltered) — never drop-by-timeout. */
+     *  persists unfiltered) — never drop-by-timeout.
+     *
+     *  `repair-only` (2026-07-18, the FEAT-547 follow-up): applies
+     *  `corrected_type` (and stores `evidence_supported`) exactly like
+     *  'enabled', but NEVER drops an atom — the keep/junk verdict is
+     *  logged (dry-run posture) and ignored. Measured basis: every clerk
+     *  tried at the discard seat cost real recall at 55fx scale (phi −40,
+     *  qwen3.5:4b −36, ministral-3:8b −17) while ministral's typing raised
+     *  typeAcc 43→52 with junk −17 — the typing half of the verdict earns
+     *  its keep, the discard half never has. */
     atomTriage: {
+      mode: 'off' | 'dry-run' | 'enabled' | 'repair-only';
+      provider?: LLMProviderName;
+      model?: string;
+      batchSize: number;
+      maxPerRun: number;
+      maxWallClockMs: number;
+    };
+    /** Ingest gatekeeper (FEAT-548) — an optional pre-extraction
+     *  substantiveness gate inserted right after stage 3 (chunk), BEFORE
+     *  stage 4 (compact) and stage 5 (extract) ever run. A cheap local model
+     *  answers "does this chunk contain anything durably memorable?" for
+     *  each chunk; a `skip` verdict bypasses the metered extraction (and
+     *  compaction) LLM call for that chunk entirely — the opposite chokepoint
+     *  from `atomTriage` above, which filters ATOMS a call has already
+     *  produced. This tier exists to avoid spending the call in the first
+     *  place, not to clean up after it.
+     *
+     *  `off` (shipped default) is BYTE-IDENTICAL to pre-FEAT-548 behavior —
+     *  the gate is never called and every chunk reaches compact/extract
+     *  exactly as before (AC-1). `dry-run` calls the model and logs every
+     *  would-have-skipped verdict + a running skip-rate counter to
+     *  `gatekeeper_skips`/`gatekeeper_run_log`, but drops NOTHING — every
+     *  chunk still proceeds to extraction unmodified (AC-3); this is the
+     *  measurement mode an operator uses before ever flipping to `enabled`.
+     *  `enabled` actually removes `skip`-verdicted chunks from the
+     *  compact/extract input.
+     *
+     *  Fail-open (ADR-015), same posture as `atomTriage`/`contradictionDetection`:
+     *  a parse failure, thrown/rejected `chat()` call, or a chunk with no
+     *  verdict entry at all is treated as an implicit `keep` — a gatekeeper
+     *  outage must degrade to today's behavior exactly, never silently drop a
+     *  chunk.
+     *
+     *  `provider`/`model` default to `llm.extraction` (identity — same
+     *  provider INSTANCE, shared rate-limit bucket) when unset, exactly like
+     *  `atomTriage`'s own override shape — overridable to a local
+     *  phi4-mini-class model so the gate stays free on a metered
+     *  (codex-subscription) extraction install. An invalid `provider` value
+     *  is dropped (warn, never fatal) by `applyGatekeeperGovernance`.
+     *
+     *  `batchSize`/`maxPerRun`/`maxWallClockMs` mirror `atomTriage`'s shape
+     *  exactly (FEAT-482 lesson: call-count cap alone doesn't bound
+     *  wall-clock time against a slow/rate-limited provider) — batched over
+     *  the WHOLE JOB's chunk list (chunks are already discrete units at this
+     *  insertion point, unlike atomTriage's post-reduce atom stream, but
+     *  batching still caps total call count on a session with many chunks).
+     *  Once either cap trips, every remaining un-gated chunk falls through
+     *  un-gated (implicit 'keep', persist/extract unfiltered — never
+     *  drop-by-timeout). */
+    gatekeeper: {
       mode: 'off' | 'dry-run' | 'enabled';
       provider?: LLMProviderName;
       model?: string;
@@ -1121,6 +1371,43 @@ export interface Config {
   };
 }
 
+/**
+ * Provider-aware distill defaults (2026-07-19, codex-only tuning). Called by
+ * the loader BEFORE deepMerge, so it adjusts the BASE the user's config.yaml
+ * merges over — any key explicitly present on disk always wins.
+ *
+ * Rationale: several distill defaults encode small-local-model/GPU tradeoffs
+ * that are wrong for a cloud extractor. When the EFFECTIVE extraction
+ * provider (disk value if present, else the shipped default) is
+ * codex-subscription:
+ *   - `compaction: 'never'` — compaction exists to fit small context
+ *     windows; on codex it is one wasted metered call per chunk AND measured
+ *     harm (no-compaction lifted typeAcc +23/+13/+29 across every model
+ *     tested 2026-07-17; every top LoCoMo run used compactionMode never).
+ *   - `chunkConcurrency: 3` — the sequential-ish default protects a
+ *     single-GPU box; codex is cloud. 3 stays under the provider's 20/min
+ *     client rate limit at observed ~10-12s call latency (~15-18 calls/min).
+ *
+ * `maxChunkChars` is deliberately NOT flipped here yet: larger codex chunks
+ * (12800) are enabled (MAX_CHUNK_CHARS_CEILING raised, 03-chunk.ts) but the
+ * default flip waits on a same-day A/B — the recency-bias hazard the old
+ * ceiling encoded is model-independent (see the ceiling's doc comment).
+ */
+export function applyProviderAwareDistillDefaults(
+  base: Config,
+  effectiveExtractionProvider: string | undefined,
+): Config {
+  if (effectiveExtractionProvider !== 'codex-subscription') return base;
+  return {
+    ...base,
+    distill: {
+      ...base.distill,
+      compaction: 'never',
+      chunkConcurrency: 3,
+    },
+  };
+}
+
 export function defaultConfig(): Config {
   return {
     port: 7777,
@@ -1195,9 +1482,12 @@ export function defaultConfig(): Config {
       governance: { maxComponentWeight: 1.0 },
       usefulness: {
         implicitPositive: {
-          enabled: false, windowDays: 30, minDistinctQueries: 2, weight: 0.35, maxGrantsPerRun: 500,
+          // enabled: true (2026-07-18) — eval-evidence gate satisfied; see the
+          // Config type's doc comment + RECORDED_EVAL_EVIDENCE for the run.
+          enabled: true, windowDays: 30, minDistinctQueries: 2, weight: 0.35, maxGrantsPerRun: 500,
         },
       },
+      queryRewrite: { mode: 'off', provider: 'mock', maxVariants: 3, timeoutMs: 1500, maxCandidates: 200 },
     },
     crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
     multiHop: {
@@ -1288,6 +1578,14 @@ export function defaultConfig(): Config {
         // per call) never hits it in practice.
         maxWallClockMs: 300_000,
       },
+      // FEAT-549: dup-judge over pending 'merge' proposals — 'off' is the
+      // shipped default (BYTE-IDENTICAL to pre-FEAT-549 behavior), pending
+      // the same kind of eval-before-enable gate contradictionDetection
+      // went through (tests/eval/consolidation-eval.test.ts's judge-enabled
+      // variant). minConfidence=0.7/batchSize=20/maxPerRun=200/
+      // maxWallClockMs=300_000 mirror contradictionDetection's/atomTriage's
+      // own numeric defaults — no evidence yet to justify a different bar.
+      dupJudge: { mode: 'off', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 },
       // P2.1 stabilization: 'full' stays the shipped default — BYTE-
       // IDENTICAL to pre-P2.1 behavior, including the binary maxGroupSize
       // skip. Promote to 'knn' per-install only after the soak test (P2.1
@@ -1330,12 +1628,22 @@ export function defaultConfig(): Config {
     distill: {
       durabilityGate: 'lenient', extractProfile: 'engineering', chunkConcurrency: 2, compaction: 'auto',
       maxChunkChars: 3200, extractionPasses: 2, costCap: { enabled: false },
+      // FEAT-552 sub-scope B: 'on' — shipped default (deterministic,
+      // zero-LLM, gold-set-tested, reversible). See
+      // Config['distill']['typeHints']'s own doc comment for why this is the
+      // one distill.* tier that ships on rather than off.
+      typeHints: 'on',
       // FEAT-533: 'off' — shipped default, BYTE-IDENTICAL to pre-FEAT-533
       // behavior (no triage batch call is ever made). Opt in to 'dry-run'
       // per-install via config.yaml; 'enabled' is gated on a reviewed
       // dry-run agreement sample (see Config['distill']['atomTriage']'s doc
       // comment) and is not shipped as a default by this slice.
       atomTriage: { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 },
+      // FEAT-548: 'off' — shipped default, BYTE-IDENTICAL to pre-FEAT-548
+      // behavior (no gate call is ever made). Opt in to 'dry-run' per-install
+      // via config.yaml to measure a skip-rate before ever considering
+      // 'enabled' — see Config['distill']['gatekeeper']'s own doc comment.
+      gatekeeper: { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 },
     },
     capture: {
       autoCapture: {
@@ -1496,6 +1804,38 @@ export function applyDurabilityGateGovernance(
       'See FEAT-441 / src/distill/durability-gate.ts.',
     );
     return { ...distill, durabilityGate: 'off' };
+  }
+  return distill;
+}
+
+/**
+ * FEAT-552 sub-scope B: `distill.typeHints` is a closed 2-value enum, same
+ * governance concern `applyDurabilityGateGovernance` documents — config.yaml
+ * is hand-parsed scalars with no schema, so a typo'd value would otherwise
+ * pass straight through `deepMerge` unchecked. Validated here, never fatal.
+ *
+ * Unlike every OTHER governance fallback in this file, the fallback on an
+ * invalid/missing value is `'on'`, not `'off'` — because `'on'` is the
+ * actually-documented shipped default for this field (see
+ * `Config['distill']['typeHints']`'s own doc comment for why this tier ships
+ * on: deterministic, zero-LLM, gold-set precision-tested, reversible).
+ * Falling back to 'off' here would silently downgrade a boot with a typo'd
+ * config.yaml BELOW the shipped default instead of restoring it.
+ */
+const VALID_TYPE_HINTS_MODES: ReadonlySet<Config['distill']['typeHints']> = new Set(['on', 'off']);
+
+export function applyTypeHintsGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  if (!VALID_TYPE_HINTS_MODES.has(distill.typeHints)) {
+    log(
+      `[type-hints-governance] distill.typeHints=${JSON.stringify(distill.typeHints)} is not one of ` +
+      "'on'|'off' — falling back to 'on' (the documented shipped default). See FEAT-552 / " +
+      'src/distill/type-hints.ts.',
+    );
+    return { ...distill, typeHints: 'on' };
   }
   return distill;
 }
@@ -1817,22 +2157,90 @@ export function applyExtractionPassesGovernance(
  * this only ever mutates the object when `provider` is BOTH present and
  * invalid.
  */
+/**
+ * SINGLE source of truth for the pass-B clerk tuning defaults (2026-07-18).
+ * Change a number HERE and every consumer (pipeline skip-gate, extract
+ * maxTokens, ollama num_ctx cap) follows — never re-declare these values at
+ * a call site (ADR-016). config.yaml's `distill.extractionPassB.*` fields
+ * override per-field; `0` means "disabled" for the gate/cap semantics
+ * documented on each field.
+ */
+export const EXTRACTION_PASS_B_DEFAULTS = {
+  /** Sweep only chunks where pass A extracted fewer than this many atoms; 0 = sweep all. */
+  sweepOnlyBelowAtoms: 8,
+  /** Output-token cap for sweeper calls; 0 = provider default (no cap). */
+  maxTokens: 1500,
+  /** Ollama num_ctx ceiling for a mixed-provider pass-B instance. */
+  numCtxCap: 8192,
+} as const;
+
+/**
+ * Effective pass-B clerk tuning: config override ?? central default. The
+ * ONLY place the `??` fallback happens — callers never touch
+ * EXTRACTION_PASS_B_DEFAULTS directly.
+ */
+export function resolveExtractionPassBTuning(distill: Config['distill'] | undefined): {
+  sweepOnlyBelowAtoms: number; maxTokens: number; numCtxCap: number;
+} {
+  const passB = distill?.extractionPassB;
+  return {
+    sweepOnlyBelowAtoms: passB?.sweepOnlyBelowAtoms ?? EXTRACTION_PASS_B_DEFAULTS.sweepOnlyBelowAtoms,
+    maxTokens: passB?.maxTokens ?? EXTRACTION_PASS_B_DEFAULTS.maxTokens,
+    numCtxCap: passB?.numCtxCap ?? EXTRACTION_PASS_B_DEFAULTS.numCtxCap,
+  };
+}
+
 export function applyExtractionPassBGovernance(
   distill: Config['distill'],
   opts: { log?: (message: string) => void } = {},
 ): Config['distill'] {
   const log = opts.log ?? ((message: string) => console.warn(message));
   const passB = distill.extractionPassB;
-  if (!passB || passB.provider === undefined) return distill;
-  if (!VALID_JUDGE_PROVIDERS.has(passB.provider)) {
+  if (!passB) return distill;
+
+  let next = passB;
+
+  if (passB.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(passB.provider)) {
     log(
       `[extraction-pass-b-governance] distill.extractionPassB.provider=` +
       `${JSON.stringify(passB.provider)} is not one of ${LLM_PROVIDER_NAMES_DISPLAY}` +
       ' — dropping the override (pass B rides llm.extraction). See FEAT-534.',
     );
-    return { ...distill, extractionPassB: { ...passB, provider: undefined } };
+    next = { ...next, provider: undefined };
   }
-  return distill;
+
+  // FEAT-551: `evidenceGate` is a closed 2-value enum with no schema
+  // enforcement on the hand-parsed config.yaml path — same non-fatal
+  // drop-and-fall-back-to-default posture as `provider` above, so a typo
+  // here degrades to the documented mixed-provider-default resolution
+  // (runPipeline's evidenceGateEnabled) rather than throwing during boot.
+  if (next.evidenceGate !== undefined && next.evidenceGate !== 'on' && next.evidenceGate !== 'off') {
+    log(
+      `[extraction-pass-b-governance] distill.extractionPassB.evidenceGate=` +
+      `${JSON.stringify(next.evidenceGate)} is not one of 'on'|'off' — dropping the override ` +
+      '(falls back to the mixed-provider default). See FEAT-551.',
+    );
+    next = { ...next, evidenceGate: undefined };
+  }
+
+  // Clerk-tuning numerics (2026-07-18): each must be a non-negative finite
+  // number; anything else (negative, NaN, string that YAML left as junk) is
+  // dropped so the documented default resolution applies — same non-fatal
+  // posture as `provider`/`evidenceGate` above.
+  for (const field of ['sweepOnlyBelowAtoms', 'maxTokens', 'numCtxCap'] as const) {
+    const value = next[field];
+    if (value !== undefined && (typeof value !== 'number' || !Number.isFinite(value) || value < 0)) {
+      log(
+        `[extraction-pass-b-governance] distill.extractionPassB.${field}=` +
+        `${JSON.stringify(value)} is not a non-negative number — dropping the override ` +
+        '(falls back to the documented default).',
+      );
+      next = { ...next, [field]: undefined };
+    }
+  }
+
+  if (next === passB) return distill;
+  return { ...distill, extractionPassB: next };
 }
 
 /**
@@ -1848,7 +2256,7 @@ export function applyExtractionPassBGovernance(
  * fall-through on a boot-time typo" concern.
  */
 const VALID_ATOM_TRIAGE_MODES: ReadonlySet<Config['distill']['atomTriage']['mode']> =
-  new Set(['off', 'dry-run', 'enabled']);
+  new Set(['off', 'dry-run', 'enabled', 'repair-only']);
 
 const DEFAULT_ATOM_TRIAGE: Config['distill']['atomTriage'] =
   { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 };
@@ -1868,7 +2276,7 @@ export function applyAtomTriageGovernance(
     log(
       at
         ? `[atom-triage-governance] distill.atomTriage.mode=${JSON.stringify(at.mode)} is not one of ` +
-          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-533 / " +
+          "'off'|'dry-run'|'enabled'|'repair-only' — falling back to 'off' (the documented default). See FEAT-533 / " +
           'src/distill/atom-triage.ts.'
         : "[atom-triage-governance] distill.atomTriage is missing — falling back to defaults (mode: 'off'). " +
           'See FEAT-533 / src/distill/atom-triage.ts.',
@@ -1895,6 +2303,137 @@ export function applyAtomTriageGovernance(
     return { ...distill, atomTriage: { ...at, batchSize: DEFAULT_ATOM_TRIAGE.batchSize } };
   }
   return distill;
+}
+
+/**
+ * FEAT-548: `distill.gatekeeper.mode` is a closed 3-value enum, same
+ * governance concern `applyAtomTriageGovernance` already documents —
+ * config.yaml is hand-parsed scalars with no schema, so a typo'd mode value
+ * would otherwise pass straight through `deepMerge` unchecked. Validated
+ * here, never fatal; an invalid or missing block falls back to `'off'` (the
+ * documented default) and is logged. Reuses `VALID_JUDGE_PROVIDERS` (declared
+ * above for the contradiction-judge override) — `distill.gatekeeper.provider`
+ * is the same closed provider union with the same "must not reach
+ * buildLLMProvider's throwing Azure fall-through on a boot-time typo" concern.
+ */
+const VALID_GATEKEEPER_MODES: ReadonlySet<Config['distill']['gatekeeper']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+const DEFAULT_GATEKEEPER: Config['distill']['gatekeeper'] =
+  { mode: 'off', batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 };
+
+export function applyGatekeeperGovernance(
+  distill: Config['distill'],
+  opts: { log?: (message: string) => void } = {},
+): Config['distill'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const gk = distill.gatekeeper;
+  // `loadConfig`'s top-level override merge is shallow, so a partial
+  // override that only touches a sibling `distill` field can drop
+  // `gatekeeper` entirely — a missing object gets the same non-fatal
+  // fallback as an invalid `mode` (mirrors applyAtomTriageGovernance's
+  // identical guard).
+  if (!gk || !VALID_GATEKEEPER_MODES.has(gk.mode)) {
+    log(
+      gk
+        ? `[gatekeeper-governance] distill.gatekeeper.mode=${JSON.stringify(gk.mode)} is not one of ` +
+          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-548 / " +
+          'src/distill/gatekeeper.ts.'
+        : "[gatekeeper-governance] distill.gatekeeper is missing — falling back to defaults (mode: 'off'). " +
+          'See FEAT-548 / src/distill/gatekeeper.ts.',
+    );
+    return { ...distill, gatekeeper: { ...DEFAULT_GATEKEEPER, ...gk, mode: 'off' } };
+  }
+  // Provider override: an out-of-union value must not reach buildLLMProvider
+  // (whose fall-through arm is Azure and THROWS on a missing endpoint) DURING
+  // BOOT. Drop the override, keep the ride-extraction default, warn — same
+  // posture as applyAtomTriageGovernance.
+  if (gk.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(gk.provider)) {
+    log(
+      `[gatekeeper-governance] distill.gatekeeper.provider=${JSON.stringify(gk.provider)} is not one of ` +
+      `${LLM_PROVIDER_NAMES_DISPLAY} — dropping the override (gatekeeper rides ` +
+      'llm.extraction). See FEAT-548.',
+    );
+    return { ...distill, gatekeeper: { ...gk, provider: undefined } };
+  }
+  if (!Number.isInteger(gk.batchSize) || gk.batchSize < 1) {
+    log(
+      `[gatekeeper-governance] distill.gatekeeper.batchSize=${JSON.stringify(gk.batchSize)} is not a positive ` +
+      `integer — falling back to ${DEFAULT_GATEKEEPER.batchSize}.`,
+    );
+    return { ...distill, gatekeeper: { ...gk, batchSize: DEFAULT_GATEKEEPER.batchSize } };
+  }
+  return distill;
+}
+
+/**
+ * FEAT-549: `consolidation.dupJudge.mode` is a closed 3-value enum, same
+ * governance concern `applyContradictionDetectionGovernance`/
+ * `applyAtomTriageGovernance` already document — config.yaml is hand-parsed
+ * scalars with no schema, so a typo'd mode value would otherwise pass
+ * straight through `deepMerge` unchecked. Validated here, never fatal; an
+ * invalid or missing block falls back to `'off'` (the documented default)
+ * and is logged. Reuses `VALID_JUDGE_PROVIDERS` (declared above for the
+ * contradiction-judge override) — `consolidation.dupJudge.provider` is the
+ * same closed provider union with the same "must not reach
+ * buildLLMProvider's throwing Azure fall-through on a boot-time typo"
+ * concern.
+ */
+const VALID_DUP_JUDGE_MODES: ReadonlySet<Config['consolidation']['dupJudge']['mode']> =
+  new Set(['off', 'dry-run', 'enabled']);
+
+const DEFAULT_DUP_JUDGE: Config['consolidation']['dupJudge'] =
+  { mode: 'off', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 };
+
+export function applyDupJudgeGovernance(
+  consolidation: Config['consolidation'],
+  opts: { log?: (message: string) => void } = {},
+): Config['consolidation'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const dj = consolidation.dupJudge;
+  // `loadConfig`'s top-level override merge is shallow, so a partial
+  // override that only touches a sibling `consolidation` field can drop
+  // `dupJudge` entirely — a missing object gets the same non-fatal
+  // fallback as an invalid `mode` (mirrors
+  // applyContradictionDetectionGovernance's/applyAtomTriageGovernance's
+  // identical guard).
+  if (!dj || !VALID_DUP_JUDGE_MODES.has(dj.mode)) {
+    log(
+      dj
+        ? `[dup-judge-governance] consolidation.dupJudge.mode=${JSON.stringify(dj.mode)} is not one of ` +
+          "'off'|'dry-run'|'enabled' — falling back to 'off' (the documented default). See FEAT-549 / " +
+          'src/consolidate/dup-judge.ts.'
+        : "[dup-judge-governance] consolidation.dupJudge is missing — falling back to defaults (mode: 'off'). " +
+          'See FEAT-549 / src/consolidate/dup-judge.ts.',
+    );
+    return { ...consolidation, dupJudge: { ...DEFAULT_DUP_JUDGE, ...dj, mode: 'off' } };
+  }
+  // Provider override: an out-of-union value must not reach buildLLMProvider
+  // (whose fall-through arm is Azure and THROWS on a missing endpoint) DURING
+  // BOOT. Drop the override, keep the ride-extraction default, warn — same
+  // posture as applyContradictionDetectionGovernance/applyAtomTriageGovernance.
+  if (dj.provider !== undefined && !VALID_JUDGE_PROVIDERS.has(dj.provider)) {
+    log(
+      `[dup-judge-governance] consolidation.dupJudge.provider=${JSON.stringify(dj.provider)} is not one of ` +
+      `${LLM_PROVIDER_NAMES_DISPLAY} — dropping the override (dup-judge rides llm.extraction). See FEAT-549.`,
+    );
+    return { ...consolidation, dupJudge: { ...dj, provider: undefined } };
+  }
+  if (dj.minConfidence < 0 || dj.minConfidence > 1) {
+    log(
+      `[dup-judge-governance] consolidation.dupJudge.minConfidence=${dj.minConfidence} is invalid (must be in ` +
+      `[0, 1]) — falling back to ${DEFAULT_DUP_JUDGE.minConfidence}.`,
+    );
+    return { ...consolidation, dupJudge: { ...dj, minConfidence: DEFAULT_DUP_JUDGE.minConfidence } };
+  }
+  if (!Number.isInteger(dj.batchSize) || dj.batchSize < 1) {
+    log(
+      `[dup-judge-governance] consolidation.dupJudge.batchSize=${JSON.stringify(dj.batchSize)} is not a positive ` +
+      `integer — falling back to ${DEFAULT_DUP_JUDGE.batchSize}.`,
+    );
+    return { ...consolidation, dupJudge: { ...dj, batchSize: DEFAULT_DUP_JUDGE.batchSize } };
+  }
+  return consolidation;
 }
 
 const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = new Set(['mock', 'llm']);
@@ -1940,14 +2479,59 @@ export function applyMultiHopGovernance(
   return { ...multiHop, supplementalWeight: clampedWeight };
 }
 
+const VALID_QUERY_REWRITE_MODES: ReadonlySet<Config['search']['queryRewrite']['mode']> = new Set(['off', 'enabled']);
+const VALID_QUERY_REWRITE_PROVIDERS: ReadonlySet<Config['search']['queryRewrite']['provider']> = new Set(['mock', 'llm']);
+
+/**
+ * FEAT-550 governance (mirrors `applyMultiHopGovernance`'s shape exactly):
+ * config.yaml is hand-parsed scalars with no schema, so a typo'd
+ * `queryRewrite.mode`/`provider` would otherwise pass straight through
+ * `deepMerge` unchecked. Never fatal — an invalid/missing block falls back
+ * to `mode: 'off'` (the documented default) plus the rest of
+ * `defaultConfig().search.queryRewrite`, logged, rather than risk booting
+ * with `mode: 'enabled'` and a broken provider selection. Applied AFTER
+ * `applyFusionGovernance` in `loadConfig` below — both operate on
+ * `Config['search']` but are independent concerns (fusion weight ceilings
+ * vs. this stage's own closed enums), same composition style as
+ * `distill`'s multi-governance chain.
+ */
+export function applyQueryRewriteGovernance(
+  search: Config['search'],
+  opts: { log?: (message: string) => void } = {},
+): Config['search'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().search.queryRewrite;
+  const qr = search.queryRewrite;
+
+  if (!qr || !VALID_QUERY_REWRITE_MODES.has(qr.mode) || !VALID_QUERY_REWRITE_PROVIDERS.has(qr.provider)) {
+    log(
+      qr
+        ? `[query-rewrite-governance] search.queryRewrite.mode=${JSON.stringify(qr.mode)}/provider=` +
+          `${JSON.stringify(qr.provider)} is not a valid mode ('off'|'enabled') / provider ('mock'|'llm') ` +
+          "— falling back to defaults (mode: 'off'). See FEAT-550 / src/search/query-rewrite.ts."
+        : '[query-rewrite-governance] search.queryRewrite is missing — falling back to defaults ' +
+          "(mode: 'off'). See FEAT-550 / src/search/query-rewrite.ts.",
+    );
+    return { ...search, queryRewrite: { ...fallback, ...qr, mode: 'off', provider: fallback.provider } };
+  }
+  return search;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
   return {
     ...merged,
-    search: applyFusionGovernance(merged.search),
-    distill: applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))),
-    consolidation: applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation)),
+    search: applyQueryRewriteGovernance(applyFusionGovernance(merged.search)),
+    // FEAT-548: applyGatekeeperGovernance composed here too, not just in
+    // loadConfigFromDisk() — mirrors applyExtractionPassBGovernance's own
+    // "wired into BOTH real paths" bar (the 2026-07-16 review note on
+    // applyExtractionPassesGovernance documents why loadConfigFromDisk is the
+    // one with real production callers; applyAtomTriageGovernance itself is
+    // still NOT wired into this loadConfig() chain — a pre-existing gap
+    // predating this slice, out of scope here).
+    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))))),
+    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation))),
     audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),
     retention: applyRetentionGovernance(merged.retention),

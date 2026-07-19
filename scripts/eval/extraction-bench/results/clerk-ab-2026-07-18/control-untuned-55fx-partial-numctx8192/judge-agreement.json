@@ -1,0 +1,450 @@
+[
+  {
+    "fixtureId": "fx01-clean-decision",
+    "repeats": 3,
+    "recall": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "precision": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "f1": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 0.5,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.5,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "reasonable_extra",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant combination of sqlite-vec and better-sqlite3 configuration already covered by other atoms."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "States SQLite via better-sqlite3 was chosen over Postgres and why (matches decision)."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "Specifies sqlite-vec as the SQLite extension for vector search, matching the decision but labeled as a fact."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Declares mxbai-embed-large via Ollama with 1024 dimensions, matching the embedding-dimension fact."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "States the default embedding model is mxbai-embed-large via Ollama, matching the decision but marked as a fact."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.5,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "reasonable_extra",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Restates vector store configuration (sqlite-vec + better-sqlite3) already covered by other extracted atoms; redundant rather than a distinct gold atom match."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Explicit decision that SQLite (better-sqlite3) was chosen over Postgres to avoid a separate server process — matches gold atom 0."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "States sqlite-vec was selected for vector search requiring no separate vector DB, matching the content of gold atom 1, but extracted atom is labeled as a fact while gold is a decision."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Specifies the embedding model mxbai-embed-large via Ollama produces 1024-dim embeddings, matching gold atom 3 (fact) with correct type."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Reiterates the default embedding provider/model (Ollama mxbai-embed-large) and sqlite-vec/better-sqlite3 setup, matching gold atom 2's content about the default model but labeled as a fact while gold is a decision."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx01-clean-decision",
+        "goldCount": 4,
+        "extractedCount": 5,
+        "recall": 1,
+        "precision": 1,
+        "junkRate": 0,
+        "typeAccuracy": 0.5,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": false,
+              "reason": "States sqlite-vec backed by better-sqlite3 for the vector store, matching the decision to use sqlite-vec (gold 1) though labeled as a fact."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Explains choosing SQLite/better-sqlite3 over Postgres to avoid a separate server process, matching gold 0."
+            },
+            {
+              "index": 2,
+              "verdict": "reasonable_extra",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Repeats that sqlite-vec is a SQLite extension requiring no separate vector DB; useful redundancy not adding new gold content."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "Specifies the embedding model is mxbai-embed-large via Ollama with 1024 dimensions, matching the fact about 1024-dim embeddings (gold 3)."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Summarizes default provider as Ollama with mxbai-embed-large and sqlite-vec, matching the decision to use mxbai-embed-large via Ollama (gold 2) though labeled as a fact."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      }
+    ]
+  },
+  {
+    "fixtureId": "fx02-debugging-race-condition",
+    "repeats": 3,
+    "recall": {
+      "mean": 1,
+      "stdev": 0,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        1
+      ]
+    },
+    "precision": {
+      "mean": 0.7083333333333334,
+      "stdev": 0.14433756729740646,
+      "n": 3,
+      "raw": [
+        0.625,
+        0.625,
+        0.875
+      ]
+    },
+    "f1": {
+      "mean": 0.823931623931624,
+      "stdev": 0.09474465955932318,
+      "n": 3,
+      "raw": [
+        0.7692307692307693,
+        0.7692307692307693,
+        0.9333333333333333
+      ]
+    },
+    "typeAccuracy": {
+      "mean": 0.8888888888888888,
+      "stdev": 0.1924500897298753,
+      "n": 3,
+      "raw": [
+        1,
+        1,
+        0.6666666666666666
+      ]
+    },
+    "raw": [
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 8,
+        "recall": 1,
+        "precision": 0.625,
+        "junkRate": 0.375,
+        "typeAccuracy": 1,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Captures the same lesson about the SELECT-then-INSERT race causing duplicate rows."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": true,
+              "reason": "Describes the same decision to use INSERT ... ON CONFLICT DO NOTHING and read back the winning row."
+            },
+            {
+              "index": 2,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant with other extracted atoms describing the pre-fix duplicate count; duplicates gold content already matched elsewhere."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "States the same fact about post-fix result: exactly one row created and 19 idempotent replays."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 4,
+              "type_correct": true,
+              "reason": "Matches the todo to add a concurrency regression test that asserts exactly one row for N parallel requests."
+            },
+            {
+              "index": 5,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Duplicate restatement of the root cause already captured by a matched lesson atom."
+            },
+            {
+              "index": 6,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": true,
+              "reason": "Records the event of verifying the fix by firing 20 concurrent POSTs and the before/after outcomes."
+            },
+            {
+              "index": 7,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant test criteria duplicate of the todo to add a concurrency regression test."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 8,
+        "recall": 1,
+        "precision": 0.625,
+        "junkRate": 0.375,
+        "typeAccuracy": 1,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Captures the same lesson about the SELECT-then-INSERT race and duplicate transcript rows (lesson)."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": true,
+              "reason": "Describes the same decision to use atomic INSERT ... ON CONFLICT DO NOTHING and read back the winning row (decision)."
+            },
+            {
+              "index": 2,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant partial duplication of the before-fix fact already covered by other atoms; no unique durable content."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "States the after-fix outcome (1 row, 19 idempotent replays), matching the gold fact about before/after results."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 4,
+              "type_correct": true,
+              "reason": "Matches the todo to add a concurrency/regression test that fires parallel requests and asserts one row is created."
+            },
+            {
+              "index": 5,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Duplicate statement of the root cause already captured in atom 0; redundant."
+            },
+            {
+              "index": 6,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": true,
+              "reason": "Records the verification event running 20 concurrent POSTs and the test results, matching the verification event."
+            },
+            {
+              "index": 7,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant restatement of the test criteria/todo already captured in atom 4."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      },
+      {
+        "fixtureId": "fx02-debugging-race-condition",
+        "goldCount": 5,
+        "extractedCount": 8,
+        "recall": 1,
+        "precision": 0.875,
+        "junkRate": 0.125,
+        "typeAccuracy": 0.6666666666666666,
+        "overExtractionCount": null,
+        "judge": {
+          "extracted_verdicts": [
+            {
+              "index": 0,
+              "verdict": "matches_gold",
+              "matched_gold_index": 0,
+              "type_correct": true,
+              "reason": "Captures the same lesson about the SELECT-then-INSERT race causing duplicate transcript rows."
+            },
+            {
+              "index": 1,
+              "verdict": "matches_gold",
+              "matched_gold_index": 1,
+              "type_correct": true,
+              "reason": "Describes the same decision to use atomic INSERT ... ON CONFLICT DO NOTHING and read back the winning row."
+            },
+            {
+              "index": 2,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": true,
+              "reason": "States the pre-fix fact that 20 concurrent POSTs produced 3 duplicate rows, matching the gold fact."
+            },
+            {
+              "index": 3,
+              "verdict": "matches_gold",
+              "matched_gold_index": 2,
+              "type_correct": false,
+              "reason": "Describes the post-fix verification result with 20 concurrent POSTs (verifying the fix) but is typed as a fact rather than an event."
+            },
+            {
+              "index": 4,
+              "verdict": "matches_gold",
+              "matched_gold_index": 4,
+              "type_correct": true,
+              "reason": "Matches the todo to add a concurrency regression test asserting exactly one row for N parallel requests with the same idempotency key."
+            },
+            {
+              "index": 5,
+              "verdict": "junk",
+              "matched_gold_index": null,
+              "type_correct": null,
+              "reason": "Redundant duplicate of the root-cause lesson already captured in extracted atom 0 / gold atom 0."
+            },
+            {
+              "index": 6,
+              "verdict": "matches_gold",
+              "matched_gold_index": 3,
+              "type_correct": false,
+              "reason": "Reiterates the before-and-after test results (3 duplicates before, 1 after) matching the gold fact but is typed as an event rather than a fact."
+            }
+          ],
+          "unmatched_gold_indices": []
+        }
+      }
+    ]
+  }
+]

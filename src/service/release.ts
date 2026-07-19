@@ -291,6 +291,29 @@ function resolveGitSha(checkoutDir: string): string {
 }
 
 /**
+ * Uncommitted-src canary (2026-07-18 incident): an UNCOMMITTED working-tree
+ * edit flipped defaultConfig extraction defaults (extractionPasses 2->1,
+ * compaction auto->never) and rewrote three test files to lock the flip in —
+ * a `bun run build` from that tree would have carried the flip into dist and,
+ * via materializeRelease, into a PROD release labeled with a clean-looking
+ * sha. Best-effort loud WARNING (never fatal — dev-mode materialization from
+ * an intentionally dirty tree is legitimate): a release built from a dirty
+ * src/ or migrations/ is not derivable from any commit, so its sha label
+ * under-describes what is actually being served.
+ */
+function warnIfSrcDirty(checkoutDir: string): void {
+  const res = spawnSync('git', ['status', '--porcelain', '--', 'src/', 'migrations/'], { cwd: checkoutDir, encoding: 'utf8', timeout: GIT_TIMEOUT_MS });
+  if (res.status === 0 && (res.stdout ?? '').trim().length > 0) {
+    const files = (res.stdout ?? '').trim().split('\n').slice(0, 5).map(l => l.trim()).join(', ');
+    console.warn(
+      `[astramem-local] WARNING: materializing a release from a checkout with UNCOMMITTED src/ or migrations/ changes (${files}${(res.stdout ?? '').trim().split('\n').length > 5 ? ', ...' : ''}). ` +
+      'The release sha label will NOT describe what this release actually serves. ' +
+      'See the 2026-07-18 uncommitted-default-flip incident before trusting this build.',
+    );
+  }
+}
+
+/**
  * Deterministic sha256 over the files that actually determine a release's
  * behavior: `dist/` + `migrations/` (recursively) + `package.json` + the
  * lockfile, all relative to `dir`. Deliberately excludes `node_modules/` —
@@ -387,6 +410,9 @@ export function materializeRelease(opts: MaterializeReleaseOptions = {}): Materi
   if (!existsSync(migrationsSrc)) {
     throw new Error(`materializeRelease: migrations/ not found at ${migrationsSrc} — serve boot's migrate() would crash without it`);
   }
+
+  // Loud (non-fatal) canary before any copying happens — see its doc comment.
+  warnIfSrcDirty(checkoutDir);
 
   mkdirSync(releasesRoot, { recursive: true });
   const tmpDir = join(releasesRoot, `.tmp-${randomUUID()}`);

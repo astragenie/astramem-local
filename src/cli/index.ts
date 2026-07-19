@@ -22,6 +22,7 @@ import { reembedDimCommand } from './reembed-dim.js';
 import { entityBackfillCommand } from './entity-backfill.js';
 import { entityPurgeJunkCommand } from './entity-purge.js';
 import { repoIdentityBackfillCommand } from './repo-identity-backfill.js';
+import { backfillTypesCommand } from './backfill-types.js';
 import { cliMemoryRestore } from './memory.js';
 import { memoryHealthCommand } from './memory-health.js';
 import { mcpStdio } from './mcp-stdio.js';
@@ -213,6 +214,15 @@ async function main() {
       // (or another ephemeral worktree-basename shape — DEFAULT_BAD_REPO_PATTERN).
       // Preview is the DEFAULT; --yes is required to mutate.
       repoIdentityBackfillCommand(rest);
+      break;
+    }
+
+    case 'backfill-types': {
+      // astramem-local backfill-types [--apply] [--batch-size N] [--limit N] [--reset] [--json]
+      // FEAT-552 sub-scope B: retroactive zero-LLM re-typing via the
+      // deterministic type-hint rules (src/distill/type-hints.ts).
+      // Dry-run (preview) is the DEFAULT; --apply mutates + logs audit events.
+      await backfillTypesCommand(rest);
       break;
     }
 
@@ -444,6 +454,13 @@ Commands:
                                          regex for a shape not covered by default.
                                          Never guesses: unresolvable rows are left
                                          untouched. PREVIEWS by default — --yes to apply.
+  backfill-types [--apply] [--batch-size N] [--limit N] [--reset] [--json]
+                                         Retroactively re-type existing memories via the
+                                         deterministic type-hint rules (FEAT-552, zero
+                                         LLM calls) — same rules 07-memory-normalize
+                                         applies going forward. Resumable (checkpoint
+                                         file); never touches text/embeddings/hash.
+                                         DRY-RUN by default — --apply to mutate.
   config upgrade-model [--yes] [--json]  Detect a config-pinned Ollama LLM model that is
                                          known-bad or no longer fits local VRAM (issue #279,
                                          see doctor's "Model fit canary") and print the exact

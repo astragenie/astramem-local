@@ -6,9 +6,15 @@
  */
 
 import { createHash } from 'node:crypto';
-import type { Atom } from '../prompts/extract.js';
+import type { SourcedAtom } from '../prompts/extract.js';
 
-export interface ReducedAtom extends Atom {
+// FEAT-551: extends SourcedAtom (Atom + optional `extractionSource`) rather
+// than Atom directly. Atom is structurally assignable to SourcedAtom (the
+// added field is optional), so this is additive only — every existing
+// caller passing plain Atom[] is unaffected and gets `extractionSource:
+// undefined` on its ReducedAtom output, which the stage-8 gate treats as
+// "not passB, bypass" (AC-2).
+export interface ReducedAtom extends SourcedAtom {
   /** Hash of the normalized (lowercased, trimmed, whitespace-collapsed) text */
   contentHash: string;
 }
@@ -17,7 +23,7 @@ export interface ReducedAtom extends Atom {
  * Merge a flat array of atoms, deduplicating by content hash.
  * On collision, keep the highest-importance instance.
  */
-export function reduce(atoms: Atom[]): ReducedAtom[] {
+export function reduce(atoms: SourcedAtom[]): ReducedAtom[] {
   const byHash = new Map<string, ReducedAtom>();
 
   for (const atom of atoms) {

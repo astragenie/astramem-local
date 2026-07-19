@@ -1,0 +1,19 @@
+{
+  "id": "fx50-uncertainty-suspected-memory-leak",
+  "title": "Suspected but unconfirmed memory leak — verification still pending",
+  "difficulty": "uncertainty",
+  "notes": "Tests preservation of an UNRESOLVED hypothesis (no confirmation happens in this session at all) — an extractor that upgrades 'suspected' to a standing confirmed fact fails just as badly as one that drops the suspicion entirely.",
+  "turns": [
+    { "role": "user", "text": "I suspect there might be a memory leak in the worker pool — memory climbs steadily over 6 hours, but I haven't proven it yet." },
+    { "role": "assistant", "text": "Worth investigating. Any lead on where?" },
+    { "role": "user", "text": "Not yet, still just a suspicion. I'll run a heap snapshot diff overnight to confirm or rule it out." },
+    { "role": "assistant", "text": "Sounds good — treat it as unconfirmed for now until the heap diff comes back." }
+  ],
+  "gold_atoms": [
+    { "type": "lesson", "text": "A memory leak in the worker pool is SUSPECTED (steady memory climb over 6 hours) but NOT yet confirmed — a heap snapshot diff is planned overnight to verify." }
+  ],
+  "forbidden_items": [
+    "A memory leak in the worker pool was confirmed",
+    "The worker pool has a confirmed memory leak"
+  ]
+}

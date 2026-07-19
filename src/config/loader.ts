@@ -41,6 +41,7 @@ import {
   type Config,
   defaultConfig,
   applyFusionGovernance,
+  applyQueryRewriteGovernance,
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
   applyMultiHopGovernance,
@@ -49,6 +50,10 @@ import {
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
   applyAtomTriageGovernance,
+  applyGatekeeperGovernance,
+  applyDupJudgeGovernance,
+  applyTypeHintsGovernance,
+  applyProviderAwareDistillDefaults,
 } from './config.js';
 
 type PlainObject = Record<string, unknown>;
@@ -321,7 +326,11 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
   const cfg = loadConfigFromDiskRaw(configDir, reader);
   return {
     ...cfg,
-    search: applyFusionGovernance(cfg.search),
+    // FEAT-550: applyQueryRewriteGovernance composed here too, not just in
+    // loadConfig() — see the 2026-07-16 review note a few lines below on why
+    // this real boot path needs its OWN governance composition rather than
+    // relying on loadConfig()'s (which has zero production callers).
+    search: applyQueryRewriteGovernance(applyFusionGovernance(cfg.search)),
     // FEAT-534: extractionPassB provider governance added here — this IS the
     // real boot path (the 2026-07-16 review comment below explains why that
     // matters: loadConfig() has zero production callers). Note
@@ -331,9 +340,17 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     // real boot path — each governance function in this composition only
     // ever touches its own field, so nesting order is safe (see
     // applyExtractProfileGovernance's doc comment).
-    distill: applyAtomTriageGovernance(
+    // FEAT-548: applyGatekeeperGovernance added the same way, on the same
+    // real boot path AND in loadConfig() (config.ts) — the 550/549 reviewers'
+    // bar for a new distill.<tier> governance function is BOTH real
+    // composition points, not just this one.
+    // FEAT-552: applyTypeHintsGovernance added the same way, on the same
+    // real boot path AND in loadConfig() — same "both composition points"
+    // bar. Outermost in the chain (order is safe regardless — each
+    // governance function only ever touches its own field).
+    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyAtomTriageGovernance(
       applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
-    ),
+    ))),
     multiHop: applyMultiHopGovernance(cfg.multiHop),
     retention: applyRetentionGovernance(cfg.retention),
     // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has
@@ -344,9 +361,13 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     // override: an out-of-union `contradictionDetection.provider` typo would
     // reach buildLLMProvider's throwing Azure fall-through DURING BOOT,
     // before any runtime guard exists.
-    consolidation: applyCandidateSelectionGovernance(
+    // FEAT-549: applyDupJudgeGovernance added the same way, on the same real
+    // boot path — same reasoning as the review note above (an out-of-union
+    // `dupJudge.provider` typo must not reach buildLLMProvider's throwing
+    // Azure fall-through DURING BOOT either).
+    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(
       applyContradictionDetectionGovernance(cfg.consolidation),
-    ),
+    )),
   };
 }
 
@@ -354,7 +375,10 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
  * `loadConfigFromDisk` wrapper above, which is the single place governance
  * is applied. Do not call this directly outside that wrapper. */
 function loadConfigFromDiskRaw(configDir: string, reader?: (path: string) => string): Config {
-  const base = defaultConfig();
+  // Provider-aware defaults (2026-07-19): the no-file / torn-read paths pass
+  // undefined (no disk override), so the shipped default provider
+  // (codex-subscription) gets its codex-optimized distill defaults too.
+  const base = applyProviderAwareDistillDefaults(defaultConfig(), defaultConfig().llm.extraction.provider);
   const path = join(configDir, 'config.yaml');
   let text: string;
   try {
@@ -390,7 +414,17 @@ function loadConfigFromDiskRaw(configDir: string, reader?: (path: string) => str
         'Using defaults for this boot; check the file and restart to pick up your config.',
       );
     }
-    return deepMerge(base, parsed);
+    // Re-derive the provider-aware base against what the DISK actually says
+    // the extraction provider is: an explicit `llm.extraction.provider` on
+    // disk (e.g. ollama) must get the NEUTRAL small-model defaults, not the
+    // codex-optimized ones the shipped default provider implies — and vice
+    // versa. Explicit distill keys on disk still win via deepMerge.
+    const diskProvider = ((parsed as { llm?: { extraction?: { provider?: unknown } } }).llm?.extraction?.provider);
+    const providerAwareBase = applyProviderAwareDistillDefaults(
+      defaultConfig(),
+      typeof diskProvider === 'string' ? diskProvider : defaultConfig().llm.extraction.provider,
+    );
+    return deepMerge(providerAwareBase, parsed);
   } catch (err) {
     console.warn(`[astramem-local] WARNING: config.yaml could not be parsed (${String(err)}) — using defaults.`);
     return base;

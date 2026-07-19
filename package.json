@@ -1,7 +1,7 @@
 {
   "name": "astramem-local",
   "version": "0.19.0",
-  "description": "Local-first, encrypted memory daemon for AI coding agents — hybrid retrieval, provenance receipts, MCP tools, SQLCipher at rest",
+  "description": "Local-first, encrypted memory daemon for AI coding agents \u00e2\u20ac\u201d hybrid retrieval, provenance receipts, MCP tools, SQLCipher at rest",
   "keywords": [
     "mcp",
     "claude-code",
@@ -81,7 +81,8 @@
     "vitest": "^4.1.9"
   },
   "overrides": {
-    "zod": "^4.4.3"
+    "zod": "^4.4.3",
+    "adm-zip": "^0.6.0"
   },
   "license": "MIT",
   "repository": {

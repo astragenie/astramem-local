@@ -1,0 +1,20 @@
+{
+  "id": "fx46-negation-not-using-redis",
+  "title": "Explicit negation: session store does NOT use Redis",
+  "difficulty": "negation",
+  "notes": "Tests meaning-reversal resistance: the session mentions Redis by name only to explicitly rule it out. A good extractor must capture the NEGATIVE fact (no Redis) rather than dropping the negation and recording the positive-polarity opposite (Redis IS used) — the worst class of extraction failure per FEAT-542.",
+  "turns": [
+    { "role": "user", "text": "Quick heads up on caching — we are NOT using Redis for the session store, in case that assumption is baked into anyone's mental model." },
+    { "role": "assistant", "text": "Good to know. So no Redis dependency for sessions at all — what are we using instead?" },
+    { "role": "user", "text": "Plain in-process LRU cache for now. It's simpler and we don't have multi-instance session sharing yet." },
+    { "role": "assistant", "text": "Got it — in-process LRU cache, no Redis, no cross-instance sharing. I'll keep that in mind." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "The session store does NOT use Redis — it uses a plain in-process LRU cache instead." },
+    { "type": "fact", "text": "There is no multi-instance session sharing yet, a consequence of the in-process cache choice." }
+  ],
+  "forbidden_items": [
+    "The session store uses Redis for session storage",
+    "Redis is used for sessions"
+  ]
+}

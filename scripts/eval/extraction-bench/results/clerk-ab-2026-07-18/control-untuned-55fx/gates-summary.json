@@ -1,0 +1,74 @@
+{
+  "calibration": {
+    "fixtureCount": 55,
+    "fixtureCorpusDate": "2026-07-18",
+    "provisional": true,
+    "note": "Floors below were seeded from the 2026-07-17/18 measured baselines (qwen2.5:7b 84-90 F1; qwen3.5:9b typeAcc 75-88; judge noise +/-7 F1), which were measured against the pre-FEAT-542 43-fixture corpus. This block is stamped against the now-55-fixture corpus (FEAT-542 landed the 12-fixture hard pack the same day) so the stale-calibration check has an accurate count to compare loadFixtures() against, but the floors themselves have NOT yet been re-measured on the 55-fixture set. Treat every floor here as provisional until a live --runs sweep re-baselines it (tracked as a followup, not this FEAT's AC-4 scope)."
+  },
+  "actualFixtureCount": 55,
+  "staleCalibrationWarning": null,
+  "results": [
+    {
+      "model": "qwen2.5:7b",
+      "tiers": [
+        {
+          "tier": "local-viable",
+          "verdict": "FAIL",
+          "metrics": [
+            {
+              "metric": "f1",
+              "verdict": "fail",
+              "detail": "F1 79% < 80%"
+            },
+            {
+              "metric": "typeAcc",
+              "verdict": "fail",
+              "detail": "typeAcc 44% < 60%"
+            },
+            {
+              "metric": "junk",
+              "verdict": "pass",
+              "detail": ""
+            },
+            {
+              "metric": "overExtract",
+              "verdict": "pass",
+              "detail": ""
+            },
+            {
+              "metric": "evidenceAcc",
+              "verdict": "fail",
+              "detail": "evidenceAcc 25% < 90%"
+            }
+          ]
+        },
+        {
+          "tier": "production-preferred",
+          "verdict": "FAIL",
+          "metrics": [
+            {
+              "metric": "f1",
+              "verdict": "fail",
+              "detail": "F1 79% < 88%"
+            },
+            {
+              "metric": "typeAcc",
+              "verdict": "fail",
+              "detail": "typeAcc 44% < 75%"
+            },
+            {
+              "metric": "junk",
+              "verdict": "fail",
+              "detail": "junk 19% > 10%"
+            },
+            {
+              "metric": "evidenceAcc",
+              "verdict": "fail",
+              "detail": "evidenceAcc 25% < 95%"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

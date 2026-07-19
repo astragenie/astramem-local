@@ -77,6 +77,39 @@ describe('aggregateFixtureScores', () => {
     expect(agg.avgPassAAtomCount).toBeNull();
     expect(agg.avgPassBAtomCount).toBeNull();
   });
+
+  // FEAT-542 AC-3/AC-7: evidence accuracy is POOLED (sum numerator / sum
+  // denominator), not a mean of per-fixture percentages — this matters when
+  // fixtures carry very different evidence-bearing atom counts.
+  it('pools evidenceAccNumerator/evidenceAccDenominator across fixtures rather than averaging per-fixture percentages', () => {
+    const rows = [
+      fixtureRow('fx01', score({ fixtureId: 'fx01' }), { evidenceAccNumerator: 1, evidenceAccDenominator: 1 }), // 100%
+      fixtureRow('fx02', score({ fixtureId: 'fx02' }), { evidenceAccNumerator: 1, evidenceAccDenominator: 9 }), // 11%
+    ];
+    const agg = aggregateFixtureScores(rows, 0);
+    // Pooled: 2/10 = 20% — NOT the naive mean of 100%/11% (~55.5%).
+    expect(agg.evidenceAcc).toBeCloseTo(0.2, 10);
+    expect(agg.evidenceAccNumerator).toBe(2);
+    expect(agg.evidenceAccDenominator).toBe(10);
+  });
+
+  it('evidenceAcc is null when no fixture in the run produced any evidence-bearing atom', () => {
+    const rows = [fixtureRow('fx01', score({ fixtureId: 'fx01' }))];
+    const agg = aggregateFixtureScores(rows, 0);
+    expect(agg.evidenceAcc).toBeNull();
+    expect(agg.evidenceAccNumerator).toBe(0);
+    expect(agg.evidenceAccDenominator).toBe(0);
+  });
+
+  it('sums forbiddenItemHits across fixtures into forbiddenItemHitsTotal', () => {
+    const rows = [
+      fixtureRow('fx01', score({ fixtureId: 'fx01' }), { forbiddenItemHits: 2 }),
+      fixtureRow('fx02', score({ fixtureId: 'fx02' }), { forbiddenItemHits: 1 }),
+      fixtureRow('fx03', score({ fixtureId: 'fx03' })), // no forbidden_items on this fixture — undefined, not 0
+    ];
+    const agg = aggregateFixtureScores(rows, 0);
+    expect(agg.forbiddenItemHitsTotal).toBe(3);
+  });
 });
 
 describe('combineRuns — AC-5 regression-free + AC-1 multi-run', () => {
@@ -108,6 +141,29 @@ describe('combineRuns — AC-5 regression-free + AC-1 multi-run', () => {
 
   it('throws on zero runs (programmer error, not a valid bench state)', () => {
     expect(() => combineRuns([])).toThrow();
+  });
+
+  // FEAT-542 AC-3/AC-7: multi-run evidence-acc/forbidden-hits combine by
+  // summing raw counts across runs, then recomputing the pooled fraction —
+  // NOT by averaging each run's already-pooled percentage.
+  it('AC-1/AC-7: combines evidenceAcc/forbiddenItemHitsTotal by summing raw counts across runs, then recomputing the pooled fraction', () => {
+    function runWithEvidence(evNum: number, evDenom: number, forbiddenHits: number): SingleRunReport {
+      const rows = [
+        fixtureRow('fx01', score({ fixtureId: 'fx01' }), {
+          evidenceAccNumerator: evNum,
+          evidenceAccDenominator: evDenom,
+          forbiddenItemHits: forbiddenHits,
+        }),
+      ];
+      return { model: 'm', daemonBootMs: 500, fixtures: rows, aggregate: aggregateFixtureScores(rows, 0) };
+    }
+    const runs = [runWithEvidence(1, 1, 1), runWithEvidence(0, 1, 2)]; // run1: 1/1=100%, run2: 0/1=0%
+    const combined = combineRuns(runs);
+    // Pooled across runs: (1+0)/(1+1) = 50% — not the naive mean of 100%/0%.
+    expect(combined.aggregate.evidenceAcc).toBeCloseTo(0.5, 10);
+    expect(combined.aggregate.evidenceAccNumerator).toBe(1);
+    expect(combined.aggregate.evidenceAccDenominator).toBe(2);
+    expect(combined.aggregate.forbiddenItemHitsTotal).toBe(3);
   });
 });
 
@@ -192,6 +248,38 @@ describe('renderMarkdown', () => {
     // Single-pass row: no split at all — both columns render "—".
     expect(singlePassLine).toBeDefined();
     expect(singlePassLine!.trim().endsWith('| — | — |')).toBe(true);
+  });
+
+  // FEAT-542 AC-3: "Evidence acc" column — renders a percentage when the run
+  // produced evidence-bearing atoms, "—" when it did not (mirrors the
+  // existing fmtPct convention every other percentage column already uses).
+  it('renders the "Evidence acc" column: percentage when evidence-bearing atoms exist, "—" otherwise', () => {
+    const withEvidenceRows = [
+      fixtureRow('fx01', score({ fixtureId: 'fx01' }), { evidenceAccNumerator: 3, evidenceAccDenominator: 4 }),
+    ];
+    const withEvidenceReport = {
+      model: 'qwen2.5:7b',
+      daemonBootMs: 500,
+      fixtures: withEvidenceRows,
+      aggregate: aggregateFixtureScores(withEvidenceRows, 0),
+    };
+    const noEvidenceRows = [fixtureRow('fx01', score({ fixtureId: 'fx01' }))];
+    const noEvidenceReport = {
+      model: 'qwen3.5:9b',
+      daemonBootMs: 500,
+      fixtures: noEvidenceRows,
+      aggregate: aggregateFixtureScores(noEvidenceRows, 0),
+    };
+    const md = renderMarkdown([withEvidenceReport, noEvidenceReport], 0);
+    const lines = md.split('\n');
+    const headerCells = lines[2]!.split('|').map(c => c.trim());
+    const evidenceAccColIdx = headerCells.indexOf('Evidence acc');
+    expect(evidenceAccColIdx).toBeGreaterThan(0);
+
+    const withEvidenceCells = lines.find(l => l.startsWith('| qwen2.5:7b '))!.split('|').map(c => c.trim());
+    const noEvidenceCells = lines.find(l => l.startsWith('| qwen3.5:9b '))!.split('|').map(c => c.trim());
+    expect(withEvidenceCells[evidenceAccColIdx]).toBe('75%');
+    expect(noEvidenceCells[evidenceAccColIdx]).toBe('—');
   });
 
   it('renders a judge self-agreement section when provided', () => {

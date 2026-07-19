@@ -1,0 +1,22 @@
+{
+  "id": "fx52-status-transition-blocked-unblocked-running",
+  "title": "Migration job status progression: blocked -> unblocked -> running",
+  "difficulty": "status-transition",
+  "notes": "Tests latest-state-wins without deleting history: the job passes through three distinct states in one session. A good extractor captures the CURRENT state (running, ETA ~2h) as the standing fact and should not leave 'blocked' as the extracted current status.",
+  "turns": [
+    { "role": "user", "text": "The migration job is currently BLOCKED — waiting on the DBA to grant schema-alter permissions." },
+    { "role": "assistant", "text": "Noted, blocked pending DBA approval." },
+    { "role": "user", "text": "Update: DBA granted permissions, so the job is now UNBLOCKED and queued to start." },
+    { "role": "assistant", "text": "Good, unblocked and queued." },
+    { "role": "user", "text": "It's now actually RUNNING — kicked off five minutes ago, ETA 2 hours." },
+    { "role": "assistant", "text": "Got it — running now, ETA about 2 hours from now." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "The migration job's status progressed: BLOCKED (waiting on DBA schema-alter permission) -> UNBLOCKED (permission granted, queued) -> RUNNING (started, ETA ~2 hours)." },
+    { "type": "fact", "text": "The migration job is currently RUNNING with an ETA of about 2 hours." }
+  ],
+  "forbidden_items": [
+    "The migration job is blocked",
+    "The migration job is still blocked on DBA permissions"
+  ]
+}

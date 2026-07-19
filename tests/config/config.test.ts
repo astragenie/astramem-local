@@ -10,7 +10,11 @@ import {
   applyContradictionDetectionGovernance,
   applyExtractionPassBGovernance,
   applyAtomTriageGovernance,
+  applyDupJudgeGovernance,
   applyRetentionGovernance,
+  applyTypeHintsGovernance,
+  resolveExtractionPassBTuning,
+  EXTRACTION_PASS_B_DEFAULTS,
 } from '../../src/config/config.js';
 
 describe('loadConfig', () => {
@@ -132,11 +136,15 @@ describe('loadConfig', () => {
   // full-suite gain 0.4610 -> 0.5549; see Config['distill']['extractionPasses']'s
   // doc comment). A shipped default with no assertion is how it silently
   // drifts back — same rationale as the compaction/extraction provider test
-  // above.
+  // above. (2026-07-18: an uncommitted working-tree edit flipped this default
+  // to 1 AND rewrote this very test to lock the flip in — restored same day;
+  // the assertion below is the drift canary doing its job.)
   it('distill.extractionPasses defaults to 2 (dual-pass, shipped default)', () => {
     const cfg = loadConfig(undefined);
     expect(cfg.distill.extractionPasses).toBe(2);
+    expect(cfg.distill.compaction).toBe('auto');
     expect(defaultConfig().distill.extractionPasses).toBe(2);
+    expect(defaultConfig().distill.compaction).toBe('auto');
   });
 
   it('distill.extractionPasses: 1 can be overridden — an explicit single-pass opt-out round-trips', () => {
@@ -206,12 +214,14 @@ describe('applyFusionGovernance', () => {
     expect(governed.eta).toBe(0.3);
   });
 
-  it('eta=0 (default) never consults eval evidence at all — the gate only fires for eta>0', () => {
+  it('eta=0 (default) never consults eval evidence for eta — the gate only fires for eta>0', () => {
     const search = baseSearch();
     const checkEvalEvidence = vi.fn(() => false);
-    const governed = applyFusionGovernance(search, { checkEvalEvidence });
+    const governed = applyFusionGovernance(search, { checkEvalEvidence, log: () => {} });
     expect(governed.eta).toBe(0);
-    expect(checkEvalEvidence).not.toHaveBeenCalled();
+    // implicitPositive ships enabled (2026-07-18) so ITS gate legitimately
+    // consults — the assertion here is only that eta's never does.
+    expect(checkEvalEvidence).not.toHaveBeenCalledWith('eta');
   });
 
   it('the real (uninjected) evidence lookup also refuses eta>0 today (no evidence recorded yet)', () => {
@@ -252,12 +262,13 @@ describe('applyFusionGovernance', () => {
     expect(governed.theta).toBe(0.3);
   });
 
-  it('theta=0 (default) never consults eval evidence at all — the gate only fires for theta>0', () => {
+  it('theta=0 (default) never consults eval evidence for theta — the gate only fires for theta>0', () => {
     const search = baseSearch();
     const checkEvalEvidence = vi.fn(() => false);
-    const governed = applyFusionGovernance(search, { checkEvalEvidence });
+    const governed = applyFusionGovernance(search, { checkEvalEvidence, log: () => {} });
     expect(governed.theta).toBe(0);
-    expect(checkEvalEvidence).not.toHaveBeenCalled();
+    // See the eta twin above — implicitPositive's own gate may consult.
+    expect(checkEvalEvidence).not.toHaveBeenCalledWith('theta');
   });
 
   it('the real (uninjected) evidence lookup also refuses theta>0 today (no evidence recorded yet)', () => {
@@ -307,28 +318,32 @@ describe('applyFusionGovernance', () => {
       expect(governed.usefulness.implicitPositive.enabled).toBe(true);
     });
 
-    it('enabled:false (default) never consults eval evidence at all — the gate only fires when enabled', () => {
-      const search = baseSearch();
+    it('enabled:false (explicit opt-out) never consults eval evidence at all — the gate only fires when enabled', () => {
+      const search = {
+        ...baseSearch(),
+        usefulness: { implicitPositive: { ...baseSearch().usefulness.implicitPositive, enabled: false } },
+      };
       const checkEvalEvidence = vi.fn(() => false);
       const governed = applyFusionGovernance(search, { checkEvalEvidence });
       expect(governed.usefulness.implicitPositive.enabled).toBe(false);
       expect(checkEvalEvidence).not.toHaveBeenCalled();
     });
 
-    it('the real (uninjected) evidence lookup also refuses enabled:true today (no evidence recorded yet)', () => {
+    // Flipped 2026-07-18: RECORDED_EVAL_EVIDENCE now carries the
+    // implicitPositive entry (recall@10 0.955 / NDCG@10 0.840, tip 6f6c826c)
+    // — the real lookup PERMITS activation. The gate stays armed: the
+    // injected-empty-evidence test above still proves removal of the entry
+    // force-reverts to false.
+    it('the real (uninjected) evidence lookup permits enabled:true (2026-07-18 evidence entry)', () => {
       const search = searchWithImplicitEnabled();
       const governed = applyFusionGovernance(search, { log: () => {} });
-      expect(governed.usefulness.implicitPositive.enabled).toBe(false);
+      expect(governed.usefulness.implicitPositive.enabled).toBe(true);
     });
 
-    it('loadConfig wires the gate in: an override setting enabled:true without evidence comes back false', () => {
-      const cfg = loadConfig({
-        search: {
-          ...defaultConfig().search,
-          usefulness: { implicitPositive: { ...defaultConfig().search.usefulness.implicitPositive, enabled: true } },
-        },
-      } as any);
-      expect(cfg.search.usefulness.implicitPositive.enabled).toBe(false);
+    it('loadConfig honors the shipped enabled:true default now that evidence is recorded', () => {
+      const cfg = loadConfig(undefined);
+      expect(defaultConfig().search.usefulness.implicitPositive.enabled).toBe(true);
+      expect(cfg.search.usefulness.implicitPositive.enabled).toBe(true);
     });
 
     it('does not mutate the caller-supplied search.usefulness object (governed is a fresh copy)', () => {
@@ -348,13 +363,13 @@ describe('applyFusionGovernance', () => {
 describe('applyDurabilityGateGovernance', () => {
   it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
     for (const mode of ['strict', 'lenient', 'off'] as const) {
-      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+      const distill = { durabilityGate: mode, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
       expect(applyDurabilityGateGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to off and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+    const distill = { durabilityGate: 'strcit' as any, chunkConcurrency: 2, extractProfile: 'engineering' as const, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
     const logs: string[] = [];
     const governed = applyDurabilityGateGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -370,6 +385,43 @@ describe('applyDurabilityGateGovernance', () => {
   it('loadConfig leaves a valid distill.durabilityGate untouched', () => {
     const cfg = loadConfig({ distill: { durabilityGate: 'strict' } } as any);
     expect(cfg.distill.durabilityGate).toBe('strict');
+  });
+});
+
+// FEAT-552 sub-scope B: distill.typeHints is a closed 2-value enum, same
+// config.yaml-has-no-schema governance concern as durabilityGate — but
+// UNLIKE durabilityGate (and every other distill.* tier), the documented
+// shipped default is 'on', not 'off', so the invalid-value fallback must
+// restore 'on', not degrade below it.
+describe('applyTypeHintsGovernance', () => {
+  it('leaves each valid mode byte-identical (governance is a guard, not a behavior change)', () => {
+    for (const mode of ['on', 'off'] as const) {
+      const distill = { ...defaultConfig().distill, typeHints: mode };
+      expect(applyTypeHintsGovernance(distill)).toEqual(distill);
+    }
+  });
+
+  it('falls back to "on" (the shipped default, not "off") and logs why on an invalid/typo value', () => {
+    const distill = { ...defaultConfig().distill, typeHints: 'onn' as any };
+    const logs: string[] = [];
+    const governed = applyTypeHintsGovernance(distill, { log: (m) => logs.push(m) });
+
+    expect(governed.typeHints).toBe('on');
+    expect(logs.some(m => m.includes('typeHints') && m.includes('onn'))).toBe(true);
+  });
+
+  it('loadConfig wires applyTypeHintsGovernance in: an invalid override falls back to "on"', () => {
+    const cfg = loadConfig({ distill: { typeHints: 'bogus' as any } } as any);
+    expect(cfg.distill.typeHints).toBe('on');
+  });
+
+  it('loadConfig leaves an explicit "off" override untouched', () => {
+    const cfg = loadConfig({ distill: { typeHints: 'off' } } as any);
+    expect(cfg.distill.typeHints).toBe('off');
+  });
+
+  it('defaultConfig ships typeHints: "on"', () => {
+    expect(defaultConfig().distill.typeHints).toBe('on');
   });
 });
 
@@ -446,6 +498,42 @@ describe('applyExtractionPassBGovernance — pass-B provider override', () => {
     expect(out.extractionPassB!.model).toBe('qwen3:8b');
     expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
   });
+
+  // FEAT-551: evidenceGate governance — same non-fatal drop-and-fall-back
+  // posture as `provider` above, independently validated.
+  it("evidenceGate: 'on' passes through untouched", () => {
+    const input = distillOf({ evidenceGate: 'on' });
+    expect(applyExtractionPassBGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it("evidenceGate: 'off' passes through untouched", () => {
+    const input = distillOf({ evidenceGate: 'off' });
+    expect(applyExtractionPassBGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('evidenceGate unset (no extractionPassB.evidenceGate at all) is unchanged — documented default', () => {
+    const input = distillOf({ provider: 'ollama' });
+    const out = applyExtractionPassBGovernance(input, { log: () => {} });
+    expect(out.extractionPassB!.evidenceGate).toBeUndefined();
+  });
+
+  it('an invalid evidenceGate value is DROPPED with a warning, never fatal', () => {
+    const log = vi.fn();
+    const input = distillOf({ evidenceGate: 'yes' });
+    const out = applyExtractionPassBGovernance(input, { log });
+    expect(out.extractionPassB!.evidenceGate).toBeUndefined();
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('evidenceGate'));
+  });
+
+  it('an invalid provider AND an invalid evidenceGate are both dropped in one pass', () => {
+    const log = vi.fn();
+    const input = distillOf({ provider: 'olama', evidenceGate: 'maybe', model: 'qwen3:8b' });
+    const out = applyExtractionPassBGovernance(input, { log });
+    expect(out.extractionPassB!.provider).toBeUndefined();
+    expect(out.extractionPassB!.evidenceGate).toBeUndefined();
+    expect(out.extractionPassB!.model).toBe('qwen3:8b');
+    expect(log).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('applyAtomTriageGovernance — FEAT-533', () => {
@@ -504,10 +592,76 @@ describe('applyAtomTriageGovernance — FEAT-533', () => {
   });
 });
 
+describe('applyDupJudgeGovernance — FEAT-549', () => {
+  const consolidationOf = (dupJudge: Record<string, unknown> | undefined) =>
+    ({ ...defaultConfig().consolidation, dupJudge }) as any;
+
+  it("shipped default is 'off' — byte-identical, unchanged by governance", () => {
+    const input = defaultConfig().consolidation;
+    expect(input.dupJudge.mode).toBe('off');
+    expect(applyDupJudgeGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('a valid mode + provider override passes through untouched', () => {
+    const input = consolidationOf({ mode: 'dry-run', provider: 'ollama', model: 'qwen2.5:7b', minConfidence: 0.6, batchSize: 10, maxPerRun: 100, maxWallClockMs: 60_000 });
+    expect(applyDupJudgeGovernance(input, { log: () => {} })).toEqual(input);
+  });
+
+  it('missing dupJudge block falls back to defaults (mode: off), never throws', () => {
+    const log = vi.fn();
+    const input = consolidationOf(undefined);
+    const out = applyDupJudgeGovernance(input, { log });
+    expect(out.dupJudge.mode).toBe('off');
+    expect(out.dupJudge.minConfidence).toBe(0.7);
+    expect(out.dupJudge.batchSize).toBe(20);
+    expect(out.dupJudge.maxPerRun).toBe(200);
+    expect(out.dupJudge.maxWallClockMs).toBe(300_000);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('dupJudge is missing'));
+  });
+
+  it("an invalid mode falls back to 'off' with a warning, never fatal", () => {
+    const log = vi.fn();
+    const input = consolidationOf({ mode: 'enable', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+    const out = applyDupJudgeGovernance(input, { log });
+    expect(out.dupJudge.mode).toBe('off');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('enable'));
+  });
+
+  it('an invalid provider is DROPPED with a warning, never fatal — boot survives a typo', () => {
+    const log = vi.fn();
+    const input = consolidationOf({ mode: 'dry-run', provider: 'olama', model: 'qwen2.5:7b', minConfidence: 0.7, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+    const out = applyDupJudgeGovernance(input, { log });
+    expect(out.dupJudge.provider).toBeUndefined();
+    expect(out.dupJudge.model).toBe('qwen2.5:7b');
+    expect(log).toHaveBeenCalledWith(expect.stringContaining('olama'));
+  });
+
+  it('an out-of-range minConfidence falls back to 0.7, logged', () => {
+    for (const bad of [-0.1, 1.1]) {
+      const log = vi.fn();
+      const input = consolidationOf({ mode: 'dry-run', minConfidence: bad, batchSize: 20, maxPerRun: 200, maxWallClockMs: 300_000 });
+      const out = applyDupJudgeGovernance(input, { log });
+      expect(out.dupJudge.minConfidence).toBe(0.7);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('minConfidence'));
+    }
+  });
+
+  it('a non-positive-integer batchSize falls back to 20, logged', () => {
+    for (const bad of [0, -5, 2.5]) {
+      const log = vi.fn();
+      const input = consolidationOf({ mode: 'dry-run', minConfidence: 0.7, batchSize: bad, maxPerRun: 200, maxWallClockMs: 300_000 });
+      const out = applyDupJudgeGovernance(input, { log });
+      expect(out.dupJudge.batchSize).toBe(20);
+      expect(log).toHaveBeenCalledWith(expect.stringContaining('batchSize'));
+    }
+  });
+});
+
 describe('applyCandidateSelectionGovernance', () => {
   const base = {
     autoAcceptThreshold: null,
     contradictionDetection: { mode: 'off' as const, minSimilarity: 0.6, minConfidence: 0.7, maxPerRun: 200, maxWallClockMs: 300_000 },
+    dupJudge: defaultConfig().consolidation.dupJudge,
     candidateSelection: 'full' as const,
     knnK: 30,
     maxCandidatePairsPerRun: null,
@@ -672,13 +826,13 @@ describe('applyRetentionGovernance', () => {
 describe('applyExtractProfileGovernance', () => {
   it('leaves each valid profile byte-identical (governance is a guard, not a behavior change)', () => {
     for (const profile of ['engineering', 'conversational'] as const) {
-      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+      const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: profile, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
       expect(applyExtractProfileGovernance(distill)).toEqual(distill);
     }
   });
 
   it('falls back to engineering and logs why on an invalid/typo value', () => {
-    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage };
+    const distill = { durabilityGate: 'off' as const, chunkConcurrency: 2, extractProfile: 'enginering' as any, compaction: 'auto' as const, maxChunkChars: 3200 , extractionPasses: 1 as const, atomTriage: defaultConfig().distill.atomTriage, gatekeeper: defaultConfig().distill.gatekeeper, typeHints: defaultConfig().distill.typeHints };
     const logs: string[] = [];
     const governed = applyExtractProfileGovernance(distill, { log: (m) => logs.push(m) });
 
@@ -708,5 +862,43 @@ describe('applyExtractProfileGovernance', () => {
 
   it('defaultConfig ships extractProfile: "engineering" (byte-identical pre-FEAT-479 default)', () => {
     expect(defaultConfig().distill.extractProfile).toBe('engineering');
+  });
+});
+
+describe('extraction pass-B clerk tuning (2026-07-18, centrally resolved)', () => {
+  it('resolveExtractionPassBTuning returns the central defaults when config is unset', () => {
+    const r = resolveExtractionPassBTuning(undefined);
+    expect(r).toEqual(EXTRACTION_PASS_B_DEFAULTS);
+    const r2 = resolveExtractionPassBTuning(defaultConfig().distill);
+    expect(r2).toEqual(EXTRACTION_PASS_B_DEFAULTS);
+  });
+
+  it('config overrides win per-field, others keep the central default', () => {
+    const distill = { ...defaultConfig().distill, extractionPassB: { sweepOnlyBelowAtoms: 0, maxTokens: 900 } };
+    const r = resolveExtractionPassBTuning(distill);
+    expect(r.sweepOnlyBelowAtoms).toBe(0);
+    expect(r.maxTokens).toBe(900);
+    expect(r.numCtxCap).toBe(EXTRACTION_PASS_B_DEFAULTS.numCtxCap);
+  });
+
+  it('governance drops non-numeric / negative tuning values (non-fatal), falling back to defaults', () => {
+    const warnings: string[] = [];
+    const distill = applyExtractionPassBGovernance(
+      { ...defaultConfig().distill, extractionPassB: { sweepOnlyBelowAtoms: -3, maxTokens: 'lots' as unknown as number, numCtxCap: 8192 } },
+      { log: (m) => warnings.push(m) },
+    );
+    expect(distill.extractionPassB?.sweepOnlyBelowAtoms).toBeUndefined();
+    expect(distill.extractionPassB?.maxTokens).toBeUndefined();
+    expect(distill.extractionPassB?.numCtxCap).toBe(8192);
+    expect(warnings.some((w) => w.includes('sweepOnlyBelowAtoms'))).toBe(true);
+    expect(warnings.some((w) => w.includes('maxTokens'))).toBe(true);
+  });
+});
+
+describe("atomTriage 'repair-only' mode (2026-07-18)", () => {
+  it('governance accepts repair-only as a valid mode (no fallback to off)', () => {
+    const distill = { ...defaultConfig().distill, atomTriage: { ...defaultConfig().distill.atomTriage, mode: 'repair-only' as const } };
+    const out = applyAtomTriageGovernance(distill, { log: () => { throw new Error('should not warn'); } });
+    expect(out.atomTriage.mode).toBe('repair-only');
   });
 });

@@ -1,0 +1,24 @@
+{
+  "recordedAt": "2026-07-18T08:45:24.389Z",
+  "gitSha": "8a5f7ecc1047a758a45e99a0ed761a8f0082b2b4",
+  "gitBranch": "chore/bench-onnx-embed",
+  "gitDirty": true,
+  "ollamaEnv": {
+    "OLLAMA_FLASH_ATTENTION": "1",
+    "OLLAMA_KEEP_ALIVE": "-1",
+    "OLLAMA_KV_CACHE_TYPE": "q8_0",
+    "OLLAMA_MAX_LOADED_MODELS": "2",
+    "OLLAMA_NUM_PARALLEL": "2"
+  },
+  "ollamaEnvNote": "reflects the bench process env, not necessarily the Ollama server process env if it runs as a separate service — treat absence as \"unrecorded\", not \"unset\"",
+  "modelsUnderTest": [
+    "qwen2.5:7b"
+  ],
+  "compactionModel": "ollama/qwen3.5:4b",
+  "runsPerModel": 1,
+  "judgeReasoningEffort": "low",
+  "fixtureCount": 5,
+  "fixtureSetHash": "ebb42c39a63b7f32b4f52d24b5b4d8fc81417fed17ce989f81a9084160ca9434",
+  "finishedAt": "2026-07-18T08:50:31.639Z",
+  "durationMs": 307251
+}

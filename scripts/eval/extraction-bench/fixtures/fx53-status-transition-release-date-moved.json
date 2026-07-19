@@ -1,0 +1,22 @@
+{
+  "id": "fx53-status-transition-release-date-moved",
+  "title": "Release date correction (Friday -> Wednesday) with a legitimate later Friday mention",
+  "difficulty": "status-transition",
+  "notes": "Tests the AC-6 adversarial shape directly: the superseded date ('Friday') is forbidden as v3's release date, but a LATER, legitimately different atom mentions 'Friday' again (the FOLLOWING release's normal cadence slot) — the mechanical matcher must not blanket-reject every atom containing the word Friday.",
+  "turns": [
+    { "role": "user", "text": "Just so it's on record — the v3 release was originally targeted for this Friday." },
+    { "role": "assistant", "text": "Friday it is, noted." },
+    { "role": "user", "text": "Change of plans: we're slipping it to next Wednesday instead, QA found a blocker in late Thursday review." },
+    { "role": "assistant", "text": "Updated — release is now next Wednesday, not Friday, due to a QA blocker." },
+    { "role": "user", "text": "Right, and just to be doubly clear for anyone reading this later: Wednesday is the real date now, Friday is dead. Though note, the release AFTER this one is still planned for its normal Friday slot as usual." },
+    { "role": "assistant", "text": "Understood: this release moves to Wednesday; the release cadence resumes its normal Friday slot for the release after that." }
+  ],
+  "gold_atoms": [
+    { "type": "fact", "text": "The v3 release date moved from this Friday to next Wednesday, due to a QA blocker found in late Thursday review." },
+    { "type": "fact", "text": "The release after v3 is still planned for its normal Friday slot in the release cadence." }
+  ],
+  "forbidden_items": [
+    "The v3 release is scheduled for Friday",
+    "v3 release is set for this Friday"
+  ]
+}

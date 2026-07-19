@@ -34,6 +34,19 @@ export interface GoldFixture {
   notes?: string;
   turns: FixtureTurn[];
   gold_atoms: GoldAtom[];
+  /**
+   * FEAT-542 (additive, optional — every pre-existing fixture omits it and
+   * loads unchanged): claims that must NOT be extracted as an active/standing
+   * fact — the superseded value of a corrected number/date, or the
+   * positive-polarity restatement of an explicitly negated fact. Scored
+   * MECHANICALLY (normalized string/substring match against extracted atom
+   * text — see lib/mechanical-checks.ts), never via judge.ts's LLM prompt
+   * (AC-2 decision: a deterministic match is judge-free and zero-cost,
+   * avoiding coupling a new failure mode to judge non-determinism). Any
+   * extracted atom matching an entry here counts as a precision failure,
+   * independent of the LLM judge's own verdict for that atom.
+   */
+  forbidden_items?: string[];
 }
 
 export function loadFixtures(dir: string = FIXTURES_DIR): GoldFixture[] {
@@ -43,6 +56,9 @@ export function loadFixtures(dir: string = FIXTURES_DIR): GoldFixture[] {
     const parsed = JSON.parse(raw) as GoldFixture;
     if (!parsed.id || !Array.isArray(parsed.turns) || !Array.isArray(parsed.gold_atoms)) {
       throw new Error(`fixture ${f}: missing required fields (id, turns[], gold_atoms[])`);
+    }
+    if (parsed.forbidden_items !== undefined && !Array.isArray(parsed.forbidden_items)) {
+      throw new Error(`fixture ${f}: forbidden_items, when present, must be a string array`);
     }
     return parsed;
   });
