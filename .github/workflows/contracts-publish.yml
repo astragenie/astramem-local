@@ -82,7 +82,7 @@ jobs:
       # node 22 matches the repo's engines floor (>=22); registry-url writes the
       # npmjs auth line into .npmrc. No `scope:` — publishConfig.registry in
       # contracts/package.json already targets npmjs, mirroring publish.yml.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'

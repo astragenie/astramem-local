@@ -67,7 +67,7 @@ jobs:
       # node 22 matches the repo's engines floor; registry-url writes the
       # npmjs auth line into .npmrc. No `scope:` — publishConfig.registry in
       # audio-addon/package.json already targets npmjs.
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
