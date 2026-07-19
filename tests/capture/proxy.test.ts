@@ -735,6 +735,87 @@ describe('createProxyCaptureTee', () => {
     expect(second?.turns).toEqual([{ role: 'assistant', text: 'a different second answer' }]);
   });
 
+  it('FEAT-478 AC-1: a too-short assistant reply gates out the WHOLE exchange, not just the reply', async () => {
+    const dir = freshDataDir();
+    // minChars gates the assistant reply ("gzip.") but not the longer user
+    // question — exactly the FEAT-478 bug report's own repro shape.
+    const askGate = { minChars: 8, maxBytes: 1_000_000, dedupWindow: 20 };
+    const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: askGate });
+    const sink = createTee();
+
+    sink('req', { chunk: Buffer.from(chatRequestBody('which compression codec does the ingest spool use')) });
+    sink('req', { end: true });
+    sink('res', { chunk: Buffer.from(chatResponseBodyNonStreaming('gzip.')) }); // 5 chars < minChars 8
+    sink('res', { end: true });
+    await new Promise((r) => setImmediate(r));
+
+    // Option A: an exchange is only captured when its answer survives. The
+    // long user question surviving alone is an orphaned prompt — nothing
+    // spools at all, not just the gated reply.
+    expect(listSpoolFiles(dir)).toHaveLength(0);
+  });
+
+  it('FEAT-478 AC-3 (regression guard): a terse-but-VALID assistant reply is NOT suppressed — both turns spool', async () => {
+    const dir = freshDataDir();
+    // Same minChars floor as AC-1 above, but the reply is long enough to
+    // survive the gate on its own — good, terse data must not be collateral
+    // damage from the AC-1 fix.
+    const askGate = { minChars: 8, maxBytes: 1_000_000, dedupWindow: 20 };
+    const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: askGate });
+    const sink = createTee();
+
+    sink('req', { chunk: Buffer.from(chatRequestBody('which compression codec does the ingest spool use')) });
+    sink('req', { end: true });
+    sink('res', { chunk: Buffer.from(chatResponseBodyNonStreaming('gzip, via node:zlib.')) }); // >= 8 chars, survives the gate
+    sink('res', { end: true });
+    await new Promise((r) => setImmediate(r));
+
+    const files = listSpoolFiles(dir);
+    expect(files).toHaveLength(1);
+    const envelope = JSON.parse(readFileSync(files[0]!.path, 'utf8')) as ProxyCaptureEnvelope;
+    expect(envelope.turns).toEqual([
+      { role: 'user', text: 'which compression codec does the ingest spool use' },
+      { role: 'assistant', text: 'gzip, via node:zlib.' },
+    ]);
+  });
+
+  it('FEAT-478 AC-4: a discarded exchange does NOT poison the dedup window — a later identical question WITH a good answer still spools', async () => {
+    const dir = freshDataDir();
+    const askGate = { minChars: 8, maxBytes: 1_000_000, dedupWindow: 20 };
+    const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: askGate });
+
+    // First exchange: the reply gates out (too short) so the WHOLE exchange
+    // is discarded (AC-1). Under the pre-fix code, the user turn's hash
+    // would already have been recorded into recentHashes during gating,
+    // even though this exchange never spools.
+    const sink1 = createTee();
+    sink1('req', { chunk: Buffer.from(chatRequestBody('what port does the daemon default to')) });
+    sink1('req', { end: true });
+    sink1('res', { chunk: Buffer.from(chatResponseBodyNonStreaming('7777.')) }); // 5 chars < minChars 8
+    sink1('res', { end: true });
+    await new Promise((r) => setImmediate(r));
+    expect(listSpoolFiles(dir)).toHaveLength(0);
+
+    // Second exchange: the SAME question, this time with a good, long-enough
+    // answer. If the first exchange's discard had still recorded the user
+    // turn's hash (the poisoning bug), this identical question would now be
+    // deduped away and the answer would spool alone, orphaned. It must not.
+    const sink2 = createTee();
+    sink2('req', { chunk: Buffer.from(chatRequestBody('what port does the daemon default to')) });
+    sink2('req', { end: true });
+    sink2('res', { chunk: Buffer.from(chatResponseBodyNonStreaming('7777, unless overridden in config.yaml.')) });
+    sink2('res', { end: true });
+    await new Promise((r) => setImmediate(r));
+
+    const files = listSpoolFiles(dir);
+    expect(files).toHaveLength(1);
+    const envelope = JSON.parse(readFileSync(files[0]!.path, 'utf8')) as ProxyCaptureEnvelope;
+    expect(envelope.turns).toEqual([
+      { role: 'user', text: 'what port does the daemon default to' },
+      { role: 'assistant', text: '7777, unless overridden in config.yaml.' },
+    ]);
+  });
+
   it('fails silent on a malformed body — never throws from the sink, nothing spooled', async () => {
     const dir = freshDataDir();
     const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });

@@ -172,14 +172,15 @@ describe('proxy_usage — end-to-end from capture tee through spool-drain to tra
     db.close();
   });
 
-  it('a response shape extractUsageMetadata cannot recognize stores NULL in proxy_usage_json — byte-identical to pre-slice behavior for every other envelope field', async () => {
+  it('a response shape neither extractResponseTurn nor extractUsageMetadata can recognize: nothing spools at all (FEAT-478 Option A)', async () => {
     const dir = freshDataDir();
     const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
     const sink = createTee();
 
-    // The request still yields a real user turn (so the exchange spools at
-    // all), but the response body matches neither provider's shape —
-    // extractUsageMetadata / extractResponseTurn both return null on it.
+    // The request still yields a real user turn, but the response body
+    // matches neither provider's shape — extractUsageMetadata AND
+    // extractResponseTurn both return null on it, so no assistant turn is
+    // ever produced.
     sink('req', { chunk: Buffer.from(anthropicRequest()) });
     sink('req', { end: true });
     sink('res', { chunk: Buffer.from(JSON.stringify({ not: 'a recognized provider shape' })) });
@@ -189,12 +190,19 @@ describe('proxy_usage — end-to-end from capture tee through spool-drain to tra
     const db = makeDb();
     const config = defaultConfig();
     const result = drainIngestSpool(db, config, dir);
-    expect(result).toEqual({ drained: 1, quarantined: 0, pending: 0 });
+
+    // FEAT-478 Option A: the exchange, not the turn, is the unit of capture.
+    // Before this slice, the surviving user turn spooled alone with
+    // proxy_usage_json NULL — an orphaned question with no answer, which is
+    // strictly negative value (the exact failure mode FEAT-458 S5/S7
+    // eliminated). With no assistant turn surviving, the whole exchange is
+    // now discarded, so nothing reaches the spool or the DB at all.
+    expect(result).toEqual({ drained: 0, quarantined: 0, pending: 0 });
 
     const row = db.prepare(
       `SELECT proxy_usage_json FROM transcripts ORDER BY ingested_at DESC LIMIT 1`,
-    ).get() as { proxy_usage_json: string | null };
-    expect(row.proxy_usage_json).toBeNull();
+    ).get() as { proxy_usage_json: string | null } | undefined;
+    expect(row).toBeUndefined();
 
     db.close();
   });

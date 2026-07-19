@@ -351,7 +351,7 @@ describe('createProxyCaptureTee — real compressed bytes end to end (the exact 
     ]);
   });
 
-  it('a corrupt/truncated gzip response fails silently: the user turn still captures, no throw, no assistant turn fabricated', async () => {
+  it('a corrupt/truncated gzip response fails silently: nothing spools (FEAT-478 Option A), no throw', async () => {
     const dir = freshDataDir();
     const createTee = createProxyCaptureTee({ dataDir: dir, clientVersion: '9.9.9', relevanceGate: GATE_OPTS });
     const sink = createTee();
@@ -365,13 +365,14 @@ describe('createProxyCaptureTee — real compressed bytes end to end (the exact 
     await new Promise((r) => setImmediate(r));
     await new Promise((r) => setTimeout(r, 10));
 
-    const files = listSpoolFiles(dir);
-    expect(files).toHaveLength(1);
-    const envelope = JSON.parse(readFileSync(files[0]!.path, 'utf8')) as ProxyCaptureEnvelope;
-    // Only the user turn — the corrupted response never fabricates an
-    // assistant turn from garbage bytes, and capturing the user side alone
-    // never throws or blocks.
-    expect(envelope.turns).toEqual([{ role: 'user', text: 'this response will arrive broken' }]);
+    // FEAT-478 Option A: the exchange, not the turn, is the unit of capture.
+    // Before this slice, the surviving user turn spooled alone — an
+    // orphaned question with no answer, which is strictly negative value
+    // (the exact failure mode FEAT-458 S5/S7 eliminated). The corrupted
+    // response never fabricates an assistant turn, so there is no answer to
+    // pair with the question, and the whole exchange is now discarded
+    // instead of spooling the question by itself.
+    expect(listSpoolFiles(dir)).toHaveLength(0);
   });
 
   it('decompression runs deferred (setImmediate), never synchronously inside the sink callback — same invariant as plaintext capture', () => {
