@@ -37,10 +37,30 @@ import { waitForHealth, waitForVersion } from './wait-health.js';
  * Budget for polling /version AFTER /health is already up. Dedicated (not the
  * health budget) so a genuine version mismatch — a stale shadow install or a
  * corrupt release dir that will NEVER report the expected version — still fails
- * reasonably fast instead of burning the full health budget, while a transient
- * busy-event-loop window right after boot is ridden out. See waitForVersion.
+ * eventually instead of hanging forever, while a transient busy-event-loop
+ * window right after boot is ridden out. See waitForVersion.
+ *
+ * Raised 30s → 90s (2026-07-19): the fixed 30s false-failed a legitimately
+ * busy-but-healthy boot on a large-store box — the backlog-drain that saturates
+ * the loop past the HEALTH budget (see healthTimeoutMs below, already 90s)
+ * saturates /version for just as long, and the windowless-launch indirection
+ * (wscript → cmd → launch.cjs, feat/windowless-daemon) adds cold-start latency
+ * on top. Confirmed live: /health passed at 90s while /version timed out at 30s
+ * and rolled back, though the same build served /version fine once the backlog
+ * drained. Trade-off: a genuine version mismatch (rare — corrupt/stale release)
+ * now takes up to the full budget to fail because waitForVersion keeps polling
+ * a wrong-version response rather than fast-failing it; acceptable vs
+ * false-failing every busy cold-start. Env-configurable like the health budget.
  */
-const VERSION_VERIFY_BUDGET_MS = 30_000;
+const DEFAULT_VERSION_VERIFY_BUDGET_MS = 90_000;
+export function versionVerifyBudgetMs(): number {
+  const raw = process.env.ASTRA_MEMORY_REINSTALL_VERSION_TIMEOUT_MS;
+  if (raw) {
+    const n = Number(raw);
+    if (Number.isFinite(n) && n > 0) return n;
+  }
+  return DEFAULT_VERSION_VERIFY_BUDGET_MS;
+}
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import {
   materializeRelease,
@@ -322,7 +342,7 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       detail: `/health not responding on port ${port} within ${healthBudgetMs / 1000}s — repoint aborted (${restoreDetail})`,
     });
   } else {
-    const versionResult = await waitForVersion(port, releaseManifest.pkgversion, VERSION_VERIFY_BUDGET_MS);
+    const versionResult = await waitForVersion(port, releaseManifest.pkgversion, versionVerifyBudgetMs());
     if (versionResult.ok) {
       steps.push({
         step: 'verify-version',
@@ -352,7 +372,7 @@ export async function reinstallCommand(args: string[]): Promise<void> {
       steps.push({
         step: 'verify-version',
         ok: false,
-        detail: `/version did not respond on port ${port} within ${VERSION_VERIFY_BUDGET_MS / 1000}s (health was up) — repoint aborted (${restoreDetail}).`,
+        detail: `/version did not respond on port ${port} within ${versionVerifyBudgetMs() / 1000}s (health was up) — repoint aborted (${restoreDetail}).`,
       });
     }
   }
@@ -532,7 +552,7 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
     return steps;
   }
 
-  const versionResult = await waitForVersion(port, expectedVersion, VERSION_VERIFY_BUDGET_MS);
+  const versionResult = await waitForVersion(port, expectedVersion, versionVerifyBudgetMs());
   if (versionResult.ok) {
     steps.push({
       step: 'verify-version',
@@ -554,7 +574,7 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
     steps.push({
       step: 'verify-version',
       ok: false,
-      detail: `/version did not respond on port ${port} within ${VERSION_VERIFY_BUDGET_MS / 1000}s (health was up) — repoint aborted (${restoreDetail}).`,
+      detail: `/version did not respond on port ${port} within ${versionVerifyBudgetMs() / 1000}s (health was up) — repoint aborted (${restoreDetail}).`,
     });
   }
 

@@ -79,7 +79,21 @@ describe('SchtasksAdapter', () => {
       expect(xml).toContain('<ExecutionTimeLimit>PT0S</ExecutionTimeLimit>');
       expect(xml).toContain('<Interval>PT5M</Interval>');
       expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
-      expect(xml).toContain('serve --port 7777');
+    });
+
+    it('windowless daemon (D1 slice 6): Command is wscript.exe, Arguments hidden-launch the VBS — never the raw execPath/port', async () => {
+      await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
+      const xmlWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/AstraMemoryD\.xml$/i),
+      );
+      const buf = xmlWrite![1] as Buffer;
+      const xml = buf.subarray(2).toString('utf16le');
+      expect(xml).toMatch(/<Command>[^<]*wscript\.exe<\/Command>/i);
+      expect(xml).toMatch(/<Arguments>\/\/nologo \/\/B &quot;[^&]*astramemd-hidden\.vbs&quot;<\/Arguments>/i);
+      // The raw execPath this test passed in must NOT leak into the
+      // registration — every tier routes through the hidden wrapper only.
+      expect(xml).not.toContain('C:\\app\\dist\\cli\\index.js');
+      expect(xml).not.toContain('serve --port');
     });
 
     it('does not write a Startup shortcut on XML success', async () => {
@@ -118,9 +132,23 @@ describe('SchtasksAdapter', () => {
       expect(tierACall).toBeTruthy();
       expect(tierACall).toMatch(/\/sc\s+onlogon/i);
       expect(tierACall).toContain(TASK_NAME);
-      expect(tierACall).toContain('7777');
       expect(tierACall).toMatch(/\/RL\s+LIMITED/i);
       expect(tierACall?.toUpperCase()).not.toContain('/RU');
+    });
+
+    it('windowless daemon (D1 slice 6): the /tr value hidden-launches the VBS via wscript.exe, not the raw execPath/port', async () => {
+      failMatching(/\/xml/i);
+      await adapter.install('node C:\\app\\dist\\cli\\index.js', 7777);
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      const tierACall = cmds.find(
+        c => c.toLowerCase().includes('/create') && !c.toLowerCase().includes('/xml'),
+      );
+      expect(tierACall).toMatch(/wscript\.exe/i);
+      expect(tierACall).toContain('//nologo');
+      expect(tierACall).toContain('//B');
+      expect(tierACall).toMatch(/astramemd-hidden\.vbs/i);
+      expect(tierACall).not.toContain('C:\\app\\dist\\cli\\index.js');
+      expect(tierACall).not.toContain('serve --port');
     });
   });
 
@@ -413,6 +441,53 @@ describe('SchtasksAdapter', () => {
   });
 
   // ---------------------------------------------------------------------------
+  // installBackupTimer() — windowless daemon (D1 slice 6)
+  // ---------------------------------------------------------------------------
+
+  describe('installBackupTimer', () => {
+    const BACKUP_TASK_NAME = 'AstraMemoryDBackup';
+
+    it('registers via /xml, Command is wscript.exe hidden-launching a dedicated backup VBS', async () => {
+      await adapter.installBackupTimer('"C:\\nodejs\\node.exe" "C:\\app\\dist\\cli\\index.js"', 7);
+      const xmlWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/AstraMemoryDBackup\.xml$/i),
+      );
+      expect(xmlWrite).toBeTruthy();
+      const buf = xmlWrite![1] as Buffer;
+      const xml = buf.subarray(2).toString('utf16le');
+      expect(xml).toContain('<CalendarTrigger>'); // sanity: still the daily-trigger form
+      expect(xml).toMatch(/<Command>[^<]*wscript\.exe<\/Command>/i);
+      expect(xml).toMatch(/astramemd-backup-hidden\.vbs/i);
+      expect(xml).not.toContain('backup --keep 7');
+    });
+
+    it('writes a dedicated hidden-launch VBS for the backup command, distinct from the daemon/watchdog wrappers', async () => {
+      await adapter.installBackupTimer('"C:\\nodejs\\node.exe" "C:\\app\\dist\\cli\\index.js"', 7);
+      const vbsWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/astramemd-backup-hidden\.vbs$/i),
+      );
+      expect(vbsWrite).toBeTruthy();
+      const content = vbsWrite![1] as string;
+      expect(content).toContain('CreateObject("WScript.Shell").Run');
+      expect(content).toMatch(/,\s*0,\s*True/);
+      expect(content).toContain('backup --keep 7');
+    });
+
+    it('CLI fallback tr also hidden-launches via wscript.exe, not the raw execPath', async () => {
+      failMatching(/\/xml/i);
+      await adapter.installBackupTimer('"C:\\nodejs\\node.exe" "C:\\app\\dist\\cli\\index.js"', 7);
+      const cmds = execMock.mock.calls.map(c => c[0] as string);
+      const fallbackCall = cmds.find(
+        c => c.toLowerCase().includes('/create') && !c.toLowerCase().includes('/xml'),
+      );
+      expect(fallbackCall).toBeTruthy();
+      expect(fallbackCall).toMatch(/wscript\.exe/i);
+      expect(fallbackCall).toMatch(/astramemd-backup-hidden\.vbs/i);
+      expect(fallbackCall).not.toContain('backup --keep 7');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
   // installWatchdogTimer() / uninstallWatchdogTimer() — issue #206
   // ---------------------------------------------------------------------------
 
@@ -432,7 +507,7 @@ describe('SchtasksAdapter', () => {
       expect(createCall).toMatch(/\/f/i);
     });
 
-    it('writes XML with a repetition interval derived from intervalSec and the watchdog-probe command', async () => {
+    it('writes XML with a repetition interval derived from intervalSec, hidden-launched via wscript.exe', async () => {
       await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
       const xmlWrite = fsMock.writeFileSync.mock.calls.find(
         ([p]) => String(p).match(/AstraMemoryDWatchdog\.xml$/i),
@@ -441,8 +516,23 @@ describe('SchtasksAdapter', () => {
       const buf = xmlWrite![1] as Buffer;
       const xml = buf.subarray(2).toString('utf16le');
       expect(xml).toContain('<Interval>PT180S</Interval>');
-      expect(xml).toContain('service watchdog-probe');
       expect(xml).toContain('<MultipleInstancesPolicy>IgnoreNew</MultipleInstancesPolicy>');
+      // Windowless daemon (D1 slice 6): the raw watchdog-probe command lives
+      // inside the hidden-launch VBS now, not directly in the task XML.
+      expect(xml).toMatch(/<Command>[^<]*wscript\.exe<\/Command>/i);
+      expect(xml).not.toContain('service watchdog-probe');
+    });
+
+    it('windowless daemon (D1 slice 6): writes a dedicated hidden-launch VBS for the watchdog probe, distinct from the daemon\'s own', async () => {
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      const vbsWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/astramemd-watchdog-hidden\.vbs$/i),
+      );
+      expect(vbsWrite).toBeTruthy();
+      const content = vbsWrite![1] as string;
+      expect(content).toContain('CreateObject("WScript.Shell").Run');
+      expect(content).toMatch(/,\s*0,\s*True/);
+      expect(content).toContain('node C:\\app\\dist\\cli\\index.js service watchdog-probe');
     });
 
     it('issue #370: also registers a TimeTrigger so the probe repetition arms without waiting for the next logon', async () => {

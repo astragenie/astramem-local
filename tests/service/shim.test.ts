@@ -2,8 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { writeShim, shimPaths, writePointer, exitHistoryPaths } from '../../src/service/shim.js';
+import { join, dirname } from 'node:path';
+import { writeShim, shimPaths, writePointer, exitHistoryPaths, buildHiddenVbs } from '../../src/service/shim.js';
 import { buildTaskXml } from '../../src/service/task-xml.js';
 
 describe('service shim', () => {
@@ -201,6 +201,84 @@ describe('service shim — cross-platform (FEAT-443 SLICE-1)', () => {
     expect(existsSync(posixPaths.cmdPath)).toBe(true);
     const cmd = readFileSync(posixPaths.cmdPath, 'utf8');
     expect(cmd.startsWith('#!/bin/sh\n')).toBe(true);
+  });
+});
+
+describe('service shim — windowless daemon VBS wrapper (D1 slice 6)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'astra-shim-vbs-'));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('shimPaths() exposes a vbsPath sibling of cmdPath', () => {
+    const paths = shimPaths(dir, 'win32');
+    expect(paths.vbsPath.endsWith('astramemd-hidden.vbs')).toBe(true);
+    expect(dirname(paths.vbsPath)).toBe(paths.binDir);
+  });
+
+  it('writeShim (win32) writes a hidden-launch VBS alongside the .cmd', () => {
+    const paths = shimPaths(dir, 'win32');
+    writeShim({ nodeBin: 'C:\\nodejs\\node.exe', entryJs: 'C:\\repo\\dist\\cli\\index.js', port: 7777 }, paths);
+    expect(existsSync(paths.vbsPath)).toBe(true);
+    const vbs = readFileSync(paths.vbsPath, 'utf8');
+    // Hidden (windowStyle=0) and BLOCKING (bWaitOnReturn=True) — blocking is
+    // load-bearing (see buildHiddenVbs's doc comment): a fire-and-forget Run
+    // would let Task Scheduler think the run finished while the daemon kept
+    // going headless, invisible to the keepalive/hang-watchdog model.
+    expect(vbs).toContain('CreateObject("WScript.Shell").Run');
+    expect(vbs).toMatch(/,\s*0,\s*True/);
+    // References the STABLE .cmd path (never a release path) — upgrades
+    // repoint current.json only, so the vbs is correct without rewriting.
+    expect(vbs).toContain(paths.cmdPath);
+    // Decorative parity with the pre-existing schtasks convention (the .cmd
+    // itself ignores all argv — see buildWindowsCmd — the real port comes
+    // from current.json via launch.cjs).
+    expect(vbs).toContain('serve --port 7777');
+  });
+
+  it('writeShim (posix) does NOT write a vbs — linux/darwin never had a console to hide', () => {
+    const paths = shimPaths(dir, 'linux');
+    writeShim({ nodeBin: '/usr/bin/node', entryJs: '/opt/astramem/dist/cli/index.js', port: 7777 }, paths);
+    expect(existsSync(paths.vbsPath)).toBe(false);
+  });
+
+  it('writeShim rewrites the vbs on every call (idempotent, tracks the current pointer)', () => {
+    const paths = shimPaths(dir, 'win32');
+    writeShim({ nodeBin: 'node', entryJs: 'a.js', port: 1111 }, paths);
+    const first = readFileSync(paths.vbsPath, 'utf8');
+    expect(first).toContain('serve --port 1111');
+
+    writeShim({ nodeBin: 'node', entryJs: 'b.js', port: 2222 }, paths);
+    const second = readFileSync(paths.vbsPath, 'utf8');
+    expect(second).toContain('serve --port 2222');
+    expect(second).not.toContain('serve --port 1111');
+  });
+
+  it('buildHiddenVbs escapes an embedded double-quote by DOUBLING it (VBScript rule), not backslash-escaping', () => {
+    // VBScript string literals have no backslash-escape syntax — an
+    // embedded `"` must become `""`. A naive `\"` would land a literal
+    // backslash into the running command line instead of terminating and
+    // reopening the VBS string.
+    const vbs = buildHiddenVbs('"C:\\Program Files\\astramemd.cmd" serve --port 7777');
+    expect(vbs).toContain('""C:\\Program Files\\astramemd.cmd"" serve --port 7777');
+    expect(vbs).not.toContain('\\"C:\\Program Files');
+  });
+
+  it('buildHiddenVbs round-trips a stable-shim path containing spaces (Program Files-style install)', () => {
+    const cmdPath = 'C:\\Program Files\\Astramem\\bin\\astramemd.cmd';
+    const commandLine = `"${cmdPath}" serve --port 7777`;
+    const vbs = buildHiddenVbs(commandLine);
+    // The whole Run(...) first argument is one VBS string literal — verify
+    // it parses back to exactly commandLine by reversing the doubling rule.
+    const m = vbs.match(/\.Run "(.*)", 0, True/);
+    expect(m).toBeTruthy();
+    const literal = m![1]!.replace(/""/g, '"');
+    expect(literal).toBe(commandLine);
   });
 });
 

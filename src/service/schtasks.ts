@@ -3,6 +3,7 @@ import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildTaskXml, buildDailyTaskXml } from './task-xml.js';
+import { shimPaths, buildHiddenVbs } from './shim.js';
 import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
 // Exported (not just local consts) so the "Task repetition dormancy" doctor
@@ -111,6 +112,68 @@ export function splitCommand(execPath: string): { command: string; args: string 
   return { command: trimmed.slice(0, sp), args: trimmed.slice(sp + 1).trim() };
 }
 
+/**
+ * Absolute path to the Windows System32 dir — resolved from the environment
+ * rather than hardcoded so a relocated Windows install still resolves
+ * correctly. Falls back to the near-universal default.
+ */
+function windowsSystemRoot(): string {
+  return process.env['SystemRoot'] || process.env['WINDIR'] || 'C:\\Windows';
+}
+
+/**
+ * Absolute path to wscript.exe — the windowless script host used to hide
+ * the daemon/watchdog/backup tasks' console (D1 "windowless daemon" slice
+ * 6). Resolved to an absolute path rather than the bare `wscript.exe` name:
+ * Scheduled Task Exec/Command values are passed straight to CreateProcess,
+ * not through cmd.exe, so PATH-based resolution is not guaranteed the way
+ * it would be from an interactive shell.
+ */
+function wscriptPath(): string {
+  return join(windowsSystemRoot(), 'System32', 'wscript.exe');
+}
+
+/**
+ * Every registration tier for the daemon task (XML, CLI Tier A, CLI Tier B)
+ * must invoke the daemon via `wscript.exe //nologo //B "<vbsPath>"` — never
+ * the `.cmd`/execPath directly — or the conhost console-flash this feature
+ * exists to close regresses on whichever tier is skipped. `vbsPath` is
+ * resolved through `shimPaths()` (the single source of truth for the
+ * standard install layout, shim.ts) rather than by string-parsing the
+ * caller's `execPath`: production always passes the stable `.cmd` path
+ * (install-flow.ts), but this keeps the wrapper correct regardless of what
+ * shape a caller's `execPath` happens to take (some unit tests exercise
+ * `install()` in isolation with a synthetic `node ...` string that was
+ * never a real shim path). `//nologo` suppresses the WScript banner;
+ * `//B` is batch mode — no error dialog boxes, matching this task's
+ * headless/unattended nature.
+ */
+function hiddenLaunchExec(): { command: string; args: string } {
+  const { vbsPath } = shimPaths();
+  return { command: wscriptPath(), args: `//nologo //B "${vbsPath}"` };
+}
+
+/**
+ * Writes (or overwrites) a hidden-launch VBS wrapper for a NON-daemon
+ * scheduled task (backup timer, hang-watchdog probe) at a stable sibling
+ * path next to the daemon's own shim trio (`shimPaths().binDir`), then
+ * returns the `wscript.exe` Command/Arguments pair that tier should use as
+ * its real Exec. Rewritten on every `installBackupTimer`/
+ * `installWatchdogTimer` call (install/reinstall re-registers these tasks
+ * every time — see install-flow.ts's header) since `commandLine` itself can
+ * change per-release (these two tasks bake `build.rawExecPath` directly,
+ * unlike the daemon task's stable-pointer indirection — see
+ * `install-flow.ts`'s `ResolvedBuild` doc comment) — never left pointing at
+ * a stale command line from a prior release.
+ */
+function installHiddenWrapper(filename: string, commandLine: string): { command: string; args: string } {
+  const { binDir } = shimPaths();
+  const vbsPath = join(binDir, filename);
+  mkdirSync(binDir, { recursive: true });
+  writeFileSync(vbsPath, buildHiddenVbs(commandLine), 'utf8');
+  return { command: wscriptPath(), args: `//nologo //B "${vbsPath}"` };
+}
+
 /** Current user's task-principal id: DOMAIN\user from whoami, else USERNAME. */
 async function resolveUserId(): Promise<string> {
   try {
@@ -134,7 +197,13 @@ export class SchtasksAdapter implements ServiceAdapter {
   readonly platform = 'win32' as const;
 
   async install(execPath: string, port: number): Promise<InstallResult> {
-    const tr = quoteForSchtasks(`${execPath} serve --port ${port}`);
+    // Windowless daemon (D1 slice 6): every tier below runs the daemon via
+    // wscript.exe hidden-launching the VBS shim.ts's writeShim() writes
+    // alongside the .cmd (see hiddenLaunchExec's doc comment) — the raw
+    // `execPath`/`port` are no longer part of the actual Exec/Command line;
+    // `port` is still threaded through the VBS content itself by writeShim.
+    const { command: hiddenCommand, args: hiddenArgs } = hiddenLaunchExec();
+    const tr = quoteForSchtasks(`${hiddenCommand} ${hiddenArgs}`);
     const errors: string[] = [];
 
     // Tier 0 — XML registration. The ONLY form that can express:
@@ -146,10 +215,9 @@ export class SchtasksAdapter implements ServiceAdapter {
     //   MultipleInstancesPolicy=IgnoreNew, StartWhenAvailable.
     try {
       const userId = await resolveUserId();
-      const { command, args } = splitCommand(execPath);
       const xml = buildTaskXml({
-        command,
-        args: [args, `serve --port ${port}`].filter(Boolean).join(' '),
+        command: hiddenCommand,
+        args: hiddenArgs,
         userId,
       });
       const xmlPath = join(tmpdir(), 'AstraMemoryD.xml');
@@ -318,14 +386,20 @@ export class SchtasksAdapter implements ServiceAdapter {
   }
 
   async installBackupTimer(execPath: string, keep: number): Promise<void> {
+    // Windowless daemon (D1 slice 6): wrap the actual backup invocation in
+    // its own hidden-launch VBS (distinct file from the daemon's — this
+    // task runs `backup --keep N`, not `serve`) so the nightly 03:00 run
+    // never flashes a console either. Rewritten every call — `execPath`
+    // bakes a specific release's paths (see installHiddenWrapper's doc
+    // comment), which can change release to release.
+    const { command, args } = installHiddenWrapper('astramemd-backup-hidden.vbs', `${execPath} backup --keep ${keep}`);
     // XML-first, same reason as the daemon task: the CLI /create form needs
     // elevation on some boxes; a current-user XML registration does not.
     try {
       const userId = await resolveUserId();
-      const { command, args } = splitCommand(execPath);
       const xml = buildDailyTaskXml({
         command,
-        args: [args, `backup --keep ${keep}`].filter(Boolean).join(' '),
+        args,
         userId,
         description: 'AstraMemory nightly verified backup. Managed by astramem-local reinstall / service install.',
       });
@@ -337,7 +411,7 @@ export class SchtasksAdapter implements ServiceAdapter {
     } catch {
       // fall through to legacy CLI form
     }
-    const tr = quoteForSchtasks(`${execPath} backup --keep ${keep}`);
+    const tr = quoteForSchtasks(`${command} ${args}`);
     const user = process.env['USERNAME'] ?? '';
     const ruFlag = user ? `/RU "${user}" /IT` : '';
     const cmd = `schtasks /create /sc DAILY /st 03:00 /tn "${BACKUP_TASK_NAME}" /tr ${tr} ${ruFlag} /RL LIMITED /f`;
@@ -367,12 +441,16 @@ export class SchtasksAdapter implements ServiceAdapter {
    * cadence instead of the daemon task's fixed PT5M.
    */
   async installWatchdogTimer(execPath: string, intervalSec: number): Promise<void> {
+    // Windowless daemon (D1 slice 6): wrap the probe invocation in its own
+    // hidden-launch VBS (distinct file from the daemon's/backup's) so the
+    // recurring hang-probe never flashes a console either. Rewritten every
+    // call — see installHiddenWrapper's doc comment on why.
+    const { command, args } = installHiddenWrapper('astramemd-watchdog-hidden.vbs', `${execPath} service watchdog-probe`);
     try {
       const userId = await resolveUserId();
-      const { command, args } = splitCommand(execPath);
       const xml = buildTaskXml({
         command,
-        args: [args, 'service watchdog-probe'].filter(Boolean).join(' '),
+        args,
         userId,
         description: 'AstraMemory hang-watchdog probe. Managed by astramem-local reinstall / service install.',
         repetitionIso: `PT${intervalSec}S`,
@@ -391,7 +469,7 @@ export class SchtasksAdapter implements ServiceAdapter {
       // takes whole minutes, so sub-minute intervalSec values round up to 1.
     }
     const minutes = Math.max(1, Math.round(intervalSec / 60));
-    const tr = quoteForSchtasks(`${execPath} service watchdog-probe`);
+    const tr = quoteForSchtasks(`${command} ${args}`);
     const user = process.env['USERNAME'] ?? '';
     const ruFlag = user ? `/RU "${user}" /IT` : '';
     const cmd = `schtasks /create /sc MINUTE /mo ${minutes} /tn "${WATCHDOG_TASK_NAME}" /tr ${tr} ${ruFlag} /RL LIMITED /f`;
