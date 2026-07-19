@@ -58,7 +58,7 @@ jobs:
           fi
 
       - name: Arm or disarm auto-merge
-        uses: actions/github-script@v7
+        uses: actions/github-script@v9
         with:
           # Must be a real user/app token, NOT GITHUB_TOKEN — see the preflight
           # above. No `||` fallback: silent degradation is the bug being fixed.
