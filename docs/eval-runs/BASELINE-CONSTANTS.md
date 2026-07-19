@@ -30,6 +30,20 @@ against this file to see exactly which knobs moved.
 - 55fx repair-only (qwen extract + ministral clerk): **recall 80.1 / typeAcc 53.4 / junk 17.7**.
 - LoCoMo conv-1 k15 codex dual-pass same-day board: 0.5346-0.5502; champion 0.6002 = frozen high-water mark (codex day-variance proven; per-call yield 13 → ~10).
 
+## 2026-07-19 same-day experiment board (codex dual, conv-liberal, k15, compaction never, n=1 conv-1)
+
+| leg | variable | score | verdict |
+|---|---|---|---|
+| chunkab-800tok | control (sweeper v2) | **0.5430** | today's service-day reference |
+| chunkab-3200tok | 12800-char chunks | 0.5264 | REJECTED (recency bias: multi-hop −5.3, open-domain −8.0) |
+| chunkab-1600tok | 6400-char chunks | 0.5110 | REJECTED (non-monotonic vs 3200 → deltas near noise; clean signal = nothing beats 800) |
+| sweeperv1-800tok | pre-552A sweeper (v1) | 0.5167 | **prompt-revert hypothesis REJECTED on codex** — v2 neutral-to-positive here (adversarial fell under v1); champion gap = codex day-variance, confirmed |
+
+Sweeper-restructure harm is MODEL-SPECIFIC: −96 atoms/−7 recall on qwen 55fx
+(engineering, self-sweep) vs neutral-positive on codex conversational. Prompt
+versioning + the hash-freeze gate (tests/distill/prompt-hash-freeze.test.ts)
+exist so this class of confound can never ship unrecorded again.
+
 ## Rules this baseline encodes
 
 1. Same-day controls mandatory — codex service quality moves ±6 pts between days.

@@ -15,3 +15,5 @@ Archive new runs with `bun scripts/eval/locomo/archive-run.mts --run-dir <dir> -
 | 2026-07-18 | [20260718-replicate-champion-untuned](20260718-replicate-champion-untuned/) | 0.5346 | 199 | passes=2 sweep=untuned prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=02c167b4 · 448 atoms · exact champion recipe, −6.6 vs champion = codex day-variance PROVEN |
 | 2026-07-19 | [20260719-chunkab-800tok](20260719-chunkab-800tok/) | 0.5430 | 199 | passes=2 sweep=tuned-default prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=fcbadce2 |
 | 2026-07-19 | [20260719-chunkab-3200tok](20260719-chunkab-3200tok/) | 0.5264 | 199 | passes=2 sweep=tuned-default prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=fcbadce2 |
+| 2026-07-19 | [20260719-chunkab-1600tok](20260719-chunkab-1600tok/) | 0.5110 | 199 | passes=2 sweep=tuned-default prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=27ca053f |
+| 2026-07-19 | [20260719-sweeperv1-800tok](20260719-sweeperv1-800tok/) | 0.5167 | 199 | passes=2 sweep=tuned-default prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=27ca053f |
