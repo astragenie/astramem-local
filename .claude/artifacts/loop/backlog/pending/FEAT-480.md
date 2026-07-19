@@ -1,11 +1,12 @@
 ---
 id: FEAT-480
-status: pending
+status: deferred
 priority: null
 category: bug
-target_release: null
+target_release: "0.21"
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-19
+deferral_note: "2026-07-19: 3 builds (pure-OR, AND-first/OR-fallback, instrumentation) + 2 real-store A/B rounds + branch/coverage probe on the 54k store proved naive FTS revival has an inherent tradeoff: plain-MRR +18.6% (0.548->0.650) but literal-MRR -15.8% (0.950->0.800, vector leg diluted) and junk +6pp. AND-first engages only 3/20 real queries. coverage>=2 gate is a no-op (prunes 2/79); junk lives in cov 2-3 band, needs cov>=3/>=4 = real recall/junk tradeoff. No clean lever. Not release-blocking for 0.20 (FTS-dead is longstanding, not a regression). Evidence preserved: branch feat/480-fts-or-join, PR #441 (unmerged), synthesis + validation artifacts under .claude/artifacts/crew/. 0.21 needs threshold modeling + better ground truth than the 10-case paraphrase harness."
 depends_on: [RECALL-S1]
 slices: []
 derived_from: recall-quality investigation 2026-07-13
