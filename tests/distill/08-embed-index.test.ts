@@ -966,6 +966,73 @@ function makeThrowingTriageProvider(message: string): LLMProvider {
   };
 }
 
+describe('embedAndIndex — cooperative yield in Phase A/Phase C atom loops (2026-07-19 event-loop-stall fix)', () => {
+  let db: DB;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  function makeYieldFixtureMems(count: number): NormalizedMemory[] {
+    return Array.from({ length: count }, (_, i) =>
+      normalizedMem(`yield fixture atom ${i}`, `yld${i}`.padEnd(64, '0')),
+    );
+  }
+
+  it('fires the yield hook in both Phase A and Phase C, every yieldEveryNAtoms atoms, counting atoms regardless of gating', async () => {
+    const embed = makeMockEmbed();
+    const mems = makeYieldFixtureMems(12);
+    let yields = 0;
+
+    const results = await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      yieldEveryNAtoms: 5,
+      onYield: () => { yields++; },
+    });
+
+    expect(results).toHaveLength(12);
+    // floor(12/5) = 2 yields per loop; Phase A and Phase C both walk the same
+    // 12 atoms here (nothing gated by default), so total = 2 + 2 = 4.
+    expect(yields).toBe(4);
+  });
+
+  it('never yields when the batch is smaller than the interval (default interval, small batch)', async () => {
+    const embed = makeMockEmbed();
+    const mems = makeYieldFixtureMems(3);
+    let yields = 0;
+
+    await embedAndIndex(mems, {
+      db, embed, sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      onYield: () => { yields++; }, // default interval (25), only 3 atoms in this batch
+    });
+
+    expect(yields).toBe(0);
+  });
+
+  it('yielding every single atom produces the same insert outcome as the default interval (behavior-preserving)', async () => {
+    const mems = makeYieldFixtureMems(6);
+
+    const resultsDefault = await embedAndIndex(mems, {
+      db, embed: makeMockEmbed(), sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+    });
+
+    const dbFrequentYield = openDb(':memory:');
+    migrate(dbFrequentYield);
+    const resultsFrequentYield = await embedAndIndex(mems, {
+      db: dbFrequentYield, embed: makeMockEmbed(), sessionId: null, repo: null, project: null, branch: null, agent: null, sourceHash: null,
+      yieldEveryNAtoms: 1,
+    });
+
+    expect(resultsFrequentYield).toHaveLength(resultsDefault.length);
+    expect(resultsFrequentYield.map(r => r.created)).toEqual(resultsDefault.map(r => r.created));
+
+    const countDefault = (db.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n;
+    const countFrequent = (dbFrequentYield.prepare('SELECT COUNT(*) AS n FROM memories').get() as { n: number }).n;
+    expect(countFrequent).toBe(countDefault);
+  });
+});
+
 describe('embedAndIndex — FEAT-533 atom-triage tier', () => {
   let db: DB;
 

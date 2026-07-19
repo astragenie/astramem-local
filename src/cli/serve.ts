@@ -876,14 +876,27 @@ export async function serve(opts: ServeOpts): Promise<void> {
   }
 
   // WAL discipline (W1.5): with synchronous=NORMAL a hard crash loses the
-  // un-checkpointed WAL tail. Truncate hourly so the at-risk window stays
-  // small, and once more on graceful shutdown. Timer unref'd — never holds
-  // the process open.
+  // un-checkpointed WAL tail. Checkpoint hourly so the at-risk window stays
+  // small, and once more (TRUNCATE, see below) on graceful shutdown. Timer
+  // unref'd — never holds the process open.
+  //
+  // 2026-07-19 event-loop-stall fix: this periodic pass uses PASSIVE, not
+  // TRUNCATE — TRUNCATE blocks until it can acquire the exclusive lock
+  // needed to shrink the WAL file, which on a live daemon under load is a
+  // genuine synchronous stall on the same event loop `/health` depends on
+  // (the same restart-storm class the embedAndIndex cooperative-yield fix
+  // above addresses). PASSIVE checkpoints as much of the WAL as it can
+  // without blocking or invalidating any in-progress reader, and never
+  // fails/throws when it can't fully truncate — it just does less this
+  // round and tries again next hour. The one-time TRUNCATE at graceful
+  // shutdown (below) is intentionally left as-is: shutdown has no live
+  // `/health` traffic to protect, so paying for a full blocking truncate
+  // there (to minimize the WAL file left on disk) is the right trade.
   if (dataDir !== ':memory:') {
     const WAL_CHECKPOINT_MS = 60 * 60 * 1000;
     walTimer = setInterval(() => {
       try {
-        db.pragma("wal_checkpoint(TRUNCATE)");
+        db.pragma("wal_checkpoint(PASSIVE)");
       } catch (err) {
         console.warn(`${ts()} [astramem-local] periodic WAL checkpoint failed: ${err instanceof Error ? err.message : String(err)}`);
       }

@@ -165,7 +165,41 @@ export interface EmbedIndexContext {
    * are NEVER gated regardless of this setting.
    */
   evidenceGateEnabled?: boolean;
+  /**
+   * Cooperative-yield interval (2026-07-19 event-loop-stall fix) for this
+   * stage's Phase A and Phase C atom loops — see
+   * `DEFAULT_EMBED_INDEX_YIELD_EVERY_N_ATOMS`'s doc comment. Omitted uses
+   * that default; test-only tuning knob, mirrors
+   * `ConsolidateOpts.yieldEveryNPairs` (src/consolidate/consolidate.ts).
+   */
+  yieldEveryNAtoms?: number;
+  /**
+   * Test-only observability hook, fired once per cooperative yield in either
+   * Phase A or Phase C — lets tests assert the yield actually fires without
+   * timing the event loop. Mirrors `ConsolidateOpts.onYield`. Never set in
+   * production.
+   */
+  onYield?: () => void;
 }
+
+/**
+ * 2026-07-19 event-loop-stall fix (production watchdog restart storm):
+ * cooperative-yield interval for Phase A (erasure/durability/evidence gate)
+ * and Phase C (insert transaction + entity/relation/vec writes) below —
+ * mirrors ADR-019 Tier 1's `setImmediate`-based yield in
+ * `src/consolidate/consolidate.ts` (`yieldEveryNPairs`/
+ * `setupYieldEveryNAtoms`), applied to this stage's own atom loop, which ran
+ * a whole distill job's batch (50-300+ atoms) fully synchronously with zero
+ * yields. On a 54,823-memory production store this blocked the event loop
+ * 5-45s right after "onnx embed ok" (the post-embed Phase A/C work, not the
+ * embed call itself, which already runs off-thread) — long enough that the
+ * `/health` watchdog treated a live, working daemon as dead and restarted it.
+ * Default 25 — much smaller than consolidate's 200 because each atom here
+ * does substantially more DB work per item (an insert transaction plus N
+ * entity upserts, relation inserts, and a vec upsert), not just a cosine
+ * compare.
+ */
+const DEFAULT_EMBED_INDEX_YIELD_EVERY_N_ATOMS = 25;
 
 /**
  * Embed and index all normalized memories.
@@ -240,7 +274,22 @@ export async function embedAndIndex(
   // LOGIC changed, only where the loop boundary sits.
   interface Survivor { originalIndex: number; mem: NormalizedMemory; vec: Float32Array }
   const survivors: Survivor[] = [];
+  // 2026-07-19 event-loop-stall fix — see DEFAULT_EMBED_INDEX_YIELD_EVERY_N_ATOMS.
+  const yieldEveryNAtoms = ctx.yieldEveryNAtoms ?? DEFAULT_EMBED_INDEX_YIELD_EVERY_N_ATOMS;
+  let phaseASinceYield = 0;
   for (let i = 0; i < memories.length; i++) {
+    // Counted regardless of the early `continue`s below (same posture as
+    // consolidate.ts's `processPair` yield counter) — this bounds the
+    // longest uninterrupted synchronous stretch to ~yieldEveryNAtoms
+    // iterations no matter which atoms get skipped, instead of only
+    // bounding "fully processed" atoms.
+    phaseASinceYield++;
+    if (phaseASinceYield >= yieldEveryNAtoms) {
+      phaseASinceYield = 0;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      ctx.onYield?.();
+    }
+
     const mem = memories[i];
     const vec = vectors[i];
 
@@ -380,7 +429,22 @@ export async function embedAndIndex(
   }
 
   // ─── Phase C: insert survivors, honoring the triage verdict ─────────────
+  // 2026-07-19 event-loop-stall fix — see DEFAULT_EMBED_INDEX_YIELD_EVERY_N_ATOMS.
+  // Placed at the TOP of the loop body, between atoms: `insertWithCreateEvent`
+  // (called below) owns its own single-atom `db.transaction()`, and the
+  // entity/relation/vec writes that follow it in the same iteration are
+  // never wrapped in a transaction spanning more than one atom — so yielding
+  // here never fires mid-transaction, only between one atom's fully-committed
+  // work and the next atom's.
+  let phaseCSinceYield = 0;
   for (const survivor of survivors) {
+    phaseCSinceYield++;
+    if (phaseCSinceYield >= yieldEveryNAtoms) {
+      phaseCSinceYield = 0;
+      await new Promise<void>(resolve => setImmediate(resolve));
+      ctx.onYield?.();
+    }
+
     const { originalIndex: i, mem, vec } = survivor;
     const verdict = triageVerdicts.get(i);
     const isNonKeepVerdict = atomTriageMode !== 'off' && verdict !== undefined && verdict.verdict !== 'keep';
