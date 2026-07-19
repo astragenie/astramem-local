@@ -83,6 +83,49 @@ export interface LLMProviderAdapter {
     /** Read back the `temperature` field, if present. */
     temperature(body: Record<string, unknown>): number | undefined;
   };
+  /**
+   * FEAT-483 SLICE-4 — cross-provider sampling-parameter wire assertion. The
+   * canary for two real, previously-shipped bugs (see ollama.ts's module doc
+   * comment): `temperature` silently dropped by a second `{options:{...}}`
+   * spread clobbering the first, and `num_ctx` never sent at all so every
+   * Ollama call ran at the model's truncating default. Every adapter supplies
+   * this (unlike `reasoningParams`, which only applies to the two classic
+   * Chat-Completions providers) — even "this provider doesn't support the
+   * param, it must be absent" (codex-subscription) is a real assertion, not
+   * an opt-out.
+   */
+  samplingParams: {
+    /** Read back the temperature value actually sent on the wire, or
+     *  undefined if the field is absent from the outgoing body. */
+    temperature(body: Record<string, unknown>): number | undefined;
+    /** Read back this provider's max-tokens-equivalent field (Ollama:
+     *  `options.num_predict`; azure/openai-compatible: `max_tokens`;
+     *  Anthropic: `max_tokens`; codex-subscription: never sent). */
+    maxTokensEquivalent(body: Record<string, unknown>): number | undefined;
+    /** Does this provider have a temperature knob at all? codex-subscription
+     *  does not — the Responses API 400s on it, so it's never forwarded. */
+    supportsTemperature: boolean;
+    /** Does this provider have a token-limit knob at all? codex-subscription
+     *  does not (same reason as supportsTemperature). */
+    supportsMaxTokens: boolean;
+    /** True when the max-tokens-equivalent field is sent on EVERY request
+     *  with a fixed default, even when the caller passes no `maxTokens` opt
+     *  (Anthropic's Messages API requires `max_tokens` on every call). */
+    maxTokensAlwaysSent?: boolean;
+    /** The default value sent when `maxTokensAlwaysSent` is true and the
+     *  caller passes no `maxTokens` opt. */
+    defaultMaxTokens?: number;
+  };
+  /** Ollama-only: reads back the dynamically-sized `options.num_ctx` value
+   *  (FEAT-479) — no other provider in this codebase has an equivalent
+   *  context-window parameter, so this is optional and unset for the rest. */
+  numCtx?: {
+    read(body: Record<string, unknown>): number | undefined;
+    /** NUM_CTX_FLOOR, mirrored from ollama.ts. */
+    floor: number;
+    /** NUM_CTX_CAP, mirrored from ollama.ts. */
+    cap: number;
+  };
 }
 
 function jsonResponse(status: number, body: unknown): Response {
@@ -123,6 +166,23 @@ const ollamaAdapter: LLMProviderAdapter = {
     return messages.map((m) => m.content);
   },
   appendsJsonHintWhenMissing: false,
+  samplingParams: {
+    temperature(body) {
+      return (body.options as Record<string, number> | undefined)?.temperature;
+    },
+    maxTokensEquivalent(body) {
+      return (body.options as Record<string, number> | undefined)?.num_predict;
+    },
+    supportsTemperature: true,
+    supportsMaxTokens: true,
+  },
+  numCtx: {
+    read(body) {
+      return (body.options as Record<string, number> | undefined)?.num_ctx;
+    },
+    floor: 4096,
+    cap: 16384,
+  },
 };
 
 // ─── azure-openai ────────────────────────────────────────────────────────
@@ -183,6 +243,16 @@ const azureAdapter: LLMProviderAdapter = {
       return body.temperature as number | undefined;
     },
   },
+  samplingParams: {
+    temperature(body) {
+      return body.temperature as number | undefined;
+    },
+    maxTokensEquivalent(body) {
+      return body.max_tokens as number | undefined;
+    },
+    supportsTemperature: true,
+    supportsMaxTokens: true,
+  },
 };
 
 // ─── openai-compatible ───────────────────────────────────────────────────
@@ -241,6 +311,16 @@ const openaiCompatibleAdapter: LLMProviderAdapter = {
       return body.temperature as number | undefined;
     },
   },
+  samplingParams: {
+    temperature(body) {
+      return body.temperature as number | undefined;
+    },
+    maxTokensEquivalent(body) {
+      return body.max_tokens as number | undefined;
+    },
+    supportsTemperature: true,
+    supportsMaxTokens: true,
+  },
 };
 
 // ─── anthropic ───────────────────────────────────────────────────────────
@@ -287,6 +367,22 @@ const anthropicAdapter: LLMProviderAdapter = {
     return [...contents, ...messages.map((m) => m.content)];
   },
   appendsJsonHintWhenMissing: false,
+  samplingParams: {
+    temperature(body) {
+      return body.temperature as number | undefined;
+    },
+    maxTokensEquivalent(body) {
+      return body.max_tokens as number | undefined;
+    },
+    supportsTemperature: true,
+    supportsMaxTokens: true,
+    // Anthropic's Messages API requires `max_tokens` on EVERY request — see
+    // anthropic.ts's DEFAULT_MAX_TOKENS (not exported; mirrored here as a
+    // literal, same convention tests/providers/ollama-llm.test.ts already
+    // uses for NUM_CTX_FLOOR/CAP).
+    maxTokensAlwaysSent: true,
+    defaultMaxTokens: 1024,
+  },
 };
 
 // ─── codex-subscription ─────────────────────────────────────────────────
@@ -366,6 +462,22 @@ const codexAdapter: LLMProviderAdapter = {
     return [...instructions, ...input.map((m) => m.content)];
   },
   appendsJsonHintWhenMissing: true,
+  samplingParams: {
+    // Live-verified (codex-subscription.ts): `temperature`/`maxTokens` are
+    // intentionally NOT forwarded — the Responses API 400s on both
+    // (`Unsupported parameter: temperature` / `max_output_tokens`). Reading
+    // back the fields that WOULD carry them if some future edit reintroduced
+    // the forwarding, so a regression shows up as "value defined" here
+    // rather than this reader silently looking at the wrong field forever.
+    temperature(body) {
+      return body.temperature as number | undefined;
+    },
+    maxTokensEquivalent(body) {
+      return (body.max_tokens ?? body.max_output_tokens) as number | undefined;
+    },
+    supportsTemperature: false,
+    supportsMaxTokens: false,
+  },
 };
 
 export const ALL_LLM_ADAPTERS: LLMProviderAdapter[] = [
