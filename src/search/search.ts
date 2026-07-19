@@ -30,6 +30,57 @@ import { getQueryVariants, mergeVariantHits, type QueryRewriteOpts } from './que
 // src/contracts/filter-registry.ts.
 import { applySqlColumnFilters, applySqlRangeFilters, mergeRepoAlias } from '../contracts/filter-registry.js';
 
+/**
+ * FEAT-480 instrumentation (measurement only — see the "AND-first NEVER
+ * engages on real queries" hypothesis from the 2nd real-store A/B). Reads
+ * once at module load, same convention as other env-driven levers in this
+ * codebase (e.g. ASTRA_EXTRACT_TEMP) — meant to be set on daemon start, not
+ * toggled mid-process.
+ */
+const FTS_INSTRUMENT_ENV = process.env.ASTRA_FTS_INSTRUMENT === '1';
+
+/**
+ * One gatherCandidates() call's FTS AND/OR pass record (FEAT-480
+ * instrumentation). `andRows` is what the precise AND pass returned;
+ * `orFired` is whether the OR fallback ran at all (i.e. AND returned zero);
+ * `orRows` is what OR returned (0 when it didn't fire). This is pure
+ * measurement — it does not feed ranking and does not change
+ * buildFtsAnd/buildFtsOr or the two-pass gate in gatherCandidates().
+ */
+export interface FtsGatherProbe {
+  query: string;
+  andRows: number;
+  orFired: boolean;
+  orRows: number;
+}
+
+/**
+ * Signal-token coverage for one FTS-sourced hit that reached the final
+ * top-K (FEAT-480 instrumentation, SearchHit path only). `coverage` counts
+ * how many of the query's post-stopword "signal tokens" (the exact token
+ * list buildFtsOr() OR-joins — see ftsSignalTokens()) appear as a
+ * whole-word match in the hit's text. Sizes the lever for a future
+ * coverage-gate decision (e.g. "prune OR-sourced hits with coverage < 2").
+ */
+export interface FtsCoverageProbe {
+  id: string;
+  source: 'fts' | 'vec' | 'both';
+  coverage: number;
+  signalTokenCount: number;
+}
+
+/**
+ * Caller-supplied out-parameter sink for FEAT-480 instrumentation (measured
+ * via SearchOpts.ftsProbeSink below). search() only ever PUSHES onto the two
+ * arrays here — the caller owns allocation and reads them back after
+ * awaiting search(). Kept out of search()'s return type entirely so
+ * SearchHit[]/SearchDebugHit[] stay unchanged (no wire-contract impact).
+ */
+export interface FtsInstrumentation {
+  gather: FtsGatherProbe[];
+  coverage: FtsCoverageProbe[];
+}
+
 export interface SearchFilters {
   type?: string[];
   /**
@@ -319,6 +370,19 @@ export interface SearchOpts {
    * when `queryRewrite` is configured — see that field's doc comment.
    */
   expand?: boolean;
+  /**
+   * FEAT-480 instrumentation (measurement only, not a ranking change) — when
+   * supplied, search() pushes FtsGatherProbe/FtsCoverageProbe entries onto
+   * it. Instrumentation is only actually COMPUTED when `debug: true` above
+   * OR the `ASTRA_FTS_INSTRUMENT=1` env var is set (module-load-time flag);
+   * otherwise this sink is never written to, at zero added cost — omitting
+   * it entirely (the default for every existing caller) is byte-identical
+   * to pre-FEAT-480-instrumentation behavior. GET /search wires this so an
+   * external probe (scripts/eval/recall-quality/fts-branch-probe.mjs) can
+   * read `_ftsProbe` off the JSON response without needing `debug: true`
+   * (which would change the response shape entirely — see SearchOpts.debug).
+   */
+  ftsProbeSink?: FtsInstrumentation;
 }
 
 /**
@@ -444,11 +508,25 @@ function buildFtsAnd(q: string): string {
  * This is the right default for an agent-driven search surface; an
  * `advanced` flag can be added later if needed.
  */
+/**
+ * The post-stopword, cap-bounded token list buildFtsOr() actually OR-joins
+ * for a query — factored out of buildFtsOr so FEAT-480 instrumentation (the
+ * coverage probe below) measures against the EXACT set buildFtsOr uses, not
+ * a re-derived approximation. Returns `[]` for an all-stopword query (that
+ * case has no "signal tokens" of its own — buildFtsOr falls back to
+ * AND-of-all-tokens instead).
+ */
+function ftsSignalTokens(q: string): string[] {
+  const rawTokens = ftsTokens(q);
+  const signalTokens = rawTokens.filter(t => !FTS_STOPWORDS.has(t.toLowerCase()));
+  return signalTokens.slice(0, FTS_MAX_OR_TOKENS);
+}
+
 function buildFtsOr(q: string): string {
   const rawTokens = ftsTokens(q);
   if (rawTokens.length === 0) return '';
 
-  const signalTokens = rawTokens.filter(t => !FTS_STOPWORDS.has(t.toLowerCase()));
+  const signalTokens = ftsSignalTokens(q);
   if (signalTokens.length === 0) {
     // All-stopword query — OR-joining pure stopwords would match nearly
     // every row with zero signal. Fall back to AND-of-all-tokens: a valid,
@@ -456,7 +534,7 @@ function buildFtsOr(q: string): string {
     return rawTokens.map(ftsQuote).join(' ');
   }
 
-  return signalTokens.slice(0, FTS_MAX_OR_TOKENS).map(ftsQuote).join(' OR ');
+  return signalTokens.map(ftsQuote).join(' OR ');
 }
 
 /**
@@ -556,6 +634,25 @@ export function entityNameMatchesQuery(query: string, name: string): boolean {
   if (!name) return false;
   const pattern = new RegExp(`(?:^|[^\\p{L}\\p{N}])${escapeRegExp(name)}(?:$|[^\\p{L}\\p{N}])`, 'u');
   return pattern.test(query);
+}
+
+/**
+ * FEAT-480 instrumentation only — whole-word coverage of `signalTokens`
+ * (the exact tokens ftsSignalTokens()/buildFtsOr() would OR-join, already
+ * lowercased by the caller) against `text`. Reuses entityNameMatchesQuery's
+ * whole-word boundary rule (same "not a substring of a longer word" check
+ * issue #207 AC-3 fixed for entity matching) for consistency. Sizes the
+ * lever for a future coverage-gate decision — never called on the ranking
+ * path, only when an instrumentation sink is supplied (see SearchOpts.ftsProbeSink).
+ */
+function ftsSignalTokenCoverage(text: string, signalTokens: string[]): number {
+  if (signalTokens.length === 0) return 0;
+  const lowerText = text.toLowerCase();
+  let coverage = 0;
+  for (const t of signalTokens) {
+    if (entityNameMatchesQuery(lowerText, t.toLowerCase())) coverage++;
+  }
+  return coverage;
 }
 
 /**
@@ -671,6 +768,13 @@ function correctionSignalForCandidates(db: DB, candidateIds: Set<string>): Map<s
  * as before. This is the ONE place mode is enforced — both the primary call
  * and every decompose sub-query call route through here with the same mode,
  * so decomposition can never surface a candidate the caller's mode excluded.
+ *
+ * `instrument` (FEAT-480, default false): when true, additionally returns an
+ * `ftsProbe` record of the AND/OR pass row counts — pure measurement, reads
+ * no extra rows and does not change which pass runs or its result. `false`
+ * (every pre-instrumentation caller, and every caller when
+ * ASTRA_FTS_INSTRUMENT is unset and debug is not requested) skips building
+ * that record entirely — zero added cost on the normal path.
  */
 async function gatherCandidates(
   db: DB,
@@ -678,8 +782,14 @@ async function gatherCandidates(
   query: string,
   vecK: number,
   mode: 'keyword' | 'semantic' | 'hybrid' = 'hybrid',
-): Promise<{ ftsHits: Array<{ id: string; bm25: number }>; vecHits: Array<{ id: string; cosine: number }> }> {
+  instrument = false,
+): Promise<{
+  ftsHits: Array<{ id: string; bm25: number }>;
+  vecHits: Array<{ id: string; cosine: number }>;
+  ftsProbe?: FtsGatherProbe;
+}> {
   const ftsHits: Array<{ id: string; bm25: number }> = [];
+  let ftsProbe: FtsGatherProbe | undefined;
   if (mode !== 'semantic' && query.trim()) {
     const runFts = (matchQuery: string): Array<{ id: string; bm25: number }> => {
       try {
@@ -706,16 +816,26 @@ async function gatherCandidates(
     // that would otherwise return zero FTS candidates (some signal beats
     // none) instead of applying to every query and diluting good AND hits.
     const andQuery = buildFtsAnd(query);
-    ftsHits.push(...runFts(andQuery));
+    const andRows = runFts(andQuery);
+    ftsHits.push(...andRows);
 
+    let orFired = false;
+    let orRowsCount = 0;
     if (ftsHits.length === 0) {
       const orQuery = buildFtsOr(query);
       // Skip a redundant identical re-run — e.g. an all-stopword query
       // makes buildFtsOr fall back to the same AND string, which can only
       // reproduce the same empty result.
       if (orQuery !== andQuery) {
-        ftsHits.push(...runFts(orQuery));
+        orFired = true;
+        const orRows = runFts(orQuery);
+        orRowsCount = orRows.length;
+        ftsHits.push(...orRows);
       }
+    }
+
+    if (instrument) {
+      ftsProbe = { query, andRows: andRows.length, orFired, orRows: orRowsCount };
     }
   }
 
@@ -741,7 +861,7 @@ async function gatherCandidates(
     }
   }
 
-  return { ftsHits, vecHits };
+  return { ftsHits, vecHits, ftsProbe };
 }
 
 /**
@@ -793,11 +913,22 @@ export async function search(
   // FEAT-532 L2: 'hybrid' when omitted — byte-identical to pre-FEAT-532
   // behavior (both legs always ran).
   const mode = opts.mode ?? 'hybrid';
+  // FEAT-480 instrumentation (measurement only — see SearchOpts.ftsProbeSink
+  // and gatherCandidates()'s `instrument` param doc). Gated on the existing
+  // `debug` opt OR the ASTRA_FTS_INSTRUMENT env var (the two production
+  // triggers), OR `ftsProbeSink` simply being supplied — a caller that
+  // passes a sink has no legitimate reason to want it left empty, and this
+  // third condition is what lets tests exercise the coverage computation
+  // (SearchHit path only, see below) directly instead of needing to reload
+  // the module with the env var pre-set. False for every pre-FEAT-480
+  // caller (none of the three are set) — zero added cost on the normal path.
+  const instrumentFts = opts.debug === true || FTS_INSTRUMENT_ENV || !!opts.ftsProbeSink;
 
   // 1-2. FTS5 BM25 + vector search — see gatherCandidates() above (RECALL-S1
   // query-prefix handling and FTS/embed degrade behavior both live there,
   // unchanged from pre-WS6 inline code).
-  const { ftsHits, vecHits } = await gatherCandidates(db, embed, query, vecK, mode);
+  const { ftsHits, vecHits, ftsProbe } = await gatherCandidates(db, embed, query, vecK, mode, instrumentFts);
+  if (ftsProbe) opts.ftsProbeSink?.gather.push(ftsProbe);
 
   // 2b. Entity filter (FEAT-402 slice 2 AC-4) — resolve `entity` to entity
   // ids (AC-9 normalize seam) and intersect the FTS+vec candidate set BEFORE
@@ -832,7 +963,8 @@ export async function search(
     const subQueries = await getSubQueries(query, opts.decompose);
     const seenIds = new Set(primaryIds);
     for (const sq of subQueries) {
-      const gathered = await gatherCandidates(db, embed, sq, vecK, mode);
+      const gathered = await gatherCandidates(db, embed, sq, vecK, mode, instrumentFts);
+      if (gathered.ftsProbe) opts.ftsProbeSink?.gather.push(gathered.ftsProbe);
       const { ftsHits: sFts, vecHits: sVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
       for (const h of sFts) {
         if (seenIds.has(h.id)) continue;
@@ -866,7 +998,8 @@ export async function search(
   if (opts.expand && opts.queryRewrite) {
     const variants = await getQueryVariants(query, opts.queryRewrite);
     for (const variant of variants) {
-      const gathered = await gatherCandidates(db, embed, variant, vecK, mode);
+      const gathered = await gatherCandidates(db, embed, variant, vecK, mode, instrumentFts);
+      if (gathered.ftsProbe) opts.ftsProbeSink?.gather.push(gathered.ftsProbe);
       const { ftsHits: vFts, vecHits: vVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
       rewriteFtsByVariant.push(vFts);
       rewriteVecByVariant.push(vVec);
@@ -1192,6 +1325,13 @@ export async function search(
     return { final: score, signals, top_signal: computeTopSignal(signals) };
   }
 
+  // FEAT-480 instrumentation (measurement only): the exact signal-token list
+  // buildFtsOr() would OR-join for THIS query — computed once, only when
+  // both instrumentFts and a sink are present, so the normal path (the
+  // overwhelmingly common case) never runs this. `undefined` means "coverage
+  // not requested," checked per-hit below instead of re-deriving per hit.
+  const coverageSignalTokens = (instrumentFts && opts.ftsProbeSink) ? ftsSignalTokens(query) : undefined;
+
   const results: SearchHit[] = [];
   for (const hit of rankedFused) {
     const mem = memMap.get(hit.id);
@@ -1210,6 +1350,14 @@ export async function search(
       ...(correctionSignal.has(hit.id) ? { correction_pending: correctionSignal.get(hit.id)! } : {}),
       explanation: buildExplanation(hit.id, hit.score, mem.importance, mem.created_at),
     });
+    if (coverageSignalTokens && (hit.source === 'fts' || hit.source === 'both')) {
+      opts.ftsProbeSink!.coverage.push({
+        id: hit.id,
+        source: hit.source,
+        coverage: ftsSignalTokenCoverage(mem.text, coverageSignalTokens),
+        signalTokenCount: coverageSignalTokens.length,
+      });
+    }
     if (results.length >= buildLimit) break;
   }
 
