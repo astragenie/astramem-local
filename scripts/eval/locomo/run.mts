@@ -82,6 +82,7 @@ import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { resolveExtractionPassBTuning } from '../../../src/config/config.js';
+import { collectRunConstants } from '../shared/run-constants.js';
 import { loadDataset, sampleLocomo, ensureDatasetDownloaded } from './lib/dataset.js';
 import { LOCOMO_CATEGORIES, CATEGORY_NAMES, sessionNumbers, type LoCoMoSample } from './lib/types.js';
 import {
@@ -715,6 +716,12 @@ async function runFull(): Promise<void> {
       passBSweep: passBSweepFlag ?? 'tuned-default',
       extractPromptEnv: process.env.ASTRA_EXTRACT_PROMPT ?? null,
       passBTuning: resolveExtractionPassBTuning(undefined),
+      // 2026-07-19 operator directive (0.5346 replication review): every
+      // constant that can move an eval number, derived from live source —
+      // chunk size, temps, pass-A token ceiling, num_ctx formula, embed
+      // dim, config-default models/modes, ollama env. Shared template with
+      // extraction-bench's run-metadata.json (run-constants.ts).
+      runConstants: collectRunConstants(),
       gitState: (() => {
         try {
           const sha = execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();

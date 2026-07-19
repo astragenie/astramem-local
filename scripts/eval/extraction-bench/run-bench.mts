@@ -49,6 +49,7 @@ import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 import { OllamaLLMProvider } from '../../../src/providers/llm/ollama.js';
 import { OpenAICompatibleLLMProvider } from '../../../src/providers/llm/openai-compatible.js';
 import { CodexSubscriptionLLMProvider } from '../../../src/providers/llm/codex-subscription.js';
+import { collectRunConstants } from '../shared/run-constants.js';
 import type { LLMProvider } from '../../../src/contracts/llm.js';
 
 // --- bench API keys (gitignored) ---------------------------------------------
@@ -489,6 +490,21 @@ function collectRunMetadata(fixtures: GoldFixture[]): Record<string, unknown> {
     judgeReasoningEffort,
     fixtureCount: fixtures.length,
     fixtureSetHash,
+    // 2026-07-19 operator directive: shared effective-constants template
+    // (chunk size, temps, pass-A ceiling, pass-B tuning, num_ctx formula,
+    // embed dim, config-default models/modes) — same block LoCoMo's
+    // run-manifest.json records. Derived from live source (run-constants.ts).
+    runConstants: collectRunConstants(),
+    // Harness flags that override those baselines for THIS run — recorded so
+    // template + overrides together fully describe the effective settings.
+    harnessOverrides: {
+      atomTriageMode: atomTriageMode ?? null,
+      triageModel: triageModel ?? null,
+      gatekeeperMode: gatekeeperMode ?? null,
+      passBSweep: passBSweep ?? null,
+      compactionMode: compactionMode ?? null,
+      maxChunkChars: maxChunkChars ?? null,
+    },
   };
 }
 

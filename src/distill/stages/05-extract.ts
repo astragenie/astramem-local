@@ -45,11 +45,19 @@ export type { ExtractProfile };
 // Extraction sampling temperature. Default 0.1; `ASTRA_EXTRACT_TEMP=0` makes
 // JSON output fully deterministic (a/b lever — may reduce stochastic parse
 // failures). Invalid values fall back to 0.1.
-const EXTRACT_TEMPERATURE = (() => {
+export const EXTRACT_TEMPERATURE = (() => {
   const raw = process.env.ASTRA_EXTRACT_TEMP;
   const n = raw !== undefined ? Number(raw) : NaN;
   return Number.isFinite(n) ? n : 0.1;
 })();
+
+/** Pass-A extraction output ceiling (tokens). Pass-B sweeper calls may
+ * override it downward via the centrally-resolved clerk tuning
+ * (EXTRACTION_PASS_B_DEFAULTS.maxTokens) — see callExtract's
+ * maxTokensOverride doc. Exported for eval run-provenance manifests
+ * (scripts/eval/shared/run-constants.ts) so recorded runs derive the value
+ * from this constant instead of hand-copying the literal (ADR-016). */
+export const PASS_A_MAX_TOKENS = 6000;
 
 /**
  * Lenient wrapper: accepts any objects in the atoms array so that individual
@@ -282,7 +290,7 @@ async function callExtract(
     // is whack-a-mole (#434's hardening list has the durable fix: reject
     // token-limit termination as retryable + chunk-split); 6000 buys headroom
     // for the densest observed dual-pass chunk until that lands.
-    maxTokens: maxTokensOverride ?? 6000,
+    maxTokens: maxTokensOverride ?? PASS_A_MAX_TOKENS,
   });
 
   return { text: result.text, usageUsd: result.usage.usd };

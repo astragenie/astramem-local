@@ -35,14 +35,14 @@ const HEALTH_TIMEOUT_MS = 10_000;
 // CHARS_PER_TOKEN heuristic (not imported — that module belongs to the distill layer,
 // this one is a generic provider, and the constant is a one-line rough estimate, not a
 // shared contract). Used only to size num_ctx below.
-const CHARS_PER_TOKEN = 4;
+export const CHARS_PER_TOKEN = 4;
 /** Ollama's own observed per-model default on this box; never shrink num_ctx below it. */
-const NUM_CTX_FLOOR = 4096;
+export const NUM_CTX_FLOOR = 4096;
 /** VRAM guard for a background local daemon — native context on these models goes up to
  * 32K, but an unbounded num_ctx risks claiming more memory than a background process
  * should. 16384 covers the v3 engineering prompt (~3.8k tokens) plus a large chunk plus a
  * generous output budget with room to spare. */
-const NUM_CTX_CAP = 16384;
+export const NUM_CTX_CAP = 16384;
 /** Assumed output budget when the caller passes no `maxTokens` (e.g. health-style tiny
  * calls) — not a real limit, just an estimate input for the num_ctx sizing formula. */
 const DEFAULT_OUTPUT_BUDGET_TOKENS = 512;
