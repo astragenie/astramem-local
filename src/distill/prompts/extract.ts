@@ -1003,7 +1003,7 @@ RIGHT: {"type":"fact","text":"The event store uses Postgres.","importance":0.5,"
 // name, on purpose, so pass A's profile/env-override precedence chain can
 // never accidentally select it.
 // ---------------------------------------------------------------------------
-export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER = `You are the SECOND of two independent extraction passes over the same transcript chunk. The FIRST pass already ran a broader extraction prompt and captured the main facts, decisions, and events. Your job is narrower and different: sweep the SAME chunk for concrete SPECIFICS the first pass is prone to skip because they read as minor details rather than headline facts.
+export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V2 = `You are the SECOND of two independent extraction passes over the same transcript chunk. The FIRST pass already ran a broader extraction prompt and captured the main facts, decisions, and events. Your job is narrower and different: sweep the SAME chunk for concrete SPECIFICS the first pass is prone to skip because they read as minor details rather than headline facts.
 
 Measured finding this pass exists to fix: in production runs, 36-47% of gold single-hop facts were never captured as ANY atom — and every one spot-checked was present verbatim in the source transcript. The missing facts were disproportionately: exact durations, frequencies, quantities, one-off events, verbatim quotes, and the less narratively-central speaker's own facts and advice. That is exactly what you are looking for.
 
@@ -1096,3 +1096,124 @@ must be copyable from the transcript exactly as written.)
 6. Input: "Caroline: hey how's it going? Melanie: good, just tired, work's been busy." ->
 {"atoms":[]}
 (No date, duration, frequency, quantity, name, quote, one-off event, or advice — plain small talk, nothing in this pass's eight categories. No evidence quote to point to either way -- empty output, not a guess.)`;
+
+/** PRE-552A sweeper prompt, resurrected 2026-07-19 for the champion-gap
+ * forensics: the 0.6002 champion (run started 07-17 21:29) used THESE bytes
+ * for pass B; every run after 91189291 (07-18 02:22) used the V2 restructure
+ * (evidence-first ordering + "ATOMS WITHOUT A VERBATIM EVIDENCE QUOTE ARE
+ * DISCARDED"), including the 0.5346 "exact" replication — which was
+ * therefore NOT byte-exact on the sweeper. The 55fx proof chain measured the
+ * V2 restructure at −96 atoms / −7 recall on qwen self-sweep (validation
+ * artifact 20260718T2100Z); ASTRA_SWEEPER_PROMPT=v1 is the A/B lever that
+ * prices the same mechanism on codex. */
+export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V1 = `You are the SECOND of two independent extraction passes over the same transcript chunk. The FIRST pass already ran a broader extraction prompt and captured the main facts, decisions, and events. Your job is narrower and different: sweep the SAME chunk for concrete SPECIFICS the first pass is prone to skip because they read as minor details rather than headline facts.
+
+Measured finding this pass exists to fix: in production runs, 36-47% of gold single-hop facts were never captured as ANY atom — and every one spot-checked was present verbatim in the source transcript. The missing facts were disproportionately: exact durations, frequencies, quantities, one-off events, verbatim quotes, and the less narratively-central speaker's own facts and advice. That is exactly what you are looking for.
+
+Output STRICT JSON matching the SAME schema the first pass uses:
+{
+  "atoms": [
+    {
+      "type": "decision" | "fact" | "lesson" | "command" | "todo" | "note" | "event",
+      "text": "<one self-contained sentence, roughly 10-80 words>",
+      "importance": 0.0-1.0,
+      "confidence": 0.0-1.0,
+      "evidence": "<REQUIRED — an EXACT verbatim quote from the source text this atom is based on; copy, never paraphrase>",
+      "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai" }],
+      "valid_at": "<ISO-8601 date-time, only if the source text states when THIS fact started>",
+      "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS fact stopped>"
+    }
+  ]
+}
+
+"evidence" is REQUIRED for EVERY atom you emit — not optional, unlike the first pass. Copy a short EXACT verbatim excerpt from the source chunk that this atom is directly based on; never paraphrase or summarize it. If you cannot point to an exact quote supporting a candidate item, do NOT emit that item as an atom at all — a specific detail you cannot quote is not one of the eight categories below, it is a guess.
+
+Extract ONLY items in these categories — this pass is deliberately narrow, not a second general-purpose pass:
+1. DATES/TIMES — any specific date, day, month, year, or time mentioned, even in passing.
+2. DURATIONS — how long something lasted or has been going on ("about three years", "for six months").
+3. FREQUENCIES — how often something happens ("once or twice a year", "every Sunday morning", "twice a week").
+4. QUANTITIES AND PRICES — counts, amounts, ages, prices, measurements ("three kids", "$40", "7 years old").
+5. NAMES — the specific, exact name of a person, place, pet, product, or thing mentioned, even a passing one.
+6. VERBATIM QUOTES — a phrase or sentence someone actually said, worth preserving word-for-word rather than paraphrased.
+7. ONE-OFF EVENTS — a single, non-recurring happening: an accident, a purchase, a trip, an injury, a specific incident — as opposed to an ongoing state or a recurring habit.
+8. ADVICE / COUNSEL — a specific recommendation, tip, or piece of guidance one speaker GIVES to the other. Attribute it to the speaker who GAVE it, not the one who received it.
+
+Cover BOTH speakers with EQUAL attention. Do not let whichever speaker's storyline feels more central crowd out the other speaker's specifics — a routine detail from the quieter speaker (an outing, a quantity, a one-off event) is exactly as valuable to this pass as a dramatic detail from the more prominent one.
+
+Self-containment: resolve every pronoun to the actual named person. Never emit "she went twice a year" — write "Melanie goes horseback riding once or twice a year". Preserve proper nouns exactly as given.
+
+Ground relative dates against an anchor. If a line reading "Observation date: <YYYY-MM-DD>"
+appears immediately before the transcript chunk below, treat it as the authoritative anchor and
+resolve "yesterday" / "last week" / "this morning" / "three years ago" to a natural-language
+absolute date (e.g. "10 July 2026", NOT "2026-07-10") against it, replacing the relative phrase
+rather than appending to it — "text" is prose, not the machine-parsed "valid_at"/"invalid_at"
+fields above, which stay ISO-8601. Otherwise, ground against an anchor stated in the transcript
+itself (a log timestamp, an explicit "as of 2026-07-10") when one exists, still in
+natural-language form. If no date anchor exists anywhere — no Observation date line and no
+in-transcript anchor — keep the original relative phrasing rather than inventing a date. This
+matters especially for you: DATES/TIMES is category 1 above and the category most likely to fire,
+so a bare/unresolved date here is not a corner case — it is the common path.
+
+Duplicating something the first pass likely already caught is FINE and expected — a separate merge step deduplicates the two passes' output afterward, so do not spend effort trying to guess what the first pass kept or skipped. Your only job is to sweep for the eight specific categories above, exhaustively, from BOTH speakers.
+
+Skip noise: greetings, small talk with no durable specific, filler acknowledgments.
+Skip secrets: passwords, tokens, financial account numbers, government ID numbers.
+Confidence reflects how clearly and directly the specific was stated: an explicit, unambiguous statement = 0.9; a hedge or approximation = 0.5.
+Importance reflects how durable and specific the detail is: a precise duration/frequency/quantity/quote/one-off event/piece of advice = 0.6-0.8; nothing here should score below 0.4, since if it doesn't fit one of the eight categories above it should not be extracted at all.
+
+Empty is valid: if the chunk truly contains none of the eight categories above, output "atoms": [] — do not invent one to have output.
+
+Examples (illustrative only, not exhaustive):
+
+1. Input: "Caroline: We don't go often, usually only once or twice a year. Melanie: Makes sense, it's a long drive." ->
+{"atoms":[
+  {"type":"fact","text":"Caroline said they don't go often — usually only once or twice a year.","importance":0.6,"confidence":0.85,"evidence":"usually only once or twice a year"}
+]}
+
+2. Input: "Observation date: 2026-07-10\n\nMelanie: My son got into an accident last week, but he's okay, thank god." ->
+{"atoms":[
+  {"type":"event","text":"Melanie's son got into an accident on 3 July 2026 and is okay.","importance":0.7,"confidence":0.9,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+]}
+(The Observation date anchor resolves "last week" to a natural-language absolute date IN "text" —
+never a bare ISO date like "2026-07-03", and never left as the unresolved relative phrase.)
+
+3. Input: "Caroline: I saw a sign that said 'Trans Lives Matter' at the rally and took a photo of it." ->
+{"atoms":[
+  {"type":"fact","text":"Caroline saw and photographed a sign reading \\"Trans Lives Matter\\" at a rally she attended.","importance":0.6,"confidence":0.9,"evidence":"a sign that said 'Trans Lives Matter'"}
+]}
+
+4. Input: "Melanie: Honestly, if you're thinking about adopting, my advice is to start the home study early — it took us almost 7 months just for that part." ->
+{"atoms":[
+  {"type":"note","text":"Melanie advised starting the adoption home study early, noting it took her family almost 7 months to complete that part alone.","importance":0.7,"confidence":0.85,"entities":[{"name":"Melanie","kind":"actor","subtype":"human"}]}
+]}
+
+5. Input: "Caroline: I used to go horseback riding with my dad when I was a kid." ->
+{"atoms":[
+  {"type":"fact","text":"Caroline used to go horseback riding with her dad when she was a kid.","importance":0.5,"confidence":0.85,"entities":[{"name":"Caroline","kind":"actor","subtype":"human"}]}
+]}
+
+6. Input: "Caroline: hey how's it going? Melanie: good, just tired, work's been busy." ->
+{"atoms":[]}
+(No date, duration, frequency, quantity, name, quote, one-off event, or advice — plain small talk, nothing in this pass's eight categories.)`;
+
+/** Sweeper prompt resolution (2026-07-19): V2 (the 552-A restructure) is the
+ * default; ASTRA_SWEEPER_PROMPT=v1 restores the pre-552A / champion-era
+ * bytes as a rollback + A/B lever, mirroring resolveExtractionPrompt's
+ * env-override shape. Recorded per run via runConstants.promptHashes +
+ * promptVersions; frozen by tests/distill/prompt-hash-freeze.test.ts. */
+export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER =
+  process.env.ASTRA_SWEEPER_PROMPT === 'v1'
+    ? EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V1
+    : EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V2;
+
+/** Human-readable prompt version registry (2026-07-19 operator directive:
+ * prompts carry explicit versions from now on). Bump the version WITH the
+ * bytes — the freeze test pins the hash, this map names it for manifests. */
+export const EXTRACTION_PROMPT_VERSIONS = {
+  v3: 'eng-v3.0 (FEAT-479, 2026-07-13)',
+  conversational: 'conv-v1.0 (FEAT-485)',
+  convLiberal: 'conv-liberal-v1.0 (2026-07-18 champion prompt)',
+  specificsSweeper: process.env.ASTRA_SWEEPER_PROMPT === 'v1'
+    ? 'sweeper-v1.0 (pre-552A, champion-era — env-selected)'
+    : 'sweeper-v2.0 (552-A evidence-first restructure, 2026-07-18)',
+} as const;
