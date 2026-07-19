@@ -383,53 +383,80 @@ const FTS_STOPWORDS = new Set([
 const FTS_MAX_OR_TOKENS = 12;
 
 /**
- * Sanitize a free-form query string for safe use with the FTS5 `MATCH` operator.
- *
- * FTS5 treats several characters as operators (`-` negation, `*` wildcard,
- * `"` phrase, `^` column, `AND`/`OR`/`NOT` connectives). Without sanitization,
- * a query like `sqlite-vec` triggers `fts5: syntax error near "-"` because `-`
- * is parsed as a negation prefix.
- *
- * Strategy: split on whitespace, wrap each token in double quotes (treating
- * each as a literal phrase, escaping embedded `"` by doubling it per the
- * FTS5 phrase-literal rule) — this neutralization is unchanged and applies
- * to every token regardless of which join below is used.
- *
- * FEAT-480: quoted tokens are OR-joined (`"a" OR "b"`), not AND-joined.
- * FTS5 treats adjacent bare phrases as implicit AND, which meant a plain
- * multi-word natural-language query required EVERY token present in one
- * memory to match at all — measured 0/50 candidates on real queries, with
- * the BM25 leg (alpha=0.4 of the fusion weight) silently contributing
- * nothing. OR-join returns any row matching ANY token and lets bm25() rank
- * by match quality instead.
+ * Split a query into whitespace tokens (shared by both builders below).
+ */
+function ftsTokens(q: string): string[] {
+  return q.trim().split(/\s+/).filter(Boolean);
+}
+
+/**
+ * Quote a single token as an FTS5 phrase literal, escaping embedded `"` by
+ * doubling it per the FTS5 phrase-literal rule. FTS5 treats several bare
+ * characters as operators (`-` negation, `*` wildcard, `"` phrase, `^`
+ * column, `AND`/`OR`/`NOT` connectives) — without quoting, a query like
+ * `sqlite-vec` triggers `fts5: syntax error near "-"` because `-` is parsed
+ * as a negation prefix. Quoting neutralizes all of that; it is applied to
+ * every token regardless of which join (AND/OR) below is used.
+ */
+function ftsQuote(t: string): string {
+  return `"${t.replace(/"/g, '""')}"`;
+}
+
+/**
+ * Build the AND-form FTS5 MATCH string — adjacent quoted phrases, which
+ * FTS5 treats as implicit AND (every token must be present in one memory).
+ * This is the pre-FEAT-480 sanitization behavior verbatim: byte-identical
+ * output for any given query. Preserved as its own builder (rather than
+ * folded away) because the two-pass strategy in gatherCandidates() below
+ * runs this FIRST and only escalates to buildFtsOr when it draws a blank —
+ * literal-keyword queries (all tokens present in some memory) get this
+ * precise, undiluted ranking and never see the OR form at all.
+ */
+function buildFtsAnd(q: string): string {
+  return ftsTokens(q).map(ftsQuote).join(' ');
+}
+
+/**
+ * Build the OR-form FTS5 MATCH string (`"a" OR "b"`) — any row matching ANY
+ * token, letting bm25() rank by match quality. FTS-480's original fix: a
+ * plain multi-word natural-language query under AND-only required EVERY
+ * token present in one memory to match at all — measured 0/50 candidates on
+ * real queries, with the BM25 leg (alpha=0.4 of the fusion weight) silently
+ * contributing nothing.
  *
  * Naive OR-of-every-token floods the candidate set with stopword noise
  * ("the", "what", "does" match almost every row) — FTS_STOPWORDS is
- * stripped from the OR-join first. If stripping stopwords leaves nothing
- * (an all-stopword query like "what is this"), fall back to the original
- * AND-of-all-tokens behavior rather than emit an empty/invalid MATCH string
- * (FTS5 throws on `''`). FTS_MAX_OR_TOKENS bounds candidate-set cost on a
- * long query. Deterministic given the input query — no hidden global state.
+ * stripped first. If stripping stopwords leaves nothing (an all-stopword
+ * query like "what is this"), fall back to AND-of-all-tokens rather than
+ * emit an empty/invalid MATCH string (FTS5 throws on `''`).
+ * FTS_MAX_OR_TOKENS bounds candidate-set cost on a long query.
+ * Deterministic given the input query — no hidden global state.
+ *
+ * NOTE (real-store A/B, follow-up to the original fix): using this as the
+ * ONLY form regressed literal-keyword precision (MRR 0.950->0.800) and
+ * raised junk-in-top-5 (+6pp) — OR diluted precise all-tokens-match rows
+ * with weak single-token ones even when AND already had good hits. This
+ * builder is therefore only reached via the AND-first, OR-fallback gating
+ * in gatherCandidates() below, never called standalone.
  *
  * Trade-off: explicit FTS5 operators (e.g., `"exact phrase"`, `prefix*`) are
  * NOT honored in v1 — every input is treated as a bag of literal phrases.
  * This is the right default for an agent-driven search surface; an
  * `advanced` flag can be added later if needed.
  */
-function escapeFtsQuery(q: string): string {
-  const rawTokens = q.trim().split(/\s+/).filter(Boolean);
+function buildFtsOr(q: string): string {
+  const rawTokens = ftsTokens(q);
   if (rawTokens.length === 0) return '';
-  const quote = (t: string): string => `"${t.replace(/"/g, '""')}"`;
 
   const signalTokens = rawTokens.filter(t => !FTS_STOPWORDS.has(t.toLowerCase()));
   if (signalTokens.length === 0) {
     // All-stopword query — OR-joining pure stopwords would match nearly
     // every row with zero signal. Fall back to AND-of-all-tokens: a valid,
-    // conservative MATCH string (pre-FEAT-480 behavior).
-    return rawTokens.map(quote).join(' ');
+    // conservative MATCH string.
+    return rawTokens.map(ftsQuote).join(' ');
   }
 
-  return signalTokens.slice(0, FTS_MAX_OR_TOKENS).map(quote).join(' OR ');
+  return signalTokens.slice(0, FTS_MAX_OR_TOKENS).map(ftsQuote).join(' OR ');
 }
 
 /**
@@ -654,20 +681,41 @@ async function gatherCandidates(
 ): Promise<{ ftsHits: Array<{ id: string; bm25: number }>; vecHits: Array<{ id: string; cosine: number }> }> {
   const ftsHits: Array<{ id: string; bm25: number }> = [];
   if (mode !== 'semantic' && query.trim()) {
-    const ftsQuery = escapeFtsQuery(query);
-    try {
-      const rows = db.prepare(`
-        SELECT m.id, bm25(memories_fts) AS bm25
-        FROM memories_fts
-        JOIN memories m ON m.rowid = memories_fts.rowid
-        WHERE memories_fts MATCH ?
-        ORDER BY bm25
-        LIMIT ?
-      `).all(ftsQuery, vecK) as Array<{ id: string; bm25: number }>;
-      ftsHits.push(...rows);
-    } catch {
-      // FTS5 rejected the query (rare with escapeFtsQuery sanitization).
-      // Fall through to vector-only path.
+    const runFts = (matchQuery: string): Array<{ id: string; bm25: number }> => {
+      try {
+        return db.prepare(`
+          SELECT m.id, bm25(memories_fts) AS bm25
+          FROM memories_fts
+          JOIN memories m ON m.rowid = memories_fts.rowid
+          WHERE memories_fts MATCH ?
+          ORDER BY bm25
+          LIMIT ?
+        `).all(matchQuery, vecK) as Array<{ id: string; bm25: number }>;
+      } catch {
+        // FTS5 rejected the query (rare with the quoting sanitization in
+        // ftsQuote). Treat as no candidates from this pass.
+        return [];
+      }
+    };
+
+    // AND-first, OR-fallback (FEAT-480 real-store A/B follow-up): run the
+    // precise AND form first — literal-keyword queries where every token
+    // is present in some memory get their undiluted bm25 ranking, exactly
+    // as before OR-join existed. Only escalate to the OR form when AND
+    // drew a complete blank, which confines OR's junk-surfacing to queries
+    // that would otherwise return zero FTS candidates (some signal beats
+    // none) instead of applying to every query and diluting good AND hits.
+    const andQuery = buildFtsAnd(query);
+    ftsHits.push(...runFts(andQuery));
+
+    if (ftsHits.length === 0) {
+      const orQuery = buildFtsOr(query);
+      // Skip a redundant identical re-run — e.g. an all-stopword query
+      // makes buildFtsOr fall back to the same AND string, which can only
+      // reproduce the same empty result.
+      if (orQuery !== andQuery) {
+        ftsHits.push(...runFts(orQuery));
+      }
     }
   }
 
