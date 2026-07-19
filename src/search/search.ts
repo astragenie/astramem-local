@@ -353,6 +353,36 @@ export interface SearchDebugHit {
 }
 
 /**
+ * FEAT-480: small closed-class stopword set used ONLY to decide which tokens
+ * feed the OR-join below. Deliberately narrow — this is not a general NLP
+ * stopword list and must not grow to swallow content words. Its one job is
+ * to strip near-universal filler ("the", "what", "does", "is") that would
+ * otherwise OR-match almost every row in the corpus and drown real signal
+ * under bm25 ranking noise. Case-insensitive match (tokens are lowercased
+ * before lookup); the set itself is stored lowercase.
+ */
+const FTS_STOPWORDS = new Set([
+  'a', 'an', 'the',
+  'is', 'are', 'was', 'were', 'be', 'been', 'being',
+  'do', 'does', 'did', 'doing',
+  'what', 'when', 'where', 'who', 'whom', 'which', 'why', 'how',
+  'and', 'or', 'not', 'but', 'if',
+  'of', 'to', 'in', 'on', 'at', 'by', 'for', 'with', 'about', 'as', 'into',
+  'like', 'through', 'after', 'before',
+  'i', 'me', 'my', 'you', 'your', 'it', 'its', 'this', 'that', 'these', 'those',
+  'can', 'could', 'will', 'would', 'should', 'may', 'might', 'must',
+]);
+
+/**
+ * Cap on how many tokens feed the OR-join. An OR-of-N-tokens query returns
+ * any row matching ANY token, so more tokens means more candidates scored,
+ * not more precision — an unbounded paste-a-paragraph query would OR-join
+ * every word in it. Excess tokens are dropped (not truncated to AND); the
+ * point of this leg is match-any recall, not exhaustive coverage.
+ */
+const FTS_MAX_OR_TOKENS = 12;
+
+/**
  * Sanitize a free-form query string for safe use with the FTS5 `MATCH` operator.
  *
  * FTS5 treats several characters as operators (`-` negation, `*` wildcard,
@@ -361,16 +391,45 @@ export interface SearchDebugHit {
  * is parsed as a negation prefix.
  *
  * Strategy: split on whitespace, wrap each token in double quotes (treating
- * each as a literal phrase), and escape embedded `"` by doubling it per the
- * FTS5 phrase-literal rule. Multi-token queries become implicit AND.
+ * each as a literal phrase, escaping embedded `"` by doubling it per the
+ * FTS5 phrase-literal rule) — this neutralization is unchanged and applies
+ * to every token regardless of which join below is used.
  *
- * Trade-off: explicit FTS5 operators (e.g., `cat OR dog`, `"exact phrase"`,
- * `prefix*`) are NOT honored in v1 — every input is treated as a bag of
- * literal phrases. This is the right default for an agent-driven search
- * surface; an `advanced` flag can be added later if needed.
+ * FEAT-480: quoted tokens are OR-joined (`"a" OR "b"`), not AND-joined.
+ * FTS5 treats adjacent bare phrases as implicit AND, which meant a plain
+ * multi-word natural-language query required EVERY token present in one
+ * memory to match at all — measured 0/50 candidates on real queries, with
+ * the BM25 leg (alpha=0.4 of the fusion weight) silently contributing
+ * nothing. OR-join returns any row matching ANY token and lets bm25() rank
+ * by match quality instead.
+ *
+ * Naive OR-of-every-token floods the candidate set with stopword noise
+ * ("the", "what", "does" match almost every row) — FTS_STOPWORDS is
+ * stripped from the OR-join first. If stripping stopwords leaves nothing
+ * (an all-stopword query like "what is this"), fall back to the original
+ * AND-of-all-tokens behavior rather than emit an empty/invalid MATCH string
+ * (FTS5 throws on `''`). FTS_MAX_OR_TOKENS bounds candidate-set cost on a
+ * long query. Deterministic given the input query — no hidden global state.
+ *
+ * Trade-off: explicit FTS5 operators (e.g., `"exact phrase"`, `prefix*`) are
+ * NOT honored in v1 — every input is treated as a bag of literal phrases.
+ * This is the right default for an agent-driven search surface; an
+ * `advanced` flag can be added later if needed.
  */
 function escapeFtsQuery(q: string): string {
-  return q.trim().split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+  const rawTokens = q.trim().split(/\s+/).filter(Boolean);
+  if (rawTokens.length === 0) return '';
+  const quote = (t: string): string => `"${t.replace(/"/g, '""')}"`;
+
+  const signalTokens = rawTokens.filter(t => !FTS_STOPWORDS.has(t.toLowerCase()));
+  if (signalTokens.length === 0) {
+    // All-stopword query — OR-joining pure stopwords would match nearly
+    // every row with zero signal. Fall back to AND-of-all-tokens: a valid,
+    // conservative MATCH string (pre-FEAT-480 behavior).
+    return rawTokens.map(quote).join(' ');
+  }
+
+  return signalTokens.slice(0, FTS_MAX_OR_TOKENS).map(quote).join(' OR ');
 }
 
 /**
