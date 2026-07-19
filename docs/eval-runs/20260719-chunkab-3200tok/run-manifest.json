@@ -1,0 +1,117 @@
+{
+  "run_dir": ".eval-data/locomo/runs/chunkab-3200tok-20260719",
+  "config": {
+    "datasetPath": ".eval-data/locomo/locomo10.json",
+    "n": 1,
+    "seed": 42,
+    "k": 15,
+    "concurrency": 4,
+    "distillTimeoutMs": 900000,
+    "shards": 1,
+    "answererDeployment": "gpt-5-mini",
+    "models": {
+      "extraction": "gpt-5.4-mini",
+      "compaction": "gpt-5.4-mini",
+      "extractionProvider": "codex-subscription",
+      "compactionProvider": "codex-subscription"
+    },
+    "extractProfile": "conversational",
+    "crossEncoder": {
+      "enabled": false
+    },
+    "diagnosed": false,
+    "extractionPasses": 2,
+    "compactionMode": "never",
+    "extractionPassB": "inherited-default",
+    "passBSweep": "tuned-default",
+    "maxChunkChars": 12800,
+    "extractPromptEnv": "conv-liberal",
+    "passBTuning": {
+      "sweepOnlyBelowAtoms": 8,
+      "maxTokens": 1500,
+      "numCtxCap": 8192
+    },
+    "runConstants": {
+      "chunking": {
+        "maxChunkChars": 3200,
+        "targetTokensEnv": null
+      },
+      "extraction": {
+        "temperature": 0.1,
+        "tempEnv": null,
+        "passAMaxTokens": 6000,
+        "promptEnv": "conv-liberal",
+        "defaultPasses": 2
+      },
+      "passBTuning": {
+        "sweepOnlyBelowAtoms": 8,
+        "maxTokens": 1500,
+        "numCtxCap": 8192,
+        "shippedDefaults": {
+          "sweepOnlyBelowAtoms": 8,
+          "maxTokens": 1500,
+          "numCtxCap": 8192
+        }
+      },
+      "ollamaNumCtx": {
+        "formula": "clamp(inputChars/4 + maxTokens + 512, 4096, min(16384, provider numCtxCap))",
+        "charsPerToken": 4,
+        "floor": 4096,
+        "cap": 16384
+      },
+      "embedding": {
+        "defaultProvider": "onnx",
+        "defaultModel": "mxbai-embed-large",
+        "dim": 1024
+      },
+      "configDefaults": {
+        "compactionModel": "codex-subscription/gpt-5.4-mini",
+        "extractionModel": "gpt-5.4-mini",
+        "extractionProvider": "codex-subscription",
+        "atomTriageMode": "off",
+        "gatekeeperMode": "off",
+        "compactionMode": "never",
+        "chunkConcurrency": 3
+      },
+      "codexDeadKnobs": [
+        "temperature",
+        "maxTokens (pass-A ceiling + pass-B tuning cap)"
+      ],
+      "ollamaEnv": {
+        "OLLAMA_FLASH_ATTENTION": "1",
+        "OLLAMA_KV_CACHE_TYPE": "q8_0",
+        "OLLAMA_NUM_PARALLEL": "2",
+        "OLLAMA_MAX_LOADED_MODELS": "2",
+        "OLLAMA_KEEP_ALIVE": "-1"
+      }
+    },
+    "gitState": {
+      "sha": "fcbadce2",
+      "srcDirty": false
+    }
+  },
+  "counts": {
+    "sampled_conversations": 1,
+    "sampled_qa": 199,
+    "sessions_total": 19,
+    "ingest_ok": 19,
+    "ingest_failed": 0,
+    "distill_ready": 1,
+    "distill_timed_out": 0
+  },
+  "timings": {
+    "load_dataset_ms": 6,
+    "shards_wall_clock_ms": 526617,
+    "total_ms": 529267
+  },
+  "per_shard_timings": {
+    "shard_0": {
+      "daemon_boot_ms": 2436,
+      "ingest_ms": 50,
+      "distill_wait_ms": 436339,
+      "answer_ms": 87728
+    }
+  },
+  "failed_shards": [],
+  "timed_out_sample_ids": []
+}

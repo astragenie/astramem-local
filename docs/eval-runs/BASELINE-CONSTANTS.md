@@ -11,7 +11,7 @@ against this file to see exactly which knobs moved.
 
 | knob | value | notes |
 |---|---|---|
-| chunk `maxChunkChars` | **3200 chars (~800 tok)** | Ceiling raised to 16000 (03-chunk.ts) so codex configs MAY ask for 12800; default flip pending the chunk-size A/B (recency-bias hazard is model-independent) |
+| chunk `maxChunkChars` | **3200 chars (~800 tok)** | Ceiling raised to 16000 (03-chunk.ts) so codex configs MAY ask for 12800. **A/B RESOLVED 2026-07-19: 12800 REJECTED** — same-day LoCoMo pair (codex dual, conv-liberal, k15, compaction never): 800tok 0.5430 vs 3200tok 0.5264 (−1.7; multi-hop −5.3, open-domain −8.0 = the recency-bias signature; adversarial +8.5 the lone gain; no wall-clock win). Runs: `chunkab-800tok-20260719` / `chunkab-3200tok-20260719` |
 | extraction temperature | 0.1 (`ASTRA_EXTRACT_TEMP`) | **DEAD on codex** — provider drops it (endpoint 400s) |
 | pass-A maxTokens | 6000 (`PASS_A_MAX_TOKENS`) | **DEAD on codex** — not forwarded; live for ollama/azure legs |
 | pass-B tuning | gate 8 / cap 1500 / numCtx 8192 | KEPT (proof chain 2026-07-18: costs ~0). On codex only the skip-gate is live; cap+numCtx are ollama-only |
