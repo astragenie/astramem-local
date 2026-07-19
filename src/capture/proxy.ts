@@ -44,7 +44,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { gunzipSync, inflateSync, inflateRawSync, brotliDecompressSync } from 'node:zlib';
 import * as zlibFeatureProbe from 'node:zlib';
 import { stableStringify } from '../server/lib/stable-stringify.js';
-import { gateRelevance, recordCapturedTurnHash, type RelevanceGateOptions } from './relevance-gate.js';
+import { gateRelevance, recordCapturedTurnHash, hashTurnText, type RelevanceGateOptions } from './relevance-gate.js';
 import { writeToSpool } from '../ingest/spool.js';
 import type { ProxyTeeSink } from '../proxy/server.js';
 import { localIsoString } from './local-time.js';
@@ -797,13 +797,47 @@ export function createProxyCaptureTee(opts: ProxyCaptureOptions): () => ProxyTee
       if (assistantTurn) turns.push(assistantTurn);
       if (turns.length === 0) return;
 
+      // FEAT-478 Option A: the exchange, not the turn, is the unit of
+      // capture — an assistant reply gated out (too short, structural junk,
+      // duplicate) or never produced at all (corrupt/unrecognized response
+      // body upstream) must sink the WHOLE exchange, not just the reply.
+      // Spooling a surviving question with no answer is an orphaned prompt —
+      // strictly negative value, the exact failure mode FEAT-458 S5/S7 spent
+      // its arc eliminating. So gating happens in two phases:
+      //   1. Decide which turns survive (below), WITHOUT touching the
+      //      persistent `recentHashes` dedup window yet.
+      //   2. Only if an assistant turn survived, record hashes for the
+      //      survivors and spool.
+      // Phase 1 needs its own SESSION-LOCAL hash set for intra-exchange
+      // dedup: `gateRelevance` only consults `recentHashes` (not yet
+      // mutated), so without this a second turn in the SAME exchange with
+      // text identical to the first would no longer be caught by
+      // `recentHashes.has(...)` the way the old single-pass loop caught it.
       const gated: ProxyTurn[] = [];
+      const exchangeSeenHashes = new Set<string>();
       for (const turn of turns) {
         if (gateRelevance(turn, recentHashes, opts.relevanceGate)) continue;
-        recordCapturedTurnHash(recentHashes, turn.text, opts.relevanceGate.dedupWindow);
+        const hash = hashTurnText(turn.text);
+        if (exchangeSeenHashes.has(hash)) continue;
+        exchangeSeenHashes.add(hash);
         gated.push(turn);
       }
-      if (gated.length === 0) return;
+
+      // Require a surviving assistant turn — an exchange is only captured
+      // when its answer survived. Covers both a gated-out reply (AC-1) and a
+      // reply that never parsed into a turn at all (AC-2); a terse-but-valid
+      // reply that survives the gate still spools with both turns (AC-3).
+      if (!gated.some((turn) => turn.role === 'assistant')) return;
+
+      // Record hashes ONLY now, for turns in an exchange that is ACTUALLY
+      // being spooled (AC-4). Recording during phase 1 above — as the old
+      // code did — would poison `recentHashes` with turns from exchanges
+      // discarded right here, and a LATER identical question that DID get a
+      // good answer could then be silently deduped away (an answer captured
+      // without its question).
+      for (const turn of gated) {
+        recordCapturedTurnHash(recentHashes, turn.text, opts.relevanceGate.dedupWindow);
+      }
 
       // Usage extraction runs independent of the relevance gate above — it's
       // exchange-level telemetry, not turn content, so it's computed once on
