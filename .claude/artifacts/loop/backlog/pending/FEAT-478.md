@@ -1,11 +1,12 @@
 ---
 id: FEAT-478
-status: pending
+status: done
 priority: null
 category: bug
-target_release: null
+target_release: "0.20"
 created: 2026-07-13
-updated: 2026-07-13
+updated: 2026-07-19
+resolution: "2026-07-19 (PR #442, merged 90ee574): Option A — exchange is the unit of capture. proxy.ts now discards the whole exchange unless a role:'assistant' turn survives the relevance gate (kills the orphaned-question / 'gzip.'-reply-gated-out bug), and records dedup hashes only for spooled exchanges (AC-4, no dedup-window poisoning). 2 Option-B tests rewritten deliberately; 3 new tests. Both reviewers approved. LOW follow-ups deferred to 0.21: (1) tool_use-only-response test locking the now-load-bearing no-assistant-turn->discard invariant, (2) optional live-proxy smoke."
 depends_on: [FEAT-458]
 slices: []
 derived_from: live proxy capture test, 2026-07-13
