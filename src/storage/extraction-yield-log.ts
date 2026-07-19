@@ -71,3 +71,17 @@ export function zeroYieldRate(db: DB, sinceMs = 0): number | null {
   if (eligible === 0) return null;
   return zeroYieldCount(db, sinceMs) / eligible;
 }
+
+/** Number of extraction-yield rows recorded since `sinceMs` that produced at least one atom
+ *  (atoms_out > 0) -- the "the pipeline is actually producing memories" signal. Used by the
+ *  doctor "Ingest freshness" canary (FEAT-483 S2) to tell a live stall (ingest activity is
+ *  happening but nothing is coming out the other end) apart from a quiet install (no ingest
+ *  activity, so zero output is expected and not alarming). Same index-range query shape as
+ *  eligibleRunCount/zeroYieldCount -- bounded by `idx_extraction_yield_created` (migration 042),
+ *  not an unindexed scan. */
+export function producedAtomsCount(db: DB, sinceMs = 0): number {
+  const row = db
+    .prepare('SELECT COUNT(*) AS n FROM extraction_yield WHERE created_at >= ? AND atoms_out > 0')
+    .get(sinceMs) as { n: number };
+  return row.n;
+}
