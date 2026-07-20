@@ -29,10 +29,35 @@
  * `spawnSync` child it started — see instance-lock.ts's own header) — then
  * restarts via the adapter. This closes the exact gap the exit-only restart
  * mechanisms leave open, on all three platforms.
+ *
+ * BOOT-GRACE (2026-07-20 incident): the probe above cannot, on its own, tell
+ * a daemon that is SLOW TO BOOT (never bound `/health` yet) apart from one
+ * that is genuinely HUNG (was healthy, is now wedged) — both look identical
+ * from the outside ("N consecutive `/health` failures"). On a large DB
+ * (observed: 573MB SQLCipher) the daemon's pre-bind boot phase (openDb +
+ * sqlite-vec load + worker wiring — all BEFORE `app.listen()` in
+ * `src/cli/serve.ts`) can take several minutes, comfortably past
+ * `DEFAULT_FAILURE_THRESHOLD` consecutive probe intervals. Killing a
+ * still-booting daemon just restarts the identical slow boot from scratch —
+ * a permanent crash-loop that never converges.
+ *
+ * The fix: `daemon.lock` (instance-lock.ts) is written by
+ * `acquireInstanceLock` BEFORE the slow `bind` callback (openDb/migrate/...)
+ * ever runs, so its `{pid, startedAt}` is a reliable per-instance boot-start
+ * anchor available from very early in the process's life — well before
+ * `/health` can answer. The persisted watchdog state (`WatchdogState`,
+ * `watchdogStatePath` below) now tracks which instance (`pid:startedAt`) it
+ * belongs to and whether THAT instance has ever answered `/health` at all
+ * (`everHealthyThisInstance`). The kill/restart path below only fires once a
+ * daemon that WAS healthy stops answering — a daemon that has never once
+ * been healthy since it started is presumed to still be booting and is left
+ * alone, no matter how many consecutive probes fail, UNLESS it has been
+ * alive longer than `BOOT_HARD_CAP_SEC` — the safety valve for a daemon that
+ * is genuinely stuck before ever reaching `app.listen()`, not merely slow.
  */
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { stopLockHolder } from './instance-lock.js';
+import { readLockInfo, stopLockHolder, type LockInfo } from './instance-lock.js';
 import type { ServiceAdapter } from './types.js';
 
 /**
@@ -108,6 +133,25 @@ export const DEFAULT_FAILURE_THRESHOLD = 2;
  */
 export const RESTART_STORM_THRESHOLD = 3;
 export const RESTART_STORM_WINDOW_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Safety-valve absolute cap (2026-07-20 boot-grace fix): a daemon instance
+ * that has NEVER answered `/health` since it started is normally never
+ * killed, no matter how many consecutive probes fail (see the boot-grace
+ * doc comment at the top of this file) — but that must not mean "wait
+ * forever" for an instance that is genuinely stuck before ever reaching
+ * `app.listen()` (a real deadlock during openDb/migrate/provider wiring, not
+ * merely a slow one). Once a never-healthy instance has been alive (per its
+ * own `daemon.lock` `startedAt`) longer than this cap, it is killed exactly
+ * once and the reason is logged loudly — distinct from the ordinary
+ * was-healthy-then-hung kill path below.
+ *
+ * Deliberately generous: a 573MB SQLCipher DB under disk contention was
+ * observed taking ~6-8 minutes to bind on the affected box. 20 minutes
+ * leaves ample headroom above that worst-observed case while still bounding
+ * a truly-wedged boot instead of leaving it stuck forever.
+ */
+export const BOOT_HARD_CAP_SEC = 1200;
 
 /** One line per actual watchdog kill (only the `stopResult.ok === true`
  *  path — refused/failed stops don't count; nothing died). */
@@ -214,10 +258,21 @@ export interface WatchdogProbeOptions {
   /** Injectable stopLockHolder — tests substitute a stub instead of really
    *  signaling a PID. Defaults to the real instance-lock.ts implementation. */
   stopLockHolderImpl?: typeof stopLockHolder;
-  /** Injectable failure-count persistence — tests substitute in-memory
-   *  stubs instead of touching disk. Defaults to a JSON file under dataDir. */
-  readFailureCountImpl?: (dataDir: string) => number;
-  writeFailureCountImpl?: (dataDir: string, count: number) => void;
+  /** Injectable watchdog-state persistence — tests substitute in-memory
+   *  stubs instead of touching disk. Defaults to a JSON file under dataDir
+   *  (see `WatchdogState` / `watchdogStatePath`). */
+  readStateImpl?: (dataDir: string) => WatchdogState;
+  writeStateImpl?: (dataDir: string, state: WatchdogState) => void;
+  /** Injectable `daemon.lock` reader — identifies the CURRENT daemon
+   *  instance (`pid:startedAt`) so the boot-grace gate can tell "never
+   *  healthy, still booting" apart from "was healthy, now hung", and can
+   *  compute how long a never-healthy instance has been alive for the
+   *  `BOOT_HARD_CAP_SEC` safety valve. Defaults to the real
+   *  instance-lock.ts `readLockInfo`. */
+  readLockInfoImpl?: (dataDir: string) => LockInfo | null;
+  /** Boot-grace hard-cap override (ms) — tests substitute a tiny value
+   *  instead of the real `BOOT_HARD_CAP_SEC` default. */
+  bootHardCapMs?: number;
   /** Restart-storm breaker knobs/seams (P1.1) — tests substitute in-memory
    *  kill logs and a fixed clock; production always uses the defaults. */
   restartStormThreshold?: number;
@@ -229,8 +284,43 @@ export interface WatchdogProbeOptions {
 
 export interface WatchdogProbeResult {
   healthy: boolean;
-  action: 'none' | 'below-threshold' | 'breaker-tripped' | 'restarted' | 'restart-failed';
+  action: 'none' | 'below-threshold' | 'still-booting' | 'breaker-tripped' | 'restarted' | 'restart-failed';
   detail: string;
+}
+
+/**
+ * Persisted watchdog state (per dataDir, `watchdogStatePath` below) — same
+ * file `{consecutiveFailures}` used to live in alone, now extended (2026-07-20
+ * boot-grace fix) with per-instance identity so a hang recorded against one
+ * daemon process can never be misattributed to its successor.
+ *
+ *  - `consecutiveFailures` — unchanged: consecutive `/health` failures
+ *    against the CURRENT instance, reset to 0 the moment it answers.
+ *  - `instanceKey` — `${pid}:${startedAt}` of the `daemon.lock` holder this
+ *    state was last observed against, or `null` when no lock could be read.
+ *    A probe that reads a DIFFERENT key than the one persisted here means a
+ *    new daemon process has taken over since the last tick — see the reset
+ *    logic in `runWatchdogProbe`.
+ *  - `everHealthyThisInstance` — has THIS instance (by `instanceKey`) ever
+ *    answered `/health` at all. Gates the kill path: only a daemon that was
+ *    healthy at least once and has since gone silent is treated as hung.
+ */
+export interface WatchdogState {
+  consecutiveFailures: number;
+  instanceKey: string | null;
+  everHealthyThisInstance: boolean;
+}
+
+const DEFAULT_WATCHDOG_STATE: WatchdogState = {
+  consecutiveFailures: 0,
+  instanceKey: null,
+  everHealthyThisInstance: false,
+};
+
+/** `${pid}:${startedAt}` identity for a `daemon.lock` holder, or `null` when
+ *  no lock could be read (nothing to identify). */
+function instanceKeyOf(lock: LockInfo | null): string | null {
+  return lock ? `${lock.pid}:${lock.startedAt}` : null;
 }
 
 async function probeHealth(port: number, timeoutMs: number, fetchImpl: typeof fetch): Promise<boolean> {
@@ -242,30 +332,36 @@ async function probeHealth(port: number, timeoutMs: number, fetchImpl: typeof fe
   }
 }
 
-/** Per-dataDir persisted consecutive-failure count — same directory
- *  convention as daemon.lock (instance-lock.ts). */
+/** Per-dataDir persisted watchdog state — same directory convention as
+ *  daemon.lock (instance-lock.ts). */
 function watchdogStatePath(dataDir: string): string {
   return join(dataDir, 'watchdog-probe-state.json');
 }
 
-/** Absent/corrupt state reads as 0 — a fresh start, never a false positive. */
-function readFailureCount(dataDir: string): number {
+/** Absent/corrupt state reads as the zero-value default — a fresh start,
+ *  never a false positive. */
+function readWatchdogState(dataDir: string): WatchdogState {
   try {
-    const parsed = JSON.parse(readFileSync(watchdogStatePath(dataDir), 'utf8')) as { consecutiveFailures?: unknown };
-    return typeof parsed.consecutiveFailures === 'number' && parsed.consecutiveFailures >= 0
-      ? parsed.consecutiveFailures
-      : 0;
+    const parsed = JSON.parse(readFileSync(watchdogStatePath(dataDir), 'utf8')) as Partial<WatchdogState>;
+    return {
+      consecutiveFailures:
+        typeof parsed.consecutiveFailures === 'number' && parsed.consecutiveFailures >= 0
+          ? parsed.consecutiveFailures
+          : 0,
+      instanceKey: typeof parsed.instanceKey === 'string' ? parsed.instanceKey : null,
+      everHealthyThisInstance: parsed.everHealthyThisInstance === true,
+    };
   } catch {
-    return 0;
+    return { ...DEFAULT_WATCHDOG_STATE };
   }
 }
 
-/** Best-effort — a failed write just means the next tick recomputes from 0,
- *  which only delays action by extending the "consecutive" run, never
- *  causes a spurious kill. */
-function writeFailureCount(dataDir: string, count: number): void {
+/** Best-effort — a failed write just means the next tick recomputes from the
+ *  zero-value default, which only delays action by extending the
+ *  "consecutive" run, never causes a spurious kill. */
+function writeWatchdogState(dataDir: string, state: WatchdogState): void {
   try {
-    writeFileSync(watchdogStatePath(dataDir), JSON.stringify({ consecutiveFailures: count }));
+    writeFileSync(watchdogStatePath(dataDir), JSON.stringify(state));
   } catch {
     /* best-effort, see doc comment above */
   }
@@ -281,23 +377,64 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
   const failureThreshold = opts.failureThreshold ?? DEFAULT_FAILURE_THRESHOLD;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const stopLockHolderFn = opts.stopLockHolderImpl ?? stopLockHolder;
-  const readCount = opts.readFailureCountImpl ?? readFailureCount;
-  const writeCount = opts.writeFailureCountImpl ?? writeFailureCount;
+  const readState = opts.readStateImpl ?? readWatchdogState;
+  const writeState = opts.writeStateImpl ?? writeWatchdogState;
+  const readLock = opts.readLockInfoImpl ?? readLockInfo;
+  const nowMs = opts.nowMs ?? Date.now();
+  const bootHardCapMs = opts.bootHardCapMs ?? BOOT_HARD_CAP_SEC * 1000;
+
+  const lock = readLock(opts.dataDir);
+  const currentInstanceKey = instanceKeyOf(lock);
+  let state = readState(opts.dataDir);
+  if (currentInstanceKey !== null && currentInstanceKey !== state.instanceKey) {
+    // A different daemon instance (fresh pid+startedAt) now holds the lock
+    // than the one this state was last recorded against — a restart (ours or
+    // otherwise) happened since the last tick. Reset the whole streak so a
+    // hang recorded against the OLD instance can never carry over and cause
+    // an immediate kill of a brand-new, still-booting one.
+    state = { consecutiveFailures: 0, instanceKey: currentInstanceKey, everHealthyThisInstance: false };
+  }
 
   const healthy = await probeHealth(opts.port, timeoutMs, fetchImpl);
   if (healthy) {
-    writeCount(opts.dataDir, 0);
+    writeState(opts.dataDir, { ...state, consecutiveFailures: 0, everHealthyThisInstance: true });
     return { healthy: true, action: 'none', detail: `/health responded within ${timeoutMs}ms` };
   }
 
-  const consecutiveFailures = readCount(opts.dataDir) + 1;
+  const consecutiveFailures = state.consecutiveFailures + 1;
+  state = { ...state, consecutiveFailures };
+
   if (consecutiveFailures < failureThreshold) {
-    writeCount(opts.dataDir, consecutiveFailures);
+    writeState(opts.dataDir, state);
     return {
       healthy: false,
       action: 'below-threshold',
       detail: `/health unresponsive within ${timeoutMs}ms (failure ${consecutiveFailures}/${failureThreshold}) — waiting for another consecutive failure before acting`,
     };
+  }
+
+  // Boot-grace gate (2026-07-20 fix): a daemon instance that has NEVER
+  // answered /health cannot be distinguished from a genuine hang by probe
+  // failures alone — it may simply still be booting (see file header). Only
+  // proceed to the kill path below once this instance has been healthy at
+  // least once, UNLESS it has outlived the BOOT_HARD_CAP_SEC safety valve.
+  let bootHardCapTripped = false;
+  if (!state.everHealthyThisInstance) {
+    const aliveMs = lock?.startedAt ? nowMs - Date.parse(lock.startedAt) : NaN;
+    if (!Number.isFinite(aliveMs) || aliveMs < bootHardCapMs) {
+      writeState(opts.dataDir, state);
+      return {
+        healthy: false,
+        action: 'still-booting',
+        detail:
+          `daemon not yet healthy after ${consecutiveFailures} consecutive probes — still booting, not killing ` +
+          `(instance alive ${Number.isFinite(aliveMs) ? `${aliveMs}ms` : 'unknown'}, hard cap ${bootHardCapMs}ms)`,
+      };
+    }
+    bootHardCapTripped = true;
+    console.error(
+      `[astramem-local] daemon never became healthy within the boot hard-cap (${bootHardCapMs}ms) — genuinely stuck, restarting`,
+    );
   }
 
   // Restart-storm circuit breaker (see RESTART_STORM_THRESHOLD doc comment):
@@ -308,9 +445,9 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
   const stormWindowMs = opts.restartStormWindowMs ?? RESTART_STORM_WINDOW_MS;
   const readKills = opts.readKillsInWindowImpl ?? readKillsInWindow;
   const appendKill = opts.appendKillEventImpl ?? appendKillEvent;
-  const killsInWindow = readKills(opts.dataDir, opts.nowMs ?? Date.now(), stormWindowMs);
+  const killsInWindow = readKills(opts.dataDir, nowMs, stormWindowMs);
   if (killsInWindow.length >= stormThreshold) {
-    writeCount(opts.dataDir, consecutiveFailures);
+    writeState(opts.dataDir, state);
     return {
       healthy: false,
       action: 'breaker-tripped',
@@ -343,7 +480,7 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
       // kill+restart immediately instead of waiting through another full
       // below-threshold run — the daemon is confirmed hung, not merely
       // suspected.
-      writeCount(opts.dataDir, consecutiveFailures);
+      writeState(opts.dataDir, state);
       return {
         healthy: false,
         action: 'restart-failed',
@@ -355,16 +492,23 @@ export async function runWatchdogProbe(opts: WatchdogProbeOptions): Promise<Watc
     // breaker must count exactly the events that destroy in-flight work.
     appendKill(opts.dataDir);
     await opts.adapter.start();
-    writeCount(opts.dataDir, 0);
+    // Reset consecutiveFailures but keep instanceKey/everHealthyThisInstance
+    // as-is — the NEXT tick will observe the newly-spawned process's own
+    // fresh daemon.lock (different pid/startedAt) and reset the rest of the
+    // state via the instance-change branch above.
+    writeState(opts.dataDir, { ...state, consecutiveFailures: 0 });
     return {
       healthy: false,
       action: 'restarted',
-      detail: `hang detected (/health unresponsive within ${timeoutMs}ms) — ${stopResult.detail}; restarted via ${opts.adapter.platform} adapter`,
+      detail:
+        `hang detected (/health unresponsive within ${timeoutMs}ms) — ${stopResult.detail}; ` +
+        `restarted via ${opts.adapter.platform} adapter` +
+        (bootHardCapTripped ? ' [boot hard-cap exceeded — daemon never became healthy since starting]' : ''),
     };
   } catch (err) {
     // Same reasoning as the stopResult.ok===false branch above — restart
     // itself failed, so keep the count at threshold and retry next tick.
-    writeCount(opts.dataDir, consecutiveFailures);
+    writeState(opts.dataDir, state);
     return {
       healthy: false,
       action: 'restart-failed',
