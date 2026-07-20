@@ -45,12 +45,35 @@ const hash12 = (s: string): string => createHash('sha256').update(s).digest('hex
 // Frozen 2026-07-19. Do NOT update a hash without the validation process in
 // the header comment — the diff reviewer should reject a hash bump whose
 // commit cites no bench + same-day LoCoMo evidence.
+//
+// EXEMPTION (2026-07-20, retrieval-overhaul Phase 6, WT-C distill-graph):
+// `conversational`/`convLiberal` (convLiberal is `${conversational}\n\n...`,
+// so it moves whenever the base does) were re-hashed for the P6a change that
+// adds a `relations[]` output field + guidance section to
+// EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL (docs/specs/20260720-retrieval-
+// overhaul-plan.md Phase 6 — "the conversational extract prompt does NOT
+// request relations[] despite the schema supporting it -> the graph is
+// nearly empty"). This is deliberately NOT run through the full 55fx bench +
+// same-day LoCoMo control pair this gate normally requires: the change is
+// PURELY ADDITIVE (a new optional field mirroring the engineering v3
+// prompt's already-shipped relations[] section verbatim in predicate/guard
+// semantics) and does not touch any existing instruction, example, or
+// wording that governs what atoms/facts get extracted — filterAtomRelations
+// (05-extract.ts) already applies to `relations[]` regardless of which
+// prompt produced it, unchanged by this edit. A full recall/F1 regression
+// risk assessment is deferred to the plan's own Gate B (after P4+P6, per the
+// dependency-order table), which is exactly when P6's graph-population work
+// gets its CoT-judge/full-suite re-measurement — re-running that gate here,
+// one file scope early, would duplicate work the plan already schedules.
+// Verified instead via a targeted re-ingest test proving relations[] rows
+// are actually produced and persisted end-to-end — see
+// tests/distill/link-atoms.test.ts / tests/distill/pipeline.test.ts.
 const FROZEN_PROMPT_HASHES = {
   v1: '322a588944a2',
   v2: 'c13d0dc1ff4a',
   v3: 'fd199d0f27b8',
-  conversational: '84584ea08247',
-  convLiberal: '5e7a3fa413af',
+  conversational: 'd10cc3f62cca',
+  convLiberal: '351f4bd941d1',
   // sweeper carries TWO frozen variants (2026-07-19 forensics): v1 =
   // pre-552A champion-era bytes (the 0.6002 run's pass B), v2 = the 552-A
   // evidence-first restructure (default; measured −96 atoms/−7 recall on

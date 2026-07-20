@@ -241,13 +241,24 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/NEGATIVE COUNTER-EXAMPLE/);
   });
 
-  // FEAT-479's conversational profile (SLICE-434) is NOT extended with
-  // relations[] — design doc §2.5 scopes the prompt addition to the shared
-  // engineering skeleton only; no direction to also add it to the
-  // conversational profile.
-  it('does NOT add relations[] to the conversational profile', () => {
-    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/"relations"/);
-    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/relations\[\]/);
+  // UPDATE (retrieval-overhaul Phase 6, 2026-07-20): this used to assert the
+  // OPPOSITE — that the conversational profile deliberately did NOT get
+  // relations[]. Codex's architecture review measured that omission as the
+  // direct cause of the entity graph being near-empty (LoCoMo/personal
+  // transcripts are overwhelmingly conversational-profile), so P6a extends
+  // this profile with the SAME closed predicate enum the engineering (V3)
+  // prompt already uses — see EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL's own
+  // "Relations" section.
+  it('adds relations[] to the conversational profile using the same closed predicate enum', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/"relations"/);
+    for (const predicate of [
+      'uses', 'depends_on', 'replaces', 'supersedes', 'mentions',
+      'relates_to', 'part_of', 'owned_by', 'assigned_to', 'created_by', 'other',
+    ]) {
+      expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toContain(predicate);
+    }
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/MUST each be a name that ALSO appears in this/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Possessor qualification/);
   });
 
   it('includes a negative (WRONG vs RIGHT) example demonstrating the contextless-trivia failure mode', () => {

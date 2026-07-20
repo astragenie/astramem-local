@@ -156,4 +156,24 @@ export interface Memory {
    *  claim. Purely additive/queryable — NEVER used to delete or rewrite the
    *  atom itself (see src/distill/atom-triage.ts's doc comment). */
   evidence_supported: boolean | null;
+  /**
+   * Retrieval-overhaul Phase 5 (storage half, migration 057) — structured
+   * source-provenance for `evidence` (above), replacing the ~25%-match fuzzy
+   * back-map the eval harness previously had to do at READ time with a
+   * located span computed once at WRITE time. See
+   * src/distill/locate-evidence.ts for how these are computed and
+   * migrations/057-evidence-provenance.sql for the full field-by-field
+   * rationale. All four are `null` together (never partially populated) for
+   * every write path without a source transcript to locate evidence within,
+   * every atom with no `evidence` string, and every atom whose evidence
+   * didn't confidently match anywhere in its own source transcript.
+   */
+  evidence_turn_index: number | null;
+  evidence_char_start: number | null;
+  evidence_char_end: number | null;
+  /** The exact verbatim transcript text located at
+   *  [evidence_char_start, evidence_char_end) — distinct from `evidence`
+   *  (the extractor's own, possibly paraphrased, excerpt). See
+   *  migrations/057-evidence-provenance.sql. */
+  evidence_span: string | null;
 }

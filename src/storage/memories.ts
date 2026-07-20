@@ -131,6 +131,22 @@ export interface InsertInput {
    * ever passes an explicit `true`/`false` here.
    */
   evidence_supported?: boolean | null;
+  /**
+   * Retrieval-overhaul Phase 5 (storage half, migration 057) — structured
+   * source-provenance for `evidence`, computed by
+   * src/distill/locate-evidence.ts and passed straight through by stage 8
+   * (src/distill/stages/08-embed-index.ts). All four fields travel together
+   * — the caller either supplies a full `EvidenceLocation` or omits the
+   * whole group; there is no partial-population case. `undefined` (every
+   * pre-Phase-5 caller: `/remember`, MCP `remember`, the eval harness, and
+   * any distill-pipeline atom whose evidence didn't locate) inserts NULL
+   * for all four, byte-identical to pre-Phase-5 behavior. See
+   * Memory.evidence_turn_index's doc comment for the full field rationale.
+   */
+  evidence_turn_index?: number | null;
+  evidence_char_start?: number | null;
+  evidence_char_end?: number | null;
+  evidence_span?: string | null;
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
@@ -250,8 +266,9 @@ export class MemoryRepo {
         (id, type, text, normalized_text, repo, project, branch, agent, session_id,
          importance, confidence, hash, embedding_provider, embedding_model, embedding_dim,
          created_at, updated_at, source_hash, evidence, valid_from, valid_to, scope, capture_source,
-         validity_extracted, speaker_label, consent_disclosed, evidence_supported)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         validity_extracted, speaker_label, consent_disclosed, evidence_supported,
+         evidence_turn_index, evidence_char_start, evidence_char_end, evidence_span)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.type, input.text, input.normalized_text,
       input.repo, input.project, input.branch, input.agent, input.session_id,
@@ -262,6 +279,8 @@ export class MemoryRepo {
       input.speaker_label ?? null,
       input.consent_disclosed === undefined || input.consent_disclosed === null ? null : (input.consent_disclosed ? 1 : 0),
       input.evidence_supported === undefined || input.evidence_supported === null ? null : (input.evidence_supported ? 1 : 0),
+      input.evidence_turn_index ?? null, input.evidence_char_start ?? null,
+      input.evidence_char_end ?? null, input.evidence_span ?? null,
     );
     return id;
   }
