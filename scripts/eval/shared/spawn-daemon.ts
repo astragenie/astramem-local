@@ -97,8 +97,11 @@ export interface IsolatedEvalEnv {
 export interface EvalCrossEncoderOverride {
   enabled: boolean;
   /** Default 'mock' (the deterministic Jaccard stand-in, no network/model —
-   *  see rerank.ts's header) if omitted. */
-  provider?: 'mock' | 'http';
+   *  see rerank.ts's header) if omitted. `'onnx'` (P2 retrieval overhaul,
+   *  2026-07-20) selects the real in-process cross-encoder
+   *  (`src/search/onnx-cross-encoder.ts`) — the sandbox daemon downloads/
+   *  loads it on first rerank call the same way it would in production. */
+  provider?: 'mock' | 'http' | 'onnx';
 }
 
 /** Same override-or-default resolution `makeIsolatedEvalEnv` applies,

@@ -4,10 +4,12 @@ import {
   HttpCrossEncoderProvider,
   applyRerank,
   buildCrossEncoderProvider,
+  buildRerankCandidateText,
   resolveRerankOpts,
   type CrossEncoderProvider,
   type RerankOpts,
 } from '../../src/search/rerank.js';
+import { OnnxCrossEncoderProvider } from '../../src/search/onnx-cross-encoder.js';
 import { defaultConfig } from '../../src/config/config.js';
 
 type Hit = { id: string; text: string; score: number };
@@ -76,6 +78,42 @@ describe('buildCrossEncoderProvider', () => {
     expect(provider.name).toBe('http');
     expect(provider).toBeInstanceOf(HttpCrossEncoderProvider);
   });
+
+  // P2 retrieval overhaul (2026-07-20): the real in-process ONNX
+  // cross-encoder provider — never throws at build time (model loads lazily
+  // on first score() call, same posture as buildCrossEncoderProvider's
+  // pre-existing mock/http branches never doing network I/O at build time).
+  describe("provider: 'onnx'", () => {
+    it('builds an OnnxCrossEncoderProvider without touching the network/model', () => {
+      const provider = buildCrossEncoderProvider({ enabled: true, provider: 'onnx', topK: 50, timeoutMs: 1500 });
+      expect(provider.name).toBe('onnx');
+      expect(provider).toBeInstanceOf(OnnxCrossEncoderProvider);
+    });
+
+    it('derives cacheDir from dataDir (<dataDir>/models/onnx) when no explicit onnx.cacheDir override is set', () => {
+      // Indirect assertion: this must not throw when a dataDir is supplied —
+      // constructing the provider is the observable surface here since
+      // cacheDir resolution only actually matters at first-load time.
+      expect(() =>
+        buildCrossEncoderProvider({ enabled: true, provider: 'onnx', topK: 50, timeoutMs: 1500 }, 'C:\\custom\\astra-data'),
+      ).not.toThrow();
+    });
+
+    it('skips cacheDir derivation for dataDir === ":memory:"', () => {
+      expect(() =>
+        buildCrossEncoderProvider({ enabled: true, provider: 'onnx', topK: 50, timeoutMs: 1500 }, ':memory:'),
+      ).not.toThrow();
+    });
+
+    it('an explicit onnx.cacheDir override wins over a derived dataDir cache path', () => {
+      expect(() =>
+        buildCrossEncoderProvider(
+          { enabled: true, provider: 'onnx', topK: 50, timeoutMs: 1500, onnx: { cacheDir: '/explicit/cache' } },
+          'C:\\custom\\astra-data',
+        ),
+      ).not.toThrow();
+    });
+  });
 });
 
 describe('resolveRerankOpts', () => {
@@ -90,6 +128,38 @@ describe('resolveRerankOpts', () => {
     expect(opts?.topK).toBe(7);
     expect(opts?.timeoutMs).toBe(123);
     expect(opts?.provider.name).toBe('mock');
+  });
+
+  it("wires config.dataDir through to the onnx provider when enabled + provider: 'onnx'", () => {
+    const cfg = {
+      ...defaultConfig(),
+      dataDir: 'C:\\custom\\astra-data',
+      crossEncoder: { enabled: true, provider: 'onnx' as const, topK: 50, timeoutMs: 1500 },
+    };
+    const opts = resolveRerankOpts(cfg);
+    expect(opts).toBeDefined();
+    expect(opts?.provider.name).toBe('onnx');
+    expect(opts?.provider).toBeInstanceOf(OnnxCrossEncoderProvider);
+  });
+});
+
+describe('buildRerankCandidateText', () => {
+  it('returns text unchanged when evidence is absent (default SearchHit shape today)', () => {
+    expect(buildRerankCandidateText({ text: 'atom text' })).toBe('atom text');
+  });
+
+  it('returns text unchanged when evidence is null', () => {
+    expect(buildRerankCandidateText({ text: 'atom text', evidence: null })).toBe('atom text');
+  });
+
+  it('returns text unchanged when evidence is an empty string', () => {
+    expect(buildRerankCandidateText({ text: 'atom text', evidence: '' })).toBe('atom text');
+  });
+
+  it('appends the evidence excerpt when present — "query + atom text + evidence excerpt"', () => {
+    const result = buildRerankCandidateText({ text: 'atom text', evidence: 'the exact quoted excerpt' });
+    expect(result).toContain('atom text');
+    expect(result).toContain('the exact quoted excerpt');
   });
 });
 
@@ -437,6 +507,28 @@ describe('applyRerank', () => {
     expect(tail.reranked).toBeUndefined();
     expect(tail.rerank_score).toBeUndefined();
     expect(tail.explanation).toBeUndefined();
+  });
+
+  it('P2: passes evidence-excerpt-augmented text (not atom text alone) to the provider when a hit carries evidence', async () => {
+    let capturedTexts: string[] = [];
+    const capturingProvider: CrossEncoderProvider = {
+      name: 'mock',
+      score: async (_query, candidates) => {
+        capturedTexts = candidates.map(c => c.text);
+        return new Map(candidates.map(c => [c.id, 0.5]));
+      },
+    };
+    const hits: Array<Hit & { evidence?: string | null }> = [
+      { id: 'a', text: 'atom text only', score: 0.5, evidence: 'exact source excerpt' },
+      { id: 'b', text: 'no evidence atom', score: 0.4 },
+    ];
+    const opts: RerankOpts = { topK: 10, timeoutMs: 300, provider: capturingProvider };
+
+    await applyRerank('query', hits, opts);
+
+    expect(capturedTexts[0]).toContain('atom text only');
+    expect(capturedTexts[0]).toContain('exact source excerpt');
+    expect(capturedTexts[1]).toBe('no evidence atom');
   });
 
   it('FEAT-452: whole-call timeout fallback leaves hits completely unchanged — no rerank fields anywhere', async () => {

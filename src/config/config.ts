@@ -308,36 +308,94 @@ export interface Config {
       maxCandidates: number;
     };
   };
-  /** Cross-encoder rerank stage (issue #26, ADR-005). OFF by default — ADR-005
-   * ruled "no reranker in v1 (CPU budget)" for local, so this is a
-   * config-flagged, opt-in seam (mirrors the cloud engine's stub-by-default
-   * `ICrossEncoderRanker`), not a default-on capability. When disabled the
-   * search pipeline is byte-identical to pre-rerank behavior — the stage is
-   * never invoked, not merely a no-op weight (see src/search/rerank.ts).
+  /** Cross-encoder rerank stage (issue #26, ADR-005; P2 retrieval overhaul,
+   * WT-B, 2026-07-20). OFF by default — ADR-005 ruled "no reranker in v1
+   * (CPU budget)" for local, so this remains a config-flagged, opt-in seam
+   * (mirrors the cloud engine's stub-by-default `ICrossEncoderRanker`), not
+   * a default-on capability: flipping `enabled: true` in the SHIPPED
+   * default still requires published eval evidence per
+   * docs/runbooks/cross-encoder-rerank.md's "Eval-evidence requirement" —
+   * that is a cross-track Gate A decision (retrieval overhaul plan), not
+   * something this worktree changes unilaterally. When disabled the search
+   * pipeline is byte-identical to pre-rerank behavior — the stage is never
+   * invoked, not merely a no-op weight (see src/search/rerank.ts).
    *
-   * `provider: 'mock'` is a deterministic lexical-overlap scorer — fully
-   * testable, no network/model dependency. `provider: 'http'` calls a real
-   * cross-encoder sidecar over HTTP (see docs/runbooks/cross-encoder-rerank.md
-   * for the endpoint contract, cost/latency notes, and how to run one) —
-   * requires `sidecarUrl`; `buildCrossEncoderProvider` throws at
-   * provider-build time if it's unset.
+   * Three providers:
+   * - `provider: 'mock'` — deterministic lexical-overlap scorer. No real
+   *   semantic signal; exists to prove the stage is wired end-to-end
+   *   without a network/model dependency.
+   * - `provider: 'onnx'` (P2, new default WHEN `enabled: true` — see
+   *   `defaultConfig()`) — a real, compact, in-process cross-encoder
+   *   (`ms-marco-MiniLM-L-6-v2`, ~23MB q8) via `@huggingface/transformers`,
+   *   the SAME local-only, no-cloud-dependency posture `onnxEmbed` already
+   *   ships (`src/search/onnx-cross-encoder.ts`). This is the "real
+   *   reranker" this repo has needed since ADR-005 — no sidecar process to
+   *   run, model loads lazily on first use and is memoized for the daemon's
+   *   lifetime.
+   * - `provider: 'http'` — a real cross-encoder sidecar over HTTP (see
+   *   docs/runbooks/cross-encoder-rerank.md for the endpoint contract,
+   *   cost/latency notes, and how to run one) — requires `sidecarUrl`;
+   *   `buildCrossEncoderProvider` throws at provider-build time if it's
+   *   unset. Optional acceleration path (e.g. a GPU-hosted sidecar), never
+   *   the only real implementation now that `onnx` exists.
    *
    * `topK` bounds how many post-fusion candidates are sent through the
-   * reranker (cost/latency control — mirrors cloud's TopK=50 default).
-   * `timeoutMs` is a hard cap (mirrors cloud's 300ms DEC-011/012 budget): a
-   * slow/failed rerank call falls back to the un-reranked fused order rather
-   * than blocking the request — degrades quality, never availability. */
+   * reranker (cost/latency control — the retrieval overhaul plan's target
+   * window is 40-60; default 50). `timeoutMs` is a hard cap: a slow/failed
+   * rerank call falls back to the un-reranked fused order rather than
+   * blocking the request — degrades quality, never availability. Default
+   * raised from the original 300ms (that budget assumed a warm GPU sidecar
+   * — unrealistic for CPU-only in-process inference, which this repo's
+   * ADR-018 deliberately restricts itself to) to 1500ms; the `onnx`
+   * provider logs `device: 'cpu'` + `latency_ms` per call
+   * (`src/search/onnx-cross-encoder.ts`) so p50/p95 can be tracked
+   * separately from a future GPU-backed `http` sidecar's own numbers via
+   * the existing structured-log aggregation this repo already relies on
+   * (no separate metrics registry — see rerank.ts's "Local observability"
+   * doc comment). */
   crossEncoder: {
     enabled: boolean;
-    provider: 'mock' | 'http';
+    provider: 'mock' | 'http' | 'onnx';
     topK: number;
     timeoutMs: number;
     /** Required when provider === 'http'. Base URL of the cross-encoder
      * sidecar's rerank endpoint (e.g. a TEI `/rerank` deployment). */
     sidecarUrl?: string;
-    /** Optional model identifier forwarded in the request body when the
-     * sidecar hosts more than one model (provider === 'http' only). */
+    /** Model identifier. `provider === 'http'`: optional, forwarded in the
+     * sidecar request body when it hosts more than one model.
+     * `provider === 'onnx'`: the `RERANK_MODEL_REGISTRY`
+     * (src/search/onnx-rerank-registry.ts) label to load — defaults to
+     * `DEFAULT_RERANK_MODEL_LABEL` ('ms-marco-MiniLM-L-6-v2') when unset. */
     model?: string;
+    /** `provider === 'onnx'` only — in-process model load overrides. Unset
+     * fields default to the `RERANK_MODEL_REGISTRY[model]` entry, falling
+     * back to `DEFAULT_RERANK_HF_MODEL_ID`/`DEFAULT_RERANK_REVISION`/
+     * `DEFAULT_RERANK_DTYPE` for an unregistered model — same resolution
+     * order as `onnxEmbed`. */
+    onnx?: {
+      /** Local cache directory for downloaded weights. Defaults to
+       * `<dataDir>/models/onnx/` (the same root `onnxEmbed` uses — distinct
+       * HF repo ids nest under separate subdirectories there, so embed and
+       * rerank weights coexist without collision). */
+      cacheDir?: string;
+      /** Explicit local filesystem override — takes precedence over any
+       * download when set (offline/air-gapped installs); see
+       * `resolveLocalSnapshotDir`'s doc comment (providers/embed/onnx.ts)
+       * for the exact lookup rule. */
+      modelPath?: string;
+      /** HF repo id override — bypasses the registry entirely. */
+      hfModelId?: string;
+      /** Pinned HF revision override — never `'main'`. */
+      revision?: string;
+      /** ORT weight precision override — 'q8' (default) | 'fp16' | 'fp32'. */
+      dtype?: OnnxDType;
+      /** ORT intraOpNumThreads cap. Defaults to the same core-count-aware
+       * cap `onnxEmbed` uses inside `OnnxCrossEncoderProvider` when unset. */
+      numThreads?: number;
+      /** (query, text) pairs per model() call — bounds peak batch memory.
+       * Defaults to 16 inside `OnnxCrossEncoderProvider` when unset. */
+      batchSize?: number;
+    };
   };
   /** Multi-hop query decomposition (WS6, LoCoMo multi-hop workstream,
    * src/search/decompose.ts). OFF by default — mirrors crossEncoder's
@@ -1489,7 +1547,20 @@ export function defaultConfig(): Config {
       },
       queryRewrite: { mode: 'off', provider: 'mock', maxVariants: 3, timeoutMs: 1500, maxCandidates: 200 },
     },
-    crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
+    // P2 retrieval overhaul (2026-07-20): `enabled` stays `false` — flipping
+    // the shipped default requires published recall@10/NDCG@10 (or
+    // token-F1, per the retrieval-overhaul plan's Gate A) evidence across
+    // ALL Wave-1 tracks, not a single worktree's own A/B (see
+    // docs/runbooks/cross-encoder-rerank.md's "Eval-evidence requirement").
+    // `provider` DOES flip mock -> onnx: 'onnx' is now the real local
+    // cross-encoder (src/search/onnx-cross-encoder.ts) an operator who
+    // opts into `enabled: true` should get, not the semantically-inert
+    // Jaccard mock. `topK` 50 sits inside the plan's 40-60 target window.
+    // `timeoutMs` raised 300 -> 1500: 300ms assumed a warm GPU sidecar,
+    // unrealistic for CPU-only in-process inference (ADR-018 rejects GPU
+    // execution providers for this repo) — see the Config type's doc
+    // comment above for the full rationale.
+    crossEncoder: { enabled: false, provider: 'onnx', topK: 50, timeoutMs: 1500 },
     multiHop: {
       enabled: false, provider: 'mock', minQueryWords: 6, maxSubQueries: 3,
       maxSupplemental: 5, supplementalWeight: 0.5, timeoutMs: 800,
