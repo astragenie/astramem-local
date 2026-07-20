@@ -22,17 +22,20 @@ cheap recipe, byte-comparable to the numbers already in the LEDGER — NOT the g
   Revert from the diagnostic gpt-5.4 reader. This keeps every A/B comparable to baseline-v2 and the whole LEDGER.
 - **Judge (dev) = token-F1 (deterministic, zero-LLM, zero-cost) PRIMARY + gpt-5-mini llm-judge secondary.**
   token-F1 has no cost and no variance — ideal for *relative* deltas.
-- **gpt-5.4 reader AND gpt-5.4 CoT judge are BOTH diagnostic-only, gate-stage tools** (operator decision
-  2026-07-20). They do NOT run during iteration. Re-enable at phase gates via the standalone
-  `scripts/eval/locomo/oracle/{zep-match answerer, rejudge.mts}` — no code toggle, just don't run them mid-dev.
+- **gpt-5.4 reader AND gpt-5.4 CoT judge are BOTH diagnostic-only, OPERATOR-GATED tools** (operator decision
+  2026-07-20, REAFFIRMED + TIGHTENED 2026-07-20). They do NOT run during iteration **AND do NOT auto-run at
+  phase gates.** Every measurement — dev iteration AND every milestone gate (A/B/C) — uses the cheap stack:
+  gpt-5-mini `current` answerer + gpt-5-mini llm-judge (+ token-F1). The gpt-5.4 reader (`zep-match` answerer)
+  and CoT re-judge (`rejudge.mts`) fire ONLY when the operator explicitly approves the switch, run by run.
+  No code toggle, no automatic gate trigger — just don't run them until told.
 - **The number to beat:** baseline-v2 on the SAME store — conv-26, cat1-4, gpt-5-mini answerer. token-F1
   cat-avg ≈ 0.39 / gpt-5-mini-llm-judge cat-avg ≈ 0.461 (`docs/eval-runs/LEDGER.md` P0a rescore). Every fix
   must beat THAT under the identical cheap recipe.
 - Every A/B: **same store, same conversation (conv-26, n=152), same day** (±6-pt service variance). Full-suite
   (n=1986) reconfirm only at major milestones.
-- A change is KEPT only if token-F1 shows a clear positive delta beyond same-day noise. Gate stages add the
-  gpt-5.4 reader + CoT judge to read the *fair absolute* number, but keep/revert decisions during dev are made
-  on the cheap recipe alone.
+- A change is KEPT only if token-F1 shows a clear positive delta beyond same-day noise. Gate stages are scored
+  on the SAME cheap recipe (gpt-5-mini answerer + gpt-5-mini llm-judge + token-F1) — they do NOT auto-add the
+  gpt-5.4 reader / CoT judge. The fair-absolute gpt-5.4+CoT read is an operator-approved, on-request pass only.
 
 ## Phase 0 — Correctness prerequisites (BLOCKS everything; these are bugs)
 
@@ -100,7 +103,7 @@ Required for 0.80+. Ranking existing atoms better cannot cross the 0.750 gold-at
   shared token budget. Do NOT blindly append neighbors (PRF already rejected that).
 - Return bundle provenance through `/recall`; teach the local answerer to consume grouped chains, not an
   unordered atom list.
-- Local-first: entirely local. **A/B: token-F1 + full-suite; CoT re-judge at the gate — this is the milestone that must clear 0.80.**
+- Local-first: entirely local. **A/B: token-F1 + gpt-5-mini llm-judge + full-suite (cheap stack) — this is the milestone that must clear 0.80 on the cheap ruler; gpt-5.4+CoT confirmation is operator-approved only.**
 
 ## Phase 6 — Graph population  (Codex step 6; +0.02–0.05; PREREQ for Phase 4/5)
 
@@ -126,19 +129,25 @@ P6 (graph populate) ────────────────┴──►
                                                                      └─ P7 (triage, anytime, low pri)
 ```
 
-## Milestone gates (where CoT judge turns back ON)
+## Milestone gates (ALL scored on the cheap stack — CoT stays OFF until operator approves)
 
-- **Gate A (after P1–P3):** token-F1 must show clear cumulative gain; run gpt-5.4 CoT re-judge + full-suite once →
-  expect ~0.68–0.75. If not, stop and re-diagnose before P4.
-- **Gate B (after P4+P6):** multi-hop category must move materially; CoT re-judge.
-- **Gate C (after P5):** the 0.80 milestone. Full-suite, ≥3 runs, CoT judge, conversation-level splits. Only here is
-  a "0.80+" number claimable, per the eval-runs measurement rules.
+Operator instruction 2026-07-20: gates are measured with the SAME cheap recipe as dev iteration —
+gpt-5-mini `current` answerer + gpt-5-mini llm-judge + token-F1. The gpt-5.4 reader / CoT re-judge do
+NOT auto-fire here; the operator approves that switch run-by-run when a fair-absolute read is wanted.
+
+- **Gate A (after P1–P3):** token-F1 + gpt-5-mini llm-judge must show clear cumulative gain over the
+  baseline-v2 cheap numbers (token-F1 ≈ 0.39 / llm-judge ≈ 0.461); full-suite reconfirm once. If no clear
+  gain, stop and re-diagnose before P4. (Fair-absolute gpt-5.4+CoT read: only if operator approves.)
+- **Gate B (after P4+P6):** multi-hop category must move materially under the cheap stack.
+- **Gate C (after P5):** the 0.80 milestone. Full-suite, ≥3 runs, cheap stack, conversation-level splits. A
+  "0.80+" claim on the cheap ruler is what's tracked here; the fair-absolute gpt-5.4+CoT confirmation is an
+  operator-approved pass, not automatic.
 
 ## Slice breakdown (for the loop backlog)
 
 P0.1, P0.2, P0.3 (three small slices) · P1 (1 slice) · P2 (1 slice) · P3 (1 slice) · P6 (1–2 slices) ·
 P4 (1 slice) · P5 (2–3 slices) · P7 (1 slice, deferred). Each slice: implement → token-F1 A/B → reviewer →
-keep-or-revert. CoT re-judge only at Gates A/B/C.
+keep-or-revert. gpt-5.4 reader / CoT re-judge: operator-approved only, never automatic.
 
 ---
 
@@ -192,10 +201,10 @@ Run these in one worktree, serially, each with its own token-F1 A/B.
 ```
 Wave 0 (trunk: bugs + harness + seams)  ──►  merge to feat branch
    ├─ WT-A (P1+P3)  ─┐
-   ├─ WT-B (P2)     ─┼─►  merge all 3 (disjoint files, clean)  ──►  GATE A: cheap-recipe token-F1 must beat baseline;
-   └─ WT-C (P6+P5a) ─┘                                              then gpt-5.4 reader + CoT re-judge for the fair number
-                                                                    (expect ~0.68–0.75)
-   Wave 2: P4 ──► P6-graph must be populated first ──► P5  ──►  GATE C: full-suite, ≥3 runs, CoT judge (0.80 milestone)
+   ├─ WT-B (P2)     ─┼─►  merge all 3 (disjoint files, clean)  ──►  GATE A: cheap-recipe token-F1 + gpt-5-mini
+   └─ WT-C (P6+P5a) ─┘                                              llm-judge must beat baseline. gpt-5.4+CoT read:
+                                                                    operator-approved only (not automatic).
+   Wave 2: P4 ──► P6-graph must be populated first ──► P5  ──►  GATE C: full-suite, ≥3 runs, cheap stack (0.80 milestone)
 ```
 
 ## Dispatch shape
