@@ -24,6 +24,19 @@
  * this prefix the oracle rung would be an unfairly EASIER version of
  * "perfect evidence" than production evidence ever is.
  *
+ * Image-grounded turns (`turn.blip_caption` present) get the SAME inline
+ * `[shares <blip_caption>]` suffix `lib/envelope.ts`'s `buildIngestEnvelope`
+ * appends before real ingest (see that file's `text:` mapping, line ~51) --
+ * a meaningful fraction of LoCoMo's evidence lives ONLY in the image
+ * caption, not the turn's own `text` (e.g. "what did X paint" answered by a
+ * caption, with the turn text itself just small talk). The real store
+ * already folds captions into what it ingests, so an oracle source that
+ * omitted them would UNDERSTATE the evidence ceiling and mislead every
+ * downstream (extraction/retrieval/answering) attribution built on top of
+ * this rung. Each such hit's `type` is tagged `gold-turn-image` (instead of
+ * the plain `gold-turn`) so a caller can split the ceiling both ways --
+ * image-grounded vs text-only -- without re-deriving it from raw turns.
+ *
  * `EvidenceSource.id` MUST equal the filename stem -- this file's id is
  * `gold-turns`, matching `gold-turns.mts`.
  */
@@ -35,6 +48,7 @@ interface GoldTurn {
   speaker: string;
   text: string;
   sessionDateTime: string;
+  blipCaption?: string;
 }
 
 /** dia_id -> turn, indexed once per sample_id and reused across every QA
@@ -53,7 +67,7 @@ function indexSample(sample: LoCoMoSample): Map<string, GoldTurn> {
     const turns = sample.conversation[`session_${n}`] ?? [];
     const sessionDateTime = sample.conversation[`session_${n}_date_time`] ?? '';
     for (const turn of turns) {
-      index.set(turn.dia_id, { speaker: turn.speaker, text: turn.text, sessionDateTime });
+      index.set(turn.dia_id, { speaker: turn.speaker, text: turn.text, sessionDateTime, blipCaption: turn.blip_caption });
     }
   }
   sampleIndexCache.set(sample.sample_id, index);
@@ -75,8 +89,10 @@ const goldTurns: EvidenceSource = {
     for (const diaId of evidence) {
       const turn = index.get(diaId);
       if (!turn) continue; // unresolved dia_id -- a legitimate oracle result, not an error
-      const text = turn.sessionDateTime ? `[${turn.sessionDateTime}] ${turn.speaker}: ${turn.text}` : `${turn.speaker}: ${turn.text}`;
-      hits.push({ id: diaId, type: 'gold-turn', text, score: 1.0, source: 'gold-turns' });
+      // Same `[shares <caption>]` convention as lib/envelope.ts:51's real ingest path.
+      const body = turn.blipCaption ? `${turn.speaker}: ${turn.text} [shares ${turn.blipCaption}]` : `${turn.speaker}: ${turn.text}`;
+      const text = turn.sessionDateTime ? `[${turn.sessionDateTime}] ${body}` : body;
+      hits.push({ id: diaId, type: turn.blipCaption ? 'gold-turn-image' : 'gold-turn', text, score: 1.0, source: 'gold-turns' });
     }
     return hits;
   },
