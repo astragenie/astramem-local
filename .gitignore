@@ -23,16 +23,11 @@ secrets.env
 # crew/runner agent worktrees (ephemeral)
 .claude/worktrees/
 
-# Eval run outputs (metrics, manifests, hypotheses) ARE tracked for provenance.
-# But NEVER commit the LoCoMo/LongMemEval DATASET itself — CC BY-NC 4.0,
-# redistribution-prohibited (see scripts/eval/locomo/README.md "License").
-# Ignore the raw dataset + its sampled subsets; track the system's own outputs.
-.eval-data/**/locomo10.json
-.eval-data/**/locomo*.raw.json
-.eval-data/**/sample.json
-.eval-data/**/dataset*.json
-.eval-data/longmemeval*/
-.eval-data/**/*.tmp
+# LongMemEval + LoCoMo benchmark data (large, fetched; CC BY-NC 4.0 dataset —
+# redistribution-prohibited, see scripts/eval/locomo/README.md "License").
+# Kept fully ignored: run dirs stay local; safe outputs (metrics/manifests, no
+# dataset content) are published via archive-run.mts → docs/eval-runs/.
+.eval-data/
 .bench-keys.env
 
 # Playwright MCP runtime
