@@ -111,6 +111,7 @@ import { checkEntityRelations } from './entity-relations.js';
 import { checkEvidenceProvenance } from './evidence-provenance.js';
 import { checkTranscriptSessionProvenance } from './transcript-session-provenance.js';
 import { checkExtractionYield } from './extraction-yield.js';
+import { checkIngestFreshness } from './ingest-freshness.js';
 import { checkAtomTriage } from './atom-triage.js';
 import { checkGatekeeper } from './gatekeeper.js';
 import { checkEntityNameQuality } from './entity-name-quality.js';
@@ -218,6 +219,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkSpeakerAttributionRate(dataDir, encryptionEnabled),
     checkTranscriptSessionProvenance(dataDir, encryptionEnabled),
     checkExtractionYield(dataDir, encryptionEnabled),
+    checkIngestFreshness(dataDir, encryptionEnabled),
     checkAtomTriage(dataDir, opts.atomTriageMode ?? 'off', encryptionEnabled),
     checkGatekeeper(dataDir, opts.gatekeeperMode ?? 'off', encryptionEnabled),
     checkEntityNameQuality(dataDir, encryptionEnabled),
