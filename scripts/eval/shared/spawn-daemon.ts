@@ -197,6 +197,18 @@ export function makeIsolatedEvalEnv(
 
   const configLines = ['security:', '  encryption:', '    enabled: false'];
 
+  // Eval-sandbox hardening (2026-07-20, session-handoff open item): every isolated
+  // eval daemon otherwise inherits defaultConfig()'s consolidation.contradictionDetection
+  // = { mode: 'enabled' } (intentional for PRODUCTION — see CLAUDE.md's "Contradiction
+  // detection ships enabled", do NOT flip that default back off). A LoCoMo/LongMemEval
+  // sandbox run re-ingests hundreds of near-duplicate sessions in a single pass, which
+  // fires one contradiction-judge LLM call per eligible pair — on a throwaway eval
+  // Ollama/codex setup those calls routinely fail or stall, wedging the run (the same
+  // FEAT-482 incident class, now hitting the harness instead of prod). Force it off for
+  // every sandbox daemon unconditionally; this is an eval-sandbox-only override written
+  // to the throwaway config.yaml below, never the shipped default in src/config/config.ts.
+  configLines.push('consolidation:', '  contradictionDetection:', '    mode: off');
+
   // ONNX embed (ADR-018): since 2026-07-15 defaultConfig().embedding.provider is
   // 'onnx' (in-process ONNX Runtime). This sandbox has a FRESH dataDir, so its own
   // ONNX cache is empty and transformers.js can't fetch offline (HF blocked) — the
