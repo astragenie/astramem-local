@@ -14,8 +14,11 @@ import { MemoryRepo } from '../../storage/memories.js';
 import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { EntityRepo } from '../../storage/entities.js';
 import { EntityRelationRepo } from '../../storage/entity-relations.js';
+import { MemoryLinkRepo } from '../../storage/memory-links.js';
 import { JobRepo } from '../../pipeline/job-repo.js';
 import { normalizeEntityName } from '../../entity/normalize.js';
+import { locateEvidence } from '../locate-evidence.js';
+import type { AtomLinkCandidate } from '../link-atoms.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import type { DB } from '../../storage/db.js';
 import type { Config } from '../../config/config.js';
@@ -180,6 +183,21 @@ export interface EmbedIndexContext {
    * production.
    */
   onYield?: () => void;
+  /**
+   * Retrieval-overhaul Phase 6 (P6b) — deterministic cross-atom link
+   * candidates computed by `linkAtoms` (src/distill/link-atoms.ts) right
+   * after stage 6's reduce(), threaded through pipeline.ts unchanged
+   * (memory-normalize/ground-dates never drop or reorder atoms, only
+   * annotate them, so the `contentHash` values these candidates reference
+   * stay valid all the way to this stage). Resolved to real memory ids and
+   * persisted via `MemoryLinkRepo` AFTER the main atom-insert loop below,
+   * once every atom in this batch has a memory id (or was deduped to an
+   * existing one) — see the resolution block after Phase C. `undefined`/
+   * empty (every caller that doesn't pass it, e.g. distill-events.ts's
+   * atom-to-memory path, which has no `linkAtoms` pass) is a pure no-op —
+   * byte-identical to pre-P6b behavior.
+   */
+  atomLinks?: AtomLinkCandidate[];
 }
 
 /**
@@ -215,8 +233,13 @@ export async function embedAndIndex(
   const eventsRepo = new MemoryEventRepo(ctx.db);
   const entityRepo = new EntityRepo(ctx.db);
   const relationRepo = new EntityRelationRepo(ctx.db);
+  const memoryLinkRepo = new MemoryLinkRepo(ctx.db);
   const vecStore = new SqliteVecStore(ctx.db, ctx.embed.dim);
   const jobRepo = new JobRepo(ctx.db);
+  // Retrieval-overhaul Phase 6 (P6b): resolved as each atom is inserted
+  // below (Phase C) — see EmbedIndexContext.atomLinks's doc comment for why
+  // this can't be resolved until every atom in the batch has a memory id.
+  const memoryIdByContentHash = new Map<string, string>();
 
   // Batch embed all texts at once for efficiency
   const texts = memories.map(m => m.normalizedText);
@@ -521,6 +544,15 @@ export async function embedAndIndex(
       );
     }
 
+    // Retrieval-overhaul Phase 5 (storage half): locate this atom's
+    // `evidence` excerpt in its own source transcript, when both are
+    // present. `undefined` sourceText (the majority of non-distill write
+    // paths, and every caller of this stage without a transcript in scope)
+    // or no `evidence` string both short-circuit to `null` inside
+    // locateEvidence — byte-identical to pre-Phase-5 behavior for any row
+    // that can't be located.
+    const evidenceLocation = ctx.sourceText ? locateEvidence(ctx.sourceText, mem.evidence) : null;
+
     // Insert + append a 'create' memory_event (ADR-002) in one transaction.
     // Dedup-aware: `created` is false when this hash already existed.
     const { id: memoryId, created } = memRepo.insertWithCreateEvent({
@@ -592,7 +624,24 @@ export async function embedAndIndex(
       // so the sync payload signals "tried, found nothing" rather than
       // "extraction never ran" (see InsertInput.entities doc).
       entities: mem.entities ?? [],
+      // Retrieval-overhaul Phase 5 (storage half) — see evidenceLocation's
+      // own comment above. All four travel together; a null evidenceLocation
+      // (no sourceText, no evidence string, or no confident match) leaves
+      // all four NULL, byte-identical to pre-Phase-5 behavior.
+      evidence_turn_index: evidenceLocation?.turnIndex ?? null,
+      evidence_char_start: evidenceLocation?.charStart ?? null,
+      evidence_char_end: evidenceLocation?.charEnd ?? null,
+      evidence_span: evidenceLocation?.span ?? null,
     }, eventsRepo);
+
+    // Retrieval-overhaul Phase 6 (P6b): record this atom's resolved memory
+    // id under its contentHash so the atomLinks resolution pass after this
+    // loop can look it up. A deduped hit (`created === false`) still needs
+    // an entry here — its memoryId is the PRE-EXISTING row's id, which is
+    // exactly the id a link candidate referencing this atom should point
+    // at, same as the entity/relation writes above (which also run
+    // unconditionally on a dedup hit).
+    memoryIdByContentHash.set(mem.contentHash, memoryId);
 
     // FEAT-402 AC-1 / FEAT-453 §4: link entities emitted in the same
     // extraction call, carrying each entity's stated fact-level validity
@@ -742,6 +791,44 @@ export async function embedAndIndex(
     }
 
     results.push({ memoryId, created });
+  }
+
+  // Retrieval-overhaul Phase 6 (P6b): resolve this batch's atomLinks
+  // candidates (contentHash pairs, computed pre-insert by linkAtoms) to real
+  // memory ids now that every atom above has one, and persist via
+  // MemoryLinkRepo. A candidate referencing a contentHash that isn't in this
+  // batch's map (e.g. one side was gated out in Phase A/B and never reached
+  // insertWithCreateEvent) is skipped rather than thrown — same "never let
+  // one item sink the whole batch" posture as the relation-write loop above;
+  // counted so a future regression here is distinguishable from
+  // linkAtoms genuinely producing nothing.
+  let unresolvableLinkDrops = 0;
+  if (ctx.atomLinks && ctx.atomLinks.length > 0) {
+    for (const candidate of ctx.atomLinks) {
+      const memoryIdA = memoryIdByContentHash.get(candidate.contentHashA);
+      const memoryIdB = memoryIdByContentHash.get(candidate.contentHashB);
+      if (!memoryIdA || !memoryIdB) { unresolvableLinkDrops++; continue; }
+      try {
+        memoryLinkRepo.insert({
+          memoryIdA,
+          memoryIdB,
+          linkType: candidate.linkType,
+          evidence: candidate.evidence,
+          confidence: candidate.confidence,
+        });
+      } catch (err) {
+        childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+          { error_message: err instanceof Error ? err.message : String(err), link_type: candidate.linkType },
+          'memory link: insert failed for one candidate — skipped, batch otherwise persisted',
+        );
+      }
+    }
+    if (unresolvableLinkDrops > 0) {
+      childLogger({ session_id: ctx.sessionId ?? undefined, stage: 'embed-index' }).warn(
+        { unresolvableLinkDrops },
+        'memory link: one or more link candidates referenced an atom gated out before insert — skipped',
+      );
+    }
   }
 
   // Diagnostic counter write, deliberately isolated in its own try/catch: it

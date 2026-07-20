@@ -20,6 +20,7 @@ import { compact, shouldCompact, compactionDecisionFor, BudgetExceeded as Compac
 import { extract, extractSpecifics, BudgetExceeded as ExtractBudgetExceeded } from './stages/05-extract.js';
 import { mergeDualPassAtoms } from './dedup-merge.js';
 import { reduce } from './stages/06-reduce.js';
+import { linkAtoms } from './link-atoms.js';
 import { groundAtomDates } from './ground-dates.js';
 import { memoryNormalize } from './stages/07-memory-normalize.js';
 import { embedAndIndex } from './stages/08-embed-index.js';
@@ -635,6 +636,20 @@ export async function runPipeline(
   const reducedAtoms = reduce(allAtoms);
   pipeLog.info({ stage: 'reduce', atoms_out: reducedAtoms.length }, 'stage complete');
 
+  // Retrieval-overhaul Phase 6 (P6b): deterministic cross-atom link
+  // candidates, computed HERE (right after reduce, on the deduped atom set,
+  // before ground-dates/memory-normalize/embed-index) per the plan's own
+  // "insertion point after reduce" direction — reduce is the earliest point
+  // atoms are settled to their final, deduplicated set for this run, so
+  // linking pre-dedup atoms would waste work linking an atom that's about
+  // to be merged away. Candidates key off `contentHash` (stable through the
+  // rest of the pipeline, see ReducedAtom); embedAndIndex resolves them to
+  // real memory ids once every atom has one. Pure/deterministic — no LLM
+  // call, no I/O — so this can never fail or add latency variance to the
+  // pipeline.
+  const atomLinks = linkAtoms(reducedAtoms);
+  pipeLog.info({ stage: 'link-atoms', atoms_in: reducedAtoms.length, links_out: atomLinks.length }, 'stage complete');
+
   // Date-grounding retry (2026-07-13): a second, narrow LLM call for atoms
   // whose text still carries an unresolved relative-date expression after
   // stage 5's own resolve-in-place instruction — see ground-dates.ts's doc
@@ -734,6 +749,10 @@ export async function runPipeline(
     // match a labeled turn, including every transcript with no speaker
     // labels at all (the overwhelming majority).
     sourceText: transcript,
+    // Retrieval-overhaul Phase 6 (P6b): resolved to real memory ids and
+    // persisted inside embedAndIndex once every atom in this batch has one
+    // — see EmbedIndexContext.atomLinks's doc comment.
+    atomLinks,
   });
 
   const created = indexResults.filter(r => r.created).length;
