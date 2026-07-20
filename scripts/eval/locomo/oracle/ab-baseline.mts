@@ -69,11 +69,17 @@ async function main(): Promise<void> {
   }
 
   const label = get('--label') ?? 'ab-baseline';
+  // P2 retrieval overhaul (2026-07-20, WT-B): --rerank off|onnx passthrough to
+  // oracle-factorial.mts — lets a P2 A/B run through this SAME pinned-recipe
+  // wrapper instead of a bespoke script, so the numbers stay comparable to
+  // every other ab-baseline run. Omitting it preserves this command's
+  // original off-only behavior exactly.
+  const rerank = get('--rerank') ?? 'off';
   const outDir = get('--out')
     ?? join('.eval-data', 'locomo', 'oracle', `ab-baseline-${label}-${new Date().toISOString().replace(/[:.]/g, '-')}`);
   mkdirSync(outDir, { recursive: true });
 
-  console.log(`ab-baseline [${label}]: source=retrieved-atoms answerer=current conv=${PINNED_CONV} datadir=${datadir}`);
+  console.log(`ab-baseline [${label}]: source=retrieved-atoms answerer=current conv=${PINNED_CONV} rerank=${rerank} datadir=${datadir}`);
   console.log(`ab-baseline [${label}]: delegating to oracle-factorial.mts (out=${outDir})...\n`);
 
   const result = spawnSync(
@@ -85,6 +91,7 @@ async function main(): Promise<void> {
       '--conv', PINNED_CONV,
       '--datadir', datadir,
       '--out', outDir,
+      '--rerank', rerank,
     ],
     { stdio: 'inherit' },
   );

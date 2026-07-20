@@ -286,7 +286,8 @@ export function configToYaml(cfg: Config): string {
     line(2, 'timeoutMs', cfg.search.queryRewrite.timeoutMs),
     line(2, 'maxCandidates', cfg.search.queryRewrite.maxCandidates),
     '',
-    // Cross-encoder rerank stage (issue #26, ADR-005) — OFF by default. See
+    // Cross-encoder rerank stage (issue #26, ADR-005; P2 retrieval overhaul,
+    // WT-B, 2026-07-20) — OFF by default. See
     // docs/runbooks/cross-encoder-rerank.md before flipping `enabled: true`.
     line(0, 'crossEncoder'),
     line(1, 'enabled', cfg.crossEncoder.enabled),
@@ -295,6 +296,20 @@ export function configToYaml(cfg: Config): string {
     line(1, 'timeoutMs', cfg.crossEncoder.timeoutMs),
     ...(cfg.crossEncoder.sidecarUrl ? [line(1, 'sidecarUrl', cfg.crossEncoder.sidecarUrl)] : []),
     ...(cfg.crossEncoder.model ? [line(1, 'model', cfg.crossEncoder.model)] : []),
+    // `provider: 'onnx'` in-process model load overrides — same "only meaningful
+    // for one provider value, emit only when set, each field independently
+    // optional" shape as `onnxEmbed` above (FEAT-461 discipline: an unemitted
+    // field silently reverts to its default on next load).
+    ...(cfg.crossEncoder.onnx ? [
+      line(1, 'onnx'),
+      ...(cfg.crossEncoder.onnx.cacheDir !== undefined ? [line(2, 'cacheDir', cfg.crossEncoder.onnx.cacheDir)] : []),
+      ...(cfg.crossEncoder.onnx.modelPath !== undefined ? [line(2, 'modelPath', cfg.crossEncoder.onnx.modelPath)] : []),
+      ...(cfg.crossEncoder.onnx.hfModelId !== undefined ? [line(2, 'hfModelId', cfg.crossEncoder.onnx.hfModelId)] : []),
+      ...(cfg.crossEncoder.onnx.revision !== undefined ? [line(2, 'revision', cfg.crossEncoder.onnx.revision)] : []),
+      ...(cfg.crossEncoder.onnx.dtype !== undefined ? [line(2, 'dtype', cfg.crossEncoder.onnx.dtype)] : []),
+      ...(cfg.crossEncoder.onnx.numThreads !== undefined ? [line(2, 'numThreads', cfg.crossEncoder.onnx.numThreads)] : []),
+      ...(cfg.crossEncoder.onnx.batchSize !== undefined ? [line(2, 'batchSize', cfg.crossEncoder.onnx.batchSize)] : []),
+    ] : []),
     '',
     // Multi-hop query decomposition (WS6) — OFF by default. See
     // src/search/decompose.ts before flipping `enabled: true`.

@@ -80,6 +80,17 @@ async function main(): Promise<void> {
   const limitQuestionsRaw = get('--limit-questions');
   const limitQuestions = limitQuestionsRaw !== undefined ? Number(limitQuestionsRaw) : undefined;
   const llmJudge = !has('--no-llm-judge');
+  // P2 retrieval overhaul (2026-07-20, WT-B): --rerank off|onnx toggles the
+  // sandbox daemon's crossEncoder config via makeIsolatedEvalEnv's existing
+  // additive override (spawn-daemon.ts) — no src/ change needed to A/B the
+  // real in-process cross-encoder reranker against the un-reranked baseline.
+  // Omitting the flag (or --rerank off) writes byte-identical config to
+  // before this flag existed (defaultConfig()'s crossEncoder.enabled: false).
+  const rerankFlag = get('--rerank') ?? 'off';
+  if (rerankFlag !== 'off' && rerankFlag !== 'onnx') {
+    console.error(`--rerank must be "off" or "onnx", got "${rerankFlag}"`);
+    process.exit(1);
+  }
 
   const sourceMap = await discoverSources();
   const answererMap = await discoverAnswerers();
@@ -152,7 +163,9 @@ async function main(): Promise<void> {
     // never touches the operator's real config dir, see spawn-daemon.ts's
     // fail-closed isolation guard) pointed at the EXISTING datadir. No
     // ingestConversations call — the store is already populated.
-    isolatedEnv = makeIsolatedEvalEnv('oracle-factorial');
+    isolatedEnv = makeIsolatedEvalEnv('oracle-factorial', rerankFlag === 'onnx'
+      ? { crossEncoder: { enabled: true, provider: 'onnx' } }
+      : undefined);
     daemonHandle = await spawnEvalDaemon({ dataDir: datadir, token, env: isolatedEnv.env });
     await waitForHealthStatus(daemonHandle.baseUrl, ['ok'], 60_000);
     daemonClient = { baseUrl: daemonHandle.baseUrl, token };

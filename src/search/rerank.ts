@@ -29,9 +29,11 @@
  *    reranked one instead of losing the fused value the moment rerank runs.
  */
 
+import { join } from 'node:path';
 import type { Config } from '../config/config.js';
 import { childLogger } from '../log/logger.js';
 import { withAbortableTimeout } from '../util/abortable-timeout.js';
+import { OnnxCrossEncoderProvider } from './onnx-cross-encoder.js';
 
 /** One post-fusion candidate handed to the reranker. */
 export interface CrossEncoderCandidate {
@@ -42,7 +44,7 @@ export interface CrossEncoderCandidate {
 }
 
 export interface CrossEncoderProvider {
-  readonly name: 'mock' | 'http';
+  readonly name: 'mock' | 'http' | 'onnx';
   /**
    * Score every candidate against `query`. Returned map need not cover every
    * id — a missing id falls back to its original fused score (see
@@ -224,16 +226,47 @@ export interface RerankOpts {
 /**
  * Build a `CrossEncoderProvider` from config. `provider: 'http'` requires
  * `sidecarUrl` — throws a clear config error at build time (startup) rather
- * than at first-search-time if it's missing. See
- * docs/runbooks/cross-encoder-rerank.md for the endpoint contract and how to
- * run a sidecar.
+ * than at first-search-time if it's missing. `provider: 'onnx'` (P2
+ * retrieval overhaul, 2026-07-20) never throws at build time — the model
+ * loads lazily on first `score()` call, same posture as
+ * `OnnxEmbedProvider` (providers/embed/onnx.ts): selecting the provider
+ * without a reachable model artifact does not crash daemon boot, it
+ * surfaces through the first real rerank call's timeout/error fallback
+ * instead (`applyRerank` degrades to the un-reranked order — quality, never
+ * availability). See docs/runbooks/cross-encoder-rerank.md for the endpoint
+ * contract and how to run an http sidecar.
+ *
+ * `dataDir` (optional, second param — `resolveRerankOpts` below passes
+ * `config.dataDir`) only matters for `provider: 'onnx'`: it derives the
+ * default weight-cache directory `<dataDir>/models/onnx/`, the SAME root
+ * `providers/index.ts` uses for the embed model (ADR-018 S2) — different HF
+ * repo ids nest under distinct subdirectories there, so embed and rerank
+ * weights coexist without collision. `config.crossEncoder.onnx.cacheDir`
+ * overrides this when set; omitting both `dataDir` and the override defers
+ * to `@huggingface/transformers`' own default cache resolution (matches
+ * `buildCrossEncoderProvider`'s existing test-call signature, which never
+ * passed a second argument before this change).
  */
-export function buildCrossEncoderProvider(config: Config['crossEncoder']): CrossEncoderProvider {
+export function buildCrossEncoderProvider(config: Config['crossEncoder'], dataDir?: string): CrossEncoderProvider {
   if (config.provider === 'mock') return new MockCrossEncoderProvider();
+  if (config.provider === 'onnx') {
+    const cacheDir =
+      config.onnx?.cacheDir ?? (dataDir && dataDir !== ':memory:' ? join(dataDir, 'models', 'onnx') : undefined);
+    return new OnnxCrossEncoderProvider({
+      model: config.model,
+      hfModelId: config.onnx?.hfModelId,
+      revision: config.onnx?.revision,
+      dtype: config.onnx?.dtype,
+      cacheDir,
+      modelPath: config.onnx?.modelPath,
+      numThreads: config.onnx?.numThreads,
+      batchSize: config.onnx?.batchSize,
+    });
+  }
   if (!config.sidecarUrl) {
     throw new Error(
       "crossEncoder.provider 'http' requires crossEncoder.sidecarUrl to be set " +
-        "(see docs/runbooks/cross-encoder-rerank.md). Set sidecarUrl or use provider: 'mock'.",
+        "(see docs/runbooks/cross-encoder-rerank.md). Set sidecarUrl or use provider: 'mock'/'onnx'.",
     );
   }
   return new HttpCrossEncoderProvider({
@@ -254,7 +287,7 @@ export function resolveRerankOpts(config: Config): RerankOpts | undefined {
   return {
     topK: config.crossEncoder.topK,
     timeoutMs: config.crossEncoder.timeoutMs,
-    provider: buildCrossEncoderProvider(config.crossEncoder),
+    provider: buildCrossEncoderProvider(config.crossEncoder, config.dataDir),
   };
 }
 
@@ -294,6 +327,23 @@ export interface RerankFields {
 }
 
 /**
+ * Builds the text a candidate is scored against — `query + atom text +
+ * evidence excerpt`, not atom text alone (P2 retrieval overhaul plan,
+ * 2026-07-20: "Rerank `query + atom text + evidence excerpt`, not atom text
+ * alone"). `evidence` is an OPTIONAL, forward-compatible field on the
+ * generic hit type `applyRerank` accepts: today's actual call site
+ * (`search.ts`'s `SearchHit`) does not populate it, so this degrades to
+ * atom text alone until a future change threads `Memory.evidence`
+ * (`contracts/memory.ts`) through `SearchHit` — that's a `search.ts`
+ * change, out of this file's ownership (see docs/runbooks/cross-encoder-
+ * rerank.md's "Rerank input" note for the full status). Exported standalone
+ * so this text-composition rule is independently testable.
+ */
+export function buildRerankCandidateText(h: { text: string; evidence?: string | null }): string {
+  return h.evidence ? `${h.text}\n\nEvidence: ${h.evidence}` : h.text;
+}
+
+/**
  * Apply the rerank stage to an already-fused, already-ordered hit list.
  * Reorders only the first `opts.topK` hits by cross-encoder score; hits
  * beyond that position are appended unchanged, in their original relative
@@ -305,7 +355,9 @@ export interface RerankFields {
  * the fused score, `rerank_score`/`explanation` carry the cross-encoder's
  * verdict as a distinct, additive signal.
  */
-export async function applyRerank<T extends { id: string; text: string; score: number }>(
+export async function applyRerank<
+  T extends { id: string; text: string; score: number; evidence?: string | null },
+>(
   query: string,
   hits: T[],
   opts: RerankOpts,
@@ -328,7 +380,7 @@ export async function applyRerank<T extends { id: string; text: string; score: n
   log.info({ topK: opts.topK, candidates: head.length }, 'rerank stage start');
 
   try {
-    const candidates: CrossEncoderCandidate[] = head.map(h => ({ id: h.id, text: h.text, fusedScore: h.score }));
+    const candidates: CrossEncoderCandidate[] = head.map(h => ({ id: h.id, text: buildRerankCandidateText(h), fusedScore: h.score }));
     const scored = await withAbortableTimeout(
       (signal) => opts.provider.score(query, candidates, signal),
       opts.timeoutMs,
