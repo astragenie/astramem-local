@@ -123,7 +123,8 @@ there is nothing to count per-request when the stage doesn't run.
 crossEncoder:
   enabled: true
   provider: 'mock'
-  topK: 50           # candidates considered for rerank (cost/latency control)
+  topK: 40           # candidates considered for rerank (cost/latency control — tuned 2026-07-20,
+                      # see "topK tuning" below)
   timeoutMs: 1500    # hard cap — see "P2: real in-process ONNX cross-encoder" for why this
                       # was raised from the original 300ms
 ```
@@ -134,7 +135,8 @@ crossEncoder:
 crossEncoder:
   enabled: true
   provider: 'onnx'
-  topK: 50           # candidates considered for rerank (P2 plan's target window is 40-60)
+  topK: 40           # candidates considered for rerank — tuned default (see "topK tuning" below);
+                      # the P2 plan's original target window was 40-60
   timeoutMs: 1500    # hard cap — CPU-realistic (see below)
   # model: 'ms-marco-MiniLM-L-6-v2'   # optional — this is already the default
   # onnx:
@@ -148,7 +150,7 @@ crossEncoder:
 crossEncoder:
   enabled: true
   provider: 'http'
-  topK: 50                                  # candidates considered for rerank
+  topK: 40                                  # candidates considered for rerank
   timeoutMs: 1500                           # hard cap; also the HTTP request's own abort budget
   sidecarUrl: 'http://127.0.0.1:8081/rerank' # required for provider: 'http'
   model: 'BAAI/bge-reranker-v2-m3'           # optional — forwarded in the request body when set
@@ -224,6 +226,54 @@ off|onnx` (the `--rerank` flag is new in this change, threaded through
 
 This is preliminary, single-track evidence — see "Eval-evidence requirement" below for why the
 shipped default (`crossEncoder.enabled`) is NOT flipped by this change despite the positive result.
+
+## topK tuning + model swap (2026-07-20, same-day follow-up to the WT-B A/B above)
+
+Same measurement protocol as the A/B evidence above (cheap dev recipe: conv-26, n=152,
+gpt-5-mini answerer, token-F1 primary + gpt-5-mini llm-judge secondary, scratch copy of the same
+pre-ingested store, single day — so these deltas are comparable to each other but NOT
+directly comparable across different days to the WT-B numbers above, which is why the first row
+here re-anchors rerank-off/on at the (then-current) default topK 50):
+
+| variant | token-F1 cat-avg | llm-judge cat-avg | multi-hop (cat 1) f1 / judge |
+|---|---|---|---|
+| rerank OFF (anchor) | 0.3938 | 0.4075 | 0.2669 / 0.2188 |
+| rerank ON, onnx, topK=50 (then-default) | 0.4163 | 0.4811 | 0.2668 / 0.2500 |
+| rerank ON, onnx, **topK=40** | **0.4115** | **0.4907** | **0.2849 / 0.2813** |
+| rerank ON, onnx, topK=100 | 0.3910 | 0.4683 | 0.2771 / 0.2813 |
+| rerank ON, onnx, `bge-reranker-base`, topK=40 | 0.3870 | 0.3968 | 0.2218 / 0.1563 |
+
+**topK=40 is the new default** (`defaultConfig()`, `src/config/config.ts`): best llm-judge
+cat-avg of the sweep, token-F1 essentially tied with topK=50 (within day-to-day noise), and
+clearly the best multi-hop result — topK 50/100 leave multi-hop llm-judge well below topK=40's
+0.2813. topK=100 is a **net regression vs. even the rerank-OFF baseline on token-F1** (0.3910 <
+0.3938) — a wider candidate pool pulls in more distractors than it resolves, confirming the P2
+plan's 40-60 target window should be read as "don't go wider," not "40-60 are interchangeable."
+
+**Model swap (`Xenova/bge-reranker-base`, XLM-RoBERTa, ~266MB q8 vs MiniLM-L-6's ~23MB) is a
+clear loss, not just "not worth the size":** worse on both metrics than even the un-reranked
+baseline, AND 5 of 152 `/recall` requests hit the route's own 30s `handler_deadline_exceeded`
+timeout during this run — the larger model's per-batch CPU inference latency pushed some
+requests past the whole-request budget (separate from, and outside, `crossEncoder.timeoutMs`,
+which only bounds the rerank sub-call). The reported bge-reranker-base numbers are therefore
+UNDERSTATED (5 abstentions scored as wrong), but the size/latency evidence alone already rules
+it out for this repo's "compact local cross-encoder" posture — kept in
+`RERANK_MODEL_REGISTRY` (`src/search/onnx-rerank-registry.ts`) as an evaluated, addressable
+option (`crossEncoder.model: 'bge-reranker-base'`), not a recommendation.
+
+**Not done here — the evidence-excerpt hook is still inert:** `buildRerankCandidateText`
+(`rerank.ts`) already appends `hit.evidence` to the text scored against the query when present,
+but `SearchHit` (`search.ts`) never populates `evidence` today, so every rerank call in this
+sweep scored atom text alone. Threading `Memory.evidence` (`contracts/memory.ts`) through
+`SearchHit` is a `search.ts` change — out of this runbook's ownership — but is a plausible next
+lever: the P2 plan's own rationale for the hook was that a reranker judging query-vs-full-atom
+text is a strictly worse signal than query-vs-the-specific-evidence-span an atom was extracted
+from.
+
+Reproduce: `bun scripts/eval/locomo/oracle/ab-baseline.mts --datadir <scratch-copy> --rerank
+onnx` after editing `defaultConfig().crossEncoder.topK`/`model` in `src/config/config.ts` (the
+`--rerank` flag only toggles `enabled`/`provider` via `EvalCrossEncoderOverride` — it does not
+carry `topK` or `model`, so a topK/model sweep edits the default and rebuilds between passes).
 
 ## HTTP provider — endpoint contract
 

@@ -50,7 +50,7 @@ function clampNumThreads(n: number): number {
 
 /** How many (query, text) pairs go through one `model()` call. Bounds peak
  * memory/latency for a single batch rather than tokenizing+running all
- * `topK` (default 50) candidates in one shot — a compact 6-layer model on
+ * `topK` (default 40) candidates in one shot — a compact 6-layer model on
  * CPU still benefits from not building one huge padded batch. Overridable
  * via `config.crossEncoder.onnx.batchSize`. */
 const DEFAULT_BATCH_SIZE = 16;

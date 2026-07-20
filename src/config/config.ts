@@ -341,7 +341,12 @@ export interface Config {
    *
    * `topK` bounds how many post-fusion candidates are sent through the
    * reranker (cost/latency control — the retrieval overhaul plan's target
-   * window is 40-60; default 50). `timeoutMs` is a hard cap: a slow/failed
+   * window is 40-60; default 40, tuned 2026-07-20 against the cheap-recipe
+   * conv-26 A/B: topK 40 beat both 50 and 100 on llm-judge cat-avg, and 100
+   * scored BELOW the rerank-off baseline on token-F1 — a wider candidate
+   * pool dilutes with distractors faster than it helps, see
+   * docs/runbooks/cross-encoder-rerank.md's tuning-results section for the
+   * full table). `timeoutMs` is a hard cap: a slow/failed
    * rerank call falls back to the un-reranked fused order rather than
    * blocking the request — degrades quality, never availability. Default
    * raised from the original 300ms (that budget assumed a warm GPU sidecar
@@ -1555,12 +1560,16 @@ export function defaultConfig(): Config {
     // `provider` DOES flip mock -> onnx: 'onnx' is now the real local
     // cross-encoder (src/search/onnx-cross-encoder.ts) an operator who
     // opts into `enabled: true` should get, not the semantically-inert
-    // Jaccard mock. `topK` 50 sits inside the plan's 40-60 target window.
+    // Jaccard mock. `topK` 40 — tuned 2026-07-20 against the cheap-recipe
+    // conv-26 A/B: beat both 50 (the plan's original pick) and 100 on
+    // llm-judge cat-avg and multi-hop, while 100 scored BELOW the
+    // rerank-off baseline on token-F1 (see the runbook's "topK tuning"
+    // section) — don't raise this without new same-day evidence.
     // `timeoutMs` raised 300 -> 1500: 300ms assumed a warm GPU sidecar,
     // unrealistic for CPU-only in-process inference (ADR-018 rejects GPU
     // execution providers for this repo) — see the Config type's doc
     // comment above for the full rationale.
-    crossEncoder: { enabled: false, provider: 'onnx', topK: 50, timeoutMs: 1500 },
+    crossEncoder: { enabled: false, provider: 'onnx', topK: 40, timeoutMs: 1500 },
     multiHop: {
       enabled: false, provider: 'mock', minQueryWords: 6, maxSubQueries: 3,
       maxSupplemental: 5, supplementalWeight: 0.5, timeoutMs: 800,
