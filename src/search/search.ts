@@ -242,7 +242,41 @@ export interface SearchHit {
     winner_id: string;
     confidence: number;
   };
+  /**
+   * P2 retrieval-overhaul plan (2026-07-20): "Rerank `query + atom text +
+   * evidence excerpt`, not atom text alone" — this is the field
+   * `buildRerankCandidateText` (src/search/rerank.ts) was already reading
+   * before it had a producer. Sourced from the memory's provenance: prefers
+   * `evidence_span` (migration 057 — the exact verbatim transcript text
+   * `locate-evidence.ts` traced the atom back to) over the legacy `evidence`
+   * string (migration 004 — the extractor's own, possibly-paraphrased
+   * excerpt) when both are present, since the located span is strictly more
+   * trustworthy. Bounded to `MAX_EVIDENCE_EXCERPT_CHARS` so a whole-turn
+   * fuzzy-tier match (locate-evidence.ts's tier 2 can return an entire
+   * transcript line) can't blow up the cross-encoder input. Absent (not
+   * `null`) when the memory has neither field — same "omit rather than
+   * fake" convention as `capture_source` above.
+   *
+   * LOCAL-ONLY: deliberately stripped by `toWireHit` (src/contracts/
+   * wire-hit.ts), same treatment as `source`/`reranked`/`rerank_score`/
+   * `correction_pending` — the closed astramem-retrieval-result@1 schema
+   * (`additionalProperties: false`) doesn't declare this field yet, so it's
+   * visible on GET /search and the MCP tools' raw JSON but not on POST
+   * /recall's canonical envelope. The rerank stage itself still benefits:
+   * `search()` builds `results` (with `evidence` populated) BEFORE calling
+   * `applyRerank`, so the cross-encoder always sees it regardless of what
+   * the wire response later strips.
+   */
+  evidence?: string;
 }
+
+/** Bounds the `evidence` excerpt threaded onto a SearchHit — mirrors the
+ *  500-char excerpt bound already used for the analogous fallback at
+ *  src/distill/stages/08-embed-index.ts's `sourceExcerpt`. A whole-turn
+ *  fuzzy-tier `evidence_span` match (locate-evidence.ts) can be much longer
+ *  than the extractor's own short `evidence` quote; this keeps either case
+ *  bounded before it reaches the cross-encoder rerank input. */
+const MAX_EVIDENCE_EXCERPT_CHARS = 500;
 
 export interface SearchOpts {
   db: DB;
@@ -1047,7 +1081,10 @@ export async function search(
   // scope/importance/confidence/created_at/capture_source added to the
   // SELECT so the wire-facing SearchHit below can populate the canonical
   // optional fields from real columns instead of projecting them away.
-  const sql = `SELECT id, type, text, scope, importance, confidence, created_at, capture_source FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
+  // evidence/evidence_span added (2026-07-20, P2 retrieval-overhaul) so the
+  // rerank stage below can score `query + atom text + evidence excerpt` —
+  // see SearchHit.evidence's doc comment for the precedence rule.
+  const sql = `SELECT id, type, text, scope, importance, confidence, created_at, capture_source, evidence, evidence_span FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
   const memRows = db.prepare(sql).all(...fusedIds, ...validityParams, ...filterParams) as Array<{
     id: string;
     type: MemoryType;
@@ -1057,6 +1094,8 @@ export async function search(
     confidence: number;
     created_at: number;
     capture_source: string | null;
+    evidence: string | null;
+    evidence_span: string | null;
   }>;
 
   const memMap = new Map(memRows.map(r => [r.id, r]));
@@ -1205,6 +1244,11 @@ export async function search(
   for (const hit of rankedFused) {
     const mem = memMap.get(hit.id);
     if (!mem) continue;  // filtered out
+    // SearchHit.evidence doc comment: prefer the located `evidence_span`
+    // (migration 057, exact/whole-turn transcript text) over the legacy
+    // extractor-authored `evidence` string (migration 004), bounded so a
+    // whole-turn fuzzy match can't blow up the rerank input.
+    const evidenceExcerpt = (mem.evidence_span ?? mem.evidence)?.slice(0, MAX_EVIDENCE_EXCERPT_CHARS);
     results.push({
       id: hit.id,
       type: mem.type,
@@ -1217,6 +1261,7 @@ export async function search(
       created_at: new Date(mem.created_at).toISOString(),
       ...(mem.capture_source !== null ? { capture_source: mem.capture_source } : {}),
       ...(correctionSignal.has(hit.id) ? { correction_pending: correctionSignal.get(hit.id)! } : {}),
+      ...(evidenceExcerpt ? { evidence: evidenceExcerpt } : {}),
       explanation: buildExplanation(hit.id, hit.score, mem.importance, mem.created_at),
     });
     if (results.length >= buildLimit) break;
