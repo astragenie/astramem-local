@@ -273,17 +273,41 @@ export async function runOracleFactorial(opts: OracleFactorialOpts): Promise<Cel
   for (const source of sources) {
     for (const answerer of answerers) {
       console.log(`\n=== cell: ${source.id} x ${answerer.id} ===`);
+      let failedQuestions = 0;
       const outcomes = await mapWithConcurrency(tasks, concurrency ?? DEFAULT_CELL_CONCURRENCY, async (t): Promise<AnswerOutcome> => {
-        const hits = await source.hitsFor(t.qa, t.sampleId, ctx);
-        const hypothesis = await answerer.answer(t.qa.question, hits, ctx);
-        return {
-          qa_id: qaId(t.sampleId, t.qaIndex),
-          sample_id: t.sampleId,
-          category: t.qa.category,
-          hypothesis: hypothesis.trim(),
-          hit_count: hits.length,
-        };
+        try {
+          const hits = await source.hitsFor(t.qa, t.sampleId, ctx);
+          const hypothesis = await answerer.answer(t.qa.question, hits, ctx);
+          return {
+            qa_id: qaId(t.sampleId, t.qaIndex),
+            sample_id: t.sampleId,
+            category: t.qa.category,
+            hypothesis: hypothesis.trim(),
+            hit_count: hits.length,
+          };
+        } catch (err) {
+          // A single question that still fails AFTER the client's own retry
+          // budget (network throw, exhausted 429 backoff, provider 4xx) must
+          // NOT reject Promise.all and discard a 152-question cell — that is
+          // how one dropped socket killed the Tier-A gate run on 2026-07-20.
+          // Degrade to a scored abstention (empty hypothesis, hit_count 0) so
+          // the cell still produces a table; count + surface them so a cell
+          // that silently lost half its questions can't masquerade as a real
+          // score.
+          failedQuestions++;
+          console.error(`  [warn] ${source.id} x ${answerer.id} q=${qaId(t.sampleId, t.qaIndex)} failed after retries: ${err instanceof Error ? err.message : String(err)}`);
+          return {
+            qa_id: qaId(t.sampleId, t.qaIndex),
+            sample_id: t.sampleId,
+            category: t.qa.category,
+            hypothesis: '(answer failed after retries)',
+            hit_count: 0,
+          };
+        }
       });
+      if (failedQuestions > 0) {
+        console.error(`  [warn] cell ${source.id} x ${answerer.id}: ${failedQuestions}/${tasks.length} question(s) degraded to abstention — the score below is UNDERSTATED by that many.`);
+      }
 
       const hypPath = join(outDir, `cell-${source.id}-${answerer.id}.hypotheses.jsonl`);
       writeHypothesesJsonl(outcomes, hypPath);
