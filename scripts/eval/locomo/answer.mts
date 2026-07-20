@@ -33,7 +33,19 @@ import { projectIdFor } from './lib/envelope.js';
 import { azureChatComplete } from '../shared/azure-client.js';
 import { resolveAzureConfig, type AzureConfig } from '../shared/config.js';
 
-const ANSWER_MAX_COMPLETION_TOKENS = 150;
+// A/B knobs (v2 plan C2). Defaults reproduce prior behavior exactly. RAISE the
+// token budget when raising effort — the budget is shared between hidden
+// reasoning and the visible answer, so `low`+150 can truncate answers to empty
+// (FEAT-450 precedent). e.g. ASTRA_LOCOMO_ANSWER_EFFORT=low ASTRA_LOCOMO_ANSWER_MAX_TOKENS=400
+const ANSWER_MAX_COMPLETION_TOKENS = (() => {
+  const raw = process.env.ASTRA_LOCOMO_ANSWER_MAX_TOKENS;
+  const n = raw ? Number(raw) : NaN;
+  return Number.isFinite(n) && n > 0 ? n : 150;
+})();
+const ANSWER_REASONING_EFFORT = ((): 'minimal' | 'low' | 'medium' | 'high' => {
+  const v = process.env.ASTRA_LOCOMO_ANSWER_EFFORT;
+  return v === 'low' || v === 'medium' || v === 'high' ? v : 'minimal';
+})();
 
 /**
  * Local-answerer A/B (2026-07-18, additive): swap the fixed cheap Azure
@@ -201,7 +213,7 @@ export async function answerConversations(
           deployment: azureCfg.answererDeployment,
           messages: [{ role: 'user', content: prompt }],
           maxCompletionTokens: ANSWER_MAX_COMPLETION_TOKENS,
-          reasoningEffort: 'minimal',
+          reasoningEffort: ANSWER_REASONING_EFFORT,
         });
     return { qa_id: t.id, sample_id: t.sampleId, category: t.qa.category, hypothesis: hypothesis.trim(), hit_count: hits.length };
   });

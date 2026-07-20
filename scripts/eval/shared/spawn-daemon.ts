@@ -174,7 +174,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -226,6 +226,12 @@ export function makeIsolatedEvalEnv(
   }
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
+  }
+  // multiHop (WS6 decompose) override — top-level, mirrors crossEncoder. OFF by
+  // default in defaultConfig(); the LoCoMo v2 plan A/Bs flipping it on since no
+  // archived run ever measured the #266-fixed decomposer on real questions.
+  if (opts?.multiHop !== undefined) {
+    configLines.push('multiHop:', `  enabled: ${opts.multiHop.enabled}`);
   }
   if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined || opts?.extractionPassB !== undefined || opts?.maxChunkChars !== undefined) {
     configLines.push('distill:');

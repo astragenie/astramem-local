@@ -23,8 +23,16 @@ secrets.env
 # crew/runner agent worktrees (ephemeral)
 .claude/worktrees/
 
-# LongMemEval benchmark data (large, fetched — see docs/eval/longmemeval-plan.md)
-.eval-data/
+# Eval RUN OUTPUTS are tracked (metrics, hypotheses, scores, manifests) so run
+# numbers are versioned and never lost — the root cause of stale-number drift.
+# Ignore ONLY the raw CC BY-NC 4.0 datasets (redistribution-prohibited — see
+# scripts/eval/locomo/README.md "License"): the LoCoMo dataset file + the
+# LongMemEval raw download. Everything else under .eval-data/ is tracked.
+.eval-data/**/locomo10.json
+.eval-data/**/locomo10_*.json
+.eval-data/locomo/*.json
+.eval-data/longmemeval*/
+.eval-data/**/*.jsonl.gz
 .bench-keys.env
 
 # Playwright MCP runtime
@@ -45,3 +53,6 @@ audio-addon/**/*.download
 # path during local testing.
 *.ggml.bin
 ggml-*.bin
+
+# LoCoMo sampled dataset subset (gold answers = their data) — ignore
+.eval-data/**/sample.json

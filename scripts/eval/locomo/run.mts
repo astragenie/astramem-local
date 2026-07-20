@@ -199,6 +199,10 @@ const extractionPassBFlag = passBProviderFlag !== undefined && passBModelFlag !=
 // before this flag existed.
 const crossEncoderOverride: EvalCrossEncoderOverride | undefined =
   has('--cross-encoder') ? { enabled: true, provider: 'mock' } : undefined;
+// --multihop (v2 plan C1): flip the WS6 decompose stage ON for the sandbox
+// (OFF by default in defaultConfig). Additive — omitted is byte-identical.
+const multiHopOverride: { enabled: boolean } | undefined =
+  has('--multihop') ? { enabled: true } : undefined;
 // WS2 diagnostic (same doc, workstream 2): run the not-in-db/rank-miss/
 // rank-ok retrieval diagnosis against each shard's daemon right after the
 // answer step, before it's torn down -- reuses the daemon that's about to
@@ -269,6 +273,8 @@ async function runShard(opts: {
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
+  /** Additive (v2 C1) — flips WS6 multiHop decompose on for the sandbox. */
+  multiHopOverride?: { enabled: boolean };
   /** Additive (WS2 diagnostic, same comment) — false/omitted runs no extra
    *  recall() calls and writes no diagnosis.json, byte-identical to before
    *  this option existed. */
@@ -283,7 +289,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, crossEncoderOverride, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, crossEncoderOverride, multiHopOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -294,7 +300,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, multiHop: multiHopOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars });
   // 2026-07-18 traceability: persist the sandbox's EXACT boot config into the
   // run dir — the sandbox datadir is deleted on cleanup, and everything not in
   // this file fell through to defaultConfig() (see run-manifest's gitState for
@@ -600,7 +606,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag, crossEncoderOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag, crossEncoderOverride, multiHopOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,

@@ -1,0 +1,9 @@
+security:
+  encryption:
+    enabled: false
+embedding:
+  provider: onnx
+onnxEmbed:
+  cacheDir: 'C:/Users/serge/AppData/Local/Astramem/models/onnx'
+distill:
+  extractProfile: conversational

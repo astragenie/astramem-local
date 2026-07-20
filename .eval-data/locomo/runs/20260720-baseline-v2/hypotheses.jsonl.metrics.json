@@ -1,0 +1,34 @@
+{
+  "f1": {
+    "per_category": {
+      "1": {
+        "accuracy": 0.26588474829500286,
+        "n": 32,
+        "name": "multi-hop"
+      },
+      "2": {
+        "accuracy": 0.5545045045045045,
+        "n": 37,
+        "name": "temporal"
+      },
+      "3": {
+        "accuracy": 0.31575091575091574,
+        "n": 13,
+        "name": "open-domain"
+      },
+      "4": {
+        "accuracy": 0.4371730601842171,
+        "n": 70,
+        "name": "single-hop"
+      },
+      "5": {
+        "accuracy": 0.8085106382978723,
+        "n": 47,
+        "name": "adversarial"
+      }
+    },
+    "category_averaged_accuracy": 0.4763647734065025,
+    "overall_accuracy": 0.5112153504008233,
+    "n_total": 199
+  }
+}
