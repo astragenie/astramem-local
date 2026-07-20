@@ -9,6 +9,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.20.0] - 2026-07-20
+
+### Daemon stability & service UX
+- **Embed-index restart-storm fix (#444).** `embedAndIndex()` processed a
+  distill batch's atoms fully synchronously, blocking the event loop 5–45s;
+  `/health` timed out and the watchdog false-killed a *working* daemon,
+  producing a restart storm. Now yields cooperatively (`setImmediate` every 25
+  atoms, mirroring `consolidate.ts`/ADR-019) + a PASSIVE WAL checkpoint.
+  Event-loop max dropped ~3600ms → ~337ms in production.
+- **Windowless daemon on win32 (#443).** `AstraMemoryD` launches hidden via
+  `wscript //nologo //B` — no visible console window.
+- **Zombie grace-period (#397).** A still-booting daemon is granted a boot
+  grace window before the instance-lock logic treats it as a zombie, closing a
+  false-takeover race.
+
+### Capture & ingest
+- **Exchange is the unit of proxy capture (FEAT-478, #442).** The LLM-proxy
+  capture path records a full request/response exchange as one unit.
+- **Named-speaker turn boundaries (#282).** Distill recognizes named-speaker
+  turn boundaries — a proven no-op for LoCoMo but a real gap for legacy/raw
+  content.
+
+### Observability — doctor freshness/canary wave (FEAT-483)
+- **Ingest→memory freshness row (#449)** and **capture-chain freshness row
+  (#450)** — doctor now surfaces staleness across the ingest and capture
+  pipelines.
+- **Queue-liveness starvation canary (#451)**, **ingest→memory e2e canary
+  (#447)**, **dashboard accepts urlencoded form posts (#448)**,
+  **config defaults-vs-docs consistency check (#445)**, and **cross-provider
+  options wire-asserts (#446)**.
+
+### Eval infrastructure
+- **LLM-judge unbroken for reasoning models (#454).** The LoCoMo llm-judge
+  budget (5 completion tokens) was fully consumed by gpt-5-mini's reasoning,
+  yielding empty verdicts and a silent uniform-0.0 score; raised to 512. Also
+  widened a flaky float-epsilon (`1e-9` → `1e-6`) in the query-rewrite search
+  test that failed nondeterministically on CI.
+- **Eval sandbox hardened against FEAT-482-class failures (#453).** Isolated
+  eval sandboxes force `contradictionDetection.mode: off` (production default
+  unchanged) and the LoCoMo distill-wait default was raised 900s → 1800s
+  (env-overridable).
+- Chunk-size / compaction-mode A/B levers + ONNX eval sandboxes (#435),
+  distill prompt versioning + hash-freeze gate, and a canonical
+  `docs/eval-runs/` run tracker (#452).
+
 ## [0.19.0] - 2026-07-17
 
 - Sync ship batch default **50 → 25** — stay under the cloud's 60s request
