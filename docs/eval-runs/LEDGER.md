@@ -24,3 +24,4 @@ must be full-sample-reconfirmed before publishing). See `README.md`.
 | 2026-07-19 | [20260719-chunkab-3200tok](20260719-chunkab-3200tok/) | 0.5264 | 199 | passes=2 sweep=tuned-default prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=fcbadce2 |
 | 2026-07-19 | [20260719-chunkab-1600tok](20260719-chunkab-1600tok/) | 0.5110 | 199 | passes=2 sweep=tuned-default prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=27ca053f |
 | 2026-07-19 | [20260719-sweeperv1-800tok](20260719-sweeperv1-800tok/) | 0.5167 | 199 | passes=2 sweep=tuned-default prompt=conv-liberal k=15 extract=codex-subscription/gpt-5.4-mini git=27ca053f |
+| 2026-07-20 | [20260720-baseline-v2](20260720-baseline-v2/) | 0.5112 | 199 | passes=inherited-default prompt=conversational k=15 extract=codex-subscription/gpt-5.4-mini git=277bb06 · cat: sh 0.437 mh 0.266 tmp 0.555 od 0.316 adv 0.809 · **-6pt vs board = day-variance live** |

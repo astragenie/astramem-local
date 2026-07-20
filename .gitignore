@@ -53,3 +53,6 @@ audio-addon/**/*.download
 # path during local testing.
 *.ggml.bin
 ggml-*.bin
+
+# LoCoMo sampled dataset subset (gold answers = their data) — ignore
+.eval-data/**/sample.json
