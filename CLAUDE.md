@@ -323,6 +323,36 @@ Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answ
   to that list — capability detection is still name-based, so an unlisted thinking model
   reintroduces the class.)
 
+## LoCoMo / eval runs — where they live + how to record one
+
+**Canonical tracker: `docs/eval-runs/`** — the single source of truth for every
+scored eval run. If a benchmark number isn't backed by a folder there, it is
+unverified; do not quote it. Read `docs/eval-runs/README.md` first — it carries the
+current-state table, the day-variance caveat, and the measurement rules.
+
+- `docs/eval-runs/README.md` — index: current champion/service-day/full-suite numbers, realistic-path analysis, the 6 hard-earned measurement rules.
+- `docs/eval-runs/LEDGER.md` — one row per run, newest last, **both scales tagged** (`n=1986` full-suite = the real number; `n=199` conv-1 = 10% single-conversation sample, must be full-sample-reconfirmed before publishing).
+- `docs/eval-runs/BASELINE-CONSTANTS.md` — the tuned baseline recipe every future run compares against.
+- Older pre-2026-07-18 analysis stays in `docs/research/*locomo*` / `docs/eval/*locomo*` (linked from the README); do NOT scatter new runs there.
+
+**Exact pattern to record a run (do this for EVERY scored run — no orphan numbers):**
+```bash
+bun scripts/eval/locomo/archive-run.mts --run-dir <dir> --name <slug>
+# → copies metrics.json + run-manifest.json + run-params.json into
+#   docs/eval-runs/<date>-<slug>/  (the only sanctioned way to publish a score)
+```
+Then append ONE row to `docs/eval-runs/LEDGER.md` in this format:
+```
+| <YYYY-MM-DD> | <slug> | <F1> | <n> | passes=<1|2> sweep=<untuned|tuned-default> prompt=<name> k=<K> extract=<provider/model> git=<sha> · <atoms> atoms · <one-line note/verdict> |
+```
+
+**Current numbers (as of 2026-07-19, re-verify against the LEDGER — they drift):**
+champion **0.6002** / service-day **0.5430** (conv-1, n=199); full-suite best **0.4840**
+(n=1986). The 0.54→0.60 gap is **proven codex day-variance (±6 pts/day)**, not a missing
+lever — every config A/B (chunk-size, sweeper-v1, temperature, maxTokens, compaction) is
+REJECTED. Do not re-run a rejected lever without new evidence (see the README + hypothesis
+ledger).
+
 ## Bump discipline
 
 `package.json.version` MUST match the git tag. `.github/workflows/version-tag-parity.yml` gates this on tag pushes. Bump package.json + tag same PR when cutting a release.
