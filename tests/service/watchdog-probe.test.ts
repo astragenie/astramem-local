@@ -20,6 +20,9 @@
  * `LockInfo` via `makeLock` instead.
  */
 import { describe, it, expect, vi } from 'vitest';
+import { mkdtempSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   runWatchdogProbe,
   hasWatchdogTimer,
@@ -429,6 +432,65 @@ describe('boot-grace (2026-07-20 crash-loop fix)', () => {
     expect(state.state.everHealthyThisInstance).toBe(false);
     expect(state.state.instanceKey).toBe(`${newLock.pid}:${newLock.startedAt}`);
     expect(state.value).toBe(1);
+  });
+
+  it('upgrades a legacy on-disk state file (pre-boot-grace shape, real file IO) without an immediate kill', async () => {
+    // Exercises the REAL readWatchdogState/writeWatchdogState against an
+    // actual watchdog-probe-state.json on disk — every other test in this
+    // file injects readStateImpl/writeStateImpl and never touches the parser
+    // at all. This is the exact file every real prod upgrade hits on its
+    // first post-upgrade tick: a state file written by the PRE-2026-07-20
+    // binary, containing only `{consecutiveFailures}`, no `instanceKey`, no
+    // `everHealthyThisInstance`.
+    const dir = mkdtempSync(join(tmpdir(), 'astramem-watchdog-legacy-state-'));
+    try {
+      const statePath = join(dir, 'watchdog-probe-state.json');
+      // Legacy shape — a real prior boot had already reached the old
+      // failure threshold (2) right before the binary was upgraded.
+      writeFileSync(statePath, JSON.stringify({ consecutiveFailures: 2 }));
+
+      const fetchImpl = vi.fn(async () => { throw new Error('ECONNREFUSED'); }) as unknown as typeof fetch;
+      const stopLockHolderImpl = vi.fn(async () => ({ ok: true, detail: 'should never be called' }));
+      const adapter = makePlainAdapter();
+      // A live lock for the CURRENT (post-upgrade) daemon instance, just
+      // started — not yet proven healthy.
+      const lock = makeLock({ pid: 5150, startedAt: new Date().toISOString() });
+      const readLockInfoImpl = vi.fn(() => lock);
+
+      // failureThreshold: 1 forces this tick's single failure to reach
+      // threshold immediately, so the run either kills (bug) or hits the
+      // boot-grace still-booting gate (fix) — no second tick needed to prove
+      // which one happened.
+      const result = await runWatchdogProbe({
+        port, dataDir: dir, adapter, fetchImpl, stopLockHolderImpl, readLockInfoImpl,
+        failureThreshold: 1,
+      });
+
+      // 1. readWatchdogState parsed the legacy shape without throwing (the
+      //    call above would have rejected/thrown otherwise) and defaulted
+      //    the missing fields (instanceKey -> null, everHealthyThisInstance
+      //    -> false).
+      // 2. The legacy consecutiveFailures:2 did NOT cause an immediate kill
+      //    of the current, not-yet-proven-healthy instance: the missing
+      //    instanceKey (null) differs from the live lock's key, so the
+      //    instance-change branch reset the streak to 0 before this tick's
+      //    failure incremented it to 1 — and even having reached threshold,
+      //    the defaulted everHealthyThisInstance:false routes it through the
+      //    boot-grace gate instead of the kill path.
+      expect(result.healthy).toBe(false);
+      expect(result.action).toBe('still-booting');
+      expect(stopLockHolderImpl).not.toHaveBeenCalled();
+      expect(adapter.start).not.toHaveBeenCalled();
+
+      // 3. The persisted file was rewritten to the new shape, keyed to the
+      //    CURRENT instance.
+      const persisted = JSON.parse(readFileSync(statePath, 'utf8')) as Partial<WatchdogState>;
+      expect(persisted.instanceKey).toBe(`${lock.pid}:${lock.startedAt}`);
+      expect(persisted.everHealthyThisInstance).toBe(false);
+      expect(persisted.consecutiveFailures).toBe(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
