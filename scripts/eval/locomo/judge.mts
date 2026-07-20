@@ -62,7 +62,12 @@ function parseJsonl<T>(path: string): T[] {
   return readFileSync(path, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as T);
 }
 
-const LLM_JUDGE_MAX_COMPLETION_TOKENS = 5;
+// gpt-5-mini (and any reasoning model) spends completion tokens on hidden
+// reasoning BEFORE emitting visible content, and that reasoning counts against
+// maxCompletionTokens. A 5-token budget was fully consumed by minimal-effort
+// reasoning, leaving empty visible content -> every verdict parsed as "no" ->
+// uniform 0.0 across all categories. Give reasoning room plus the one-word answer.
+const LLM_JUDGE_MAX_COMPLETION_TOKENS = 512;
 
 function buildJudgePrompt(question: string, referenceAnswer: string, hypothesis: string): string {
   return [
