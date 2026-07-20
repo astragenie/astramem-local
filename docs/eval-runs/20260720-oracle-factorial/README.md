@@ -160,6 +160,25 @@ The last +0.197 is on PERFECT evidence, so it is **not** our extraction/retrieva
 - LoCoMo is a CONVERSATIONAL benchmark; for the actual product (coding-agent memory) it is not even the
   right test. 0.95 is not the bar.
 
+## Multi-scope retrieval prototype — NEGATIVE result (2026-07-20 "try 2")
+
+`retrieved-multiscope` = direct recall + PRF neighbor expansion (re-recall on the top-3 hits'
+text, union+dedupe, cap 30). Tested whether neighbor expansion recovers the single-hop retrieval
+headroom. CoT judge, n=152, gpt-5.4 reader:
+
+| retrieval | overall | single-hop | temporal | open-domain |
+|---|---|---|---|---|
+| retrieved-atoms (plain top-15) | 0.566 | 0.643 | 0.649 | 0.308 |
+| retrieved-multiscope | 0.579 | 0.657 | 0.730 | 0.154 |
+| gold-turns (ceiling) | 0.750 | 0.843 | — | — |
+
+**+0.013 overall (within noise), single-hop +0.014 of a 0.20 headroom = essentially no recovery.**
+PRF amplifies what recall already surfaced, so it cannot find what recall MISSED at the query
+level. Conclusion: the single-hop retrieval gap is **query-side** (the recall query doesn't match
+the right atom) or store-side, NOT "right atom just below top-k." The real retrieval lever is
+**query expansion / hybrid lexical+vector / reranking**, not answer-side neighbor expansion. This
+prototype is rejected as-is; the finding narrows the next experiment.
+
 ## Harness added
 `answerers/strong.mts` (gpt-4o), `answerers/zep-match.mts` (gpt-5.4 medium), `rejudge.mts` (gpt-5.4 CoT
 re-score of cached hypotheses), `sources/retrieved-multiscope.mts` (PRF neighbor-expansion retrieval).
