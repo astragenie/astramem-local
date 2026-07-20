@@ -49,13 +49,22 @@ refinement: re-score misses with `--llm-judge` to split "semantically wrong" fro
 answerer. Exactly the re-scoped Phase 2 (repair-only atom triage / extraction). The answerer A/B
 (effort→low) and multiHop A/B are still worth measuring but are not where the points are.
 
-## multiHop A/B — `20260720-multihop` (RUNNING)
-`--multihop` verified ON in the sandbox config (`multiHop: enabled: true`) — valid A/B, not a
-no-op. Multi-hop has 56% recall-miss; decompose may surface more supporting atoms. Result pending.
+## multiHop A/B — `20260720-multihop-v2` (0.5511) — CONFOUNDED, no clear benefit
+`--multihop` verified ON in the sandbox config. Overall 0.5511 vs baseline 0.5112 = +0.040.
+**But this is NOT a multiHop win — it's a broken comparison:**
+- It's a **separate distill** vs the baseline (not a same-store A/B), so the delta is entangled with day-variance.
+- The lift is **uniform across ALL 5 categories** (adversarial +0.021, single-hop +0.046, multi-hop +0.036) — decompose can't affect adversarial; a uniform lift is the **variance signature**, not a decompose signature.
+- 0.5511 is **BELOW the multiHop-OFF board** (0.573/0.584). So multiHop didn't beat normal runs — it beat a low-variance-day baseline.
+**Conclusion: no measurable multiHop benefit here.** A same-store A/B (distill once, answer with multiHop off vs on) is required to isolate it — the `--multihop` flag is now wired + verified for that. First attempt also exposed the eval sandbox's contradiction-judge firing 200 failing calls (FEAT-482 class) + a too-short 900s distill timeout on a contended box.
 
-## Answerer A/B — queued
-`ASTRA_LOCOMO_ANSWER_EFFORT=low` + raised token budget, via `--resume` (cheap, no re-distill).
-Low expected upside given the recall finding, but cheap to confirm.
+## Answerer A/B — deferred to next session
+The precision finding already indicates the answerer is NOT the lever (single-hop is recall-miss, not verbose-penalty), so an `effort=low` answerer won't fix recall. Needs a clean same-store `--resume` setup. `ASTRA_LOCOMO_ANSWER_EFFORT`/`ASTRA_LOCOMO_ANSWER_MAX_TOKENS` knobs are wired (C2) and ready.
+
+## Bottom line (the overnight empirically validated the cross-review's re-scope)
+1. **Day-variance dominates** — baseline landed 0.5112, −6pt below the board on the same recipe. Confirmed live. Single-run deltas can't be trusted (multiHop's +0.040 is variance).
+2. **Single-hop is a RECALL/extraction problem** (51% recall-miss, 4% verbose) — not the answerer, not format. THE lever is extraction completeness.
+3. **Config knobs (multiHop) show no clean benefit** — consistent with "config space exhausted."
+4. **The path forward is: metric-match (`--llm-judge`, per Zep audit) → oracle factorial → extraction completeness → same-store retrieval A/Bs with ≥3 runs.** Not a stack swap, not the answerer, not a lucky-day chase.
 
 ## Status of the PRs (GitHub CI was down)
 FEAT-483 (7 PRs #445-451) + the v2 doc PR #452 auto-merge when GitHub recovers. All built + reviewed.
