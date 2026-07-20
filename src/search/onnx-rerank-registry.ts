@@ -59,4 +59,23 @@ export const RERANK_MODEL_REGISTRY: Readonly<Record<string, RerankModelRegistryE
     defaultRevision: DEFAULT_RERANK_REVISION,
     defaultDtype: DEFAULT_RERANK_DTYPE,
   },
+  /**
+   * Larger alternative cross-encoder, evaluated 2026-07-20 (P2 retrieval
+   * overhaul tuning pass) against the pinned MiniLM-L-6 default —
+   * `Xenova/bge-reranker-base` (XLM-RoBERTa, transformers.js ONNX export of
+   * `BAAI/bge-reranker-base`). Confirmed live via the HF API 2026-07-20; a
+   * `model_quantized.onnx` artifact exists so `dtype: 'q8'` resolves the
+   * same way it does for the default model. NOT the default — kept in the
+   * registry as an evaluated, addressable option (`config.crossEncoder.model:
+   * 'bge-reranker-base'`) but ~11x the on-disk weight size of MiniLM-L-6
+   * (~266MB q8 vs ~23MB) for a measured wash-to-slightly-worse cheap-recipe
+   * score on conv-26 (see docs/runbooks/cross-encoder-rerank.md) — not worth
+   * the size/latency cost for this repo's "compact local cross-encoder"
+   * posture (P2 plan).
+   */
+  'bge-reranker-base': {
+    hfRepo: 'Xenova/bge-reranker-base',
+    defaultRevision: '280bcc27a84e0b898c251e06fddb25171bd9b101',
+    defaultDtype: 'q8',
+  },
 };
