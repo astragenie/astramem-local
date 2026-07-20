@@ -261,7 +261,7 @@ Useful flags on `run.mts` (mirrors `../longmemeval/run-smoke.mts`'s surface):
 | `--k` | 10 | recall `limit` |
 | `--concurrency` | 4 | parallel `/ingest/transcript` calls within each shard/daemon |
 | `--shards` | 1 | number of isolated daemons, round-robin partitioned by conversation |
-| `--distill-timeout-ms` | 900000 (15 min) | almost certainly too low for a real run — see LongMemEval's measured throughput section for the order of magnitude (this harness hasn't published its own measured rate yet; use `--dry-run-throughput` first) |
+| `--distill-timeout-ms` | 1800000 (30 min; raised 2026-07-20 from 900000 — the old default was aborting full-suite runs mid-distill) | override via flag or `ASTRA_LOCOMO_DISTILL_TIMEOUT_MS` env; still may be too low for a very large run — see LongMemEval's measured throughput section for the order of magnitude (this harness hasn't published its own measured rate yet; use `--dry-run-throughput` first) |
 | `--run-dir` | `.eval-data/locomo/runs/<timestamp>` | override output location |
 | `--ollama-url` | `http://127.0.0.1:11434` (or `$OLLAMA_HOST`) | Ollama status/tuning query target |
 | `--resume <run-dir>` | (none) | resume a killed run — see "Resume behavior" below |

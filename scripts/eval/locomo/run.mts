@@ -10,7 +10,7 @@
  *
  * bun scripts/eval/locomo/run.mts [--dataset <path>] [--n <conversations>]
  *   [--qa-per-sample <cap>] [--seed 42] [--k 10] [--concurrency 4]
- *   [--distill-timeout-ms 900000] [--shards 1]
+ *   [--distill-timeout-ms 1800000] [--shards 1]
  *   [--extraction-model <model>] [--compaction-model <model>]
  *   [--extraction-provider <provider>] [--compaction-provider <provider>]
  *   [--extract-profile engineering|conversational]
@@ -44,6 +44,12 @@
  * touched. Run the same sample twice (once without this flag, once with
  * it) and compare judge.mts scores between the two run dirs. Omitted:
  * byte-identical to before this flag existed.
+ *
+ * ASTRA_LOCOMO_DISTILL_TIMEOUT_MS (env, not a flag; 2026-07-20 hardening):
+ * fallback for --distill-timeout-ms's default (1800000ms/30min) when the flag
+ * is omitted — --distill-timeout-ms still wins when passed explicitly. Lets a
+ * full-suite run raise the timeout via env without threading the flag through
+ * every invocation.
  *
  * ANSWERER_SIGNALS=1 (env, not a flag; FEAT-500 A/B prep, additive): includes
  * each retrieved hit's `top_signal` + a compact per-signal breakdown in the
@@ -480,7 +486,15 @@ function mergeDistillResults(results: DistillWaitResult[]): DistillWaitResult {
 async function runFull(): Promise<void> {
   const nRaw = get('--n');
   const qaPerSampleRaw = get('--qa-per-sample');
-  const distillTimeoutMs = Number(get('--distill-timeout-ms') ?? String(15 * 60_000));
+  // Default raised 900_000 -> 1_800_000 (2026-07-20, session-handoff open item): the
+  // README already flagged 900000/15min as "almost certainly too low for a real run"
+  // (docs/eval-runs + scripts/eval/locomo/README.md), and it was aborting full-suite
+  // runs mid-distill. --distill-timeout-ms still wins when passed explicitly; new
+  // ASTRA_LOCOMO_DISTILL_TIMEOUT_MS env fallback so a full-suite run doesn't need the
+  // flag threaded through every invocation.
+  const distillTimeoutMs = Number(
+    get('--distill-timeout-ms') ?? process.env.ASTRA_LOCOMO_DISTILL_TIMEOUT_MS ?? String(30 * 60_000),
+  );
   const runDir = resumeDir ?? get('--run-dir') ?? join('.eval-data', 'locomo', 'runs', new Date().toISOString().replace(/[:.]/g, '-'));
 
   if (resumeDir && !existsSync(resumeDir)) {
