@@ -13,19 +13,26 @@ and the oracle-factorial measured findings (`docs/eval-runs/20260720-oracle-fact
 
 Both models agree: 0.90 is fiction until proven. Ship 0.80–0.86 first, re-measure the ceiling, then decide.
 
-## Measurement protocol (READ FIRST)
+## Measurement protocol (READ FIRST) — LOCKED to the OLD baseline recipe
 
-- **Dev A/B (every slice): token-F1 (deterministic, zero-LLM, zero-cost) is the PRIMARY signal**, plus the
-  cheap gpt-5-mini llm-judge as a secondary. Deterministic token-F1 is ideal for *relative* deltas — no
-  variance, no cost, run it as often as you like.
-- **CoT judge (gpt-5.4) is DISABLED for dev iteration** (operator decision 2026-07-20 — too expensive to run
-  per slice). It stays the *fair absolute* grader and is **re-enabled at phase-gate milestones only**, via the
-  standalone `scripts/eval/locomo/oracle/rejudge.mts` (no code change needed to toggle — just don't run it
-  mid-iteration; run it at gates).
-- Every A/B: **same store, same conversation (conv-26, n=152), same day** (±6-pt service variance). Reconfirm at
-  full-suite (n=1986) only at major milestones.
-- A change is KEPT only if token-F1 shows a clear positive delta beyond same-day noise; milestone CoT re-judge
-  confirms the absolute number before publishing.
+The whole point of dev A/B is "did this fix improve the **old baseline**?" So the dev recipe is the historical
+cheap recipe, byte-comparable to the numbers already in the LEDGER — NOT the gpt-5.4 diagnostic stack.
+
+- **Answerer = gpt-5-mini, reasoning minimal** — the FROZEN benchmark answerer (`run.mts` / oracle `current`).
+  Revert from the diagnostic gpt-5.4 reader. This keeps every A/B comparable to baseline-v2 and the whole LEDGER.
+- **Judge (dev) = token-F1 (deterministic, zero-LLM, zero-cost) PRIMARY + gpt-5-mini llm-judge secondary.**
+  token-F1 has no cost and no variance — ideal for *relative* deltas.
+- **gpt-5.4 reader AND gpt-5.4 CoT judge are BOTH diagnostic-only, gate-stage tools** (operator decision
+  2026-07-20). They do NOT run during iteration. Re-enable at phase gates via the standalone
+  `scripts/eval/locomo/oracle/{zep-match answerer, rejudge.mts}` — no code toggle, just don't run them mid-dev.
+- **The number to beat:** baseline-v2 on the SAME store — conv-26, cat1-4, gpt-5-mini answerer. token-F1
+  cat-avg ≈ 0.39 / gpt-5-mini-llm-judge cat-avg ≈ 0.461 (`docs/eval-runs/LEDGER.md` P0a rescore). Every fix
+  must beat THAT under the identical cheap recipe.
+- Every A/B: **same store, same conversation (conv-26, n=152), same day** (±6-pt service variance). Full-suite
+  (n=1986) reconfirm only at major milestones.
+- A change is KEPT only if token-F1 shows a clear positive delta beyond same-day noise. Gate stages add the
+  gpt-5.4 reader + CoT judge to read the *fair absolute* number, but keep/revert decisions during dev are made
+  on the cheap recipe alone.
 
 ## Phase 0 — Correctness prerequisites (BLOCKS everything; these are bugs)
 
@@ -132,3 +139,66 @@ P6 (graph populate) ────────────────┴──►
 P0.1, P0.2, P0.3 (three small slices) · P1 (1 slice) · P2 (1 slice) · P3 (1 slice) · P6 (1–2 slices) ·
 P4 (1 slice) · P5 (2–3 slices) · P7 (1 slice, deferred). Each slice: implement → token-F1 A/B → reviewer →
 keep-or-revert. CoT re-judge only at Gates A/B/C.
+
+---
+
+# Parallel execution plan (isolated git worktrees)
+
+`src/search/search.ts` is the hub every retrieval phase funnels through, so we parallelize by **disjoint
+subsystem**, not by phase. Good news from the Codex reviews: the plug points ALREADY EXIST in the orchestrator
+(`rerank()` at ~`search.ts:1109`, rewrite at ~`:759`, decompose at ~`:724`) — so the reranker and query-rewrite
+tracks implement *behind existing hooks* and never touch `search.ts`. Only the retrieval-core track owns it.
+
+## Wave 0 — serial trunk (ONE owner, ~half a day). Everyone branches from this commit.
+
+Coordination commit. Nothing parallel can start until it lands, because it fixes the bugs that make A/B valid
+AND locks the measurement harness every track shares.
+- **P0.1** config no-op fix (`src/server/routes/search.ts:174`) — thread the real runtime config into fusion.
+- **P0.2** FTS fix (`src/search/search.ts:372` `escapeFtsQuery`) — analyzed lexical query, drop stopwords/interrogatives.
+- **P0.3 + harness**: eval calls the real hybrid `/recall`; land a one-command **token-F1 A/B runner** pinned to
+  the CHEAP recipe (gpt-5-mini answerer, token-F1 + gpt-5-mini llm-judge, conv-26 n=152) that every worktree runs
+  identically. Capture the baseline-v2 number as the bar.
+- Confirm the existing `rerank`/`rewrite`/`decompose` hook points compile as no-op seams so Wave-1 tracks plug in
+  without editing `search.ts` (except the core track).
+
+## Wave 1 — three parallel worktrees (disjoint files, ~simultaneous)
+
+| worktree | owns (files) | phases | touches search.ts? |
+|---|---|---|---|
+| **WT-A retrieval-core** | `src/search/fuse.ts`, `src/search/query-rewrite.ts`, `src/search/search.ts` | P1 (RRF fusion) + P3 (multi-query) | YES — sole owner |
+| **WT-B reranker** | `src/search/rerank.ts`, reranker sidecar, `src/config/config.ts` rerank defaults | P2 (local cross-encoder) | NO — behind the `:1109` hook |
+| **WT-C distill-graph** | `src/distill/prompts/extract.ts`, `src/distill/pipeline.ts`, `src/distill/stages/05-extract.ts`, `src/storage/memories.ts`, `src/storage/entity-relations.ts` | P6 (relations + cross-atom links) + P5-storage (provenance persistence) | NO — src/distill + src/storage only |
+
+No two worktrees share a file. WT-B/WT-C never edit `search.ts`; WT-A never edits `src/distill`/`rerank.ts`.
+`config.ts` is touched only by WT-B (rerank defaults) — if WT-A also needs a fusion-weight default, put it in a
+separate config sub-key or land it in Wave 0 to avoid the one shared file.
+
+### Per-worktree A/B without daemon-lock contention
+Retrieval A/B is **read-only** on the store, but concurrent daemons on one datadir hit the instance lock (learned
+in the oracle build). So each store-needing worktree **copies** `.eval-data/locomo/runs/20260720-baseline-v2/datadir`
+to its own path and mounts its daemon there. A copy is cheap and fully isolates the lock. WT-C's distill changes
+need a *re-ingest* to take effect (they change what's stored) — WT-C runs a small scoped re-ingest into its own
+datadir for its A/B; WT-A/WT-B reuse the baseline store as-is (they only change retrieval, not storage).
+
+## Wave 2 — serial integration (after Wave 1 merges + graph is populated)
+
+These consume multiple subsystems, so they can't parallelize:
+- **P4 chained 2-hop** (`search.ts:724` decompose) — consumes WT-C's populated entity graph + WT-A's core. Owner: retrieval-core.
+- **P5 multi-scope bundling** (`search.ts` + local answerer) — consumes WT-C's provenance + WT-A's core. Owner: retrieval-core.
+Run these in one worktree, serially, each with its own token-F1 A/B.
+
+## Merge + gate order
+
+```
+Wave 0 (trunk: bugs + harness + seams)  ──►  merge to feat branch
+   ├─ WT-A (P1+P3)  ─┐
+   ├─ WT-B (P2)     ─┼─►  merge all 3 (disjoint files, clean)  ──►  GATE A: cheap-recipe token-F1 must beat baseline;
+   └─ WT-C (P6+P5a) ─┘                                              then gpt-5.4 reader + CoT re-judge for the fair number
+                                                                    (expect ~0.68–0.75)
+   Wave 2: P4 ──► P6-graph must be populated first ──► P5  ──►  GATE C: full-suite, ≥3 runs, CoT judge (0.80 milestone)
+```
+
+## Dispatch shape
+Wave 0 = 1 synchronous builder (it's the shared trunk — get it right, review, commit). Wave 1 = 3 background
+`crew:fullstack-dev` builders in `isolation: worktree` off the Wave-0 commit, awaitAll, review each, merge disjoint.
+Wave 2 = sequential builders in one worktree. Same pattern as the oracle-factorial parallel build that worked today.
