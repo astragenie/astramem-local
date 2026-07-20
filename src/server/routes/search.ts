@@ -172,18 +172,27 @@ const RememberBodySchema = z.object({
 });
 
 export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defaultConfig()) {
-  const cfg = defaultConfig();
   // FEAT-454: renamed from `weights` — this is now the per-preset BASE, not
   // the final weights object. `resolvePresetWeights` (src/search/presets.ts)
   // derives the actual per-request weights from this base, once per request
   // (was: built once per route-factory call, which made a per-request preset
   // impossible to honor).
-  const baseWeights = cfg.search;
+  //
+  // P0.1 (2026-07-20 retrieval overhaul, Wave 0): this used to read
+  // `defaultConfig().search` from a locally-shadowed `cfg` instead of the
+  // REAL passed-in `config` — every config.yaml fusion-weight override
+  // (alpha/beta/gamma/delta/epsilon/zeta/eta/theta) silently no-op'd on both
+  // GET /search and POST /recall, because `resolvePresetWeights` always
+  // derived from the hardcoded default base. `config.search` already carries
+  // governed weights (`applyFusionGovernance` runs once at config-load time,
+  // see config.ts's `search.governance` doc comment) — this is the same real
+  // config object the sibling `rerank`/`decompose`/`queryRewrite` resolvers
+  // below already correctly read from. See tests/server/search-config.test.ts.
+  const baseWeights = config.search;
   // issue #26 / ADR-005: cross-encoder rerank stage, read from the REAL
-  // passed-in `config` (not `cfg` above — that pre-existing `defaultConfig()`
-  // fallback for `weights` is out of scope here) so config.yaml's
-  // `crossEncoder.enabled` actually takes effect on this route. `undefined`
-  // when disabled (the default) — search() takes zero extra branches.
+  // passed-in `config` so config.yaml's `crossEncoder.enabled` actually takes
+  // effect on this route. `undefined` when disabled (the default) — search()
+  // takes zero extra branches.
   const rerank = resolveRerankOpts(config);
   // WS6: multi-hop query decomposition — undefined (search() takes zero
   // extra branches) unless multiHop.enabled is set. See src/search/decompose.ts.

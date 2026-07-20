@@ -353,24 +353,140 @@ export interface SearchDebugHit {
 }
 
 /**
- * Sanitize a free-form query string for safe use with the FTS5 `MATCH` operator.
+ * Stopword / interrogative set for FTS5 lexical-query construction (P0.2,
+ * 2026-07-20 retrieval overhaul plan, Wave 0). Deliberately conservative:
+ * erring toward KEEPING a token (a stray common word surviving into the OR
+ * clause costs a little precision) rather than DROPPING a genuine content
+ * word (a wrongly-dropped content word can zero out the only matching
+ * evidence). Lowercase, matched against already-punctuation-stripped tokens.
  *
- * FTS5 treats several characters as operators (`-` negation, `*` wildcard,
- * `"` phrase, `^` column, `AND`/`OR`/`NOT` connectives). Without sanitization,
- * a query like `sqlite-vec` triggers `fts5: syntax error near "-"` because `-`
- * is parsed as a negation prefix.
+ * NOTE (FEAT-480, deferred 2026-07-19): a prior investigation found that a
+ * NAIVE pure-OR revival of the FTS leg — measured on the OLDER
+ * scripts/eval/recall-quality/run.mjs harness against a 54k-memory store —
+ * traded +18.6% plain-English MRR for -15.8% literal-keyword MRR and +6pp
+ * junk, because weak OR-matched keyword candidates diluted the vector leg's
+ * already-good literal rankings. That FEAT deferred a general fix pending
+ * threshold/coverage modeling. This P0.2 fix is narrower in scope (stopword
+ * removal + quoted-phrase preservation, not raw all-tokens OR) and is
+ * re-measured here against the CURRENT retrieval-overhaul A/B protocol
+ * (token-F1, conv-26 n=152) — see docs/specs/20260720-retrieval-overhaul-plan.md.
+ * Keep only if that measurement doesn't regress; if it reproduces FEAT-480's
+ * literal-recall regression, this is evidence for Phase 1's RRF fusion (not
+ * min-max) to land before FTS is OR'd, not a reason to revert alone.
+ */
+const FTS_STOPWORDS = new Set([
+  // interrogatives
+  'who', 'whom', 'whose', 'what', 'which', 'when', 'where', 'why', 'how',
+  // auxiliary/copula verbs
+  'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being',
+  'do', 'does', 'did', 'done',
+  'have', 'has', 'had', 'having',
+  'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must',
+  // articles/determiners
+  'a', 'an', 'the', 'this', 'that', 'these', 'those',
+  // pronouns
+  'i', 'me', 'my', 'mine', 'you', 'your', 'yours', 'he', 'him', 'his',
+  'she', 'her', 'hers', 'it', 'its', 'we', 'us', 'our', 'ours',
+  'they', 'them', 'their', 'theirs',
+  // prepositions/conjunctions
+  'of', 'to', 'in', 'on', 'at', 'for', 'with', 'about', 'against',
+  'between', 'into', 'through', 'during', 'before', 'after', 'above',
+  'below', 'from', 'up', 'down', 'over', 'under', 'again', 'further',
+  'and', 'or', 'but', 'if', 'so', 'than', 'as', 'not', 'no', 'nor',
+  // filler
+  'there', 'here', 'then', 'once', 'all', 'any', 'both', 'each', 'few',
+  'more', 'most', 'other', 'some', 'such', 'only', 'own', 'same', 'too',
+  'very', 'just', 'also', 's', 't',
+]);
+
+/** Escape a literal string for safe use inside an FTS5 double-quoted phrase
+ *  (double an embedded `"` per the FTS5 phrase-literal escaping rule). */
+function escapeFtsLiteral(s: string): string {
+  return s.replace(/"/g, '""');
+}
+
+/**
+ * Split a query into quoted-phrase units and bare-word units, in the order
+ * they appear. A `"quoted phrase"` in the caller's own input is returned as
+ * ONE unit — user intent to match those words together verbatim overrides
+ * stopword filtering for its contents (an unterminated trailing quote is
+ * simply treated as a bare word, never throws).
+ */
+function splitQuotedAndBareTerms(q: string): Array<{ phrase: boolean; text: string }> {
+  const units: Array<{ phrase: boolean; text: string }> = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(q)) !== null) {
+    if (m[1] !== undefined) {
+      const inner = m[1].trim();
+      if (inner) units.push({ phrase: true, text: inner });
+    } else if (m[2]) {
+      units.push({ phrase: false, text: m[2] });
+    }
+  }
+  return units;
+}
+
+/**
+ * Build an FTS5 `MATCH` query from a free-form (often natural-language)
+ * query string (P0.2, 2026-07-20 retrieval overhaul plan).
  *
- * Strategy: split on whitespace, wrap each token in double quotes (treating
- * each as a literal phrase), and escape embedded `"` by doubling it per the
- * FTS5 phrase-literal rule. Multi-token queries become implicit AND.
+ * Pre-P0.2, EVERY token (including "who"/"did"/"the"/"a") became its own
+ * quoted phrase joined by bare whitespace — FTS5 implicit-ANDs adjacent
+ * phrases, so a question needed every one of its words (stopwords included)
+ * present verbatim in the target row to match at all. A natural-language
+ * question essentially never satisfies that; the FTS leg (40% of the default
+ * fusion weight, `alpha`) returned zero candidates for most real queries.
  *
- * Trade-off: explicit FTS5 operators (e.g., `cat OR dog`, `"exact phrase"`,
- * `prefix*`) are NOT honored in v1 — every input is treated as a bag of
- * literal phrases. This is the right default for an agent-driven search
- * surface; an `advanced` flag can be added later if needed.
+ * Fix: drop interrogatives/stopwords (FTS_STOPWORDS above), keep everything
+ * else — names, nouns, dates, numbers — and OR the survivors together, so
+ * the row needs only ONE genuine content term to match, not all of them.
+ * User-supplied `"quoted phrases"` are kept intact as a single multi-word
+ * phrase unit (not stopword-filtered, not split into independently-ORed
+ * terms) — this is the "boost": FTS5's bm25() naturally scores a full
+ * contiguous phrase match higher than any single term from it would score
+ * alone, without needing a weighted-query extension.
+ *
+ * Safety unchanged from pre-P0.2: every surviving term/phrase is still
+ * wrapped in FTS5 double-quotes (embedded `"` doubled), so operator
+ * characters (`-` negation, `*` wildcard, `^` column) inside a token can
+ * never be parsed as FTS5 syntax — a query like `sqlite-vec` still can't
+ * trigger `fts5: syntax error near "-"`.
+ *
+ * Edge cases:
+ *  - All-stopword or punctuation-only query (after filtering, zero
+ *    survivors): falls back to the legacy all-tokens-ANDed query rather than
+ *    emitting an empty/invalid MATCH string. Byte-identical to pre-P0.2 for
+ *    this shape — still correct (0 rows), just not "no query at all."
+ *  - Single-term query (an error code, `"7777"`, one exact keyword):
+ *    degrades to exactly one OR clause of one term — unchanged, exact-match
+ *    behavior (this is the shape FEAT-480 AC-5 required stay intact).
  */
 function escapeFtsQuery(q: string): string {
-  return q.trim().split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+  const trimmed = q.trim();
+  if (!trimmed) return '';
+
+  const units = splitQuotedAndBareTerms(trimmed);
+  const survivors: string[] = [];
+  for (const unit of units) {
+    if (unit.phrase) {
+      survivors.push(`"${escapeFtsLiteral(unit.text)}"`);
+      continue;
+    }
+    // Strip leading/trailing punctuation a raw NL question carries (?, ., etc.)
+    // that carries no lexical signal of its own, and lowercase — this
+    // stripped/lowercased form is what actually becomes the FTS phrase
+    // literal, so e.g. a trailing "?" never survives into the query (FTS5
+    // matching is already case-insensitive via its tokenizer either way).
+    const stripped = unit.text.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    if (!stripped || FTS_STOPWORDS.has(stripped)) continue;
+    survivors.push(`"${escapeFtsLiteral(stripped)}"`);
+  }
+
+  if (survivors.length === 0) {
+    return units.map(u => `"${escapeFtsLiteral(u.text)}"`).join(' ');
+  }
+  return survivors.join(' OR ');
 }
 
 /**
