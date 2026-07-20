@@ -99,3 +99,68 @@ bun scripts/eval/locomo/oracle/oracle-factorial.mts \
 # gold-turns / gold-atoms need no store; retrieved-* mount a daemon on --datadir.
 # --sources / --answerers / --limit-questions to slice; --cells for a single cell.
 ```
+
+---
+
+# Follow-up (2026-07-20): the answerer + judge ceiling
+
+The factorial above ran with the frozen cheap stack (reader = gpt-5-mini `minimal`,
+judge = gpt-5-mini one-word yes/no). Two follow-up experiments isolated how much of the
+gap-to-Zep is that MEASUREMENT stack vs a real memory deficit. Zep's published 94.7% uses
+**reader = gpt-5.4 (medium) + judge = gpt-5.4 chain-of-thought**; we reproduced both halves.
+
+## Reader ladder (llm-judge cat-avg, n=152, judge held at gpt-5-mini)
+
+| source | current (gpt-5-mini) | strong (gpt-4o) | zep-match (gpt-5.4 med) |
+|---|---|---|---|
+| gold-turns (perfect ev.) | 0.502 | 0.417 | 0.535 |
+| retrieved-atoms (pipeline) | 0.461 | 0.400 | 0.426 |
+
+**A stronger reader alone does NOT lift the score** — gpt-4o is *worse* (verbose output meets a
+lexical-ish judge), gpt-5.4 barely moves. Eyeballing showed the readers produce correct answers
+whenever the evidence contains the fact; the failures are evidence-insufficiency + judge harshness,
+not the reader. This refuted the initial "stronger reader closes the gap" hypothesis.
+
+## Judge swap — same gpt-5.4 hypotheses, re-scored with a gpt-5.4 CoT judge (`rejudge.mts`)
+
+| cell (gpt-5.4 reader) | gpt-5-mini judge | gpt-5.4 CoT judge | overall (CoT) |
+|---|---|---|---|
+| gold-turns (perfect ev.) | 0.535 | **0.669** | **0.750** |
+| retrieved-atoms (pipeline) | 0.426 | **0.501** | **0.566** |
+
+**The judge was the bigger suppressor** (+0.134 gold / +0.075 retrieved cat-avg, > the reader swap).
+Our gpt-5-mini yes/no judge marks paraphrased/date-resolved-correct answers wrong.
+
+## The honest decomposition (overall/micro, Zep-comparable, Zep's full stack)
+
+```
+0.566  our real pipeline, gpt-5.4 reader + CoT judge   ← the FAIR product number (not 0.46/0.53)
+  +0.184  retrieval headroom  (right atoms exist below top-k / not surfaced — IN SCOPE)
+0.750  perfect evidence (gold-turns), same stack        ← ceiling with LoCoMo's OWN cited turns
+  +0.197  residual to Zep
+0.947  Zep reported
+```
+
+The last +0.197 is on PERFECT evidence, so it is **not** our extraction/retrieval:
+1. **Evidence-sufficiency** — LoCoMo's cited gold turns often don't contain the answer (~33% image-
+   caption-grounded; single-dia_id multi-hop needing other turns). Many "wrong" answers are correct
+   abstentions on insufficient cited evidence.
+2. **Zep retrieves richer context than the single cited turn** (their multi-scope graph surfaces
+   neighbors) — an architecture difference, not a memory-quality deficit. See the `retrieved-multiscope`
+   prototype (below / separate run) testing whether neighbor expansion recovers the retrieval headroom.
+
+## Verdict for the "product is broken at 0.53" question
+
+- **~⅓ of the apparent gap was MEASUREMENT** — a harsh cheap judge under-scored us by ~10pt. The fair
+  number for our pipeline (real reader + fair judge) is **0.57 overall**, not 0.46/0.53.
+- **~0.18 overall is real retrieval headroom** (single-hop: retrieved 0.643 vs gold 0.843 under CoT) —
+  the in-scope, local-first lever.
+- **~0.20 is evidence-sufficiency + Zep's multi-scope retrieval** — partly the benchmark's own citation
+  quality (not our bug), partly a stealable architecture idea.
+- LoCoMo is a CONVERSATIONAL benchmark; for the actual product (coding-agent memory) it is not even the
+  right test. 0.95 is not the bar.
+
+## Harness added
+`answerers/strong.mts` (gpt-4o), `answerers/zep-match.mts` (gpt-5.4 medium), `rejudge.mts` (gpt-5.4 CoT
+re-score of cached hypotheses), `sources/retrieved-multiscope.mts` (PRF neighbor-expansion retrieval).
+gpt-5.4 was provisioned on the Azure resource (GlobalStandard, consumption-billed) for these runs.
