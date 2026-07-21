@@ -71,12 +71,10 @@ typically the affected subsystem (e.g. `feat(search): ...`, `fix(ci): ...`, `fea
 
 ## Publishing (maintainers only)
 
-```bash
-bun run build
-bun publish   # or: npm publish
-```
-
-Bump `package.json`'s `version` and push the matching tag in the same PR/release — see "Bump
-discipline" in this repo's `CLAUDE.md`. Verify after publishing that the registry now serves the
-new version; a stale published version can otherwise shadow the real package for anyone installing
-it globally (see the npm-shadow note in `CLAUDE.md`'s install/onboarding section).
+Bump `package.json`'s `version`, update `CHANGELOG.md`, and push a matching `vX.Y.Z` tag in the
+same release (tag must equal `package.json`'s version — see "Pull requests" above). **The tag push publishes to npm
+automatically** via `.github/workflows/publish.yml` — do not run `npm publish`/`bun publish`
+yourself after pushing the tag, it collides with CI's own publish. Full steps:
+`docs/runbooks/release-publish.md`. Verify after the workflow finishes that the registry now
+serves the new version; a stale published version can otherwise shadow the real package for anyone
+installing it globally (see the npm-shadow note in `docs/memory.md`'s durable architecture facts).

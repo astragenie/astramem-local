@@ -1,463 +1,115 @@
-# astramemory-local — session guidance
-
-Local-first memory daemon. TypeScript + Node 20 + Fastify + better-sqlite3 + sqlite-vec.
-Wire-compatible with astramem-plugin (v0.5.2+) and memory SaaS backend (FEAT-4a Phase 1).
-
-## Architecture verdict (2026-07-13) — do not re-litigate this per session
-
-A 6-agent adversarial teardown investigation concluded **H2 — sound core, accumulated
-debt; zero of five redesign gates cleared. Default to salvage, not rewrite.** Full
-findings: `docs/research/20260713-teardown-and-reinvent.md`. The remediation plan
-derived from it (tracks, slices, acceptance criteria): `docs/specs/20260713-teardown-remediation-plan.md`.
-This is the answer to "should we redesign X" — read those two docs before proposing a
-rewrite of the daemon, the storage layer, or the MCP transport; don't re-derive the
-question from scratch.
-
-## Install / onboarding
-
-The wizard IS the installer. Do NOT hand-craft config.
-
-```powershell
-cd C:\work\mega\astramemory-local
-bun install
-bun run build
-node dist/cli/index.js init
-```
-
-`init` writes `%APPDATA%\Astramem\config.yaml` + `secrets.env`, runs migrations, provisions the OS service (schtasks / systemd / launchd), runs doctor, prints next steps.
-
-Prereqs the wizard checks: Node 20+, Ollama running with `mxbai-embed-large` (1024-dim, matches schema — do NOT use `nomic-embed-text-v2-moe` which is 768-dim; hotfix v0.2.1 swapped the default).
-
-## Service / upgrade (post-hardening, feat/install-daemon-hardening)
-
-One command fixes/installs/repairs everything — idempotent, non-elevated OK:
-```powershell
-node dist/cli/index.js reinstall     # materialize release → stop → shim → XML task → start → verify version
-```
-Upgrade flow: `git pull && bun install && bun run build && node dist/cli/index.js reinstall`.
-Both `init` and `reinstall` also idempotently run `git config core.hooksPath scripts/git-hooks`
-when invoked from a git checkout of this repo (`src/service/git-hooks-activate.ts`, FEAT-439
-residual) — activates the migration-merge-currency post-merge hook with no separate manual
-step; silent no-op for npm-installed users, who have no `.git` at their install location.
-
-Architecture: schtasks task `AstraMemoryD` points at a STABLE shim
-(`%LOCALAPPDATA%\Astramem\bin\astramemd.cmd` → `launch.cjs` → `current.json` pointer).
-Upgrades rewrite the pointer only; schtasks is never re-touched. Task registered via
-XML: no 72h ExecutionTimeLimit, logon trigger + PT5M repetition = keepalive watchdog
-(dead daemon restarts ≤5min; healthy re-runs exit <100ms via `daemon.lock` instance lock).
-
-`reinstall` materializes an immutable release under `%LOCALAPPDATA%\Astramem\releases\<pkgversion>+<gitsha>\`
-before ever touching the running daemon (FEAT-438) and repoints `current.json` at it —
-the mutable checkout's `dist/` is never served directly, closing the 2026-07-07
-stale-dist outage class. Every successful `reinstall` also prunes old releases,
-keeping the newest 2 (the just-verified one is always protected, even if older).
-
-`reinstall --rollback` repoints at the previous release with no new
-materialization and no schtasks re-registration (task registration happens
-exactly once, at first install) — fails loudly with a non-zero exit and
-leaves `current.json` untouched if there is no older release on disk.
-
-`reinstall --dev` is the escape hatch back to pre-FEAT-438 behavior: pins the
-service straight at the checkout's own `dist/cli/index.js` (mutable — dev
-churn can restrand the daemon again) and prints a loud warning every time.
-`doctor` flags a dev-pinned install with a WARN row; run plain `reinstall`
-(no `--dev`) to return to a pinned release.
-
-### Unix service parity (FEAT-443)
-
-`service install` / `init` / `reinstall` share ONE install path
-(`install-flow.ts`) on all three platforms now: systemd units and launchd
-plists point at the same STABLE shim architecture Windows always used
-(`<dataDir>/bin/astramemd.sh` → `launch.cjs` → `current.json` pointer, see
-`shim.ts`) — upgrades repoint `current.json` only, the unit/plist is
-registered exactly once at first install, and `reinstall --rollback` works
-on linux/darwin exactly like it does on win32 (SLICE-1).
-
-`Restart=on-failure` (systemd) and `KeepAlive` (launchd) only fire when the
-daemon process actually exits — a daemon that's alive but wedged (blocked
-event loop, deadlocked native call) keeps holding `daemon.lock` and answering
-nothing, and neither mechanism ever notices (same blind spot Windows' PT5M
-keepalive has always had — a healthy-looking re-run only checks that the
-lock is HELD, not that the holder is responsive, so it restarts a *dead*
-daemon but can never restart a *hung* one). SLICE-2 closes this for
-linux/darwin with a separate recurring hang-watchdog probe (systemd
-`OnUnitActiveSec` timer / launchd `StartInterval` agent, installed
-automatically alongside the main service — not opt-in) that hits `/health`
-every 3 minutes and, after 2 consecutive failures (not one flaky probe —
-see `DEFAULT_FAILURE_THRESHOLD` in `src/service/watchdog-probe.ts`), kills
-whatever actually holds `daemon.lock` and restarts via the adapter — see
-that file for why this shells out to a probe+kill cycle instead of genuine
-`sd_notify`/`WatchdogSec` (Node has no built-in Unix datagram socket
-support). Invoke by hand with `astramem-local service watchdog-probe`;
-remove with `service uninstall`.
-**Windows parity (issue #206, 2026-07-13):** the same probe now also runs
-on win32 as a second scheduled task (`AstraMemoryDWatchdog`, `schtasks.ts`'s
-`installWatchdogTimer`) registered automatically by `install-flow.ts`
-alongside the main `AstraMemoryD` task — closing the exact gap that bit in
-production: a wedged-but-lock-holding daemon that the PT5M keepalive alone
-could never recover, only a human noticing and killing the PID by hand.
-
-**Package name: `astramem-local` on npmjs** — first published 2026-07-08 as v0.9.0
-(this repo, SQLCipher-capable). The OLD stale 0.4.0 lives under the scoped name
-`@astragenie/astramemory-local` on GitHub Packages (scope-mapped in ~/.npmrc) —
-never install that one (plain better-sqlite3, `SQLITE_NOTADB` on encrypted DBs).
-For dev work still prefer `node dist/cli/index.js <cmd>` from the repo; a stale
-GLOBAL install can shadow dev expectations, and `reinstall` asserts served
-version == build version to catch exactly that.
-
-Boot is degraded-start: port binds immediately, embed probe retries in background
-(`/health.status`: starting|ok|degraded). `--strict-preflight` restores fail-fast.
-
-Foreground dev (no service): `node dist/cli/index.js serve --port 7777`
-Diagnose: `node dist/cli/index.js doctor` (now reads config.yaml same as serve)
-
-## Config paths (Windows)
-- Config: `%APPDATA%\Astramem\config.yaml`
-- Secrets: `%APPDATA%\Astramem\secrets.env` (contains `MEMORY_BEARER=<64-hex>`)
-- Ingest log: `%APPDATA%\Astramem\ingest.log` (rotated at 10MB)
-- SQLite: `%LOCALAPPDATA%\Astramem\memory.sqlite` — NOT `AstraMemory`, which is the LEGACY ≤0.2.2 dir (`legacyDataDir()` in `src/config/datadir.ts`, migration/fallback readers only). Canonical dir name is `Astramem` under both `%APPDATA%` and `%LOCALAPPDATA%`.
-- ONNX embed model cache: `%LOCALAPPDATA%\Astramem\models\onnx\` (stable across release rotation; default since the 2026-07-16 offline-load fix — before that the cache lived inside the release dir's `node_modules` and was silently discarded on release rotation)
-
-Non-Windows: `~/.config/astramem/` and `~/.local/share/astra-memory/`.
-
-## MCP transport: two modes, not one
-
-The daemon isn't the only way to run MCP. `node dist/cli/index.js mcp-stdio` (`src/cli/mcp-stdio.ts`)
-is a **spawn-per-session MCP server over stdio** — same tool set, same db/embed wiring as
-the HTTP daemon (`buildMcpServer()`, `src/mcp/server.ts`), just connected to a
-`StdioServerTransport` instead of a Fastify route. Its own doc comment states the design
-intent verbatim: *"No daemon lifecycle (no instance lock, no worker, no shipper, no
-timers): this process is meant to be spawned per-client-session by an MCP host and to
-exit when that host closes stdin."* Meant to be launched directly by an MCP host (Claude
-Desktop, etc.), one process per session.
-
-Consequence worth knowing: in `mcp-stdio` mode the PID-reuse kill hazard around
-`daemon.lock` (see the instance-lock footgun, if documented elsewhere) **cannot fire** —
-there's no lock file and no watchdog to mis-signal. But this mode is **not a daemon
-replacement**. The long-lived HTTP daemon remains **mandatory** for: the LLM-proxy/capture
-path (`src/proxy/server.ts:349` binds a real HTTP listener — a MITM proxy structurally
-cannot be spawn-per-session, something must already be listening when the client
-connects), background jobs (consolidate/cleanup/spool-drain), and sync. Pure MCP
-consumers with no need for capture/proxy/sync can use `mcp-stdio` and skip the install
-layer (service registration, shim, watchdog) entirely.
-
-MCP tool surface: count not tracked here — a manually maintained number in this
-file is exactly the ADR-016 Junction pattern (declare instead of derive) and
-drifts the moment a tool is added. The count is enforced by
-`tests/mcp/server.test.ts` and `tests/contracts/mcp-tool-manifest-parity.test.ts`,
-both of which compare the live `tools/list` wire response against
-`contracts/manifests/mcp-tools.v1.json` (the cross-repo tool-name SoT) — read
-the manifest or run those tests for the current count, don't grep for
-`registerTool`. Both transports (HTTP daemon, `mcp-stdio`) expose the same set.
-
-## Wire contract (FEAT-4a Phase 2)
-
-Daemon speaks BOTH envelopes on `POST /ingest/transcript`:
-- **Canonical (v1.0)**: `{event, session_id, turns[], wire_version, client_scrub_*, ...}` — SaaS-aligned
-- **Legacy (v0.0)**: `{session_id, source, content}` — backward-compat
-
-`wire_version` regex: `^v(?:0|[1-9][0-9]*)\.[0-9]+$` — mirrors SaaS `IngestTranscriptRequest.cs:65` and plugin `wire.ts:106` (v0.2.1 tightened; prior versions accepted `v01.0`).
-
-`GET /health` and `GET /version` are public (no Bearer). Everything else requires `Authorization: Bearer <token>` matching `MEMORY_BEARER`.
-
-Idempotency via `Idempotency-Key` header: SHA-256 (stable-stringify) body hash. Same key + same body → 200 replay with `idempotent: true`. Same key + different body → 409.
-
-## Entity relations (FEAT-481)
-
-`entity_relations` table (migration 027) holds entity-to-entity relation triples, extracted
-alongside each atom's `entities[]` list (engineering extraction profile only — see
-src/distill/prompts/extract.ts). Two MCP tools read it: `get_entity_related` (bitemporal
-`as_of` aware) and `get_entity_timeline`. `doctor`'s "Entity relations extraction" row is the
-built-wired-never-invoked canary for this pipeline — WARN means real distill activity produced
-zero rows; `relation_guard_drops` (migration 029) tells apart "model never emits a relation"
-from "model emits relations but the guard drops every one."
-
-## Contradiction detection ships `enabled` — Do NOT re-fix this as "off by default"
-
-`defaultConfig()` sets `contradictionDetection: { mode: 'enabled', ... }` (`src/config/config.ts:623`).
-It is **on**. The `DEFAULT_CONTRADICTION_DETECTION` constant (`config.ts:782-783`, `mode: 'off'`)
-is a **governance-fallback** used only by `applyContradictionDetectionGovernance` when a
-config override is missing or has an invalid `mode` — it is not the shipped default and
-was never meant to describe the default. A prior session read that constant, concluded
-contradiction detection ships off, and nearly re-shipped the fix that had already caused
-an incident hours earlier.
-
-**FEAT-482 incident (2026-07-13):** the flip from `off` to `enabled` shipped without a
-call-count or wall-clock cap on the judge. It fired ~245 sequential LLM calls against a
-metered endpoint (codex-subscription, billed to the operator's personal quota) and wedged
-the daemon's sole worker lane for 10+ minutes. A **dollar-cap guard was tried and reverted**
-(commit `0b6b3f8`) because every shipped LLM provider hardcodes `usage.usd: 0` — a budget
-check can never trip. The live guards are `maxPerRun: 200` + `maxWallClockMs: 300_000`
-(`config.ts:623-635`), both now in place. Full incident + retraction record:
-`docs/specs/20260713-teardown-remediation-plan.md` §2.5.
-
-If you're touching this again: don't flip the default, don't re-add a dollar cap. If
-`maxPerRun`/`maxWallClockMs` ever need tightening, that's the lever — not `mode`.
-
-## Citation drift caution
-
-`src/distill/**` and `src/search/**` are under active edit as of 2026-07-13 — several
-`file:line` citations across the docs written this session have already drifted (e.g.
-`validityFilterClause` moved from `search.ts:264-278` to `search.ts:272-291` mid-session).
-**Anchor on the symbol name, not the line number** — the line is a hint, the symbol is the
-claim. See `docs/adr/ADR-015-loud-failure-invariant.md`'s citation policy for the same rule
-stated in full. Every `config.ts`/`checks.ts`/etc. line cited below was re-verified against
-this worktree's live source at write time, but re-verify before trusting a line number that's
-more than a session old.
-
-## Temporal reasoning — the schema is NOT at fault
-
-Bitemporal storage (`migrations/006-atom-v3.sql`) and `as_of`-aware retrieval
-(`validityFilterClause`, `src/search/search.ts:272-291`) are **both correct**. The LoCoMo temporal category score
-(12.4) was an **extraction** gap, not a data-model gap — a full architecture investigation
-concluded this; do not let any doc imply the schema needs replacing.
-
-**Shipped 2026-07-13:** text-surface date grounding (PR #189 + timezone fix #191). Threads
-`capturedAtMs` into the extraction prompt so relative expressions ("yesterday", "last
-year") resolve to absolute dates inside the atom's own text — the part the retrieval
-harness actually reads. This also helps live production ingest, not just the benchmark:
-both `buildClaudeEnvelope` and `buildProxyEnvelope` already carry a per-session
-`captured_at` anchor. Only legacy v0.0 envelopes and direct `/remember` calls lack one.
-
-**BUILT, WIRED — and `invalid_at` has NEVER FIRED (corrected 2026-07-14; the
-previous text here said it was unbuilt and was wrong).** `AtomSchema`
-(`src/distill/prompts/extract.ts`) DOES have atom-level `valid_at`/`invalid_at`
-(issue #205 AC-1, merged in PR #216), `InsertInput` (`src/storage/memories.ts`)
-DOES have `valid_to`, and `src/distill/stages/08-embed-index.ts` maps
-`atom.valid_at → valid_from` / `atom.invalid_at → valid_to` behind a validity
-guard. **Do not "build" this — it exists.**
-
-What is actually open is its **invocation rate**. Measured on 2499 real atoms
-(codex extraction, conversational profile, full LoCoMo suite):
-
-```
-valid_to NOT NULL     :    0     <- invalid_at emitted ZERO times in 2499 atoms
-validity_guard_drops  :    0     <- and the guard never refused one either
-distinct valid_from   :  423     <- the valid_at half DOES work
-```
-
-Zero drops means this is **not** "model emits, guard rejects" — the model never
-emits an `invalid_at` at all. Built-wired-never-invoked, rate 0.0%, behind no
-canary. Whether that is a BUG or CORRECT (conversations may genuinely never state
-an invalidation) is **unmeasured** — sample transcripts by hand before changing the
-prompt. The prompt itself discourages it (`extract.ts` ~104-108: a hallucinated
-`invalid_at` silently expires a true fact, which is a worse bug).
-
-Either way this earns **zero LoCoMo points** — the harness never sets `as_of`, so
-bitemporal filtering is never exercised; the temporal category (0.2300) is answered
-from atom TEXT. **Temporal is an extraction-into-text problem, not a data-model one.**
-
-Migration hazard if you do touch `valid_to`: legacy rows have `valid_to = NULL`,
-which `as_of` filtering treats as "valid forever," not "unknown." See
-`docs/specs/20260713-teardown-remediation-plan.md` §2.3. A prior attempt at this
-silently hid still-true facts — any fixture's "now" must be in the PAST.
-
-Full plan: `.claude/artifacts/crew/handoffs/20260714T0530Z-handoff-temporal-answerer-and-second-llm-call.md`
-
-## Known open gaps — this is a working doc, not a clean bill of health (updated 2026-07-15)
-
-- **Doctor DOES run unattended — the old "never runs unattended" claim here was WRONG
-  (corrected 2026-07-15 after an agent grepped only for `runChecks` and missed the real
-  wiring).** `serve.ts` (~line 421) calls `startFrequentDoctorSchedule` from
-  `src/doctor/schedule.ts` — a two-tier schedule: a **frequent 15-min** pass runs every
-  check tagged `tier: 'cheap'` (DB-only, no LLM/embed provider), and the metered LLM/embed
-  probes piggyback the **existing 24h cleanup tick** (`runFullDoctorChecks`, `tier: 'full'`)
-  rather than a new interval — a tight interval on a real LLM call is a self-DoS on a shared
-  GPU and, on a metered endpoint, the FEAT-482 incident class. Skipped under `:memory:`.
-  Results land in `healthState.doctor` + a structured warn log on any red (ADR-015). So do
-  NOT "wire doctor into serve" — it is already wired.
-  **CORRECTED 2026-07-16 (the prior version of this bullet mis-briefed an agent into nearly
-  re-tripping incident #226 — do not re-word this back to "promote both").** `extraction-yield.ts`
-  and `memory-health.ts` are both DB-only (no LLM/embed call), but `tier` is decided by query
-  cost, not provider presence, and the two check files differ on that axis:
-  - `extraction-yield.ts` is now `tier: 'cheap'` (promoted 2026-07-16) — its window queries
-    are index-range searches bounded to a 7-day window (`idx_extraction_yield_created`,
-    migration 042; confirmed via `EXPLAIN QUERY PLAN`), genuinely safe on a 15-min interval.
-    Locked by a positive regression test in `tests/doctor/schedule.test.ts`. A broken local
-    model's zero-yield rate now surfaces in 15 min, not 24h.
-  - `memory-health.ts` MUST STAY `tier: 'full'`. This exact promotion was already tried and
-    reverted in incident #226 (2026-07-13): `stalenessDistribution()` and
-    `countsByTypeAndScope()` (`src/server/queries/memory-health.ts`) run unbounded
-    full-active-memories scans with no date filter and no LIMIT — a genuine O(N)-with-usage
-    cost, not a bounded read. Hard-locked by `FULL_TIER_ONLY_CHECK_NAMES` in
-    `tests/doctor/schedule.test.ts` (includes "Memory health") — flipping its tier fails that
-    test. Do not promote it; do not re-word this bullet to suggest promoting it.
-- **RESOLVED 2026-07-15 — `checkMemoryHealth` is no longer a `{ok:true}` stub.** Moved to
-  `src/doctor/checks/memory-health.ts` with 4 real return paths incl a poison-rate alarm
-  (`ok:false` when `distill.poisonRate >= POISON_RATE_ALARM`). The one-return-path bug this
-  bullet used to describe is fixed. (Caveat: only fires under a manual doctor run — see the
-  dormant-canary gap above.)
-- **RESOLVED 2026-07-15 — `llmChatProbe` now passes `json:true`** (#299,
-  `src/doctor/probes/llm-chat-probe.ts`): sends `format:json` and requires the response be
-  non-empty AND `JSON.parse`-able — the exact request shape that broke qwen3. Was a
-  plain-chat probe; no longer.
-- **RESOLVED 2026-07-15 — the `{"atoms":[]}` blind spot has a canary** (#300/#303,
-  `src/doctor/checks/extraction-yield.ts`): "Extraction yield" measures the zero-yield RATE
-  over a rolling window (`ZERO_YIELD_RATE_ALARM = 0.5`), gated behind a meaningful-usage
-  threshold — explicitly framed as closing the ADR-015 headline finding. A broken model and
-  a genuinely-empty transcript are no longer indistinguishable in aggregate. (Same dormant
-  caveat: manual doctor only.)
-- **Corrected 2026-07-14 (caught by FEAT-493's build):** this bullet used to claim the
-  `artifacts` SQL table was a live zero-writer table. Wrong — `messages`, `artifacts`, and
-  `provider_state` were all **dropped, irreversibly**, by `migrations/040-drop-dead-tables.sql`
-  (none had ever been written; `provider_state` also had a dead reader,
-  `src/server/queries/dashboard.ts`, repointed at live `HealthState` in the same migration's
-  paired dashboard change). FEAT-493's first retention design targeted the `artifacts` table and
-  failed at runtime against it — exactly the stale-doc-read-as-authoritative class this repo
-  otherwise documents. Only `evidence_guard_drops` (migration 030) remains an actual zero-writer,
-  in-flight table. Disk artifacts (the thing FEAT-489/493 actually govern) live under
-  `<dataDir>/artifacts/<kind>/` on the filesystem, not in SQLite — see `src/storage/retention.ts`.
-- **RESOLVED 2026-07-15 — `.quarantine/` now has a TTL sweep + doctor canary**
-  (`src/doctor/checks/spool-quarantine.ts`): the check goes RED when a quarantined file
-  outlives `DEFAULT_QUARANTINE_TTL_MS`, with a `pruneExpiredQuarantine` sweep, and redaction
-  now happens at spool-write time (`spool-schema-guard.ts`) rather than only at stage-0
-  ingest. The "credential sits in quarantine indefinitely, unredacted, no TTL, no canary"
-  hazard this bullet used to describe is closed. (Dormant-canary caveat still applies — the
-  RED gate only evaluates under a manual doctor run until the periodic-doctor gap above is
-  fixed; the TTL prune sweep itself is not doctor-gated.)
-- **RESOLVED 2026-07-15 — the qwen3 thinking-mode guard is now an explicit prefix list, and
-  `deepseek-r1` IS handled.** `src/providers/llm/ollama.ts` uses
-  `KNOWN_THINKING_MODEL_PREFIXES = ['qwen3', 'deepseek-r1', 'deepseek-v3.1', 'gpt-oss']`
-  matched via `.startsWith()` — not the old `/^qwen3/i` regex. A user picking `deepseek-r1`
-  no longer reproduces the incident. (If you add a new thinking-mode model, add its prefix
-  to that list — capability detection is still name-based, so an unlisted thinking model
-  reintroduces the class.)
-
-## LoCoMo / eval runs — where they live + how to record one
-
-**Canonical tracker: `docs/eval-runs/`** — the single source of truth for every
-scored eval run. If a benchmark number isn't backed by a folder there, it is
-unverified; do not quote it. Read `docs/eval-runs/README.md` first — it carries the
-current-state table, the day-variance caveat, and the measurement rules.
-
-- `docs/eval-runs/README.md` — index: current champion/service-day/full-suite numbers, realistic-path analysis, the 6 hard-earned measurement rules.
-- `docs/eval-runs/LEDGER.md` — one row per run, newest last, **both scales tagged** (`n=1986` full-suite = the real number; `n=199` conv-1 = 10% single-conversation sample, must be full-sample-reconfirmed before publishing).
-- `docs/eval-runs/BASELINE-CONSTANTS.md` — the tuned baseline recipe every future run compares against.
-- Older pre-2026-07-18 analysis stays in `docs/research/*locomo*` / `docs/eval/*locomo*` (linked from the README); do NOT scatter new runs there.
-
-**Exact pattern to record a run (do this for EVERY scored run — no orphan numbers):**
-```bash
-bun scripts/eval/locomo/archive-run.mts --run-dir <dir> --name <slug>
-# → copies metrics.json + run-manifest.json + run-params.json into
-#   docs/eval-runs/<date>-<slug>/  (the only sanctioned way to publish a score)
-```
-Then append ONE row to `docs/eval-runs/LEDGER.md` in this format:
-```
-| <YYYY-MM-DD> | <slug> | <F1> | <n> | passes=<1|2> sweep=<untuned|tuned-default> prompt=<name> k=<K> extract=<provider/model> git=<sha> · <atoms> atoms · <one-line note/verdict> |
-```
-
-**Current numbers (as of 2026-07-19, re-verify against the LEDGER — they drift):**
-champion **0.6002** / service-day **0.5430** (conv-1, n=199); full-suite best **0.4840**
-(n=1986). The 0.54→0.60 gap is **proven codex day-variance (±6 pts/day)**, not a missing
-lever — every config A/B (chunk-size, sweeper-v1, temperature, maxTokens, compaction) is
-REJECTED. Do not re-run a rejected lever without new evidence (see the README + hypothesis
-ledger).
-
-## Bump discipline
-
-`package.json.version` MUST match the git tag. `.github/workflows/version-tag-parity.yml` gates this on tag pushes. Bump package.json + tag same PR when cutting a release.
-
-**Publish runbook: `docs/runbooks/release-publish.md`** (kb mirror: `kb/deployments/astramem-local-npm-publish.md`). `npm publish` auth = an npm **Automation** token in `~/.npmrc` (`//registry.npmjs.org/:_authToken=npm_...`) — Automation-type bypasses 2FA, so publish needs no OTP; a Publish/Granular token fails with `EOTP`. Package `astramem-local` on npmjs, owner account `heroboec`; regenerate token at npmjs.com → settings/heroboec/tokens → Classic → Automation. Token value lives ONLY in `~/.npmrc` (never committed).
-
-## Recent (2026-07-01)
-
-- v0.2.1 hotfix: swap embed default to `mxbai-embed-large` + boot-time dim preflight; regex tighten; version parity CI. See PR #4.
-- Marketplace `astramem` entry tracks the PLUGIN version, not the daemon.
-
-## Sensible defaults for testing
-Local dev: `serve --port 7777` foreground, `ASTRA_MEMORY_DATADIR=:memory:` for throwaway state. Kill with Ctrl+C. Production-ish: `init` + `service install` + `service start`, real SQLite at default datadir.
-
-## Formerly-deferred items — RESOLVED (verified 2026-07-03, do not re-fix)
-- Turn flattening: DONE — `flattenTranscriptContent` (src/distill/flatten-turns.ts) wired at distill.ts:72 (D-DEF1, commit 55ac082). Canonical `JSON.stringify(turns)` flattens to `role: text` lines before the pipeline.
-- `summary_memory_id`: DONE-as-designed — D-DEF2 backfill (same commit): first-response returns transcript UUID (distill is async — inherent), then `ingest_idempotency.summary_memory_id` is backfilled with the first real memory id post-distill; idempotent replays return it. Clients treat it as opaque.
-- Retrieval eval gate: ADR-005 harness (tests/eval/retrieval-eval.test.ts) runs in every vitest/CI pass — recall@10 ≥ 0.9, NDCG@10 ≥ 0.7 regression floors, deterministic fake embedder.
-- Usefulness → ranking: ADR-010 v1.x epsilon component live in src/search/fuse.ts (`epsilon: 0.1` default; Laplace-smoothed used/corrected per atom).
-
-## Config reload (FEAT-433, resolved)
-config.yaml is read exactly once per process at boot (`resolveRuntimeConfig` →
-`loadConfigFromDisk`) — there is no live reload, so hand-editing it while the
-service is running has no effect on the running process either way; the
-change is picked up on the next restart. `writeConfig` (`init`,
-`reembed-dim`, `pair`) now writes atomically via tmp-file + rename, so the
-DAEMON's own writes (including the schtasks keepalive racing a restart) can
-never be observed torn — that's the footgun this warning used to be about,
-and it's fully closed.
-Guarantee, precisely: a fully-empty boot-time read is retried then WARNs +
-falls back to defaults; a non-empty read that parses to zero keys (cut off
-before any complete line) also WARNs + falls back. A hand-edit's own save is
-NOT atomic, though — if a restart lands mid-save AFTER at least one complete
-key: value line was written, the loader applies that partial content with no
-warning (indistinguishable from an intentionally minimal config). Stop the
-service before hand-editing config.yaml to avoid that narrow window; don't
-rely on the loader alone to catch it.
-
-## LLM sampling: `num_ctx` and `temperature` (v0.16.0 — both were silently broken for months)
-
-Two provider-level bugs made extraction quietly worse for months. Neither ever
-errored; both just produced thinner, lower-quality output — the exact
-success-and-silent-failure-look-identical class ADR-015 exists to kill.
-
-### `num_ctx` — sized dynamically, never hardcode it
-
-`src/providers/llm/ollama.ts` sizes the context window **per call**:
-
-```
-num_ctx = clamp(inputChars/4 + maxTokens + 512, 4096, 16384)
-```
-
-- **floor 4096** — Ollama's observed per-model default; never shrink below it.
-- **cap 16384** (`NUM_CTX_CAP`) — VRAM guard. Native context on these models goes
-  to 32K, but an unbounded `num_ctx` lets a *background daemon* claim more memory
-  than it should. Raise this only with a VRAM measurement, not a hunch.
-- `inputChars/4` = `CHARS_PER_TOKEN` heuristic; `+512` slack for chat-template overhead.
-
-**The bug (fixed):** `num_ctx` was never set *anywhere*, so every call ran at
-Ollama's default **4096**. The v3 engineering extraction prompt alone is
-**~3.8k tokens** — add a transcript chunk and an output budget and it overflowed.
-**Ollama silently truncates on overflow rather than erroring**, so the only
-observable was "the model returned less" (3 atoms collapsed to 1). This is what
-kept entity extraction ~87% broken for weeks with a green doctor canary (#200).
-
-### `temperature` — set per stage, never globally
-
-| Stage | temp | where |
-|---|---|---|
-| 04-compact | `0.1` | `src/distill/stages/04-compact.ts:80` |
-| 05-extract | `0.1` | `EXTRACT_TEMPERATURE`, override with `ASTRA_EXTRACT_TEMP` (`0` = fully deterministic JSON; an a/b lever for stochastic parse failures) |
-| entity extraction | `0.1` | `src/entity/extract-entities.ts:76` |
-| contradiction judge | `0` | `src/consolidate/contradiction-judge.ts:89` |
-
-**The bug (fixed):** the provider spread `{ options: {...} }` **twice** — once for
-`temperature`, once for `num_predict`. **A second top-level spread of the same key
-REPLACES the first rather than merging**, so `temperature` was silently dropped on
-every call that also passed `maxTokens` — i.e. **every real extraction, compaction,
-and entity call in production**, since all three always pass both.
-
-**Rule: build ONE `options` object.** Never spread `options` more than once into an
-Ollama request body. Any quality baseline measured before v0.16.0 ran with no
-temperature control and a truncated context — treat those numbers as invalid.
-
-## Do NOT
-- Do NOT commit `secrets.env` or the SQLite file — both in `.gitignore`.
-- Do NOT spread `options` twice into an Ollama request body (see above) — the
-  second spread silently replaces the first, dropping `temperature`/`num_predict`.
-- Do NOT hardcode `num_ctx`. It is sized per call; a fixed value that happens to fit
-  today's prompt silently truncates tomorrow's.
-- Do NOT kill processes machine-wide by image name (`taskkill /F /IM node.exe`, `/IM bun.exe`, `Stop-Process -Name node`). This box runs the production daemon, eval shard daemons, Ollama, and sibling agents' processes — an image-name kill murders all of them (2026-07-10: killed a 40-min LongMemEval run + prod daemon). Kill only PIDs you spawned (track them; use process-tree kill on your own root PID). If stray vitest daemons pile up, find YOUR strays via their listen ports / datadir paths and kill those PIDs.
-- Do NOT `git stash` in worktrees — the stash stack is repo-global across all worktrees; a `stash pop` in one worktree can eat a sibling agent's stash (caused a 2026-07-09 work-loss race). Use `git diff > x.patch` + `git checkout` + `git apply` instead.
-- Do NOT hand-edit `memories_vec FLOAT[N]` in a migration file directly. Since FEAT-409 (merged) the dim is single-sourced from `DEFAULT_EMBED_DIM` (`src/contracts/embed.ts`) — config default, embed providers, `SqliteVecStore`, mock providers, the `__EMBED_DIM__` migration placeholder, and the boot-time preflight (`src/doctor/probes/embed-probe.ts`) all derive from it or from `getVecSchemaDim()`. Changing the *default* is a one-constant edit for fresh DBs; migrating an *existing* DB's live vectors to a new dim requires `astramem-local reembed-dim` (migration 011, `docs/embed-dim-migration.md`) — there is no ALTER for a sqlite-vec vec0 table. FEAT-436 (2026-07-05) re-audited this and confirmed it is resolved, not an open coordinated-change hazard.
-- Do NOT construct a month-arithmetic `Date` via `setUTCMonth`/`setMonth` on a `Date`
-  still carrying the anchor's own day-of-month. It silently overflows forward whenever
-  that day doesn't exist in the target month (`2023-07-31` + 1 month lands on the
-  nonexistent Aug 31, which JS normalizes into September instead of throwing) — bit
-  `src/distill/temporal-grounding.ts`'s `addMonthsUtc` and shipped behind 307 green tests
-  because the whole suite anchored on the 15th, the one day-of-month that can never
-  trigger it (fixed same day; see `docs/research/20260713-temporal-grounding-regex-postmortem.md`).
-  When only month/year granularity is needed, construct fresh via
-  `new Date(Date.UTC(year, month, 1))` instead — no day value left to overflow. Any
-  future month-arithmetic helper needs an explicit month-end-anchor test (29th/30th/31st),
-  not just mid-month ones.
-- During a `git rebase`, `--ours` is the UPSTREAM side, not your commits — the inverse of a normal merge. Resolving a rebase conflict with `git checkout --ours` therefore keeps *main's* version and **discards your work**. Read the conflict markers; never pick a side by name. This already bit the repo once: PR #229's rebase resolved six test-file conflicts with `--ours`, silently reverting them back to their pre-fix hardcoded-literal state — and the suite stayed **green the entire time**, because the reverted literal happened to numerically equal the correctly-derived value at each point in the rebase (a test passing for the wrong reason). It took a human re-deriving the claim against `origin/main` to notice. Fixed in PR #233. See ADR-016 §3 Instance 1 and §5 rule 6.
+# CLAUDE.md — astramem-local
+
+@AGENTS.md
+
+> The include above is the tool-agnostic scaffold (commands, structure, style, credentials,
+> never-do). Everything below is **astramem-local-specific**: mission, decisions an agent must not
+> re-litigate, and where volatile state lives. This file changes rarely by design — dated facts,
+> eval numbers, and open/closed incidents live in `docs/memory.md`.
+
+## Session protocol — memory + issue tracing (mandatory, not advisory)
+
+Before any non-trivial work (feature, fix, review, plan):
+
+1. **Read `docs/memory.md` in full.** It is the ONLY source for dated corrections, current LoCoMo/
+   eval numbers, known open gaps, and closed-incident records — `CLAUDE.md` deliberately contains
+   none of that. Skipping it means working on stale assumptions (this file itself used to embed
+   that state directly; the 2026-07-21 rebuild extracted it for exactly this reason).
+2. **Re-verify before relying.** `docs/eval-runs/LEDGER.md` numbers and `docs/memory.md`'s dated
+   bullets are a cache, not the truth — re-check against the cited source (a test file, a config
+   constant, a migration) before quoting either in a decision.
+3. **Write-back is part of the task.** Any fact you verify, any number that moved, any incident
+   that closed: update `docs/memory.md` in the same session — supersede the entry in place and
+   refresh its date. A session that learns something and doesn't write it back is a defect.
+
+## Mission
+
+**astramem-local is a local-first memory daemon for AI coding agents** — it captures every Claude
+Code session transcript, distills typed memories (decisions, facts, lessons, commands, todos)
+through an 8-stage pipeline, and serves them back via hybrid search, entirely on the user's
+workstation with no cloud account required. It is wire-compatible with the `astramem-plugin`
+Claude Code plugin and the memory SaaS backend (shared atom/retrieval/capture/sync contracts). Per
+the kb strategy research, **astramem-local is the flagship product** the company is built around
+(see `../kb/12-research/astra-strategy-2026-07/README.md`, machine-local path).
+
+## Authority documents (read for any non-trivial work)
+
+- **`docs/research/20260713-teardown-and-reinvent.md`** + **`docs/specs/20260713-teardown-remediation-plan.md`**
+  — the architecture-verdict investigation (see "Decisions not to relitigate" below). Read these
+  before proposing a rewrite of the daemon, storage layer, or MCP transport.
+- **`docs/eval-runs/README.md`** — canonical LoCoMo/eval tracker. Read before quoting any benchmark
+  number.
+- **`docs/architecture/README.md`** + `docs/adr/ADR-001..010` — the original design package
+  (2026-07-02): memory atom shape, storage engine, sync protocol, retrieval contract.
+- **`docs/memory.md`** — durable facts index (dated corrections, current numbers, open/closed
+  incidents).
+- **`docs/README.md`** — map of the whole `docs/` tree.
+
+## Architecture (stable facts — see `docs/memory.md` for anything dated)
+
+- **Install is wizard-only.** `init` (first install) and `reinstall` (idempotent fix/upgrade) share
+  one install-flow path across win32/linux/darwin, all pointing a STABLE shim at a `current.json`
+  pointer. `reinstall` materializes an immutable release before ever touching the running daemon
+  (FEAT-438) and prunes old releases (keeps newest 2). `reinstall --dev` pins straight at the
+  checkout's mutable `dist/` as an escape hatch; `doctor` flags a dev-pinned install.
+- **Config paths (Windows):** `%APPDATA%\Astramem\config.yaml` + `secrets.env`;
+  `%LOCALAPPDATA%\Astramem\memory.sqlite` + ONNX model cache. Non-Windows:
+  `~/.config/astramem/` and `~/.local/share/astra-memory/`. Canonical dir name is `Astramem`
+  (not `AstraMemory`, which is the legacy ≤0.2.2 dir).
+- **MCP transport: two modes.** The long-lived HTTP daemon (`serve`) is mandatory for the
+  LLM-proxy/capture path, background jobs, and sync. `mcp-stdio` is a lighter spawn-per-session
+  stdio MCP server with no daemon lifecycle — a real way to use the MCP tools with no service
+  install, not a daemon replacement.
+- **Wire contract:** the daemon speaks both a canonical v1.0 envelope (SaaS-aligned) and a legacy
+  v0.0 envelope on `POST /ingest/transcript`. Idempotency via `Idempotency-Key` (SHA-256 body hash).
+- **Entity relations** (`entity_relations`, migration 027) hold entity-to-entity triples extracted
+  alongside each atom's `entities[]` list, read via `get_entity_related` / `get_entity_timeline`.
+- **Boot is degraded-start** — port binds immediately, embed probe retries in background
+  (`--strict-preflight` restores fail-fast).
+
+## Decisions not to relitigate
+
+- **Architecture verdict (2026-07-13):** a 6-agent adversarial teardown concluded **sound core,
+  accumulated debt; zero of five redesign gates cleared. Default to salvage, not rewrite.** Read
+  the two authority docs above before re-deriving this question from scratch.
+- **Contradiction detection ships `enabled`.** `defaultConfig()` sets
+  `contradictionDetection.mode: 'enabled'` (`src/config/config.ts`) — this is the real shipped
+  default. `DEFAULT_CONTRADICTION_DETECTION` (`mode: 'off'`) is a governance-fallback constant used
+  only when a config override is missing/invalid; it does **not** describe the default. Do not
+  "fix" this as off-by-default — see `docs/memory.md`'s FEAT-482 record for why that flip is
+  guarded, not reverted.
+- **Temporal reasoning: the schema is NOT at fault.** Bitemporal storage and `as_of`-aware
+  retrieval are both correct; the LoCoMo temporal-category gap is an extraction problem (facts
+  rarely carry a populated `valid_at`/`invalid_at` window), not a data-model gap. Don't let any doc
+  imply the schema needs replacing.
+- **Doctor DOES run unattended** — a frequent 15-min pass (cheap-tier, DB-only checks) plus the
+  existing 24h cleanup tick (full-tier, metered LLM/embed probes). Don't propose "wiring doctor
+  into serve" — it already is.
+- **`memory-health` check MUST stay `tier: 'full'`** — promoting it to the 15-min cheap tier was
+  already tried and reverted (incident #226): its queries are unbounded full-table scans with no
+  date filter. Hard-locked by `FULL_TIER_ONLY_CHECK_NAMES` in `tests/doctor/schedule.test.ts`.
+- **Package identity:** `astramem-local` on npmjs (owner `heroboec`) is canonical.
+  `@astragenie/astramemory-local` on GitHub Packages (0.4.0, plain better-sqlite3) is stale — never
+  install or publish it.
+- **Publish flow:** a `v*` tag push **auto-publishes via CI** (`.github/workflows/publish.yml`).
+  Never run a manual `npm publish` after pushing the release tag — it collides with CI's own
+  publish (this was learned once already; don't re-learn it).
+- Everything in `@AGENTS.md`'s Never-do still applies.
+
+## Ecosystem canon (kb)
+
+`../kb/...` links are filesystem-relative — machine-local, work only on this box.
+
+- Strategy context: [astra strategy series](../kb/12-research/astra-strategy-2026-07/README.md) —
+  why this repo is the flagship product, not a side bet.
+- Engineering standards: [definition-of-done etc.](../kb/08-engineering/),
+  [AI/agent-workflow rules](../kb/10-ai-rules/) (directly relevant — this product *is*
+  extraction/retrieval/prompt-engineering), [security](../kb/security/12-security-standards.md).
+- Patterns: [crew-harness / wiggin-loop / phase-gates](../kb/05-patterns/) (this repo runs both).
+- Publish reference mirror: `../kb/deployments/astramem-local-npm-publish.md` — currently carries
+  the same stale manual-`npm publish` instruction this run corrected in
+  `docs/runbooks/release-publish.md`; kb is out of this repo's edit scope, flagged for the kb
+  owner instead of fixed here.
 
 <!-- crew:start -->
 <!-- Crew framework memory. Run /crew:install after plugin updates that change framework memory. -->

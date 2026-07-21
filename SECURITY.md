@@ -2,14 +2,10 @@
 
 ## Supported versions
 
-Only the `0.10.x` line is currently supported with security fixes. AstraMemory Local has not yet
-reached a 1.0 release; there is no LTS branch. Upgrade to the latest `0.10.x` release before
-reporting an issue.
-
-| Version | Supported |
-|---------|-----------|
-| 0.10.x  | ✅        |
-| < 0.10.0 | ❌       |
+AstraMemory Local has not yet reached a 1.0 release; there is no LTS branch. **Only the latest
+published release is supported** with security fixes — upgrade before reporting an issue. See
+[CHANGELOG.md](CHANGELOG.md) or the npm badge in [README.md](README.md) for the current version;
+this file intentionally doesn't pin a version number, since a fixed line goes stale every release.
 
 ## Reporting a vulnerability
 
