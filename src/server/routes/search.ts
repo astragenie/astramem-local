@@ -37,6 +37,15 @@
  * meaning will silently misinterpret the new one. GET /search is
  * UNCHANGED (still the flat `{ hits }` shape) — only POST /recall adopts
  * the envelope in this slice.
+ *
+ * FEAT-480 instrumentation (measurement only, not a wire-contract change):
+ * GET /search's `{ hits }` response gains an optional `_ftsProbe` field
+ * (src/search/search.ts's FtsInstrumentation shape) ONLY when the daemon
+ * process was started with ASTRA_FTS_INSTRUMENT=1 — every other caller sees
+ * byte-identical `{ hits }`. Consumed by scripts/eval/recall-quality/
+ * fts-branch-probe.mjs to confirm/refute whether the AND-first pass in
+ * gatherCandidates() ever actually fires on real queries, and to histogram
+ * signal-token coverage of FTS-sourced top-K hits.
  */
 
 import { z } from 'zod';
@@ -48,7 +57,7 @@ import { MemoryEventRepo } from '../../storage/memory-events.js';
 import { recordRecallServed } from '../../storage/usefulness.js';
 import { SqliteVecStore } from '../../vector/sqlite-vec.js';
 import { JobRepo } from '../../pipeline/job-repo.js';
-import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
+import { search, parseAsOf, type SearchFilters, type FtsInstrumentation } from '../../search/search.js';
 import { resolveRerankOpts } from '../../search/rerank.js';
 import { resolveDecomposeOpts } from '../../search/decompose.js';
 import { resolveQueryRewriteOpts } from '../../search/query-rewrite.js';
@@ -256,7 +265,19 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       // search.queryRewrite.mode: 'enabled'). Omitted/anything else = false,
       // byte-identical to pre-FEAT-550 behavior.
       const expand = params.expand === 'true';
-      const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, queryRewrite, expand });
+      // FEAT-480 instrumentation (measurement only, not a ranking change).
+      // search() treats a SUPPLIED sink as its own "instrument this call"
+      // trigger (see SearchOpts.ftsProbeSink / gatherCandidates' instrument
+      // param) — so the sink must only be constructed and passed when this
+      // process was started with ASTRA_FTS_INSTRUMENT=1, otherwise every
+      // GET /search call would pay the (small but nonzero) coverage-scan
+      // cost unconditionally. `undefined` here is the normal case and costs
+      // nothing beyond this one env read; the response only gains
+      // `_ftsProbe` when the env var is set AND something was pushed.
+      const ftsProbe: FtsInstrumentation | undefined = process.env.ASTRA_FTS_INSTRUMENT === '1'
+        ? { gather: [], coverage: [] }
+        : undefined;
+      const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, queryRewrite, expand, ftsProbeSink: ftsProbe });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
         query: q,
@@ -267,7 +288,13 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       });
       // SLICE-411: enforce the [0,1] wire score contract at serialization,
       // independent of fuseScores() internal math.
-      return { hits: clampScores(hits, 'GET /search') };
+      const response: { hits: ReturnType<typeof clampScores>; _ftsProbe?: FtsInstrumentation } = {
+        hits: clampScores(hits, 'GET /search'),
+      };
+      if (ftsProbe && (ftsProbe.gather.length > 0 || ftsProbe.coverage.length > 0)) {
+        response._ftsProbe = ftsProbe;
+      }
+      return response;
     });
 
     // POST /recall
