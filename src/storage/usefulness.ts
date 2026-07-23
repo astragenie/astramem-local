@@ -90,6 +90,17 @@ export interface RecordRecallUsedInput {
   atomId: string;
   surface: UsefulnessSurface;
   signal: UsefulnessSignal;
+  /**
+   * FEAT-477: free-form label distinguishing WHICH heuristic mechanism
+   * produced a `signal:'heuristic'` grant — e.g. `runImplicitPositivePass`'s
+   * own inline append uses `'no_correction_survival'`, and
+   * `src/storage/proxy-turn-correlation.ts`'s independent SECOND heuristic
+   * (ADR-010 v1.x) uses `PROXY_TURN_CORRELATION_BASIS`. Omitted for
+   * `signal:'explicit'` (a human/API caller needs no mechanism label) and
+   * for every pre-FEAT-477 caller — the payload shape is byte-identical to
+   * before when this is left undefined.
+   */
+  basis?: string;
 }
 
 /** Append one 'usefulness'/'recall_used' event — the atom mattered. */
@@ -97,7 +108,12 @@ export function recordRecallUsed(db: DB, input: RecordRecallUsedInput): void {
   new MemoryEventRepo(db).append({
     event_type: 'usefulness',
     atom_id: input.atomId,
-    payload: { family: 'recall_used', surface: input.surface, signal: input.signal },
+    payload: {
+      family: 'recall_used',
+      surface: input.surface,
+      signal: input.signal,
+      ...(input.basis !== undefined ? { basis: input.basis } : {}),
+    },
   });
 }
 

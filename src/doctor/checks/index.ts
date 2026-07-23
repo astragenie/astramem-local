@@ -103,6 +103,7 @@ import { checkSyncTokenLocation } from './sync-token-location.js';
 import { checkSyncExperimentalGate } from './sync-experimental-gate.js';
 import { checkUsefulness } from './usefulness.js';
 import { checkUsefulnessFeedbackLoop } from './usefulness-feedback-loop.js';
+import { checkProxyTurnCorrelation } from './proxy-turn-correlation.js';
 import { checkMemoryHealth } from './memory-health.js';
 import { checkDurabilityGateMode } from './durability-gate-mode.js';
 import { checkExtractProfile } from './extract-profile.js';
@@ -211,6 +212,7 @@ function coreChecks(opts: DoctorCheckOpts): Check[] {
     checkSyncExperimentalGate(opts.syncEnabled ?? false, opts.syncExperimental ?? false),
     checkUsefulness(dataDir, encryptionEnabled),
     checkUsefulnessFeedbackLoop(dataDir, encryptionEnabled),
+    checkProxyTurnCorrelation(dataDir, encryptionEnabled),
     checkMemoryHealth(dataDir, encryptionEnabled),
     checkDurabilityGateMode(opts.durabilityGateMode ?? 'off'),
     checkExtractProfile(opts.extractProfile ?? 'engineering'),

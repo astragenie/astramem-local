@@ -157,6 +157,9 @@ describe('doctor scheduling (A2-lite)', () => {
     'Usefulness feedback loop',
     'Atom validity extraction',
     'Entity relations extraction',
+    // FEAT-477: same tier rationale as "Usefulness feedback loop" above —
+    // see checkProxyTurnCorrelation's own doc comment.
+    'Proxy-turn correlation',
   ];
 
   it('frequent tier NEVER runs the checks the #226 follow-up audit found doing unbounded/unindexed scans', async () => {
