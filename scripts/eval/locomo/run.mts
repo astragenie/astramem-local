@@ -203,8 +203,16 @@ const extractionPassBFlag = passBProviderFlag !== undefined && passBModelFlag !=
 // existing off-by-default baseline) and once with it, then compare
 // judge.mts scores between the two run dirs. Omitted: byte-identical to
 // before this flag existed.
+// --cross-encoder-provider mock|onnx|http (additive, 2026-07-22): the real
+// enable-default reranker is 'onnx' (defaultConfig().crossEncoder.provider), and
+// the +0.031/+0.06 rerank evidence (LEDGER v3 rerank-ONNX rows) was measured with
+// onnx — 'mock' is only the deterministic Jaccard stand-in. Default stays 'mock'
+// so every prior --cross-encoder invocation is byte-identical; pass onnx to A/B
+// the production reranker on the run.mts conv-1 path.
 const crossEncoderOverride: EvalCrossEncoderOverride | undefined =
-  has('--cross-encoder') ? { enabled: true, provider: 'mock' } : undefined;
+  has('--cross-encoder')
+    ? { enabled: true, provider: (get('--cross-encoder-provider') as 'mock' | 'onnx' | 'http' | undefined) ?? 'mock' }
+    : undefined;
 // --multihop (v2 plan C1): flip the WS6 decompose stage ON for the sandbox
 // (OFF by default in defaultConfig). Additive — omitted is byte-identical.
 const multiHopOverride: { enabled: boolean } | undefined =

@@ -57,6 +57,100 @@ const ANSWER_REASONING_EFFORT = ((): 'minimal' | 'low' | 'medium' | 'high' => {
  */
 export interface OllamaAnswerer { model: string; baseUrl?: string }
 
+const DEFAULT_OLLAMA_URL = 'http://127.0.0.1:11434';
+
+/**
+ * LLM rerank+abstain gate (2026-07-22, eval-only A/B, env-gated).
+ *
+ * Set `ASTRA_LOCOMO_RERANK_LLM=<ollama-model>` (e.g. phi4-mini) to insert a
+ * local-LLM reranker BETWEEN recall and the answerer. It selects which recalled
+ * notes are actually relevant — or returns NONE, which forces the exact-substring
+ * abstention answer directly (no answerer call).
+ *
+ * Motivation (LEDGER 2026-07-22 same-store rerank A/B): the onnx cross-encoder
+ * lifts content retrieval (multi-hop +0.101) but BREAKS abstention on adversarial
+ * (−0.149) because it surfaces a confident-looking note for no-answer questions.
+ * A cross-encoder can only ORDER; it cannot say "none of these answer this". An
+ * LLM reranker can — targeting the 0.607 rerank+abstain ceiling in one call.
+ *
+ * Fail-OPEN: any gate error / unparseable output passes the original hits through
+ * unchanged, so the gate can never turn a working retrieval into an empty one.
+ * Unset: byte-identical to before this existed (no call, no import cost).
+ */
+const RERANK_LLM_MODEL = process.env.ASTRA_LOCOMO_RERANK_LLM;
+
+interface RerankGateResult { abstain: boolean; hits: SearchHit[] }
+
+/**
+ * Cross-encoder score-floor abstain gate (2026-07-22, eval-only A/B, env-gated,
+ * ZERO extra LLM calls). Requires the run to have rerank ON with provider=onnx
+ * (`--cross-encoder --cross-encoder-provider onnx`), so each hit carries
+ * `explanation.signals.cross_encoder.final` (rerank.ts:395-400 — the clamped
+ * cross-encoder relevance, 0..1).
+ *
+ * Set `ASTRA_LOCOMO_RERANK_SCORE_FLOOR=<0..1>` to drop every hit scoring below
+ * the floor; if NONE clear it, abstain outright. Targets the onnx+abstain
+ * ceiling (LEDGER 2026-07-22 = 0.6068): onnx ranks content well (multi-hop
+ * +0.101) but surfaces a confident-looking note for no-answer questions — a
+ * relevance floor is the cheapest way to restore abstention without an LLM.
+ *
+ * Fallback to the fused `hit.score` only if a hit lacks a cross_encoder signal
+ * (shouldn't happen when topK >= k, but defensive). Unset: no-op, byte-identical.
+ */
+const RERANK_SCORE_FLOOR = ((): number | undefined => {
+  const raw = process.env.ASTRA_LOCOMO_RERANK_SCORE_FLOOR;
+  if (raw === undefined) return undefined;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : undefined;
+})();
+
+export function applyScoreFloor(hits: SearchHit[], floor: number): RerankGateResult {
+  if (hits.length === 0) return { abstain: false, hits };
+  const kept = hits.filter(h => (h.explanation?.signals?.cross_encoder?.final ?? h.score) >= floor);
+  if (kept.length === 0) return { abstain: true, hits: [] };
+  return { abstain: false, hits: kept };
+}
+
+export async function llmRerankGate(
+  model: string,
+  question: string,
+  hits: SearchHit[],
+  baseUrl: string = DEFAULT_OLLAMA_URL,
+): Promise<RerankGateResult> {
+  if (hits.length === 0) return { abstain: false, hits };
+  const notes = hits.map((h, i) => `${i + 1}. ${h.text}`).join('\n');
+  const prompt = [
+    'You select which memory notes are relevant to answer a QUESTION.',
+    'Output ONLY the numbers of notes that contain information needed to answer it, most relevant first, comma-separated (e.g. "3,1,7").',
+    'If NONE of the notes contain information that answers the question, output exactly: NONE',
+    'Do not explain. Output only the numbers or NONE.',
+    '',
+    `QUESTION: ${question}`,
+    'NOTES:',
+    notes,
+  ].join('\n');
+  try {
+    const res = await fetch(`${baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        model, messages: [{ role: 'user', content: prompt }], stream: false,
+        options: { temperature: 0, num_predict: 60 },
+      }),
+    });
+    if (!res.ok) return { abstain: false, hits }; // fail-open
+    const out = (((await res.json()) as { message?: { content?: string } }).message?.content ?? '').trim();
+    // Explicit NONE (and no digits) => abstain.
+    if (/\bNONE\b/i.test(out) && !/\d/.test(out)) return { abstain: true, hits: [] };
+    const nums = [...out.matchAll(/\d+/g)].map(m => Number(m[0])).filter(n => n >= 1 && n <= hits.length);
+    const uniq = [...new Set(nums)];
+    if (uniq.length === 0) return { abstain: false, hits }; // unparseable => fail-open, keep original order
+    return { abstain: false, hits: uniq.map(n => hits[n - 1]!) };
+  } catch {
+    return { abstain: false, hits }; // fail-open
+  }
+}
+
 async function ollamaChatComplete(o: OllamaAnswerer, prompt: string): Promise<string> {
   const res = await fetch(`${o.baseUrl ?? 'http://127.0.0.1:11434'}/api/chat`, {
     method: 'POST',
@@ -205,7 +299,24 @@ export async function answerConversations(
     }
     // IDENTICAL to the serial version: same recall, same k, same project filter,
     // same prompt, same deployment, same token budget, same reasoning effort.
-    const hits = await recall(daemonClient, { text: t.qa.question, limit: k, filters: { project: projectIdFor(t.sampleId) } });
+    const recalled = await recall(daemonClient, { text: t.qa.question, limit: k, filters: { project: projectIdFor(t.sampleId) } });
+    // LLM rerank+abstain gate (env-gated, eval-only A/B): unset => hits === recalled,
+    // byte-identical. Set => phi4-mini reranks/filters, or NONE => abstain outright.
+    let hits = recalled;
+    if (RERANK_LLM_MODEL) {
+      const gate = await llmRerankGate(RERANK_LLM_MODEL, t.qa.question, recalled);
+      if (gate.abstain) {
+        return { qa_id: t.id, sample_id: t.sampleId, category: t.qa.category, hypothesis: 'no information available', hit_count: recalled.length };
+      }
+      hits = gate.hits;
+    }
+    if (RERANK_SCORE_FLOOR !== undefined) {
+      const gate = applyScoreFloor(hits, RERANK_SCORE_FLOOR);
+      if (gate.abstain) {
+        return { qa_id: t.id, sample_id: t.sampleId, category: t.qa.category, hypothesis: 'no information available', hit_count: recalled.length };
+      }
+      hits = gate.hits;
+    }
     const prompt = buildAnswerPrompt(t.qa.question, hits, { includeSignals });
     const hypothesis = opts.ollamaAnswerer
       ? await ollamaChatComplete(opts.ollamaAnswerer, prompt)

@@ -1,0 +1,24 @@
+{
+  "judge": "gpt-5.4 chain-of-thought (rejudge.mts)",
+  "deployment": "gpt-5.4",
+  "effort": "medium",
+  "scope": "cat1-4 (cat5/adversarial excluded, per rejudge.mts)",
+  "n": 152,
+  "overall": 0.6579,
+  "cat_avg": 0.5936,
+  "per_category": {
+    "multi_hop": { "acc": 0.438, "n": 32 },
+    "temporal": { "acc": 0.838, "n": 37 },
+    "open_domain": { "acc": 0.385, "n": 13 },
+    "single_hop": { "acc": 0.714, "n": 70 }
+  },
+  "source_hypotheses": "hypotheses.jsonl (same file scored by token-F1 metrics.json)",
+  "token_f1_cat1_4_avg": 0.4703,
+  "cot_vs_tokenf1_cat_avg_delta": 0.1233,
+  "notes": [
+    "CoT rejudge is a MEASUREMENT lever, not a pipeline lever: same answers, more lenient/fair grading.",
+    "+0.123 cat1-4 lift over token-F1 confirms the 2026-07-20 oracle judge-swap +0.08-0.13 finding.",
+    "0.70 NOT reached. This 0.6579 is the best real-pipeline CoT number recorded (>oracle 0.566), but 0.70+ has only ever appeared with PERFECT gold evidence (oracle gold-turns = 0.750).",
+    "Single conv-1 (n=199 answers / n=152 cat1-4), ONE codex service day. Good-day variance: token-F1 0.5883 landed within variance of the 0.6002 champion. Full-sample + >=3-run median required before publishing."
+  ]
+}
