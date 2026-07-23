@@ -62,10 +62,10 @@ export const LOCAL_SQLITE_KINDS: readonly JobKind[] = ['cleanup'];
  * Anti-starvation aging (FEAT-482 fold, item 3 of 3). Every `AGING_STEP_MS`
  * a pending job has waited knocks one full tier off its EFFECTIVE priority
  * for claim-ordering purposes only — the stored `priority` column itself is
- * never mutated, so it stays available for future forensics (`queue`/doctor
- * don't display it today — src/cli/queue.ts's job listing doesn't select
- * `priority` yet — but the column is there, real, and unmutated whenever a
- * caller wants to wire it in).
+ * never mutated, so it stays available for forensics: `queue`'s job listing
+ * now surfaces it directly (`JobRepo.pendingByPriority()` for the per-tier
+ * pending breakdown, plus a `priority` column on each recent-failure row —
+ * see src/cli/queue.ts).
  *
  * A tier-5 (cleanup) job ages past tier-1 after 4 elapsed steps, and below
  * EVERY possible fresh arrival (which always starts at its own base tier,
@@ -345,6 +345,26 @@ export class JobRepo {
     const out: Record<string, number> = {};
     for (const r of rows) out[r.state] = r.n;
     return out;
+  }
+
+  /**
+   * Pending-job counts grouped by their STORED priority tier (lower number =
+   * claimed first), ascending. This is the `priority` column `enqueue()`
+   * stamps at insert time — it does NOT reflect the aging discount
+   * `claimPending()` applies at claim time (see `AGING_STEP_MS`), so a
+   * long-waiting P5 row still reports as P5 here even after it has aged past
+   * P1 for claim-ordering purposes. Used by `queue` forensics
+   * (src/cli/queue.ts) to answer "is a whole tier backed up" without
+   * re-deriving the aging math.
+   */
+  pendingByPriority(): Array<{ priority: number; n: number }> {
+    return this.db.prepare(`
+      SELECT priority, COUNT(*) AS n
+      FROM jobs
+      WHERE state = 'pending'
+      GROUP BY priority
+      ORDER BY priority ASC
+    `).all() as Array<{ priority: number; n: number }>;
   }
 
   private _transition(id: string, state: JobState): void {

@@ -2,9 +2,12 @@
  * `astramem-local queue [--json] [--limit N]`
  * `astramem-local queue purge --poison [--json] [--dump-dir PATH]`
  *
- * Shows job-table state counts (pending/running/completed/failed/poison/paused)
- * plus the most recent failures (state IN ('failed','poison')) with their
- * last_error, so an operator can see what's stuck without opening the DB.
+ * Shows job-table state counts (pending/running/completed/failed/poison/paused),
+ * a pending-jobs breakdown by FEAT-482 priority tier (P1 claimed first —
+ * `JobRepo.pendingByPriority()`), plus the most recent failures (state IN
+ * ('failed','poison')) with their last_error and priority tier, so an
+ * operator can see what's stuck — and how urgent it was — without opening
+ * the DB.
  *
  * The `purge --poison` subcommand (FEAT-405) removes poison-marked jobs on
  * demand, ahead of the 30-day auto-purge — see ./queue-purge.ts.
@@ -13,6 +16,7 @@
 import { openRuntimeDb } from './open-runtime-db.js';
 import { queuePurgeCommand } from './queue-purge.js';
 import { queueRequeueCommand } from './queue-requeue.js';
+import { JobRepo } from '../pipeline/job-repo.js';
 import type { JobState } from '../contracts/index.js';
 
 function parseArg(args: string[], flag: string): string | undefined {
@@ -31,11 +35,18 @@ interface RecentFailure {
   attempts: number;
   last_error: string | null;
   updated_at: number;
+  priority: number;
+}
+
+interface PriorityCount {
+  priority: number;
+  n: number;
 }
 
 export interface QueueSummary {
   counts: StateCount[];
   recentFailures: RecentFailure[];
+  pendingByPriority: PriorityCount[];
 }
 
 export async function queueCommand(args: string[]): Promise<void> {
@@ -62,7 +73,7 @@ export async function queueCommand(args: string[]): Promise<void> {
 
   const recentFailures = db
     .prepare(`
-      SELECT id, kind, attempts, last_error, updated_at
+      SELECT id, kind, attempts, last_error, updated_at, priority
       FROM jobs
       WHERE state IN ('failed', 'poison')
       ORDER BY updated_at DESC
@@ -70,9 +81,11 @@ export async function queueCommand(args: string[]): Promise<void> {
     `)
     .all(limit) as RecentFailure[];
 
+  const pendingByPriority = new JobRepo(db).pendingByPriority();
+
   db.close();
 
-  const summary: QueueSummary = { counts, recentFailures };
+  const summary: QueueSummary = { counts, recentFailures, pendingByPriority };
 
   if (jsonMode) {
     console.log(JSON.stringify(summary, null, 2));
@@ -93,6 +106,16 @@ export async function queueCommand(args: string[]): Promise<void> {
   }
 
   console.log('');
+  if (pendingByPriority.length === 0) {
+    console.log('  No pending jobs.');
+  } else {
+    console.log('  Pending by priority tier (P1 claimed first):');
+    for (const p of pendingByPriority) {
+      console.log(`    P${p.priority}  ${p.n}`);
+    }
+  }
+
+  console.log('');
   if (recentFailures.length === 0) {
     console.log('  No recent failures.');
   } else {
@@ -100,7 +123,7 @@ export async function queueCommand(args: string[]): Promise<void> {
     for (const f of recentFailures) {
       const when = new Date(f.updated_at).toISOString();
       const err = (f.last_error ?? '(no error recorded)').slice(0, 160);
-      console.log(`    [${when}] ${f.kind} ${f.id} (attempts=${f.attempts}): ${err}`);
+      console.log(`    [${when}] ${f.kind} ${f.id} (priority=P${f.priority}, attempts=${f.attempts}): ${err}`);
     }
   }
   console.log('');
