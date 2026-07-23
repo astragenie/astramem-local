@@ -40,6 +40,8 @@ export interface PolicyDecision {
 
 export interface PolicyInput {
   repo: string;
+  project?: string | null;
+  branch?: string | null;
   prompt: string;
   /** Requested budget; the policy may shrink it, never grow it. */
   budgetTokens?: number;
@@ -72,7 +74,13 @@ export function decideInjection(db: DB, config: Config, input: PolicyInput): Pol
 
   if (!policyCfg.enabled) {
     // Policy off = legacy behavior: always inject whatever the pack selects.
-    const memories = selectPack(db, { repo: input.repo, budgetTokens: baseBudget, now: input.now });
+    const memories = selectPack(db, {
+      repo: input.repo,
+      project: input.project,
+      branch: input.branch,
+      budgetTokens: baseBudget,
+      now: input.now,
+    });
     record(db, input, memories);
     return {
       inject: memories.length > 0,
@@ -100,7 +108,13 @@ export function decideInjection(db: DB, config: Config, input: PolicyInput): Pol
   // 3. Token-budget-aware top-k.
   const budget = shrinkBudgetForPrompt(baseBudget, prompt.length);
 
-  const candidates = selectPack(db, { repo: input.repo, budgetTokens: budget, now: input.now });
+  const candidates = selectPack(db, {
+    repo: input.repo,
+    project: input.project,
+    branch: input.branch,
+    budgetTokens: budget,
+    now: input.now,
+  });
   if (candidates.length === 0) return skip('no-eligible-memories', budget);
 
   // 2. Confidence threshold on the selection score.
