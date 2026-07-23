@@ -171,5 +171,25 @@ describe('JobRepo', () => {
       const claimed = repo.claimPending();
       expect(claimed!.id).toBe(distillId);
     });
+
+    it('pendingByPriority groups pending jobs by their stored tier, ascending', () => {
+      repo.enqueue('distill', { kind: 'distill', transcript_id: 't1', session_id: 's1' }); // P1
+      repo.enqueue('distill', { kind: 'distill', transcript_id: 't2', session_id: 's2' }); // P1
+      repo.enqueue('reembed', { kind: 'reembed', memory_id: 'm1' }); // P2
+      const cleanupId = repo.enqueue('cleanup', { kind: 'cleanup', older_than_days: 30 }); // P5
+      repo.claimPending({ preferKinds: ['cleanup'] }); // claim the cleanup job so it's no longer pending
+      // sanity: the claimed job is indeed the cleanup one and is now 'running'
+      expect(repo.get(cleanupId)!.state).toBe('running');
+
+      const breakdown = repo.pendingByPriority();
+      expect(breakdown).toEqual([
+        { priority: 1, n: 2 },
+        { priority: 2, n: 1 },
+      ]);
+    });
+
+    it('pendingByPriority returns an empty array when there are no pending jobs', () => {
+      expect(repo.pendingByPriority()).toEqual([]);
+    });
   });
 });
