@@ -32,6 +32,7 @@ import { proxyCommand } from './proxy.js';
 import { ingestAudioCommand } from './audio.js';
 import { configCommand } from './config.js';
 import { installCliCrashHandlers } from './crash-handlers.js';
+import { parseArg } from './arg-parse.js';
 
 const PKG_VERSION: string = (() => {
   try {
@@ -50,11 +51,6 @@ const PKG_VERSION: string = (() => {
 // a newer install exists elsewhere) is visible at a glance instead of
 // silently running whichever binary the shell found first.
 const ENTRY_PATH: string = fileURLToPath(import.meta.url);
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
 
 // See crash-handlers.ts for why this is a global-scope call to an imported
 // function rather than inline logic here.

@@ -33,6 +33,7 @@ import { getServiceAdapter } from '../service/index.js';
 import { stopLockHolder, readLockInfo, getProcessStartTime, type LockInfo } from '../service/instance-lock.js';
 import { BOOT_HARD_CAP_SEC } from '../service/watchdog-probe.js';
 import { waitForHealth, waitForVersion } from './wait-health.js';
+import { hasFlag } from './arg-parse.js';
 
 /**
  * Budget for polling /version AFTER /health is already up. Dedicated (not the
@@ -74,10 +75,6 @@ import {
 } from '../service/release.js';
 import { shimPaths, writeShim, writePointer, type ShimPointer } from '../service/shim.js';
 import { activateGitHooks } from '../service/git-hooks-activate.js';
-
-function hasFlag(args: string[], flag: string): boolean {
-  return args.includes(flag);
-}
 
 /**
  * verify-health polling budget (bug #2, this session): a service/task-

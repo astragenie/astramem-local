@@ -18,11 +18,7 @@ import { queuePurgeCommand } from './queue-purge.js';
 import { queueRequeueCommand } from './queue-requeue.js';
 import { JobRepo } from '../pipeline/job-repo.js';
 import type { JobState } from '../contracts/index.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 interface StateCount {
   state: JobState;

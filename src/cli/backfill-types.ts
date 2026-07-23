@@ -31,13 +31,9 @@ import { join } from 'node:path';
 import { openRuntimeDb } from './open-runtime-db.js';
 import { MemoryEventRepo } from '../storage/memory-events.js';
 import { runTypeBackfillBatch, type TypeChangeCandidate } from '../distill/backfill-types.js';
+import { parseArg } from './arg-parse.js';
 
 const DEFAULT_BATCH_SIZE = 500;
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
 
 function checkpointPath(dataDir: string): string {
   return join(dataDir, 'backfill-types.checkpoint.json');
