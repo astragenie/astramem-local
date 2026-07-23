@@ -3,6 +3,88 @@ import type { DB } from '../storage/db.js';
 import type { Job, JobKind, JobState } from '../contracts/index.js';
 
 /**
+ * Priority tiers (FEAT-482 fold, worker-starvation wave, item 1 of 3).
+ * LOWER number is claimed FIRST — `enqueue()` stamps the tier for a job's
+ * `kind` onto the row at insert time, so `claimPending()`'s ORDER BY never
+ * needs a per-call kind lookup.
+ *
+ * P1 — distill / distill-events: the user-facing extract/compact/embed
+ *      pipeline. Recall correctness depends on this landing promptly.
+ * P2 — reembed / transcribe: backfill-shaped maintenance (re-index one
+ *      memory, convert one queued audio file) — async by design, but still
+ *      wants to drain ahead of pure housekeeping.
+ * P3 — consolidate: the merge/propose (+ optional contradiction/dup-judge)
+ *      sweep. Also the DEFAULT_JOB_PRIORITY fallback below.
+ * P4 — reserved, no JobKind maps here today. contradiction-judge/dup-judge
+ *      calls happen INSIDE a `consolidate` job, not as their own row —
+ *      kept as a numbered gap so a future standalone job kind for that
+ *      work slots in without renumbering every tier below it.
+ * P5 — cleanup: pure housekeeping, lowest urgency.
+ */
+export const JOB_PRIORITY: Readonly<Record<JobKind, number>> = {
+  distill: 1,
+  'distill-events': 1,
+  reembed: 2,
+  transcribe: 2,
+  consolidate: 3,
+  cleanup: 5,
+};
+
+/** Fallback tier for any row without a `JOB_PRIORITY` entry — in practice
+ *  only a pre-058 legacy row (migration 058's own `DEFAULT 3`) or a raw
+ *  insert that bypassed `enqueue()`; `JobKind` is a closed union, so every
+ *  kind enqueue() actually sees already has a real entry above. Mid-tier —
+ *  same value migration 058 backfills existing rows to — so a legacy row
+ *  neither jumps ahead of nor starves forever behind newly tiered work (the
+ *  aging term in `claimPending()` bounds "forever" regardless). */
+export const DEFAULT_JOB_PRIORITY = 3;
+
+/**
+ * Job kinds whose handler never makes a network/LLM/embed call — pure local
+ * SQLite reads/writes (see handlers/cleanup.ts: DB deletes + local sweeps
+ * only). Reserved for the worker's lane-0 preferential claim (`worker.ts`'s
+ * `RESERVED_LOCAL_LANE_ID`, `backpressure.ts`) so a local-only job — e.g.
+ * cleanup's own vec-index-retry sweep — can't get stuck behind a long
+ * network-bound distill/consolidate job occupying every other lane, which is
+ * exactly the failure mode `queue-liveness-starvation.test.ts` documents in
+ * the opposite direction (a slow job starving everything else).
+ *
+ * Deliberately conservative/static — classified by KIND, not by runtime
+ * config — mirrors `backpressure.ts`'s `EMBED_HEAVY_KINDS` classification
+ * style. `consolidate` is NOT included even though its default merge/propose
+ * pass is itself local-only: contradiction-detection/dup-judge config can
+ * turn any given consolidate run into a network-bound one, and a per-kind
+ * static set can't see that at claim time.
+ */
+export const LOCAL_SQLITE_KINDS: readonly JobKind[] = ['cleanup'];
+
+/**
+ * Anti-starvation aging (FEAT-482 fold, item 3 of 3). Every `AGING_STEP_MS`
+ * a pending job has waited knocks one full tier off its EFFECTIVE priority
+ * for claim-ordering purposes only — the stored `priority` column itself is
+ * never mutated, so it stays available for future forensics (`queue`/doctor
+ * don't display it today — src/cli/queue.ts's job listing doesn't select
+ * `priority` yet — but the column is there, real, and unmutated whenever a
+ * caller wants to wire it in).
+ *
+ * A tier-5 (cleanup) job ages past tier-1 after 4 elapsed steps, and below
+ * EVERY possible fresh arrival (which always starts at its own base tier,
+ * age ~0) after 5 — so a low-priority job is GUARANTEED to eventually win a
+ * claim race against a continuous stream of fresh P1 arrivals, not merely
+ * "sometimes get lucky" on a quiet tick. See job-repo.test.ts's fairness
+ * test for the selection-OUTCOME proof (not just the SQL shape — aging is
+ * easy to get backwards in a way no test of the expression alone catches).
+ */
+export const AGING_STEP_MS = 120_000;
+
+/** SQL fragment computing a row's claim-time EFFECTIVE priority: its stored
+ *  tier minus one full tier per `AGING_STEP_MS` elapsed since `created_at`.
+ *  Integer division truncates toward zero, which is floor() here since
+ *  `created_at` can never be after the bound `now` parameter (age >= 0).
+ *  Bind order for each occurrence: (nowMs, AGING_STEP_MS). */
+const EFFECTIVE_PRIORITY_SQL = `(priority - ((? - created_at) / ?))`;
+
+/**
  * Data-access object for the jobs table.
  * All methods are synchronous (better-sqlite3 is sync).
  */
@@ -13,32 +95,59 @@ export class JobRepo {
   enqueue(kind: JobKind, payload: unknown): string {
     const id = randomUUID();
     const now = Date.now();
+    const priority = JOB_PRIORITY[kind] ?? DEFAULT_JOB_PRIORITY;
     this.db.prepare(`
-      INSERT INTO jobs (id, kind, payload_json, state, attempts, last_error, created_at, updated_at)
-      VALUES (?, ?, ?, 'pending', 0, NULL, ?, ?)
-    `).run(id, kind, JSON.stringify(payload), now, now);
+      INSERT INTO jobs (id, kind, payload_json, state, attempts, last_error, priority, created_at, updated_at)
+      VALUES (?, ?, ?, 'pending', 0, NULL, ?, ?, ?)
+    `).run(id, kind, JSON.stringify(payload), priority, now, now);
     return id;
   }
 
   /**
-   * Atomically claim the oldest pending job: pending → running.
-   * Returns the updated Job row, or null if the queue is empty.
+   * Atomically claim the highest-EFFECTIVE-priority pending job (tier, aged
+   * by wait time — see `AGING_STEP_MS`; ties broken oldest-`created_at`-
+   * first): pending → running. Returns the updated Job row, or null if the
+   * queue (or, with `preferKinds` set, the preferred-kind subset of it) is
+   * empty.
+   *
+   * `preferKinds`, when non-empty, first tries to claim among ONLY those
+   * kinds; if none are pending it falls through to a normal claim across
+   * every kind. Used by `worker.ts`'s lane-0 reservation
+   * (`LOCAL_SQLITE_KINDS`) so a local-only job always gets first refusal on
+   * that lane without ever leaving it idle when no local-only job is
+   * waiting. Omitted entirely (every pre-existing caller) is byte-identical
+   * to claiming across all kinds.
+   *
    * Uses a CTE-based UPDATE so only one concurrent caller wins the row.
    */
-  claimPending(): Job | null {
+  claimPending(opts: { preferKinds?: readonly JobKind[] } = {}): Job | null {
     // SQLite does not support UPDATE ... RETURNING with a subquery on some versions,
     // so we use a transaction: SELECT the candidate, then UPDATE if still pending.
     const claim = this.db.transaction((): Job | null => {
-      const candidate = this.db.prepare(`
-        SELECT * FROM jobs
-        WHERE state = 'pending'
-        ORDER BY created_at ASC
-        LIMIT 1
-      `).get() as Job | undefined;
+      const now = Date.now();
+      let candidate: Job | undefined;
+
+      if (opts.preferKinds && opts.preferKinds.length > 0) {
+        const placeholders = opts.preferKinds.map(() => '?').join(',');
+        candidate = this.db.prepare(`
+          SELECT * FROM jobs
+          WHERE state = 'pending' AND kind IN (${placeholders})
+          ORDER BY ${EFFECTIVE_PRIORITY_SQL} ASC, created_at ASC
+          LIMIT 1
+        `).get(...opts.preferKinds, now, AGING_STEP_MS) as Job | undefined;
+      }
+
+      if (!candidate) {
+        candidate = this.db.prepare(`
+          SELECT * FROM jobs
+          WHERE state = 'pending'
+          ORDER BY ${EFFECTIVE_PRIORITY_SQL} ASC, created_at ASC
+          LIMIT 1
+        `).get(now, AGING_STEP_MS) as Job | undefined;
+      }
 
       if (!candidate) return null;
 
-      const now = Date.now();
       const changes = this.db.prepare(`
         UPDATE jobs
         SET state = 'running', updated_at = ?
