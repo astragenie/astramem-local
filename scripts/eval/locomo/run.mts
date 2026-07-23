@@ -215,8 +215,24 @@ const crossEncoderOverride: EvalCrossEncoderOverride | undefined =
     : undefined;
 // --multihop (v2 plan C1): flip the WS6 decompose stage ON for the sandbox
 // (OFF by default in defaultConfig). Additive — omitted is byte-identical.
-const multiHopOverride: { enabled: boolean } | undefined =
-  has('--multihop') ? { enabled: true } : undefined;
+// --multihop-provider mock|llm (2026-07-22): mock = deterministic regex split
+// (default); llm = the real LlmQueryDecomposer, which uses config.llm.extraction
+// provider+model (decompose.ts:buildQueryDecomposer). On --resume no distill
+// runs, so pairing --multihop-provider llm with --extraction-provider ollama
+// --extraction-model <local> points the decomposer at a FAST LOCAL model — codex
+// latency (~10s) blows past multiHop.timeoutMs and would no-op every call.
+// --multihop-timeout-ms raises that per-call budget (default 800ms is tuned for a
+// fast local model; still too tight for some). Additive — omitted is byte-identical.
+const multiHopProviderFlag = get('--multihop-provider') as 'mock' | 'llm' | undefined;
+const multiHopTimeoutFlag = get('--multihop-timeout-ms');
+const multiHopOverride: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number } | undefined =
+  has('--multihop')
+    ? {
+        enabled: true,
+        ...(multiHopProviderFlag ? { provider: multiHopProviderFlag } : {}),
+        ...(multiHopTimeoutFlag ? { timeoutMs: Number(multiHopTimeoutFlag) } : {}),
+      }
+    : undefined;
 // WS2 diagnostic (same doc, workstream 2): run the not-in-db/rank-miss/
 // rank-ok retrieval diagnosis against each shard's daemon right after the
 // answer step, before it's torn down -- reuses the daemon that's about to
@@ -288,7 +304,7 @@ async function runShard(opts: {
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
   /** Additive (v2 C1) — flips WS6 multiHop decompose on for the sandbox. */
-  multiHopOverride?: { enabled: boolean };
+  multiHopOverride?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number };
   /** Additive (WS2 diagnostic, same comment) — false/omitted runs no extra
    *  recall() calls and writes no diagnosis.json, byte-identical to before
    *  this option existed. */

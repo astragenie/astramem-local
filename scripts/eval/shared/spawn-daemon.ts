@@ -177,7 +177,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -247,6 +247,8 @@ export function makeIsolatedEvalEnv(
   // archived run ever measured the #266-fixed decomposer on real questions.
   if (opts?.multiHop !== undefined) {
     configLines.push('multiHop:', `  enabled: ${opts.multiHop.enabled}`);
+    if (opts.multiHop.provider !== undefined) configLines.push(`  provider: ${opts.multiHop.provider}`);
+    if (opts.multiHop.timeoutMs !== undefined) configLines.push(`  timeoutMs: ${opts.multiHop.timeoutMs}`);
   }
   if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined || opts?.extractionPassB !== undefined || opts?.maxChunkChars !== undefined) {
     configLines.push('distill:');
