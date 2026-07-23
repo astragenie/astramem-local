@@ -41,6 +41,8 @@ export function recallRoute(db: DB, config: Config = defaultConfig()) {
       if (parsed.data.prompt !== undefined) {
         const decision = decideInjection(db, config, {
           repo: parsed.data.repo,
+          project: parsed.data.project,
+          branch: parsed.data.branch,
           prompt: parsed.data.prompt,
           budgetTokens: parsed.data.budget_tokens,
         });

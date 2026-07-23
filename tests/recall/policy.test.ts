@@ -150,4 +150,48 @@ describe('POST /recall/pack with prompt (4d REST surface)', () => {
     expect(legacy.json().decision).toBeUndefined();
     expect(legacy.json().pack).toContain('Use SQLite');
   });
+
+  // decideInjection's PolicyInput had no project/branch field, so a `prompt`-
+  // bearing request silently reverted to repo-wide filtering — the opposite
+  // of pack.ts's documented worktree-scoping. Same repo, divergent project
+  // (worktree scenario) must scope identically with and without `prompt`.
+  it('project scoping is identical whether or not `prompt` is present', async () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    new MemoryRepo(db).insert({
+      type: 'decision', text: 'worktree-scoped decision', normalized_text: 'worktree-scoped decision',
+      repo: 'memory', project: 'memory-worktree-atom2', branch: null, agent: null, session_id: null,
+      hash: 'h-pol-project-1', source_hash: null, importance: 0.9,
+    });
+    const app = await buildApp({ db, token: 't' });
+    const promptThatReferencesMemory = 'what did we decide about the storage layer last time';
+
+    const legacyWrongProject = await app.inject({
+      method: 'POST', url: '/recall/pack',
+      headers: { authorization: 'Bearer t' },
+      payload: { repo: 'memory' },
+    });
+    expect(legacyWrongProject.json().pack).toBe('');
+
+    const legacyRightProject = await app.inject({
+      method: 'POST', url: '/recall/pack',
+      headers: { authorization: 'Bearer t' },
+      payload: { repo: 'memory', project: 'memory-worktree-atom2' },
+    });
+    expect(legacyRightProject.json().pack).toContain('worktree-scoped decision');
+
+    const policyWrongProject = await app.inject({
+      method: 'POST', url: '/recall/pack',
+      headers: { authorization: 'Bearer t' },
+      payload: { repo: 'memory', prompt: promptThatReferencesMemory },
+    });
+    expect(policyWrongProject.json().pack).toBe('');
+
+    const policyRightProject = await app.inject({
+      method: 'POST', url: '/recall/pack',
+      headers: { authorization: 'Bearer t' },
+      payload: { repo: 'memory', project: 'memory-worktree-atom2', prompt: promptThatReferencesMemory },
+    });
+    expect(policyRightProject.json().pack).toContain('worktree-scoped decision');
+  });
 });
