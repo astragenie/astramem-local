@@ -55,6 +55,9 @@ function buildFullyPopulatedConfig(): Config {
       enabled: true, provider: 'llm', minQueryWords: 4, maxSubQueries: 4,
       maxSupplemental: 8, supplementalWeight: 0.6, timeoutMs: 900, model: 'decompose-model',
     },
+    evidenceBundling: {
+      enabled: true, maxExtra: 3, minDistinctSessions: 3, sameEntity: false, sameSession: true,
+    },
     recallPack: {
       enabled: true,
       budgetTokens: 2200,

@@ -56,6 +56,7 @@ import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
 import { resolveRerankOpts } from '../../search/rerank.js';
 import { resolveDecomposeOpts } from '../../search/decompose.js';
 import { resolveQueryRewriteOpts } from '../../search/query-rewrite.js';
+import { resolveEvidenceBundlingOpts } from '../../search/evidence-bundle.js';
 import { buildLLMProvider } from '../../providers/index.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
@@ -206,6 +207,10 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
   // requires the per-request `expand: true` opt-in below (AC-1's latency
   // gate) — see src/search/query-rewrite.ts.
   const queryRewrite = resolveQueryRewriteOpts(config, buildLLMProvider);
+  // Wave-6: selective post-rerank evidence bundling — undefined (search()
+  // takes zero extra branches) unless evidenceBundling.enabled is set. See
+  // src/search/evidence-bundle.ts.
+  const evidenceBundling = resolveEvidenceBundlingOpts(config);
 
   return async (app: FastifyInstance) => {
     // GET /search
@@ -295,7 +300,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       // at 30s. See src/server/lib/deadline.ts's doc comment for exactly
       // what this does and does not protect against.
       return withDeadline('GET /search', reply, async () => {
-        const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand });
+        const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand, evidenceBundling });
         // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
         recordRecallServed(db, {
           query: q,
@@ -371,7 +376,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       const expand = parsed.data.expand ?? false;
 
       return withDeadline('POST /recall', reply, async () => {
-        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand });
+        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand, evidenceBundling });
         // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
         recordRecallServed(db, {
           query,

@@ -327,6 +327,16 @@ export function configToYaml(cfg: Config): string {
     line(1, 'timeoutMs', cfg.multiHop.timeoutMs),
     ...(cfg.multiHop.model ? [line(1, 'model', cfg.multiHop.model)] : []),
     '',
+    // Wave-6 evidence bundling (P2 retrieval-overhaul evidence-sufficiency
+    // lever) — OFF by default. See src/search/evidence-bundle.ts before
+    // flipping `enabled: true`.
+    line(0, 'evidenceBundling'),
+    line(1, 'enabled', cfg.evidenceBundling.enabled),
+    line(1, 'maxExtra', cfg.evidenceBundling.maxExtra),
+    line(1, 'minDistinctSessions', cfg.evidenceBundling.minDistinctSessions),
+    line(1, 'sameEntity', cfg.evidenceBundling.sameEntity),
+    line(1, 'sameSession', cfg.evidenceBundling.sameSession),
+    '',
     line(0, 'recallPack'),
     line(1, 'enabled', cfg.recallPack.enabled),
     line(1, 'budgetTokens', cfg.recallPack.budgetTokens),

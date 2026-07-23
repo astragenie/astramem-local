@@ -15,6 +15,7 @@ import {
   applyRetentionGovernance,
   applyTypeHintsGovernance,
   applyMultiHopGovernance,
+  applyEvidenceBundlingGovernance,
   applyQueryRewriteGovernance,
   applyCrossEncoderGovernance,
   resolveExtractionPassBTuning,
@@ -1015,6 +1016,56 @@ describe('applyMultiHopGovernance', () => {
     const cfg = loadConfig({ multiHop: { ...base, maxSubQueries: -1, timeoutMs: 0 } } as any);
     expect(cfg.multiHop.maxSubQueries).toBe(base.maxSubQueries);
     expect(cfg.multiHop.timeoutMs).toBe(base.timeoutMs);
+  });
+});
+
+// Wave-6 (P2 retrieval-overhaul evidence-sufficiency lever): mirrors
+// applyMultiHopGovernance's own test shape directly above — same "invalid
+// config must never reach evidence-bundle.ts's Array.slice(0, N) cap /
+// Set.size < N comparison unvalidated" concern.
+describe('applyEvidenceBundlingGovernance', () => {
+  const base = defaultConfig().evidenceBundling;
+
+  it('leaves a valid config byte-identical (governance is a guard, not a behavior change)', () => {
+    expect(applyEvidenceBundlingGovernance(base)).toEqual(base);
+  });
+
+  it('falls back to defaults when the block is missing entirely', () => {
+    const logs: string[] = [];
+    const governed = applyEvidenceBundlingGovernance(undefined as any, { log: (m) => logs.push(m) });
+    expect(governed).toEqual(base);
+    expect(logs.some(m => m.includes('evidenceBundling is missing'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN, 2.5])('falls back maxExtra=%s to the documented default (never a negative slice cap)', (bad) => {
+    const logs: string[] = [];
+    const governed = applyEvidenceBundlingGovernance({ ...base, maxExtra: bad }, { log: (m) => logs.push(m) });
+    expect(governed.maxExtra).toBe(base.maxExtra);
+    expect(logs.some(m => m.includes('maxExtra'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN, 2.5])('falls back minDistinctSessions=%s to the documented default', (bad) => {
+    const logs: string[] = [];
+    const governed = applyEvidenceBundlingGovernance({ ...base, minDistinctSessions: bad }, { log: (m) => logs.push(m) });
+    expect(governed.minDistinctSessions).toBe(base.minDistinctSessions);
+    expect(logs.some(m => m.includes('minDistinctSessions'))).toBe(true);
+  });
+
+  it('falls back a non-boolean sameEntity/sameSession to the documented default', () => {
+    const logs: string[] = [];
+    const governed = applyEvidenceBundlingGovernance(
+      { ...base, sameEntity: 'yes' as any, sameSession: 1 as any },
+      { log: (m) => logs.push(m) },
+    );
+    expect(governed.sameEntity).toBe(base.sameEntity);
+    expect(governed.sameSession).toBe(base.sameSession);
+    expect(logs.some(m => m.includes('sameEntity'))).toBe(true);
+    expect(logs.some(m => m.includes('sameSession'))).toBe(true);
+  });
+
+  it('loadConfig wires the clamps in on the in-process path', () => {
+    const cfg = loadConfig({ evidenceBundling: { ...base, maxExtra: -1 } } as any);
+    expect(cfg.evidenceBundling.maxExtra).toBe(base.maxExtra);
   });
 });
 

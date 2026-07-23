@@ -69,6 +69,7 @@ import { search, parseAsOf, type SearchFilters } from '../search/search.js';
 import { resolveRerankOpts } from '../search/rerank.js';
 import { resolveDecomposeOpts } from '../search/decompose.js';
 import { resolveQueryRewriteOpts } from '../search/query-rewrite.js';
+import { resolveEvidenceBundlingOpts } from '../search/evidence-bundle.js';
 import { buildLLMProvider } from '../providers/index.js';
 import { clampScores } from '../server/lib/score-contract.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -140,6 +141,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
   // requires the per-call `expand: true` opt-in argument below (AC-1's
   // latency gate) — see src/search/query-rewrite.ts.
   const queryRewrite = resolveQueryRewriteOpts(cfg, buildLLMProvider);
+  // Wave-6: selective post-rerank evidence bundling — undefined (search()
+  // takes zero extra branches) unless evidenceBundling.enabled is set. See
+  // src/search/evidence-bundle.ts.
+  const evidenceBundling = resolveEvidenceBundlingOpts(cfg);
 
   const server = new McpServer(
     { name: 'astramemory-local', version: PKG_VERSION },
@@ -257,6 +262,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         mode: args.mode ?? 'hybrid',
         queryRewrite,
         expand: args.expand ?? false,
+        evidenceBundling,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
@@ -382,6 +388,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         mode: args.mode ?? 'hybrid',
         queryRewrite,
         expand: args.expand ?? false,
+        evidenceBundling,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
