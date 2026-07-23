@@ -2,6 +2,7 @@ import type { EmbedHealth, EmbedProvider } from '../../contracts/embed.js';
 import { DEFAULT_EMBED_DIM } from '../../contracts/embed.js';
 import { TransientError, DeterministicError } from '../../pipeline/errors.js';
 import { childLogger } from '../../log/logger.js';
+import { parseRetryAfterMs } from '../llm/retry-after.js';
 
 const EMBED_TIMEOUT_MS = 15_000;
 const HEALTH_TIMEOUT_MS = 15_000;
@@ -93,6 +94,8 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
   }
 
   async embed(texts: string[], signal?: AbortSignal): Promise<Float32Array[]> {
+    const log = childLogger({ provider: this.name, model: this.model });
+    const t0 = Date.now();
     const body = {
       input: texts,
       dimensions: this.dim,
@@ -122,11 +125,13 @@ export class AzureOpenAIEmbedProvider implements EmbedProvider {
         // leave as raw text
       }
       const snippet = detail.slice(0, 200);
+      const latency_ms = Date.now() - t0;
+      log.warn({ latency_ms, status: res.status, error_kind: res.status >= 500 || res.status === 429 ? 'TransientError' : 'DeterministicError' }, 'azure-openai embed failed');
       if (res.status >= 500) {
-        throw new TransientError(`Azure OpenAI embed failed: HTTP ${res.status} — ${snippet}`);
+        throw new TransientError(`Azure OpenAI embed failed: HTTP ${res.status} — ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       if (res.status === 429) {
-        throw new TransientError(`Azure OpenAI embed rate-limited (429): ${snippet}`);
+        throw new TransientError(`Azure OpenAI embed rate-limited (429): ${snippet}`, undefined, parseRetryAfterMs(res.headers.get('retry-after')));
       }
       throw new DeterministicError(`Azure OpenAI embed failed: HTTP ${res.status} — ${snippet}`);
     }
