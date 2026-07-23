@@ -56,6 +56,30 @@ Operator asked for a 10% (conv-1) LoCoMo run with **CoT judge + champion (conv-l
 - All numbers single conv-1 / one codex day / **diagnostic** — not publishable.
 - Built-never-invoked risk if pursuing ChatGPT's status/subtype/provenance ideas (see `invalid_at` 0/2499).
 
+## Gold-fact bucketing — MEASURED (2026-07-23), on the 329-atom store
+For each wrong content question (cat1-4, token-F1 < 0.3 on rerank-off hypotheses = 59/152), an LLM checked (SEMANTIC) whether the gold fact is present in ANY of the 329 stored atoms. **ABSENT = extraction gap (prompt-reachable); PRESENT = fact stored, lost downstream (retrieval/answerer/token-scorer).**
+
+**Detector matters (hypothesis-ledger rule, live again):** qwen2.5:7b judged 11/59 ABSENT (19%) — but it was **false-PRESENT** over the ~7k-token context (lazy pattern-match). Codex gpt-5.4-mini re-judge: **29/59 ABSENT (49%)** — 2.5× more, and the trustworthy number.
+
+| cat | wrong | ABSENT (codex) |
+|---|---|---|
+| multi-hop | 19 | 6 (32%) |
+| temporal | 7 | 3 (43%) |
+| open-domain | 9 | **8 (89%)** |
+| single-hop | 24 | 12 (50%) |
+| **TOTAL** | 59 | **29 (49%)** |
+
+**Transcript-presence split (codex, tightens the ceiling — the 3-way split of the 59 wrong content Qs):**
+| bucket | count | meaning |
+|---|---|---|
+| PRESENT (downstream) | 37 (63%) | fact stored, lost in retrieval/answerer/token-scorer — NOT prompt-fixable |
+| ABSENT→**fixable** | **15 (25%)** | fact in transcript, extraction missed it — the real prompt lever |
+| ABSENT→unanswerable | 7 (12%) | not in source — unfixable by anything |
+
+Per-cat fixable: single-hop **8**, multi-hop 4, temporal 2, open-domain **1**. Per-question detail: `.eval-data/locomo/runs/20260722-cot-conv-liberal/gold-bucketing-results.json`.
+
+**FINAL verdict: prompt path is LIVE but MODEST.** Prompt-fixable = 15/199 → **+0.053 absolute ceiling, +0.02–0.04 realistic** (after the extract→retrieve→answer haircut). **63% of content losses are downstream (not prompt); 12% dataset-unanswerable.** **Single-hop extraction is the fattest prompt target (8), NOT open-domain** (mostly unanswerable — the earlier single-run "89% ABSENT" was noisier). Instrument caveat: codex store-check has run-to-run noise (this run 22 store-ABSENT vs prior 29, ±7 at temp 0) — "15 fixable" is ±a few; ceiling robust to ~+0.03–0.05, not precise per-question.
+
 ## Suggested next handoff — gold-fact-present bucketing (GATE before any prompt tuning)
 **Do NOT tune the prompt blind.** Run the bucketing first (~1 hr): for every wrong-answer question, LLM-check (SEMANTIC, not token — the old detector had 42% FN) "is the gold fact in ANY stored atom?" → bucket into never-extracted / extracted-not-retrieved / retrieved-but-wrong.
 - If misses are **durations / quiet-speaker / temporal-into-text** → prompt-targetable → tune Pass A exhaustiveness (#275, HELD, untested on codex), single-variable, `--runs 3`, measure junk too.
