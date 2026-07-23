@@ -15,9 +15,28 @@
 -- comment).
 ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 3;
 
--- Composite index: claimPending's hot path always filters state='pending'
--- then orders by (an age-adjusted) priority, then created_at. Without this
--- the filter step falls back to the pre-existing idx_jobs_state(state,
--- created_at) and still has to sort the matching (small, but not free) set
--- by priority in memory on every single claim.
-CREATE INDEX idx_jobs_state_priority ON jobs(state, priority, created_at);
+-- Deliberately NO new index here. A composite (state, priority, created_at)
+-- index was tried and dropped again before merge: claimPending()'s hot-path
+-- ORDER BY is NOT a plain `priority ASC, created_at ASC` sort -- it's an
+-- age-adjusted EFFECTIVE priority, a computed expression bound to a live
+-- `now` parameter that is different on every single claim
+-- (`priority - ((now - created_at) / AGING_STEP_MS)` -- see job-repo.ts's
+-- EFFECTIVE_PRIORITY_SQL). SQLite can only use an index to serve an ORDER BY
+-- on a deterministic function of a row's own columns; an expression that
+-- closes over an external bind parameter can never be precomputed into an
+-- index, so no index shape -- this one or any other -- changes the query
+-- plan for that ORDER BY. Confirmed via EXPLAIN QUERY PLAN: the claim query
+-- always does `SEARCH jobs USING INDEX idx_jobs_state (state=?)` then `USE
+-- TEMP B-TREE FOR ORDER BY`, with or without a (state, priority, created_at)
+-- index present. Shipping the unused index would only add write-time
+-- maintenance cost on every jobs insert/update for zero read-time benefit.
+--
+-- Measured cost of the scan+sort this leaves in place: ~0.63ms at 5k pending
+-- rows, ~10.3ms at 50k -- negligible for a single-user local daemon, and the
+-- filter step still narrows to just the (normally small) 'pending' subset
+-- via the pre-existing idx_jobs_state(state, created_at) before sorting, so
+-- cost tracks pending-set size, not total table size. If pending depth ever
+-- grows enough for this to matter (e.g. a large bulk-enqueue backlog), the
+-- fix is a periodic sweep that MATERIALIZES effective priority into a real
+-- column (trading write amplification + staleness-between-sweeps for an
+-- index-servable read) -- not resurrecting this dead index.
