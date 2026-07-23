@@ -1296,8 +1296,11 @@ export async function search(
     // SearchHit.evidence doc comment: prefer the located `evidence_span`
     // (migration 057, exact/whole-turn transcript text) over the legacy
     // extractor-authored `evidence` string (migration 004), bounded so a
-    // whole-turn fuzzy match can't blow up the rerank input.
-    const evidenceExcerpt = (mem.evidence_span ?? mem.evidence)?.slice(0, MAX_EVIDENCE_EXCERPT_CHARS);
+    // whole-turn fuzzy match can't blow up the rerank input. `||` (not `??`)
+    // deliberately — an empty-string `evidence_span` is falsy but not
+    // nullish, so `??` would let it shadow a genuinely populated legacy
+    // `evidence` instead of falling through to it.
+    const evidenceExcerpt = (mem.evidence_span || mem.evidence)?.slice(0, MAX_EVIDENCE_EXCERPT_CHARS);
     results.push({
       id: hit.id,
       type: mem.type,

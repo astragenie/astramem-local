@@ -270,10 +270,14 @@ describe('LlmQueryRewriter', () => {
     await rewriter.rewrite('anything');
     expect(provider.chat).toHaveBeenCalledWith(
       expect.any(Array),
+      // retrieval hardening (P2 2026-07): maxItems now mirrors the
+      // constructor's maxVariants — constrains the schema itself, not
+      // just the post-hoc .slice(0, maxVariants) truncation (mirrors
+      // decompose.ts's LlmQueryDecomposer.decompose's identical guard).
       expect.objectContaining({
         json: true,
         temperature: 0,
-        jsonSchema: { type: 'array', items: { type: 'string' } },
+        jsonSchema: { type: 'array', items: { type: 'string' }, maxItems: 3 },
       }),
     );
   });
