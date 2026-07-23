@@ -22,6 +22,53 @@ describe('normalizeScores', () => {
   it('empty array → empty', () => {
     expect(normalizeScores([])).toEqual([]);
   });
+
+  // Score-phase Track I: 'minmax' is the config default (`search.normalization`)
+  // and MUST be byte-identical to the pre-Track-I, mode-less function — this
+  // pins that an explicit 'minmax' and an omitted mode always agree, so the
+  // shipped default can never silently drift from "the old behavior".
+  it("explicit 'minmax' is byte-identical to omitting mode", () => {
+    const arr = [3, 1, 9, 4, 4, 100];
+    expect(normalizeScores(arr, 'minmax')).toEqual(normalizeScores(arr));
+  });
+
+  // Score-phase Track I pool-tax fix (QA repro 2026-07-23, memory
+  // `fusion-pool-tax-score-lead`): SQLite bm25/cosine are unbounded, so ONE
+  // outlier candidate stretches plain min-max's range so far that every OTHER
+  // candidate's normalized score collapses toward the same corner, erasing
+  // the separation between them. 'winsorized' clips to [p5,p95] first so a
+  // realistically-sized candidate pool (here: 40 ordinary values + 2 close
+  // values + 1 wild outlier) keeps a meaningful gap between the two
+  // non-outlier candidates instead of losing it to the outlier.
+  describe("'winsorized' mode — pool-tax outlier clipping", () => {
+    // 40 ordinary values (1..40) + two close candidates (20, 22) + one
+    // wildly unrelated outlier (2000) — sized like a real post-fusion
+    // candidate pool (WT-B's topK/vecK land in the 40-60 range), since
+    // percentile clipping needs enough points to have real effect (see the
+    // normalizeScores doc comment: with only 2-3 points p5/p95 sit right
+    // next to the extremes).
+    const fillers = Array.from({ length: 40 }, (_, i) => i + 1);
+    const arr = [...fillers, 20, 22, 2000];
+    const idxLow = arr.length - 3; // value 20
+    const idxHigh = arr.length - 2; // value 22
+
+    it('plain minmax: the outlier compresses the two close candidates to a near-zero gap', () => {
+      const norm = normalizeScores(arr, 'minmax');
+      expect(norm[idxHigh]! - norm[idxLow]!).toBeLessThan(0.01);
+    });
+
+    it('winsorized: clipping the outlier restores a meaningful gap between the two close candidates', () => {
+      const norm = normalizeScores(arr, 'winsorized');
+      expect(norm[idxHigh]! - norm[idxLow]!).toBeGreaterThan(0.03);
+    });
+
+    it('winsorized never changes the RAW order within the array (still a monotonic transform)', () => {
+      const norm = normalizeScores(arr, 'winsorized');
+      for (let i = 1; i < arr.length; i++) {
+        if (arr[i]! > arr[i - 1]!) expect(norm[i]!).toBeGreaterThanOrEqual(norm[i - 1]!);
+      }
+    });
+  });
 });
 
 describe('fuseScores', () => {
@@ -430,5 +477,81 @@ describe('fuseHits — issue #352B theta ranking safety (rank changes, membershi
     // Rank changed — 'a' (uncontested, no map entry -> default 1) now ranks first.
     expect(demoted[0]?.id).toBe('a');
     expect(demoted[0]?.score).toBeGreaterThan(demoted[1]?.score as number);
+  });
+});
+
+// Score-phase Track I: end-to-end proof that 'winsorized' fixes the pool-tax
+// RANK inversion (not just the intermediate normalized value) — the actual
+// user-visible bug (QA repro 2026-07-23, memory `fusion-pool-tax-score-lead`).
+// Default weights favor bm25 over importance (alpha=0.4 >> gamma=0.1), so 'b'
+// (slightly better bm25, lower importance) SHOULD outrank 'a' (worse bm25,
+// higher importance) whenever bm25's gap is allowed to actually register.
+// An unrelated outlier with an unbounded bm25 score drowns that gap out under
+// plain min-max, letting importance decide instead — inverting 'a' and 'b's
+// relative order. 'winsorized' clips the outlier and restores the intended
+// (bm25-driven) order.
+describe("fuseHits — 'winsorized' normalization fixes the pool-tax rank inversion (score-phase Track I)", () => {
+  const NOW = 1_700_000_000_000;
+  // 40 ordinary filler candidates (a realistic-sized post-fusion pool — see
+  // fuse.test.ts's normalizeScores winsorized-mode tests above for why size
+  // matters) so percentile clipping has room to work.
+  const fillerIds = Array.from({ length: 40 }, (_, i) => `filler-${i + 1}`);
+  const ftsHitsBase = fillerIds.map((id, i) => ({ id, bm25: -(i + 1) })); // negated: raw 1..40
+
+  const A_RAW_BM25 = 20; // weaker bm25, higher importance
+  const B_RAW_BM25 = 22; // stronger bm25, lower importance
+  const OUTLIER_RAW_BM25 = 2000; // unrelated, unbounded lexical match
+
+  const metas = new Map<string, { importance: number; created_at: number }>(
+    fillerIds.map(id => [id, { importance: 0, created_at: NOW }]),
+  );
+  metas.set('a', { importance: 0.3, created_at: NOW });
+  metas.set('b', { importance: 0.15, created_at: NOW });
+  metas.set('outlier', { importance: 0, created_at: NOW });
+
+  const weights = { alpha: 0.4, beta: 0, gamma: 0.1, delta: 0 };
+
+  it('reference (no outlier): the bm25 gap decides — b outranks a', () => {
+    const ftsHits = [...ftsHitsBase, { id: 'a', bm25: -A_RAW_BM25 }, { id: 'b', bm25: -B_RAW_BM25 }];
+    const scores = new Map(fuseHits(ftsHits, [], metas, weights, NOW).map(h => [h.id, h.score]));
+    expect(scores.get('b')!).toBeGreaterThan(scores.get('a')!);
+  });
+
+  it("plain minmax + the outlier present: a/b's bm25 gap is compressed to near-nothing, INVERTING their order (a wins on importance alone)", () => {
+    const ftsHits = [
+      ...ftsHitsBase,
+      { id: 'a', bm25: -A_RAW_BM25 },
+      { id: 'b', bm25: -B_RAW_BM25 },
+      { id: 'outlier', bm25: -OUTLIER_RAW_BM25 },
+    ];
+    const scores = new Map(
+      fuseHits(ftsHits, [], metas, { ...weights, normalization: 'minmax' }, NOW).map(h => [h.id, h.score]),
+    );
+    expect(scores.get('a')!).toBeGreaterThan(scores.get('b')!); // inverted vs. the reference order above
+  });
+
+  it("'winsorized' + the SAME outlier: clipping restores a/b's separation — b outranks a again, matching the reference order", () => {
+    const ftsHits = [
+      ...ftsHitsBase,
+      { id: 'a', bm25: -A_RAW_BM25 },
+      { id: 'b', bm25: -B_RAW_BM25 },
+      { id: 'outlier', bm25: -OUTLIER_RAW_BM25 },
+    ];
+    const scores = new Map(
+      fuseHits(ftsHits, [], metas, { ...weights, normalization: 'winsorized' }, NOW).map(h => [h.id, h.score]),
+    );
+    expect(scores.get('b')!).toBeGreaterThan(scores.get('a')!);
+  });
+
+  it("omitting normalization entirely (real production callers pre-Track-I) behaves exactly like explicit 'minmax' — still inverted", () => {
+    const ftsHits = [
+      ...ftsHitsBase,
+      { id: 'a', bm25: -A_RAW_BM25 },
+      { id: 'b', bm25: -B_RAW_BM25 },
+      { id: 'outlier', bm25: -OUTLIER_RAW_BM25 },
+    ];
+    const withMode = fuseHits(ftsHits, [], metas, { ...weights, normalization: 'minmax' }, NOW);
+    const withoutMode = fuseHits(ftsHits, [], metas, weights, NOW);
+    expect(withoutMode).toEqual(withMode);
   });
 });

@@ -188,6 +188,16 @@ describe('config defaults vs docs consistency (FEAT-483 SLICE-6)', () => {
         'gold-set-tested, reversible)"; the one distill.* tier that ships on rather than off.',
     },
 
+    // --- Search / fusion (score-phase Track I) ---
+    {
+      configPath: 'search.normalization',
+      documentedDefault: 'minmax',
+      actualDefault: cfg.search.normalization,
+      docSource:
+        "config.ts Config['search'] doc comment (score-phase Track I, 2026-07-23): " +
+        "\"'minmax' (default) is plain min-max, BYTE-IDENTICAL to pre-Track-I behavior\".",
+    },
+
     // --- Sync (cloud shipper) ---
     {
       configPath: 'sync.batchSize',

@@ -42,6 +42,7 @@ import {
   defaultConfig,
   applyFusionGovernance,
   applyQueryRewriteGovernance,
+  applyNormalizationGovernance,
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
   applyMultiHopGovernance,
@@ -330,7 +331,11 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
     // loadConfig() — see the 2026-07-16 review note a few lines below on why
     // this real boot path needs its OWN governance composition rather than
     // relying on loadConfig()'s (which has zero production callers).
-    search: applyQueryRewriteGovernance(applyFusionGovernance(cfg.search)),
+    // Score-phase Track I: applyNormalizationGovernance added the same way,
+    // on the same real boot path AND in loadConfig() (config.ts) — same
+    // "wired into BOTH real paths" bar as every other governance function in
+    // this composition.
+    search: applyNormalizationGovernance(applyQueryRewriteGovernance(applyFusionGovernance(cfg.search))),
     // FEAT-534: extractionPassB provider governance added here — this IS the
     // real boot path (the 2026-07-16 review comment below explains why that
     // matters: loadConfig() has zero production callers). Note
