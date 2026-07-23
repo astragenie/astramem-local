@@ -137,7 +137,14 @@ export class LlmQueryDecomposer implements QueryDecomposer {
       ],
       {
         json: true,
-        jsonSchema: { type: 'array', items: { type: 'string' } },
+        // maxItems (retrieval hardening, P2 2026-07): constrains Ollama's
+        // structured output to AT MOST this.maxSubQueries entries directly at
+        // the schema level — defense-in-depth alongside the post-hoc
+        // `.slice(0, this.maxSubQueries)` below, which only trims an
+        // already-generated (and already-token-costed) array. A governed
+        // `maxSubQueries` (see applyMultiHopGovernance, config.ts) is always a
+        // positive integer by the time it reaches here.
+        jsonSchema: { type: 'array', items: { type: 'string' }, maxItems: this.maxSubQueries },
         temperature: 0,
         maxTokens: 300,
         signal,

@@ -13,6 +13,9 @@ import {
   applyDupJudgeGovernance,
   applyRetentionGovernance,
   applyTypeHintsGovernance,
+  applyMultiHopGovernance,
+  applyQueryRewriteGovernance,
+  applyCrossEncoderGovernance,
   resolveExtractionPassBTuning,
   EXTRACTION_PASS_B_DEFAULTS,
 } from '../../src/config/config.js';
@@ -900,5 +903,170 @@ describe("atomTriage 'repair-only' mode (2026-07-18)", () => {
     const distill = { ...defaultConfig().distill, atomTriage: { ...defaultConfig().distill.atomTriage, mode: 'repair-only' as const } };
     const out = applyAtomTriageGovernance(distill, { log: () => { throw new Error('should not warn'); } });
     expect(out.atomTriage.mode).toBe('repair-only');
+  });
+});
+
+// Retrieval hardening (P2 2026-07): applyMultiHopGovernance/
+// applyQueryRewriteGovernance/applyCrossEncoderGovernance previously had zero
+// direct test coverage despite already being wired into loadConfig/
+// loadConfigFromDisk (config.ts/loader.ts) — this closes that gap, and adds
+// coverage for the NEW clamps (maxSubQueries/maxSupplemental/timeoutMs,
+// maxVariants/maxCandidates, topK) this pass introduces. See issues #8/#9:
+// an unvalidated ≤0/NaN value here either inverts an Array.slice(0, N) cap
+// (JS negative-index semantics) or fires a setTimeout-family budget
+// immediately, silently and permanently degrading a `provider: 'llm'` stage
+// to "never contributes" with no loud signal.
+describe('applyMultiHopGovernance', () => {
+  const base = defaultConfig().multiHop;
+
+  it('leaves a valid config byte-identical (governance is a guard, not a behavior change)', () => {
+    expect(applyMultiHopGovernance(base)).toEqual(base);
+  });
+
+  it("falls back to defaults (enabled: false) on an invalid/typo provider", () => {
+    const cfg = { ...base, provider: 'bogus' as any, enabled: true };
+    const logs: string[] = [];
+    const governed = applyMultiHopGovernance(cfg, { log: (m) => logs.push(m) });
+    expect(governed.enabled).toBe(false);
+    expect(governed.provider).toBe(base.provider);
+    expect(logs.some(m => m.includes('multiHop.provider'))).toBe(true);
+  });
+
+  it('clamps supplementalWeight into [0,1]', () => {
+    const logs: string[] = [];
+    const governed = applyMultiHopGovernance({ ...base, supplementalWeight: 1.5 }, { log: (m) => logs.push(m) });
+    expect(governed.supplementalWeight).toBe(1);
+    expect(logs.some(m => m.includes('supplementalWeight'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN, 2.5])('falls back maxSubQueries=%s to the documented default', (bad) => {
+    const logs: string[] = [];
+    const governed = applyMultiHopGovernance({ ...base, maxSubQueries: bad }, { log: (m) => logs.push(m) });
+    expect(governed.maxSubQueries).toBe(base.maxSubQueries);
+    expect(logs.some(m => m.includes('maxSubQueries'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN, 2.5])('falls back maxSupplemental=%s to the documented default (never a negative slice cap)', (bad) => {
+    const logs: string[] = [];
+    const governed = applyMultiHopGovernance({ ...base, maxSupplemental: bad }, { log: (m) => logs.push(m) });
+    expect(governed.maxSupplemental).toBe(base.maxSupplemental);
+    expect(logs.some(m => m.includes('maxSupplemental'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN])('falls back timeoutMs=%s to the documented default (never an immediately-firing budget)', (bad) => {
+    const logs: string[] = [];
+    const governed = applyMultiHopGovernance({ ...base, timeoutMs: bad }, { log: (m) => logs.push(m) });
+    expect(governed.timeoutMs).toBe(base.timeoutMs);
+    expect(logs.some(m => m.includes('timeoutMs'))).toBe(true);
+  });
+
+  it('a positive fractional timeoutMs is accepted (duration, not a discrete count)', () => {
+    const governed = applyMultiHopGovernance({ ...base, timeoutMs: 800.5 });
+    expect(governed.timeoutMs).toBe(800.5);
+  });
+
+  it('loadConfig wires the new clamps in on the in-process path', () => {
+    const cfg = loadConfig({ multiHop: { ...base, maxSubQueries: -1, timeoutMs: 0 } } as any);
+    expect(cfg.multiHop.maxSubQueries).toBe(base.maxSubQueries);
+    expect(cfg.multiHop.timeoutMs).toBe(base.timeoutMs);
+  });
+});
+
+describe('applyQueryRewriteGovernance', () => {
+  const base = defaultConfig().search;
+
+  it('leaves a valid config byte-identical (governance is a guard, not a behavior change)', () => {
+    expect(applyQueryRewriteGovernance(base).queryRewrite).toEqual(base.queryRewrite);
+  });
+
+  it("falls back to mode: 'off' on an invalid/typo mode or provider", () => {
+    const logs: string[] = [];
+    const governed = applyQueryRewriteGovernance(
+      { ...base, queryRewrite: { ...base.queryRewrite, mode: 'bogus' as any } },
+      { log: (m) => logs.push(m) },
+    );
+    expect(governed.queryRewrite.mode).toBe('off');
+    expect(logs.some(m => m.includes('query-rewrite-governance'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN, 2.5])('falls back maxVariants=%s to the documented default', (bad) => {
+    const logs: string[] = [];
+    const governed = applyQueryRewriteGovernance(
+      { ...base, queryRewrite: { ...base.queryRewrite, maxVariants: bad } },
+      { log: (m) => logs.push(m) },
+    );
+    expect(governed.queryRewrite.maxVariants).toBe(base.queryRewrite.maxVariants);
+    expect(logs.some(m => m.includes('maxVariants'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN])('falls back timeoutMs=%s to the documented default (never an immediately-firing budget)', (bad) => {
+    const logs: string[] = [];
+    const governed = applyQueryRewriteGovernance(
+      { ...base, queryRewrite: { ...base.queryRewrite, timeoutMs: bad } },
+      { log: (m) => logs.push(m) },
+    );
+    expect(governed.queryRewrite.timeoutMs).toBe(base.queryRewrite.timeoutMs);
+    expect(logs.some(m => m.includes('timeoutMs'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN, 2.5])('falls back maxCandidates=%s to the documented default (never a negative slice cap)', (bad) => {
+    const logs: string[] = [];
+    const governed = applyQueryRewriteGovernance(
+      { ...base, queryRewrite: { ...base.queryRewrite, maxCandidates: bad } },
+      { log: (m) => logs.push(m) },
+    );
+    expect(governed.queryRewrite.maxCandidates).toBe(base.queryRewrite.maxCandidates);
+    expect(logs.some(m => m.includes('maxCandidates'))).toBe(true);
+  });
+
+  it('loadConfig wires the new clamps in on the in-process path', () => {
+    const cfg = loadConfig({ search: { ...base, queryRewrite: { ...base.queryRewrite, maxCandidates: -5 } } } as any);
+    expect(cfg.search.queryRewrite.maxCandidates).toBe(base.queryRewrite.maxCandidates);
+  });
+});
+
+// crossEncoder had NO governance composition point at all before this pass
+// (neither loadConfig nor loadConfigFromDisk) — see applyCrossEncoderGovernance's
+// doc comment (config.ts) for the full rationale.
+describe('applyCrossEncoderGovernance', () => {
+  const base = defaultConfig().crossEncoder;
+
+  it('leaves a valid config byte-identical (governance is a guard, not a behavior change)', () => {
+    expect(applyCrossEncoderGovernance(base)).toEqual(base);
+  });
+
+  it("falls back to defaults (enabled: false) on an invalid/typo provider", () => {
+    const cfg = { ...base, provider: 'bogus' as any, enabled: true };
+    const logs: string[] = [];
+    const governed = applyCrossEncoderGovernance(cfg, { log: (m) => logs.push(m) });
+    expect(governed.enabled).toBe(false);
+    expect(governed.provider).toBe(base.provider);
+    expect(logs.some(m => m.includes('cross-encoder-governance'))).toBe(true);
+  });
+
+  it('falls back to defaults (enabled: false) when the block is missing entirely', () => {
+    const logs: string[] = [];
+    const governed = applyCrossEncoderGovernance(undefined as any, { log: (m) => logs.push(m) });
+    expect(governed.enabled).toBe(false);
+    expect(logs.some(m => m.includes('crossEncoder is missing'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN, 2.5])('falls back topK=%s to the documented default', (bad) => {
+    const logs: string[] = [];
+    const governed = applyCrossEncoderGovernance({ ...base, topK: bad }, { log: (m) => logs.push(m) });
+    expect(governed.topK).toBe(base.topK);
+    expect(logs.some(m => m.includes('topK'))).toBe(true);
+  });
+
+  it.each([0, -1, NaN])('falls back timeoutMs=%s to the documented default (never an immediately-firing budget)', (bad) => {
+    const logs: string[] = [];
+    const governed = applyCrossEncoderGovernance({ ...base, timeoutMs: bad }, { log: (m) => logs.push(m) });
+    expect(governed.timeoutMs).toBe(base.timeoutMs);
+    expect(logs.some(m => m.includes('timeoutMs'))).toBe(true);
+  });
+
+  it('loadConfig wires applyCrossEncoderGovernance in on the in-process path', () => {
+    const cfg = loadConfig({ crossEncoder: { ...base, topK: -1 } } as any);
+    expect(cfg.crossEncoder.topK).toBe(base.topK);
   });
 });

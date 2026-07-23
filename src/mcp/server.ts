@@ -199,6 +199,19 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             "FEAT-550: opt this call into the pre-recall query-rewrite/expansion stage — only takes " +
             "effect when search.queryRewrite.mode is 'enabled'. Omitted/false = pre-FEAT-550 behavior."
           ),
+        // FEAT-532 L2 (retrieval hardening issue #2): was silently ignored on
+        // this tool before — GET /search and POST /recall both threaded
+        // `mode` into SearchOpts.mode, but this MCP surface never accepted
+        // the argument at all, so an MCP caller asking for keyword-only or
+        // semantic-only retrieval silently got 'hybrid' with no signal its
+        // intent was dropped.
+        mode: z
+          .enum(['keyword', 'semantic', 'hybrid'])
+          .optional()
+          .describe(
+            "Which candidate-gathering leg(s) to run — 'keyword' (FTS5 BM25 only), 'semantic' (vector " +
+            "only), or 'hybrid' (both, default). Omitted = 'hybrid', byte-identical to pre-FEAT-532 behavior."
+          ),
       }),
     },
     async (args) => {
@@ -241,6 +254,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         weights,
         rerank,
         decompose,
+        mode: args.mode ?? 'hybrid',
         queryRewrite,
         expand: args.expand ?? false,
       });
@@ -314,6 +328,15 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             "FEAT-550: opt this call into the pre-recall query-rewrite/expansion stage — only takes " +
             "effect when search.queryRewrite.mode is 'enabled'. Omitted/false = pre-FEAT-550 behavior."
           ),
+        // FEAT-532 L2 (retrieval hardening issue #2): see search_memory's
+        // identical field above — this alias tool had the same gap.
+        mode: z
+          .enum(['keyword', 'semantic', 'hybrid'])
+          .optional()
+          .describe(
+            "Which candidate-gathering leg(s) to run — 'keyword' (FTS5 BM25 only), 'semantic' (vector " +
+            "only), or 'hybrid' (both, default). Omitted = 'hybrid', byte-identical to pre-FEAT-532 behavior."
+          ),
       }),
     },
     async (args) => {
@@ -356,6 +379,7 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         weights,
         rerank,
         decompose,
+        mode: args.mode ?? 'hybrid',
         queryRewrite,
         expand: args.expand ?? false,
       });
