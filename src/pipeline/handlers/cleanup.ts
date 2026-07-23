@@ -128,14 +128,15 @@ export const cleanupHandler: JobHandler = {
     }
 
     // Wave-3 storage+perf track: memory_events 'usefulness'/'recall_served'
-    // retention. Only already-synced rows older than the TTL are ever
-    // deleted — see pruneOldRecallServedEvents's doc comment for the full
-    // HARD INVARIANT (never touches unsynced/create/invalidate/supersede/
-    // promote_scope/erase_request rows).
+    // retention. Prunes rows older than the TTL that are already synced OR
+    // provably never-shippable (private-scope / hard-erased atom) — see
+    // pruneOldRecallServedEvents's doc comment for the full HARD INVARIANT
+    // (never touches a row the shipper might still need, and never touches
+    // create/invalidate/supersede/promote_scope/erase_request rows).
     const recallServedPrune = pruneOldRecallServedEvents(ctx.db, ctx.config.memoryEvents.recallServedRetentionDays);
     if (recallServedPrune.pruned > 0) {
       console.log(
-        `${ts()} [cleanup] pruned ${recallServedPrune.pruned} synced recall_served event(s) older than ` +
+        `${ts()} [cleanup] pruned ${recallServedPrune.pruned} recall_served event(s) older than ` +
         `${ctx.config.memoryEvents.recallServedRetentionDays} day(s)`,
       );
     }
