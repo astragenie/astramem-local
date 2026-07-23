@@ -436,6 +436,13 @@ export function configToYaml(cfg: Config): string {
     line(0, 'ingestIdempotency'),
     line(1, 'retentionDays', (cfg.ingestIdempotency ?? EMIT_DEFAULTS.ingestIdempotency).retentionDays),
     '',
+    // memory_events 'usefulness'/'recall_served' row retention (Wave-3
+    // storage+perf track) — same FEAT-461 "previously dropped" class as
+    // ingestIdempotency above; wired in from the same slice, so it never
+    // regresses this way.
+    line(0, 'memoryEvents'),
+    line(1, 'recallServedRetentionDays', (cfg.memoryEvents ?? EMIT_DEFAULTS.memoryEvents).recallServedRetentionDays),
+    '',
     // Distillation durability quality gate (FEAT-441) — previously dropped on
     // every writeConfig() call (FEAT-461). 'off' (default) is byte-identical
     // to pre-FEAT-441 behavior.

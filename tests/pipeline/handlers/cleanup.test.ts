@@ -164,6 +164,51 @@ describe('cleanupHandler', () => {
     });
   });
 
+  describe('memory_events recall_served retention (Wave-3 storage+perf track)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    function insertRecallServedEvent(memoryId: string, createdAt: number, syncedAt: number | null): void {
+      db.prepare(`
+        INSERT INTO memory_events (event_id, event_type, atom_id, payload_json, created_at, synced_at)
+        VALUES (?, 'usefulness', ?, '{"family":"recall_served","query_hash":"q"}', ?, ?)
+      `).run(`ev-${memoryId}`, memoryId, createdAt, syncedAt);
+    }
+
+    it('prunes old, synced recall_served rows via the default retentionDays and keeps unsynced/recent ones', async () => {
+      const now = Date.now();
+      insertRecallServedEvent('old-synced', now - 40 * DAY_MS, now - 39 * DAY_MS); // pruned
+      insertRecallServedEvent('old-unsynced', now - 40 * DAY_MS, null);            // kept — shipper may still need it
+      insertRecallServedEvent('recent-synced', now - 1 * DAY_MS, now);             // kept — not old enough
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const remaining = db.prepare('SELECT atom_id FROM memory_events WHERE event_type = \'usefulness\'').all() as { atom_id: string }[];
+      const atomIds = remaining.map(r => r.atom_id);
+      expect(atomIds).not.toContain('old-synced');
+      expect(atomIds).toContain('old-unsynced');
+      expect(atomIds).toContain('recent-synced');
+    });
+
+    it('respects a configured recallServedRetentionDays value other than the default', async () => {
+      const now = Date.now();
+      insertRecallServedEvent('three-days-old', now - 3 * DAY_MS, now - 2 * DAY_MS);
+      insertRecallServedEvent('eight-days-old', now - 8 * DAY_MS, now - 7 * DAY_MS);
+
+      const customCtx: HandlerCtx = {
+        db,
+        config: { ...defaultConfig(), memoryEvents: { recallServedRetentionDays: 5 } },
+      };
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, customCtx);
+
+      const remaining = db.prepare('SELECT atom_id FROM memory_events WHERE event_type = \'usefulness\'').all() as { atom_id: string }[];
+      const atomIds = remaining.map(r => r.atom_id);
+      expect(atomIds).toContain('three-days-old');
+      expect(atomIds).not.toContain('eight-days-old');
+    });
+  });
+
   // Issue #209: the durable safety net behind the write-time retry-job
   // enqueue — every memory still flagged needs_vec_index gets a `reembed`
   // job on this same 24h tick (ADR-015 §4: reuse the existing cadence

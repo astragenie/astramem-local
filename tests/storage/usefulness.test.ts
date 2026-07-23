@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
@@ -14,6 +15,7 @@ import {
   usefulnessScores,
   runImplicitPositivePass,
   feedbackLoopSummary,
+  pruneOldRecallServedEvents,
 } from '../../src/storage/usefulness.js';
 
 function insertMem(repo: MemoryRepo, hash: string, type = 'fact'): string {
@@ -523,5 +525,138 @@ describe('usefulnessScores (weighted, issue #190)', () => {
     recordRecallUsed(db, { atomId: a, surface: 'system', signal: 'heuristic' });
     const score = usefulnessScores(db, [a]).get(a)!;
     expect(score).toBeCloseTo((1 + 0.35 + 1) / (1 + 0.35 + 2), 6);
+  });
+});
+
+describe('pruneOldRecallServedEvents (Wave-3 storage+perf track)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+  });
+
+  /** Raw insert bypassing recordRecallServed/MemoryEventRepo.append — the
+   *  only way to control created_at/synced_at directly for this sweep's age
+   *  + sync-state predicate, same technique tests/sync/shipper.test.ts uses. */
+  function insertRawEvent(opts: {
+    eventType: string;
+    atomId: string;
+    payload?: unknown;
+    createdAt: number;
+    syncedAt?: number | null;
+  }): number {
+    const result = db.prepare(`
+      INSERT INTO memory_events (event_id, event_type, atom_id, payload_json, created_at, synced_at)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      randomUUID(), opts.eventType, opts.atomId,
+      opts.payload !== undefined ? JSON.stringify(opts.payload) : null,
+      opts.createdAt, opts.syncedAt ?? null,
+    );
+    return Number(result.lastInsertRowid);
+  }
+
+  it('prunes an old, synced recall_served row', () => {
+    const a = insertMem(repo, 'prune-old-synced');
+    insertRawEvent({
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_served', query_hash: 'q1' },
+      createdAt: Date.now() - 40 * DAY_MS, syncedAt: Date.now() - 39 * DAY_MS,
+    });
+
+    const result = pruneOldRecallServedEvents(db, 30);
+
+    expect(result.pruned).toBe(1);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_events WHERE atom_id = ?').get(a)).toEqual({ n: 0 });
+  });
+
+  it('HARD INVARIANT: leaves an old but UNSYNCED recall_served row untouched — the shipper may still need it', () => {
+    const a = insertMem(repo, 'prune-old-unsynced');
+    insertRawEvent({
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_served', query_hash: 'q1' },
+      createdAt: Date.now() - 40 * DAY_MS, syncedAt: null,
+    });
+
+    const result = pruneOldRecallServedEvents(db, 30);
+
+    expect(result.pruned).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_events WHERE atom_id = ?').get(a)).toEqual({ n: 1 });
+  });
+
+  it('leaves a synced recall_served row that is not old enough yet', () => {
+    const a = insertMem(repo, 'prune-too-new');
+    insertRawEvent({
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_served', query_hash: 'q1' },
+      createdAt: Date.now() - 5 * DAY_MS, syncedAt: Date.now() - 4 * DAY_MS,
+    });
+
+    const result = pruneOldRecallServedEvents(db, 30);
+
+    expect(result.pruned).toBe(0);
+  });
+
+  it('never prunes the recall_used / memory_corrected usefulness families, even old + synced', () => {
+    const a = insertMem(repo, 'prune-other-families');
+    insertRawEvent({
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_used', signal: 'explicit' },
+      createdAt: Date.now() - 40 * DAY_MS, syncedAt: Date.now() - 39 * DAY_MS,
+    });
+    insertRawEvent({
+      eventType: 'usefulness', atomId: a, payload: { family: 'memory_corrected', action: 'invalidated' },
+      createdAt: Date.now() - 40 * DAY_MS, syncedAt: Date.now() - 39 * DAY_MS,
+    });
+
+    const result = pruneOldRecallServedEvents(db, 30);
+
+    expect(result.pruned).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_events WHERE atom_id = ?').get(a)).toEqual({ n: 2 });
+  });
+
+  it('never prunes non-usefulness (audit) event types, even old + synced', () => {
+    const a = insertMem(repo, 'prune-audit-rows');
+    for (const eventType of ['create', 'invalidate', 'supersede', 'promote_scope', 'erase_request']) {
+      insertRawEvent({
+        eventType, atomId: a,
+        createdAt: Date.now() - 40 * DAY_MS, syncedAt: Date.now() - 39 * DAY_MS,
+      });
+    }
+
+    const result = pruneOldRecallServedEvents(db, 30);
+
+    expect(result.pruned).toBe(0);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM memory_events WHERE atom_id = ?').get(a)).toEqual({ n: 5 });
+  });
+
+  it('mixed batch: only the old+synced recall_served rows are pruned, everything else survives', () => {
+    const a = insertMem(repo, 'prune-mixed');
+    insertRawEvent({ // pruned
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_served', query_hash: 'q1' },
+      createdAt: Date.now() - 40 * DAY_MS, syncedAt: Date.now() - 39 * DAY_MS,
+    });
+    insertRawEvent({ // pruned
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_served', query_hash: 'q2' },
+      createdAt: Date.now() - 60 * DAY_MS, syncedAt: Date.now() - 50 * DAY_MS,
+    });
+    insertRawEvent({ // survives — unsynced
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_served', query_hash: 'q3' },
+      createdAt: Date.now() - 40 * DAY_MS, syncedAt: null,
+    });
+    insertRawEvent({ // survives — too new
+      eventType: 'usefulness', atomId: a, payload: { family: 'recall_served', query_hash: 'q4' },
+      createdAt: Date.now() - 1 * DAY_MS, syncedAt: Date.now(),
+    });
+    insertRawEvent({ // survives — create is an audit row, never pruned
+      eventType: 'create', atomId: a,
+      createdAt: Date.now() - 40 * DAY_MS, syncedAt: Date.now() - 39 * DAY_MS,
+    });
+
+    const result = pruneOldRecallServedEvents(db, 30);
+
+    expect(result.pruned).toBe(2);
+    const remaining = db.prepare('SELECT event_type FROM memory_events WHERE atom_id = ? ORDER BY seq').all(a) as { event_type: string }[];
+    expect(remaining.map(r => r.event_type)).toEqual(['usefulness', 'usefulness', 'create']);
   });
 });

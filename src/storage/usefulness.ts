@@ -562,3 +562,59 @@ export function usefulnessByType(db: DB, opts: UsefulnessRateOpts = {}): Usefuln
     return { type, served, used, rate: served > 0 ? used / served : null };
   });
 }
+
+export interface PruneRecallServedResult {
+  /** Rows deleted this pass. */
+  pruned: number;
+}
+
+/**
+ * Retention sweep for the 'usefulness'/'recall_served' event subset ONLY
+ * (Wave-3 storage+perf track — real bug: this family is appended once PER
+ * SERVED ATOM PER SEARCH, k=15 -> 15 rows/query via {@link recordRecallServed},
+ * making it by far the highest-volume writer onto memory_events, and unlike
+ * every other event_type nothing has ever pruned it).
+ *
+ * `memory_events` doubles as the sync queue (src/sync/shipper.ts: "the log
+ * IS the queue" — unsynced rows are `synced_at IS NULL`), so an unqualified
+ * age-based delete risks eating a row the shipper hasn't shipped yet.
+ * HARD INVARIANT, exactly as specified for this track (see the memory_events
+ * retention handoff): a row is only ever deleted when ALL of —
+ *   - `event_type = 'usefulness'` (never create/invalidate/supersede/
+ *     promote_scope/erase_request — those event_types are excluded by this
+ *     predicate alone, not by an extra guard)
+ *   - `payload_json.family = 'recall_served'` (never `recall_used` or
+ *     `memory_corrected` — those lower-volume families feed
+ *     {@link usefulnessScores}'s all-time ranking signal and
+ *     {@link feedbackLoopSummary}'s all-time canary; `recall_served` rows
+ *     feed neither)
+ *   - `synced_at IS NOT NULL` (already shipped — never a row the shipper
+ *     might still need)
+ *   - `created_at < now - retentionDays`
+ *
+ * KNOWN GAP, deliberately not widened here: `synced_at` is only ever set for
+ * a team/org-scoped atom's events (ADR-009 — see shipper.ts's
+ * `listUnsynced`). A `private`-scoped atom's recall_served rows — the common
+ * case for a single-device install that has never paired sync — never ship,
+ * so `synced_at` stays NULL on them forever and this sweep prunes none of
+ * them. Widening the predicate to also cover never-shippable private-scope
+ * rows would close that gap but changes the safety argument this sweep was
+ * reviewed against (no shipper race to reason about, but a bigger diff to
+ * the one invariant it exists to keep) — flagged as a follow-up, not done
+ * unilaterally.
+ */
+export function pruneOldRecallServedEvents(
+  db: DB,
+  retentionDays: number,
+  now: number = Date.now(),
+): PruneRecallServedResult {
+  const cutoffMs = now - retentionDays * 24 * 60 * 60 * 1000;
+  const result = db.prepare(`
+    DELETE FROM memory_events
+    WHERE event_type = 'usefulness'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_served'
+      AND synced_at IS NOT NULL
+      AND created_at < ?
+  `).run(cutoffMs);
+  return { pruned: result.changes };
+}

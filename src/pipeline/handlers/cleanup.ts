@@ -3,7 +3,7 @@ import { ts } from '../../log/logger.js';
 import type { JobHandler, HandlerCtx } from '../handler.js';
 import { runArchivalPass } from '../../storage/archival.js';
 import { pruneIngestIdempotency } from '../../storage/ingest-idempotency.js';
-import { runImplicitPositivePass } from '../../storage/usefulness.js';
+import { runImplicitPositivePass, pruneOldRecallServedEvents } from '../../storage/usefulness.js';
 import { runRetentionPass, writeSweepStats } from '../../storage/retention.js';
 import { MemoryRepo } from '../../storage/memories.js';
 import { JobRepo } from '../job-repo.js';
@@ -24,6 +24,12 @@ import { JobRepo } from '../job-repo.js';
  * `config.ingestIdempotency.retentionDays` (default 7 days) on the same
  * pass — see src/storage/ingest-idempotency.ts for the replay-safety
  * rationale behind that default.
+ *
+ * Wave-3 storage+perf track: also prunes `memory_events` 'usefulness'/
+ * 'recall_served' rows older than `config.memoryEvents.recallServedRetentionDays`
+ * (default 30 days) — see src/storage/usefulness.ts's
+ * `pruneOldRecallServedEvents` for the full safe predicate (already-synced
+ * rows only; never unsynced or any non-usefulness event_type).
  *
  * issue #190: also runs the implicit positive-usefulness sweep
  * (`runImplicitPositivePass`, src/storage/usefulness.ts) on the same
@@ -117,6 +123,19 @@ export const cleanupHandler: JobHandler = {
       console.log(
         `${ts()} [cleanup] pruned ${idempotency.pruned} ingest_idempotency row(s) older than ` +
         `${ctx.config.ingestIdempotency.retentionDays} day(s)`,
+      );
+    }
+
+    // Wave-3 storage+perf track: memory_events 'usefulness'/'recall_served'
+    // retention. Only already-synced rows older than the TTL are ever
+    // deleted — see pruneOldRecallServedEvents's doc comment for the full
+    // HARD INVARIANT (never touches unsynced/create/invalidate/supersede/
+    // promote_scope/erase_request rows).
+    const recallServedPrune = pruneOldRecallServedEvents(ctx.db, ctx.config.memoryEvents.recallServedRetentionDays);
+    if (recallServedPrune.pruned > 0) {
+      console.log(
+        `${ts()} [cleanup] pruned ${recallServedPrune.pruned} synced recall_served event(s) older than ` +
+        `${ctx.config.memoryEvents.recallServedRetentionDays} day(s)`,
       );
     }
 
