@@ -96,3 +96,48 @@ describe('toWireHit — issue #352B correction_pending exclusion', () => {
     expect(validateEnvelope.errors?.some(e => e.message?.includes('additional properties'))).toBe(true);
   });
 });
+
+// Wave-6 (P2 retrieval-overhaul evidence-sufficiency lever, src/search/
+// evidence-bundle.ts): `bundled`/`bundle_reason` are LOCAL-ONLY SearchHit
+// fields (the evidence-bundling stage's provenance marker), same posture as
+// `correction_pending` above — the closed astramem-retrieval-result@1 hit
+// shape doesn't declare either property, so toWireHit() must strip both.
+// Mirrors the correction_pending block's exact 4-test shape (key-inspection
+// strip, no-op-when-absent, ajv-valid-after-strip, ajv-fails-when-unstripped).
+describe('toWireHit — Wave-6 bundled/bundle_reason exclusion', () => {
+  it('strips bundled/bundle_reason from the canonical wire hit', () => {
+    const hit = baseHit({ bundled: true, bundle_reason: 'same_entity' });
+    const wire = toWireHit(hit) as Record<string, unknown>;
+    expect(wire.bundled).toBeUndefined();
+    expect(wire.bundle_reason).toBeUndefined();
+    expect('bundled' in wire).toBe(false);
+    expect('bundle_reason' in wire).toBe(false);
+  });
+
+  it('every other field survives unchanged when bundled/bundle_reason are absent (no-op case)', () => {
+    const hit = baseHit();
+    const wire = toWireHit(hit) as Record<string, unknown>;
+    expect(wire.id).toBe(hit.id);
+    expect(wire.text).toBe(hit.text);
+    expect(wire.score).toBe(hit.score);
+    expect('bundled' in wire).toBe(false);
+    expect('bundle_reason' in wire).toBe(false);
+  });
+
+  it('a hit that HAS bundled/bundle_reason pre-strip still validates against retrieval-result.v1 after toWireHit()', () => {
+    const hit = baseHit({ bundled: true, bundle_reason: 'same_session' });
+    const wire = toWireHit(hit);
+    const valid = validateEnvelope(envelope([wire]));
+    expect(validateEnvelope.errors).toBeNull();
+    expect(valid).toBe(true);
+  });
+
+  // The converse: an UNSTRIPPED hit (bypassing toWireHit entirely) MUST fail
+  // the closed schema — proves the strip is load-bearing, not incidental.
+  it('an unstripped hit (bundled/bundle_reason left in) fails retrieval-result.v1 (additionalProperties: false)', () => {
+    const hit = baseHit({ bundled: true, bundle_reason: 'same_session' });
+    const valid = validateEnvelope(envelope([hit]));
+    expect(valid).toBe(false);
+    expect(validateEnvelope.errors?.some(e => e.message?.includes('additional properties'))).toBe(true);
+  });
+});

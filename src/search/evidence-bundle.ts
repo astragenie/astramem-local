@@ -92,9 +92,16 @@ export function isEvidenceThin(sessionIds: Array<string | null>, minDistinctSess
  * The exact SQL fragments search() already built for the base result set
  * (post-fusion column/range filters + bitemporal validity window) — reused
  * VERBATIM here rather than re-derived from `SearchFilters`, so an enrichment
- * pull can never surface an atom the base search's own filters/validity
- * window would have excluded (no drift between the two, by construction —
- * there is only one filter-building call site, in search.ts).
+ * pull can never surface an atom that project/scope/type/agent/since
+ * filtering or the as_of/validity window would have excluded (no drift
+ * between the two, by construction — there is only one filter-building call
+ * site, in search.ts). NOT reapplied here: `filters.entity` — that narrowing
+ * is a PRE-fusion candidate-set intersection in search() (applyEntityFilter,
+ * before gatherCandidates' output ever reaches fusion), not part of this
+ * post-fusion `whereFilter`/`validityClause` pair, so an entity-filtered
+ * search's enrichment pull can surface an atom outside that entity scope.
+ * `filters.entity` is a relevance narrowing, not a tenant/security boundary,
+ * so this is an accuracy caveat, not a scoping leak.
  */
 export interface EvidenceBundleSqlContext {
   /** ` AND ...`-prefixed fragment, or `''` when no post-fusion filter is active. */
@@ -206,9 +213,10 @@ export async function applyEvidenceBundling(
 
   // Re-apply the IDENTICAL post-fusion filters + bitemporal validity window
   // search() used for `hits` (see EvidenceBundleSqlContext's doc comment) —
-  // an enrichment pull must never surface an atom the base search's own
-  // scoping would have excluded (project/scope/type/agent/since, and
-  // invalidated/out-of-as_of-window atoms).
+  // an enrichment pull must never surface an atom project/scope/type/agent/
+  // since filtering or the as_of/validity window would have excluded.
+  // `filters.entity` narrowing is NOT reapplied here (see that doc comment
+  // for why) — a relevance-scoping gap, not a tenant/security one.
   const idPlaceholders = rankedIds.map(() => '?').join(',');
   const rows = db
     .prepare(
