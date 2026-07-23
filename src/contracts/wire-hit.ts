@@ -32,6 +32,10 @@
  *    dropping it here loses no retrieval-quality signal — only the raw
  *    excerpt string itself, which still surfaces on GET /search and the MCP
  *    search_memory/recall_memory tools.
+ *  - drop `bundled`/`bundle_reason` (Wave-6 evidence-bundling, src/search/
+ *    evidence-bundle.ts) — same posture as `correction_pending`/`evidence`:
+ *    the closed hit shape's property whitelist doesn't include them yet.
+ *    Still visible on GET /search and the MCP tools' raw JSON.
  */
 import type { SearchHit } from '../search/search.js';
 
@@ -43,6 +47,8 @@ export function toWireHit(hit: SearchHit): unknown {
     rerank_score: _rerankScore,
     correction_pending: _correctionPending,
     evidence: _evidence,
+    bundled: _bundled,
+    bundle_reason: _bundleReason,
     ...rest
   } = hit;
   return { ...rest, ...(capture_source !== undefined ? { source: capture_source } : {}) };

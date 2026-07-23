@@ -24,6 +24,7 @@ import { EntityRepo } from '../storage/entities.js';
 import { applyRerank, type RerankOpts } from './rerank.js';
 import { getSubQueries, type DecomposeOpts } from './decompose.js';
 import { getQueryVariants, mergeVariantHits, type QueryRewriteOpts } from './query-rewrite.js';
+import { applyEvidenceBundling, type EvidenceBundlingOpts } from './evidence-bundle.js';
 // FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
@@ -269,6 +270,25 @@ export interface SearchHit {
    * the wire response later strips.
    */
   evidence?: string;
+  /**
+   * Wave-6 (P2 retrieval-overhaul, evidence-sufficiency lever,
+   * src/search/evidence-bundle.ts): present + `true` only on a hit the
+   * evidence-bundling stage ADDED to an already-finalized top-k (never on an
+   * ordinarily-fused/reranked hit) — absent (not just `false`) otherwise,
+   * same "additive marker" convention as `reranked`. `score` on a bundled
+   * hit is a synthetic floor value (never a real fusion/rerank score, see
+   * `applyEvidenceBundling`'s doc comment), so a consumer that cares about
+   * hit provenance should key off THIS field, not `score`.
+   *
+   * LOCAL-ONLY: stripped by `toWireHit` (src/contracts/wire-hit.ts), same
+   * treatment as `evidence`/`correction_pending` — the closed
+   * astramem-retrieval-result@1 schema doesn't declare it yet.
+   */
+  bundled?: true;
+  /** Why the evidence-bundling stage pulled this atom in — which scoped
+   *  query (same-entity via `memory_entities`, same-session via
+   *  `memories.session_id`) found it. Present only alongside `bundled: true`. */
+  bundle_reason?: 'same_entity' | 'same_session';
 }
 
 /** Bounds the `evidence` excerpt threaded onto a SearchHit — mirrors the
@@ -373,6 +393,19 @@ export interface SearchOpts {
    * when `queryRewrite` is configured — see that field's doc comment.
    */
   expand?: boolean;
+  /**
+   * Optional post-rerank evidence-bundling stage (Wave-6, P2 retrieval-
+   * overhaul evidence-sufficiency lever, src/search/evidence-bundle.ts).
+   * `undefined` (the default — see config.evidenceBundling.enabled /
+   * resolveEvidenceBundlingOpts) means the stage is never invoked and
+   * search() is byte-identical to pre-Wave-6 behavior. When present, it runs
+   * once against the FINALIZED top-k (post-rerank when `rerank` is also
+   * set, post-fusion-truncation otherwise) and only ever APPENDS additional
+   * scoped atoms — it never reorders or drops an existing hit. debug:true is
+   * unaffected (that path returns before this stage would ever run), same
+   * posture as rerank/decompose's debug interaction.
+   */
+  evidenceBundling?: EvidenceBundlingOpts;
 }
 
 /**
@@ -1346,8 +1379,21 @@ export async function search(
         },
       };
     });
-    return merged.slice(0, limit);
+    const finalHits = merged.slice(0, limit);
+    return opts.evidenceBundling
+      ? await applyEvidenceBundling(
+          db, finalHits,
+          { whereFilter, filterParams, validityClause, validityParams },
+          opts.evidenceBundling,
+        )
+      : finalHits;
   }
 
-  return results;
+  return opts.evidenceBundling
+    ? await applyEvidenceBundling(
+        db, results,
+        { whereFilter, filterParams, validityClause, validityParams },
+        opts.evidenceBundling,
+      )
+    : results;
 }

@@ -467,6 +467,28 @@ export interface Config {
      * config.llm.extraction.model on config.llm.extraction.provider. */
     model?: string;
   };
+  /** Selective post-rerank evidence bundling (Wave-6, P2 retrieval-overhaul
+   * "evidence-sufficiency" lever — src/search/evidence-bundle.ts). The
+   * oracle-factorial investigation found ~87% of the LoCoMo gap lives in the
+   * answerer/evidence layer: top-k atoms that are each individually
+   * well-ranked but collectively insufficient for a multi-hop question. OFF
+   * by default — mirrors crossEncoder/multiHop's opt-in-seam governance
+   * style; `resolveEvidenceBundlingOpts` returns `undefined` when disabled
+   * and search() takes zero extra branches, same contract as rerank/decompose.
+   *
+   * Heuristic-only (no LLM call on this hot path): `minDistinctSessions` is
+   * the "evidence looks thin" trigger — when the finalized top-k spans fewer
+   * distinct `memories.session_id` values than this, the pull below fires.
+   * `sameEntity`/`sameSession` gate which scoped pulls run (same-entity via
+   * `memory_entities`, same-session via `memories.session_id`); `maxExtra`
+   * bounds how many additional atoms either pull may ever add. */
+  evidenceBundling: {
+    enabled: boolean;
+    maxExtra: number;
+    minDistinctSessions: number;
+    sameEntity: boolean;
+    sameSession: boolean;
+  };
   recallPack: {
     enabled: boolean;
     budgetTokens: number;
@@ -1622,6 +1644,14 @@ export function defaultConfig(): Config {
       enabled: false, provider: 'mock', minQueryWords: 6, maxSubQueries: 3,
       maxSupplemental: 5, supplementalWeight: 0.5, timeoutMs: 800,
     },
+    // Wave-6: OFF by default — promotion to enabled:true is a separate,
+    // operator-gated decision after a metered LoCoMo A/B (see
+    // src/search/evidence-bundle.ts's doc comment). maxExtra 5 mirrors
+    // multiHop.maxSupplemental's bound; minDistinctSessions 2 is the
+    // simplest non-trivial "spans more than one session" trigger.
+    evidenceBundling: {
+      enabled: false, maxExtra: 5, minDistinctSessions: 2, sameEntity: true, sameSession: true,
+    },
     recallPack: {
       enabled: false,
       budgetTokens: 1500,
@@ -2659,6 +2689,59 @@ export function applyMultiHopGovernance(
   return { ...multiHop, supplementalWeight: clampedWeight, maxSubQueries, maxSupplemental, timeoutMs };
 }
 
+/**
+ * Wave-6 evidence-bundling governance (mirrors `applyMultiHopGovernance`'s
+ * shape): config.yaml is hand-parsed scalars with no schema, so a bad
+ * `maxExtra`/`minDistinctSessions` would otherwise reach evidence-bundle.ts's
+ * `Array.slice(0, N)` cap / `Set.size < N` comparison unvalidated — a
+ * negative `maxExtra` would invert the slice cap via JS negative-index
+ * semantics, same failure mode `clampPositiveField`'s doc comment describes
+ * for `multiHop.maxSubQueries`/`maxSupplemental`. Never fatal — an invalid
+ * value falls back to the documented default, logged. `sameEntity`/
+ * `sameSession` are plain booleans; a non-boolean value on the hand-parsed
+ * disk path (e.g. a stray string surviving the shallow `deepMerge`) falls
+ * back to its documented default rather than being coerced or passed through.
+ */
+export function applyEvidenceBundlingGovernance(
+  evidenceBundling: Config['evidenceBundling'],
+  opts: { log?: (message: string) => void } = {},
+): Config['evidenceBundling'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().evidenceBundling;
+
+  if (!evidenceBundling) {
+    log(
+      '[evidence-bundling-governance] evidenceBundling is missing — falling back to defaults ' +
+      '(enabled: false). See src/search/evidence-bundle.ts.',
+    );
+    return fallback;
+  }
+
+  const maxExtra = clampPositiveField(
+    'evidenceBundling.maxExtra', evidenceBundling.maxExtra, fallback.maxExtra, log, { requireInteger: true },
+  );
+  const minDistinctSessions = clampPositiveField(
+    'evidenceBundling.minDistinctSessions', evidenceBundling.minDistinctSessions, fallback.minDistinctSessions, log,
+    { requireInteger: true },
+  );
+  const sameEntity = typeof evidenceBundling.sameEntity === 'boolean' ? evidenceBundling.sameEntity : fallback.sameEntity;
+  const sameSession = typeof evidenceBundling.sameSession === 'boolean' ? evidenceBundling.sameSession : fallback.sameSession;
+  if (sameEntity !== evidenceBundling.sameEntity) {
+    log(`[evidence-bundling-governance] evidenceBundling.sameEntity=${JSON.stringify(evidenceBundling.sameEntity)} is not a boolean — falling back to ${fallback.sameEntity}.`);
+  }
+  if (sameSession !== evidenceBundling.sameSession) {
+    log(`[evidence-bundling-governance] evidenceBundling.sameSession=${JSON.stringify(evidenceBundling.sameSession)} is not a boolean — falling back to ${fallback.sameSession}.`);
+  }
+
+  if (
+    maxExtra === evidenceBundling.maxExtra && minDistinctSessions === evidenceBundling.minDistinctSessions &&
+    sameEntity === evidenceBundling.sameEntity && sameSession === evidenceBundling.sameSession
+  ) {
+    return evidenceBundling;
+  }
+  return { ...evidenceBundling, maxExtra, minDistinctSessions, sameEntity, sameSession };
+}
+
 const VALID_QUERY_REWRITE_MODES: ReadonlySet<Config['search']['queryRewrite']['mode']> = new Set(['off', 'enabled']);
 const VALID_QUERY_REWRITE_PROVIDERS: ReadonlySet<Config['search']['queryRewrite']['provider']> = new Set(['mock', 'llm']);
 
@@ -2822,6 +2905,7 @@ export function applyAllGovernance(cfg: Config, opts: { log?: (message: string) 
       applyContradictionDetectionGovernance(cfg.consolidation, opts), opts), opts),
     audio: applyAudioModeGovernance(cfg.audio, opts),
     multiHop: applyMultiHopGovernance(cfg.multiHop, opts),
+    evidenceBundling: applyEvidenceBundlingGovernance(cfg.evidenceBundling, opts),
     crossEncoder: applyCrossEncoderGovernance(cfg.crossEncoder, opts),
     retention: applyRetentionGovernance(cfg.retention, opts),
   };
