@@ -449,14 +449,24 @@ temperature control and a truncated context — treat those numbers as invalid.
 - Do NOT construct a month-arithmetic `Date` via `setUTCMonth`/`setMonth` on a `Date`
   still carrying the anchor's own day-of-month. It silently overflows forward whenever
   that day doesn't exist in the target month (`2023-07-31` + 1 month lands on the
-  nonexistent Aug 31, which JS normalizes into September instead of throwing) — bit
-  `src/distill/temporal-grounding.ts`'s `addMonthsUtc` and shipped behind 307 green tests
-  because the whole suite anchored on the 15th, the one day-of-month that can never
-  trigger it (fixed same day; see `docs/research/20260713-temporal-grounding-regex-postmortem.md`).
-  When only month/year granularity is needed, construct fresh via
-  `new Date(Date.UTC(year, month, 1))` instead — no day value left to overflow. Any
-  future month-arithmetic helper needs an explicit month-end-anchor test (29th/30th/31st),
-  not just mid-month ones.
+  nonexistent Aug 31, which JS normalizes into September instead of throwing). This bit
+  the FORMER `src/distill/temporal-grounding.ts`'s `addMonthsUtc`, hidden behind 307 green
+  tests because the suite anchored on the 15th — the one day-of-month that can never
+  trigger it (see `docs/research/20260713-temporal-grounding-regex-postmortem.md`).
+  **CORRECTED 2026-07-23: that file and `addMonthsUtc` no longer exist — 0 matches for
+  `setUTCMonth`/`setMonth`/`addMonths` in `src/`.** Date resolution moved to
+  `src/distill/ground-dates.ts`, which now routes ALL month/week/year arithmetic through
+  an **LLM call with no code-side correctness check** (the schema only asserts
+  `resolved_text` is non-empty). The month-overflow class is gone, replaced by two new
+  ones worth a canary: (a) hallucinated dates the schema can't catch, and (b)
+  `groundAtomDates` has a `maxCalls` count cap but **no `maxWallClockMs`** — the exact
+  FEAT-482 count-cap-alone gap (a count cap alone did not stop the 245-call worker wedge).
+  Also note `ground-dates.ts::hasUnresolvedRelativeDate` is 100% past-anchored (…ago/last/
+  next+unit/weekday) with **zero future-relative coverage** ("in two weeks", "N months from
+  now"), so future-dated facts silently never become grounding candidates — a plausible
+  slice of the temporal-category F1 gap (FEAT-486). The general rule still holds for any
+  NEW code-side month arithmetic: construct fresh via `new Date(Date.UTC(year, month, 1))`,
+  and any month-arithmetic helper needs an explicit month-end-anchor test (29th/30th/31st).
 - During a `git rebase`, `--ours` is the UPSTREAM side, not your commits — the inverse of a normal merge. Resolving a rebase conflict with `git checkout --ours` therefore keeps *main's* version and **discards your work**. Read the conflict markers; never pick a side by name. This already bit the repo once: PR #229's rebase resolved six test-file conflicts with `--ours`, silently reverting them back to their pre-fix hardcoded-literal state — and the suite stayed **green the entire time**, because the reverted literal happened to numerically equal the correctly-derived value at each point in the rebase (a test passing for the wrong reason). It took a human re-deriving the claim against `origin/main` to notice. Fixed in PR #233. See ADR-016 §3 Instance 1 and §5 rule 6.
 
 <!-- crew:start -->
