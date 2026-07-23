@@ -2,7 +2,8 @@ import { join } from 'node:path';
 import { mkdirSync, statSync, unlinkSync } from 'node:fs';
 import { ts } from '../log/logger.js';
 import { buildApp } from '../server/app.js';
-import { openDb } from '../storage/db.js';
+import { openDb, type DB } from '../storage/db.js';
+import type { Config } from '../config/config.js';
 import { migrate, getVecSchemaDim, SchemaNewerThanDaemonError } from '../storage/migrate.js';
 import { getOrCreateKey, readSyncToken } from '../storage/keystore.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
@@ -164,36 +165,16 @@ export async function serve(opts: ServeOpts): Promise<void> {
   const bootAndBind = async (): Promise<void> => {
     const bootStartedAt = Date.now();
 
-    // SEC-1/2/7/9: in-memory databases can never be encrypted (SQLCipher
-    // rejects PRAGMA key on :memory:, confirmed by the 1a spike) — the
-    // ASTRA_MEMORY_DATADIR=':memory:' test/dev path always stays plaintext
-    // and never touches the keystore. Assigns the outer `db` (declared
-    // above bootAndBind) — the WAL/oversize-scan/spool-drain timers
-    // registered after boot need the same handle, not a copy scoped to
-    // this closure.
-    /** Retained for the vec-search offload worker (its own read-only
-     *  connection needs the same SQLCipher key) — undefined on the plaintext
-     *  and :memory: paths. */
-    let dbKey: string | undefined;
-    if (dataDir === ':memory:') {
-      db = openDb(dbPath);
-    } else if (cfg.security.encryption.enabled) {
-      const keyResult = getOrCreateKey(defaultConfigDir());
-      encryptIfPlaintext(dbPath, keyResult.key);
-      try {
-        db = openDb(dbPath, { key: keyResult.key });
-        dbKey = keyResult.key;
-      } catch (err) {
-        throw rewrapWrongKeyError(err, dbPath, keyResult.source);
-      }
-    } else {
-      // SEC-9: disabling encryption is a deliberate trust trade-off — make it loud.
-      console.warn(
-        `${ts()} [astramem-local] WARNING: encryption at rest is DISABLED (security.encryption.enabled=false). ` +
-        `memory.sqlite at ${dbPath} will be stored in PLAINTEXT.`,
-      );
-      db = openDb(dbPath);
-    }
+    // Assigns the outer `db` (declared above bootAndBind) — the WAL/oversize-
+    // scan/spool-drain timers registered after boot need the same handle,
+    // not a copy scoped to this closure. `dbKey` is retained for the
+    // vec-search offload worker (its own read-only connection needs the same
+    // SQLCipher key) — undefined on the plaintext and :memory: paths. See
+    // `openBootDb`'s doc comment for why this is the ONLY openDb() call
+    // reached before app.listen() either way.
+    const opened = openBootDb(dataDir, dbPath, cfg);
+    db = opened.db;
+    const dbKey = opened.dbKey;
     dbForCrash = db;
 
     // ---------------------------------------------------------------------
@@ -996,6 +977,46 @@ function rewrapWrongKeyError(err: unknown, dbPath: string, keySource: string): E
     `matching key (see 'astramem-local backup'/'restore'); do not delete db.key or the credential-store ` +
     `entry without one, or the existing data becomes permanently unreadable. Original error: ${(err as Error).message}`,
   );
+}
+
+/**
+ * Open the single boot-time DB connection. Exactly one of the three branches
+ * below runs per boot (dataDir === ':memory:' / encryption enabled /
+ * plaintext) — this is the ONLY `openDb()` call reached anywhere on the
+ * pre-bind critical path (see `bootAndBind`'s doc comment above: `migrate()`
+ * and every post-bind consumer — JobRepo, MemoryRepo, SqliteVecStore, the
+ * worker's ExtendedHandlerCtx, the health-snapshot refresher — all reuse this
+ * SAME handle, never open a second connection). Extracted out of `bootAndBind`
+ * (Wave 7 boot-fix investigation) purely so this invariant is directly unit-
+ * testable without driving the full `serve()` function, which registers
+ * signal handlers ending in `process.exit(0)` and therefore cannot be safely
+ * exercised in-process (see tests/doctor/schedule.test.ts's doc comment).
+ * Byte-identical behavior to the inline branch it replaced — same pragma
+ * order, same key-rewrap error, same plaintext warning.
+ */
+export function openBootDb(dataDir: string, dbPath: string, cfg: Config): { db: DB; dbKey?: string } {
+  if (dataDir === ':memory:') {
+    // SEC-1/2/7/9: in-memory databases can never be encrypted (SQLCipher
+    // rejects PRAGMA key on :memory:, confirmed by the 1a spike) — the
+    // ASTRA_MEMORY_DATADIR=':memory:' test/dev path always stays plaintext
+    // and never touches the keystore.
+    return { db: openDb(dbPath) };
+  } else if (cfg.security.encryption.enabled) {
+    const keyResult = getOrCreateKey(defaultConfigDir());
+    encryptIfPlaintext(dbPath, keyResult.key);
+    try {
+      return { db: openDb(dbPath, { key: keyResult.key }), dbKey: keyResult.key };
+    } catch (err) {
+      throw rewrapWrongKeyError(err, dbPath, keyResult.source);
+    }
+  } else {
+    // SEC-9: disabling encryption is a deliberate trust trade-off — make it loud.
+    console.warn(
+      `${ts()} [astramem-local] WARNING: encryption at rest is DISABLED (security.encryption.enabled=false). ` +
+      `memory.sqlite at ${dbPath} will be stored in PLAINTEXT.`,
+    );
+    return { db: openDb(dbPath) };
+  }
 }
 
 function cleanupPreEncryptionBak(dbPath: string): void {
