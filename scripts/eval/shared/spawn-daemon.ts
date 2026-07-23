@@ -177,7 +177,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number; normalization?: 'minmax' | 'winsorized' },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -241,6 +241,14 @@ export function makeIsolatedEvalEnv(
   }
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
+  }
+  // Score-phase Track I A/B (2026-07-23, eval-only lever — src/config/config.ts
+  // already ships the real `search.normalization` key; this harness previously
+  // had no way to flip it per-sandbox). Additive: omitted writes byte-identical
+  // config.yaml to before this option existed (search.normalization stays at
+  // defaultConfig()'s 'minmax').
+  if (opts?.normalization !== undefined) {
+    configLines.push('search:', `  normalization: ${opts.normalization}`);
   }
   // multiHop (WS6 decompose) override — top-level, mirrors crossEncoder. OFF by
   // default in defaultConfig(); the LoCoMo v2 plan A/Bs flipping it on since no
