@@ -44,6 +44,7 @@
 
 import { z } from 'zod';
 import type { LLMProvider, ChatMsg, MemoryType } from '../contracts/index.js';
+import { RunCapTracker } from '../util/run-cap-tracker.js';
 
 /**
  * Stable marker embedded in the system prompt, mirroring
@@ -275,51 +276,17 @@ export interface AtomTriageCaps {
  * this is a graceful degrade to "persist unfiltered", never a
  * drop-by-timeout (FEAT-482 lesson, restated for this cap).
  */
-export class AtomTriageRunTracker {
-  private callsThisJob = 0;
-  private readonly startedAt = Date.now();
-  private capReached = false;
-  private wallClockCapReached = false;
-  private loggedTrip = false;
-
-  constructor(
-    private readonly caps: AtomTriageCaps,
-    private readonly log: (message: string) => void = (m) => console.warn(m),
-  ) {}
-
-  shouldStop(): boolean {
-    if (this.callsThisJob >= this.caps.maxPerRun) {
-      this.capReached = true;
-      this.logTripOnce('call-count', `${this.callsThisJob}/${this.caps.maxPerRun} calls`);
-      return true;
-    }
-    const elapsed = Date.now() - this.startedAt;
-    if (elapsed >= this.caps.maxWallClockMs) {
-      this.wallClockCapReached = true;
-      this.logTripOnce('wall-clock', `${elapsed}ms/${this.caps.maxWallClockMs}ms`);
-      return true;
-    }
-    return false;
-  }
-
-  recordCall(): void {
-    this.callsThisJob++;
-  }
-
-  state(): { callsExecuted: number; capReached: boolean; wallClockCapReached: boolean } {
-    return {
-      callsExecuted: this.callsThisJob,
-      capReached: this.capReached,
-      wallClockCapReached: this.wallClockCapReached,
-    };
-  }
-
-  private logTripOnce(kind: 'call-count' | 'wall-clock', detail: string): void {
-    if (this.loggedTrip) return;
-    this.loggedTrip = true;
-    this.log(
-      `[atom-triage] ${kind} cap reached (${detail}) — skipping further triage calls for this job; ` +
-      "remaining atoms fall through un-triaged (treated as 'keep', persist unfiltered — never drop-by-timeout).",
+export class AtomTriageRunTracker extends RunCapTracker {
+  constructor(caps: AtomTriageCaps, log: (message: string) => void = (m) => console.warn(m)) {
+    super(
+      caps,
+      {
+        tag: 'atom-triage',
+        skipping: 'further triage calls for this job',
+        fallthrough:
+          "remaining atoms fall through un-triaged (treated as 'keep', persist unfiltered — never drop-by-timeout).",
+      },
+      log,
     );
   }
 }

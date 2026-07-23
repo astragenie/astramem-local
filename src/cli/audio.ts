@@ -13,11 +13,7 @@ import { openRuntimeDb } from './open-runtime-db.js';
 import { JobRepo } from '../pipeline/job-repo.js';
 import { deriveProject } from '../pipeline/derive-project.js';
 import { THIRD_PARTY_SPEAKER_CONSENT_DISCLOSURE } from '../config/config.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 export async function ingestAudioCommand(args: string[]): Promise<void> {
   const audioPath = args.find(a => !a.startsWith('-'));

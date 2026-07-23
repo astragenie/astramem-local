@@ -25,11 +25,7 @@ import {
   runRepoIdentityBackfill,
   type RepoIdentityBackfillResult,
 } from '../tag-hygiene/repo-identity-backfill.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 export function repoIdentityBackfillCommand(args: string[]): void {
   const jsonMode = args.includes('--json');

@@ -31,11 +31,7 @@ import {
 } from '../capture/claude.js';
 import { gateRelevance, recordCapturedTurnHash } from '../capture/relevance-gate.js';
 import { writeToSpool } from '../ingest/spool.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 function statePath(): string {
   return join(process.env.ASTRA_MEMORY_DATADIR ?? defaultDataDir(), 'codex-capture-state.json');

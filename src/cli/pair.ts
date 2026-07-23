@@ -14,6 +14,7 @@
 import { defaultConfigDir } from '../config/datadir.js';
 import { writeSyncSettings } from '../config/sync-settings.js';
 import { storeSyncToken } from '../storage/keystore.js';
+import { parseArg } from './arg-parse.js';
 
 export interface RedeemResponse {
   apiUrl: string;
@@ -53,11 +54,6 @@ export async function redeemClaim(
     return { ok: false, status: res.status, message: 'redeem succeeded but response was missing apiKey/workspaceId/apiUrl' };
   }
   return { ok: true, data: body as RedeemResponse };
-}
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
 }
 
 /** Prod cloud API host — root-relative, no /api prefix (astragenie/common
