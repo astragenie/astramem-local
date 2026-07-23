@@ -99,6 +99,22 @@ describe('recordRecallUsed + recordMemoryCorrected', () => {
     expect(payload).toEqual({ family: 'recall_used', surface: 'mcp', signal: 'explicit' });
   });
 
+  // FEAT-477: `basis` lets a heuristic mechanism (e.g.
+  // src/storage/proxy-turn-correlation.ts) tag which one produced a grant,
+  // without disturbing the byte-identical shape every pre-FEAT-477 caller
+  // (including this file's own previous test above) already relies on.
+  it('recordRecallUsed includes basis when supplied, omits it when not', () => {
+    const withBasis = insertMem(repo, 'us-used-basis');
+    recordRecallUsed(db, { atomId: withBasis, surface: 'system', signal: 'heuristic', basis: 'proxy_turn_correlation' });
+    const withBasisPayload = JSON.parse(events.listForAtom(withBasis)[0]?.payload_json ?? '{}');
+    expect(withBasisPayload).toEqual({ family: 'recall_used', surface: 'system', signal: 'heuristic', basis: 'proxy_turn_correlation' });
+
+    const withoutBasis = insertMem(repo, 'us-used-no-basis');
+    recordRecallUsed(db, { atomId: withoutBasis, surface: 'mcp', signal: 'explicit' });
+    const withoutBasisPayload = JSON.parse(events.listForAtom(withoutBasis)[0]?.payload_json ?? '{}');
+    expect(withoutBasisPayload).not.toHaveProperty('basis');
+  });
+
   it('recordMemoryCorrected appends a memory_corrected event, source defaults to external', () => {
     const id = insertMem(repo, 'us-corrected-a');
     recordMemoryCorrected(db, { atomId: id, action: 'demoted' });
