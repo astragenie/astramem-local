@@ -637,13 +637,16 @@ export interface Config {
    * SEARCH (k=15 -> 15 rows/query, src/storage/usefulness.ts's
    * recordRecallServed) — by far the highest-volume writer onto
    * memory_events, and unlike every other event_type nothing has ever
-   * pruned it, so it grows on every READ (not just every write). Runs on
-   * the same cleanup-job cadence as the passes above via
-   * `pruneOldRecallServedEvents` (src/storage/usefulness.ts). Only rows that
-   * are BOTH already synced (`synced_at IS NOT NULL`) AND older than
-   * `retentionDays` are ever deleted — see that function's doc comment for
-   * the full HARD INVARIANT and the known private-scope gap. Default 30
-   * days is far above any realistic sync-shipper backlog drain time. */
+   * pruned it, so it grows on every READ (not just every write) — including
+   * the common single-device install with sync never paired, where every
+   * atom is `private` scope. Runs on the same cleanup-job cadence as the
+   * passes above via `pruneOldRecallServedEvents` (src/storage/usefulness.ts)
+   * — see that function's doc comment for the full HARD INVARIANT (rows are
+   * only ever deleted once already shipped OR structurally unshippable, e.g.
+   * private-scoped or erased) and the one accepted residual risk (a
+   * later-promoted atom's pre-promotion recall_served analytics history can
+   * have a gap). Default 30 days is far above any realistic sync-shipper
+   * backlog drain time. */
   memoryEvents: {
     /** recall_served rows older than this (by created_at) AND already
      * synced are pruned. See pruneOldRecallServedEvents's doc comment. */

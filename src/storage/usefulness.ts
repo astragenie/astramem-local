@@ -568,13 +568,14 @@ export interface PruneRecallServedResult {
  * (Wave-3 storage+perf track — real bug: this family is appended once PER
  * SERVED ATOM PER SEARCH, k=15 -> 15 rows/query via {@link recordRecallServed},
  * making it by far the highest-volume writer onto memory_events, and unlike
- * every other event_type nothing has ever pruned it).
+ * every other event_type nothing has ever pruned it — and unbounded on READ
+ * traffic, not just write traffic, which is exactly the common single-device
+ * case where this needed to be fixed).
  *
  * `memory_events` doubles as the sync queue (src/sync/shipper.ts: "the log
  * IS the queue" — unsynced rows are `synced_at IS NULL`), so an unqualified
- * age-based delete risks eating a row the shipper hasn't shipped yet.
- * HARD INVARIANT, exactly as specified for this track (see the memory_events
- * retention handoff): a row is only ever deleted when ALL of —
+ * age-based delete risks eating a row the shipper hasn't shipped yet. HARD
+ * INVARIANT: a row is only ever deleted when ALL of —
  *   - `event_type = 'usefulness'` (never create/invalidate/supersede/
  *     promote_scope/erase_request — those event_types are excluded by this
  *     predicate alone, not by an extra guard)
@@ -583,20 +584,41 @@ export interface PruneRecallServedResult {
  *     {@link usefulnessScores}'s all-time ranking signal and
  *     {@link feedbackLoopSummary}'s all-time canary; `recall_served` rows
  *     feed neither)
- *   - `synced_at IS NOT NULL` (already shipped — never a row the shipper
- *     might still need)
  *   - `created_at < now - retentionDays`
+ *   - AND (already shipped, OR structurally can never ship) — see below.
  *
- * KNOWN GAP, deliberately not widened here: `synced_at` is only ever set for
- * a team/org-scoped atom's events (ADR-009 — see shipper.ts's
- * `listUnsynced`). A `private`-scoped atom's recall_served rows — the common
- * case for a single-device install that has never paired sync — never ship,
- * so `synced_at` stays NULL on them forever and this sweep prunes none of
- * them. Widening the predicate to also cover never-shippable private-scope
- * rows would close that gap but changes the safety argument this sweep was
- * reviewed against (no shipper race to reason about, but a bigger diff to
- * the one invariant it exists to keep) — flagged as a follow-up, not done
- * unilaterally.
+ * "Structurally can never ship" widens the original synced-only predicate to
+ * close the common case: shipper.ts's `listUnsynced` only ever selects a
+ * non-erase_request row when `memories.scope IN ('team','org')` (confirmed by
+ * re-reading listUnsynced's own SQL, not assumed) — a `private`-scoped atom's
+ * recall_served rows NEVER enter that result set, so `synced_at` stays NULL
+ * on them forever under the old synced-only predicate, and the sweep pruned
+ * NOTHING for a single-device install that has never paired sync (the common
+ * case this track exists to fix). Same reasoning extends to an atom whose
+ * `memories` row no longer exists at all (hard-erased via `erase()`) — an
+ * erase is permanent (no "unerase"), so that row can never become ship
+ * eligible either. Both are captured in one `NOT EXISTS` clause that is the
+ * direct logical negation of listUnsynced's own scope predicate, so the two
+ * queries are provably consistent by construction rather than by two
+ * independently-hand-written conditions that could drift apart.
+ *
+ * ACCEPTED RESIDUAL RISK (surfaced, not silently swept under): `memories.scope`
+ * is mutable — ADR-009 promotions move private -> team -> org, upward only,
+ * via an explicit `promote_scope` call, and `promoteScope()` places no
+ * `valid_to`/archived guard on which rows are eligible. So "this atom is
+ * private RIGHT NOW" is not the same claim as "this atom will NEVER become
+ * team/org-scoped" — an old recall_served row pruned while its atom was
+ * private could, in principle, have shipped LATER if that specific atom is
+ * promoted after this sweep already deleted it. Accepted because the only
+ * consequence is a gap in the cloud's per-atom recall_served analytics
+ * history starting from the promotion point rather than from the atom's
+ * creation — `recall_served` is pure measurement (ADR-010: "events captured
+ * here do NOT feed ranking"), not lifecycle state, so this can never lose a
+ * memory's content, its create/invalidate/supersede/promote_scope history,
+ * or an erase tombstone — none of those event_types are touched by this
+ * predicate at all. Promotion of an atom old enough for its recall_served
+ * rows to already be past the retention window is also expected to be rare
+ * (scope decisions are made close to creation in practice, not months later).
  */
 export function pruneOldRecallServedEvents(
   db: DB,
@@ -608,8 +630,13 @@ export function pruneOldRecallServedEvents(
     DELETE FROM memory_events
     WHERE event_type = 'usefulness'
       AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_served'
-      AND synced_at IS NOT NULL
       AND created_at < ?
+      AND (
+        synced_at IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM memories WHERE memories.id = memory_events.atom_id AND memories.scope IN ('team', 'org')
+        )
+      )
   `).run(cutoffMs);
   return { pruned: result.changes };
 }

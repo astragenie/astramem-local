@@ -28,8 +28,9 @@ import { JobRepo } from '../job-repo.js';
  * Wave-3 storage+perf track: also prunes `memory_events` 'usefulness'/
  * 'recall_served' rows older than `config.memoryEvents.recallServedRetentionDays`
  * (default 30 days) — see src/storage/usefulness.ts's
- * `pruneOldRecallServedEvents` for the full safe predicate (already-synced
- * rows only; never unsynced or any non-usefulness event_type).
+ * `pruneOldRecallServedEvents` for the full safe predicate (already-shipped
+ * OR structurally unshippable — private-scoped or erased — rows only; never
+ * a row that's still ship-eligible, and never any non-usefulness event_type).
  *
  * issue #190: also runs the implicit positive-usefulness sweep
  * (`runImplicitPositivePass`, src/storage/usefulness.ts) on the same
