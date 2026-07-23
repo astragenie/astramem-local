@@ -39,11 +39,7 @@ import { makeMockProviders } from '../pipeline/mock-providers.js';
 import { SqliteVecStore } from '../vector/sqlite-vec.js';
 import type { Config } from '../config/config.js';
 import type { EmbedProvider } from '../contracts/embed.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 export interface ReembedDimResult {
   targetDim: number;

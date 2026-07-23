@@ -119,7 +119,13 @@ export class LlmQueryRewriter implements QueryRewriter {
       ],
       {
         json: true,
-        jsonSchema: { type: 'array', items: { type: 'string' } },
+        // maxItems (retrieval hardening, P2 2026-07): constrains the
+        // provider's structured output to AT MOST this.maxVariants entries
+        // directly at the schema level — defense-in-depth alongside the
+        // post-hoc `.slice(0, this.maxVariants)` below, which only trims an
+        // already-generated (and already-token-costed) array. Mirrors
+        // `LlmQueryDecomposer.decompose`'s identical guard (decompose.ts).
+        jsonSchema: { type: 'array', items: { type: 'string' }, maxItems: this.maxVariants },
         temperature: 0,
         maxTokens: 300,
         signal,
@@ -286,5 +292,10 @@ export function mergeVariantHits(
   }
   return Array.from(byId.values())
     .sort((a, b) => b.score - a.score)
-    .slice(0, maxCandidates);
+    // Defensive clamp (mirrors search.ts's `Math.max(0, opts.decompose.maxSupplemental)`
+    // guard on WS6's own slice) — a hand-built QueryRewriteOpts bypassing config
+    // governance (tests, eval harness) could pass a negative maxCandidates, which
+    // `Array.prototype.slice` would interpret as "count back from the end" and
+    // invert the cap into returning the LOWEST-scoring tail instead of nothing.
+    .slice(0, Math.max(0, maxCandidates));
 }

@@ -23,6 +23,19 @@
  *    SearchHit directly rather than through this closed envelope.
  *  - rename `capture_source` -> the canonical `source` (CONTRACT-FREEZE §1,
  *    astragenie/memory#759: "source maps to local's provenance").
+ *  - drop `evidence` (P2 retrieval-overhaul, 2026-07-20) — same posture as
+ *    `correction_pending`: the closed hit shape's property whitelist doesn't
+ *    include it yet (adding it there is a cross-repo contract change). The
+ *    rerank stage already benefited from it server-side before this
+ *    projection ever runs (search() populates `SearchHit.evidence` and
+ *    scores the cross-encoder against it BEFORE `toWireHit` is called), so
+ *    dropping it here loses no retrieval-quality signal — only the raw
+ *    excerpt string itself, which still surfaces on GET /search and the MCP
+ *    search_memory/recall_memory tools.
+ *  - drop `bundled`/`bundle_reason` (Wave-6 evidence-bundling, src/search/
+ *    evidence-bundle.ts) — same posture as `correction_pending`/`evidence`:
+ *    the closed hit shape's property whitelist doesn't include them yet.
+ *    Still visible on GET /search and the MCP tools' raw JSON.
  */
 import type { SearchHit } from '../search/search.js';
 
@@ -33,6 +46,9 @@ export function toWireHit(hit: SearchHit): unknown {
     reranked: _reranked,
     rerank_score: _rerankScore,
     correction_pending: _correctionPending,
+    evidence: _evidence,
+    bundled: _bundled,
+    bundle_reason: _bundleReason,
     ...rest
   } = hit;
   return { ...rest, ...(capture_source !== undefined ? { source: capture_source } : {}) };

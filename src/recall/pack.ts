@@ -73,13 +73,31 @@ export function selectPack(db: DB, opts: PackOptions): PackMemory[] {
 
   // Atom v3 (ADR-001): invalidated memories (valid_to set) are excluded from
   // the injected pack — a superseded/dead memory must not surface in recall.
+  const clauses = ['project = ?', 'valid_to IS NULL'];
+  const params: Array<string | number> = [projectFilter];
+  // opts.branch was previously declared but never wired here — a caller
+  // requesting a branch got repo/project-wide results with no branch
+  // scoping at all. Only filter when a branch is actually requested so
+  // existing branch-agnostic callers (no branch passed) are unaffected.
+  if (opts.branch != null) {
+    clauses.push('branch = ?');
+    params.push(opts.branch);
+  }
+  params.push(CANDIDATE_LIMIT);
+
+  // `, id DESC` tiebreaker (migration 059): created_at collisions are routine
+  // under batch/distill ingest, and without a deterministic second sort key
+  // the 500-row CANDIDATE_LIMIT cutoff below can silently reshuffle across
+  // runs. Matches idx_memories_project_valid_created's trailing columns
+  // exactly, so this ORDER BY rides the index instead of forcing a temp
+  // b-tree sort.
   const rows = db.prepare(`
     SELECT id, type, text, importance, created_at
     FROM memories
-    WHERE project = ? AND valid_to IS NULL
-    ORDER BY created_at DESC
+    WHERE ${clauses.join(' AND ')}
+    ORDER BY created_at DESC, id DESC
     LIMIT ?
-  `).all(projectFilter, CANDIDATE_LIMIT) as Row[];
+  `).all(...params) as Row[];
 
   const scored: PackMemory[] = rows.map(r => {
     const ageDays = (now - r.created_at) / (24 * 60 * 60 * 1000);

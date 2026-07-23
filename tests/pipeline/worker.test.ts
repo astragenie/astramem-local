@@ -798,3 +798,43 @@ describe('Worker + LoadGovernor integration (P1.4/P1.5)', () => {
     expect(attempts).toBe(2);
   });
 });
+
+describe('Worker lane-0 reservation (FEAT-482 fold, worker-starvation wave, item 2 of 3)', () => {
+  let db: DB;
+  let repo: JobRepo;
+  let registry: HandlerRegistry;
+  let stopWorker: (() => Promise<void>) | null = null;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new JobRepo(db);
+    registry = new HandlerRegistry();
+  });
+
+  afterEach(async () => {
+    await stopWorker?.();
+    stopWorker = null;
+  });
+
+  it('lane 0 claims a LOCAL_SQLITE_KINDS (cleanup) job before older network-bound (distill) jobs queued ahead of it', async () => {
+    const completedOrder: string[] = [];
+    registry.register({ kind: 'distill', async handle() { completedOrder.push('distill'); } });
+    registry.register({ kind: 'cleanup', async handle() { completedOrder.push('cleanup'); } });
+
+    // Two distill (P1) jobs enqueued first — under plain priority+FIFO
+    // ordering these would both be claimed before the cleanup (P5) job
+    // enqueued after them. Single lane (concurrency: 1) so lane 0 is the
+    // ONLY lane, isolating its reservation behavior.
+    repo.enqueue('distill', {});
+    repo.enqueue('distill', {});
+    repo.enqueue('cleanup', {}); // enqueued last, lowest tier — still wins lane 0's first claim
+
+    const cfg = { ...defaultConfig(), pipeline: { concurrency: 1 } };
+    const { stop } = startWorker({ pollMs: 20, registry, db, config: cfg });
+    stopWorker = stop;
+
+    await waitFor(() => completedOrder.length >= 3, 3_000);
+    expect(completedOrder[0]).toBe('cleanup');
+  });
+});

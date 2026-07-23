@@ -29,6 +29,7 @@ import { dirname, join } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { resolveBearerToken } from '../storage/bearer-keystore.js';
+import { parseArg } from './arg-parse.js';
 
 export const IMPLEMENTED_CLIENTS = ['claude', 'claude-code', 'cursor'] as const;
 export const MANUAL_CLIENTS = ['windsurf', 'vscode'] as const;
@@ -253,11 +254,6 @@ export function runMcpInstall(opts: RunMcpInstallOpts): RunMcpInstallResult {
   if (client === 'claude-code') console.log('  note   : restart Claude Code (or run /mcp) to pick up the change');
 
   return { ok: true, manual: false, path: target.path, wrote: true, changed: merged.changed };
-}
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
 }
 
 export async function mcpInstallCommand(args: string[]): Promise<void> {

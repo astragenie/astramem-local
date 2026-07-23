@@ -15,7 +15,7 @@
  * up to a day to repair them is too slow. This scanner also gives oversize
  * repairs their own observable counters, separate from the generic sweep.
  *
- * Dedup guard (FEAT-507 requirement): `hasPendingOrRunningReembedJob` skips a
+ * Dedup guard (FEAT-507 requirement): `listActiveReembedMemoryIds` skips a
  * memory that already has a job in any non-terminal state (`pending`,
  * `running`, `failed` awaiting retry, or `paused`), so re-running this scan
  * mid-drain (or on the next timer tick before a prior pass's jobs have
@@ -53,11 +53,12 @@ export function scanAndEnqueueOversizeRepairs(db: DB, limit: number = OVERSIZE_S
   const jobRepo = new JobRepo(db);
 
   const candidateIds = memRepo.listOversizeNeedingVecIndex(EMBED_MAX_INPUT_CHARS, limit);
+  const activeReembedMemoryIds = listActiveReembedMemoryIds(db);
 
   let enqueued = 0;
   let alreadyQueued = 0;
   for (const memoryId of candidateIds) {
-    if (hasPendingOrRunningReembedJob(db, memoryId)) {
+    if (activeReembedMemoryIds.has(memoryId)) {
       alreadyQueued++;
       continue;
     }
@@ -69,11 +70,14 @@ export function scanAndEnqueueOversizeRepairs(db: DB, limit: number = OVERSIZE_S
 }
 
 /**
- * True when a `reembed` job for `memoryId` exists in any non-terminal state.
- * Terminal states are `completed` and `poison` (see job-repo.ts); everything
- * else (`pending`, `running`, `failed`, `paused`) will still be retried by
- * the worker, so it counts as "already has a job in flight" for dedup
- * purposes — a `failed` job sitting in its exponential-backoff window before
+ * Every memory id with a `reembed` job in any non-terminal state, as a Set —
+ * ONE query up front instead of a per-candidate `SELECT` (up to
+ * `OVERSIZE_SCAN_LIMIT` = 500 `SCAN jobs` per hourly tick, the N+1 this
+ * replaces; see docs/specs/20260723-codebase-refactor-plan.md). Terminal
+ * states are `completed` and `poison` (see job-repo.ts); everything else
+ * (`pending`, `running`, `failed`, `paused`) will still be retried by the
+ * worker, so it counts as "already has a job in flight" for dedup purposes —
+ * a `failed` job sitting in its exponential-backoff window before
  * self-promoting back to `pending` must not be re-enqueued by this scan.
  * `jobs.payload_json` is always written by this codebase's own `JobRepo.enqueue`
  * (JSON.stringify) — never fed by an external/sync source the way
@@ -82,13 +86,11 @@ export function scanAndEnqueueOversizeRepairs(db: DB, limit: number = OVERSIZE_S
  * malformed-JSON guard (precedent: migration 018's own partial index reads
  * `jobs.payload_json` the same way).
  */
-function hasPendingOrRunningReembedJob(db: DB, memoryId: string): boolean {
-  const row = db.prepare(`
-    SELECT 1 FROM jobs
-    WHERE kind = 'reembed'
-      AND state NOT IN ('completed', 'poison')
-      AND json_extract(payload_json, '$.memory_id') = ?
-    LIMIT 1
-  `).get(memoryId);
-  return row !== undefined;
+function listActiveReembedMemoryIds(db: DB): Set<string> {
+  const rows = db.prepare(`
+    SELECT DISTINCT json_extract(payload_json, '$.memory_id') AS memory_id
+    FROM jobs
+    WHERE kind = 'reembed' AND state NOT IN ('completed', 'poison')
+  `).all() as { memory_id: string | null }[];
+  return new Set(rows.map(r => r.memory_id).filter((id): id is string => id !== null));
 }

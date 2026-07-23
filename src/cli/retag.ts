@@ -16,11 +16,7 @@ import { openRuntimeDb } from './open-runtime-db.js';
 import { getProviders } from '../providers/index.js';
 import { runTagHygieneBackfill, type BackfillResult } from '../tag-hygiene/backfill.js';
 import { makeLlmTier2Infer } from '../tag-hygiene/tier2-infer.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 export async function retagCommand(args: string[]): Promise<void> {
   const jsonMode = args.includes('--json');

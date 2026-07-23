@@ -352,6 +352,52 @@ describe('POST /recall — handler deadline wrapper (ADR-018 Tier 1, issue #347 
   });
 });
 
+// Retrieval hardening issue #4: GET /search had NO deadline wrapper at all
+// before this — unlike POST /recall above, a stuck embed/rerank/decompose
+// call inside search() hung all the way to Fastify's 60s blanket
+// requestTimeout instead of a clean, named 504 at 30s. Same mechanism/same
+// honesty caveat as the POST /recall test above — this is Decision 1b's
+// narrower "hang inside this request's own async chain" case, not the #347
+// fix itself.
+describe('GET /search — handler deadline wrapper (retrieval hardening issue #4)', () => {
+  let db: DB;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns a clean 504 with an honest, non-#347-claiming error body when the embed call hangs past the deadline', async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    seedMemory(new MemoryRepo(db), 'use sqlite-vec for vector storage');
+    const hangingEmbed: EmbedProvider = {
+      name: 'ollama',
+      model: 'mock',
+      dim: 1024 as const,
+      embed: () => new Promise(() => {}), // never resolves — simulates a stuck async chain
+      health: async () => ({ ok: true, model: 'mock', dim: 1024 as const })
+    };
+    app = await buildApp({ db, token: 'tok', embed: hangingEmbed });
+
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const resPromise = app.inject({
+      method: 'GET',
+      url: '/search?q=vector+storage',
+      headers: { authorization: 'Bearer tok' },
+    });
+    await vi.advanceTimersByTimeAsync(30_000); // DEFAULT_HANDLER_DEADLINE_MS
+    const res = await resPromise;
+
+    expect(res.statusCode).toBe(504);
+    const body = res.json();
+    expect(body.error).toBe('handler_deadline_exceeded');
+    expect(body.route).toBe('GET /search');
+    expect(body.message).toMatch(/cannot detect or protect/i);
+    expect(body.message).toMatch(/synchronous event-loop stall/i);
+  });
+});
+
 // #112 (U3-local) AC-2: `text`/`limit` (ADR-005 canonical) and `query`/`k`
 // (legacy) are both accepted for exactly one release on POST /recall.
 describe('POST /recall — field-name aliases (#112 AC-2)', () => {
@@ -846,6 +892,103 @@ describe('POST /recall — mode (FEAT-532 L2)', () => {
     const ids = (res.json().hits as Array<{ id: string }>).map(h => h.id);
     expect(ids).toEqual([idB]);
     expect(ids).not.toContain(idA);
+  });
+});
+
+// Retrieval hardening issue #2: GET /search silently ignored `mode` entirely
+// before this — every other surface (POST /recall above, and the MCP tools)
+// already threaded it into search()'s SearchOpts.mode. Same live-daemon
+// proof style as the POST /recall mode describe block above.
+describe('GET /search — mode (retrieval hardening issue #2)', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let app: Awaited<ReturnType<typeof buildApp>>;
+  let embed: EmbedProvider;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    embed = buildMockEmbed();
+    app = await buildApp({ db, token: 'tok', embed });
+  });
+
+  it('mode=keyword and mode=hybrid (default) return measurably different result sets for the same query', async () => {
+    // idA shares the query's terms — reachable via FTS5.
+    const idA = repo.insert({
+      type: 'fact',
+      text: 'GET-search mode test: wombat husbandry notes',
+      normalized_text: 'get-search mode test: wombat husbandry notes',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'c1'.repeat(32), source_hash: null,
+    });
+    // idB shares no terms with the query — only reachable via the vector leg.
+    const idB = repo.insert({
+      type: 'fact',
+      text: 'completely unrelated banana bread recipe notes',
+      normalized_text: 'completely unrelated banana bread recipe notes',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'c2'.repeat(32), source_hash: null,
+    });
+    const vecStore = new SqliteVecStore(db, embed.dim);
+    const [vecB] = await embed.embed(['completely unrelated banana bread recipe notes']);
+    await vecStore.upsert(idB, vecB as Float32Array);
+
+    const keywordRes = await app.inject({
+      method: 'GET',
+      url: '/search?q=wombat+husbandry&limit=10&mode=keyword',
+      headers: { authorization: 'Bearer tok' },
+    });
+    const hybridRes = await app.inject({
+      method: 'GET',
+      url: '/search?q=wombat+husbandry&limit=10&mode=hybrid',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(keywordRes.statusCode).toBe(200);
+    expect(hybridRes.statusCode).toBe(200);
+
+    const keywordIds = (keywordRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+    const hybridIds = (hybridRes.json().hits as Array<{ id: string }>).map(h => h.id).sort();
+
+    // mode=keyword never gathers the vector leg — idB (FTS-invisible) can't surface.
+    expect(keywordIds).toEqual([idA]);
+    // mode=hybrid (default) gathers both legs — idB now surfaces too.
+    expect(hybridIds).toEqual([idA, idB].sort());
+    expect(hybridIds).not.toEqual(keywordIds);
+  });
+
+  it('an omitted mode defaults to hybrid — byte-identical to explicitly passing mode=hybrid', async () => {
+    const idA = repo.insert({
+      type: 'fact',
+      text: 'GET-search omitted-mode test: capybara grooming notes',
+      normalized_text: 'get-search omitted-mode test: capybara grooming notes',
+      repo: 'myrepo', project: null, branch: null, agent: null, session_id: null,
+      hash: 'c3'.repeat(32), source_hash: null,
+    });
+    const omittedRes = await app.inject({
+      method: 'GET',
+      url: '/search?q=capybara+grooming&limit=10',
+      headers: { authorization: 'Bearer tok' },
+    });
+    const explicitRes = await app.inject({
+      method: 'GET',
+      url: '/search?q=capybara+grooming&limit=10&mode=hybrid',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(omittedRes.statusCode).toBe(200);
+    const omittedIds = (omittedRes.json().hits as Array<{ id: string }>).map(h => h.id);
+    const explicitIds = (explicitRes.json().hits as Array<{ id: string }>).map(h => h.id);
+    expect(omittedIds).toEqual(explicitIds);
+    expect(omittedIds).toContain(idA);
+  });
+
+  it('an out-of-enum mode value is a 400, not a silent fall-through to hybrid', async () => {
+    const res = await app.inject({
+      method: 'GET',
+      url: '/search?q=anything&mode=bogus',
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(res.statusCode).toBe(400);
   });
 });
 

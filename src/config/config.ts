@@ -307,37 +307,125 @@ export interface Config {
       timeoutMs: number;
       maxCandidates: number;
     };
+    /**
+     * Score-phase Track I (2026-07-23): which normalization `fuse.ts`'s
+     * `normalizeScores`/`fuseHits` apply to raw bm25/cosine scores before
+     * fusion. `'minmax'` (default) is plain min-max, BYTE-IDENTICAL to
+     * pre-Track-I behavior. `'winsorized'` clips each candidate's raw score
+     * to its own array's [p5, p95] before min-max — the pool-tax fix (QA
+     * repro 2026-07-23, memory `fusion-pool-tax-score-lead`): SQLite
+     * bm25/cosine are unbounded, so a single outlier candidate stretches
+     * plain min-max's range so far that every OTHER candidate's normalized
+     * score compresses toward the same corner, which can invert two
+     * unrelated candidates' relative fused score once combined with
+     * components the outlier didn't distort (importance/freshness/etc).
+     * See src/search/fuse.ts's `normalizeScores` doc comment for the full
+     * mechanism and `applyNormalizationGovernance` below for the closed-enum
+     * validation (an invalid/typo'd value falls back to 'minmax', never
+     * fatal — config.yaml has no schema, see loader.ts's doc comment).
+     *
+     * Deliberately NOT rank-based (RRF-style) normalization — that path is
+     * already refuted (memory `retrieval-fusion-refuted`: multi-hop score
+     * dropped 0.28→0.15 when magnitude ties collapsed to ordinal ranks).
+     * Measurement (the 2×2 minmax/winsorized × rerank-off/onnx A/B) is a
+     * separate, later track's job — this key only needs to be correct and
+     * additive; it does not itself carry eval evidence the way η/θ do.
+     */
+    normalization: 'minmax' | 'winsorized';
   };
-  /** Cross-encoder rerank stage (issue #26, ADR-005). OFF by default — ADR-005
-   * ruled "no reranker in v1 (CPU budget)" for local, so this is a
-   * config-flagged, opt-in seam (mirrors the cloud engine's stub-by-default
-   * `ICrossEncoderRanker`), not a default-on capability. When disabled the
-   * search pipeline is byte-identical to pre-rerank behavior — the stage is
-   * never invoked, not merely a no-op weight (see src/search/rerank.ts).
+  /** Cross-encoder rerank stage (issue #26, ADR-005; P2 retrieval overhaul,
+   * WT-B, 2026-07-20). OFF by default — ADR-005 ruled "no reranker in v1
+   * (CPU budget)" for local, so this remains a config-flagged, opt-in seam
+   * (mirrors the cloud engine's stub-by-default `ICrossEncoderRanker`), not
+   * a default-on capability: flipping `enabled: true` in the SHIPPED
+   * default still requires published eval evidence per
+   * docs/runbooks/cross-encoder-rerank.md's "Eval-evidence requirement" —
+   * that is a cross-track Gate A decision (retrieval overhaul plan), not
+   * something this worktree changes unilaterally. When disabled the search
+   * pipeline is byte-identical to pre-rerank behavior — the stage is never
+   * invoked, not merely a no-op weight (see src/search/rerank.ts).
    *
-   * `provider: 'mock'` is a deterministic lexical-overlap scorer — fully
-   * testable, no network/model dependency. `provider: 'http'` calls a real
-   * cross-encoder sidecar over HTTP (see docs/runbooks/cross-encoder-rerank.md
-   * for the endpoint contract, cost/latency notes, and how to run one) —
-   * requires `sidecarUrl`; `buildCrossEncoderProvider` throws at
-   * provider-build time if it's unset.
+   * Three providers:
+   * - `provider: 'mock'` — deterministic lexical-overlap scorer. No real
+   *   semantic signal; exists to prove the stage is wired end-to-end
+   *   without a network/model dependency.
+   * - `provider: 'onnx'` (P2, new default WHEN `enabled: true` — see
+   *   `defaultConfig()`) — a real, compact, in-process cross-encoder
+   *   (`ms-marco-MiniLM-L-6-v2`, ~23MB q8) via `@huggingface/transformers`,
+   *   the SAME local-only, no-cloud-dependency posture `onnxEmbed` already
+   *   ships (`src/search/onnx-cross-encoder.ts`). This is the "real
+   *   reranker" this repo has needed since ADR-005 — no sidecar process to
+   *   run, model loads lazily on first use and is memoized for the daemon's
+   *   lifetime.
+   * - `provider: 'http'` — a real cross-encoder sidecar over HTTP (see
+   *   docs/runbooks/cross-encoder-rerank.md for the endpoint contract,
+   *   cost/latency notes, and how to run one) — requires `sidecarUrl`;
+   *   `buildCrossEncoderProvider` throws at provider-build time if it's
+   *   unset. Optional acceleration path (e.g. a GPU-hosted sidecar), never
+   *   the only real implementation now that `onnx` exists.
    *
    * `topK` bounds how many post-fusion candidates are sent through the
-   * reranker (cost/latency control — mirrors cloud's TopK=50 default).
-   * `timeoutMs` is a hard cap (mirrors cloud's 300ms DEC-011/012 budget): a
-   * slow/failed rerank call falls back to the un-reranked fused order rather
-   * than blocking the request — degrades quality, never availability. */
+   * reranker (cost/latency control — the retrieval overhaul plan's target
+   * window is 40-60; default 40, tuned 2026-07-20 against the cheap-recipe
+   * conv-26 A/B: topK 40 beat both 50 and 100 on llm-judge cat-avg, and 100
+   * scored BELOW the rerank-off baseline on token-F1 — a wider candidate
+   * pool dilutes with distractors faster than it helps, see
+   * docs/runbooks/cross-encoder-rerank.md's tuning-results section for the
+   * full table). `timeoutMs` is a hard cap: a slow/failed
+   * rerank call falls back to the un-reranked fused order rather than
+   * blocking the request — degrades quality, never availability. Default
+   * raised from the original 300ms (that budget assumed a warm GPU sidecar
+   * — unrealistic for CPU-only in-process inference, which this repo's
+   * ADR-018 deliberately restricts itself to) to 1500ms; the `onnx`
+   * provider logs `device: 'cpu'` + `latency_ms` per call
+   * (`src/search/onnx-cross-encoder.ts`) so p50/p95 can be tracked
+   * separately from a future GPU-backed `http` sidecar's own numbers via
+   * the existing structured-log aggregation this repo already relies on
+   * (no separate metrics registry — see rerank.ts's "Local observability"
+   * doc comment). */
   crossEncoder: {
     enabled: boolean;
-    provider: 'mock' | 'http';
+    provider: 'mock' | 'http' | 'onnx';
     topK: number;
     timeoutMs: number;
     /** Required when provider === 'http'. Base URL of the cross-encoder
      * sidecar's rerank endpoint (e.g. a TEI `/rerank` deployment). */
     sidecarUrl?: string;
-    /** Optional model identifier forwarded in the request body when the
-     * sidecar hosts more than one model (provider === 'http' only). */
+    /** Model identifier. `provider === 'http'`: optional, forwarded in the
+     * sidecar request body when it hosts more than one model.
+     * `provider === 'onnx'`: the `RERANK_MODEL_REGISTRY`
+     * (src/search/onnx-rerank-registry.ts) label to load — defaults to
+     * `DEFAULT_RERANK_MODEL_LABEL` ('ms-marco-MiniLM-L-6-v2') when unset. */
     model?: string;
+    /** `provider === 'onnx'` only — in-process model load overrides. Unset
+     * fields default to the `RERANK_MODEL_REGISTRY[model]` entry, falling
+     * back to `DEFAULT_RERANK_HF_MODEL_ID`/`DEFAULT_RERANK_REVISION`/
+     * `DEFAULT_RERANK_DTYPE` for an unregistered model — same resolution
+     * order as `onnxEmbed`. */
+    onnx?: {
+      /** Local cache directory for downloaded weights. Defaults to
+       * `<dataDir>/models/onnx/` (the same root `onnxEmbed` uses — distinct
+       * HF repo ids nest under separate subdirectories there, so embed and
+       * rerank weights coexist without collision). */
+      cacheDir?: string;
+      /** Explicit local filesystem override — takes precedence over any
+       * download when set (offline/air-gapped installs); see
+       * `resolveLocalSnapshotDir`'s doc comment (providers/embed/onnx.ts)
+       * for the exact lookup rule. */
+      modelPath?: string;
+      /** HF repo id override — bypasses the registry entirely. */
+      hfModelId?: string;
+      /** Pinned HF revision override — never `'main'`. */
+      revision?: string;
+      /** ORT weight precision override — 'q8' (default) | 'fp16' | 'fp32'. */
+      dtype?: OnnxDType;
+      /** ORT intraOpNumThreads cap. Defaults to the same core-count-aware
+       * cap `onnxEmbed` uses inside `OnnxCrossEncoderProvider` when unset. */
+      numThreads?: number;
+      /** (query, text) pairs per model() call — bounds peak batch memory.
+       * Defaults to 16 inside `OnnxCrossEncoderProvider` when unset. */
+      batchSize?: number;
+    };
   };
   /** Multi-hop query decomposition (WS6, LoCoMo multi-hop workstream,
    * src/search/decompose.ts). OFF by default — mirrors crossEncoder's
@@ -378,6 +466,28 @@ export interface Config {
     /** Optional model override when provider === 'llm'; defaults to
      * config.llm.extraction.model on config.llm.extraction.provider. */
     model?: string;
+  };
+  /** Selective post-rerank evidence bundling (Wave-6, P2 retrieval-overhaul
+   * "evidence-sufficiency" lever — src/search/evidence-bundle.ts). The
+   * oracle-factorial investigation found ~87% of the LoCoMo gap lives in the
+   * answerer/evidence layer: top-k atoms that are each individually
+   * well-ranked but collectively insufficient for a multi-hop question. OFF
+   * by default — mirrors crossEncoder/multiHop's opt-in-seam governance
+   * style; `resolveEvidenceBundlingOpts` returns `undefined` when disabled
+   * and search() takes zero extra branches, same contract as rerank/decompose.
+   *
+   * Heuristic-only (no LLM call on this hot path): `minDistinctSessions` is
+   * the "evidence looks thin" trigger — when the finalized top-k spans fewer
+   * distinct `memories.session_id` values than this, the pull below fires.
+   * `sameEntity`/`sameSession` gate which scoped pulls run (same-entity via
+   * `memory_entities`, same-session via `memories.session_id`); `maxExtra`
+   * bounds how many additional atoms either pull may ever add. */
+  evidenceBundling: {
+    enabled: boolean;
+    maxExtra: number;
+    minDistinctSessions: number;
+    sameEntity: boolean;
+    sameSession: boolean;
   };
   recallPack: {
     enabled: boolean;
@@ -543,6 +653,26 @@ export interface Config {
     /** Rows older than this (by created_at) are pruned. Must stay well above
      * any realistic client retry window — see rationale above. */
     retentionDays: number;
+  };
+  /** Retention for `memory_events` 'usefulness'/'recall_served' rows (Wave-3
+   * storage+perf track). That family is appended once PER SERVED ATOM PER
+   * SEARCH (k=15 -> 15 rows/query, src/storage/usefulness.ts's
+   * recordRecallServed) — by far the highest-volume writer onto
+   * memory_events, and unlike every other event_type nothing has ever
+   * pruned it, so it grows on every READ (not just every write) — including
+   * the common single-device install with sync never paired, where every
+   * atom is `private` scope. Runs on the same cleanup-job cadence as the
+   * passes above via `pruneOldRecallServedEvents` (src/storage/usefulness.ts)
+   * — see that function's doc comment for the full HARD INVARIANT (rows are
+   * only ever deleted once already shipped OR structurally unshippable, e.g.
+   * private-scoped or erased) and the one accepted residual risk (a
+   * later-promoted atom's pre-promotion recall_served analytics history can
+   * have a gap). Default 30 days is far above any realistic sync-shipper
+   * backlog drain time. */
+  memoryEvents: {
+    /** recall_served rows older than this (by created_at) AND already
+     * synced are pruned. See pruneOldRecallServedEvents's doc comment. */
+    recallServedRetentionDays: number;
   };
   /** Distill-job worker pool (FEAT throughput hardening). A single serial
    * claim-execute loop was the daemon's throughput ceiling under parallel
@@ -1488,11 +1618,39 @@ export function defaultConfig(): Config {
         },
       },
       queryRewrite: { mode: 'off', provider: 'mock', maxVariants: 3, timeoutMs: 1500, maxCandidates: 200 },
+      // Score-phase Track I: 'minmax' is the shipped default, byte-identical
+      // to pre-Track-I behavior. See the Config type's doc comment above.
+      normalization: 'minmax',
     },
-    crossEncoder: { enabled: false, provider: 'mock', topK: 50, timeoutMs: 300 },
+    // P2 retrieval overhaul (2026-07-20): `enabled` stays `false` — flipping
+    // the shipped default requires published recall@10/NDCG@10 (or
+    // token-F1, per the retrieval-overhaul plan's Gate A) evidence across
+    // ALL Wave-1 tracks, not a single worktree's own A/B (see
+    // docs/runbooks/cross-encoder-rerank.md's "Eval-evidence requirement").
+    // `provider` DOES flip mock -> onnx: 'onnx' is now the real local
+    // cross-encoder (src/search/onnx-cross-encoder.ts) an operator who
+    // opts into `enabled: true` should get, not the semantically-inert
+    // Jaccard mock. `topK` 40 — tuned 2026-07-20 against the cheap-recipe
+    // conv-26 A/B: beat both 50 (the plan's original pick) and 100 on
+    // llm-judge cat-avg and multi-hop, while 100 scored BELOW the
+    // rerank-off baseline on token-F1 (see the runbook's "topK tuning"
+    // section) — don't raise this without new same-day evidence.
+    // `timeoutMs` raised 300 -> 1500: 300ms assumed a warm GPU sidecar,
+    // unrealistic for CPU-only in-process inference (ADR-018 rejects GPU
+    // execution providers for this repo) — see the Config type's doc
+    // comment above for the full rationale.
+    crossEncoder: { enabled: false, provider: 'onnx', topK: 40, timeoutMs: 1500 },
     multiHop: {
       enabled: false, provider: 'mock', minQueryWords: 6, maxSubQueries: 3,
       maxSupplemental: 5, supplementalWeight: 0.5, timeoutMs: 800,
+    },
+    // Wave-6: OFF by default — promotion to enabled:true is a separate,
+    // operator-gated decision after a metered LoCoMo A/B (see
+    // src/search/evidence-bundle.ts's doc comment). maxExtra 5 mirrors
+    // multiHop.maxSupplemental's bound; minDistinctSessions 2 is the
+    // simplest non-trivial "spans more than one session" trigger.
+    evidenceBundling: {
+      enabled: false, maxExtra: 5, minDistinctSessions: 2, sameEntity: true, sameSession: true,
     },
     recallPack: {
       enabled: false,
@@ -1521,6 +1679,7 @@ export function defaultConfig(): Config {
       tierScope: { media: [], lean: [] },
     },
     ingestIdempotency: { retentionDays: 7 },
+    memoryEvents: { recallServedRetentionDays: 30 },
     pipeline: { concurrency: 2 },
     consolidation: {
       // autoAcceptThreshold stays NULL — deliberately, and against the obvious
@@ -2439,6 +2598,38 @@ export function applyDupJudgeGovernance(
 const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = new Set(['mock', 'llm']);
 
 /**
+ * Shared numeric clamp for the retrieval-stage cost/latency-bound fields
+ * governed below (`multiHop.maxSubQueries`/`maxSupplemental`/`timeoutMs`,
+ * `search.queryRewrite.maxVariants`/`timeoutMs`/`maxCandidates`,
+ * `crossEncoder.topK`/`timeoutMs`) — retrieval hardening pass, P2 (2026-07).
+ * Every one of these fields either bounds an `Array.slice(0, N)` cap (a
+ * negative N inverts the cap via JS negative-index semantics — an unbounded
+ * slice from the end) or a `setTimeout`-family budget (a ≤0/NaN value fires
+ * immediately, so the guarded stage silently, permanently degrades to "never
+ * contributes" on every call with no loud signal it's misconfigured — the
+ * `multiHop`/`queryRewrite` LLM stages' exact failure mode before this fix).
+ * ADR-015: always logged when it clamps, never a silent accept. `requireInteger`
+ * distinguishes discrete counts/caps (must be a whole number, mirrors
+ * `applyCandidateSelectionGovernance`'s `knnK` precedent) from a millisecond
+ * duration (`timeoutMs` — any positive finite number is a legitimate budget).
+ */
+function clampPositiveField(
+  label: string,
+  value: number,
+  fallback: number,
+  log: (message: string) => void,
+  opts: { requireInteger?: boolean } = {},
+): number {
+  const valid = opts.requireInteger ? Number.isInteger(value) && value > 0 : Number.isFinite(value) && value > 0;
+  if (valid) return value;
+  log(
+    `[retrieval-governance] ${label}=${JSON.stringify(value)} must be a positive ` +
+    `${opts.requireInteger ? 'integer' : 'number'} — falling back to ${fallback}.`,
+  );
+  return fallback;
+}
+
+/**
  * WS6 governance (mirrors `applyContradictionDetectionGovernance`'s shape):
  * config.yaml is hand-parsed scalars with no schema, and `loadConfig`'s
  * top-level override merge is shallow, so a partial `multiHop` override (or
@@ -2450,6 +2641,15 @@ const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = n
  * defense-in-depth `resolveDecomposeOpts` already applies at resolve time —
  * this is belt-and-suspenders against a bad value ever being logged as
  * "governed" while still being out of range downstream).
+ *
+ * Retrieval hardening (issues #8/#9): `maxSubQueries`/`maxSupplemental` cap
+ * `Array.slice(0, N)` calls in decompose.ts/search.ts — a negative value
+ * inverts the cap via JS negative-index slicing. `timeoutMs` bounds the
+ * decomposer's `setTimeout`-family budget — ≤0/NaN fires immediately, so
+ * `provider: 'llm'` silently, permanently degrades to zero sub-queries on
+ * every call. All three are clamped to their documented default via
+ * `clampPositiveField` above rather than reaching decompose.ts/search.ts
+ * unvalidated.
  */
 export function applyMultiHopGovernance(
   multiHop: Config['multiHop'],
@@ -2476,7 +2676,70 @@ export function applyMultiHopGovernance(
       `clamping to ${clampedWeight}. See WS6 / src/search/decompose.ts.`,
     );
   }
-  return { ...multiHop, supplementalWeight: clampedWeight };
+  const maxSubQueries = clampPositiveField('multiHop.maxSubQueries', multiHop.maxSubQueries, fallback.maxSubQueries, log, { requireInteger: true });
+  const maxSupplemental = clampPositiveField('multiHop.maxSupplemental', multiHop.maxSupplemental, fallback.maxSupplemental, log, { requireInteger: true });
+  const timeoutMs = clampPositiveField('multiHop.timeoutMs', multiHop.timeoutMs, fallback.timeoutMs, log);
+
+  if (
+    clampedWeight === multiHop.supplementalWeight && maxSubQueries === multiHop.maxSubQueries &&
+    maxSupplemental === multiHop.maxSupplemental && timeoutMs === multiHop.timeoutMs
+  ) {
+    return multiHop;
+  }
+  return { ...multiHop, supplementalWeight: clampedWeight, maxSubQueries, maxSupplemental, timeoutMs };
+}
+
+/**
+ * Wave-6 evidence-bundling governance (mirrors `applyMultiHopGovernance`'s
+ * shape): config.yaml is hand-parsed scalars with no schema, so a bad
+ * `maxExtra`/`minDistinctSessions` would otherwise reach evidence-bundle.ts's
+ * `Array.slice(0, N)` cap / `Set.size < N` comparison unvalidated — a
+ * negative `maxExtra` would invert the slice cap via JS negative-index
+ * semantics, same failure mode `clampPositiveField`'s doc comment describes
+ * for `multiHop.maxSubQueries`/`maxSupplemental`. Never fatal — an invalid
+ * value falls back to the documented default, logged. `sameEntity`/
+ * `sameSession` are plain booleans; a non-boolean value on the hand-parsed
+ * disk path (e.g. a stray string surviving the shallow `deepMerge`) falls
+ * back to its documented default rather than being coerced or passed through.
+ */
+export function applyEvidenceBundlingGovernance(
+  evidenceBundling: Config['evidenceBundling'],
+  opts: { log?: (message: string) => void } = {},
+): Config['evidenceBundling'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().evidenceBundling;
+
+  if (!evidenceBundling) {
+    log(
+      '[evidence-bundling-governance] evidenceBundling is missing — falling back to defaults ' +
+      '(enabled: false). See src/search/evidence-bundle.ts.',
+    );
+    return fallback;
+  }
+
+  const maxExtra = clampPositiveField(
+    'evidenceBundling.maxExtra', evidenceBundling.maxExtra, fallback.maxExtra, log, { requireInteger: true },
+  );
+  const minDistinctSessions = clampPositiveField(
+    'evidenceBundling.minDistinctSessions', evidenceBundling.minDistinctSessions, fallback.minDistinctSessions, log,
+    { requireInteger: true },
+  );
+  const sameEntity = typeof evidenceBundling.sameEntity === 'boolean' ? evidenceBundling.sameEntity : fallback.sameEntity;
+  const sameSession = typeof evidenceBundling.sameSession === 'boolean' ? evidenceBundling.sameSession : fallback.sameSession;
+  if (sameEntity !== evidenceBundling.sameEntity) {
+    log(`[evidence-bundling-governance] evidenceBundling.sameEntity=${JSON.stringify(evidenceBundling.sameEntity)} is not a boolean — falling back to ${fallback.sameEntity}.`);
+  }
+  if (sameSession !== evidenceBundling.sameSession) {
+    log(`[evidence-bundling-governance] evidenceBundling.sameSession=${JSON.stringify(evidenceBundling.sameSession)} is not a boolean — falling back to ${fallback.sameSession}.`);
+  }
+
+  if (
+    maxExtra === evidenceBundling.maxExtra && minDistinctSessions === evidenceBundling.minDistinctSessions &&
+    sameEntity === evidenceBundling.sameEntity && sameSession === evidenceBundling.sameSession
+  ) {
+    return evidenceBundling;
+  }
+  return { ...evidenceBundling, maxExtra, minDistinctSessions, sameEntity, sameSession };
 }
 
 const VALID_QUERY_REWRITE_MODES: ReadonlySet<Config['search']['queryRewrite']['mode']> = new Set(['off', 'enabled']);
@@ -2494,6 +2757,13 @@ const VALID_QUERY_REWRITE_PROVIDERS: ReadonlySet<Config['search']['queryRewrite'
  * `Config['search']` but are independent concerns (fusion weight ceilings
  * vs. this stage's own closed enums), same composition style as
  * `distill`'s multi-governance chain.
+ *
+ * Retrieval hardening (issue #9's twin on the rewrite stage): `maxVariants`/
+ * `maxCandidates` cap `Array.slice(0, N)` calls in query-rewrite.ts/search.ts
+ * (negative-index inversion risk); `timeoutMs` bounds the rewriter's
+ * `setTimeout`-family budget (≤0/NaN silently, permanently no-ops
+ * `provider: 'llm'`). Clamped via the same `clampPositiveField` helper
+ * `applyMultiHopGovernance` uses just above.
  */
 export function applyQueryRewriteGovernance(
   search: Config['search'],
@@ -2514,26 +2784,145 @@ export function applyQueryRewriteGovernance(
     );
     return { ...search, queryRewrite: { ...fallback, ...qr, mode: 'off', provider: fallback.provider } };
   }
+
+  const maxVariants = clampPositiveField('search.queryRewrite.maxVariants', qr.maxVariants, fallback.maxVariants, log, { requireInteger: true });
+  const timeoutMs = clampPositiveField('search.queryRewrite.timeoutMs', qr.timeoutMs, fallback.timeoutMs, log);
+  const maxCandidates = clampPositiveField('search.queryRewrite.maxCandidates', qr.maxCandidates, fallback.maxCandidates, log, { requireInteger: true });
+
+  if (maxVariants === qr.maxVariants && timeoutMs === qr.timeoutMs && maxCandidates === qr.maxCandidates) {
+    return search;
+  }
+  return { ...search, queryRewrite: { ...qr, maxVariants, timeoutMs, maxCandidates } };
+}
+
+const VALID_CROSS_ENCODER_PROVIDERS: ReadonlySet<Config['crossEncoder']['provider']> = new Set(['mock', 'http', 'onnx']);
+
+/**
+ * Cross-encoder rerank governance (issue #26/ADR-005; retrieval hardening
+ * P2 2026-07) — `crossEncoder` had NO governance function at all before this:
+ * an out-of-union `provider`, or a ≤0/NaN `topK`/`timeoutMs`, from a
+ * hand-edited config.yaml passed straight through `deepMerge` to
+ * `resolveRerankOpts` (src/search/rerank.ts) completely unvalidated. Same
+ * non-fatal, log-and-fall-back shape as every other governance function in
+ * this file: an invalid override degrades to the documented default
+ * (`enabled: false`) rather than risking a broken provider selection, or a
+ * cost-bound field that can't bound anything (a ≤0 `topK`, an
+ * immediately-firing `timeoutMs`) reaching the hot recall path silently.
+ */
+export function applyCrossEncoderGovernance(
+  crossEncoder: Config['crossEncoder'],
+  opts: { log?: (message: string) => void } = {},
+): Config['crossEncoder'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().crossEncoder;
+
+  if (!crossEncoder || !VALID_CROSS_ENCODER_PROVIDERS.has(crossEncoder.provider)) {
+    log(
+      crossEncoder
+        ? `[cross-encoder-governance] crossEncoder.provider=${JSON.stringify(crossEncoder.provider)} is not one ` +
+          "of 'mock'|'http'|'onnx' — falling back to defaults (enabled: false). See issue #26 / src/search/rerank.ts."
+        : '[cross-encoder-governance] crossEncoder is missing — falling back to defaults (enabled: false). ' +
+          'See issue #26 / src/search/rerank.ts.',
+    );
+    return { ...fallback, ...crossEncoder, provider: fallback.provider, enabled: false };
+  }
+
+  const topK = clampPositiveField('crossEncoder.topK', crossEncoder.topK, fallback.topK, log, { requireInteger: true });
+  const timeoutMs = clampPositiveField('crossEncoder.timeoutMs', crossEncoder.timeoutMs, fallback.timeoutMs, log);
+
+  if (topK === crossEncoder.topK && timeoutMs === crossEncoder.timeoutMs) return crossEncoder;
+  return { ...crossEncoder, topK, timeoutMs };
+}
+
+const VALID_NORMALIZATION_MODES: ReadonlySet<Config['search']['normalization']> = new Set(['minmax', 'winsorized']);
+
+/**
+ * Score-phase Track I governance (mirrors `applyQueryRewriteGovernance`'s
+ * shape exactly): `config.yaml` is hand-parsed scalars with no schema, so a
+ * typo'd `search.normalization` would otherwise pass straight through
+ * `deepMerge` unchecked. Never fatal — an invalid/missing value falls back to
+ * `'minmax'` (the documented default), logged, rather than risk booting with
+ * an unrecognized mode string that `fuse.ts`'s `normalizeScores` would
+ * silently treat as plain min-max anyway (its own `mode !== 'winsorized'`
+ * check), making a typo invisible instead of loud. Applied alongside
+ * `applyFusionGovernance`/`applyQueryRewriteGovernance` in `loadConfig` below
+ * — an independent concern operating on the same `Config['search']` shape,
+ * same composition style as the rest of this file's governance chain.
+ */
+export function applyNormalizationGovernance(
+  search: Config['search'],
+  opts: { log?: (message: string) => void } = {},
+): Config['search'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+
+  if (!VALID_NORMALIZATION_MODES.has(search.normalization)) {
+    log(
+      `[normalization-governance] search.normalization=${JSON.stringify(search.normalization)} is not a valid ` +
+      "mode ('minmax'|'winsorized') — falling back to 'minmax'. See score-phase Track I / src/search/fuse.ts.",
+    );
+    return { ...search, normalization: 'minmax' };
+  }
   return search;
 }
 
+/**
+ * Wave-3 config track: the single ordered composition of every
+ * `applyXGovernance` function this module exports, applied to an already
+ * defaults-merged `Config`. `loadConfig` (below) and `loadConfigFromDisk`
+ * (src/config/loader.ts) both call this instead of each hand-maintaining
+ * their own copy of the same ~17-call chain — the two had already drifted
+ * apart twice, silently:
+ *
+ *  - `loadConfig`'s old chain never called `applyAtomTriageGovernance` — an
+ *    out-of-union `distill.atomTriage.provider` reaching this path (tests
+ *    only, per production-caller audit below) wouldn't get dropped.
+ *  - `loadConfigFromDisk`'s old chain never called
+ *    `applyExtractionPassesGovernance` — a hand-edited out-of-{1,2}
+ *    `distill.extractionPasses` on the REAL boot path reached
+ *    `runPipeline` ungoverned.
+ *  - `loadConfigFromDisk`'s old chain never called `applyAudioModeGovernance`
+ *    AT ALL — `audio` had no governance composition point on the real boot
+ *    path whatsoever, the largest of the three gaps: a hand-edited
+ *    out-of-union `audio.mode` reached the audio add-on's dispatch fully
+ *    unvalidated.
+ *
+ * Every governance function composed here only ever reads/writes its own
+ * field (or, for `distill`/`consolidation`, its own subfield) and passes the
+ * rest of its input through unchanged — every individual function's own doc
+ * comment already documents this — so the nesting order below is safe
+ * regardless of direction; it simply matches loadConfigFromDisk's pre-existing
+ * order (the real boot path) so a diff against this repo's history stays
+ * minimal.
+ */
+export function applyAllGovernance(cfg: Config, opts: { log?: (message: string) => void } = {}): Config {
+  return {
+    ...cfg,
+    search: applyNormalizationGovernance(applyQueryRewriteGovernance(applyFusionGovernance(cfg.search, opts), opts), opts),
+    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyAtomTriageGovernance(
+      applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(
+        applyDurabilityGateGovernance(cfg.distill, opts), opts), opts), opts), opts), opts), opts),
+    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(
+      applyContradictionDetectionGovernance(cfg.consolidation, opts), opts), opts),
+    audio: applyAudioModeGovernance(cfg.audio, opts),
+    multiHop: applyMultiHopGovernance(cfg.multiHop, opts),
+    evidenceBundling: applyEvidenceBundlingGovernance(cfg.evidenceBundling, opts),
+    crossEncoder: applyCrossEncoderGovernance(cfg.crossEncoder, opts),
+    retention: applyRetentionGovernance(cfg.retention, opts),
+  };
+}
+
+/**
+ * In-process defaults + overrides + governance helper. Verified
+ * zero production callers (grep audit, Wave-3 config track) — every real
+ * caller goes through `loadConfigFromDisk` (src/config/loader.ts) instead.
+ * Kept (not deleted) because tests/config/config.test.ts and its siblings
+ * lean on its convenient in-memory `Partial<Config>` override shape for
+ * ~40 governance-unit assertions that would otherwise need a real disk
+ * write per test; now a thin wrapper over `applyAllGovernance` so it can
+ * never again drift out of sync with the real boot path's chain.
+ */
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
-  return {
-    ...merged,
-    search: applyQueryRewriteGovernance(applyFusionGovernance(merged.search)),
-    // FEAT-548: applyGatekeeperGovernance composed here too, not just in
-    // loadConfigFromDisk() — mirrors applyExtractionPassBGovernance's own
-    // "wired into BOTH real paths" bar (the 2026-07-16 review note on
-    // applyExtractionPassesGovernance documents why loadConfigFromDisk is the
-    // one with real production callers; applyAtomTriageGovernance itself is
-    // still NOT wired into this loadConfig() chain — a pre-existing gap
-    // predating this slice, out of scope here).
-    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))))),
-    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation))),
-    audio: applyAudioModeGovernance(merged.audio),
-    multiHop: applyMultiHopGovernance(merged.multiHop),
-    retention: applyRetentionGovernance(merged.retention),
-  };
+  return applyAllGovernance(merged);
 }

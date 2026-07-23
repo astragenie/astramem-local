@@ -8,24 +8,34 @@ candidate list, an optional second pass re-scores the top `crossEncoder.topK` ca
 the query using a cross-encoder-style provider and re-sorts that window. Everything beyond
 `topK` is left in its original fused order.
 
-**Status:** OFF by default, everywhere. ADR-005 (`docs/adr/ADR-005-retrieval-contract.md`) ruled
-that local ships v1 with "no reranker (CPU budget)" — this stage is the config-flagged seam that
-lets a future rollout happen by config flip + published eval evidence, mirroring how the cloud
-engine (astragenie/memory) shipped its `ICrossEncoderRanker` stub-off-by-default before its own
-staged rollout (see issue #26 for the cloud runbook this mirrors).
+**Status:** OFF by default, everywhere (`crossEncoder.enabled: false`). ADR-005
+(`docs/adr/ADR-005-retrieval-contract.md`) ruled that local ships v1 with "no reranker (CPU
+budget)" — this stage is the config-flagged seam that lets a future rollout happen by config flip
++ published eval evidence, mirroring how the cloud engine (astragenie/memory) shipped its
+`ICrossEncoderRanker` stub-off-by-default before its own staged rollout (see issue #26 for the
+cloud runbook this mirrors). **P2 retrieval overhaul (2026-07-20, WT-B)** landed the real local
+provider this gap always referred to — see "P2: real in-process ONNX cross-encoder" below — but did
+NOT flip the shipped default: that is a Gate A decision made after all three Wave-1 tracks merge
+(`docs/specs/20260720-retrieval-overhaul-plan.md`), not a single track's own A/B, however positive.
 
-Two providers are implemented:
+Three providers are implemented:
 
-- `provider: 'mock'` (the default when `enabled: true` without further config) — a deterministic
-  lexical (Jaccard token-overlap) scorer. It carries **no real semantic signal**; it exists to
-  prove the stage is correctly wired end-to-end (unit tests, the ADR-005 eval harness) without a
-  network/model dependency.
+- `provider: 'mock'` — a deterministic lexical (Jaccard token-overlap) scorer. It carries **no
+  real semantic signal**; it exists to prove the stage is correctly wired end-to-end (unit tests,
+  the ADR-005 eval harness) without a network/model dependency.
+- `provider: 'onnx'` (P2, `DEFAULT_MODEL_LABEL` when `enabled: true` is set — see
+  `defaultConfig()`) — a real, compact, in-process cross-encoder
+  (`Xenova/ms-marco-MiniLM-L-6-v2`, ~23MB q8) via `@huggingface/transformers`
+  (`src/search/onnx-cross-encoder.ts`), same offline-first / lazy-load / CPU-only posture as the
+  `onnxEmbed` provider (ADR-018). No sidecar process to run. See "P2: real in-process ONNX
+  cross-encoder" below.
 - `provider: 'http'` — a real cross-encoder sidecar client (`HttpCrossEncoderProvider`, issue
   #26/#94). It POSTs the query + candidate texts to `crossEncoder.sidecarUrl` and maps the
   response back to per-candidate scores. See "HTTP provider — endpoint contract" and "Running a
   sidecar" below before enabling it. Requires `sidecarUrl`; `buildCrossEncoderProvider` throws a
   clear config error at provider-build time (startup) if it's missing rather than silently
-  no-opping.
+  no-opping. Now an optional acceleration path (e.g. a GPU-hosted sidecar), not the only real
+  implementation.
 
 ## Where it's wired
 
@@ -113,18 +123,35 @@ there is nothing to count per-request when the stage doesn't run.
 crossEncoder:
   enabled: true
   provider: 'mock'
-  topK: 50           # candidates considered for rerank (cost/latency control)
-  timeoutMs: 300     # hard cap — mirrors cloud's DEC-011/012 300ms budget
+  topK: 40           # candidates considered for rerank (cost/latency control — tuned 2026-07-20,
+                      # see "topK tuning" below)
+  timeoutMs: 1500    # hard cap — see "P2: real in-process ONNX cross-encoder" for why this
+                      # was raised from the original 300ms
 ```
 
-`config.yaml` — real HTTP sidecar:
+`config.yaml` — real in-process ONNX cross-encoder (P2, local-only, no sidecar to run):
+
+```yaml
+crossEncoder:
+  enabled: true
+  provider: 'onnx'
+  topK: 40           # candidates considered for rerank — tuned default (see "topK tuning" below);
+                      # the P2 plan's original target window was 40-60
+  timeoutMs: 1500    # hard cap — CPU-realistic (see below)
+  # model: 'ms-marco-MiniLM-L-6-v2'   # optional — this is already the default
+  # onnx:
+  #   cacheDir: 'C:\custom\onnx-cache' # optional — defaults to <dataDir>/models/onnx/
+  #   numThreads: 4                    # optional — defaults to core-count-aware cap
+```
+
+`config.yaml` — real HTTP sidecar (optional acceleration path, e.g. a GPU-hosted deployment):
 
 ```yaml
 crossEncoder:
   enabled: true
   provider: 'http'
-  topK: 50                                  # candidates considered for rerank
-  timeoutMs: 300                            # hard cap; also the HTTP request's own abort budget
+  topK: 40                                  # candidates considered for rerank
+  timeoutMs: 1500                           # hard cap; also the HTTP request's own abort budget
   sidecarUrl: 'http://127.0.0.1:8081/rerank' # required for provider: 'http'
   model: 'BAAI/bge-reranker-v2-m3'           # optional — forwarded in the request body when set
 ```
@@ -137,9 +164,116 @@ scorer with no semantic value over the existing BM25 leg, so enabling it today w
 budget for no quality gain. It exists so the seam, the eval gate, and the timeout/fallback
 behavior are all exercised and provable without a network dependency.
 
-`provider: 'http'` gives real semantic reranking, but see "Eval-evidence requirement" below before
-flipping the *shipped default* — publishing a recall@10/NDCG@10 delta against your own corpus is
-still the bar for that, even though the client is now implemented.
+`provider: 'onnx'` and `provider: 'http'` both give real semantic reranking, but see
+"Eval-evidence requirement" below before flipping the *shipped default* — publishing a
+recall@10/NDCG@10 (or the retrieval-overhaul plan's token-F1) delta is still the bar for that,
+even though a real local provider now exists with no sidecar required.
+
+## P2: real in-process ONNX cross-encoder (2026-07-20, WT-B)
+
+`OnnxCrossEncoderProvider` (`src/search/onnx-cross-encoder.ts`) is this repo's answer to the gap
+both Codex architecture reviews flagged: "no usable local reranker... the mock is Jaccard overlap;
+the real provider requires an HTTP sidecar" (`docs/research/20260720-codex-architecture-reviews.md`).
+It loads `Xenova/ms-marco-MiniLM-L-6-v2` (sentence-transformers' reference MS MARCO cross-encoder,
+ONNX-exported, ~23MB int8-quantized) via `@huggingface/transformers`, the same library, offline-first
+directory-snapshot loading (`resolveLocalSnapshotDir`, reused from `onnx.ts` — see that function's
+doc comment for the 2026-07-16 outage class this avoids), and CPU-execution-provider-only posture
+(ADR-018) that `OnnxEmbedProvider` already established for embeddings. No sidecar process, no GPU
+allocation, model loads lazily on first rerank call and is memoized for the daemon's lifetime —
+first-call latency was measured at ~2.9s cold (model download + session load) on this repo's own
+dev box; every subsequent call reuses the warm session.
+
+Candidates are batched (`crossEncoder.onnx.batchSize`, default 16 pairs per `model()` call) to
+bound peak memory rather than tokenizing all `topK` candidates in one shot. Scoring is `query +
+atom text + evidence excerpt` when a hit carries an `evidence` field (`buildRerankCandidateText`
+in `rerank.ts`) — today's actual `SearchHit` shape from `search.ts` does not populate `evidence`
+yet, so this degrades to atom text alone until a future change threads `Memory.evidence`
+(`contracts/memory.ts`) through `SearchHit`; the hook is forward-compatible and already tested.
+
+**Weight cache:** shares the same `<dataDir>/models/onnx/` root `onnxEmbed` uses (ADR-018 S2) —
+different HF repo ids nest under distinct subdirectories, so embed and rerank weights coexist
+without collision. Override via `crossEncoder.onnx.cacheDir` or point `crossEncoder.onnx.modelPath`
+at an explicit local snapshot for air-gapped installs (same lookup rule as `onnxEmbed.modelPath` —
+see `resolveLocalSnapshotDir`'s doc comment).
+
+**Timeout:** the original 300ms cap assumed a warm GPU sidecar — unrealistic for CPU-only
+in-process inference. Default raised to 1500ms. The provider logs `device: 'cpu'` +
+`latency_ms` on every call (structured pino log, this repo's only "metrics" surface) so p50/p95
+can be tracked separately from any future GPU-backed `http` sidecar's own numbers.
+
+**A/B evidence (2026-07-20, same store, same day, cheap dev recipe per the retrieval-overhaul
+plan's measurement protocol — conv-26, n=152, gpt-5-mini answerer, token-F1 primary + gpt-5-mini
+llm-judge secondary):**
+
+| | token-F1 cat-avg | llm-judge cat-avg |
+|---|---|---|
+| rerank OFF (baseline) | 0.4016 | 0.4129 |
+| rerank ON (`provider: 'onnx'`) | 0.4232 | 0.4761 |
+| **delta** | **+0.0216** | **+0.0632** |
+
+Both metrics improved on the same store, same day — the token-F1 delta lands at the low end of the
+plan's expected +0.02–0.05 range for P2, and the treatment run's absolute numbers (0.4232 /
+0.4761) beat the previously-recorded Wave-0 baseline (0.4073 / 0.4541) despite the baseline re-run
+on this same day scoring slightly below its own historical number (day-variance, ±6pt/day —
+consistent with the LEDGER's documented variance). Per-category: multi-hop (cat 1) and open-domain
+(cat 3) improved the most; single-hop (cat 4) token-F1 dipped slightly (0.4736 → 0.4509) while its
+llm-judge score also dropped (0.6429 → 0.5857) — plausibly the reranker occasionally demotes an
+already-correct top-1 hit in favor of a lexically-closer but less complete one; worth watching at
+Gate A with the full-suite CoT re-judge, not a reason to revert on this single-conversation sample.
+Reproduce: `bun scripts/eval/locomo/oracle/ab-baseline.mts --datadir <scratch-copy> --rerank
+off|onnx` (the `--rerank` flag is new in this change, threaded through
+`scripts/eval/shared/spawn-daemon.ts`'s existing `EvalCrossEncoderOverride`).
+
+This is preliminary, single-track evidence — see "Eval-evidence requirement" below for why the
+shipped default (`crossEncoder.enabled`) is NOT flipped by this change despite the positive result.
+
+## topK tuning + model swap (2026-07-20, same-day follow-up to the WT-B A/B above)
+
+Same measurement protocol as the A/B evidence above (cheap dev recipe: conv-26, n=152,
+gpt-5-mini answerer, token-F1 primary + gpt-5-mini llm-judge secondary, scratch copy of the same
+pre-ingested store, single day — so these deltas are comparable to each other but NOT
+directly comparable across different days to the WT-B numbers above, which is why the first row
+here re-anchors rerank-off/on at the (then-current) default topK 50):
+
+| variant | token-F1 cat-avg | llm-judge cat-avg | multi-hop (cat 1) f1 / judge |
+|---|---|---|---|
+| rerank OFF (anchor) | 0.3938 | 0.4075 | 0.2669 / 0.2188 |
+| rerank ON, onnx, topK=50 (then-default) | 0.4163 | 0.4811 | 0.2668 / 0.2500 |
+| rerank ON, onnx, **topK=40** | **0.4115** | **0.4907** | **0.2849 / 0.2813** |
+| rerank ON, onnx, topK=100 | 0.3910 | 0.4683 | 0.2771 / 0.2813 |
+| rerank ON, onnx, `bge-reranker-base`, topK=40 | 0.3870 | 0.3968 | 0.2218 / 0.1563 |
+
+**topK=40 is the new default** (`defaultConfig()`, `src/config/config.ts`): best llm-judge
+cat-avg of the sweep, token-F1 essentially tied with topK=50 (within day-to-day noise), and
+clearly the best multi-hop result — topK 50/100 leave multi-hop llm-judge well below topK=40's
+0.2813. topK=100 is a **net regression vs. even the rerank-OFF baseline on token-F1** (0.3910 <
+0.3938) — a wider candidate pool pulls in more distractors than it resolves, confirming the P2
+plan's 40-60 target window should be read as "don't go wider," not "40-60 are interchangeable."
+
+**Model swap (`Xenova/bge-reranker-base`, XLM-RoBERTa, ~266MB q8 vs MiniLM-L-6's ~23MB) is a
+clear loss, not just "not worth the size":** worse on both metrics than even the un-reranked
+baseline, AND 5 of 152 `/recall` requests hit the route's own 30s `handler_deadline_exceeded`
+timeout during this run — the larger model's per-batch CPU inference latency pushed some
+requests past the whole-request budget (separate from, and outside, `crossEncoder.timeoutMs`,
+which only bounds the rerank sub-call). The reported bge-reranker-base numbers are therefore
+UNDERSTATED (5 abstentions scored as wrong), but the size/latency evidence alone already rules
+it out for this repo's "compact local cross-encoder" posture — kept in
+`RERANK_MODEL_REGISTRY` (`src/search/onnx-rerank-registry.ts`) as an evaluated, addressable
+option (`crossEncoder.model: 'bge-reranker-base'`), not a recommendation.
+
+**Not done here — the evidence-excerpt hook is still inert:** `buildRerankCandidateText`
+(`rerank.ts`) already appends `hit.evidence` to the text scored against the query when present,
+but `SearchHit` (`search.ts`) never populates `evidence` today, so every rerank call in this
+sweep scored atom text alone. Threading `Memory.evidence` (`contracts/memory.ts`) through
+`SearchHit` is a `search.ts` change — out of this runbook's ownership — but is a plausible next
+lever: the P2 plan's own rationale for the hook was that a reranker judging query-vs-full-atom
+text is a strictly worse signal than query-vs-the-specific-evidence-span an atom was extracted
+from.
+
+Reproduce: `bun scripts/eval/locomo/oracle/ab-baseline.mts --datadir <scratch-copy> --rerank
+onnx` after editing `defaultConfig().crossEncoder.topK`/`model` in `src/config/config.ts` (the
+`--rerank` flag only toggles `enabled`/`provider` via `EvalCrossEncoderOverride` — it does not
+carry `topK` or `model`, so a topK/model sweep edits the default and rebuilds between passes).
 
 ## HTTP provider — endpoint contract
 
@@ -213,20 +347,26 @@ are operator/deployment decisions outside this repo's code.
   the full candidate pool, so both latency and sidecar compute cost scale with `topK`, not corpus
   size — and, for the HTTP provider, `texts` payload size scales with `topK` too.
 
-## Sidecar vs. embedded model (FEAT-452 decision)
+## Sidecar vs. embedded model (FEAT-452 decision — SUPERSEDED by P2, 2026-07-20)
 
 FEAT-452 raised an open product question: does the already-shipped `HttpCrossEncoderProvider`
 talking to a `127.0.0.1` sidecar actually satisfy astramem-local's "local-only, no-cloud-moat"
 goal, or is an embedded in-process model (e.g. `bge-reranker-v2-m3` run directly via
-Ollama/ONNX, no separate process) required? **Decision: the `127.0.0.1` HTTP sidecar already
-satisfies the local-only requirement — all inference stays on the operator's own machine, no
-network hop ever leaves `localhost`, and nothing about "local-only" implies "same process as the
-daemon."** An embedded in-process model is explicitly **deferred, not planned**: it would trade a
-one-time sidecar setup (documented above under "Running a sidecar") for daemon binary size,
-model-loading startup cost on every daemon boot, and CPU contention with the daemon's own event
-loop, for zero improvement to the actual constraint (data never leaving the local machine) that
-motivated the "local-only" goal in the first place. Revisit only if a concrete operator pain point
-with running a separate sidecar process ever surfaces — none has today.
+Ollama/ONNX, no separate process) required? At the time: "the `127.0.0.1` HTTP sidecar already
+satisfies the local-only requirement... An embedded in-process model is explicitly deferred, not
+planned... Revisit only if a concrete operator pain point with running a separate sidecar process
+ever surfaces."
+
+**That pain point surfaced: the retrieval overhaul plan's Codex architecture reviews both
+independently flagged "no usable local reranker... the mock is Jaccard overlap; the real provider
+requires an HTTP sidecar" as a real gap** (`docs/research/20260720-codex-architecture-reviews.md`)
+— an operator who wants real reranking without standing up a separate Docker/TEI process had no
+path. `provider: 'onnx'` (P2, 2026-07-20 — see "P2: real in-process ONNX cross-encoder" above)
+closes it: model-loading startup cost is now lazy (first `score()` call, not daemon boot) and
+memoized, and the model is small enough (~23MB) that daemon binary size / CPU contention concerns
+from the original FEAT-452 decision don't materialize the way they might for a multi-hundred-MB
+model. The `http` sidecar path remains fully supported as an *optional acceleration* (e.g. a
+GPU-hosted deployment for higher throughput), not the only real implementation anymore.
 
 ## Rollback
 
@@ -256,14 +396,26 @@ This is necessary but **not sufficient** evidence to ever flip the *shipped defa
 the mock provider carries no real semantic signal, so "floors still hold with rerank on" here only
 proves the stage doesn't silently break search — it says nothing about whether reranking with a
 *real* cross-encoder would improve or regress ranking quality on real queries. `HttpCrossEncoderProvider`
-being implemented removes the *engineering* blocker, but not this evidence bar. Before any future
-PR proposes flipping the shipped default to `provider: 'http'` / `enabled: true`:
+and (as of P2) `OnnxCrossEncoderProvider` being implemented removes the *engineering* blocker, but
+not this evidence bar. Before any future PR proposes flipping the shipped default to
+`provider: 'onnx'` / `'http'` / `enabled: true`:
 
-1. Stand up a sidecar (see "Running a sidecar" above) against a representative corpus.
-2. Re-run the ADR-005 eval harness with `provider: 'http'` configured and publish the
-   recall@10/NDCG@10 delta versus the rerank-off baseline (the same "publish the NDCG delta" gate
-   ADR-005 imposed on cloud's rollout). The harness only exercises the mock provider today
-   (deterministic, no live sidecar dependency in CI); a real-provider run is a manual/ad-hoc
-   evaluation against your own sidecar, not something CI can gate on without a live dependency.
+1. For `http`: stand up a sidecar (see "Running a sidecar" above) against a representative corpus.
+   For `onnx`: no separate process needed — the model loads on first use.
+2. Re-run the ADR-005 eval harness (recall@10/NDCG@10) AND/OR the retrieval-overhaul plan's
+   token-F1 dev recipe against a representative corpus, and publish the delta versus the
+   rerank-off baseline (the same "publish the delta" gate ADR-005 imposed on cloud's rollout). The
+   ADR-005 harness only exercises the mock provider today (deterministic, no live model/sidecar
+   dependency in CI); a real-provider run is a manual/ad-hoc evaluation, not something CI can gate
+   on without a live dependency.
 3. Only then is there a data-backed case for changing `crossEncoder.enabled` / `provider`'s
    default.
+
+**P2 status (2026-07-20, WT-B):** step 2 has a first data point — see "P2: real in-process ONNX
+cross-encoder" above for the measured token-F1/llm-judge delta (+0.0216 / +0.0632, one conversation,
+one day). This is real, positive, single-track evidence, but it is deliberately **not** treated as
+satisfying this gate on its own: the retrieval-overhaul plan's Gate A (after all three Wave-1
+tracks — hybrid+RRF fusion, this reranker, distill/graph — merge) is where the shipped default gets
+decided, using the full-suite CoT re-judge, not a single track's own conv-26 sample. `defaultConfig()`
+still ships `crossEncoder.enabled: false` after this change; only `provider` changed (mock -> onnx)
+so that an operator who DOES opt in gets the real reranker, not the semantically-inert mock.

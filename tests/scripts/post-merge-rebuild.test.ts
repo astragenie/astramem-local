@@ -43,6 +43,10 @@ function initFixtureRepo(dir: string): void {
   writeFileSync(join(dir, 'README.md'), 'hello\n', 'utf8');
   git(dir, ['add', '.']);
   git(dir, ['commit', '-q', '-m', 'init']);
+  // Deterministically name the default branch 'main' (a deploy branch) so the
+  // FEAT-439 gate's deploy-vs-feature behavior doesn't depend on the host git's
+  // init.defaultBranch setting; feature-branch tests check out explicitly.
+  git(dir, ['branch', '-m', 'main']);
 }
 
 /** Merges a feature branch touching `relPath` into the current branch —
@@ -73,6 +77,25 @@ describe('post-merge-rebuild.mjs — touchesWatchedPaths (FEAT-439 AC-1)', () =>
 
   it('WATCHED_PREFIXES is exactly the two documented dirs', () => {
     expect(mod.WATCHED_PREFIXES).toEqual(['migrations/', 'src/storage/']);
+  });
+});
+
+describe('post-merge-rebuild.mjs — isDeployBranch (FEAT-439 gate)', () => {
+  it('main / master / release-* are deploy branches', () => {
+    expect(mod.isDeployBranch('main')).toBe(true);
+    expect(mod.isDeployBranch('master')).toBe(true);
+    expect(mod.isDeployBranch('release/0.21')).toBe(true);
+  });
+
+  it('feature / track branches are NOT deploy branches (the incident class)', () => {
+    expect(mod.isDeployBranch('feat/retrieval-overhaul')).toBe(false);
+    expect(mod.isDeployBranch('track/b')).toBe(false);
+    expect(mod.isDeployBranch('')).toBe(false);
+    expect(mod.isDeployBranch(null)).toBe(false);
+  });
+
+  it('force (ASTRA_POST_MERGE_FORCE=1) overrides any branch', () => {
+    expect(mod.isDeployBranch('feat/x', { force: true })).toBe(true);
   });
 });
 
@@ -164,4 +187,17 @@ describe('post-merge-rebuild.mjs — main() (FEAT-439 AC-3/AC-4)', () => {
     mod.main(dir);
     expect(stderrOutput).toContain('migrations/ or src/storage/ changed — rebuilding');
   }, 30_000);
+
+  it('FEAT-439 gate: a migration merge on a NON-deploy (feature) branch SKIPS auto-reinstall', () => {
+    initFixtureRepo(dir);
+    git(dir, ['checkout', '-q', '-b', 'feat/gate-fixture']);
+    mergeBranchTouching(dir, 'migrations/100-fixture.sql', '-- fixture\n');
+    expect(() => mod.main(dir)).not.toThrow();
+    expect(stderrOutput).toContain('SKIPPING auto-reinstall (FEAT-439 gate)');
+    // The gate must short-circuit BEFORE the rebuild path — no rebuild attempt,
+    // no marker written (the exact 2026-07-23 incident: a feature-branch merge
+    // with a migration auto-reinstalling prod).
+    expect(stderrOutput).not.toContain('changed — rebuilding');
+    expect(existsSync(join(dir, '.git', 'astramem-post-merge-last-rebuilt-sha'))).toBe(false);
+  }, GIT_SPAWN_TIMEOUT_MS);
 });

@@ -22,6 +22,11 @@
  * Ollama legitimately owns would nuke a running model mid-inference. Checks
  * below only ever report PIDs and print the command the OPERATOR can choose
  * to run themselves.
+ *
+ * Consumed by both `cli/doctor.ts` (manual run) and `doctor/schedule.ts`'s
+ * `extraChecks()` — tier-split by each check's own `tier` field: "Ollama
+ * tuning env vars" rides the 15-min frequent schedule, the other two ride
+ * only the >=24h full-tier piggyback tick.
  */
 import { platform } from 'node:os';
 import type { Check, CheckResult } from './types.js';
@@ -139,13 +144,12 @@ function checkOrphanedLlamaServer(opts: {
 }): Check {
   return {
     name: 'Orphaned llama-server processes',
-    // Not wired into getChecks()/coreChecks() — cli/doctor.ts combines this
-    // registry separately, outside schedule.ts's frequent/full split, so
-    // this tier value is currently inert for the 15-minute loop. Classified
-    // 'full' on its own merits regardless (network call to Ollama's
-    // /api/ps + an nvidia-smi subprocess spawn + OS process enumeration) so
-    // it can't silently start riding the frequent tier if this registry is
-    // ever folded into getChecks() later.
+    // Not part of getChecks()/coreChecks() — cli/doctor.ts combines this
+    // registry separately, and schedule.ts's extraChecks() folds it into the
+    // full tier ONLY (>=24h piggyback tick), by this same `tier` field (see
+    // schedule.ts's module doc comment): a network call to Ollama's
+    // /api/ps + an nvidia-smi subprocess spawn + OS process enumeration —
+    // never the 15-minute frequent loop.
     tier: 'full',
     async run(): Promise<CheckResult> {
       let procs: ProcessInfo[] | null;
@@ -227,7 +231,7 @@ function checkSilentCpuOffload(opts: {
 }): Check {
   return {
     name: 'Silent CPU offload',
-    tier: 'full', // network call to Ollama's /api/ps — see checkOrphanedLlamaServer's tier comment above
+    tier: 'full', // full tier only (schedule.ts's extraChecks()) — network call to Ollama's /api/ps, see checkOrphanedLlamaServer's tier comment above
     async run(): Promise<CheckResult> {
       let models: OllamaPsModel[] | null;
       try {
@@ -289,7 +293,7 @@ function checkOllamaTuningEnvVars(opts: {
 }): Check {
   return {
     name: 'Ollama tuning env vars',
-    tier: 'cheap', // local registry/env read only, no network — see checkOrphanedLlamaServer's tier comment above
+    tier: 'cheap', // frequent tier too (schedule.ts's extraChecks()) — local registry/env read only, no network
     async run(): Promise<CheckResult> {
       let persisted: Map<string, PersistedEnvValue> | null;
       try {

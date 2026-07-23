@@ -97,8 +97,11 @@ export interface IsolatedEvalEnv {
 export interface EvalCrossEncoderOverride {
   enabled: boolean;
   /** Default 'mock' (the deterministic Jaccard stand-in, no network/model —
-   *  see rerank.ts's header) if omitted. */
-  provider?: 'mock' | 'http';
+   *  see rerank.ts's header) if omitted. `'onnx'` (P2 retrieval overhaul,
+   *  2026-07-20) selects the real in-process cross-encoder
+   *  (`src/search/onnx-cross-encoder.ts`) — the sandbox daemon downloads/
+   *  loads it on first rerank call the same way it would in production. */
+  provider?: 'mock' | 'http' | 'onnx';
 }
 
 /** Same override-or-default resolution `makeIsolatedEvalEnv` applies,
@@ -174,7 +177,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number; normalization?: 'minmax' | 'winsorized' },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -239,11 +242,21 @@ export function makeIsolatedEvalEnv(
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
   }
+  // Score-phase Track I A/B (2026-07-23, eval-only lever — src/config/config.ts
+  // already ships the real `search.normalization` key; this harness previously
+  // had no way to flip it per-sandbox). Additive: omitted writes byte-identical
+  // config.yaml to before this option existed (search.normalization stays at
+  // defaultConfig()'s 'minmax').
+  if (opts?.normalization !== undefined) {
+    configLines.push('search:', `  normalization: ${opts.normalization}`);
+  }
   // multiHop (WS6 decompose) override — top-level, mirrors crossEncoder. OFF by
   // default in defaultConfig(); the LoCoMo v2 plan A/Bs flipping it on since no
   // archived run ever measured the #266-fixed decomposer on real questions.
   if (opts?.multiHop !== undefined) {
     configLines.push('multiHop:', `  enabled: ${opts.multiHop.enabled}`);
+    if (opts.multiHop.provider !== undefined) configLines.push(`  provider: ${opts.multiHop.provider}`);
+    if (opts.multiHop.timeoutMs !== undefined) configLines.push(`  timeoutMs: ${opts.multiHop.timeoutMs}`);
   }
   if (opts?.extractProfile !== undefined || opts?.extractionPasses !== undefined || opts?.compactionMode !== undefined || opts?.extractionPassB !== undefined || opts?.maxChunkChars !== undefined) {
     configLines.push('distill:');

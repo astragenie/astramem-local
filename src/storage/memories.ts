@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DB } from './db.js';
 import type { Memory, MemoryScope, MemoryType } from '../contracts/index.js';
 import type { MemoryEventRepo } from './memory-events.js';
+import { chunkedIn } from './sql-utils.js';
 
 export interface InsertInput {
   type: MemoryType;
@@ -131,6 +132,22 @@ export interface InsertInput {
    * ever passes an explicit `true`/`false` here.
    */
   evidence_supported?: boolean | null;
+  /**
+   * Retrieval-overhaul Phase 5 (storage half, migration 057) — structured
+   * source-provenance for `evidence`, computed by
+   * src/distill/locate-evidence.ts and passed straight through by stage 8
+   * (src/distill/stages/08-embed-index.ts). All four fields travel together
+   * — the caller either supplies a full `EvidenceLocation` or omits the
+   * whole group; there is no partial-population case. `undefined` (every
+   * pre-Phase-5 caller: `/remember`, MCP `remember`, the eval harness, and
+   * any distill-pipeline atom whose evidence didn't locate) inserts NULL
+   * for all four, byte-identical to pre-Phase-5 behavior. See
+   * Memory.evidence_turn_index's doc comment for the full field rationale.
+   */
+  evidence_turn_index?: number | null;
+  evidence_char_start?: number | null;
+  evidence_char_end?: number | null;
+  evidence_span?: string | null;
 }
 
 /** Raw DB row shape — derived_from is stored as a JSON string (hydrated to
@@ -250,8 +267,9 @@ export class MemoryRepo {
         (id, type, text, normalized_text, repo, project, branch, agent, session_id,
          importance, confidence, hash, embedding_provider, embedding_model, embedding_dim,
          created_at, updated_at, source_hash, evidence, valid_from, valid_to, scope, capture_source,
-         validity_extracted, speaker_label, consent_disclosed, evidence_supported)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         validity_extracted, speaker_label, consent_disclosed, evidence_supported,
+         evidence_turn_index, evidence_char_start, evidence_char_end, evidence_span)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.type, input.text, input.normalized_text,
       input.repo, input.project, input.branch, input.agent, input.session_id,
@@ -262,6 +280,8 @@ export class MemoryRepo {
       input.speaker_label ?? null,
       input.consent_disclosed === undefined || input.consent_disclosed === null ? null : (input.consent_disclosed ? 1 : 0),
       input.evidence_supported === undefined || input.evidence_supported === null ? null : (input.evidence_supported ? 1 : 0),
+      input.evidence_turn_index ?? null, input.evidence_char_start ?? null,
+      input.evidence_char_end ?? null, input.evidence_span ?? null,
     );
     return id;
   }
@@ -269,6 +289,24 @@ export class MemoryRepo {
   get(id: string): Memory | null {
     const row = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | undefined;
     return row ? MemoryRepo.hydrate(row) : null;
+  }
+
+  /**
+   * Batched sibling of `get()` — one (or, past chunkedIn's batch size, a
+   * few) `IN (...)` query instead of one `SELECT` per id, for callers
+   * resolving a whole id set at once (e.g. MCP `get_entity_timeline`, which
+   * used to `.map(mid => memRepo.get(mid))` over every linked memory id —
+   * an N+1 on a hot read path). Order is NOT guaranteed to match `ids` —
+   * callers that need a specific order (e.g. newest-first) must sort the
+   * result themselves. Rows that don't exist are silently omitted, same as
+   * `get()` returning `null` for a missing id.
+   */
+  getMany(ids: string[]): Memory[] {
+    if (ids.length === 0) return [];
+    const rows = chunkedIn(ids, (batch, ph) =>
+      this.db.prepare(`SELECT * FROM memories WHERE id IN (${ph})`).all(...batch) as MemoryRow[],
+    );
+    return rows.map(MemoryRepo.hydrate);
   }
 
   /** Parse the JSON-stored derived_from column into a string[] | null. */

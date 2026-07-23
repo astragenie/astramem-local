@@ -1,0 +1,533 @@
+[
+  {
+    "qa_id": "conv-26#11",
+    "q": "Where did Caroline move from 4 years ago?",
+    "a": "Sweden",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#110",
+    "q": "What kind of pot did Mel and her kids make with clay?",
+    "a": "a cup with a dog face on it",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "NO"
+  },
+  {
+    "qa_id": "conv-26#112",
+    "q": "What did Mel and her kids paint in their latest project in July 2023?",
+    "a": "a sunset with a palm tree",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "NO"
+  },
+  {
+    "qa_id": "conv-26#113",
+    "q": "What did Caroline see at the council meeting for adoption?",
+    "a": "many people wanting to create loving homes for children in need",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#116",
+    "q": "What inspired Caroline's painting for the art show?",
+    "a": "visiting an LGBTQ center and wanting to capture unity and strength",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#121",
+    "q": "Who performed at the concert at Melanie's daughter's birthday?",
+    "a": "Matt Patterson",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#125",
+    "q": "Where did Oliver hide his bone once?",
+    "a": "In Melanie's slipper",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#135",
+    "q": "What setback did Melanie face in October 2023?",
+    "a": "She got hurt and had to take a break from pottery.",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#137",
+    "q": "What painting did Melanie show to Caroline on October 13, 2023?",
+    "a": "A painting inspired by sunsets with a pink sky.",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#138",
+    "q": "What kind of painting did Caroline share with Melanie on October 13, 2023?",
+    "a": "An abstract painting with blue streaks on a wall.",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#140",
+    "q": "What did the posters at the poetry reading say?",
+    "a": "\"Trans Lives Matter\"",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "NO"
+  },
+  {
+    "qa_id": "conv-26#142",
+    "q": "How do Melanie and Caroline describe their journey through life together?",
+    "a": "An ongoing adventure of learning and growing.",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#144",
+    "q": "How did Melanie's son handle the accident?",
+    "a": "He was scared but reassured by his family",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#145",
+    "q": "How did Melanie feel about her family after the accident?",
+    "a": "They are important and mean the world to her",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#147",
+    "q": "How did Melanie feel after the accident?",
+    "a": "Grateful and thankful for her family",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#148",
+    "q": "What was Melanie's reaction to her children enjoying the Grand Canyon?",
+    "a": "She was happy and thankful",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#150",
+    "q": "How did Melanie feel about her family supporting her?",
+    "a": "She appreciated them a lot",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#2",
+    "q": "What fields would Caroline be likely to pursue in her educaton?",
+    "a": "Psychology, counseling certification",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "NO"
+  },
+  {
+    "qa_id": "conv-26#22",
+    "q": "Would Caroline likely have Dr. Seuss books on her bookshelf?",
+    "a": "Yes, since she collects classic children's books",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#24",
+    "q": "What does Melanie do to destress?",
+    "a": "Running, pottery",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#26",
+    "q": "When did Melanie read the book \"nothing is impossible\"?",
+    "a": "2022",
+    "cat": 2,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#27",
+    "q": "Would Caroline pursue writing as a career option?",
+    "a": "LIkely no; though she likes reading, she wants to be a counselor",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#30",
+    "q": "Would Melanie be considered a member of the LGBTQ community?",
+    "a": "Likely no, she does not refer to herself as part of it",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#32",
+    "q": "What LGBTQ+ events has Caroline participated in?",
+    "a": "Pride parade, school speech, support group",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#33",
+    "q": "When did Caroline go to a pride parade during the summer?",
+    "a": "The week before 3 July 2023",
+    "cat": 2,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#34",
+    "q": "What events has Caroline participated in to help children?",
+    "a": "Mentoring program, school speech",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#35",
+    "q": "When did Melanie go camping in July?",
+    "a": "two weekends before 17 July 2023",
+    "cat": 2,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#37",
+    "q": "What did Melanie paint recently?",
+    "a": "sunset",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#38",
+    "q": "What activities has Melanie done with her family?",
+    "a": "Pottery, painting, camping, museum, swimming, hiking",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#39",
+    "q": "In what ways is Caroline participating in the LGBTQ community?",
+    "a": "Joining activist group, going to pride parades, participating in an art show, mentoring program",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#4",
+    "q": "What is Caroline's identity?",
+    "a": "Transgender woman",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#40",
+    "q": "How many times has Melanie gone to the beach in 2023?",
+    "a": "2",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#43",
+    "q": "What kind of art does Caroline make?",
+    "a": "abstract art",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#5",
+    "q": "When did Melanie run a charity race?",
+    "a": "The sunday before 25 May 2023",
+    "cat": 2,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "NO"
+  },
+  {
+    "qa_id": "conv-26#50",
+    "q": "What would Caroline's political leaning likely be?",
+    "a": "Liberal",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#51",
+    "q": "What has Melanie painted?",
+    "a": "Horse, sunset, sunrise",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#56",
+    "q": "What symbols are important to Caroline?",
+    "a": "Rainbow flag, transgender symbol",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "NO"
+  },
+  {
+    "qa_id": "conv-26#59",
+    "q": "Would Caroline be considered religious?",
+    "a": "Somewhat, but not extremely religious",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#65",
+    "q": "What are some changes Caroline has faced during her transition journey?",
+    "a": "Changes to her body, losing unsupportive friends",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#66",
+    "q": "What does Melanie do with her family on hikes?",
+    "a": "Roast marshmallows, tell stories",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#68",
+    "q": "How long has Melanie been practicing art?",
+    "a": "Since 2016",
+    "cat": 2,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#69",
+    "q": "What personality traits might Melanie say Caroline has?",
+    "a": "Thoughtful, authentic, driven",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#7",
+    "q": "What is Caroline's relationship status?",
+    "a": "Single",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#70",
+    "q": "What transgender-specific events has Caroline attended?",
+    "a": "Poetry reading, conference",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#71",
+    "q": "What book did Melanie read from Caroline's suggestion?",
+    "a": "\"Becoming Nicole\"",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#72",
+    "q": "When did Melanie's friend adopt a child?",
+    "a": "2022",
+    "cat": 2,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#74",
+    "q": "When did Melanie's family go on a roadtrip?",
+    "a": "The weekend before 20 October 2023",
+    "cat": 2,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#75",
+    "q": "How many children does Melanie have?",
+    "a": "3",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#77",
+    "q": "Would Melanie go on another roadtrip soon?",
+    "a": "Likely no; since this one went badly",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#78",
+    "q": "What items has Melanie bought?",
+    "a": "Figurines, shoes",
+    "cat": 1,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#81",
+    "q": "Would Caroline want to move back to her home country soon?",
+    "a": "No; she's in the process of adopting children.",
+    "cat": 3,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "NO"
+  },
+  {
+    "qa_id": "conv-26#84",
+    "q": "How does Melanie prioritize self-care?",
+    "a": "by carving out some me-time each day for activities like running, reading, or playing the violin",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#85",
+    "q": "What are Caroline's plans for the summer?",
+    "a": "researching adoption agencies",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#87",
+    "q": "Why did Caroline choose the adoption agency?",
+    "a": "because of their inclusivity and support for LGBTQ+ individuals",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#88",
+    "q": "What is Caroline excited about in the adoption process?",
+    "a": "creating a family for kids who need one",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#89",
+    "q": "What does Melanie think about Caroline's decision to adopt?",
+    "a": "she thinks Caroline is doing something amazing and will be an awesome mom",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#94",
+    "q": "What is Melanie's hand-painted bowl a reminder of?",
+    "a": "art and self-expression",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  },
+  {
+    "qa_id": "conv-26#95",
+    "q": "What did Melanie and her family do while camping?",
+    "a": "explored nature, roasted marshmallows, and went on a hike",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "YES",
+    "inTranscript": "n/a"
+  },
+  {
+    "qa_id": "conv-26#98",
+    "q": "What was discussed in the LGBTQ+ counseling workshop?",
+    "a": "therapeutic methods and how to best work with trans people",
+    "cat": 4,
+    "sid": "conv-26",
+    "inStore": "NO",
+    "inTranscript": "YES"
+  }
+]

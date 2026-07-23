@@ -6,6 +6,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT_V2,
   EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
   EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
 } from '../../../src/distill/prompts/extract.js';
 
@@ -135,6 +136,44 @@ describe('resolveExtractionPrompt', () => {
     expect(resolveExtractionPrompt('engineering', '')).toBe(EXTRACTION_SYSTEM_PROMPT_V3);
     expect(resolveExtractionPrompt('engineering', 'not-a-real-value')).toBe(EXTRACTION_SYSTEM_PROMPT_V3);
   });
+
+  // Wave-5 extraction-score track (2026-07-23): conv-spkbal is a NEW A/B
+  // variant (speaker-balance checklist appended to the conversational base
+  // prompt), selected the same way conv-liberal already is — an explicit
+  // env override, never the default, and it must win regardless of profile
+  // (same "regardless of profile" semantics as every other override above).
+  it("ASTRA_EXTRACT_PROMPT=conv-spkbal resolves to the speaker-balance variant, regardless of profile", () => {
+    expect(resolveExtractionPrompt('conversational', 'conv-spkbal')).toBe(
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
+    );
+    expect(resolveExtractionPrompt('engineering', 'conv-spkbal')).toBe(
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
+    );
+    expect(resolveExtractionPrompt(undefined, 'conv-spkbal')).toBe(
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
+    );
+  });
+
+  it('conv-spkbal is never the default — no profile/env combination other than the explicit override selects it', () => {
+    expect(resolveExtractionPrompt('conversational', undefined)).not.toBe(
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
+    );
+    expect(resolveExtractionPrompt(undefined, undefined)).not.toBe(
+      EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
+    );
+  });
+
+  it('conv-spkbal is additive: it starts with the byte-identical base conversational prompt (frozen bytes untouched)', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL.startsWith(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL)).toBe(true);
+  });
+
+  it('conv-spkbal contains an explicit per-speaker count-balance rule, not just a restated "both speakers" reminder', () => {
+    // Countable tally language, not vague "consider both speakers" wording —
+    // the whole point of this variant is a check, not a restatement.
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL).toMatch(/SPEAKER BALANCE CHECK/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL).toMatch(/TALLY ATOMS PER SPEAKER/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL.toLowerCase()).toContain('re-scan');
+  });
 });
 
 // SLICE-433 AC-5/AC-6: the v3 prompt states the type-conditioned richness
@@ -241,13 +280,24 @@ describe('EXTRACTION_SYSTEM_PROMPT_V3 content', () => {
     expect(EXTRACTION_SYSTEM_PROMPT_V3).toMatch(/NEGATIVE COUNTER-EXAMPLE/);
   });
 
-  // FEAT-479's conversational profile (SLICE-434) is NOT extended with
-  // relations[] — design doc §2.5 scopes the prompt addition to the shared
-  // engineering skeleton only; no direction to also add it to the
-  // conversational profile.
-  it('does NOT add relations[] to the conversational profile', () => {
-    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/"relations"/);
-    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).not.toMatch(/relations\[\]/);
+  // UPDATE (retrieval-overhaul Phase 6, 2026-07-20): this used to assert the
+  // OPPOSITE — that the conversational profile deliberately did NOT get
+  // relations[]. Codex's architecture review measured that omission as the
+  // direct cause of the entity graph being near-empty (LoCoMo/personal
+  // transcripts are overwhelmingly conversational-profile), so P6a extends
+  // this profile with the SAME closed predicate enum the engineering (V3)
+  // prompt already uses — see EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL's own
+  // "Relations" section.
+  it('adds relations[] to the conversational profile using the same closed predicate enum', () => {
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/"relations"/);
+    for (const predicate of [
+      'uses', 'depends_on', 'replaces', 'supersedes', 'mentions',
+      'relates_to', 'part_of', 'owned_by', 'assigned_to', 'created_by', 'other',
+    ]) {
+      expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toContain(predicate);
+    }
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/MUST each be a name that ALSO appears in this/);
+    expect(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL).toMatch(/Possessor qualification/);
   });
 
   it('includes a negative (WRONG vs RIGHT) example demonstrating the contextless-trivia failure mode', () => {

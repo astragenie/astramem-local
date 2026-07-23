@@ -172,6 +172,10 @@ export interface GroundDatesResult {
   errors: number;
   /** Total atoms considered — the denominator for a fire-rate measurement. */
   totalAtoms: number;
+  /** True iff `maxWallClockMs` tripped before every candidate atom got a
+   *  call — distinguishes "ran out of time" from "ran out of candidates" the
+   *  same way consolidate.ts's `contradictionWallClockCapReached` does. */
+  wallClockCapReached: boolean;
 }
 
 export interface GroundDatesOptions {
@@ -182,10 +186,26 @@ export interface GroundDatesOptions {
    * is cheap insurance against a pathological transcript, not a routine
    * limiter. Mirrors consolidate.ts's maxPerRun call-count cap (FEAT-482). */
   maxCalls?: number;
+  /**
+   * FEAT-482 fold (worker-starvation wave): wall-clock cap (ms) on the
+   * ENTIRE grounding sweep within one `groundAtomDates()` invocation —
+   * mirrors consolidate.ts's dual-cap shape (contradiction-judge.ts /
+   * dup-judge.ts's `maxPerRun` + `maxWallClockMs`). `maxCalls` alone bounds
+   * CALL COUNT, not TIME: a slow or rate-limited provider can still stall a
+   * distill job well past what `maxCalls` alone protects against if each
+   * call is slow enough — the exact FEAT-482 incident shape (~245 calls at
+   * ~13/min against a throttled endpoint, 10+ minutes, not a count
+   * problem). Once exceeded, remaining candidate atoms fall through
+   * UNCHANGED — same fail-open contract as the `maxCalls` cap, never a
+   * partial/guessed resolution. Default 300_000 (5 min), matching
+   * contradictionDetection/dupJudge/atomTriage/gatekeeper's shared default.
+   */
+  maxWallClockMs?: number;
   log?: (message: string) => void;
 }
 
 const DEFAULT_MAX_CALLS = 50;
+const DEFAULT_MAX_WALL_CLOCK_MS = 300_000;
 
 /**
  * Runs the date-grounding retry over a reduced atom list. `sessionDateIso`
@@ -202,15 +222,19 @@ export async function groundAtomDates(
 ): Promise<GroundDatesResult> {
   const log = opts.log ?? ((message: string) => console.warn(message));
   const maxCalls = opts.maxCalls ?? DEFAULT_MAX_CALLS;
+  const maxWallClockMs = opts.maxWallClockMs ?? DEFAULT_MAX_WALL_CLOCK_MS;
 
   if (!sessionDateIso) {
-    return { atoms, fired: 0, resolved: 0, errors: 0, totalAtoms: atoms.length };
+    return { atoms, fired: 0, resolved: 0, errors: 0, totalAtoms: atoms.length, wallClockCapReached: false };
   }
 
+  const startedAt = Date.now();
   let fired = 0;
   let resolved = 0;
   let errors = 0;
   let cappedWarned = false;
+  let wallClockCapReached = false;
+  let wallClockWarned = false;
   const out: ReducedAtom[] = [];
 
   for (const atom of atoms) {
@@ -224,6 +248,21 @@ export async function groundAtomDates(
       if (isCandidate && !cappedWarned) {
         cappedWarned = true;
         log(`[date-grounding-retry] maxCalls (${maxCalls}) reached — remaining matching atoms left ungrounded`);
+      }
+      out.push(atom);
+      continue;
+    }
+
+    // Wall-clock cap: checked BEFORE each call, mirroring
+    // DupJudgeRunTracker/AtomTriageRunTracker's shouldStop() shape — bounds
+    // worst-case duration against a slow/rate-limited provider, which
+    // maxCalls alone cannot (FEAT-482 lesson).
+    const elapsed = Date.now() - startedAt;
+    if (elapsed >= maxWallClockMs) {
+      wallClockCapReached = true;
+      if (isCandidate && !wallClockWarned) {
+        wallClockWarned = true;
+        log(`[date-grounding-retry] maxWallClockMs (${maxWallClockMs}ms) reached after ${elapsed}ms — remaining matching atoms left ungrounded`);
       }
       out.push(atom);
       continue;
@@ -249,7 +288,7 @@ export async function groundAtomDates(
     }
   }
 
-  return { atoms: out, fired, resolved, errors, totalAtoms: atoms.length };
+  return { atoms: out, fired, resolved, errors, totalAtoms: atoms.length, wallClockCapReached };
 }
 
 async function resolveOne(

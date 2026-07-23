@@ -5,14 +5,10 @@ import { getHardeningChecks } from '../doctor/hardening-checks.js';
 import { getGpuChecks } from '../doctor/gpu-checks.js';
 import { runChecks, formatTable, formatJson } from '../doctor/runner.js';
 import { isLoopbackHost } from '../server/lib/network.js';
+import { parseArg } from './arg-parse.js';
 
 function parseFlag(args: string[], flag: string): boolean {
   return args.includes(flag);
-}
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
 }
 
 export async function doctorCommand(args: string[]): Promise<void> {

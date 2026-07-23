@@ -35,11 +35,7 @@ import { startProxyServer } from '../proxy/server.js';
 import { createProxyCaptureTee } from '../capture/proxy.js';
 import { PKG_VERSION } from '../server/lib/wire-meta.js';
 import { ts } from '../log/logger.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 export async function proxyCommand(rest: string[]): Promise<void> {
   const [sub, ...subRest] = rest;

@@ -164,6 +164,68 @@ describe('cleanupHandler', () => {
     });
   });
 
+  describe('memory_events recall_served retention (Wave-3 storage+perf track)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    function insertMemWithScope(hash: string, scope: 'private' | 'team' | 'org'): string {
+      return new MemoryRepo(db).insert({
+        type: 'fact', text: 'cleanup retention test memory', normalized_text: 'cleanup retention test memory',
+        repo: 'r1', project: null, branch: null, agent: null, session_id: null,
+        hash, source_hash: null, scope,
+      });
+    }
+
+    function insertRecallServedEvent(atomId: string, createdAt: number, syncedAt: number | null): void {
+      db.prepare(`
+        INSERT INTO memory_events (event_id, event_type, atom_id, payload_json, created_at, synced_at)
+        VALUES (?, 'usefulness', ?, '{"family":"recall_served","query_hash":"q"}', ?, ?)
+      `).run(`ev-${atomId}`, atomId, createdAt, syncedAt);
+    }
+
+    it('prunes old+synced (team/org) and old+unsynced (private) rows; keeps old+unsynced (team/org) and recent rows', async () => {
+      const now = Date.now();
+      const oldSyncedTeam = insertMemWithScope('old-synced-team', 'team');
+      const oldUnsyncedPrivate = insertMemWithScope('old-unsynced-private', 'private');
+      const oldUnsyncedTeam = insertMemWithScope('old-unsynced-team', 'team');
+      const recentSyncedTeam = insertMemWithScope('recent-synced-team', 'team');
+
+      insertRecallServedEvent(oldSyncedTeam, now - 40 * DAY_MS, now - 39 * DAY_MS);      // pruned — already shipped
+      insertRecallServedEvent(oldUnsyncedPrivate, now - 40 * DAY_MS, null);              // pruned — never ship-eligible (private)
+      insertRecallServedEvent(oldUnsyncedTeam, now - 40 * DAY_MS, null);                 // kept — shipper may still need it
+      insertRecallServedEvent(recentSyncedTeam, now - 1 * DAY_MS, now);                  // kept — not old enough
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const remaining = db.prepare('SELECT atom_id FROM memory_events WHERE event_type = \'usefulness\'').all() as { atom_id: string }[];
+      const atomIds = remaining.map(r => r.atom_id);
+      expect(atomIds).not.toContain(oldSyncedTeam);
+      expect(atomIds).not.toContain(oldUnsyncedPrivate);
+      expect(atomIds).toContain(oldUnsyncedTeam);
+      expect(atomIds).toContain(recentSyncedTeam);
+    });
+
+    it('respects a configured recallServedRetentionDays value other than the default', async () => {
+      const now = Date.now();
+      const threeDaysOld = insertMemWithScope('three-days-old', 'team');
+      const eightDaysOld = insertMemWithScope('eight-days-old', 'team');
+      insertRecallServedEvent(threeDaysOld, now - 3 * DAY_MS, now - 2 * DAY_MS);
+      insertRecallServedEvent(eightDaysOld, now - 8 * DAY_MS, now - 7 * DAY_MS);
+
+      const customCtx: HandlerCtx = {
+        db,
+        config: { ...defaultConfig(), memoryEvents: { recallServedRetentionDays: 5 } },
+      };
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, customCtx);
+
+      const remaining = db.prepare('SELECT atom_id FROM memory_events WHERE event_type = \'usefulness\'').all() as { atom_id: string }[];
+      const atomIds = remaining.map(r => r.atom_id);
+      expect(atomIds).toContain(threeDaysOld);
+      expect(atomIds).not.toContain(eightDaysOld);
+    });
+  });
+
   // Issue #209: the durable safety net behind the write-time retry-job
   // enqueue — every memory still flagged needs_vec_index gets a `reembed`
   // job on this same 24h tick (ADR-015 §4: reuse the existing cadence

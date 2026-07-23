@@ -31,6 +31,19 @@
 /** Handler kinds whose latency feeds the EWMA — the embed/LLM-bound ones. */
 export const EMBED_HEAVY_KINDS = new Set(['distill', 'reembed']);
 
+/**
+ * FEAT-482 fold (worker-starvation wave, item 2 of 3): the lane index
+ * `worker.ts` reserves for preferential local-sqlite-kind claims
+ * (`job-repo.ts`'s `LOCAL_SQLITE_KINDS`). MUST be 0 — `laneBudget()` above
+ * gates lane 0 always-on (`Math.max(1, ...)`; the `laneId >= laneBudget()`
+ * skip check in `worker.ts` can never be true for lane 0), so lane 0 is the
+ * one lane that keeps running even when the embed-latency EWMA throttles
+ * every other lane to zero. An arbitrary/higher lane index would itself get
+ * throttled during the exact saturation event the local/network split
+ * exists to survive, defeating the point of reserving it.
+ */
+export const RESERVED_LOCAL_LANE_ID = 0;
+
 export const DEFAULT_SLOW_THRESHOLD_MS = 5_000;
 export const DEFAULT_SEVERE_THRESHOLD_MS = 20_000;
 export const DEFAULT_RETRY_BUDGET_PER_MIN = 20;

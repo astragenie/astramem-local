@@ -45,7 +45,9 @@ export interface AzureChatOptions {
  * the SAME duration will retry in lockstep and re-trip the limit together).
  *
  * 5xx is also retried — a transient upstream blip should not kill a 90-minute
- * benchmark run.
+ * benchmark run. So is a NETWORK-level throw (ECONNRESET / socket closed /
+ * timeout), where `fetch` rejects before any HTTP response arrives: same
+ * transient class, same backoff, so one dropped socket can't discard a run.
  */
 const MAX_RETRIES = 6;
 const BASE_BACKOFF_MS = 1_000;
@@ -96,11 +98,29 @@ export async function azureChatComplete(
   let lastMessage = '';
 
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'api-key': cfg.key, 'content-type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: 'POST',
+        headers: { 'api-key': cfg.key, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      // NETWORK-level failure (ECONNRESET, socket closed unexpectedly,
+      // ETIMEDOUT, DNS): the request never received an HTTP response, so
+      // `fetch` itself throws instead of returning a status. This is the SAME
+      // transient class as a 5xx and MUST be retried the same way — before
+      // this catch existed, a single dropped socket on request #300 of a
+      // 600-call run rejected the whole Promise.all and discarded the run
+      // (observed 2026-07-20 on the oracle-factorial Tier-A gate: one
+      // ECONNRESET mid-cell killed an otherwise-complete run).
+      lastStatus = 0;
+      lastMessage = err instanceof Error ? err.message : String(err);
+      if (attempt === maxRetries) break;
+      const exp = Math.min(baseBackoffMs * 2 ** attempt, MAX_BACKOFF_MS);
+      await sleep(Math.random() * exp);
+      continue;
+    }
 
     if (res.ok) {
       const json = (await res.json()) as {
@@ -133,7 +153,10 @@ export async function azureChatComplete(
   }
 
   throw new Error(
-    `Azure chat completion failed (HTTP ${lastStatus}) on deployment ${opts.deployment} after ${maxRetries + 1} attempts: ${lastMessage}\n\n` +
+    (lastStatus === 0
+      ? `Azure chat completion failed (network error, no HTTP response) on deployment ${opts.deployment} after ${maxRetries + 1} attempts: ${lastMessage}`
+      : `Azure chat completion failed (HTTP ${lastStatus}) on deployment ${opts.deployment} after ${maxRetries + 1} attempts: ${lastMessage}`) +
+      `\n\n` +
       (lastStatus === 429
         ? `This is a RATE LIMIT, not a bug in the request. Either lower --answer-concurrency ` +
           `(default 8, see DEFAULT_ANSWER_CONCURRENCY in scripts/eval/locomo/answer.mts) or raise the ` +

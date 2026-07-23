@@ -1,0 +1,560 @@
+{
+  "generated_at": "2026-07-20T08:17:30.770Z",
+  "conv": "conv-26",
+  "k": 15,
+  "datadir": ".eval-data/locomo/runs/20260720-baseline-v2/datadir",
+  "cells": [
+    {
+      "sourceId": "gold-atoms",
+      "answererId": "canonical",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-gold-atoms-canonical.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.38480677308802314,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5640926640926641,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.4452991452991454,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.4507154516818383,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.46122850854041775,
+        "overall_accuracy": 0.4639751040583084,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.3125,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5675675675675675,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.38461538461538464,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.5428571428571428,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.4518850237600237,
+        "overall_accuracy": 0.4868421052631579,
+        "n_total": 152
+      }
+    },
+    {
+      "sourceId": "gold-atoms",
+      "answererId": "current",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-gold-atoms-current.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.32654010230986336,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5911196911196911,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.31684981684981683,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.4932824025355129,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.43194800320372106,
+        "overall_accuracy": 0.46690478711761646,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.34375,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.6216216216216216,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.3076923076923077,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.6,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.4682659823284824,
+        "overall_accuracy": 0.5263157894736842,
+        "n_total": 152
+      }
+    },
+    {
+      "sourceId": "gold-turns",
+      "answererId": "canonical",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-gold-turns-canonical.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.5205522486772487,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5763191763191764,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.46062271062271065,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.5668996012096409,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.5310984342071942,
+        "overall_accuracy": 0.5503457158174447,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.4375,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5675675675675675,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.38461538461538464,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.7142857142857143,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.5259921666171666,
+        "overall_accuracy": 0.5921052631578947,
+        "n_total": 152
+      }
+    },
+    {
+      "sourceId": "gold-turns",
+      "answererId": "current",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-gold-turns-current.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.4262259000745843,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.4387114387114386,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.27564102564102566,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.6922228221432113,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.458200296642565,
+        "overall_accuracy": 0.5388847560399213,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.5625,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.32432432432432434,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.3076923076923077,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.8142857142857143,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.5022005865755865,
+        "overall_accuracy": 0.5986842105263158,
+        "n_total": 152
+      }
+    },
+    {
+      "sourceId": "retrieved-atoms",
+      "answererId": "canonical",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-retrieved-atoms-canonical.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.3041666666666667,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.4823914823914824,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.3903540903540904,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.43120705858100816,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.4020298244983119,
+        "overall_accuracy": 0.4134270753756047,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.28125,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5135135135135135,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.46153846153846156,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.5857142857142857,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.46050406519156517,
+        "overall_accuracy": 0.4934210526315789,
+        "n_total": 152
+      }
+    },
+    {
+      "sourceId": "retrieved-atoms",
+      "answererId": "current",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-retrieved-atoms-current.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.26981595186394297,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5477477477477477,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.3476190476190476,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.4337092713783528,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.3997230046522728,
+        "overall_accuracy": 0.4196018009331917,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.21875,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5945945945945946,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.38461538461538464,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.5857142857142857,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.4459185662310663,
+        "overall_accuracy": 0.4934210526315789,
+        "n_total": 152
+      }
+    },
+    {
+      "sourceId": "retrieved-spans",
+      "answererId": "canonical",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-retrieved-spans-canonical.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.2891493055555555,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.4373873873873873,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.3705128205128205,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.4781957328385901,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.3938113115735884,
+        "overall_accuracy": 0.41925315181894124,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.25,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5135135135135135,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.46153846153846156,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.6,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.45626299376299373,
+        "overall_accuracy": 0.4934210526315789,
+        "n_total": 152
+      }
+    },
+    {
+      "sourceId": "retrieved-spans",
+      "answererId": "current",
+      "hypPath": ".eval-data\\locomo\\oracle\\20260720-full-8cell\\cell-retrieved-spans-current.hypotheses.jsonl",
+      "f1": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.23940334135646638,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.545085995085995,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.34487179487179487,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.5011732308975705,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.40763359055295667,
+        "overall_accuracy": 0.44338518577468417,
+        "n_total": 152
+      },
+      "llmJudge": {
+        "per_category": {
+          "1": {
+            "accuracy": 0.21875,
+            "n": 32,
+            "name": "multi-hop"
+          },
+          "2": {
+            "accuracy": 0.5405405405405406,
+            "n": 37,
+            "name": "temporal"
+          },
+          "3": {
+            "accuracy": 0.38461538461538464,
+            "n": 13,
+            "name": "open-domain"
+          },
+          "4": {
+            "accuracy": 0.6428571428571429,
+            "n": 70,
+            "name": "single-hop"
+          },
+          "5": {
+            "accuracy": null,
+            "n": 0,
+            "name": "adversarial"
+          }
+        },
+        "category_averaged_accuracy": 0.44669076700326704,
+        "overall_accuracy": 0.506578947368421,
+        "n_total": 152
+      }
+    }
+  ]
+}

@@ -4,11 +4,7 @@ import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { stopLockHolder } from '../service/instance-lock.js';
 import { hasWatchdogTimer, runWatchdogProbe } from '../service/watchdog-probe.js';
 import { reinstallCommand } from './reinstall.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 export async function serviceCommand(args: string[]): Promise<void> {
   const [subCmd, ...rest] = args;

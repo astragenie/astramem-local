@@ -352,6 +352,7 @@ Output STRICT JSON matching:
       "confidence": 0.0-1.0,
       "evidence": "<an EXACT verbatim quote from the source turn this atom is based on — copy, never paraphrase; omit only if the atom synthesizes multiple turns with no single quotable line>",
       "entities": [{ "name": "<named thing mentioned>", "kind": "actor" | "team" | "org" | "project" | "product" | "workitem" | "decision" | "tech" | "tool" | "concept" | "event" | "other", "subtype": "human" | "ai", "valid_at": "<ISO-8601 date-time, only if the source text states one>", "invalid_at": "<ISO-8601 date-time, only if the source text states one>" }],
+      "relations": [{ "subject": "<entity name, must appear in this atom's own entities[]>", "predicate": "uses" | "depends_on" | "replaces" | "supersedes" | "mentions" | "relates_to" | "part_of" | "owned_by" | "assigned_to" | "created_by" | "other", "object": "<entity name, must appear in this atom's own entities[]>", "confidence": 0.0-1.0 }],
       "valid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact started being true>",
       "invalid_at": "<ISO-8601 date-time, only if the source text states when THIS ATOM'S OWN fact stopped being true>"
     }
@@ -400,6 +401,33 @@ Entities: list every specific named person, place, organization, or thing the at
 Omit "entities" entirely when the atom names nothing specific.
 valid_at/invalid_at: omit both unless the source explicitly states a start and/or end date for that entity's relationship to the atom.
 
+Relations (retrieval-overhaul Phase 6): for each atom, optionally list entity-to-entity relation
+triples this atom's own text asserts — this is what powers multi-hop retrieval later (e.g.
+answering "who is Alice's mother?" by walking a relation edge instead of re-reading every atom).
+subject and object MUST each be a name that ALSO appears in this SAME atom's own "entities" list
+above — never name an entity here that isn't also listed there, and never invent a new entity
+just to complete a triple. predicate MUST be exactly one of these 11 lowercase values — personal
+conversation maps mostly onto relates_to/mentions/other, with owned_by/created_by for literal
+possession/authorship:
+- relates_to: a personal relationship or general association that doesn't fit a more specific
+  predicate below (e.g. "Priya" relates_to "Caroline" for sisters, friends, coworkers, a couple)
+- owned_by: the subject (a pet, a house, a possession) belongs to the object (e.g. "Tilly the dog" owned_by "Joanna")
+- created_by: the subject (a book, a project, an idea) was made by the object (e.g. "the mural" created_by "Marcus")
+- part_of: the subject is a member/component of the object (e.g. "Alice" part_of "the school choir")
+- mentions: the subject references the object without a stronger relationship applying
+- assigned_to: a task/errand subject is assigned to the object (e.g. "pick up the dry cleaning" assigned_to "Sergey")
+- uses / depends_on / replaces / supersedes: rare in personal conversation, kept for consistency with the closed vocabulary — use only when a literal fit exists
+- other: a real, meaningful relation that genuinely doesn't fit any predicate above
+Possessor qualification (Graphiti pattern): resolve pronouns and possessives to the actual named
+entity before writing subject/object — write "Alice" and "Sergey", never "her" and "him" or "her
+dad" as a single unresolved phrase.
+Prefer omission over guessing: emit a relation ONLY when the source text states or clearly implies
+it directly (a stated family/friend relationship, an explicit ownership, an explicit assignment).
+When in doubt whether a relation genuinely holds, or whether it fits one of the 11 predicates,
+leave "relations" empty (or omit it) for that atom rather than emitting a low-confidence guess.
+Omit "relations" entirely (or leave it empty) when the atom asserts no clear relation between two
+of its own named entities.
+
 Atom-level validity (issue #205): the top-level valid_at/invalid_at fields bound THIS ATOM'S
 OWN fact in time — set either ONLY when the source explicitly states when the fact itself
 started and/or stopped being true (e.g. "I lived in Denver until last year, then moved to
@@ -444,8 +472,9 @@ Examples (illustrative only, not exhaustive — the shape of these IS the spec: 
 
 1. Input: "My daughter Alice is starting kindergarten in September, I honestly can't believe it — she's moving up from the same preschool she's been at for two years." ->
 {"atoms":[
-  {"type":"event","text":"Sergey's daughter Alice is starting kindergarten in September, moving up from the same preschool she has attended for the past two years.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}]}
+  {"type":"event","text":"Sergey's daughter Alice is starting kindergarten in September, moving up from the same preschool she has attended for the past two years.","importance":0.8,"confidence":0.9,"entities":[{"name":"Sergey","kind":"actor","subtype":"human"},{"name":"Alice","kind":"actor","subtype":"human"}],"relations":[{"subject":"Alice","predicate":"relates_to","object":"Sergey","confidence":0.9}]}
 ]}
+(The relation captures the stated parent/child relationship — "relates_to" is the closest fit in the closed predicate vocabulary for a family relationship; do not invent a "child_of" predicate that isn't in the list.)
 
 2. Input: "I moved to Austin last month for a new job at Anthropic. Honestly loving the move so far, way better weather than where I was before." ->
 {"atoms":[
@@ -547,6 +576,15 @@ export function resolveExtractionPrompt(
   // are atoms never stored, and the codex extractor is measurably conservative
   // (sparse-dense). A/B lever only; never the default.
   if (envOverride === 'conv-liberal') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL;
+  // 'conv-spkbal' (2026-07-23, Wave-5 extraction-score track): the conversational
+  // prompt with an appended per-speaker count-balance checklist. Targets the
+  // documented ~77% capture asymmetry (this file's EXTRACTION_SYSTEM_PROMPT_
+  // CONVERSATIONAL doc comment, "Known limitation" paragraph) where extraction
+  // keeps whichever speaker's event is the narrative subject and drops the
+  // other speaker's half of the same exchange — exactly the bridge fact a
+  // multi-hop question often needs. A/B lever only; never the default; does
+  // NOT mutate the frozen base prompt (see prompt-hash-freeze.test.ts).
+  if (envOverride === 'conv-spkbal') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL;
   if (profile === 'conversational') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL;
   return EXTRACTION_SYSTEM_PROMPT_V3;
 }
@@ -568,6 +606,50 @@ EXHAUSTIVENESS OVERRIDE (this run only): err on the side of MORE atoms.
 - A typical substantive session here yields 6-12 atoms. Fewer than 4 for a
   substantive session almost certainly means under-extraction — re-scan before
   finishing. The "atoms": [] empty case remains valid ONLY for pure small talk.`;
+
+/** conv-spkbal A/B variant (Wave-5 extraction-score track, 2026-07-23) — see
+ *  resolveExtractionPrompt's comment. Base conversational prompt + an
+ *  explicit per-speaker count-balance checklist, appended the same way
+ *  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL appends its exhaustiveness
+ *  override — so the frozen base prompt's own bytes never change (hash-freeze
+ *  stays green) and this is purely additive.
+ *
+ *  Item 3 of the base prompt's own EXHAUSTIVENESS CHECKLIST ("BOTH SPEAKERS")
+ *  already says to extract facts stated by either participant — but the
+ *  base prompt's doc comment records a measured ~77% capture rate on a real
+ *  two-way session with the losses concentrated on ONE speaker, i.e. the
+ *  existing instruction is being satisfied on paper (the model "considers"
+ *  both speakers) without being satisfied in practice (it still drops one
+ *  speaker's half). A qualitative instruction restating "do both" a second
+ *  time would not fix that; a COUNTABLE check might, so this variant adds an
+ *  explicit tally step instead of stronger wording for the same rule. */
+export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL = `${EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL}
+
+SPEAKER BALANCE CHECK (this run only) — a stronger, countable version of the
+"BOTH SPEAKERS" rule above. Satisfying that rule in spirit is not the same as
+satisfying it in practice: extraction tends to follow whichever speaker's
+topic is narratively central and silently under-counts the other speaker's
+own facts, even when they were stated just as clearly. Run this check before
+you emit, as a tally, not a vibe:
+1. NAME BOTH SPEAKERS. List every distinct speaker who appears in the chunk.
+2. TALLY ATOMS PER SPEAKER. Count how many atoms are ABOUT or STATED BY each
+   speaker (a shared/mutual fact may count for both). Do this as an actual
+   count, not an impression.
+3. RE-SCAN ON IMBALANCE. If one speaker's tally is zero, or is less than half
+   of the other speaker's tally, that is a signal you under-extracted their
+   half — re-read THAT SPEAKER's turns specifically, one more time, before
+   finalizing. This applies even if the chunk "felt" like it was mainly about
+   the other speaker's topic; a topic being about one person does not mean
+   only that person's statements are durable.
+4. ATTRIBUTE, DON'T MERGE. When two speakers each contribute part of the same
+   fact (one names a relationship or event, the other confirms, corrects, or
+   adds a detail), keep each speaker's own contribution as its own atom
+   rather than folding both into a single atom credited to only one of them
+   — multi-hop questions often need exactly the OTHER speaker's half of a
+   relation, so collapsing it away loses the bridge fact silently.
+A genuinely one-sided chunk (one speaker did all the talking, the other only
+acknowledged) is a valid outcome — the check is "did you look," not "force an
+artificial 50/50 split."`;
 
 // ---------------------------------------------------------------------------
 // v2 (2026-07-09) — a/b candidate against EXTRACTION_SYSTEM_PROMPT. Adds the
@@ -713,14 +795,29 @@ Examples (illustrative only, not exhaustive):
 // UPDATE (FEAT-481 SLICE-435, 2026-07-13): entity-to-entity `relations[]`
 // added, engineering profile only (design doc §2.5 scopes the prompt
 // addition to this shared skeleton; the conversational profile, SLICE-434,
-// is not extended here — no design-doc direction to add it there, and
-// personal-conversation transcripts have materially weaker signal for
+// was NOT extended at the time — no design-doc direction to add it there,
+// and personal-conversation transcripts have materially weaker signal for
 // closed-vocabulary triples than engineering ones). See the "Relations"
 // section below the Entities section for the closed predicate list,
 // possessor-qualification, and same-atom no-hallucination guidance; the
 // filtering/dropping enforcement itself lives in
 // src/distill/stages/05-extract.ts (filterAtomRelations) and stage 8
 // (resolveAtomRelations), not in this prompt text.
+//
+// UPDATE (retrieval-overhaul Phase 6, 2026-07-20): the "not extended there"
+// half of the note above is now OUT OF DATE — see
+// EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL's own "Relations" section. Codex's
+// architecture review measured the entity graph as near-empty specifically
+// BECAUSE the conversational profile never asked for relations[] despite
+// AtomRelationSchema already validating them — LoCoMo/personal transcripts
+// are overwhelmingly conversational-profile, so this was the dominant
+// extraction path leaving `entity_relations` unpopulated. Extended using the
+// SAME closed predicate enum (no schema change) — personal relationships
+// map mostly onto `relates_to`/`mentions`/`other`, with `owned_by`/
+// `created_by` usable for literal possession/authorship. filterAtomRelations
+// applies identically regardless of profile (it operates on the atom's
+// `relations[]` field, not on which prompt produced it), so no stage-5/8
+// code change was needed for this — prompt-only.
 // Every few-shot example below was rewritten or added for this version — the
 // examples ARE the spec, so a lesson/decision example that stayed at v1's
 // ~90-char shape would directly contradict the richness rule stated above
@@ -1211,8 +1308,9 @@ export const EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER =
  * bytes — the freeze test pins the hash, this map names it for manifests. */
 export const EXTRACTION_PROMPT_VERSIONS = {
   v3: 'eng-v3.0 (FEAT-479, 2026-07-13)',
-  conversational: 'conv-v1.0 (FEAT-485)',
+  conversational: 'conv-v1.1 (FEAT-485; relations[] added, retrieval-overhaul Phase 6, 2026-07-20)',
   convLiberal: 'conv-liberal-v1.0 (2026-07-18 champion prompt)',
+  convSpkbal: 'conv-spkbal-v1.0 (Wave-5 extraction-score track, 2026-07-23 — A/B candidate, unmeasured)',
   specificsSweeper: process.env.ASTRA_SWEEPER_PROMPT === 'v1'
     ? 'sweeper-v1.0 (pre-552A, champion-era — env-selected)'
     : 'sweeper-v2.0 (552-A evidence-first restructure, 2026-07-18)',

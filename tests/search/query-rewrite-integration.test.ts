@@ -11,7 +11,7 @@
 // AC-5: a rewrite call that succeeds but returns zero usable variants degrades
 //       silently to the original-query-only path (no error).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import { openDb, type DB } from '../../src/storage/db.js';
 import { migrate } from '../../src/storage/migrate.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
@@ -260,5 +260,59 @@ describe('search() + FEAT-550 query rewrite/expansion', () => {
       db, embed: fakeEmbed, weights: defaultConfig().search, queryRewrite, expand: true, debug: true,
     });
     expect(debugHits.map(h => h.id)).not.toContain(idB);
+  });
+
+  // Retrieval hardening (P2 2026-07), issue #6's twin on the rewrite side:
+  // gatherCandidates() per variant carries no timeout of its own, so a
+  // degraded (slow, not failing) embed provider stacks latency across every
+  // variant with no aggregate cap. search() bounds the SUM across the whole
+  // fan-out with the same hardcoded wall-clock ceiling
+  // (MAX_FANOUT_WALL_CLOCK_MS, src/search/search.ts) used for WS6's
+  // sub-query loop — verified here the same way
+  // decompose-integration.test.ts does: vi.setSystemTime jumping the clock
+  // forward mid-loop rather than an actual multi-second sleep.
+  describe('issue #6: outer wall-clock budget across the rewrite-variant fan-out', () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it('stops gathering further variants once the fan-out budget is spent, keeping what was already gathered', async () => {
+      vi.useFakeTimers();
+      const db = setupDb();
+      // Disjoint word banks (no shared content tokens between the primary
+      // query, idB1, and idB2) — the FTS leg OR's every surviving term
+      // together, so a shared token would make idB1/idB2 findable via the
+      // WRONG variant and defeat the point of this test.
+      await seedWithVec(db, 'sqlite-vec hybrid bm25 fusion search', 'qr-wc-a');
+      const idB1 = seed(db, 'Gilbert repairs clocks at the harbor workshop', 'qr-wc-b1');
+      const idB2 = seed(db, 'Priya teaches marine biology lectures downtown', 'qr-wc-b2');
+
+      let embedCalls = 0;
+      const slowAfterFirstEmbed: EmbedProvider = {
+        ...fakeEmbed,
+        embed: async (texts: string[]) => {
+          embedCalls++;
+          if (embedCalls === 2) {
+            // First variant's gather (embed call #2 overall — #1 is the
+            // primary query) just completed; jump the clock past the
+            // fan-out's wall-clock budget before the loop re-checks its
+            // deadline for the second variant.
+            vi.setSystemTime(Date.now() + 6_000);
+          }
+          return texts.map(t => makeFakeVec(t));
+        },
+      };
+
+      const queryRewrite = rewriteOpts(fixedRewriter(['Gilbert clock repairs', 'Priya marine biology']));
+      const hits = await search('sqlite-vec hybrid search', {}, 10, {
+        db, embed: slowAfterFirstEmbed, weights: defaultConfig().search, queryRewrite, expand: true,
+      });
+
+      // First variant's atom made it in (gathered before the clock jumped);
+      // the second never ran because the loop's deadline check caught the
+      // budget already being spent.
+      expect(hits.map(h => h.id)).toContain(idB1);
+      expect(hits.map(h => h.id)).not.toContain(idB2);
+    });
   });
 });

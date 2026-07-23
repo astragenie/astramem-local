@@ -51,6 +51,23 @@ export function touchesWatchedPaths(files, prefixes = WATCHED_PREFIXES) {
   return files.some(f => prefixes.some(p => f.startsWith(p)));
 }
 
+/** Branches that MAY auto-reinstall prod on a schema-relevant merge. A bare
+ * feature branch must NOT — a local feature merge auto-deploying the live
+ * daemon is the FEAT-439 incident class (2026-07-20 and again 2026-07-23: a
+ * track merge carrying a migration silently reinstalled prod). Only a merge
+ * landing on a release branch (the migration-currency-on-release intent) or an
+ * explicit opt-in should deploy. */
+export const DEFAULT_DEPLOY_BRANCHES = ['main', 'master'];
+
+/** Pure predicate — exported for unit tests. `force`
+ * (`ASTRA_POST_MERGE_FORCE=1`) is the deliberate escape hatch; a `release/*`
+ * prefix counts as a deploy branch. */
+export function isDeployBranch(branch, { branches = DEFAULT_DEPLOY_BRANCHES, force = false } = {}) {
+  if (force) return true;
+  if (!branch) return false;
+  return branches.includes(branch) || branch.startsWith('release/');
+}
+
 // Generous ceiling so a hung `bun install`/`bun run build` (stalled registry,
 // interactive prompt, etc.) can't block `git pull` forever — this hook runs
 // synchronously inside the user's merge/pull, so an unbounded spawnSync here
@@ -75,6 +92,11 @@ function run(cmd, args, cwd) {
 
 function currentHeadSha(repoRoot) {
   const res = run('git', ['rev-parse', 'HEAD'], repoRoot);
+  return res.status === 0 ? res.stdout.trim() : null;
+}
+
+function currentBranch(repoRoot) {
+  const res = run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], repoRoot);
   return res.status === 0 ? res.stdout.trim() : null;
 }
 
@@ -130,6 +152,23 @@ export function main(repoRoot = join(__dirname, '..', '..')) {
       return;
     }
     if (!touchesWatchedPaths(files)) return; // nothing schema-relevant landed — no-op, no side effects
+
+    // FEAT-439 gate: only auto-reinstall prod when the schema-relevant merge
+    // lands on a deploy branch (main/master/release/*) or an explicit opt-in
+    // (ASTRA_POST_MERGE_FORCE=1). A local feature-branch merge must NEVER
+    // auto-deploy the live daemon — that is the 2026-07-20/2026-07-23 incident
+    // class (a track merge carrying a migration silently reinstalled prod).
+    const branch = currentBranch(repoRoot);
+    const force = process.env.ASTRA_POST_MERGE_FORCE === '1';
+    if (!isDeployBranch(branch, { force })) {
+      process.stderr.write(
+        `[astramem post-merge] migrations/ or src/storage/ changed on non-deploy branch ` +
+          `"${branch ?? '(unknown)'}" — SKIPPING auto-reinstall (FEAT-439 gate). Only ` +
+          `main/master/release/* (or ASTRA_POST_MERGE_FORCE=1) auto-deploy. To deploy this ` +
+          `branch deliberately: node dist/cli/index.js reinstall\n`,
+      );
+      return;
+    }
 
     process.stderr.write('[astramem post-merge] migrations/ or src/storage/ changed — rebuilding + reinstalling...\n');
 

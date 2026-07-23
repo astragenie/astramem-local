@@ -10,8 +10,8 @@ import { logger } from '../../src/log/logger.js';
 /**
  * FEAT-461 AC-1: a fully-populated `Config` built field-by-field with a
  * non-default value for EVERY field (including `archival`,
- * `ingestIdempotency`, `distill`, `memoryHealth`, `ingest`, and
- * `consolidation.contradictionDetection` — the fields the original bug
+ * `ingestIdempotency`, `memoryEvents`, `distill`, `memoryHealth`, `ingest`,
+ * and `consolidation.contradictionDetection` — the fields the original bug
  * silently dropped). Deliberately NOT derived from `defaultConfig()` with
  * fields mutated in place: a still-missing emitter block must not be able to
  * round-trip "successfully" by accident (default in, default out).
@@ -37,6 +37,10 @@ function buildFullyPopulatedConfig(): Config {
     onnxEmbed: { cacheDir: '/var/cache/onnx', modelPath: '/opt/models/mxbai.onnx', numThreads: 2, dtype: 'fp16', pooling: 'mean' },
     search: {
       alpha: 0.25, beta: 0.35, gamma: 0.15, delta: 0.05, epsilon: 0.2, zeta: 0.05, eta: 0.03, theta: 0.04,
+      // Score-phase Track I: non-default value here (like the rest of this
+      // fixture) so the AC-1 round-trip test actually exercises the emitter
+      // writing/reloading a NON-default choice, not just the shipped default.
+      normalization: 'winsorized',
       governance: { maxComponentWeight: 0.8 },
       usefulness: {
         implicitPositive: { enabled: true, windowDays: 45, minDistinctQueries: 3, weight: 0.5, maxGrantsPerRun: 250 },
@@ -50,6 +54,9 @@ function buildFullyPopulatedConfig(): Config {
     multiHop: {
       enabled: true, provider: 'llm', minQueryWords: 4, maxSubQueries: 4,
       maxSupplemental: 8, supplementalWeight: 0.6, timeoutMs: 900, model: 'decompose-model',
+    },
+    evidenceBundling: {
+      enabled: true, maxExtra: 3, minDistinctSessions: 3, sameEntity: false, sameSession: true,
     },
     recallPack: {
       enabled: true,
@@ -71,6 +78,7 @@ function buildFullyPopulatedConfig(): Config {
       tierScope: { media: ['audio-raw'], lean: ['audio-raw', 'transcript-raw'] },
     },
     ingestIdempotency: { retentionDays: 14 },
+    memoryEvents: { recallServedRetentionDays: 60 },
     pipeline: { concurrency: 4 },
     consolidation: {
       autoAcceptThreshold: 0.95,

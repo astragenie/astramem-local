@@ -26,6 +26,7 @@
 
 import { z } from 'zod';
 import type { LLMProvider, ChatMsg } from '../contracts/index.js';
+import { RunCapTracker } from '../util/run-cap-tracker.js';
 
 /**
  * Stable marker embedded in the system prompt, mirroring
@@ -175,51 +176,16 @@ export interface DupJudgeCaps {
  * un-judged — stays `pending`, the fail-open contract this whole module
  * documents (never an auto-resolve-by-timeout).
  */
-export class DupJudgeRunTracker {
-  private callsThisRun = 0;
-  private readonly startedAt = Date.now();
-  private capReached = false;
-  private wallClockCapReached = false;
-  private loggedTrip = false;
-
-  constructor(
-    private readonly caps: DupJudgeCaps,
-    private readonly log: (message: string) => void = (m) => console.warn(m),
-  ) {}
-
-  shouldStop(): boolean {
-    if (this.callsThisRun >= this.caps.maxPerRun) {
-      this.capReached = true;
-      this.logTripOnce('call-count', `${this.callsThisRun}/${this.caps.maxPerRun} calls`);
-      return true;
-    }
-    const elapsed = Date.now() - this.startedAt;
-    if (elapsed >= this.caps.maxWallClockMs) {
-      this.wallClockCapReached = true;
-      this.logTripOnce('wall-clock', `${elapsed}ms/${this.caps.maxWallClockMs}ms`);
-      return true;
-    }
-    return false;
-  }
-
-  recordCall(): void {
-    this.callsThisRun++;
-  }
-
-  state(): { callsExecuted: number; capReached: boolean; wallClockCapReached: boolean } {
-    return {
-      callsExecuted: this.callsThisRun,
-      capReached: this.capReached,
-      wallClockCapReached: this.wallClockCapReached,
-    };
-  }
-
-  private logTripOnce(kind: 'call-count' | 'wall-clock', detail: string): void {
-    if (this.loggedTrip) return;
-    this.loggedTrip = true;
-    this.log(
-      `[dup-judge] ${kind} cap reached (${detail}) — skipping further dup-judge calls this sweep; ` +
-      'remaining pending proposals stay pending (never auto-resolved by timeout).',
+export class DupJudgeRunTracker extends RunCapTracker {
+  constructor(caps: DupJudgeCaps, log: (message: string) => void = (m) => console.warn(m)) {
+    super(
+      caps,
+      {
+        tag: 'dup-judge',
+        skipping: 'further dup-judge calls this sweep',
+        fallthrough: 'remaining pending proposals stay pending (never auto-resolved by timeout).',
+      },
+      log,
     );
   }
 }

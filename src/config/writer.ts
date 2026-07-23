@@ -258,6 +258,10 @@ export function configToYaml(cfg: Config): string {
     // as zeta/eta above: omitting it here would silently drop a hand-set
     // `search.theta` on the next config write-back.
     line(1, 'theta', cfg.search.theta),
+    // Score-phase Track I: normalization is a sibling scalar of alpha..theta
+    // above, same round-trip requirement — omitting it here would silently
+    // drop a hand-set `search.normalization: winsorized` on the next write-back.
+    line(1, 'normalization', cfg.search.normalization),
     // FEAT-428 governance ceiling — also dropped pre-FEAT-461 (missed by the
     // original bug report's own field list; caught by the AC-1 exhaustive
     // round-trip test instead).
@@ -286,7 +290,8 @@ export function configToYaml(cfg: Config): string {
     line(2, 'timeoutMs', cfg.search.queryRewrite.timeoutMs),
     line(2, 'maxCandidates', cfg.search.queryRewrite.maxCandidates),
     '',
-    // Cross-encoder rerank stage (issue #26, ADR-005) — OFF by default. See
+    // Cross-encoder rerank stage (issue #26, ADR-005; P2 retrieval overhaul,
+    // WT-B, 2026-07-20) — OFF by default. See
     // docs/runbooks/cross-encoder-rerank.md before flipping `enabled: true`.
     line(0, 'crossEncoder'),
     line(1, 'enabled', cfg.crossEncoder.enabled),
@@ -295,6 +300,20 @@ export function configToYaml(cfg: Config): string {
     line(1, 'timeoutMs', cfg.crossEncoder.timeoutMs),
     ...(cfg.crossEncoder.sidecarUrl ? [line(1, 'sidecarUrl', cfg.crossEncoder.sidecarUrl)] : []),
     ...(cfg.crossEncoder.model ? [line(1, 'model', cfg.crossEncoder.model)] : []),
+    // `provider: 'onnx'` in-process model load overrides — same "only meaningful
+    // for one provider value, emit only when set, each field independently
+    // optional" shape as `onnxEmbed` above (FEAT-461 discipline: an unemitted
+    // field silently reverts to its default on next load).
+    ...(cfg.crossEncoder.onnx ? [
+      line(1, 'onnx'),
+      ...(cfg.crossEncoder.onnx.cacheDir !== undefined ? [line(2, 'cacheDir', cfg.crossEncoder.onnx.cacheDir)] : []),
+      ...(cfg.crossEncoder.onnx.modelPath !== undefined ? [line(2, 'modelPath', cfg.crossEncoder.onnx.modelPath)] : []),
+      ...(cfg.crossEncoder.onnx.hfModelId !== undefined ? [line(2, 'hfModelId', cfg.crossEncoder.onnx.hfModelId)] : []),
+      ...(cfg.crossEncoder.onnx.revision !== undefined ? [line(2, 'revision', cfg.crossEncoder.onnx.revision)] : []),
+      ...(cfg.crossEncoder.onnx.dtype !== undefined ? [line(2, 'dtype', cfg.crossEncoder.onnx.dtype)] : []),
+      ...(cfg.crossEncoder.onnx.numThreads !== undefined ? [line(2, 'numThreads', cfg.crossEncoder.onnx.numThreads)] : []),
+      ...(cfg.crossEncoder.onnx.batchSize !== undefined ? [line(2, 'batchSize', cfg.crossEncoder.onnx.batchSize)] : []),
+    ] : []),
     '',
     // Multi-hop query decomposition (WS6) — OFF by default. See
     // src/search/decompose.ts before flipping `enabled: true`.
@@ -307,6 +326,16 @@ export function configToYaml(cfg: Config): string {
     line(1, 'supplementalWeight', cfg.multiHop.supplementalWeight),
     line(1, 'timeoutMs', cfg.multiHop.timeoutMs),
     ...(cfg.multiHop.model ? [line(1, 'model', cfg.multiHop.model)] : []),
+    '',
+    // Wave-6 evidence bundling (P2 retrieval-overhaul evidence-sufficiency
+    // lever) — OFF by default. See src/search/evidence-bundle.ts before
+    // flipping `enabled: true`.
+    line(0, 'evidenceBundling'),
+    line(1, 'enabled', cfg.evidenceBundling.enabled),
+    line(1, 'maxExtra', cfg.evidenceBundling.maxExtra),
+    line(1, 'minDistinctSessions', cfg.evidenceBundling.minDistinctSessions),
+    line(1, 'sameEntity', cfg.evidenceBundling.sameEntity),
+    line(1, 'sameSession', cfg.evidenceBundling.sameSession),
     '',
     line(0, 'recallPack'),
     line(1, 'enabled', cfg.recallPack.enabled),
@@ -416,6 +445,13 @@ export function configToYaml(cfg: Config): string {
     // every writeConfig() call (FEAT-461).
     line(0, 'ingestIdempotency'),
     line(1, 'retentionDays', (cfg.ingestIdempotency ?? EMIT_DEFAULTS.ingestIdempotency).retentionDays),
+    '',
+    // memory_events 'usefulness'/'recall_served' row retention (Wave-3
+    // storage+perf track) — same FEAT-461 "previously dropped" class as
+    // ingestIdempotency above; wired in from the same slice, so it never
+    // regresses this way.
+    line(0, 'memoryEvents'),
+    line(1, 'recallServedRetentionDays', (cfg.memoryEvents ?? EMIT_DEFAULTS.memoryEvents).recallServedRetentionDays),
     '',
     // Distillation durability quality gate (FEAT-441) — previously dropped on
     // every writeConfig() call (FEAT-461). 'off' (default) is byte-identical

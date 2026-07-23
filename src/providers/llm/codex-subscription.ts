@@ -341,6 +341,57 @@ function loadAuthFile(path: string): CodexAuthFile {
   return parseAuthFile(readAuthFileRaw(path), path);
 }
 
+/**
+ * Combines a caller-supplied cancellation signal with a fixed-duration
+ * internal ceiling (issue #261): whichever fires first wins, and the
+ * caller's signal is never dropped in favor of the internal one. When no
+ * caller signal is passed, behaves exactly like the pre-fix
+ * `AbortSignal.timeout(timeoutMs)`.
+ */
+function combineSignals(timeoutMs: number, externalSignal?: AbortSignal): AbortSignal {
+  const ownSignal = AbortSignal.timeout(timeoutMs);
+  return externalSignal ? AbortSignal.any([externalSignal, ownSignal]) : ownSignal;
+}
+
+/**
+ * Transient-network-failure retry, ported from the other three providers'
+ * identical helper (openai-compatible.ts, azure-openai.ts, ollama.ts) — this
+ * provider previously had none at all, despite being the DEFAULT
+ * compact/extract provider. No retry on 4xx (a 401 is returned immediately,
+ * which matters: chat()'s OAuth reload-then-refresh flow below depends on
+ * seeing the raw 401 response). One retry on a 5xx status or a thrown fetch
+ * error (timeout, DNS, connection reset); the second attempt's outcome is
+ * always returned/thrown as-is.
+ */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  timeoutMs: number,
+  externalSignal?: AbortSignal,
+): Promise<Response> {
+  let lastError: unknown;
+  for (let i = 0; i < 2; i++) {
+    try {
+      const res = await fetch(url, { ...init, signal: combineSignals(timeoutMs, externalSignal) });
+      // No retry on 4xx
+      if (res.status >= 400 && res.status < 500) return res;
+      // Retry on 5xx (first attempt only)
+      if (res.status >= 500 && i === 0) {
+        lastError = new Error(`HTTP ${res.status} from ${url}`);
+        continue;
+      }
+      return res;
+    } catch (err) {
+      if (i === 0) {
+        lastError = err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
 /** Best-effort atomic write-back of rotated tokens, mirroring the tmp+rename
  * pattern the rest of this codebase uses for config.yaml (config/writer.ts)
  * so a concurrent reader never observes a torn auth.json. Failure to persist
@@ -551,17 +602,20 @@ export class CodexSubscriptionLLMProvider implements LLMProvider {
    * `externalSignal` (issue #261): caller-supplied cancellation, combined
    * with — never replacing — the provider's own CHAT_TIMEOUT_MS ceiling via
    * `AbortSignal.any`, same contract as the other three providers'
-   * `fetchWithRetry`.
+   * `fetchWithRetry` (which this now delegates to — see that function's doc
+   * comment for why the 401 path above in chat() is unaffected).
    */
   private callResponses(body: Record<string, unknown>, externalSignal?: AbortSignal): Promise<Response> {
-    const ownSignal = AbortSignal.timeout(CHAT_TIMEOUT_MS);
-    const signal = externalSignal ? AbortSignal.any([externalSignal, ownSignal]) : ownSignal;
-    return fetch(CODEX_RESPONSES_URL, {
-      method: 'POST',
-      headers: this.headers(),
-      body: JSON.stringify(body),
-      signal,
-    });
+    return fetchWithRetry(
+      CODEX_RESPONSES_URL,
+      {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify(body),
+      },
+      CHAT_TIMEOUT_MS,
+      externalSignal,
+    );
   }
 
   async chat(messages: ChatMsg[], opts?: ChatOpts): Promise<ChatResult> {

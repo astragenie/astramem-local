@@ -334,6 +334,79 @@ describe('groundAtomDates — plumbing and safety', () => {
     expect(cappedLogs).toHaveLength(1);
   });
 
+  it('respects maxWallClockMs — stops firing once the wall-clock cap elapses, remaining candidate atoms pass through', async () => {
+    const CALL_DELAY_MS = 30;
+    let calls = 0;
+    const slowLLM: LLMProvider = {
+      name: 'codex-subscription' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        calls++;
+        await new Promise((resolve) => setTimeout(resolve, CALL_DELAY_MS));
+        return { text: JSON.stringify({ resolved_text: '2022' }), usage: { in: 50, out: 20, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    const atoms = [
+      atom('First happened last year.'),
+      atom('Second happened last year.'),
+      atom('Third happened last year.'),
+    ];
+
+    // 15ms: comfortably below the 30ms the mock provider's first call takes,
+    // so atom 1 is dispatched (elapsed < 15ms at that check) — but by the
+    // time atom 2 is checked, elapsed (>= the first call's 30ms) has
+    // cleared the cap.
+    const result = await groundAtomDates(atoms, '2023-07-15', slowLLM, { maxWallClockMs: 15, log: () => {} });
+
+    expect(calls).toBe(1); // only the first atom's call was actually dispatched
+    expect(result.fired).toBe(1);
+    expect(result.wallClockCapReached).toBe(true);
+    expect(result.atoms[1]!.text).toBe('Second happened last year.'); // never fired, untouched
+    expect(result.atoms[2]!.text).toBe('Third happened last year.'); // never fired, untouched
+  });
+
+  it('logs once (not once per skipped atom) when maxWallClockMs truncation skips matching atoms', async () => {
+    const slowLLM: LLMProvider = {
+      name: 'codex-subscription' as const,
+      model: 'test-model',
+      async chat(): Promise<ChatResult> {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return { text: JSON.stringify({ resolved_text: '2022' }), usage: { in: 50, out: 20, usd: 0 } };
+      },
+      async health(): Promise<LLMHealth> {
+        return { ok: true, model: 'test-model', latency_ms: 0 };
+      },
+    };
+    const atoms = [
+      atom('First happened last year.'), // fires — its 30ms call trips the cap
+      atom('Second happened last year.'), // matched but skipped by the cap
+      atom('Third happened last year.'), // matched but skipped by the cap
+      atom('No relative date here.'), // not a candidate — must not affect the log
+    ];
+    const logs: string[] = [];
+
+    const result = await groundAtomDates(atoms, '2023-07-15', slowLLM, {
+      maxWallClockMs: 15,
+      log: (message) => logs.push(message),
+    });
+
+    expect(result.fired).toBe(1);
+    const cappedLogs = logs.filter((message) => message.includes('maxWallClockMs'));
+    expect(cappedLogs).toHaveLength(1);
+  });
+
+  it('does not trip wallClockCapReached when the sweep finishes comfortably within the cap', async () => {
+    const { llm } = makeRetryLLM({ 'last year': '2022' });
+    const atoms = [atom('It happened last year.')];
+
+    const result = await groundAtomDates(atoms, '2023-07-15', llm, { maxWallClockMs: 300_000 });
+
+    expect(result.wallClockCapReached).toBe(false);
+  });
+
   it('totalAtoms always reflects the full input length regardless of fire rate', async () => {
     const { llm } = makeRetryLLM({ 'last year': '2022' });
     const atoms = [

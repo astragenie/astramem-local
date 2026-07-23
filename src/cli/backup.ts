@@ -17,15 +17,7 @@ import { defaultConfigDir } from '../config/datadir.js';
 import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
 import { getOrCreateKey } from '../storage/keystore.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
-
-function hasFlag(args: string[], flag: string): boolean {
-  return args.includes(flag);
-}
+import { parseArg, hasFlag } from './arg-parse.js';
 
 /**
  * Generate a timestamped filename: `memory-YYYYMMDDTHHmmss.sqlite`

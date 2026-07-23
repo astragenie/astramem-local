@@ -1,6 +1,10 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=&preset=
+ *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=&preset=&mode=&expand=
+ *                 { mode? }                FEAT-532 L2 (retrieval hardening issue #2): 'keyword'|'semantic'|
+ *                                           'hybrid' — was silently ignored on this route before; now threaded
+ *                                           into search()'s SearchOpts.mode exactly like POST /recall.
+ *                                           Omitted = 'hybrid'. An out-of-enum value is a 400.
  *   POST /recall  { query|text, k|limit, mode?, filters? }  filters.as_of: ISO-8601 date-time,
  *                                          filters.entity: FEAT-402 AC-4,
  *                                          filters.agentMode: FEAT-426 ('filter'|'boost')
@@ -52,6 +56,7 @@ import { search, parseAsOf, type SearchFilters } from '../../search/search.js';
 import { resolveRerankOpts } from '../../search/rerank.js';
 import { resolveDecomposeOpts } from '../../search/decompose.js';
 import { resolveQueryRewriteOpts } from '../../search/query-rewrite.js';
+import { resolveEvidenceBundlingOpts } from '../../search/evidence-bundle.js';
 import { buildLLMProvider } from '../../providers/index.js';
 import { defaultConfig, type Config } from '../../config/config.js';
 import { childLogger } from '../../log/logger.js';
@@ -172,18 +177,27 @@ const RememberBodySchema = z.object({
 });
 
 export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defaultConfig()) {
-  const cfg = defaultConfig();
   // FEAT-454: renamed from `weights` — this is now the per-preset BASE, not
   // the final weights object. `resolvePresetWeights` (src/search/presets.ts)
   // derives the actual per-request weights from this base, once per request
   // (was: built once per route-factory call, which made a per-request preset
   // impossible to honor).
-  const baseWeights = cfg.search;
+  //
+  // P0.1 (2026-07-20 retrieval overhaul, Wave 0): this used to read
+  // `defaultConfig().search` from a locally-shadowed `cfg` instead of the
+  // REAL passed-in `config` — every config.yaml fusion-weight override
+  // (alpha/beta/gamma/delta/epsilon/zeta/eta/theta) silently no-op'd on both
+  // GET /search and POST /recall, because `resolvePresetWeights` always
+  // derived from the hardcoded default base. `config.search` already carries
+  // governed weights (`applyFusionGovernance` runs once at config-load time,
+  // see config.ts's `search.governance` doc comment) — this is the same real
+  // config object the sibling `rerank`/`decompose`/`queryRewrite` resolvers
+  // below already correctly read from. See tests/server/search-config.test.ts.
+  const baseWeights = config.search;
   // issue #26 / ADR-005: cross-encoder rerank stage, read from the REAL
-  // passed-in `config` (not `cfg` above — that pre-existing `defaultConfig()`
-  // fallback for `weights` is out of scope here) so config.yaml's
-  // `crossEncoder.enabled` actually takes effect on this route. `undefined`
-  // when disabled (the default) — search() takes zero extra branches.
+  // passed-in `config` so config.yaml's `crossEncoder.enabled` actually takes
+  // effect on this route. `undefined` when disabled (the default) — search()
+  // takes zero extra branches.
   const rerank = resolveRerankOpts(config);
   // WS6: multi-hop query decomposition — undefined (search() takes zero
   // extra branches) unless multiHop.enabled is set. See src/search/decompose.ts.
@@ -193,6 +207,10 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
   // requires the per-request `expand: true` opt-in below (AC-1's latency
   // gate) — see src/search/query-rewrite.ts.
   const queryRewrite = resolveQueryRewriteOpts(config, buildLLMProvider);
+  // Wave-6: selective post-rerank evidence bundling — undefined (search()
+  // takes zero extra branches) unless evidenceBundling.enabled is set. See
+  // src/search/evidence-bundle.ts.
+  const evidenceBundling = resolveEvidenceBundlingOpts(config);
 
   return async (app: FastifyInstance) => {
     // GET /search
@@ -251,23 +269,50 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
       const weights = resolvePresetWeights(preset, baseWeights);
 
+      // FEAT-532 L2: astramem-retrieval-query@1 `mode` — was silently
+      // ignored on this route (retrieval hardening, issue #2): every other
+      // surface (POST /recall, and now the MCP tools below) threads this
+      // into SearchOpts.mode, but GET /search never read the query param at
+      // all, so a caller asking for keyword-only or semantic-only retrieval
+      // here silently got 'hybrid' with no signal its request was ignored.
+      // An out-of-enum value is a 400, same shape as the `type`/`preset`
+      // validation above, rather than a silent fall-through to 'hybrid'.
+      let retrievalMode: 'keyword' | 'semantic' | 'hybrid' = 'hybrid';
+      if (params.mode !== undefined) {
+        const parsedMode = RetrievalModeEnum.safeParse(params.mode);
+        if (!parsedMode.success) {
+          return reply.code(400).send({ error: 'invalid', details: parsedMode.error.flatten() });
+        }
+        retrievalMode = parsedMode.data;
+      }
+
       // FEAT-550 AC-1: `expand=true` opts THIS call into the query-rewrite
       // stage (only takes effect when queryRewrite is also resolved, i.e.
       // search.queryRewrite.mode: 'enabled'). Omitted/anything else = false,
       // byte-identical to pre-FEAT-550 behavior.
       const expand = params.expand === 'true';
-      const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, queryRewrite, expand });
-      // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
-      recordRecallServed(db, {
-        query: q,
-        atomIds: hits.map(h => h.id),
-        scores: hits.map(h => h.score),
-        surface: 'rest',
-        mode: 'search',
+
+      // ADR-019 Tier 1 (issue #347) Decision 1b / retrieval hardening issue
+      // #4: bound the actual search/DB work in the same deadline race POST
+      // /recall already uses — this route never had one, so a stuck
+      // embed/rerank/decompose call inside search() hung all the way to
+      // Fastify's 60s blanket requestTimeout instead of a clean, named 504
+      // at 30s. See src/server/lib/deadline.ts's doc comment for exactly
+      // what this does and does not protect against.
+      return withDeadline('GET /search', reply, async () => {
+        const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand, evidenceBundling });
+        // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
+        recordRecallServed(db, {
+          query: q,
+          atomIds: hits.map(h => h.id),
+          scores: hits.map(h => h.score),
+          surface: 'rest',
+          mode: 'search',
+        });
+        // SLICE-411: enforce the [0,1] wire score contract at serialization,
+        // independent of fuseScores() internal math.
+        return { hits: clampScores(hits, 'GET /search') };
       });
-      // SLICE-411: enforce the [0,1] wire score contract at serialization,
-      // independent of fuseScores() internal math.
-      return { hits: clampScores(hits, 'GET /search') };
     });
 
     // POST /recall
@@ -331,7 +376,7 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       const expand = parsed.data.expand ?? false;
 
       return withDeadline('POST /recall', reply, async () => {
-        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand });
+        const hits = await search(query, filters, k, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand, evidenceBundling });
         // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
         recordRecallServed(db, {
           query,

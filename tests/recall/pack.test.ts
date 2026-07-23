@@ -13,10 +13,10 @@ const DAY = 24 * 60 * 60 * 1000;
 // `repo` when one is given (src/pipeline/derive-project.ts), so this test
 // double mirrors that instead of leaving `project` null the way raw
 // MemoryRepo.insert callers legally can.
-function seed(db: DB, type: string, text: string, importance: number, repo = 'r1') {
+function seed(db: DB, type: string, text: string, importance: number, repo = 'r1', branch: string | null = null) {
   new MemoryRepo(db).insert({
     type: type as never, text, normalized_text: text.toLowerCase(),
-    repo, project: repo, branch: null, agent: null, session_id: null,
+    repo, project: repo, branch, agent: null, session_id: null,
     hash: `h-${type}-${text.slice(0, 24)}`, source_hash: null, importance,
   });
 }
@@ -65,6 +65,28 @@ describe('selectPack (KF-B)', () => {
     // project-column behavior requires the worktree-specific project value.
     expect(selectPack(db, { repo: 'memory', now: Date.now() })).toHaveLength(0);
     expect(selectPack(db, { repo: 'memory', project: 'memory-worktree-atom2', now: Date.now() })).toHaveLength(1);
+  });
+
+  // `branch` was declared on PackOptions but never read by the SQL filter —
+  // requesting a branch silently returned repo/project-wide results.
+  it('scopes to the requested branch, and a nonexistent branch returns none', () => {
+    seed(db, 'decision', 'main branch decision', 0.8, 'r1', 'main');
+    seed(db, 'decision', 'feature branch decision', 0.8, 'r1', 'feat/x');
+
+    const mainPack = selectPack(db, { repo: 'r1', branch: 'main', now: Date.now() });
+    expect(mainPack).toHaveLength(1);
+    expect(mainPack[0]?.text).toBe('main branch decision');
+
+    const featPack = selectPack(db, { repo: 'r1', branch: 'feat/x', now: Date.now() });
+    expect(featPack).toHaveLength(1);
+    expect(featPack[0]?.text).toBe('feature branch decision');
+
+    const noSuchBranch = selectPack(db, { repo: 'r1', branch: 'does-not-exist', now: Date.now() });
+    expect(noSuchBranch).toEqual([]);
+
+    // No branch requested → branch-agnostic, matches both.
+    const allBranches = selectPack(db, { repo: 'r1', now: Date.now() });
+    expect(allBranches).toHaveLength(2);
   });
 
   it('respects the token budget (keeps best, drops overflow)', () => {

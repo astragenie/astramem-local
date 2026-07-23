@@ -88,8 +88,12 @@ export class MockQueryDecomposer implements QueryDecomposer {
  * Real LLM-backed decomposer (WS6). Asks the model for a JSON array of up
  * to `maxSubQueries` standalone search queries that together could retrieve
  * every fact a multi-hop question needs. A single-hop question is expected
- * to yield `[]` (or one element equal to the input) — either way the
- * caller's `getSubQueries` treats `<2` sub-queries as "nothing to add".
+ * to yield `[]` (or one element equal to the input, which `getSubQueries`'s
+ * de-dup step drops as an echo of the original query) — but there is no
+ * sub-query-COUNT gate: `getSubQueries` returns whatever the decomposer plus
+ * de-dup yields, at any length. The consumer (search.ts) gates on HIT count
+ * instead, so a single surviving sub-query fans out exactly like two or more
+ * would.
  *
  * Parsing is lenient by design: any non-JSON or empty-after-extraction
  * response is treated as "no sub-queries" (empty array), not an error —
@@ -137,7 +141,14 @@ export class LlmQueryDecomposer implements QueryDecomposer {
       ],
       {
         json: true,
-        jsonSchema: { type: 'array', items: { type: 'string' } },
+        // maxItems (retrieval hardening, P2 2026-07): constrains Ollama's
+        // structured output to AT MOST this.maxSubQueries entries directly at
+        // the schema level — defense-in-depth alongside the post-hoc
+        // `.slice(0, this.maxSubQueries)` below, which only trims an
+        // already-generated (and already-token-costed) array. A governed
+        // `maxSubQueries` (see applyMultiHopGovernance, config.ts) is always a
+        // positive integer by the time it reaches here.
+        jsonSchema: { type: 'array', items: { type: 'string' }, maxItems: this.maxSubQueries },
         temperature: 0,
         maxTokens: 300,
         signal,
@@ -249,11 +260,16 @@ export function needsDecomposition(query: string, minQueryWords: number): boolea
 /**
  * Run the decompose stage for one query: the cheap-skip gate, then the
  * decomposer call under a hard timeout, then de-dup/cap. Returns `[]`
- * (never throws) on a short-circuited query, a timeout, a provider error,
- * or fewer than 2 usable sub-queries — every one of those cases means
- * "search.ts should treat this call exactly like single-pass search",
- * which is the fallback contract this stage promises (degrades quality,
- * never availability — same posture as rerank.ts).
+ * (never throws) on a short-circuited query (below `minQueryWords`), a
+ * timeout, a provider error, or zero usable sub-queries surviving de-dup
+ * (every candidate was blank or an echo of the original query) — every one
+ * of those cases means "search.ts should treat this call exactly like
+ * single-pass search", which is the fallback contract this stage promises
+ * (degrades quality, never availability — same posture as rerank.ts). A
+ * successful call otherwise returns whatever survives de-dup at ANY length
+ * from 1 up to `maxSubQueries` — there is no `<2` cutoff; the fan-out
+ * consumer in search.ts gates on how many NEW candidate ids it finds, not on
+ * how many sub-queries ran.
  */
 export async function getSubQueries(query: string, opts: DecomposeOpts): Promise<string[]> {
   if (!needsDecomposition(query, opts.minQueryWords)) return [];

@@ -48,10 +48,7 @@ import { openDb } from '../storage/db.js';
 import { migrate } from '../storage/migrate.js';
 import { waitForHealth } from './wait-health.js';
 import type { DB } from '../storage/db.js';
-
-function hasFlag(args: string[], flag: string): boolean {
-  return args.includes(flag);
-}
+import { hasFlag } from './arg-parse.js';
 
 /**
  * `StopLockHolderFailureReason` values bypassable with `--force` ALONE.

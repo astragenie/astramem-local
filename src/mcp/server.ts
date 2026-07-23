@@ -69,6 +69,7 @@ import { search, parseAsOf, type SearchFilters } from '../search/search.js';
 import { resolveRerankOpts } from '../search/rerank.js';
 import { resolveDecomposeOpts } from '../search/decompose.js';
 import { resolveQueryRewriteOpts } from '../search/query-rewrite.js';
+import { resolveEvidenceBundlingOpts } from '../search/evidence-bundle.js';
 import { buildLLMProvider } from '../providers/index.js';
 import { clampScores } from '../server/lib/score-contract.js';
 import { defaultConfig, type Config } from '../config/config.js';
@@ -140,6 +141,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
   // requires the per-call `expand: true` opt-in argument below (AC-1's
   // latency gate) — see src/search/query-rewrite.ts.
   const queryRewrite = resolveQueryRewriteOpts(cfg, buildLLMProvider);
+  // Wave-6: selective post-rerank evidence bundling — undefined (search()
+  // takes zero extra branches) unless evidenceBundling.enabled is set. See
+  // src/search/evidence-bundle.ts.
+  const evidenceBundling = resolveEvidenceBundlingOpts(cfg);
 
   const server = new McpServer(
     { name: 'astramemory-local', version: PKG_VERSION },
@@ -199,6 +204,19 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             "FEAT-550: opt this call into the pre-recall query-rewrite/expansion stage — only takes " +
             "effect when search.queryRewrite.mode is 'enabled'. Omitted/false = pre-FEAT-550 behavior."
           ),
+        // FEAT-532 L2 (retrieval hardening issue #2): was silently ignored on
+        // this tool before — GET /search and POST /recall both threaded
+        // `mode` into SearchOpts.mode, but this MCP surface never accepted
+        // the argument at all, so an MCP caller asking for keyword-only or
+        // semantic-only retrieval silently got 'hybrid' with no signal its
+        // intent was dropped.
+        mode: z
+          .enum(['keyword', 'semantic', 'hybrid'])
+          .optional()
+          .describe(
+            "Which candidate-gathering leg(s) to run — 'keyword' (FTS5 BM25 only), 'semantic' (vector " +
+            "only), or 'hybrid' (both, default). Omitted = 'hybrid', byte-identical to pre-FEAT-532 behavior."
+          ),
       }),
     },
     async (args) => {
@@ -241,8 +259,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         weights,
         rerank,
         decompose,
+        mode: args.mode ?? 'hybrid',
         queryRewrite,
         expand: args.expand ?? false,
+        evidenceBundling,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
@@ -314,6 +334,15 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
             "FEAT-550: opt this call into the pre-recall query-rewrite/expansion stage — only takes " +
             "effect when search.queryRewrite.mode is 'enabled'. Omitted/false = pre-FEAT-550 behavior."
           ),
+        // FEAT-532 L2 (retrieval hardening issue #2): see search_memory's
+        // identical field above — this alias tool had the same gap.
+        mode: z
+          .enum(['keyword', 'semantic', 'hybrid'])
+          .optional()
+          .describe(
+            "Which candidate-gathering leg(s) to run — 'keyword' (FTS5 BM25 only), 'semantic' (vector " +
+            "only), or 'hybrid' (both, default). Omitted = 'hybrid', byte-identical to pre-FEAT-532 behavior."
+          ),
       }),
     },
     async (args) => {
@@ -356,8 +385,10 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
         weights,
         rerank,
         decompose,
+        mode: args.mode ?? 'hybrid',
         queryRewrite,
         expand: args.expand ?? false,
+        evidenceBundling,
       });
       // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
       recordRecallServed(db, {
@@ -812,9 +843,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       // GET /entities/:id/memories: a superseded/invalidated/archived
       // memory is retired, not "currently linked", even though the
       // memory_entities row itself still points at it.
-      const memories = Array.from(memoryIds)
-        .map((mid) => memRepo.get(mid))
-        .filter((m): m is NonNullable<typeof m> => m !== null && m.valid_to === null)
+      // getMany (batched IN) replaces a per-id memRepo.get() N+1 here.
+      const memories = memRepo.getMany(Array.from(memoryIds))
+        .filter((m) => m.valid_to === null)
         .filter((m) => args.since === undefined || m.created_at >= args.since)
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, args.limit)

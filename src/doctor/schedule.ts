@@ -59,8 +59,29 @@
  * whatever `checkOpts` it's given, rather than trusting the tier filter
  * alone — belt-and-braces against a future 'cheap'-tagged check that
  * mistakenly accepts a provider argument it never uses.
+ *
+ * `getHardeningChecks` (hardening-checks.ts, W1.3) and `getGpuChecks`
+ * (gpu-checks.ts, FEAT-485) used to be wired ONLY into `cli/doctor.ts` — nine
+ * real canaries (stranded legacy DB, plaintext pre-encryption backup, served-
+ * version mismatch, zombie instance lock, poisoned jobs, pending
+ * consolidation proposals, orphaned llama-server processes, silent CPU
+ * offload, Ollama tuning env vars) that only ever fired when a human ran
+ * `doctor` by hand — the exact "built, wired [to the CLI], never invoked
+ * [unattended]" gap this module exists to close for the core registry. Both
+ * factories are folded in here, via `extraChecks()` below, using each check's
+ * own pre-existing `tier` field rather than a new classification: all six
+ * hardening checks and the "Ollama tuning env vars" check are `'cheap'` (fs
+ * stat / loopback fetch / indexed COUNT(*) / local registry read) and ride
+ * the 15-minute frequent schedule; "Orphaned llama-server processes" and
+ * "Silent CPU offload" are `'full'` (a real Ollama `/api/ps` call plus, for
+ * the former, an `nvidia-smi` subprocess spawn) and only ever run on the
+ * existing >=24h piggyback tick, same as every other full-tier check.
  */
-import { getChecks, crashLoopStreakLength, CRASH_LOOP_THRESHOLD, type DoctorCheckOpts, type Check } from './checks.js';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { getChecks, crashLoopStreakLength, CRASH_LOOP_THRESHOLD, openProductionDbReadonly, type DoctorCheckOpts, type Check } from './checks.js';
+import { getHardeningChecks } from './hardening-checks.js';
+import { getGpuChecks } from './gpu-checks.js';
 import { runChecks, type CheckResultWithName } from './runner.js';
 
 export type DoctorScheduleTier = 'frequent' | 'full';
@@ -92,6 +113,29 @@ export type DoctorResultSink = (result: DoctorScheduleResult) => void;
  *  costs nothing worth tuning against. */
 export const FREQUENT_DOCTOR_INTERVAL_MS = 15 * 60 * 1000;
 
+/**
+ * Builds the hardening-checks.ts + gpu-checks.ts registries, applying the
+ * same opts defaults `coreChecks()` (checks/index.ts) uses so a caller that
+ * omits `dataDir`/`port`/`encryptionEnabled` here sees identical behavior to
+ * the CLI doctor path (cli/doctor.ts) for these same checks. Each returned
+ * `Check` carries its own `tier` — callers (below) decide inclusion by
+ * filtering on it, exactly like `getChecks()`'s output.
+ */
+function extraChecks(checkOpts: DoctorCheckOpts): Check[] {
+  const port = checkOpts.port ?? 7777;
+  const dataDir = checkOpts.dataDir ?? join(tmpdir(), 'astramem');
+  const encryptionEnabled = checkOpts.encryptionEnabled ?? true;
+
+  return [
+    ...getHardeningChecks({
+      dataDir,
+      port,
+      openDbReadonly: () => openProductionDbReadonly(join(dataDir, 'memory.sqlite'), encryptionEnabled),
+    }),
+    ...getGpuChecks({ ollamaBaseUrl: checkOpts.ollamaBaseUrl }),
+  ];
+}
+
 async function runTier(
   tier: DoctorScheduleTier,
   checks: Check[],
@@ -113,16 +157,17 @@ async function runTier(
 
 /**
  * Cheap DB-only pass. Selects exactly the checks declared `tier: 'cheap'`
- * (see this module's header comment) and, belt-and-braces, also clears
- * `llmProviders`/`embedProvider` from the opts before building the check
- * list at all.
+ * (see this module's header comment) — from BOTH the core registry
+ * (checks.ts) and the hardening/GPU registries (`extraChecks()` above) — and,
+ * belt-and-braces, also clears `llmProviders`/`embedProvider` from the opts
+ * before building the check list at all.
  */
 export async function runFrequentDoctorChecks(
   checkOpts: DoctorCheckOpts,
   onResult: DoctorResultSink,
 ): Promise<DoctorScheduleResult> {
   const frequentOpts: DoctorCheckOpts = { ...checkOpts, llmProviders: undefined, embedProvider: undefined };
-  const checks = getChecks(frequentOpts).filter(c => c.tier === 'cheap');
+  const checks = [...getChecks(frequentOpts), ...extraChecks(frequentOpts)].filter(c => c.tier === 'cheap');
   return runTier('frequent', checks, onResult);
 }
 
@@ -143,7 +188,7 @@ export async function runFullDoctorChecks(
   const opts: DoctorCheckOpts = crashLooping
     ? { ...checkOpts, llmProviders: undefined, embedProvider: undefined }
     : checkOpts;
-  const checks = getChecks(opts);
+  const checks = [...getChecks(opts), ...extraChecks(opts)];
   return runTier('full', checks, onResult, crashLooping);
 }
 

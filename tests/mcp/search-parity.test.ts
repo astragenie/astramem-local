@@ -13,6 +13,7 @@ import { buildApp } from '../../src/server/app.js';
 import { makeFakeVec } from '../../src/search/search.js';
 import { MemoryRepo } from '../../src/storage/memories.js';
 import { EntityRepo } from '../../src/storage/entities.js';
+import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import type { EmbedProvider } from '../../src/contracts/index.js';
 import type { FastifyInstance } from 'fastify';
 import type { DB } from '../../src/storage/db.js';
@@ -218,5 +219,75 @@ describe.each(['search_memory', 'recall_memory'] as const)('%s as_of + entity pa
     expect(mcpIds).toEqual(restIds);
     expect(restIds).toContain(oldId);
     expect(restIds).not.toContain(newId);
+  });
+});
+
+// Retrieval hardening issue #2: search_memory/recall_memory silently ignored
+// `mode` entirely before this — GET /search and POST /recall both threaded
+// it into search()'s SearchOpts.mode, but neither MCP tool accepted the
+// argument at all.
+describe.each(['search_memory', 'recall_memory'] as const)('%s mode parity (retrieval hardening issue #2)', (toolName) => {
+  let db: DB;
+  let app: FastifyInstance;
+  let baseUrl: string;
+  let repo: MemoryRepo;
+  let embed: EmbedProvider;
+
+  beforeEach(async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    embed = buildMockEmbed();
+    app = await buildApp({ db, token: TOKEN, embed });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const addr = app.server.address();
+    if (!addr || typeof addr === 'string') throw new Error('unexpected server address');
+    baseUrl = `http://127.0.0.1:${addr.port}`;
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  it('mode:"keyword" drops the vector leg — a vec-only-matching candidate never surfaces', async () => {
+    // idA shares the query's terms — reachable via FTS5.
+    const idA = seedMemory(repo, 'mode-parity test: wombat husbandry notes', 'fact');
+    // idB shares no terms with the query at all — only reachable via the
+    // vector leg (the only row ever upserted into the vec store).
+    const idB = seedMemory(repo, 'completely unrelated banana bread recipe notes', 'fact');
+    const vecStore = new SqliteVecStore(db, embed.dim);
+    const [vecB] = await embed.embed(['completely unrelated banana bread recipe notes']);
+    await vecStore.upsert(idB, vecB as Float32Array);
+
+    const argKey = toolName === 'search_memory' ? 'limit' : 'k';
+    const keywordResult = await toolCall(baseUrl, toolName, {
+      query: 'wombat husbandry', [argKey]: 10, mode: 'keyword',
+    });
+    const hybridResult = await toolCall(baseUrl, toolName, {
+      query: 'wombat husbandry', [argKey]: 10, mode: 'hybrid',
+    });
+    expect(keywordResult.isError).toBe(false);
+    expect(hybridResult.isError).toBe(false);
+
+    const keywordIds = (keywordResult.payload as { hits: Array<{ id: string }> }).hits.map(h => h.id).sort();
+    const hybridIds = (hybridResult.payload as { hits: Array<{ id: string }> }).hits.map(h => h.id).sort();
+
+    expect(keywordIds).toEqual([idA]);
+    expect(hybridIds).toEqual([idA, idB].sort());
+    expect(hybridIds).not.toEqual(keywordIds);
+  });
+
+  it('an omitted mode defaults to hybrid (byte-identical to pre-fix behavior)', async () => {
+    const idA = seedMemory(repo, 'mode-parity omitted test: capybara grooming notes', 'fact');
+    const idB = seedMemory(repo, 'a totally different topic: sourdough starter notes', 'fact');
+    const vecStore = new SqliteVecStore(db, embed.dim);
+    const [vecB] = await embed.embed(['a totally different topic: sourdough starter notes']);
+    await vecStore.upsert(idB, vecB as Float32Array);
+
+    const argKey = toolName === 'search_memory' ? 'limit' : 'k';
+    const omittedResult = await toolCall(baseUrl, toolName, { query: 'capybara grooming', [argKey]: 10 });
+    expect(omittedResult.isError).toBe(false);
+    const ids = (omittedResult.payload as { hits: Array<{ id: string }> }).hits.map(h => h.id).sort();
+    expect(ids).toEqual([idA, idB].sort());
   });
 });

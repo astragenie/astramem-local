@@ -2,12 +2,13 @@ import type { DB } from '../storage/db.js';
 import type { Config } from '../config/config.js';
 import type { HandlerCtx } from './handler.js';
 import type { HandlerRegistry } from './registry.js';
-import { JobRepo } from './job-repo.js';
+import { JobRepo, LOCAL_SQLITE_KINDS } from './job-repo.js';
 import { DistillBudgetPausedError } from './handlers/distill.js';
 import { classifyError } from './failure-classifier.js';
 import { TransientError } from './errors.js';
 import { logger, childLogger } from '../log/logger.js';
 import { recordHandlerRun } from '../storage/handler-run-log.js';
+import { RESERVED_LOCAL_LANE_ID } from './backpressure.js';
 
 const MAX_ATTEMPTS = 3;
 
@@ -90,7 +91,10 @@ export interface WorkerHandle {
  * the same guarantee.
  *
  * Each lane's tick:
- *   1. Claim the oldest pending job (atomic state transition pending→running).
+ *   1. Claim the highest-priority pending job (atomic state transition
+ *      pending→running; lane `RESERVED_LOCAL_LANE_ID` claims among
+ *      `LOCAL_SQLITE_KINDS` first — see job-repo.ts's `claimPending` doc
+ *      comment and backpressure.ts's `RESERVED_LOCAL_LANE_ID`).
  *   2. Dispatch to the registered handler.
  *   3. On success → complete.
  *   4. On throw → fail + attempts++. If attempts >= MAX_ATTEMPTS → poison.
@@ -140,7 +144,17 @@ export function startWorker(opts: WorkerOpts): WorkerHandle {
         return;
       }
 
-      const job = repo.claimPending();
+      // FEAT-482 fold (item 2 of 3): the reserved lane gets first refusal on
+      // local-sqlite-kind work (job-repo.ts's LOCAL_SQLITE_KINDS — currently
+      // just 'cleanup') so it can never get stuck behind a long queue of
+      // network-bound distill/consolidate jobs; falls through to a normal
+      // any-kind claim when no local-only job is pending, so this lane is
+      // never left idle. Every other lane claims across all kinds exactly as
+      // before — local-only jobs remain claimable there too, this just
+      // guarantees them a chance even when every other lane is occupied.
+      const job = laneId === RESERVED_LOCAL_LANE_ID
+        ? repo.claimPending({ preferKinds: LOCAL_SQLITE_KINDS })
+        : repo.claimPending();
 
       if (!job) {
         // Nothing to do — schedule next poll

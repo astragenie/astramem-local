@@ -26,6 +26,17 @@
  * safe to use: with no real I/O anywhere in the tick, vi.advanceTimersByTimeAsync
  * can drive the interval deterministically and assert exact tick counts,
  * independent of CPU/machine load.
+ *
+ * Wave-3 doctor track: schedule.ts's `extraChecks()` now also pulls in
+ * hardening-checks.ts's `getHardeningChecks()` and gpu-checks.ts's
+ * `getGpuChecks()` directly (not through checks.js) — both must be stubbed
+ * here too, for the exact same reason as `getChecks()` above. Left
+ * unstubbed, `getGpuChecks()`'s real `readPersistedEnvVars` (a PowerShell
+ * child-process spawn) does genuine async I/O outside the fake-timer clock:
+ * `vi.advanceTimersByTimeAsync` only fast-forwards virtual time and flushes
+ * microtasks, it does not wait out a real subprocess's exit event, so the
+ * tick's promise is still pending — and the boot-pass assertion below sees
+ * zero results instead of one.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { Check } from '../../src/doctor/types.js';
@@ -33,8 +44,9 @@ import type { DoctorCheckOpts } from '../../src/doctor/checks.js';
 import { startFrequentDoctorSchedule, type DoctorScheduleResult } from '../../src/doctor/schedule.js';
 
 // vi.mock calls are hoisted above these imports by vitest's transform, so
-// schedule.ts's internal `getChecks` binds to this stub rather than the real
-// ~50-check registry — see the file header comment for why.
+// schedule.ts's internal `getChecks`/`getHardeningChecks`/`getGpuChecks`
+// bind to these stubs rather than the real registries — see the file header
+// comment for why.
 vi.mock('../../src/doctor/checks.js', () => {
   const stubCheck: Check = {
     name: 'stub cheap check',
@@ -45,8 +57,17 @@ vi.mock('../../src/doctor/checks.js', () => {
     getChecks: (): Check[] => [stubCheck],
     crashLoopStreakLength: (): number => 0,
     CRASH_LOOP_THRESHOLD: 3,
+    openProductionDbReadonly: async (): Promise<never> => {
+      throw new Error('not used — extraChecks() opts are never exercised by this stub');
+    },
   };
 });
+vi.mock('../../src/doctor/hardening-checks.js', () => ({
+  getHardeningChecks: (): Check[] => [],
+}));
+vi.mock('../../src/doctor/gpu-checks.js', () => ({
+  getGpuChecks: (): Check[] => [],
+}));
 
 describe('doctor scheduling — interval firing (deterministic, fake timers)', () => {
   beforeEach(() => {

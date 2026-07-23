@@ -52,6 +52,13 @@ as a ≥3-run median with reported dispersion. **0.70 is a stretch, gated** on t
 showing a real answerer ceiling AND the change preserving local-first constraints. A lucky-day 0.70 on
 one conversation is not a result.
 
+> **UPDATE 2026-07-20 — the oracle-factorial gate has RESOLVED (Phase 1 below).** It found a real
+> perfect-evidence ceiling of ~0.53 with the frozen answerer. **0.70 is effectively off the table for
+> memory-pipeline work** — even perfect evidence can't reach it under the current answerer+scorer, and a
+> stronger answerer is a rejected mechanism. Retarget on **stable full-suite 0.62** via the ~7-point
+> single-hop-retrieval + multi-hop headroom Phase 1 identified; treat any approach to 0.70 as requiring an
+> out-of-scope answerer change, not a memory fix.
+
 ## The plan — measure before building (cheap-first, ordered by cost:evidence)
 
 ### Phase 0 — free / near-free measurements (no or minimal LLM cost)
@@ -64,16 +71,46 @@ one conversation is not a result.
     budget so answers don't truncate to empty. FEAT-450 measured minimal→low as a win on this model family.
     One conv-1 pair.
 
-### Phase 1 — the oracle factorial (the honest ceiling)
+### Phase 1 — the oracle factorial (the honest ceiling) — ✅ DONE 2026-07-20
 Answer each question from: gold-source-turns · gold-atoms · retrieved-atoms · retrieved-source-spans, crossed
-with current-answerer vs canonical-renderer. This measures the true ceiling of EACH stage (extraction,
-retrieval, evidence-sufficiency, answering, scoring) before any build. It is the only thing that can honestly
-attribute single-hop's gap.
+with current-answerer vs canonical-renderer. Measures the true ceiling of EACH stage (extraction,
+retrieval, evidence-sufficiency, answering, scoring) before any build.
 
-### Phase 2 — attack the measured gap
-Whatever Phase 1 says is the binding constraint. The prior (from `single-hop-root-cause.md`) is
-**extraction completeness** — repair-only atom triage (measured recall 78→80.1, typeAcc +9, currently
-disabled) is the most evidence-backed lever and is local-first-aligned.
+**Built + run.** Harness: `scripts/eval/locomo/oracle/`. Full result + caveats:
+`docs/eval-runs/20260720-oracle-factorial/README.md`. Attribution (llm-judge, conv-26, n=152 cat1-4):
+
+```
+gold-turns (PERFECT evidence)  0.526   ceiling — answerer + scorer, evidence cannot be blamed
+gold-atoms                     0.468   extraction loss  −0.058
+retrieved-atoms (real pipeline)0.461   retrieval  loss  −0.007   (≈ P0a rescore 0.463 → harness faithful)
+Zep target                     0.947   remaining −0.42 = answerer / scorer / evidence-sufficiency ceiling
+```
+
+**Verdict: ~87% of the gap is downstream of the memory pipeline.** Handed the literal cited answer
+turns, the current answerer+scorer tops out at ~0.53. `canonical ≈ current` (±1–2 pts) → the ceiling is
+real, not a metric artifact. This **refutes the extraction-completeness prior as a broad lever** (below).
+Per-category the constraint differs: single-hop is retrieval-limited (0.81 gold → 0.59 retrieved),
+multi-hop is extraction+retrieval-limited (0.56 → 0.28), temporal is already HELPED by extraction
+(atoms 0.62 > raw turns 0.32 — date-grounding paying off).
+
+### Phase 2 — attack the measured gap — RE-SCOPED 2026-07-20 (post Phase-1)
+Phase 1 measured the binding constraint; it is **not** broad extraction completeness. Re-scoped, in order:
+
+1. **Single-hop retrieval (primary).** Largest category (n=70) with the clearest, in-scope headroom:
+   0.81 (perfect evidence) → 0.59 (real retrieval) = **~0.23 recoverable** by surfacing the right atoms.
+   The right atoms mostly EXIST (gold-atoms 0.60 ≈ retrieved 0.59 on single-hop) — this is a ranking/recall
+   problem, not an extraction problem. Local-first-aligned.
+2. **Multi-hop (secondary).** The ONE category where extraction completeness genuinely helps — it loses at
+   both rungs (0.56 → 0.34 extraction → 0.28 retrieval). Repair-only atom triage (recall 78→80.1, typeAcc +9,
+   currently disabled) is the evidence-backed lever HERE specifically, not as a global fix.
+3. **Do NOT spend on temporal** — already near its evidence ceiling via text-surface date-grounding.
+4. **Hard ceiling to respect:** any memory-pipeline work is bounded by the ~0.53 perfect-evidence ceiling.
+   The dominant −0.42 lever (answerer capability) is explicitly OUT of scope (a stronger answerer is a
+   rejected mechanism — reintroduces the harness confound). So the realistic reachable gain from Phase 2 is
+   **~7 aggregate points** (extraction ~6 + retrieval ~1), concentrated in single-hop + multi-hop.
+
+**Caveat before acting:** Phase-1 numbers are a single conversation, single day (n=152). Confirm the ceiling
+at full-suite + ≥3 runs (Phase 3 rules) before committing build effort to Phase 2.
 
 ### Phase 3 — variance-lock + full-suite gate
 Full-suite n=1986, ≥3-run, conversation-level baseline. Report median + dispersion + worst-conversation.

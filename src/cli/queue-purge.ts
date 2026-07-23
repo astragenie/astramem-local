@@ -14,11 +14,7 @@ import { join } from 'node:path';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { openRuntimeDb } from './open-runtime-db.js';
 import { JobRepo } from '../pipeline/job-repo.js';
-
-function parseArg(args: string[], flag: string): string | undefined {
-  const i = args.indexOf(flag);
-  return i >= 0 ? args[i + 1] : undefined;
-}
+import { parseArg } from './arg-parse.js';
 
 export interface PurgeResult {
   purged: number;

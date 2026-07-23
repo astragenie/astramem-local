@@ -45,6 +45,12 @@
  * it) and compare judge.mts scores between the two run dirs. Omitted:
  * byte-identical to before this flag existed.
  *
+ * --normalization minmax|winsorized (eval-only lever, score-phase Track I A/B,
+ * 2026-07-23, additive): flips the isolated eval daemon's search.normalization
+ * config key (src/config/config.ts / src/search/fuse.ts already ship this —
+ * this flag is new eval-harness plumbing only, no src/ edits). Omitted:
+ * byte-identical to before this flag existed (defaultConfig()'s 'minmax').
+ *
  * ASTRA_LOCOMO_DISTILL_TIMEOUT_MS (env, not a flag; 2026-07-20 hardening):
  * fallback for --distill-timeout-ms's default (1800000ms/30min) when the flag
  * is omitted — --distill-timeout-ms still wins when passed explicitly. Lets a
@@ -203,12 +209,46 @@ const extractionPassBFlag = passBProviderFlag !== undefined && passBModelFlag !=
 // existing off-by-default baseline) and once with it, then compare
 // judge.mts scores between the two run dirs. Omitted: byte-identical to
 // before this flag existed.
+// --cross-encoder-provider mock|onnx|http (additive, 2026-07-22): the real
+// enable-default reranker is 'onnx' (defaultConfig().crossEncoder.provider), and
+// the +0.031/+0.06 rerank evidence (LEDGER v3 rerank-ONNX rows) was measured with
+// onnx — 'mock' is only the deterministic Jaccard stand-in. Default stays 'mock'
+// so every prior --cross-encoder invocation is byte-identical; pass onnx to A/B
+// the production reranker on the run.mts conv-1 path.
 const crossEncoderOverride: EvalCrossEncoderOverride | undefined =
-  has('--cross-encoder') ? { enabled: true, provider: 'mock' } : undefined;
+  has('--cross-encoder')
+    ? { enabled: true, provider: (get('--cross-encoder-provider') as 'mock' | 'onnx' | 'http' | undefined) ?? 'mock' }
+    : undefined;
+// --normalization minmax|winsorized (eval-only lever, score-phase Track I A/B,
+// 2026-07-23): flips the isolated eval daemon's search.normalization config key
+// (src/config/config.ts / src/search/fuse.ts already ship this — this flag is
+// new eval-harness plumbing, not a src/ change). Omitted: byte-identical to
+// before this flag existed (defaultConfig()'s 'minmax').
+const normalizationFlag = get('--normalization') as 'minmax' | 'winsorized' | undefined;
+if (normalizationFlag !== undefined && normalizationFlag !== 'minmax' && normalizationFlag !== 'winsorized') {
+  console.error(`--normalization must be minmax|winsorized, got: ${normalizationFlag}`);
+  process.exit(1);
+}
 // --multihop (v2 plan C1): flip the WS6 decompose stage ON for the sandbox
 // (OFF by default in defaultConfig). Additive — omitted is byte-identical.
-const multiHopOverride: { enabled: boolean } | undefined =
-  has('--multihop') ? { enabled: true } : undefined;
+// --multihop-provider mock|llm (2026-07-22): mock = deterministic regex split
+// (default); llm = the real LlmQueryDecomposer, which uses config.llm.extraction
+// provider+model (decompose.ts:buildQueryDecomposer). On --resume no distill
+// runs, so pairing --multihop-provider llm with --extraction-provider ollama
+// --extraction-model <local> points the decomposer at a FAST LOCAL model — codex
+// latency (~10s) blows past multiHop.timeoutMs and would no-op every call.
+// --multihop-timeout-ms raises that per-call budget (default 800ms is tuned for a
+// fast local model; still too tight for some). Additive — omitted is byte-identical.
+const multiHopProviderFlag = get('--multihop-provider') as 'mock' | 'llm' | undefined;
+const multiHopTimeoutFlag = get('--multihop-timeout-ms');
+const multiHopOverride: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number } | undefined =
+  has('--multihop')
+    ? {
+        enabled: true,
+        ...(multiHopProviderFlag ? { provider: multiHopProviderFlag } : {}),
+        ...(multiHopTimeoutFlag ? { timeoutMs: Number(multiHopTimeoutFlag) } : {}),
+      }
+    : undefined;
 // WS2 diagnostic (same doc, workstream 2): run the not-in-db/rank-miss/
 // rank-ok retrieval diagnosis against each shard's daemon right after the
 // answer step, before it's torn down -- reuses the daemon that's about to
@@ -279,8 +319,11 @@ async function runShard(opts: {
   /** Additive (WS2 rerank-flip, see the flag-parsing comment near the top of
    *  this file) — undefined reproduces pre-existing behavior exactly. */
   crossEncoderOverride?: EvalCrossEncoderOverride;
+  /** Additive (score-phase Track I A/B, eval-only lever) — undefined
+   *  reproduces pre-existing behavior exactly (defaultConfig()'s 'minmax'). */
+  normalization?: 'minmax' | 'winsorized';
   /** Additive (v2 C1) — flips WS6 multiHop decompose on for the sandbox. */
-  multiHopOverride?: { enabled: boolean };
+  multiHopOverride?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number };
   /** Additive (WS2 diagnostic, same comment) — false/omitted runs no extra
    *  recall() calls and writes no diagnosis.json, byte-identical to before
    *  this option existed. */
@@ -295,7 +338,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, crossEncoderOverride, multiHopOverride, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, crossEncoderOverride, multiHopOverride, normalization, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -306,7 +349,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, multiHop: multiHopOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, multiHop: multiHopOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, normalization });
   // 2026-07-18 traceability: persist the sandbox's EXACT boot config into the
   // run dir — the sandbox datadir is deleted on cleanup, and everything not in
   // this file fell through to defaultConfig() (see run-manifest's gitState for
@@ -620,7 +663,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag, crossEncoderOverride, multiHopOverride, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag, crossEncoderOverride, multiHopOverride, normalization: normalizationFlag, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -727,6 +770,10 @@ async function runFull(): Promise<void> {
       // comparison between a baseline and a rerank-flip run must be
       // checkable against this field, not memory.
       crossEncoder: crossEncoderOverride ?? { enabled: false },
+      // Score-phase Track I A/B (2026-07-23): a published normalization
+      // comparison must be checkable against this field, not memory — same
+      // rationale as crossEncoder/extractProfile above.
+      normalization: normalizationFlag ?? 'minmax',
       diagnosed: diagnoseRequested,
       // 2026-07-18 postmortem (the 0.5945-vs-0.5362 forensics failure): the
       // knobs that actually explained a 5.8-pt gap — extraction passes,

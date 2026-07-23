@@ -24,11 +24,13 @@ import { EntityRepo } from '../storage/entities.js';
 import { applyRerank, type RerankOpts } from './rerank.js';
 import { getSubQueries, type DecomposeOpts } from './decompose.js';
 import { getQueryVariants, mergeVariantHits, type QueryRewriteOpts } from './query-rewrite.js';
+import { applyEvidenceBundling, type EvidenceBundlingOpts } from './evidence-bundle.js';
 // FEAT-429: the repo/project/agent hard-column WHERE-clause builder and the
 // since numeric-range builder now derive from the shared filter-descriptor
 // registry instead of hand-rolled closures — see
 // src/contracts/filter-registry.ts.
 import { applySqlColumnFilters, applySqlRangeFilters, mergeRepoAlias } from '../contracts/filter-registry.js';
+import { childLogger } from '../log/logger.js';
 
 export interface SearchFilters {
   type?: string[];
@@ -242,7 +244,79 @@ export interface SearchHit {
     winner_id: string;
     confidence: number;
   };
+  /**
+   * P2 retrieval-overhaul plan (2026-07-20): "Rerank `query + atom text +
+   * evidence excerpt`, not atom text alone" — this is the field
+   * `buildRerankCandidateText` (src/search/rerank.ts) was already reading
+   * before it had a producer. Sourced from the memory's provenance: prefers
+   * `evidence_span` (migration 057 — the exact verbatim transcript text
+   * `locate-evidence.ts` traced the atom back to) over the legacy `evidence`
+   * string (migration 004 — the extractor's own, possibly-paraphrased
+   * excerpt) when both are present, since the located span is strictly more
+   * trustworthy. Bounded to `MAX_EVIDENCE_EXCERPT_CHARS` so a whole-turn
+   * fuzzy-tier match (locate-evidence.ts's tier 2 can return an entire
+   * transcript line) can't blow up the cross-encoder input. Absent (not
+   * `null`) when the memory has neither field — same "omit rather than
+   * fake" convention as `capture_source` above.
+   *
+   * LOCAL-ONLY: deliberately stripped by `toWireHit` (src/contracts/
+   * wire-hit.ts), same treatment as `source`/`reranked`/`rerank_score`/
+   * `correction_pending` — the closed astramem-retrieval-result@1 schema
+   * (`additionalProperties: false`) doesn't declare this field yet, so it's
+   * visible on GET /search and the MCP tools' raw JSON but not on POST
+   * /recall's canonical envelope. The rerank stage itself still benefits:
+   * `search()` builds `results` (with `evidence` populated) BEFORE calling
+   * `applyRerank`, so the cross-encoder always sees it regardless of what
+   * the wire response later strips.
+   */
+  evidence?: string;
+  /**
+   * Wave-6 (P2 retrieval-overhaul, evidence-sufficiency lever,
+   * src/search/evidence-bundle.ts): present + `true` only on a hit the
+   * evidence-bundling stage ADDED to an already-finalized top-k (never on an
+   * ordinarily-fused/reranked hit) — absent (not just `false`) otherwise,
+   * same "additive marker" convention as `reranked`. `score` on a bundled
+   * hit is a synthetic floor value (never a real fusion/rerank score, see
+   * `applyEvidenceBundling`'s doc comment), so a consumer that cares about
+   * hit provenance should key off THIS field, not `score`.
+   *
+   * LOCAL-ONLY: stripped by `toWireHit` (src/contracts/wire-hit.ts), same
+   * treatment as `evidence`/`correction_pending` — the closed
+   * astramem-retrieval-result@1 schema doesn't declare it yet.
+   */
+  bundled?: true;
+  /** Why the evidence-bundling stage pulled this atom in — which scoped
+   *  query (same-entity via `memory_entities`, same-session via
+   *  `memories.session_id`) found it. Present only alongside `bundled: true`. */
+  bundle_reason?: 'same_entity' | 'same_session';
 }
+
+/** Bounds the `evidence` excerpt threaded onto a SearchHit — mirrors the
+ *  500-char excerpt bound already used for the analogous fallback at
+ *  src/distill/stages/08-embed-index.ts's `sourceExcerpt`. A whole-turn
+ *  fuzzy-tier `evidence_span` match (locate-evidence.ts) can be much longer
+ *  than the extractor's own short `evidence` quote; this keeps either case
+ *  bounded before it reaches the cross-encoder rerank input. */
+const MAX_EVIDENCE_EXCERPT_CHARS = 500;
+
+/**
+ * Hard wall-clock ceiling across the ENTIRE WS6 sub-query / FEAT-550 variant
+ * fan-out loop below (retrieval hardening, P2 2026-07-2x, issue #6). Each
+ * `gatherCandidates()` call in those loops does an `embed.embed()` call with
+ * NO timeout of its own (unlike the decompose/rewrite LLM call itself, which
+ * `getSubQueries`/`getQueryVariants` already bound via `withAbortableTimeout`)
+ * — a degraded-but-not-failing embed provider stacks `maxSubQueries` +
+ * `maxVariants` sequential slow calls into tens of seconds of added latency
+ * with no aggregate cap (measured: N degraded embeds stacking to ~45s against
+ * a single search() call). This bounds the SUM across every sub-query/variant
+ * gathered in one call: once spent, the loop stops gathering MORE candidates
+ * (whatever was already gathered is kept, never discarded/rolled back) rather
+ * than continuing to add latency for diminishing returns — same "degrade
+ * quality, never availability" posture as every other fallback in this file.
+ * Local, hardcoded (not config-surfaced) — mirrors `MAX_EVIDENCE_EXCERPT_CHARS`
+ * just above: a safety ceiling, not a tuning knob.
+ */
+const MAX_FANOUT_WALL_CLOCK_MS = 5_000;
 
 export interface SearchOpts {
   db: DB;
@@ -319,6 +393,19 @@ export interface SearchOpts {
    * when `queryRewrite` is configured — see that field's doc comment.
    */
   expand?: boolean;
+  /**
+   * Optional post-rerank evidence-bundling stage (Wave-6, P2 retrieval-
+   * overhaul evidence-sufficiency lever, src/search/evidence-bundle.ts).
+   * `undefined` (the default — see config.evidenceBundling.enabled /
+   * resolveEvidenceBundlingOpts) means the stage is never invoked and
+   * search() is byte-identical to pre-Wave-6 behavior. When present, it runs
+   * once against the FINALIZED top-k (post-rerank when `rerank` is also
+   * set, post-fusion-truncation otherwise) and only ever APPENDS additional
+   * scoped atoms — it never reorders or drops an existing hit. debug:true is
+   * unaffected (that path returns before this stage would ever run), same
+   * posture as rerank/decompose's debug interaction.
+   */
+  evidenceBundling?: EvidenceBundlingOpts;
 }
 
 /**
@@ -353,24 +440,140 @@ export interface SearchDebugHit {
 }
 
 /**
- * Sanitize a free-form query string for safe use with the FTS5 `MATCH` operator.
+ * Stopword / interrogative set for FTS5 lexical-query construction (P0.2,
+ * 2026-07-20 retrieval overhaul plan, Wave 0). Deliberately conservative:
+ * erring toward KEEPING a token (a stray common word surviving into the OR
+ * clause costs a little precision) rather than DROPPING a genuine content
+ * word (a wrongly-dropped content word can zero out the only matching
+ * evidence). Lowercase, matched against already-punctuation-stripped tokens.
  *
- * FTS5 treats several characters as operators (`-` negation, `*` wildcard,
- * `"` phrase, `^` column, `AND`/`OR`/`NOT` connectives). Without sanitization,
- * a query like `sqlite-vec` triggers `fts5: syntax error near "-"` because `-`
- * is parsed as a negation prefix.
+ * NOTE (FEAT-480, deferred 2026-07-19): a prior investigation found that a
+ * NAIVE pure-OR revival of the FTS leg — measured on the OLDER
+ * scripts/eval/recall-quality/run.mjs harness against a 54k-memory store —
+ * traded +18.6% plain-English MRR for -15.8% literal-keyword MRR and +6pp
+ * junk, because weak OR-matched keyword candidates diluted the vector leg's
+ * already-good literal rankings. That FEAT deferred a general fix pending
+ * threshold/coverage modeling. This P0.2 fix is narrower in scope (stopword
+ * removal + quoted-phrase preservation, not raw all-tokens OR) and is
+ * re-measured here against the CURRENT retrieval-overhaul A/B protocol
+ * (token-F1, conv-26 n=152) — see docs/specs/20260720-retrieval-overhaul-plan.md.
+ * Keep only if that measurement doesn't regress; if it reproduces FEAT-480's
+ * literal-recall regression, this is evidence for Phase 1's RRF fusion (not
+ * min-max) to land before FTS is OR'd, not a reason to revert alone.
+ */
+const FTS_STOPWORDS = new Set([
+  // interrogatives
+  'who', 'whom', 'whose', 'what', 'which', 'when', 'where', 'why', 'how',
+  // auxiliary/copula verbs
+  'is', 'am', 'are', 'was', 'were', 'be', 'been', 'being',
+  'do', 'does', 'did', 'done',
+  'have', 'has', 'had', 'having',
+  'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must',
+  // articles/determiners
+  'a', 'an', 'the', 'this', 'that', 'these', 'those',
+  // pronouns
+  'i', 'me', 'my', 'mine', 'you', 'your', 'yours', 'he', 'him', 'his',
+  'she', 'her', 'hers', 'it', 'its', 'we', 'us', 'our', 'ours',
+  'they', 'them', 'their', 'theirs',
+  // prepositions/conjunctions
+  'of', 'to', 'in', 'on', 'at', 'for', 'with', 'about', 'against',
+  'between', 'into', 'through', 'during', 'before', 'after', 'above',
+  'below', 'from', 'up', 'down', 'over', 'under', 'again', 'further',
+  'and', 'or', 'but', 'if', 'so', 'than', 'as', 'not', 'no', 'nor',
+  // filler
+  'there', 'here', 'then', 'once', 'all', 'any', 'both', 'each', 'few',
+  'more', 'most', 'other', 'some', 'such', 'only', 'own', 'same', 'too',
+  'very', 'just', 'also', 's', 't',
+]);
+
+/** Escape a literal string for safe use inside an FTS5 double-quoted phrase
+ *  (double an embedded `"` per the FTS5 phrase-literal escaping rule). */
+function escapeFtsLiteral(s: string): string {
+  return s.replace(/"/g, '""');
+}
+
+/**
+ * Split a query into quoted-phrase units and bare-word units, in the order
+ * they appear. A `"quoted phrase"` in the caller's own input is returned as
+ * ONE unit — user intent to match those words together verbatim overrides
+ * stopword filtering for its contents (an unterminated trailing quote is
+ * simply treated as a bare word, never throws).
+ */
+function splitQuotedAndBareTerms(q: string): Array<{ phrase: boolean; text: string }> {
+  const units: Array<{ phrase: boolean; text: string }> = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(q)) !== null) {
+    if (m[1] !== undefined) {
+      const inner = m[1].trim();
+      if (inner) units.push({ phrase: true, text: inner });
+    } else if (m[2]) {
+      units.push({ phrase: false, text: m[2] });
+    }
+  }
+  return units;
+}
+
+/**
+ * Build an FTS5 `MATCH` query from a free-form (often natural-language)
+ * query string (P0.2, 2026-07-20 retrieval overhaul plan).
  *
- * Strategy: split on whitespace, wrap each token in double quotes (treating
- * each as a literal phrase), and escape embedded `"` by doubling it per the
- * FTS5 phrase-literal rule. Multi-token queries become implicit AND.
+ * Pre-P0.2, EVERY token (including "who"/"did"/"the"/"a") became its own
+ * quoted phrase joined by bare whitespace — FTS5 implicit-ANDs adjacent
+ * phrases, so a question needed every one of its words (stopwords included)
+ * present verbatim in the target row to match at all. A natural-language
+ * question essentially never satisfies that; the FTS leg (40% of the default
+ * fusion weight, `alpha`) returned zero candidates for most real queries.
  *
- * Trade-off: explicit FTS5 operators (e.g., `cat OR dog`, `"exact phrase"`,
- * `prefix*`) are NOT honored in v1 — every input is treated as a bag of
- * literal phrases. This is the right default for an agent-driven search
- * surface; an `advanced` flag can be added later if needed.
+ * Fix: drop interrogatives/stopwords (FTS_STOPWORDS above), keep everything
+ * else — names, nouns, dates, numbers — and OR the survivors together, so
+ * the row needs only ONE genuine content term to match, not all of them.
+ * User-supplied `"quoted phrases"` are kept intact as a single multi-word
+ * phrase unit (not stopword-filtered, not split into independently-ORed
+ * terms) — this is the "boost": FTS5's bm25() naturally scores a full
+ * contiguous phrase match higher than any single term from it would score
+ * alone, without needing a weighted-query extension.
+ *
+ * Safety unchanged from pre-P0.2: every surviving term/phrase is still
+ * wrapped in FTS5 double-quotes (embedded `"` doubled), so operator
+ * characters (`-` negation, `*` wildcard, `^` column) inside a token can
+ * never be parsed as FTS5 syntax — a query like `sqlite-vec` still can't
+ * trigger `fts5: syntax error near "-"`.
+ *
+ * Edge cases:
+ *  - All-stopword or punctuation-only query (after filtering, zero
+ *    survivors): falls back to the legacy all-tokens-ANDed query rather than
+ *    emitting an empty/invalid MATCH string. Byte-identical to pre-P0.2 for
+ *    this shape — still correct (0 rows), just not "no query at all."
+ *  - Single-term query (an error code, `"7777"`, one exact keyword):
+ *    degrades to exactly one OR clause of one term — unchanged, exact-match
+ *    behavior (this is the shape FEAT-480 AC-5 required stay intact).
  */
 function escapeFtsQuery(q: string): string {
-  return q.trim().split(/\s+/).map(t => `"${t.replace(/"/g, '""')}"`).join(' ');
+  const trimmed = q.trim();
+  if (!trimmed) return '';
+
+  const units = splitQuotedAndBareTerms(trimmed);
+  const survivors: string[] = [];
+  for (const unit of units) {
+    if (unit.phrase) {
+      survivors.push(`"${escapeFtsLiteral(unit.text)}"`);
+      continue;
+    }
+    // Strip leading/trailing punctuation a raw NL question carries (?, ., etc.)
+    // that carries no lexical signal of its own, and lowercase — this
+    // stripped/lowercased form is what actually becomes the FTS phrase
+    // literal, so e.g. a trailing "?" never survives into the query (FTS5
+    // matching is already case-insensitive via its tokenizer either way).
+    const stripped = unit.text.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+    if (!stripped || FTS_STOPWORDS.has(stripped)) continue;
+    survivors.push(`"${escapeFtsLiteral(stripped)}"`);
+  }
+
+  if (survivors.length === 0) {
+    return units.map(u => `"${escapeFtsLiteral(u.text)}"`).join(' ');
+  }
+  return survivors.join(' OR ');
 }
 
 /**
@@ -724,7 +927,18 @@ export async function search(
   if (opts.decompose) {
     const subQueries = await getSubQueries(query, opts.decompose);
     const seenIds = new Set(primaryIds);
+    // issue #6: outer wall-clock budget across the WHOLE fan-out — see
+    // MAX_FANOUT_WALL_CLOCK_MS's doc comment above for why gatherCandidates()
+    // itself carries no per-call timeout here.
+    const fanOutDeadline = Date.now() + MAX_FANOUT_WALL_CLOCK_MS;
     for (const sq of subQueries) {
+      if (Date.now() >= fanOutDeadline) {
+        childLogger({ stage: 'decompose-fanout' }).warn(
+          { outcome: 'budget_exceeded', budget_ms: MAX_FANOUT_WALL_CLOCK_MS, subQueriesTotal: subQueries.length },
+          'WS6 sub-query fan-out exceeded its wall-clock budget — stopping early with whatever was already gathered',
+        );
+        break;
+      }
       const gathered = await gatherCandidates(db, embed, sq, vecK, mode);
       const { ftsHits: sFts, vecHits: sVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
       for (const h of sFts) {
@@ -758,7 +972,18 @@ export async function search(
   const rewriteVecByVariant: Array<Array<{ id: string; cosine: number }>> = [];
   if (opts.expand && opts.queryRewrite) {
     const variants = await getQueryVariants(query, opts.queryRewrite);
+    // issue #6: same outer wall-clock budget as the WS6 fan-out above — its
+    // own deadline (not shared with WS6's) so decompose and rewrite each get
+    // the full MAX_FANOUT_WALL_CLOCK_MS budget rather than splitting one.
+    const fanOutDeadline = Date.now() + MAX_FANOUT_WALL_CLOCK_MS;
     for (const variant of variants) {
+      if (Date.now() >= fanOutDeadline) {
+        childLogger({ stage: 'query-rewrite-fanout' }).warn(
+          { outcome: 'budget_exceeded', budget_ms: MAX_FANOUT_WALL_CLOCK_MS, variantsTotal: variants.length },
+          'FEAT-550 rewrite-variant fan-out exceeded its wall-clock budget — stopping early with whatever was already gathered',
+        );
+        break;
+      }
       const gathered = await gatherCandidates(db, embed, variant, vecK, mode);
       const { ftsHits: vFts, vecHits: vVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
       rewriteFtsByVariant.push(vFts);
@@ -843,8 +1068,15 @@ export async function search(
   const supplementalRawScore = new Map<string, number>();
   if (opts.decompose && (subFtsHits.length > 0 || subVecHits.length > 0)) {
     const supplementalFused = fuseHits(subFtsHits, subVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus, uncontestedBonus);
+    // issue #8: `maxSupplemental` is governed (applyMultiHopGovernance,
+    // config.ts) at config-load time, but SearchOpts.decompose can also be
+    // hand-built by a caller (tests, the eval harness) bypassing governance
+    // entirely — Math.max(0, ...) is the defense-in-depth floor so a
+    // negative value here can never invert `Array.slice(0, N)`'s cap via JS
+    // negative-index semantics (slice(0, -1) means "all but the last one",
+    // not "zero").
     const capped = supplementalFused
-      .slice(0, opts.decompose.maxSupplemental)
+      .slice(0, Math.max(0, opts.decompose.maxSupplemental))
       .map(h => {
         const raw = Math.min(1, Math.max(0, h.score));
         supplementalRawScore.set(h.id, raw);
@@ -931,7 +1163,10 @@ export async function search(
   // scope/importance/confidence/created_at/capture_source added to the
   // SELECT so the wire-facing SearchHit below can populate the canonical
   // optional fields from real columns instead of projecting them away.
-  const sql = `SELECT id, type, text, scope, importance, confidence, created_at, capture_source FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
+  // evidence/evidence_span added (2026-07-20, P2 retrieval-overhaul) so the
+  // rerank stage below can score `query + atom text + evidence excerpt` —
+  // see SearchHit.evidence's doc comment for the precedence rule.
+  const sql = `SELECT id, type, text, scope, importance, confidence, created_at, capture_source, evidence, evidence_span FROM memories WHERE id IN (${idPlaceholders}) AND ${validityClause}${whereFilter}`;
   const memRows = db.prepare(sql).all(...fusedIds, ...validityParams, ...filterParams) as Array<{
     id: string;
     type: MemoryType;
@@ -941,6 +1176,8 @@ export async function search(
     confidence: number;
     created_at: number;
     capture_source: string | null;
+    evidence: string | null;
+    evidence_span: string | null;
   }>;
 
   const memMap = new Map(memRows.map(r => [r.id, r]));
@@ -1089,6 +1326,14 @@ export async function search(
   for (const hit of rankedFused) {
     const mem = memMap.get(hit.id);
     if (!mem) continue;  // filtered out
+    // SearchHit.evidence doc comment: prefer the located `evidence_span`
+    // (migration 057, exact/whole-turn transcript text) over the legacy
+    // extractor-authored `evidence` string (migration 004), bounded so a
+    // whole-turn fuzzy match can't blow up the rerank input. `||` (not `??`)
+    // deliberately — an empty-string `evidence_span` is falsy but not
+    // nullish, so `??` would let it shadow a genuinely populated legacy
+    // `evidence` instead of falling through to it.
+    const evidenceExcerpt = (mem.evidence_span || mem.evidence)?.slice(0, MAX_EVIDENCE_EXCERPT_CHARS);
     results.push({
       id: hit.id,
       type: mem.type,
@@ -1101,6 +1346,7 @@ export async function search(
       created_at: new Date(mem.created_at).toISOString(),
       ...(mem.capture_source !== null ? { capture_source: mem.capture_source } : {}),
       ...(correctionSignal.has(hit.id) ? { correction_pending: correctionSignal.get(hit.id)! } : {}),
+      ...(evidenceExcerpt ? { evidence: evidenceExcerpt } : {}),
       explanation: buildExplanation(hit.id, hit.score, mem.importance, mem.created_at),
     });
     if (results.length >= buildLimit) break;
@@ -1116,10 +1362,11 @@ export async function search(
     // where every hit already carries a real base ScoreExplanation, merge
     // the cross_encoder signal IN rather than let it clobber the base
     // signals — `final` stays the fused `score` (rerank never changes it).
+    const byId = new Map(results.map(r => [r.id, r]));
     const merged = reranked.map(hit => {
       if (!hit.reranked) return hit;
       const crossEncoder = hit.explanation!.signals.cross_encoder!;
-      const base = results.find(r => r.id === hit.id)!;
+      const base = byId.get(hit.id)!;
       const signals = { ...base.explanation.signals, cross_encoder: crossEncoder };
       return {
         ...hit,
@@ -1132,8 +1379,21 @@ export async function search(
         },
       };
     });
-    return merged.slice(0, limit);
+    const finalHits = merged.slice(0, limit);
+    return opts.evidenceBundling
+      ? await applyEvidenceBundling(
+          db, finalHits,
+          { whereFilter, filterParams, validityClause, validityParams },
+          opts.evidenceBundling,
+        )
+      : finalHits;
   }
 
-  return results;
+  return opts.evidenceBundling
+    ? await applyEvidenceBundling(
+        db, results,
+        { whereFilter, filterParams, validityClause, validityParams },
+        opts.evidenceBundling,
+      )
+    : results;
 }
