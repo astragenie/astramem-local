@@ -36,6 +36,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
   EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V1,
   EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V2,
 } from '../../src/distill/prompts/extract.js';
@@ -68,12 +69,23 @@ const hash12 = (s: string): string => createHash('sha256').update(s).digest('hex
 // Verified instead via a targeted re-ingest test proving relations[] rows
 // are actually produced and persisted end-to-end — see
 // tests/distill/link-atoms.test.ts / tests/distill/pipeline.test.ts.
+//
+// convSpkbal (2026-07-23, Wave-5 extraction-score track): a NEW variant, not
+// an edit to any frozen prompt above — the conversational base prompt plus
+// an appended per-speaker count-balance section, built the same additive way
+// convLiberal is (base + appended section, base bytes untouched). Frozen at
+// creation so a later edit to THIS variant also has to go through the same
+// validation process. It carries no score anchor yet: it is an unmeasured
+// A/B candidate only reachable via ASTRA_EXTRACT_PROMPT=conv-spkbal, selected
+// by no default and no existing pipeline — the bench + same-day-LoCoMo-
+// control measurement is a deliberate follow-up step, not part of this change.
 const FROZEN_PROMPT_HASHES = {
   v1: '322a588944a2',
   v2: 'c13d0dc1ff4a',
   v3: 'fd199d0f27b8',
   conversational: 'd10cc3f62cca',
   convLiberal: '351f4bd941d1',
+  convSpkbal: 'acf219d38dc7',
   // sweeper carries TWO frozen variants (2026-07-19 forensics): v1 =
   // pre-552A champion-era bytes (the 0.6002 run's pass B), v2 = the 552-A
   // evidence-first restructure (default; measured −96 atoms/−7 recall on
@@ -89,6 +101,7 @@ describe('extraction prompt hash freeze — prompt edits require recorded valida
     v3: hash12(EXTRACTION_SYSTEM_PROMPT_V3),
     conversational: hash12(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL),
     convLiberal: hash12(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL),
+    convSpkbal: hash12(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL),
     specificsSweeperV1: hash12(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V1),
     specificsSweeperV2: hash12(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER_V2),
   };

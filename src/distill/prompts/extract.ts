@@ -576,6 +576,15 @@ export function resolveExtractionPrompt(
   // are atoms never stored, and the codex extractor is measurably conservative
   // (sparse-dense). A/B lever only; never the default.
   if (envOverride === 'conv-liberal') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL;
+  // 'conv-spkbal' (2026-07-23, Wave-5 extraction-score track): the conversational
+  // prompt with an appended per-speaker count-balance checklist. Targets the
+  // documented ~77% capture asymmetry (this file's EXTRACTION_SYSTEM_PROMPT_
+  // CONVERSATIONAL doc comment, "Known limitation" paragraph) where extraction
+  // keeps whichever speaker's event is the narrative subject and drops the
+  // other speaker's half of the same exchange — exactly the bridge fact a
+  // multi-hop question often needs. A/B lever only; never the default; does
+  // NOT mutate the frozen base prompt (see prompt-hash-freeze.test.ts).
+  if (envOverride === 'conv-spkbal') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL;
   if (profile === 'conversational') return EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL;
   return EXTRACTION_SYSTEM_PROMPT_V3;
 }
@@ -597,6 +606,50 @@ EXHAUSTIVENESS OVERRIDE (this run only): err on the side of MORE atoms.
 - A typical substantive session here yields 6-12 atoms. Fewer than 4 for a
   substantive session almost certainly means under-extraction — re-scan before
   finishing. The "atoms": [] empty case remains valid ONLY for pure small talk.`;
+
+/** conv-spkbal A/B variant (Wave-5 extraction-score track, 2026-07-23) — see
+ *  resolveExtractionPrompt's comment. Base conversational prompt + an
+ *  explicit per-speaker count-balance checklist, appended the same way
+ *  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL appends its exhaustiveness
+ *  override — so the frozen base prompt's own bytes never change (hash-freeze
+ *  stays green) and this is purely additive.
+ *
+ *  Item 3 of the base prompt's own EXHAUSTIVENESS CHECKLIST ("BOTH SPEAKERS")
+ *  already says to extract facts stated by either participant — but the
+ *  base prompt's doc comment records a measured ~77% capture rate on a real
+ *  two-way session with the losses concentrated on ONE speaker, i.e. the
+ *  existing instruction is being satisfied on paper (the model "considers"
+ *  both speakers) without being satisfied in practice (it still drops one
+ *  speaker's half). A qualitative instruction restating "do both" a second
+ *  time would not fix that; a COUNTABLE check might, so this variant adds an
+ *  explicit tally step instead of stronger wording for the same rule. */
+export const EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL = `${EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL}
+
+SPEAKER BALANCE CHECK (this run only) — a stronger, countable version of the
+"BOTH SPEAKERS" rule above. Satisfying that rule in spirit is not the same as
+satisfying it in practice: extraction tends to follow whichever speaker's
+topic is narratively central and silently under-counts the other speaker's
+own facts, even when they were stated just as clearly. Run this check before
+you emit, as a tally, not a vibe:
+1. NAME BOTH SPEAKERS. List every distinct speaker who appears in the chunk.
+2. TALLY ATOMS PER SPEAKER. Count how many atoms are ABOUT or STATED BY each
+   speaker (a shared/mutual fact may count for both). Do this as an actual
+   count, not an impression.
+3. RE-SCAN ON IMBALANCE. If one speaker's tally is zero, or is less than half
+   of the other speaker's tally, that is a signal you under-extracted their
+   half — re-read THAT SPEAKER's turns specifically, one more time, before
+   finalizing. This applies even if the chunk "felt" like it was mainly about
+   the other speaker's topic; a topic being about one person does not mean
+   only that person's statements are durable.
+4. ATTRIBUTE, DON'T MERGE. When two speakers each contribute part of the same
+   fact (one names a relationship or event, the other confirms, corrects, or
+   adds a detail), keep each speaker's own contribution as its own atom
+   rather than folding both into a single atom credited to only one of them
+   — multi-hop questions often need exactly the OTHER speaker's half of a
+   relation, so collapsing it away loses the bridge fact silently.
+A genuinely one-sided chunk (one speaker did all the talking, the other only
+acknowledged) is a valid outcome — the check is "did you look," not "force an
+artificial 50/50 split."`;
 
 // ---------------------------------------------------------------------------
 // v2 (2026-07-09) — a/b candidate against EXTRACTION_SYSTEM_PROMPT. Adds the
@@ -1257,6 +1310,7 @@ export const EXTRACTION_PROMPT_VERSIONS = {
   v3: 'eng-v3.0 (FEAT-479, 2026-07-13)',
   conversational: 'conv-v1.1 (FEAT-485; relations[] added, retrieval-overhaul Phase 6, 2026-07-20)',
   convLiberal: 'conv-liberal-v1.0 (2026-07-18 champion prompt)',
+  convSpkbal: 'conv-spkbal-v1.0 (Wave-5 extraction-score track, 2026-07-23 — A/B candidate, unmeasured)',
   specificsSweeper: process.env.ASTRA_SWEEPER_PROMPT === 'v1'
     ? 'sweeper-v1.0 (pre-552A, champion-era — env-selected)'
     : 'sweeper-v2.0 (552-A evidence-first restructure, 2026-07-18)',
