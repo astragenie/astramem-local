@@ -20,6 +20,7 @@ import {
   EXTRACTION_SYSTEM_PROMPT_V3,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL,
   EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL,
+  EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL,
   EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER,
   EXTRACTION_PROMPT_VERSIONS,
 } from '../../../src/distill/prompts/extract.js';
@@ -87,6 +88,7 @@ export interface RunConstants {
     v3: string;
     conversational: string;
     convLiberal: string;
+    convSpkbal: string;
     specificsSweeper: string;
   };
   /** Human-readable prompt versions (EXTRACTION_PROMPT_VERSIONS,
@@ -142,6 +144,7 @@ export function collectRunConstants(): RunConstants {
       v3: hash12(EXTRACTION_SYSTEM_PROMPT_V3),
       conversational: hash12(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL),
       convLiberal: hash12(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_LIBERAL),
+      convSpkbal: hash12(EXTRACTION_SYSTEM_PROMPT_CONVERSATIONAL_SPKBAL),
       specificsSweeper: hash12(EXTRACTION_SYSTEM_PROMPT_SPECIFICS_SWEEPER),
     },
     promptVersions: EXTRACTION_PROMPT_VERSIONS,
