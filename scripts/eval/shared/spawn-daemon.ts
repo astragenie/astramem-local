@@ -104,6 +104,22 @@ export interface EvalCrossEncoderOverride {
   provider?: 'mock' | 'http' | 'onnx';
 }
 
+/** Evidence-bundling override for one isolated eval daemon (Wave-6 lever,
+ *  `src/search/evidence-bundle.ts`) — ships OFF by default
+ *  (`defaultConfig().evidenceBundling = { enabled: false, maxExtra: 5,
+ *  minDistinctSessions: 2, sameEntity: true, sameSession: true }`). Mirrors
+ *  `EvalCrossEncoderOverride`: this lets an eval harness flip it on for one
+ *  isolated daemon via config only, with zero src/ edits. Omitting this
+ *  option (or the whole `evidenceBundling` field) writes byte-identical
+ *  config.yaml to before this option existed. */
+export interface EvalEvidenceBundlingOverride {
+  enabled: boolean;
+  maxExtra?: number;
+  minDistinctSessions?: number;
+  sameEntity?: boolean;
+  sameSession?: boolean;
+}
+
 /** Same override-or-default resolution `makeIsolatedEvalEnv` applies,
  *  exposed standalone so a caller can record the resolved model names in a
  *  run manifest even when no shard's `makeIsolatedEvalEnv` call ended up
@@ -177,7 +193,7 @@ export function resolveEvalOnnxCacheDir(): string | null {
 
 export function makeIsolatedEvalEnv(
   prefix: string,
-  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number; normalization?: 'minmax' | 'winsorized' },
+  opts?: { models?: EvalModelOverrides; crossEncoder?: EvalCrossEncoderOverride; multiHop?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number }; extractProfile?: 'engineering' | 'conversational'; extractionPasses?: 1 | 2; compactionMode?: 'auto' | 'always' | 'never'; extractionPassB?: { provider: string; model: string }; passBSweep?: 'untuned'; maxChunkChars?: number; normalization?: 'minmax' | 'winsorized'; evidenceBundling?: EvalEvidenceBundlingOverride },
 ): IsolatedEvalEnv {
   const root = mkdtempSync(join(tmpdir(), `${prefix}-`));
   const appDataRoot = join(root, 'appdata');
@@ -241,6 +257,17 @@ export function makeIsolatedEvalEnv(
   }
   if (opts?.crossEncoder !== undefined) {
     configLines.push('crossEncoder:', `  enabled: ${opts.crossEncoder.enabled}`, `  provider: ${opts.crossEncoder.provider ?? 'mock'}`);
+  }
+  // Wave-6 evidenceBundling override — top-level, mirrors crossEncoder. OFF by
+  // default in defaultConfig(); lets an eval harness measure the lever without
+  // touching src/search/evidence-bundle.ts. Omitted: byte-identical to before
+  // this option existed.
+  if (opts?.evidenceBundling !== undefined) {
+    configLines.push('evidenceBundling:', `  enabled: ${opts.evidenceBundling.enabled}`);
+    if (opts.evidenceBundling.maxExtra !== undefined) configLines.push(`  maxExtra: ${opts.evidenceBundling.maxExtra}`);
+    if (opts.evidenceBundling.minDistinctSessions !== undefined) configLines.push(`  minDistinctSessions: ${opts.evidenceBundling.minDistinctSessions}`);
+    if (opts.evidenceBundling.sameEntity !== undefined) configLines.push(`  sameEntity: ${opts.evidenceBundling.sameEntity}`);
+    if (opts.evidenceBundling.sameSession !== undefined) configLines.push(`  sameSession: ${opts.evidenceBundling.sameSession}`);
   }
   // Score-phase Track I A/B (2026-07-23, eval-only lever — src/config/config.ts
   // already ships the real `search.normalization` key; this harness previously

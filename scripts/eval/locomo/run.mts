@@ -100,6 +100,7 @@ import { LOCOMO_CATEGORIES, CATEGORY_NAMES, sessionNumbers, type LoCoMoSample } 
 import {
   spawnEvalDaemon, waitForHealthStatus, killDaemon, makeIsolatedEvalEnv, cleanupIsolatedEvalEnv,
   resolveEvalModels, type DaemonHandle, type EvalModelOverrides, type EvalCrossEncoderOverride,
+  type EvalEvidenceBundlingOverride,
 } from '../shared/spawn-daemon.js';
 import { ingestConversations, type IngestManifest } from './ingest.mts';
 import { waitForSamplesDistilled, type DistillWaitResult } from './distill-wait.mts';
@@ -249,6 +250,11 @@ const multiHopOverride: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs
         ...(multiHopTimeoutFlag ? { timeoutMs: Number(multiHopTimeoutFlag) } : {}),
       }
     : undefined;
+// --evidence-bundling (Wave-6 lever, additive): flip the evidenceBundling
+// stage ON for the sandbox (OFF by default in defaultConfig). Omitted:
+// byte-identical to before this flag existed.
+const evidenceBundlingOverride: EvalEvidenceBundlingOverride | undefined =
+  has('--evidence-bundling') ? { enabled: true } : undefined;
 // WS2 diagnostic (same doc, workstream 2): run the not-in-db/rank-miss/
 // rank-ok retrieval diagnosis against each shard's daemon right after the
 // answer step, before it's torn down -- reuses the daemon that's about to
@@ -324,6 +330,10 @@ async function runShard(opts: {
   normalization?: 'minmax' | 'winsorized';
   /** Additive (v2 C1) — flips WS6 multiHop decompose on for the sandbox. */
   multiHopOverride?: { enabled: boolean; provider?: 'mock' | 'llm'; timeoutMs?: number };
+  /** Additive (Wave-6 lever) — flips evidenceBundling on for the sandbox;
+   *  undefined reproduces pre-existing behavior exactly (defaultConfig()'s
+   *  `{ enabled: false }`). */
+  evidenceBundlingOverride?: EvalEvidenceBundlingOverride;
   /** Additive (WS2 diagnostic, same comment) — false/omitted runs no extra
    *  recall() calls and writes no diagnosis.json, byte-identical to before
    *  this option existed. */
@@ -338,7 +348,7 @@ async function runShard(opts: {
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg, modelOverrides,
-    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, crossEncoderOverride, multiHopOverride, normalization, diagnose = false,
+    extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, crossEncoderOverride, multiHopOverride, normalization, evidenceBundlingOverride, diagnose = false,
     resume = false, onDaemonSpawned, reportIngestProgress,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
@@ -349,7 +359,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, multiHop: multiHopOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, normalization });
+  const isolated = makeIsolatedEvalEnv(label ? `locomo-${label}` : 'locomo-run', { models: modelOverrides, crossEncoder: crossEncoderOverride, multiHop: multiHopOverride, extractProfile, extractionPasses, compactionMode, extractionPassB, passBSweep, maxChunkChars, normalization, evidenceBundling: evidenceBundlingOverride });
   // 2026-07-18 traceability: persist the sandbox's EXACT boot config into the
   // run dir — the sandbox datadir is deleted on cleanup, and everything not in
   // this file fell through to defaultConfig() (see run-manifest's gitState for
@@ -663,7 +673,7 @@ async function runFull(): Promise<void> {
   const settled = await Promise.allSettled(
     shardBuckets.map((samples, i) => runShard({
       shardIndex: i, totalShards: shardBuckets.length, samples, runDir, concurrency, distillTimeoutMs, k, azureCfg,
-      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag, crossEncoderOverride, multiHopOverride, normalization: normalizationFlag, diagnose: diagnoseRequested,
+      modelOverrides, extractProfile: extractProfileFlag, extractionPasses: extractionPassesFlag, compactionMode: compactionModeFlag, extractionPassB: extractionPassBFlag, passBSweep: passBSweepFlag, maxChunkChars: maxChunkCharsFlag, crossEncoderOverride, multiHopOverride, normalization: normalizationFlag, evidenceBundlingOverride, diagnose: diagnoseRequested,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
@@ -774,6 +784,10 @@ async function runFull(): Promise<void> {
       // comparison must be checkable against this field, not memory — same
       // rationale as crossEncoder/extractProfile above.
       normalization: normalizationFlag ?? 'minmax',
+      // Wave-6 evidenceBundling lever: a published evidence-bundling
+      // comparison must be checkable against this field, not memory — same
+      // rationale as crossEncoder/normalization above.
+      evidenceBundling: evidenceBundlingOverride ?? { enabled: false },
       diagnosed: diagnoseRequested,
       // 2026-07-18 postmortem (the 0.5945-vs-0.5362 forensics failure): the
       // knobs that actually explained a 5.8-pt gap — extraction passes,
