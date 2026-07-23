@@ -85,11 +85,17 @@ export function selectPack(db: DB, opts: PackOptions): PackMemory[] {
   }
   params.push(CANDIDATE_LIMIT);
 
+  // `, id DESC` tiebreaker (migration 059): created_at collisions are routine
+  // under batch/distill ingest, and without a deterministic second sort key
+  // the 500-row CANDIDATE_LIMIT cutoff below can silently reshuffle across
+  // runs. Matches idx_memories_project_valid_created's trailing columns
+  // exactly, so this ORDER BY rides the index instead of forcing a temp
+  // b-tree sort.
   const rows = db.prepare(`
     SELECT id, type, text, importance, created_at
     FROM memories
     WHERE ${clauses.join(' AND ')}
-    ORDER BY created_at DESC
+    ORDER BY created_at DESC, id DESC
     LIMIT ?
   `).all(...params) as Row[];
 
