@@ -35,11 +35,15 @@ the `//registry.npmjs.org/:_authToken=` line of `~/.npmrc`. Verify with
    - `git commit -m "release: vX.Y.Z — <headline>"`
 4. **Tag** the bump commit: `git tag -a vX.Y.Z -m "vX.Y.Z — <headline>"`.
 5. **Push** commit then tag: `git push origin main && git push origin vX.Y.Z`.
-6. **Publish**: `npm publish` (runs `prepublishOnly` → `bun run build` first).
-   With the Automation token this needs **no OTP**.
-   - Sanity-check first with `npm publish --dry-run` (shows tarball: `dist/`,
-     `migrations/`, README, CHANGELOG, LICENSE).
-7. **Verify**: `npm view astramem-local version` → should print the new version.
+   **The tag push IS the release** — `.github/workflows/publish.yml` triggers on any `v*` tag and
+   publishes to npm automatically (self-hosted fleet, `NPM_TOKEN` secret, `prepublishOnly` runs
+   `bun run build` first). **Do NOT run a manual `npm publish` after pushing the tag** — it
+   collides with CI's own publish (see `.claude/crew/deployment.md`, learned 2026-07-12). If you
+   want to sanity-check the tarball contents beforehand, use `npm publish --dry-run` locally
+   *before* pushing the tag (shows `dist/`, `migrations/`, README, CHANGELOG, LICENSE) — never
+   after.
+6. **Verify**: watch the `publish` workflow run to green, then `npm view astramem-local version` →
+   should print the new version.
 
 ## Notes / gotchas
 
