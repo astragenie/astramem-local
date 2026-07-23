@@ -60,6 +60,17 @@ function _typeOnlyTierRequiredProof(): Check {
 }
 void _typeOnlyTierRequiredProof;
 
+// Wave-3 doctor track: runFullDoctorChecks now also runs gpu-checks.ts's real
+// subprocess-backed checks (PowerShell process enumeration, nvidia-smi,
+// a persisted-env registry read) sequentially alongside everything else —
+// runChecks() (runner.ts) awaits one check at a time, so their cost adds up
+// rather than overlapping. Fast on a quiet box, but slow enough under
+// parallel-suite CPU contention to occasionally clear the 5s default; every
+// test below that calls runFullDoctorChecks passes this as its own timeout
+// rather than widening the file/suite default (which would also mask an
+// unrelated hang in a frequent-tier-only test).
+const FULL_TIER_TEST_TIMEOUT_MS = 20_000;
+
 describe('doctor scheduling (A2-lite)', () => {
   let dir: string;
 
@@ -134,7 +145,7 @@ describe('doctor scheduling (A2-lite)', () => {
 
     const chatCheck = result.results.find(r => r.name.startsWith('LLM chat probe'));
     expect(chatCheck?.ok).toBe(true); // mock LLM always returns non-empty text
-  });
+  }, FULL_TIER_TEST_TIMEOUT_MS);
 
   it('full tier omits the LLM/embed checks when no providers are supplied (same as frequent)', async () => {
     const opts: DoctorCheckOpts = { dataDir: dir, encryptionEnabled: false, port: 39777 };
@@ -142,7 +153,7 @@ describe('doctor scheduling (A2-lite)', () => {
     const names = result.results.map(r => r.name);
     expect(names.some(n => n.startsWith('LLM chat probe'))).toBe(false);
     expect(names.some(n => n.startsWith('Embed probe'))).toBe(false);
-  });
+  }, FULL_TIER_TEST_TIMEOUT_MS);
 
   // #226 follow-up (2026-07-13): checkMemoryHealth and checkEntityNameQuality
   // were CONFIRMED doing unbounded full-table scans while riding the 15-min
@@ -160,6 +171,16 @@ describe('doctor scheduling (A2-lite)', () => {
     // FEAT-477: same tier rationale as "Usefulness feedback loop" above —
     // see checkProxyTurnCorrelation's own doc comment.
     'Proxy-turn correlation',
+    // Wave-3 doctor track: hardening-checks.ts + gpu-checks.ts were wired
+    // into schedule.ts's extraChecks() for the first time here. These two
+    // GPU checks are the `tier: 'full'` half of that registry (a real
+    // Ollama /api/ps call, plus an nvidia-smi subprocess spawn for the
+    // first one) — see gpu-checks.ts's per-check tier comments. The other
+    // seven checks in extraChecks() (all six hardening checks + "Ollama
+    // tuning env vars") are `tier: 'cheap'` and are NOT listed here — they
+    // are expected to run on the frequent tier too.
+    'Orphaned llama-server processes',
+    'Silent CPU offload',
   ];
 
   it('frequent tier NEVER runs the checks the #226 follow-up audit found doing unbounded/unindexed scans', async () => {
@@ -177,6 +198,30 @@ describe('doctor scheduling (A2-lite)', () => {
     const names = result.results.map(r => r.name);
     for (const n of FULL_TIER_ONLY_CHECK_NAMES) {
       expect(names, `full tier must still run "${n}"`).toContain(n);
+    }
+  }, FULL_TIER_TEST_TIMEOUT_MS);
+
+  // Wave-3 doctor track: the positive mirror of the GPU-checks assertion
+  // above. hardening-checks.ts's six checks plus gpu-checks.ts's "Ollama
+  // tuning env vars" are all `tier: 'cheap'` — they must actually reach the
+  // 15-minute frequent schedule now that extraChecks() folds them in, not
+  // just stay absent from FULL_TIER_ONLY_CHECK_NAMES by omission.
+  const CHEAP_EXTRA_CHECK_NAMES = [
+    'No stranded legacy database',
+    'No plaintext pre-encryption backup',
+    'Served version matches this build',
+    'Instance lock healthy',
+    'No poisoned jobs',
+    'Consolidation proposals reviewed',
+    'Ollama tuning env vars',
+  ];
+
+  it('frequent tier DOES run the hardening checks + "Ollama tuning env vars" (Wave-3 doctor track)', async () => {
+    const opts: DoctorCheckOpts = { dataDir: dir, encryptionEnabled: false, port: 39777 };
+    const result = await runFrequentDoctorChecks(opts, () => {});
+    const names = result.results.map(r => r.name);
+    for (const n of CHEAP_EXTRA_CHECK_NAMES) {
+      expect(names, `frequent tier must run "${n}"`).toContain(n);
     }
   });
 
@@ -206,7 +251,7 @@ describe('doctor scheduling (A2-lite)', () => {
     // it proves the checks that DO run are tagged 'cheap' or 'full', not
     // some third silently-accepted value.
     expect(result.results.length).toBeGreaterThan(20);
-  });
+  }, FULL_TIER_TEST_TIMEOUT_MS);
 
   // #226 follow-up finding 2: a crash-looping daemon must not keep firing a
   // metered LLM/embed call on every restart, indefinitely, with no operator
@@ -252,7 +297,7 @@ describe('doctor scheduling (A2-lite)', () => {
       expect(names).toContain('Memory health');
       const crashLoopResult = result.results.find(r => r.name === 'Crash loop');
       expect(crashLoopResult?.ok).toBe(false); // streak of 3 is RED
-    });
+    }, FULL_TIER_TEST_TIMEOUT_MS);
 
     it('runs the LLM chat probe + embed probe normally when the crash-loop streak is below threshold', async () => {
       seedCrashLoop(2); // below CRASH_LOOP_THRESHOLD (3)
@@ -270,7 +315,7 @@ describe('doctor scheduling (A2-lite)', () => {
 
       expect(chatSpy).toHaveBeenCalled();
       expect(result.llmTierSkippedForCrashLoop).toBeUndefined();
-    });
+    }, FULL_TIER_TEST_TIMEOUT_MS);
 
     it('a frequent-tier run never sets llmTierSkippedForCrashLoop, even during a crash loop — it never runs LLM/embed checks anyway', async () => {
       seedCrashLoop(5);

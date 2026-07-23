@@ -5,6 +5,10 @@
  * only runs doctor still learns about: stranded legacy databases, lingering
  * plaintext encryption backups, a service serving a different build than the
  * repo, zombie instance locks, and accumulating poison jobs.
+ *
+ * Consumed by both `cli/doctor.ts` (manual run) and `doctor/schedule.ts`'s
+ * `extraChecks()` (unattended 15-min frequent schedule — every check here is
+ * `tier: 'cheap'`, see each check's own comment).
  */
 import { existsSync, statSync } from 'node:fs';
 import { join } from 'node:path';
@@ -37,12 +41,11 @@ export function getHardeningChecks(opts: HardeningCheckOpts): Check[] {
 function checkPendingProposals(openDbReadonly: () => Promise<DB>): Check {
   return {
     name: 'Consolidation proposals reviewed',
-    // Not wired into getChecks()/coreChecks() — cli/doctor.ts combines this
-    // registry separately, outside schedule.ts's frequent/full split, so
-    // this tier value is currently inert for the 15-minute loop. Classified
-    // on its own merits so it can't silently start riding the frequent tier
-    // if this registry is ever folded into getChecks() later: a single
-    // COUNT(*) WHERE status = 'pending' aggregate — cheap regardless.
+    // Not part of getChecks()/coreChecks() — cli/doctor.ts combines this
+    // registry separately, and schedule.ts's extraChecks() folds it into
+    // both the frequent and full tiers by this same `tier` field (see
+    // schedule.ts's module doc comment). A single COUNT(*) WHERE status =
+    // 'pending' aggregate — cheap regardless.
     tier: 'cheap',
     async run(): Promise<CheckResult> {
       let db: DB | null = null;
