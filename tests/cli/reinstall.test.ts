@@ -272,14 +272,22 @@ describe('bootHardCapMs (verify-health boot-grace hard cap, slow-boot fix)', () 
 // pre-bind openDb) identically to one that is genuinely dead, rolling back a
 // healthy-but-slow boot the moment the budget elapsed. `waitForHealthWithBootGrace`
 // polls in chunks and, between chunks, checks whether the daemon.lock holder
-// is still alive — extending the wait (up to bootHardCapMs()) for a live
-// process, but failing IMMEDIATELY (not waiting out the rest of the budget)
-// once the process is confirmed gone. All seams are injected so this suite
-// runs instantly — no real timers, no live daemon.
+// is still OUR instance (liveness AND identity — see the recycled-PID case
+// below, rev-a review MEDIUM) — extending the wait (up to bootHardCapMs())
+// for a live, identity-confirmed process, but failing IMMEDIATELY (not
+// waiting out the rest of the budget) once the process is confirmed gone or
+// confirmed recycled. All seams are injected so this suite runs instantly —
+// no real timers, no live daemon, no real OS process queries.
 describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
   function fakeLock(overrides: Partial<LockInfo> = {}): LockInfo {
     return { pid: 4242, startedAt: new Date(0).toISOString(), port: 7777, version: '1.0.0', ...overrides };
   }
+
+  // Default identity resolver for tests that don't care about the identity
+  // dimension specifically — "unprovable" (null) resolves to "alive" (see
+  // isDaemonInstanceAlive's doc comment), so these tests exercise ONLY the
+  // liveness/looping behavior, same as before the identity check existed.
+  const unprovableStartTime = async (): Promise<Date | null> => null;
 
   it('resolves healthy on the first chunk without ever consulting daemon.lock', async () => {
     let nowValue = 1000;
@@ -296,6 +304,7 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
       waitForHealthImpl,
       readLockInfoImpl,
       pidAliveImpl,
+      processStartTimeImpl: unprovableStartTime,
       nowMs: () => nowValue,
     });
 
@@ -314,6 +323,7 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
     });
     const readLockInfoImpl = vi.fn(() => fakeLock());
     const pidAliveImpl = vi.fn(() => true);
+    const progress: string[] = [];
 
     const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
       chunkMs: 10_000,
@@ -321,7 +331,9 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
       waitForHealthImpl,
       readLockInfoImpl,
       pidAliveImpl,
+      processStartTimeImpl: unprovableStartTime,
       nowMs: () => nowValue,
+      onProgress: (m) => progress.push(m),
     });
 
     expect(result).toEqual({ healthy: true, elapsedMs: 30_000 });
@@ -330,6 +342,12 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
     // after the chunk that finally succeeds.
     expect(readLockInfoImpl).toHaveBeenCalledTimes(2);
     expect(pidAliveImpl).toHaveBeenCalledTimes(2);
+    // LOW-MED UX fix (rev-a review): one progress line per chunk, so a human
+    // watching `reinstall` isn't staring at silence for up to 20 minutes.
+    expect(progress).toHaveLength(3);
+    expect(progress[0]).toMatch(/still not healthy/);
+    expect(progress[0]).toMatch(/pid 4242 alive, still booting/);
+    expect(progress[2]).toMatch(/healthy after 30s/);
   });
 
   it('fails FAST — before the hard cap — when daemon.lock is gone (process genuinely dead)', async () => {
@@ -346,6 +364,7 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
       waitForHealthImpl,
       readLockInfoImpl,
       pidAliveImpl: () => true,
+      processStartTimeImpl: unprovableStartTime,
       nowMs: () => nowValue,
     });
 
@@ -361,6 +380,7 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
     });
     const readLockInfoImpl = vi.fn(() => fakeLock({ pid: 999 }));
     const pidAliveImpl = vi.fn(() => false); // process has exited
+    const processStartTimeImpl = vi.fn(unprovableStartTime);
 
     const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
       chunkMs: 10_000,
@@ -368,11 +388,77 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
       waitForHealthImpl,
       readLockInfoImpl,
       pidAliveImpl,
+      processStartTimeImpl,
       nowMs: () => nowValue,
     });
 
     expect(result).toEqual({ healthy: false, elapsedMs: 10_000, gaveUpReason: 'daemon-dead' });
     expect(waitForHealthImpl).toHaveBeenCalledTimes(1);
+    // dead pid short-circuits BEFORE the identity/startedAt check even runs —
+    // there is no point resolving an OS start time for a pid that's gone.
+    expect(processStartTimeImpl).not.toHaveBeenCalled();
+  });
+
+  // rev-a review MEDIUM: PID liveness alone is not identity. If the daemon
+  // dies and the OS recycles that exact PID for an unrelated live process
+  // within the (up to 20min) boot-grace window, liveness-only would misread
+  // "alive" and extend to the full hard cap for a genuinely-dead daemon —
+  // defeating the fast-fail this fix exists for. Mirrors
+  // instance-lock.ts's checkHolderIdentity: pid alive AND OS-reported start
+  // time drifts far past IDENTITY_TOLERANCE_MS from the lock's recorded
+  // startedAt -> confirmed recycled -> treated as dead -> fast-fail.
+  it('PID-REUSE: same pid alive but a wildly different OS-reported start time is treated as DEAD (fast-fail)', async () => {
+    let nowValue = 0;
+    const waitForHealthImpl = vi.fn(async (_port: number, timeoutMs: number) => {
+      nowValue += timeoutMs;
+      return false;
+    });
+    const recordedStartedAt = new Date(0).toISOString(); // epoch
+    const readLockInfoImpl = vi.fn(() => fakeLock({ pid: 4242, startedAt: recordedStartedAt }));
+    const pidAliveImpl = vi.fn(() => true); // the PID IS alive — just not OUR process anymore
+    // OS reports this pid started 1 hour after the lock's recorded time —
+    // far past IDENTITY_TOLERANCE_MS (60s) — positive proof of a recycled pid.
+    const processStartTimeImpl = vi.fn(async () => new Date(Date.parse(recordedStartedAt) + 60 * 60 * 1000));
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 10_000,
+      hardCapMs: 1_200_000, // 20 minutes — must NOT be waited out
+      waitForHealthImpl,
+      readLockInfoImpl,
+      pidAliveImpl,
+      processStartTimeImpl,
+      nowMs: () => nowValue,
+    });
+
+    expect(result).toEqual({ healthy: false, elapsedMs: 10_000, gaveUpReason: 'daemon-dead' });
+    expect(waitForHealthImpl).toHaveBeenCalledTimes(1); // gave up after ONE chunk, not the 20min hard cap
+    expect(processStartTimeImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('an UNPROVABLE identity (OS start-time query fails) is treated as alive, not dead — keeps waiting', async () => {
+    let nowValue = 0;
+    let calls = 0;
+    const waitForHealthImpl = vi.fn(async (_port: number, timeoutMs: number) => {
+      calls++;
+      nowValue += timeoutMs;
+      return calls >= 2;
+    });
+    const readLockInfoImpl = vi.fn(() => fakeLock());
+    const pidAliveImpl = vi.fn(() => true);
+    const processStartTimeImpl = vi.fn(async () => null); // OS query failed — can't prove or disprove identity
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 10_000,
+      hardCapMs: 120_000,
+      waitForHealthImpl,
+      readLockInfoImpl,
+      pidAliveImpl,
+      processStartTimeImpl,
+      nowMs: () => nowValue,
+    });
+
+    expect(result).toEqual({ healthy: true, elapsedMs: 20_000 });
+    expect(waitForHealthImpl).toHaveBeenCalledTimes(2);
   });
 
   it('gives up at the hard cap (clamping the final chunk) when the daemon stays alive but never becomes healthy', async () => {
@@ -383,6 +469,7 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
     });
     const readLockInfoImpl = vi.fn(() => fakeLock());
     const pidAliveImpl = vi.fn(() => true);
+    const progress: string[] = [];
 
     const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
       chunkMs: 30_000,
@@ -390,7 +477,9 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
       waitForHealthImpl,
       readLockInfoImpl,
       pidAliveImpl,
+      processStartTimeImpl: unprovableStartTime,
       nowMs: () => nowValue,
+      onProgress: (m) => progress.push(m),
     });
 
     expect(result).toEqual({ healthy: false, elapsedMs: 100_000, gaveUpReason: 'hard-cap' });
@@ -399,10 +488,13 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
     expect(waitForHealthImpl).toHaveBeenNthCalledWith(4, 7777, 10_000);
     // never consulted daemon.lock after the FINAL (hard-cap-exhausting) chunk.
     expect(readLockInfoImpl).toHaveBeenCalledTimes(3);
+    expect(progress).toHaveLength(4);
+    expect(progress[3]).toMatch(/boot hard-cap \(100s\) reached, giving up/);
   });
 
   it('returns immediately with gaveUpReason "hard-cap" when hardCapMs is already exhausted (e.g. 0)', async () => {
     const waitForHealthImpl = vi.fn(async () => false);
+    const progress: string[] = [];
 
     const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
       chunkMs: 10_000,
@@ -410,11 +502,14 @@ describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
       waitForHealthImpl,
       readLockInfoImpl: () => null,
       pidAliveImpl: () => true,
+      processStartTimeImpl: unprovableStartTime,
       nowMs: () => 0,
+      onProgress: (m) => progress.push(m),
     });
 
     expect(result).toEqual({ healthy: false, elapsedMs: 0, gaveUpReason: 'hard-cap' });
     expect(waitForHealthImpl).not.toHaveBeenCalled();
+    expect(progress).toHaveLength(1);
   });
 });
 

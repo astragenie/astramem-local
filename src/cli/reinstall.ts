@@ -30,7 +30,7 @@ import { resolveRuntimeConfig } from '../config/resolve-runtime.js';
 import { legacyDataDir, legacyConfigDir } from '../config/datadir.js';
 import { installServiceFlow, resolveBuild } from '../service/install-flow.js';
 import { getServiceAdapter } from '../service/index.js';
-import { stopLockHolder, readLockInfo, type LockInfo } from '../service/instance-lock.js';
+import { stopLockHolder, readLockInfo, getProcessStartTime, type LockInfo } from '../service/instance-lock.js';
 import { BOOT_HARD_CAP_SEC } from '../service/watchdog-probe.js';
 import { waitForHealth, waitForVersion } from './wait-health.js';
 
@@ -137,6 +137,48 @@ function isDaemonPidAlive(pid: number): boolean {
   }
 }
 
+/** Mirrors `instance-lock.ts`'s private `IDENTITY_TOLERANCE_MS` (kept as a
+ *  local copy, not imported — that constant is file-private and this
+ *  change's guardrail is scoped to reinstall.ts + onnx-cross-encoder.ts
+ *  only). If the two ever drift, instance-lock.ts's own copy is the more
+ *  load-bearing one to trust; this one only needs to be in the same
+ *  ballpark, since it protects the same PID-reuse footgun class. */
+const IDENTITY_TOLERANCE_MS = 60_000;
+
+/**
+ * Is the `daemon.lock` holder still genuinely OUR instance — not just some
+ * live PID? PID liveness alone (`isDaemonPidAlive`) is not identity: the OS
+ * can recycle a dead PID for an unrelated process within the up-to-20min
+ * boot-grace window below, and liveness alone would misread that as "still
+ * booting", stalling verify-health at the full hard cap for a genuinely-dead
+ * daemon — defeating the fast-fail this whole fix exists for (the exact
+ * PID-reuse footgun class `instance-lock.ts`'s own `checkHolderIdentity`
+ * exists to close; see that function's doc comment).
+ *
+ * Mirrors that classification here, resolved for THIS caller's fail
+ * direction: an UNPROVABLE identity (missing/unparseable `startedAt`, or a
+ * failed OS start-time query) is treated as ALIVE — it must not regress this
+ * fix's own main goal of extending patience for a genuinely slow boot — while
+ * a CONFIRMED drift beyond `IDENTITY_TOLERANCE_MS` is treated as DEAD
+ * (fast-fail), since that drift is positive proof the PID was recycled.
+ */
+async function isDaemonInstanceAlive(
+  lock: LockInfo,
+  pidAliveImpl: (pid: number) => boolean,
+  processStartTimeImpl: (pid: number) => Promise<Date | null>,
+): Promise<boolean> {
+  if (!pidAliveImpl(lock.pid)) return false;
+
+  const recordedStart = lock.startedAt ? new Date(lock.startedAt) : null;
+  if (!recordedStart || Number.isNaN(recordedStart.getTime())) return true; // unprovable -> alive
+
+  const actualStart = await processStartTimeImpl(lock.pid);
+  if (!actualStart) return true; // unprovable -> alive
+
+  const driftMs = Math.abs(actualStart.getTime() - recordedStart.getTime());
+  return driftMs <= IDENTITY_TOLERANCE_MS; // confirmed mismatch -> dead (recycled pid)
+}
+
 export interface BootGraceHealthResult {
   healthy: boolean;
   /** Total wall-clock time actually spent waiting. */
@@ -162,12 +204,19 @@ export interface BootGraceHealthResult {
  * `healthTimeoutMs()` budget); if a chunk doesn't see a 200, check whether
  * the daemon.lock holder we just started (`instance-lock.ts` writes it
  * BEFORE the slow bind phase ever runs, so it's a reliable early anchor) is
- * still alive. Still alive -> presumed still booting, try another chunk. No
- * lock, or a dead pid -> genuinely gone, fail immediately rather than
- * waiting out the rest of the budget for nothing. Either way, the total wait
- * is bounded by `bootHardCapMs()` so a daemon that is truly stuck before
- * ever reaching `app.listen()` still eventually rolls back instead of
- * hanging `reinstall` forever.
+ * still OUR instance (`isDaemonInstanceAlive` — liveness AND identity, not
+ * liveness alone, so a recycled PID reads as dead rather than "still
+ * booting"). Still ours and alive -> presumed still booting, try another
+ * chunk. No lock, a dead pid, or a confirmed-recycled pid -> genuinely gone,
+ * fail immediately rather than waiting out the rest of the budget for
+ * nothing. Either way, the total wait is bounded by `bootHardCapMs()` so a
+ * daemon that is truly stuck before ever reaching `app.listen()` still
+ * eventually rolls back instead of hanging `reinstall` forever.
+ *
+ * `onProgress` (optional) is called once per chunk so a human watching a
+ * `reinstall` against a large DB isn't staring at silence for up to 20
+ * minutes — every chunk reports elapsed/hard-cap budget and, once healthy,
+ * why the wait ended.
  */
 export async function waitForHealthWithBootGrace(
   port: number,
@@ -177,35 +226,65 @@ export async function waitForHealthWithBootGrace(
     hardCapMs?: number;
     waitForHealthImpl?: (port: number, timeoutMs: number) => Promise<boolean>;
     readLockInfoImpl?: (dataDir: string) => LockInfo | null;
+    /** Injectable liveness check for the daemon.lock holder's pid — tests
+     *  substitute a stub instead of a real `process.kill(pid, 0)` probe (the
+     *  fake pids tests use don't correspond to real processes). Defaults to
+     *  the real `isDaemonPidAlive`. */
     pidAliveImpl?: (pid: number) => boolean;
+    /** Injectable OS process-start-time resolver for the identity check
+     *  (`isDaemonInstanceAlive`) — tests substitute a stub instead of
+     *  shelling out to the OS. Defaults to instance-lock.ts's real
+     *  `getProcessStartTime`. */
+    processStartTimeImpl?: (pid: number) => Promise<Date | null>;
     nowMs?: () => number;
+    /** Per-chunk progress line — tests/production pass the caller's own
+     *  `log()` closure; defaults to a no-op so callers that don't care about
+     *  progress output (e.g. most tests) don't have to pass one. */
+    onProgress?: (message: string) => void;
   },
 ): Promise<BootGraceHealthResult> {
   const waitChunk = opts.waitForHealthImpl ?? waitForHealth;
   const readLock = opts.readLockInfoImpl ?? readLockInfo;
   const isAlive = opts.pidAliveImpl ?? isDaemonPidAlive;
+  const processStartTime = opts.processStartTimeImpl ?? getProcessStartTime;
   const now = opts.nowMs ?? Date.now;
   const hardCapMs = opts.hardCapMs ?? bootHardCapMs();
+  const onProgress = opts.onProgress ?? (() => {});
+  const fmtSec = (ms: number): string => `${Math.round(ms / 1000)}s`;
 
   const start = now();
+  let chunkIndex = 0;
   for (;;) {
     const remaining = hardCapMs - (now() - start);
     if (remaining <= 0) {
+      onProgress(`verify-health: boot hard-cap (${fmtSec(hardCapMs)}) already exhausted — giving up`);
       return { healthy: false, elapsedMs: now() - start, gaveUpReason: 'hard-cap' };
     }
 
+    chunkIndex++;
     const healthy = await waitChunk(port, Math.min(opts.chunkMs, remaining));
     const elapsedMs = now() - start;
-    if (healthy) return { healthy: true, elapsedMs };
+    if (healthy) {
+      onProgress(`verify-health: chunk ${chunkIndex} healthy after ${fmtSec(elapsedMs)}`);
+      return { healthy: true, elapsedMs };
+    }
     if (elapsedMs >= hardCapMs) {
+      onProgress(`verify-health: chunk ${chunkIndex} still not healthy at ${fmtSec(elapsedMs)} — boot hard-cap (${fmtSec(hardCapMs)}) reached, giving up`);
       return { healthy: false, elapsedMs, gaveUpReason: 'hard-cap' };
     }
 
     const lock = readLock(dataDir);
-    if (!lock || !isAlive(lock.pid)) {
+    if (!lock) {
+      onProgress(`verify-health: chunk ${chunkIndex} still not healthy at ${fmtSec(elapsedMs)} — daemon.lock is gone, treating as dead`);
       return { healthy: false, elapsedMs, gaveUpReason: 'daemon-dead' };
     }
-    // daemon.lock holder is still alive -> presumed still booting, try another chunk.
+    const alive = await isDaemonInstanceAlive(lock, isAlive, processStartTime);
+    if (!alive) {
+      onProgress(`verify-health: chunk ${chunkIndex} still not healthy at ${fmtSec(elapsedMs)} — daemon.lock holder pid ${lock.pid} is gone or recycled, treating as dead`);
+      return { healthy: false, elapsedMs, gaveUpReason: 'daemon-dead' };
+    }
+    // daemon.lock holder is still alive (identity-confirmed) -> presumed still booting, try another chunk.
+    onProgress(`verify-health: chunk ${chunkIndex} still not healthy — ${fmtSec(elapsedMs)}/${fmtSec(hardCapMs)} elapsed, daemon.lock holder pid ${lock.pid} alive, still booting`);
   }
 }
 
@@ -445,7 +524,7 @@ export async function reinstallCommand(args: string[]): Promise<void> {
   // moment the first chunk elapses; a daemon that has actually died fails
   // immediately instead of waiting out the rest of the budget for nothing.
   const healthBudgetMs = healthTimeoutMs();
-  const bootGrace = await waitForHealthWithBootGrace(port, dataDir, { chunkMs: healthBudgetMs });
+  const bootGrace = await waitForHealthWithBootGrace(port, dataDir, { chunkMs: healthBudgetMs, onProgress: log });
   const healthy = bootGrace.healthy;
   if (!healthy) {
     const restoreDetail = await restoreOnce();
@@ -660,7 +739,7 @@ async function repointStopStartVerify(opts: RepointVerifyOptions): Promise<StepR
   // daemon gets repeated chunks up to bootHardCapMs() instead of an
   // immediate rollback.
   const healthBudgetMs = healthTimeoutMs();
-  const bootGrace = await waitForHealthWithBootGrace(port, dataDir, { chunkMs: healthBudgetMs });
+  const bootGrace = await waitForHealthWithBootGrace(port, dataDir, { chunkMs: healthBudgetMs, onProgress: log });
   const healthy = bootGrace.healthy;
   if (!healthy) {
     const restoreDetail = await restoreOnce();
