@@ -53,7 +53,7 @@ function clampNumThreads(n: number): number {
  * `topK` (default 40) candidates in one shot — a compact 6-layer model on
  * CPU still benefits from not building one huge padded batch. Overridable
  * via `config.crossEncoder.onnx.batchSize`. */
-const DEFAULT_BATCH_SIZE = 16;
+export const DEFAULT_BATCH_SIZE = 16;
 
 /** Sigmoid — folds the model's raw single-label regression logit into
  * `applyRerank`'s `[0,1]` score contract. Monotonic, so rank order among
@@ -234,7 +234,37 @@ export class OnnxCrossEncoderProvider implements CrossEncoderProvider {
     this.cacheDir = config.cacheDir;
     this.modelPath = config.modelPath;
     this.numThreads = config.numThreads !== undefined ? clampNumThreads(config.numThreads) : DEFAULT_NUM_THREADS;
-    this.batchSize = config.batchSize && config.batchSize > 0 ? Math.floor(config.batchSize) : DEFAULT_BATCH_SIZE;
+    // A fractional 0<batchSize<1 (e.g. 0.5) passes the old `>0` guard and
+    // then `Math.floor` collapsed it to 0 — `score()`'s
+    // `for (i=0;i<len;i+=this.batchSize)` then never advances `i` (issue #17).
+    // Against the REAL onnxruntime backend this doesn't hang: `session.run()`
+    // runs inside a `setImmediate` macrotask, and calling the tokenizer with
+    // an empty batch throws on the first iteration — that throw propagates
+    // out of `score()` into `applyRerank`'s catch, which silently falls back
+    // to fused order. So the actual observable failure is a SILENT no-op
+    // rerank on every call, not a hang. Either way the fix is the same: floor
+    // FIRST, then require the result be >=1 before accepting it — 0,
+    // negative, and NaN (a non-numeric override) all fall back to
+    // DEFAULT_BATCH_SIZE. The clamp itself is logged at WARN rather than
+    // applied silently — silently substituting a default for a bad override
+    // is exactly the "success and failure look identical" class ADR-015
+    // exists to kill; the whole value of this fix is making the misconfig
+    // VISIBLE, not just harmless.
+    const flooredBatchSize = Math.floor(config.batchSize ?? 0);
+    // NOTE: `flooredBatchSize < 1` would silently miss the NaN case — every
+    // comparison against NaN (including `< 1`) is false, so a NaN override
+    // would fall back to DEFAULT_BATCH_SIZE below without ever logging the
+    // warn. `!(flooredBatchSize >= 1)` is the NaN-safe negation (NaN >= 1 is
+    // false, so `!false` is true) and matches the fallback condition below
+    // exactly, rather than drifting into a second, subtly different check.
+    if (config.batchSize !== undefined && !(flooredBatchSize >= 1)) {
+      childLogger({ provider: 'onnx', model: this.model }).warn(
+        { configured_batch_size: config.batchSize, effective_batch_size: DEFAULT_BATCH_SIZE },
+        'onnx cross-encoder: config.crossEncoder.onnx.batchSize must floor to >=1 — ' +
+          'falling back to DEFAULT_BATCH_SIZE instead of silently no-op-ing every rerank call',
+      );
+    }
+    this.batchSize = flooredBatchSize >= 1 ? flooredBatchSize : DEFAULT_BATCH_SIZE;
     this.loadBackend = config.loadBackend ?? loadTransformersCrossEncoderBackend;
   }
 
