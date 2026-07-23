@@ -19,6 +19,12 @@ export interface AzureChatOptions {
   maxCompletionTokens: number;
   reasoningEffort?: 'minimal' | 'low' | 'medium' | 'high';
   deployment: string;
+  /** Non-reasoning models only (e.g. gpt-4o) — a reasoning model (gpt-5-mini,
+   *  gpt-5.4) rejects `temperature` outright, so omit this entirely for those
+   *  deployments (existing callers all do). Added for the Mem0/Zep judge
+   *  rubric replication (mem0-judge.mts), whose upstream harnesses pin
+   *  `temperature=0.0`. */
+  temperature?: number;
 }
 
 /**
@@ -93,6 +99,7 @@ export async function azureChatComplete(
     max_completion_tokens: opts.maxCompletionTokens,
   };
   if (opts.reasoningEffort) body.reasoning_effort = opts.reasoningEffort;
+  if (opts.temperature !== undefined) body.temperature = opts.temperature;
 
   let lastStatus = 0;
   let lastMessage = '';
