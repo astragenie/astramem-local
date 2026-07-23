@@ -1329,10 +1329,11 @@ export async function search(
     // where every hit already carries a real base ScoreExplanation, merge
     // the cross_encoder signal IN rather than let it clobber the base
     // signals — `final` stays the fused `score` (rerank never changes it).
+    const byId = new Map(results.map(r => [r.id, r]));
     const merged = reranked.map(hit => {
       if (!hit.reranked) return hit;
       const crossEncoder = hit.explanation!.signals.cross_encoder!;
-      const base = results.find(r => r.id === hit.id)!;
+      const base = byId.get(hit.id)!;
       const signals = { ...base.explanation.signals, cross_encoder: crossEncoder };
       return {
         ...hit,
