@@ -197,7 +197,10 @@ describe('doctor "Vec-index orphans" check (issue #209 follow-up)', () => {
     // migration 041 added, leaving everything else (including the
     // schema_version row claiming 041 applied) alone. What matters to this
     // check is column presence, not the bookkeeping row.
-    db.exec('ALTER TABLE memories DROP COLUMN needs_vec_index');
+    // migration 059 added a partial index over needs_vec_index — a genuine
+    // pre-#250 DB wouldn't have it, and SQLite refuses to drop a column an
+    // index depends on, so drop that index first to make the simulation valid.
+    db.exec('DROP INDEX IF EXISTS idx_memories_needs_vec_index; ALTER TABLE memories DROP COLUMN needs_vec_index');
     db.close();
 
     const result = await check().run();
