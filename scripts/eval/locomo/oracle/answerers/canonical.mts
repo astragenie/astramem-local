@@ -69,7 +69,7 @@ function buildCanonicalPrompt(question: string, hits: SearchHit[]): string {
     'You extract the MINIMAL exact answer to a question, using ONLY the memory notes below.',
     'Output ONLY the answer itself. Do not restate the question, do not explain, do not hedge, do not write a full sentence.',
     'Style: a bare date as "D Month YYYY", a bare name, a bare number, or at most 5 words -- never a sentence.',
-    'If the notes do not contain enough information to answer, or the question presupposes something not supported by the notes, output exactly: "no information available" -- do not guess.',
+    'Answer whenever the notes STATE the answer OR reasonably imply it -- draw the natural inference and combine notes where needed. Output exactly "no information available" ONLY when the notes genuinely do not address the question at all -- do NOT abstain merely because the answer is implied rather than stated word-for-word. Never fabricate a specific fact (name, date, number, place) the notes give no basis for.',
     '',
     'Memory notes:',
     notes,

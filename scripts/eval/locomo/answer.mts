@@ -198,7 +198,7 @@ export function buildAnswerPrompt(question: string, hits: SearchHit[], opts: { i
   return [
     'You are answering a question using ONLY the memory notes below, taken from a personal memory assistant.',
     'Answer as briefly as possible -- a short phrase, not a sentence, unless the question truly needs more.',
-    'If the notes do not contain enough information to answer, or the question presupposes something not supported by the notes, respond with exactly: "no information available" -- do not guess.',
+    'Answer whenever the notes STATE the answer OR reasonably imply it -- draw the natural inference and combine several notes where needed (e.g. notes saying she collects classic children\'s books support answering "Would she have Dr. Seuss books?" with "Yes"). Respond with exactly "no information available" ONLY when the notes genuinely do not address the question at all -- do NOT abstain merely because the answer is implied or must be inferred rather than stated word-for-word. Never fabricate a specific fact (a name, date, number, or place) the notes give no basis for.',
     '',
     'Memory notes:',
     notes,
