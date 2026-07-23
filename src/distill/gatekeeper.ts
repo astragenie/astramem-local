@@ -23,6 +23,7 @@
 
 import { z } from 'zod';
 import type { LLMProvider, ChatMsg } from '../contracts/index.js';
+import { RunCapTracker } from '../util/run-cap-tracker.js';
 
 /**
  * Stable marker embedded in the system prompt, mirroring `ATOM_TRIAGE_MARKER`
@@ -167,51 +168,17 @@ export interface GatekeeperCaps {
  * a graceful degrade to "extract unfiltered", never a drop-by-timeout
  * (FEAT-482 lesson, restated for this cap).
  */
-export class GatekeeperRunTracker {
-  private callsThisJob = 0;
-  private readonly startedAt = Date.now();
-  private capReached = false;
-  private wallClockCapReached = false;
-  private loggedTrip = false;
-
-  constructor(
-    private readonly caps: GatekeeperCaps,
-    private readonly log: (message: string) => void = (m) => console.warn(m),
-  ) {}
-
-  shouldStop(): boolean {
-    if (this.callsThisJob >= this.caps.maxPerRun) {
-      this.capReached = true;
-      this.logTripOnce('call-count', `${this.callsThisJob}/${this.caps.maxPerRun} calls`);
-      return true;
-    }
-    const elapsed = Date.now() - this.startedAt;
-    if (elapsed >= this.caps.maxWallClockMs) {
-      this.wallClockCapReached = true;
-      this.logTripOnce('wall-clock', `${elapsed}ms/${this.caps.maxWallClockMs}ms`);
-      return true;
-    }
-    return false;
-  }
-
-  recordCall(): void {
-    this.callsThisJob++;
-  }
-
-  state(): { callsExecuted: number; capReached: boolean; wallClockCapReached: boolean } {
-    return {
-      callsExecuted: this.callsThisJob,
-      capReached: this.capReached,
-      wallClockCapReached: this.wallClockCapReached,
-    };
-  }
-
-  private logTripOnce(kind: 'call-count' | 'wall-clock', detail: string): void {
-    if (this.loggedTrip) return;
-    this.loggedTrip = true;
-    this.log(
-      `[gatekeeper] ${kind} cap reached (${detail}) — skipping further gate calls for this job; ` +
-      "remaining chunks fall through un-gated (treated as 'keep', extract unfiltered — never drop-by-timeout).",
+export class GatekeeperRunTracker extends RunCapTracker {
+  constructor(caps: GatekeeperCaps, log: (message: string) => void = (m) => console.warn(m)) {
+    super(
+      caps,
+      {
+        tag: 'gatekeeper',
+        skipping: 'further gate calls for this job',
+        fallthrough:
+          "remaining chunks fall through un-gated (treated as 'keep', extract unfiltered — never drop-by-timeout).",
+      },
+      log,
     );
   }
 }
