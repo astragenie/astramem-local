@@ -2519,6 +2519,38 @@ export function applyDupJudgeGovernance(
 const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = new Set(['mock', 'llm']);
 
 /**
+ * Shared numeric clamp for the retrieval-stage cost/latency-bound fields
+ * governed below (`multiHop.maxSubQueries`/`maxSupplemental`/`timeoutMs`,
+ * `search.queryRewrite.maxVariants`/`timeoutMs`/`maxCandidates`,
+ * `crossEncoder.topK`/`timeoutMs`) — retrieval hardening pass, P2 (2026-07).
+ * Every one of these fields either bounds an `Array.slice(0, N)` cap (a
+ * negative N inverts the cap via JS negative-index semantics — an unbounded
+ * slice from the end) or a `setTimeout`-family budget (a ≤0/NaN value fires
+ * immediately, so the guarded stage silently, permanently degrades to "never
+ * contributes" on every call with no loud signal it's misconfigured — the
+ * `multiHop`/`queryRewrite` LLM stages' exact failure mode before this fix).
+ * ADR-015: always logged when it clamps, never a silent accept. `requireInteger`
+ * distinguishes discrete counts/caps (must be a whole number, mirrors
+ * `applyCandidateSelectionGovernance`'s `knnK` precedent) from a millisecond
+ * duration (`timeoutMs` — any positive finite number is a legitimate budget).
+ */
+function clampPositiveField(
+  label: string,
+  value: number,
+  fallback: number,
+  log: (message: string) => void,
+  opts: { requireInteger?: boolean } = {},
+): number {
+  const valid = opts.requireInteger ? Number.isInteger(value) && value > 0 : Number.isFinite(value) && value > 0;
+  if (valid) return value;
+  log(
+    `[retrieval-governance] ${label}=${JSON.stringify(value)} must be a positive ` +
+    `${opts.requireInteger ? 'integer' : 'number'} — falling back to ${fallback}.`,
+  );
+  return fallback;
+}
+
+/**
  * WS6 governance (mirrors `applyContradictionDetectionGovernance`'s shape):
  * config.yaml is hand-parsed scalars with no schema, and `loadConfig`'s
  * top-level override merge is shallow, so a partial `multiHop` override (or
@@ -2530,6 +2562,15 @@ const VALID_MULTI_HOP_PROVIDERS: ReadonlySet<Config['multiHop']['provider']> = n
  * defense-in-depth `resolveDecomposeOpts` already applies at resolve time —
  * this is belt-and-suspenders against a bad value ever being logged as
  * "governed" while still being out of range downstream).
+ *
+ * Retrieval hardening (issues #8/#9): `maxSubQueries`/`maxSupplemental` cap
+ * `Array.slice(0, N)` calls in decompose.ts/search.ts — a negative value
+ * inverts the cap via JS negative-index slicing. `timeoutMs` bounds the
+ * decomposer's `setTimeout`-family budget — ≤0/NaN fires immediately, so
+ * `provider: 'llm'` silently, permanently degrades to zero sub-queries on
+ * every call. All three are clamped to their documented default via
+ * `clampPositiveField` above rather than reaching decompose.ts/search.ts
+ * unvalidated.
  */
 export function applyMultiHopGovernance(
   multiHop: Config['multiHop'],
@@ -2556,7 +2597,17 @@ export function applyMultiHopGovernance(
       `clamping to ${clampedWeight}. See WS6 / src/search/decompose.ts.`,
     );
   }
-  return { ...multiHop, supplementalWeight: clampedWeight };
+  const maxSubQueries = clampPositiveField('multiHop.maxSubQueries', multiHop.maxSubQueries, fallback.maxSubQueries, log, { requireInteger: true });
+  const maxSupplemental = clampPositiveField('multiHop.maxSupplemental', multiHop.maxSupplemental, fallback.maxSupplemental, log, { requireInteger: true });
+  const timeoutMs = clampPositiveField('multiHop.timeoutMs', multiHop.timeoutMs, fallback.timeoutMs, log);
+
+  if (
+    clampedWeight === multiHop.supplementalWeight && maxSubQueries === multiHop.maxSubQueries &&
+    maxSupplemental === multiHop.maxSupplemental && timeoutMs === multiHop.timeoutMs
+  ) {
+    return multiHop;
+  }
+  return { ...multiHop, supplementalWeight: clampedWeight, maxSubQueries, maxSupplemental, timeoutMs };
 }
 
 const VALID_QUERY_REWRITE_MODES: ReadonlySet<Config['search']['queryRewrite']['mode']> = new Set(['off', 'enabled']);
@@ -2574,6 +2625,13 @@ const VALID_QUERY_REWRITE_PROVIDERS: ReadonlySet<Config['search']['queryRewrite'
  * `Config['search']` but are independent concerns (fusion weight ceilings
  * vs. this stage's own closed enums), same composition style as
  * `distill`'s multi-governance chain.
+ *
+ * Retrieval hardening (issue #9's twin on the rewrite stage): `maxVariants`/
+ * `maxCandidates` cap `Array.slice(0, N)` calls in query-rewrite.ts/search.ts
+ * (negative-index inversion risk); `timeoutMs` bounds the rewriter's
+ * `setTimeout`-family budget (≤0/NaN silently, permanently no-ops
+ * `provider: 'llm'`). Clamped via the same `clampPositiveField` helper
+ * `applyMultiHopGovernance` uses just above.
  */
 export function applyQueryRewriteGovernance(
   search: Config['search'],
@@ -2594,7 +2652,54 @@ export function applyQueryRewriteGovernance(
     );
     return { ...search, queryRewrite: { ...fallback, ...qr, mode: 'off', provider: fallback.provider } };
   }
-  return search;
+
+  const maxVariants = clampPositiveField('search.queryRewrite.maxVariants', qr.maxVariants, fallback.maxVariants, log, { requireInteger: true });
+  const timeoutMs = clampPositiveField('search.queryRewrite.timeoutMs', qr.timeoutMs, fallback.timeoutMs, log);
+  const maxCandidates = clampPositiveField('search.queryRewrite.maxCandidates', qr.maxCandidates, fallback.maxCandidates, log, { requireInteger: true });
+
+  if (maxVariants === qr.maxVariants && timeoutMs === qr.timeoutMs && maxCandidates === qr.maxCandidates) {
+    return search;
+  }
+  return { ...search, queryRewrite: { ...qr, maxVariants, timeoutMs, maxCandidates } };
+}
+
+const VALID_CROSS_ENCODER_PROVIDERS: ReadonlySet<Config['crossEncoder']['provider']> = new Set(['mock', 'http', 'onnx']);
+
+/**
+ * Cross-encoder rerank governance (issue #26/ADR-005; retrieval hardening
+ * P2 2026-07) — `crossEncoder` had NO governance function at all before this:
+ * an out-of-union `provider`, or a ≤0/NaN `topK`/`timeoutMs`, from a
+ * hand-edited config.yaml passed straight through `deepMerge` to
+ * `resolveRerankOpts` (src/search/rerank.ts) completely unvalidated. Same
+ * non-fatal, log-and-fall-back shape as every other governance function in
+ * this file: an invalid override degrades to the documented default
+ * (`enabled: false`) rather than risking a broken provider selection, or a
+ * cost-bound field that can't bound anything (a ≤0 `topK`, an
+ * immediately-firing `timeoutMs`) reaching the hot recall path silently.
+ */
+export function applyCrossEncoderGovernance(
+  crossEncoder: Config['crossEncoder'],
+  opts: { log?: (message: string) => void } = {},
+): Config['crossEncoder'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+  const fallback = defaultConfig().crossEncoder;
+
+  if (!crossEncoder || !VALID_CROSS_ENCODER_PROVIDERS.has(crossEncoder.provider)) {
+    log(
+      crossEncoder
+        ? `[cross-encoder-governance] crossEncoder.provider=${JSON.stringify(crossEncoder.provider)} is not one ` +
+          "of 'mock'|'http'|'onnx' — falling back to defaults (enabled: false). See issue #26 / src/search/rerank.ts."
+        : '[cross-encoder-governance] crossEncoder is missing — falling back to defaults (enabled: false). ' +
+          'See issue #26 / src/search/rerank.ts.',
+    );
+    return { ...fallback, ...crossEncoder, provider: fallback.provider, enabled: false };
+  }
+
+  const topK = clampPositiveField('crossEncoder.topK', crossEncoder.topK, fallback.topK, log, { requireInteger: true });
+  const timeoutMs = clampPositiveField('crossEncoder.timeoutMs', crossEncoder.timeoutMs, fallback.timeoutMs, log);
+
+  if (topK === crossEncoder.topK && timeoutMs === crossEncoder.timeoutMs) return crossEncoder;
+  return { ...crossEncoder, topK, timeoutMs };
 }
 
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
@@ -2614,6 +2719,10 @@ export function loadConfig(overrides: Partial<Config> | undefined): Config {
     consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation))),
     audio: applyAudioModeGovernance(merged.audio),
     multiHop: applyMultiHopGovernance(merged.multiHop),
+    // Retrieval hardening (P2 2026-07): crossEncoder had no governance
+    // composition point at all before this — see applyCrossEncoderGovernance's
+    // doc comment above.
+    crossEncoder: applyCrossEncoderGovernance(merged.crossEncoder),
     retention: applyRetentionGovernance(merged.retention),
   };
 }

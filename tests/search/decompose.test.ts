@@ -254,7 +254,10 @@ describe('LlmQueryDecomposer', () => {
     await decomposer.decompose('anything');
     expect(provider.chat).toHaveBeenCalledWith(
       expect.any(Array),
-      expect.objectContaining({ jsonSchema: { type: 'array', items: { type: 'string' } } }),
+      // retrieval hardening (P2 2026-07): maxItems now mirrors the
+      // constructor's maxSubQueries — constrains the schema itself, not
+      // just the post-hoc .slice(0, maxSubQueries) truncation.
+      expect.objectContaining({ jsonSchema: { type: 'array', items: { type: 'string' }, maxItems: 3 } }),
     );
   });
 

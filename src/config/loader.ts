@@ -45,6 +45,7 @@ import {
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
   applyMultiHopGovernance,
+  applyCrossEncoderGovernance,
   applyRetentionGovernance,
   applyCandidateSelectionGovernance,
   applyContradictionDetectionGovernance,
@@ -352,6 +353,14 @@ export function loadConfigFromDisk(configDir: string, reader?: (path: string) =>
       applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
     ))),
     multiHop: applyMultiHopGovernance(cfg.multiHop),
+    // Retrieval hardening (P2 2026-07): crossEncoder had NO governance
+    // composition point on the real boot path before this — an out-of-union
+    // provider or a ≤0/NaN topK/timeoutMs from a hand-edited config.yaml
+    // reached resolveRerankOpts completely unvalidated. See
+    // applyCrossEncoderGovernance's doc comment (config.ts) for the full
+    // rationale — same "both composition points" bar every other governance
+    // function in this file already meets.
+    crossEncoder: applyCrossEncoderGovernance(cfg.crossEncoder),
     retention: applyRetentionGovernance(cfg.retention),
     // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has
     // ZERO production callers — the real boot path (resolveRuntimeConfig →

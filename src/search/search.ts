@@ -29,6 +29,7 @@ import { getQueryVariants, mergeVariantHits, type QueryRewriteOpts } from './que
 // registry instead of hand-rolled closures — see
 // src/contracts/filter-registry.ts.
 import { applySqlColumnFilters, applySqlRangeFilters, mergeRepoAlias } from '../contracts/filter-registry.js';
+import { childLogger } from '../log/logger.js';
 
 export interface SearchFilters {
   type?: string[];
@@ -277,6 +278,25 @@ export interface SearchHit {
  *  than the extractor's own short `evidence` quote; this keeps either case
  *  bounded before it reaches the cross-encoder rerank input. */
 const MAX_EVIDENCE_EXCERPT_CHARS = 500;
+
+/**
+ * Hard wall-clock ceiling across the ENTIRE WS6 sub-query / FEAT-550 variant
+ * fan-out loop below (retrieval hardening, P2 2026-07-2x, issue #6). Each
+ * `gatherCandidates()` call in those loops does an `embed.embed()` call with
+ * NO timeout of its own (unlike the decompose/rewrite LLM call itself, which
+ * `getSubQueries`/`getQueryVariants` already bound via `withAbortableTimeout`)
+ * — a degraded-but-not-failing embed provider stacks `maxSubQueries` +
+ * `maxVariants` sequential slow calls into tens of seconds of added latency
+ * with no aggregate cap (measured: N degraded embeds stacking to ~45s against
+ * a single search() call). This bounds the SUM across every sub-query/variant
+ * gathered in one call: once spent, the loop stops gathering MORE candidates
+ * (whatever was already gathered is kept, never discarded/rolled back) rather
+ * than continuing to add latency for diminishing returns — same "degrade
+ * quality, never availability" posture as every other fallback in this file.
+ * Local, hardcoded (not config-surfaced) — mirrors `MAX_EVIDENCE_EXCERPT_CHARS`
+ * just above: a safety ceiling, not a tuning knob.
+ */
+const MAX_FANOUT_WALL_CLOCK_MS = 5_000;
 
 export interface SearchOpts {
   db: DB;
@@ -874,7 +894,18 @@ export async function search(
   if (opts.decompose) {
     const subQueries = await getSubQueries(query, opts.decompose);
     const seenIds = new Set(primaryIds);
+    // issue #6: outer wall-clock budget across the WHOLE fan-out — see
+    // MAX_FANOUT_WALL_CLOCK_MS's doc comment above for why gatherCandidates()
+    // itself carries no per-call timeout here.
+    const fanOutDeadline = Date.now() + MAX_FANOUT_WALL_CLOCK_MS;
     for (const sq of subQueries) {
+      if (Date.now() >= fanOutDeadline) {
+        childLogger({ stage: 'decompose-fanout' }).warn(
+          { outcome: 'budget_exceeded', budget_ms: MAX_FANOUT_WALL_CLOCK_MS, subQueriesTotal: subQueries.length },
+          'WS6 sub-query fan-out exceeded its wall-clock budget — stopping early with whatever was already gathered',
+        );
+        break;
+      }
       const gathered = await gatherCandidates(db, embed, sq, vecK, mode);
       const { ftsHits: sFts, vecHits: sVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
       for (const h of sFts) {
@@ -908,7 +939,18 @@ export async function search(
   const rewriteVecByVariant: Array<Array<{ id: string; cosine: number }>> = [];
   if (opts.expand && opts.queryRewrite) {
     const variants = await getQueryVariants(query, opts.queryRewrite);
+    // issue #6: same outer wall-clock budget as the WS6 fan-out above — its
+    // own deadline (not shared with WS6's) so decompose and rewrite each get
+    // the full MAX_FANOUT_WALL_CLOCK_MS budget rather than splitting one.
+    const fanOutDeadline = Date.now() + MAX_FANOUT_WALL_CLOCK_MS;
     for (const variant of variants) {
+      if (Date.now() >= fanOutDeadline) {
+        childLogger({ stage: 'query-rewrite-fanout' }).warn(
+          { outcome: 'budget_exceeded', budget_ms: MAX_FANOUT_WALL_CLOCK_MS, variantsTotal: variants.length },
+          'FEAT-550 rewrite-variant fan-out exceeded its wall-clock budget — stopping early with whatever was already gathered',
+        );
+        break;
+      }
       const gathered = await gatherCandidates(db, embed, variant, vecK, mode);
       const { ftsHits: vFts, vecHits: vVec } = applyEntityFilter(db, filters, gathered.ftsHits, gathered.vecHits);
       rewriteFtsByVariant.push(vFts);
@@ -993,8 +1035,15 @@ export async function search(
   const supplementalRawScore = new Map<string, number>();
   if (opts.decompose && (subFtsHits.length > 0 || subVecHits.length > 0)) {
     const supplementalFused = fuseHits(subFtsHits, subVecHits, metaMap, weights, nowMs, undefined, usefulness, entityBonus, agentBonus, uncontestedBonus);
+    // issue #8: `maxSupplemental` is governed (applyMultiHopGovernance,
+    // config.ts) at config-load time, but SearchOpts.decompose can also be
+    // hand-built by a caller (tests, the eval harness) bypassing governance
+    // entirely — Math.max(0, ...) is the defense-in-depth floor so a
+    // negative value here can never invert `Array.slice(0, N)`'s cap via JS
+    // negative-index semantics (slice(0, -1) means "all but the last one",
+    // not "zero").
     const capped = supplementalFused
-      .slice(0, opts.decompose.maxSupplemental)
+      .slice(0, Math.max(0, opts.decompose.maxSupplemental))
       .map(h => {
         const raw = Math.min(1, Math.max(0, h.score));
         supplementalRawScore.set(h.id, raw);

@@ -1,6 +1,10 @@
 /**
  * Search routes:
- *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=&preset=
+ *   GET  /search?q=&type=&repo=&project=&agent=&agentMode=&since=&as_of=&entity=&limit=&preset=&mode=&expand=
+ *                 { mode? }                FEAT-532 L2 (retrieval hardening issue #2): 'keyword'|'semantic'|
+ *                                           'hybrid' — was silently ignored on this route before; now threaded
+ *                                           into search()'s SearchOpts.mode exactly like POST /recall.
+ *                                           Omitted = 'hybrid'. An out-of-enum value is a 400.
  *   POST /recall  { query|text, k|limit, mode?, filters? }  filters.as_of: ISO-8601 date-time,
  *                                          filters.entity: FEAT-402 AC-4,
  *                                          filters.agentMode: FEAT-426 ('filter'|'boost')
@@ -260,23 +264,50 @@ export function searchRoute(db: DB, embed: EmbedProvider, config: Config = defau
       }
       const weights = resolvePresetWeights(preset, baseWeights);
 
+      // FEAT-532 L2: astramem-retrieval-query@1 `mode` — was silently
+      // ignored on this route (retrieval hardening, issue #2): every other
+      // surface (POST /recall, and now the MCP tools below) threads this
+      // into SearchOpts.mode, but GET /search never read the query param at
+      // all, so a caller asking for keyword-only or semantic-only retrieval
+      // here silently got 'hybrid' with no signal its request was ignored.
+      // An out-of-enum value is a 400, same shape as the `type`/`preset`
+      // validation above, rather than a silent fall-through to 'hybrid'.
+      let retrievalMode: 'keyword' | 'semantic' | 'hybrid' = 'hybrid';
+      if (params.mode !== undefined) {
+        const parsedMode = RetrievalModeEnum.safeParse(params.mode);
+        if (!parsedMode.success) {
+          return reply.code(400).send({ error: 'invalid', details: parsedMode.error.flatten() });
+        }
+        retrievalMode = parsedMode.data;
+      }
+
       // FEAT-550 AC-1: `expand=true` opts THIS call into the query-rewrite
       // stage (only takes effect when queryRewrite is also resolved, i.e.
       // search.queryRewrite.mode: 'enabled'). Omitted/anything else = false,
       // byte-identical to pre-FEAT-550 behavior.
       const expand = params.expand === 'true';
-      const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, queryRewrite, expand });
-      // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
-      recordRecallServed(db, {
-        query: q,
-        atomIds: hits.map(h => h.id),
-        scores: hits.map(h => h.score),
-        surface: 'rest',
-        mode: 'search',
+
+      // ADR-019 Tier 1 (issue #347) Decision 1b / retrieval hardening issue
+      // #4: bound the actual search/DB work in the same deadline race POST
+      // /recall already uses — this route never had one, so a stuck
+      // embed/rerank/decompose call inside search() hung all the way to
+      // Fastify's 60s blanket requestTimeout instead of a clean, named 504
+      // at 30s. See src/server/lib/deadline.ts's doc comment for exactly
+      // what this does and does not protect against.
+      return withDeadline('GET /search', reply, async () => {
+        const hits = await search(q, filters, limit, { db, embed, weights, rerank, decompose, mode: retrievalMode, queryRewrite, expand });
+        // ADR-010: recall-usefulness capture — measure only, does not feed ranking (v1).
+        recordRecallServed(db, {
+          query: q,
+          atomIds: hits.map(h => h.id),
+          scores: hits.map(h => h.score),
+          surface: 'rest',
+          mode: 'search',
+        });
+        // SLICE-411: enforce the [0,1] wire score contract at serialization,
+        // independent of fuseScores() internal math.
+        return { hits: clampScores(hits, 'GET /search') };
       });
-      // SLICE-411: enforce the [0,1] wire score contract at serialization,
-      // independent of fuseScores() internal math.
-      return { hits: clampScores(hits, 'GET /search') };
     });
 
     // POST /recall
