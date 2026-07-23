@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto';
 import type { DB } from './db.js';
 import { MemoryEventRepo, type CorrectionSource } from './memory-events.js';
 import { safeJsonColumn } from './json-guard.js';
+import { chunkedIn } from './sql-utils.js';
 
 /** issue #190: 'system' covers background/pipeline-originated events (e.g.
  *  `runImplicitPositivePass`'s heuristic grants) — no live request surface
@@ -182,32 +183,26 @@ export function usefulnessScores(
   const scores = new Map<string, number>(atomIds.map(id => [id, 0.5]));
   if (atomIds.length === 0) return scores;
 
-  // Batch the IN() clause. One bound parameter per id overflows SQLite's
-  // SQLITE_MAX_VARIABLE_NUMBER (default 999) the moment a consolidation run
-  // passes the FULL valid-atom set — on a large corpus that is tens of
-  // thousands of ids, which threw "too many SQL variables" and poisoned every
-  // consolidate job (2026-07-15). Chunk well under the limit, leaving headroom
-  // for the leading implicitWeight bound param.
-  const BATCH_SIZE = 900;
-  for (let start = 0; start < atomIds.length; start += BATCH_SIZE) {
-    const batch = atomIds.slice(start, start + BATCH_SIZE);
-    const ph = batch.map(() => '?').join(',');
-    const rows = db.prepare(`
-      SELECT atom_id,
-        SUM(CASE
-          WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
-           AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'heuristic' THEN ?
-          WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1.0
-          ELSE 0 END) AS used,
-        SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
-      FROM memory_events
-      WHERE event_type = 'usefulness' AND atom_id IN (${ph})
-      GROUP BY atom_id
-    `).all(implicitWeight, ...batch) as Array<{ atom_id: string; used: number; corrected: number }>;
+  // chunkedIn (src/storage/sql-utils.ts): one bound parameter per id
+  // overflows SQLite's SQLITE_MAX_VARIABLE_NUMBER (default 999) the moment a
+  // consolidation run passes the FULL valid-atom set — on a large corpus
+  // that is tens of thousands of ids, which threw "too many SQL variables"
+  // and poisoned every consolidate job (2026-07-15).
+  const rows = chunkedIn(atomIds, (batch, ph) => db.prepare(`
+    SELECT atom_id,
+      SUM(CASE
+        WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
+         AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'heuristic' THEN ?
+        WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1.0
+        ELSE 0 END) AS used,
+      SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND atom_id IN (${ph})
+    GROUP BY atom_id
+  `).all(implicitWeight, ...batch) as Array<{ atom_id: string; used: number; corrected: number }>);
 
-    for (const r of rows) {
-      scores.set(r.atom_id, (r.used + 1) / (r.used + r.corrected + 2));
-    }
+  for (const r of rows) {
+    scores.set(r.atom_id, (r.used + 1) / (r.used + r.corrected + 2));
   }
   return scores;
 }
