@@ -33,7 +33,13 @@
  *                     to see whether a retrieval-side lever's effect clears
  *                     the (much narrower) reanswer noise floor before paying
  *                     for a fresh extraction pass to also clear the reingest
- *                     noise floor.
+ *                     noise floor. `--k` (retrieval depth -- score-affecting,
+ *                     unlike --answer-concurrency, see deriveResumeAnswererArgs)
+ *                     is auto-derived from the base run's own
+ *                     run-manifest.json unless passed explicitly, so a
+ *                     forgotten --k can never silently re-score the store at
+ *                     run.mts's own default (10) instead of the k it was
+ *                     actually answered against.
  *
  * Both modes score every repeat with judge/metrics.mts's scoreRun, then
  * report BOTH combineMetricsReports (mean±stdev, existing) AND
@@ -124,6 +130,54 @@ export function deriveResumeSamplingArgs(params: RunParams): string[] {
   if (params.qaPerSample !== undefined && params.qaPerSample !== null) args.push('--qa-per-sample', String(params.qaPerSample));
   if (params.shards !== undefined && params.shards !== null) args.push('--shards', String(params.shards));
   return args;
+}
+
+export interface DerivedAnswererArgs {
+  args: string[];
+  warning: string | null;
+}
+
+/**
+ * Review fix (rev-e MEDIUM, 2026-07-23): `--k` is a retrieval-depth knob
+ * that genuinely changes what the answerer sees (and therefore the score),
+ * run.mts parses it fresh every invocation with NO persistence
+ * (`Number(get('--k') ?? '10')`), and neither evaluateResumeGuard nor
+ * evaluateMultiRunParamsGuard covers it -- unlike dataset/seed/n/
+ * qaPerSample/shards above, a --mode reanswer repeat that forgets --k
+ * silently re-scores the base store at run.mts's OWN default (10) instead
+ * of whatever k it was actually ingested/tuned for (e.g.
+ * ../full-suite.mts's tuned k=15), and that reads indistinguishably from
+ * "answerer noise" in the aggregated report. Auto-derive it from the base
+ * run's own run-manifest.json (`config.k`, always written by run.mts) the
+ * same silent-safe way deriveResumeSamplingArgs handles the guarded fields
+ * above.
+ *
+ * An explicit `--k` already present in the caller's passthrough is left
+ * alone, not overridden -- unlike the RESERVED_REANSWER_FLAGS above, `--k`
+ * is NOT resume-guarded (varying it can never trigger evaluateResumeGuard's
+ * refusal), so a deliberate k-depth A/B on the same store is a legitimate,
+ * intentional use of this wrapper, not a mistake to block.
+ *
+ * `--answer-concurrency` is NOT derived here: run.mts's own header
+ * documents it as "purely a scheduling knob -- the prompt, deployment,
+ * token budget and k are untouched, so the hypotheses (and therefore the
+ * score) are identical to the old strictly-serial loop," and (unlike k) it
+ * is never written into run-manifest.json's config at all -- there is
+ * nothing to derive it FROM, and no score-corruption risk in leaving it at
+ * run.mts's own default.
+ */
+export function deriveResumeAnswererArgs(runManifestJson: unknown, passthroughHasK: boolean): DerivedAnswererArgs {
+  if (passthroughHasK) return { args: [], warning: null };
+  const k = (runManifestJson as { config?: { k?: unknown } } | null | undefined)?.config?.k;
+  if (typeof k === 'number' && Number.isFinite(k)) {
+    return { args: ['--k', String(k)], warning: null };
+  }
+  return {
+    args: [],
+    warning: 'WARNING: could not derive --k from the base run\'s run-manifest.json (missing, unreadable, or config.k is not a finite number) '
+      + '-- this reanswer repeat will fall through to run.mts\'s own --k default (10), which may silently differ from the k the base store '
+      + 'was actually answered/tuned against. Pass --k <value> explicitly to pin it.',
+  };
 }
 
 /** Copies the 3 files a repeat's aggregation needs (hypotheses.jsonl,
@@ -279,12 +333,23 @@ async function runReanswer(baseRunDir: string, runs: number, passthrough: string
   }
   const params = JSON.parse(readFileSync(runParamsPath, 'utf8')) as RunParams;
   const resumeArgs = deriveResumeSamplingArgs(params);
+
+  // rev-e MEDIUM fix: --k is score-affecting and NOT covered by
+  // evaluateResumeGuard -- derive it from the base run's own
+  // run-manifest.json rather than let it silently fall through to
+  // run.mts's own --k default. See deriveResumeAnswererArgs's header for
+  // why --answer-concurrency is deliberately NOT derived alongside it.
+  const runManifestPath = join(baseRunDir, 'run-manifest.json');
+  const runManifestJson = existsSync(runManifestPath) ? JSON.parse(readFileSync(runManifestPath, 'utf8')) : null;
+  const { args: answererArgs, warning } = deriveResumeAnswererArgs(runManifestJson, passthrough.includes('--k'));
+  if (warning) console.error(`\n${warning}`);
+
   const snapshotDirs = reanswerSnapshotDirs(baseRunDir, runs);
   console.log(`reanswer mode: ${runs} re-answer-only passes against the SAME store at ${baseRunDir} -> ${snapshotDirs.join(', ')}`);
   console.log('Isolates answerer-only noise (LLM sampling, reranker) at zero extraction cost.');
   for (let i = 0; i < runs; i++) {
     console.log(`\n=== repeat ${i + 1}/${runs}: run.mts --resume ${baseRunDir} ===`);
-    runChild(['--resume', baseRunDir, ...resumeArgs, ...passthrough], printOnly);
+    runChild(['--resume', baseRunDir, ...resumeArgs, ...answererArgs, ...passthrough], printOnly);
     if (!printOnly) snapshotAnswerOutputs(baseRunDir, snapshotDirs[i]!);
     else console.log(`  (print-only: would snapshot -> ${snapshotDirs[i]})`);
   }

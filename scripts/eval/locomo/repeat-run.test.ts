@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync, mkdirSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  reingestRunDirs, reanswerSnapshotDirs, deriveResumeSamplingArgs, snapshotAnswerOutputs,
+  reingestRunDirs, reanswerSnapshotDirs, deriveResumeSamplingArgs, deriveResumeAnswererArgs, snapshotAnswerOutputs,
   aggregateRunDirs, parseArgs, RESERVED_REINGEST_FLAGS, RESERVED_REANSWER_FLAGS,
 } from './repeat-run.mts';
 
@@ -46,6 +46,48 @@ describe('deriveResumeSamplingArgs', () => {
   it('omits n/qaPerSample when null (the "whole dataset, no cap" case)', () => {
     const args = deriveResumeSamplingArgs({ datasetPath: 'a.json', datasetHash: 'x', seed: 42, n: null, qaPerSample: null, shards: 1 });
     expect(args).toEqual(['--dataset', 'a.json', '--seed', '42', '--shards', '1']);
+  });
+});
+
+describe('deriveResumeAnswererArgs (rev-e MEDIUM fix: --k must never silently fall through to run.mts\'s default)', () => {
+  it('the exact mismatch scenario the review flagged: base manifest k=15, no --k in passthrough -> derives --k 15, not a silent 10', () => {
+    const manifest = { config: { k: 15 } };
+    const result = deriveResumeAnswererArgs(manifest, false);
+    expect(result).toEqual({ args: ['--k', '15'], warning: null });
+  });
+
+  it('an explicit --k already in passthrough is left untouched (deliberate k A/B, not overridden)', () => {
+    const manifest = { config: { k: 15 } };
+    const result = deriveResumeAnswererArgs(manifest, true);
+    expect(result).toEqual({ args: [], warning: null });
+  });
+
+  it('warns loudly (does not silently proceed) when run-manifest.json is null/missing', () => {
+    const result = deriveResumeAnswererArgs(null, false);
+    expect(result.args).toEqual([]);
+    expect(result.warning).toMatch(/WARNING/);
+    expect(result.warning).toMatch(/run.mts's own --k default \(10\)/);
+  });
+
+  it('warns loudly when config.k is missing from an otherwise-valid manifest', () => {
+    const result = deriveResumeAnswererArgs({ config: {} }, false);
+    expect(result.warning).toMatch(/WARNING/);
+  });
+
+  it('warns loudly when config.k is malformed (non-numeric)', () => {
+    const result = deriveResumeAnswererArgs({ config: { k: 'fifteen' } }, false);
+    expect(result.args).toEqual([]);
+    expect(result.warning).toMatch(/WARNING/);
+  });
+
+  it('warns loudly when config.k is NaN/Infinity (finite-number guard)', () => {
+    expect(deriveResumeAnswererArgs({ config: { k: NaN } }, false).warning).toMatch(/WARNING/);
+    expect(deriveResumeAnswererArgs({ config: { k: Infinity } }, false).warning).toMatch(/WARNING/);
+  });
+
+  it('does not warn when passthrough already has --k, even with a missing/malformed manifest (nothing to derive, nothing at risk)', () => {
+    expect(deriveResumeAnswererArgs(null, true)).toEqual({ args: [], warning: null });
+    expect(deriveResumeAnswererArgs({ config: { k: 'nope' } }, true)).toEqual({ args: [], warning: null });
   });
 });
 
