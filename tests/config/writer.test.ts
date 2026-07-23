@@ -37,6 +37,10 @@ function buildFullyPopulatedConfig(): Config {
     onnxEmbed: { cacheDir: '/var/cache/onnx', modelPath: '/opt/models/mxbai.onnx', numThreads: 2, dtype: 'fp16', pooling: 'mean' },
     search: {
       alpha: 0.25, beta: 0.35, gamma: 0.15, delta: 0.05, epsilon: 0.2, zeta: 0.05, eta: 0.03, theta: 0.04,
+      // Score-phase Track I: non-default value here (like the rest of this
+      // fixture) so the AC-1 round-trip test actually exercises the emitter
+      // writing/reloading a NON-default choice, not just the shipped default.
+      normalization: 'winsorized',
       governance: { maxComponentWeight: 0.8 },
       usefulness: {
         implicitPositive: { enabled: true, windowDays: 45, minDistinctQueries: 3, weight: 0.5, maxGrantsPerRun: 250 },

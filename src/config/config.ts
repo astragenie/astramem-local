@@ -307,6 +307,31 @@ export interface Config {
       timeoutMs: number;
       maxCandidates: number;
     };
+    /**
+     * Score-phase Track I (2026-07-23): which normalization `fuse.ts`'s
+     * `normalizeScores`/`fuseHits` apply to raw bm25/cosine scores before
+     * fusion. `'minmax'` (default) is plain min-max, BYTE-IDENTICAL to
+     * pre-Track-I behavior. `'winsorized'` clips each candidate's raw score
+     * to its own array's [p5, p95] before min-max — the pool-tax fix (QA
+     * repro 2026-07-23, memory `fusion-pool-tax-score-lead`): SQLite
+     * bm25/cosine are unbounded, so a single outlier candidate stretches
+     * plain min-max's range so far that every OTHER candidate's normalized
+     * score compresses toward the same corner, which can invert two
+     * unrelated candidates' relative fused score once combined with
+     * components the outlier didn't distort (importance/freshness/etc).
+     * See src/search/fuse.ts's `normalizeScores` doc comment for the full
+     * mechanism and `applyNormalizationGovernance` below for the closed-enum
+     * validation (an invalid/typo'd value falls back to 'minmax', never
+     * fatal — config.yaml has no schema, see loader.ts's doc comment).
+     *
+     * Deliberately NOT rank-based (RRF-style) normalization — that path is
+     * already refuted (memory `retrieval-fusion-refuted`: multi-hop score
+     * dropped 0.28→0.15 when magnitude ties collapsed to ordinal ranks).
+     * Measurement (the 2×2 minmax/winsorized × rerank-off/onnx A/B) is a
+     * separate, later track's job — this key only needs to be correct and
+     * additive; it does not itself carry eval evidence the way η/θ do.
+     */
+    normalization: 'minmax' | 'winsorized';
   };
   /** Cross-encoder rerank stage (issue #26, ADR-005; P2 retrieval overhaul,
    * WT-B, 2026-07-20). OFF by default — ADR-005 ruled "no reranker in v1
@@ -1551,6 +1576,9 @@ export function defaultConfig(): Config {
         },
       },
       queryRewrite: { mode: 'off', provider: 'mock', maxVariants: 3, timeoutMs: 1500, maxCandidates: 200 },
+      // Score-phase Track I: 'minmax' is the shipped default, byte-identical
+      // to pre-Track-I behavior. See the Config type's doc comment above.
+      normalization: 'minmax',
     },
     // P2 retrieval overhaul (2026-07-20): `enabled` stays `false` — flipping
     // the shipped default requires published recall@10/NDCG@10 (or
@@ -2702,12 +2730,43 @@ export function applyCrossEncoderGovernance(
   return { ...crossEncoder, topK, timeoutMs };
 }
 
+const VALID_NORMALIZATION_MODES: ReadonlySet<Config['search']['normalization']> = new Set(['minmax', 'winsorized']);
+
+/**
+ * Score-phase Track I governance (mirrors `applyQueryRewriteGovernance`'s
+ * shape exactly): `config.yaml` is hand-parsed scalars with no schema, so a
+ * typo'd `search.normalization` would otherwise pass straight through
+ * `deepMerge` unchecked. Never fatal — an invalid/missing value falls back to
+ * `'minmax'` (the documented default), logged, rather than risk booting with
+ * an unrecognized mode string that `fuse.ts`'s `normalizeScores` would
+ * silently treat as plain min-max anyway (its own `mode !== 'winsorized'`
+ * check), making a typo invisible instead of loud. Applied alongside
+ * `applyFusionGovernance`/`applyQueryRewriteGovernance` in `loadConfig` below
+ * — an independent concern operating on the same `Config['search']` shape,
+ * same composition style as the rest of this file's governance chain.
+ */
+export function applyNormalizationGovernance(
+  search: Config['search'],
+  opts: { log?: (message: string) => void } = {},
+): Config['search'] {
+  const log = opts.log ?? ((message: string) => console.warn(message));
+
+  if (!VALID_NORMALIZATION_MODES.has(search.normalization)) {
+    log(
+      `[normalization-governance] search.normalization=${JSON.stringify(search.normalization)} is not a valid ` +
+      "mode ('minmax'|'winsorized') — falling back to 'minmax'. See score-phase Track I / src/search/fuse.ts.",
+    );
+    return { ...search, normalization: 'minmax' };
+  }
+  return search;
+}
+
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
   return {
     ...merged,
-    search: applyQueryRewriteGovernance(applyFusionGovernance(merged.search)),
+    search: applyNormalizationGovernance(applyQueryRewriteGovernance(applyFusionGovernance(merged.search))),
     // FEAT-548: applyGatekeeperGovernance composed here too, not just in
     // loadConfigFromDisk() — mirrors applyExtractionPassBGovernance's own
     // "wired into BOTH real paths" bar (the 2026-07-16 review note on

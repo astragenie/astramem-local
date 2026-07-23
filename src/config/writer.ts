@@ -258,6 +258,10 @@ export function configToYaml(cfg: Config): string {
     // as zeta/eta above: omitting it here would silently drop a hand-set
     // `search.theta` on the next config write-back.
     line(1, 'theta', cfg.search.theta),
+    // Score-phase Track I: normalization is a sibling scalar of alpha..theta
+    // above, same round-trip requirement — omitting it here would silently
+    // drop a hand-set `search.normalization: winsorized` on the next write-back.
+    line(1, 'normalization', cfg.search.normalization),
     // FEAT-428 governance ceiling — also dropped pre-FEAT-461 (missed by the
     // original bug report's own field list; caught by the AC-1 exhaustive
     // round-trip test instead).

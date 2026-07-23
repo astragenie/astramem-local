@@ -3,6 +3,7 @@ import {
   loadConfig,
   defaultConfig,
   applyFusionGovernance,
+  applyNormalizationGovernance,
   applyDurabilityGateGovernance,
   applyExtractProfileGovernance,
   applyAudioModeGovernance,
@@ -356,6 +357,51 @@ describe('applyFusionGovernance', () => {
       // shallow-cloned sibling, not the same reference mutated in place.
       expect(search.usefulness.implicitPositive.enabled).toBe(true);
     });
+  });
+});
+
+// Score-phase Track I: search.normalization is a closed 2-value enum but
+// config.yaml has no schema — an invalid/typo value must fall back to the
+// documented 'minmax' default with a WARN, not silently reach fuse.ts (which
+// would treat any non-'winsorized' string as plain minmax anyway — the same
+// class of "typo becomes invisible instead of loud" gap
+// applyQueryRewriteGovernance/applyDurabilityGateGovernance close for their
+// own enums).
+describe('applyNormalizationGovernance', () => {
+  const baseSearch = () => defaultConfig().search;
+
+  it("leaves the shipped default ('minmax') byte-identical (governance is a guard, not a behavior change)", () => {
+    const search = baseSearch();
+    const governed = applyNormalizationGovernance(search);
+    expect(governed).toEqual(search);
+  });
+
+  it("leaves an explicit valid 'winsorized' override untouched", () => {
+    const search = { ...baseSearch(), normalization: 'winsorized' as const };
+    const governed = applyNormalizationGovernance(search);
+    expect(governed.normalization).toBe('winsorized');
+  });
+
+  it("an invalid/typo'd value falls back to 'minmax' and logs why", () => {
+    const search = { ...baseSearch(), normalization: 'winsorised' as any };
+    const logs: string[] = [];
+    const governed = applyNormalizationGovernance(search, { log: (m) => logs.push(m) });
+    expect(governed.normalization).toBe('minmax');
+    expect(logs.some(m => m.includes('search.normalization') && m.includes('winsorised'))).toBe(true);
+  });
+
+  it('loadConfig wires applyNormalizationGovernance in: an override with an invalid mode comes back minmax', () => {
+    const cfg = loadConfig({
+      search: { ...defaultConfig().search, normalization: 'bogus' as any },
+    } as any);
+    expect(cfg.search.normalization).toBe('minmax');
+  });
+
+  it('loadConfig wires applyNormalizationGovernance in: a valid winsorized override is honored', () => {
+    const cfg = loadConfig({
+      search: { ...defaultConfig().search, normalization: 'winsorized' as const },
+    } as any);
+    expect(cfg.search.normalization).toBe('winsorized');
   });
 });
 

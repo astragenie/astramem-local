@@ -110,20 +110,71 @@ export interface FuseInput {
   theta?: number;
 }
 
+/** Config-facing normalization mode for {@link normalizeScores} (score-phase
+ *  Track I). See `search.normalization` in `src/config/config.ts`. */
+export type NormalizationMode = 'minmax' | 'winsorized';
+
+const WINSORIZE_LOWER_PCT = 0.05;
+const WINSORIZE_UPPER_PCT = 0.95;
+
+/**
+ * Linear-interpolated percentile over an ALREADY-SORTED ascending array (same
+ * convention as numpy's default `interpolation='linear'`). Internal helper
+ * for the 'winsorized' mode below.
+ */
+function percentileOfSorted(sortedAsc: number[], p: number): number {
+  const n = sortedAsc.length;
+  if (n === 1) return sortedAsc[0]!;
+  const idx = p * (n - 1);
+  const lo = Math.floor(idx);
+  const hi = Math.ceil(idx);
+  if (lo === hi) return sortedAsc[lo]!;
+  const frac = idx - lo;
+  return sortedAsc[lo]! + (sortedAsc[hi]! - sortedAsc[lo]!) * frac;
+}
+
+/**
+ * Clip every value in `scores` to [p5, p95] of the SAME array. Used only by
+ * 'winsorized' mode — see `normalizeScores`'s doc comment for the rationale.
+ */
+function winsorize(scores: number[]): number[] {
+  const sorted = [...scores].sort((a, b) => a - b);
+  const lo = percentileOfSorted(sorted, WINSORIZE_LOWER_PCT);
+  const hi = percentileOfSorted(sorted, WINSORIZE_UPPER_PCT);
+  return scores.map(s => Math.min(hi, Math.max(lo, s)));
+}
+
 /**
  * Normalize an array of raw scores to [0,1] range.
  * If all values are equal (range = 0) returns all ones.
+ *
+ * `mode` (score-phase Track I, `search.normalization` config key):
+ * - 'minmax' (default): plain min-max over the raw values, byte-identical to
+ *   this function's pre-existing behavior.
+ * - 'winsorized': clips every value to its own array's [p5, p95] BEFORE
+ *   min-max. SQLite bm25/cosine are unbounded, so a single outlier candidate
+ *   can stretch plain min-max's range so far that every OTHER candidate's
+ *   normalized score compresses toward the same corner — erasing the
+ *   separation between them (the "pool tax": within one `fuseHits()` call,
+ *   an unrelated outlier can invert two other candidates' relative fused
+ *   score once combined with components the outlier didn't distort, e.g.
+ *   importance/freshness). Clipping first bounds the outlier's influence on
+ *   the min-max range, restoring that separation. Needs a reasonably sized
+ *   candidate array to have any effect — with very few points (2-3) the p5/
+ *   p95 interpolation sits right next to the extremes and clipping is close
+ *   to a no-op, which is expected (see tests/search/fuse.test.ts).
  */
-export function normalizeScores(scores: number[]): number[] {
+export function normalizeScores(scores: number[], mode: NormalizationMode = 'minmax'): number[] {
   if (scores.length === 0) return [];
-  const min = Math.min(...scores);
-  const max = Math.max(...scores);
+  const source = mode === 'winsorized' ? winsorize(scores) : scores;
+  const min = Math.min(...source);
+  const max = Math.max(...source);
   const range = max - min;
   // All-equal (including single-hit): every score is equally the best match
   // within this component. Returning 0 would erase the component's signal
   // entirely (a lone FTS hit would lose its whole BM25 contribution).
   if (range === 0) return scores.map(() => 1);
-  return scores.map(s => (s - min) / range);
+  return source.map(s => (s - min) / range);
 }
 
 /**
@@ -190,7 +241,12 @@ export function fuseHits(
   ftsHits: Array<{ id: string; bm25: number }>,
   vecHits: Array<{ id: string; cosine: number }>,
   metas: Map<string, { importance: number; created_at: number }>,
-  weights: { alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number; theta?: number },
+  weights: {
+    alpha: number; beta: number; gamma: number; delta: number; epsilon?: number; zeta?: number; eta?: number; theta?: number;
+    /** score-phase Track I: `search.normalization` config key. Omitted = 'minmax'
+     *  (byte-identical to pre-Track-I behavior) — see normalizeScores' doc comment. */
+    normalization?: NormalizationMode;
+  },
   nowMs: number,
   freshnessDecayDays = 30,
   usefulness?: Map<string, number>,
@@ -208,12 +264,12 @@ export function fuseHits(
   // Normalize BM25 — SQLite bm25() returns negative values (lower = better match)
   // Negate so higher positive = better, then normalize
   const rawBm25Values = ftsHits.map(h => -h.bm25);  // negate
-  const normBm25Arr = normalizeScores(rawBm25Values);
+  const normBm25Arr = normalizeScores(rawBm25Values, weights.normalization);
   const normBm25Map = new Map(ftsHits.map((h, i) => [h.id, normBm25Arr[i] ?? 0]));
 
   // Normalize cosine scores
   const rawCosineValues = vecHits.map(h => h.cosine);
-  const normCosineArr = normalizeScores(rawCosineValues);
+  const normCosineArr = normalizeScores(rawCosineValues, weights.normalization);
   const normCosineMap = new Map(vecHits.map((h, i) => [h.id, normCosineArr[i] ?? 0]));
 
   // Freshness: exponential decay, half-life = freshnessDecayDays
