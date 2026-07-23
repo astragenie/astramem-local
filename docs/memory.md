@@ -144,6 +144,26 @@ ledger: `docs/research/20260714-locomo-hypothesis-ledger.md`).
   candidates** — a plausible slice of the temporal-category F1 gap (FEAT-486). Standing rule (still
   valid for any NEW code-side month arithmetic): construct via `new Date(Date.UTC(y, m, 1))`, and add
   an explicit month-end-anchor test (29th/30th/31st). Standing rule in `AGENTS.md`.
+- **ground-dates.ts LLM resolution is NON-DETERMINISTIC at temperature 0 (discovered 2026-07-23, live gate).**
+  The Wave-5 `w5/extract-fix` branch closed gap (c) above — added `in N units` / `within N units` /
+  `N units from now` future-relative detection + symmetric resolution templates (built + code-reviewed
+  PASS, 663 distill tests green, 0 fabrications on all 13 adversarial re-anchoring cases). BUT the
+  **live** adversarial-determinism gate (`scripts/eval/date-grounding-retry-adversarial.mts`, real
+  codex-subscription, temp already pinned `0` at ground-dates.ts:373) came back RED on the *genuinely
+  session-relative must-resolve* cases: **3/5 non-deterministic across 3 identical runs** and **2/5
+  collapsed week-granularity to a bare invented day**. Load-bearing detail: the non-determinism hits a
+  **past-tense** case too — `"I saw her last week."` resolved to `"the week before 15 July 2023"` twice
+  and **declined entirely** on the third run — so this is a **pre-existing property of the LLM-grounding
+  architecture, not introduced by the future extension** (the extension only widens the surface: more
+  atoms fire → more non-deterministic resolves; resolve-rate of fired ≈ 33%, the other ~2/3 safely
+  decline). Consequence: **`w5/extract-fix` DEFERRED — not merged to `feat/retrieval-overhaul`, kept
+  on-branch.** Rationale: near-zero LoCoMo upside (temporal already GAINS from extraction per the
+  2026-07-23 fixed-answerer oracle recompute; future-relative dates are rare), so no urgency to ship a
+  known-non-deterministic widening that also hurts ingest reproducibility. Real fix needs a determinism
+  story for the whole module (e.g. move the offset arithmetic code-side once the LLM has only *classified*
+  attach-vs-reanchor, so the DATE is computed deterministically and the LLM never picks the day) — a
+  separate investigation, out of this release's scope. Mocked unit tests pass because canned responses
+  can't exhibit the live non-determinism — the live gate is the only thing that catches it.
 - **Formerly-deferred items, all resolved (verified 2026-07-03):** turn flattening
   (`flattenTranscriptContent`, D-DEF1); `summary_memory_id` backfill (D-DEF2); the ADR-005 retrieval
   eval gate (runs in every vitest/CI pass); usefulness→ranking epsilon term (ADR-010, `src/search/fuse.ts`).

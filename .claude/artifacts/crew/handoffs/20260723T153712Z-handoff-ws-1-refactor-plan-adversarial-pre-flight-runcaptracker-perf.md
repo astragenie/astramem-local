@@ -1,0 +1,39 @@
+# Task Handoff: WS-1 refactor plan adversarial pre-flight (RunCapTracker, performSearch, http-retry, guard-log factory)
+
+- Created: 2026-07-23T15:37:12.106Z
+- From: researcher
+- To: dispatcher
+- Objective: Of 4 flagship WS-1 consolidations, only http-retry (5/6 sites) and the simple-drop guard-logs (6 files) are truly safe; RunCapTracker has an odd-one-out (DistillCostCapTracker has enabled-toggle+optional fields the other 3 lack), performSearch's REST vs MCP split hides real response-shape/input-parsing divergence, and the rate-log guard group is not uniform (triage-guard-log carries 3 extra fields gatekeeper/evidence-gate lack).
+- Allowed Scope:
+  - Read-only code reading at cited file:line for all 4 WS-1 flagship consolidation candidates in docs/specs/20260723-codebase-refactor-plan.md
+- Forbidden Scope: -
+- Deliverable: Per-item SAFE/RISKY verdict with file:line citations and quoted differing code, delivered inline to dispatcher
+- Changed Files:
+  - src/distill/cost-cap.ts
+  - src/distill/atom-triage.ts
+  - src/distill/gatekeeper.ts
+  - src/consolidate/dup-judge.ts
+  - src/consolidate/contradiction-judge.ts
+  - src/distill/ground-dates.ts
+  - src/server/routes/search.ts
+  - src/mcp/server.ts
+  - src/providers/llm/ollama.ts
+  - src/providers/llm/anthropic.ts
+  - src/providers/llm/azure-openai.ts
+  - src/providers/llm/openai-compatible.ts
+  - src/providers/llm/codex-subscription.ts
+  - src/providers/embed/azure-openai.ts
+  - src/providers/embed/ollama.ts
+  - src/storage/evidence-guard-log.ts
+  - src/storage/entity-link-log.ts
+  - src/storage/relation-guard-log.ts
+  - src/storage/validity-guard-log.ts
+  - src/storage/entity-guard-log.ts
+  - src/storage/transcription-guard-log.ts
+  - src/storage/triage-guard-log.ts
+  - src/storage/gatekeeper-log.ts
+  - src/storage/evidence-gate-log.ts
+- Confidence: high
+- Risks: Did not read every one of the 11 guard-log files (spot-checked 6 of 7 simple-drop + 3 of 4 rate-log) or every rate-log file's doctor-check consumer; did not check test coverage that would break under consolidation
+- Suggested Next Handoff: Hand to colleague/reviewer building the adversarial case against docs/specs/20260723-codebase-refactor-plan.md WS-1; consider re-scoping WS-1 to (a) http-retry helper excluding codex-subscription, (b) simple-drop guard-log factory only, (c) narrow the RunCapTracker merge to the 3 truly-identical trackers with DistillCostCapTracker left separate, (d) drop or shrink the performSearch consolidation claim
+
