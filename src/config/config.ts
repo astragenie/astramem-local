@@ -2761,27 +2761,63 @@ export function applyNormalizationGovernance(
   return search;
 }
 
+/**
+ * Wave-3 config track: the single ordered composition of every
+ * `applyXGovernance` function this module exports, applied to an already
+ * defaults-merged `Config`. `loadConfig` (below) and `loadConfigFromDisk`
+ * (src/config/loader.ts) both call this instead of each hand-maintaining
+ * their own copy of the same ~17-call chain — the two had already drifted
+ * apart twice, silently:
+ *
+ *  - `loadConfig`'s old chain never called `applyAtomTriageGovernance` — an
+ *    out-of-union `distill.atomTriage.provider` reaching this path (tests
+ *    only, per production-caller audit below) wouldn't get dropped.
+ *  - `loadConfigFromDisk`'s old chain never called
+ *    `applyExtractionPassesGovernance` — a hand-edited out-of-{1,2}
+ *    `distill.extractionPasses` on the REAL boot path reached
+ *    `runPipeline` ungoverned.
+ *  - `loadConfigFromDisk`'s old chain never called `applyAudioModeGovernance`
+ *    AT ALL — `audio` had no governance composition point on the real boot
+ *    path whatsoever, the largest of the three gaps: a hand-edited
+ *    out-of-union `audio.mode` reached the audio add-on's dispatch fully
+ *    unvalidated.
+ *
+ * Every governance function composed here only ever reads/writes its own
+ * field (or, for `distill`/`consolidation`, its own subfield) and passes the
+ * rest of its input through unchanged — every individual function's own doc
+ * comment already documents this — so the nesting order below is safe
+ * regardless of direction; it simply matches loadConfigFromDisk's pre-existing
+ * order (the real boot path) so a diff against this repo's history stays
+ * minimal.
+ */
+export function applyAllGovernance(cfg: Config, opts: { log?: (message: string) => void } = {}): Config {
+  return {
+    ...cfg,
+    search: applyNormalizationGovernance(applyQueryRewriteGovernance(applyFusionGovernance(cfg.search, opts), opts), opts),
+    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyAtomTriageGovernance(
+      applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(
+        applyDurabilityGateGovernance(cfg.distill, opts), opts), opts), opts), opts), opts), opts),
+    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(
+      applyContradictionDetectionGovernance(cfg.consolidation, opts), opts), opts),
+    audio: applyAudioModeGovernance(cfg.audio, opts),
+    multiHop: applyMultiHopGovernance(cfg.multiHop, opts),
+    crossEncoder: applyCrossEncoderGovernance(cfg.crossEncoder, opts),
+    retention: applyRetentionGovernance(cfg.retention, opts),
+  };
+}
+
+/**
+ * In-process defaults + overrides + governance helper. Verified
+ * zero production callers (grep audit, Wave-3 config track) — every real
+ * caller goes through `loadConfigFromDisk` (src/config/loader.ts) instead.
+ * Kept (not deleted) because tests/config/config.test.ts and its siblings
+ * lean on its convenient in-memory `Partial<Config>` override shape for
+ * ~40 governance-unit assertions that would otherwise need a real disk
+ * write per test; now a thin wrapper over `applyAllGovernance` so it can
+ * never again drift out of sync with the real boot path's chain.
+ */
 export function loadConfig(overrides: Partial<Config> | undefined): Config {
   const base = defaultConfig();
   const merged = overrides ? { ...base, ...overrides } : base;
-  return {
-    ...merged,
-    search: applyNormalizationGovernance(applyQueryRewriteGovernance(applyFusionGovernance(merged.search))),
-    // FEAT-548: applyGatekeeperGovernance composed here too, not just in
-    // loadConfigFromDisk() — mirrors applyExtractionPassBGovernance's own
-    // "wired into BOTH real paths" bar (the 2026-07-16 review note on
-    // applyExtractionPassesGovernance documents why loadConfigFromDisk is the
-    // one with real production callers; applyAtomTriageGovernance itself is
-    // still NOT wired into this loadConfig() chain — a pre-existing gap
-    // predating this slice, out of scope here).
-    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyExtractionPassBGovernance(applyExtractionPassesGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(merged.distill)))))),
-    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(applyContradictionDetectionGovernance(merged.consolidation))),
-    audio: applyAudioModeGovernance(merged.audio),
-    multiHop: applyMultiHopGovernance(merged.multiHop),
-    // Retrieval hardening (P2 2026-07): crossEncoder had no governance
-    // composition point at all before this — see applyCrossEncoderGovernance's
-    // doc comment above.
-    crossEncoder: applyCrossEncoderGovernance(merged.crossEncoder),
-    retention: applyRetentionGovernance(merged.retention),
-  };
+  return applyAllGovernance(merged);
 }

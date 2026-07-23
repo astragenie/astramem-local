@@ -26,13 +26,16 @@
  * `port: 7001`) and is applied without a warning, same as always. Stop the
  * service before hand-editing config.yaml to avoid that narrow window.
  *
- * FEAT-428: the exported `loadConfigFromDisk` is the single choke point for
- * fusion-model governance on the real boot path (serve.ts →
- * resolveRuntimeConfig → here). Every return value — defaults, a partial
- * merge, or a full merge — is funneled through `applyFusionGovernance`
- * (src/config/config.ts) before it reaches the caller, so a hand-edited
- * config.yaml with an over-ceiling weight or an unvalidated `eta > 0` is
- * clamped/reset exactly like an in-process `loadConfig()` override would be.
+ * FEAT-428 (Wave-3: generalized to ALL governance, not just fusion): the
+ * exported `loadConfigFromDisk` is the single choke point for config
+ * governance on the real boot path (serve.ts → resolveRuntimeConfig →
+ * here). Every return value — defaults, a partial merge, or a full merge —
+ * is funneled through `applyAllGovernance` (src/config/config.ts, the same
+ * shared composition `loadConfig()` uses) before it reaches the caller, so a
+ * hand-edited config.yaml with an over-ceiling fusion weight, an
+ * unvalidated `eta > 0`, or any other out-of-union/out-of-range field any
+ * `applyXGovernance` function guards is clamped/dropped exactly like an
+ * in-process `loadConfig()` override would be.
  */
 
 import { readFileSync } from 'node:fs';
@@ -40,21 +43,7 @@ import { join } from 'node:path';
 import {
   type Config,
   defaultConfig,
-  applyFusionGovernance,
-  applyQueryRewriteGovernance,
-  applyNormalizationGovernance,
-  applyDurabilityGateGovernance,
-  applyExtractProfileGovernance,
-  applyMultiHopGovernance,
-  applyCrossEncoderGovernance,
-  applyRetentionGovernance,
-  applyCandidateSelectionGovernance,
-  applyContradictionDetectionGovernance,
-  applyExtractionPassBGovernance,
-  applyAtomTriageGovernance,
-  applyGatekeeperGovernance,
-  applyDupJudgeGovernance,
-  applyTypeHintsGovernance,
+  applyAllGovernance,
   applyProviderAwareDistillDefaults,
 } from './config.js';
 
@@ -319,70 +308,23 @@ function readConfigFileWithRetry(
 
 /**
  * defaultConfig() with config.yaml (if present and well-formed) merged over
- * it, then run through `applyFusionGovernance` (FEAT-428) so every real
- * boot read gets a governed `search` block — a single choke point, rather
- * than relying on every future caller to remember to apply it. Never
- * throws — daemon boot must not be blocked by a bad config file.
+ * it, then run through `applyAllGovernance` (src/config/config.ts) so every
+ * real boot read gets a governed config — a single choke point, rather than
+ * relying on every future caller to remember to apply it. Never throws —
+ * daemon boot must not be blocked by a bad config file.
+ *
+ * Wave-3 config track: this used to hand-maintain its own copy of the
+ * governance-composition chain, independently of `loadConfig()`'s copy in
+ * config.ts — the two had drifted apart twice (this file's chain was
+ * missing `applyExtractionPassesGovernance` and never governed `audio` at
+ * all; see `applyAllGovernance`'s doc comment for the full incident
+ * writeup). Both now call the one shared function, so this path and
+ * `loadConfig()` can never again silently diverge on which governance
+ * functions run.
  */
 export function loadConfigFromDisk(configDir: string, reader?: (path: string) => string): Config {
   const cfg = loadConfigFromDiskRaw(configDir, reader);
-  return {
-    ...cfg,
-    // FEAT-550: applyQueryRewriteGovernance composed here too, not just in
-    // loadConfig() — see the 2026-07-16 review note a few lines below on why
-    // this real boot path needs its OWN governance composition rather than
-    // relying on loadConfig()'s (which has zero production callers).
-    // Score-phase Track I: applyNormalizationGovernance added the same way,
-    // on the same real boot path AND in loadConfig() (config.ts) — same
-    // "wired into BOTH real paths" bar as every other governance function in
-    // this composition.
-    search: applyNormalizationGovernance(applyQueryRewriteGovernance(applyFusionGovernance(cfg.search))),
-    // FEAT-534: extractionPassB provider governance added here — this IS the
-    // real boot path (the 2026-07-16 review comment below explains why that
-    // matters: loadConfig() has zero production callers). Note
-    // applyExtractionPassesGovernance itself is still NOT wired into this
-    // chain (a pre-existing gap predating this slice; out of scope here).
-    // FEAT-533: applyAtomTriageGovernance added the same way, on the same
-    // real boot path — each governance function in this composition only
-    // ever touches its own field, so nesting order is safe (see
-    // applyExtractProfileGovernance's doc comment).
-    // FEAT-548: applyGatekeeperGovernance added the same way, on the same
-    // real boot path AND in loadConfig() (config.ts) — the 550/549 reviewers'
-    // bar for a new distill.<tier> governance function is BOTH real
-    // composition points, not just this one.
-    // FEAT-552: applyTypeHintsGovernance added the same way, on the same
-    // real boot path AND in loadConfig() — same "both composition points"
-    // bar. Outermost in the chain (order is safe regardless — each
-    // governance function only ever touches its own field).
-    distill: applyTypeHintsGovernance(applyGatekeeperGovernance(applyAtomTriageGovernance(
-      applyExtractionPassBGovernance(applyExtractProfileGovernance(applyDurabilityGateGovernance(cfg.distill))),
-    ))),
-    multiHop: applyMultiHopGovernance(cfg.multiHop),
-    // Retrieval hardening (P2 2026-07): crossEncoder had NO governance
-    // composition point on the real boot path before this — an out-of-union
-    // provider or a ≤0/NaN topK/timeoutMs from a hand-edited config.yaml
-    // reached resolveRerankOpts completely unvalidated. See
-    // applyCrossEncoderGovernance's doc comment (config.ts) for the full
-    // rationale — same "both composition points" bar every other governance
-    // function in this file already meets.
-    crossEncoder: applyCrossEncoderGovernance(cfg.crossEncoder),
-    retention: applyRetentionGovernance(cfg.retention),
-    // 2026-07-16 review 🔴: these two ran only inside loadConfig(), which has
-    // ZERO production callers — the real boot path (resolveRuntimeConfig →
-    // loadConfigFromDisk → getProviders) got NO consolidation governance at
-    // all. Harmless for `mode` (runConsolidation re-guards at runtime via
-    // resolveContradictionDetection) but fatal for the judge provider
-    // override: an out-of-union `contradictionDetection.provider` typo would
-    // reach buildLLMProvider's throwing Azure fall-through DURING BOOT,
-    // before any runtime guard exists.
-    // FEAT-549: applyDupJudgeGovernance added the same way, on the same real
-    // boot path — same reasoning as the review note above (an out-of-union
-    // `dupJudge.provider` typo must not reach buildLLMProvider's throwing
-    // Azure fall-through DURING BOOT either).
-    consolidation: applyDupJudgeGovernance(applyCandidateSelectionGovernance(
-      applyContradictionDetectionGovernance(cfg.consolidation),
-    )),
-  };
+  return applyAllGovernance(cfg);
 }
 
 /** Un-governed disk load — every return path funnels through the exported
