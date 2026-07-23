@@ -9,6 +9,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-07-23
+
+Retrieval-overhaul + wave program (PR #456). **No default answer behavior
+changes** — every new score lever ships dormant/opt-in, so this release is
+LEDGER-comparable at its defaults. Full synthesis:
+`.claude/artifacts/crew/handoffs/20260723T173000Z-wave-program-final-synthesis.md`.
+
+### Retrieval & evidence
+- **ONNX cross-encoder reranker (ships `enabled: false`).** Local ONNX
+  cross-encoder provider with lazy/memoized model load, topK 40, 1.5s timeout,
+  evidence-excerpt threading. Measured +0.03–0.06 llm-judge same-store; default
+  flip deferred to a full-suite gate.
+- **Evidence provenance + entity graph (additive schema).** Migrations 056
+  (`memory_links`) + 057 (nullable provenance columns); atom-linking + evidence
+  span location wired into stage-8. Retrieval does not consume the graph yet.
+- **Multi-scope evidence bundling (`evidenceBundling`, default off).** Heuristic
+  (zero LLM on the hot path) selective post-rerank enrichment: when the top-k
+  spans too few sessions, pull bounded same-session/same-entity atoms scored
+  strictly below every real hit. Flag-off is byte-identical (retrieval-eval +
+  contract-freeze proven unchanged); `bundled`/`bundle_reason` are local-only,
+  stripped from the wire.
+
+### Extraction
+- **`conv-spkbal` extraction prompt variant (opt-in via `ASTRA_EXTRACT_PROMPT`).**
+  Additive per-speaker tally-and-rescan targeting speaker-capture asymmetry;
+  frozen default prompts untouched (hash-freeze green). Unmeasured A/B candidate.
+
+### Reliability & hygiene
+- **Recall-path indexes (migration 059)** — project/valid/created composite +
+  partial indexes for the unsynced-events and needs-vec-index scans, with an
+  `id`-tiebreaker for stable pagination.
+- **`memory_events` rotation** — closes a table that grew on *read* (recall-served
+  events); retention never deletes a still-shippable row.
+- **9 hardening/GPU doctor checks now run unattended**, wired tier-correct (7
+  cheap → 15-min, 2 full → 24h) with a FULL-tier lock.
+- **Provider retry hardening** — codex-subscription retry + embed `retryAfterMs`
+  (restores the chunk-retry-amplification fix for embed providers).
+- **Governance chain unified** — one `applyAllGovernance` across both config-load
+  paths (fixes three silent drifts incl. audio on the boot path).
+- N+1 fixes (oversize scanner, entity-timeline), `chunkedIn` helper, CLI
+  arg-parse consolidation, `RunCapTracker` shared across distill call sites.
+
+### Boot
+- **Single pre-bind DB-open regression guard.** Confirms the boot path opens the
+  DB exactly once across `:memory:`/plaintext/encrypted (the watchdog boot-grace
+  fix — `BOOT_HARD_CAP_SEC=1200s` + per-instance identity — remains the
+  crash-loop mitigation; deploy remains gated on operator approval).
+
+### Eval tooling
+- **Paired-bootstrap significance harness** (`compare.mts`, `--repeats≥3`) so
+  A/B claims clear the ±4–6pt day-variance noise floor.
+- Oracle-factorial harness + fixed-answerer recompute methodology.
+
+### Deferred (recorded, not shipped)
+- Future-relative date-grounding — the live gate proved `ground-dates.ts` LLM
+  resolution is non-deterministic at temperature 0 (pre-existing module
+  property); near-zero score upside. Branch preserved for a
+  classify-then-compute-in-code redesign.
+
 ## [0.20.0] - 2026-07-20
 
 ### Daemon stability & service UX
