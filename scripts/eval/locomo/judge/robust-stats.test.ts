@@ -111,7 +111,7 @@ describe('combineRobustStats', () => {
 
   it('an outlier repeat pulls the mean but not the median (integration of the module-header claim)', () => {
     // Two service-day-consistent repeats + one bad-extraction-day outlier.
-    const reports = [makeReport(0.58), makeReport(0.59), makeReport(0.40)];
+    const reports = [makeReport(0.58, 0.58), makeReport(0.59, 0.59), makeReport(0.40, 0.40)];
     const combined = combineRobustStats(reports);
     const mean = (0.58 + 0.59 + 0.40) / 3;
     expect(combined.overall_accuracy_robust.median).toBe(0.58);
