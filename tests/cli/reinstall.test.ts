@@ -32,9 +32,20 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { restorePriorPointer, selectRollbackTarget, healthTimeoutMs, versionVerifyBudgetMs, finish, type StepResult } from '../../src/cli/reinstall.js';
+import {
+  restorePriorPointer,
+  selectRollbackTarget,
+  healthTimeoutMs,
+  versionVerifyBudgetMs,
+  bootHardCapMs,
+  waitForHealthWithBootGrace,
+  finish,
+  type StepResult,
+} from '../../src/cli/reinstall.js';
 import { shimPaths, writePointer, type ShimPointer } from '../../src/service/shim.js';
 import type { ReleaseListEntry } from '../../src/service/release.js';
+import type { LockInfo } from '../../src/service/instance-lock.js';
+import { BOOT_HARD_CAP_SEC } from '../../src/service/watchdog-probe.js';
 
 describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
   let dir: string;
@@ -220,6 +231,190 @@ describe('versionVerifyBudgetMs (configurable verify-version budget)', () => {
     expect(versionVerifyBudgetMs()).toBe(90_000);
     process.env[ENV_KEY] = '-5000';
     expect(versionVerifyBudgetMs()).toBe(90_000);
+  });
+});
+
+describe('bootHardCapMs (verify-health boot-grace hard cap, slow-boot fix)', () => {
+  const ENV_KEY = 'ASTRA_MEMORY_REINSTALL_BOOT_HARD_CAP_MS';
+  const original = process.env[ENV_KEY];
+
+  afterEach(() => {
+    if (original === undefined) delete process.env[ENV_KEY];
+    else process.env[ENV_KEY] = original;
+  });
+
+  it('defaults to BOOT_HARD_CAP_SEC (watchdog-probe.ts) rather than a second independent constant', () => {
+    delete process.env[ENV_KEY];
+    expect(bootHardCapMs()).toBe(BOOT_HARD_CAP_SEC * 1000);
+  });
+
+  it('honors a valid positive override', () => {
+    process.env[ENV_KEY] = '600000';
+    expect(bootHardCapMs()).toBe(600_000);
+  });
+
+  it('falls back to the default on a non-numeric override', () => {
+    process.env[ENV_KEY] = 'not-a-number';
+    expect(bootHardCapMs()).toBe(BOOT_HARD_CAP_SEC * 1000);
+  });
+
+  it('falls back to the default on a zero/negative override', () => {
+    process.env[ENV_KEY] = '0';
+    expect(bootHardCapMs()).toBe(BOOT_HARD_CAP_SEC * 1000);
+    process.env[ENV_KEY] = '-5000';
+    expect(bootHardCapMs()).toBe(BOOT_HARD_CAP_SEC * 1000);
+  });
+});
+
+// Slow-boot fix (mirrors watchdog-probe.ts's boot-grace fix, commit
+// 35e8f149): the flat healthTimeoutMs() budget (default 90s) used to treat a
+// daemon that is merely SLOW TO BOOT (large encrypted DB — observed 6-8min
+// pre-bind openDb) identically to one that is genuinely dead, rolling back a
+// healthy-but-slow boot the moment the budget elapsed. `waitForHealthWithBootGrace`
+// polls in chunks and, between chunks, checks whether the daemon.lock holder
+// is still alive — extending the wait (up to bootHardCapMs()) for a live
+// process, but failing IMMEDIATELY (not waiting out the rest of the budget)
+// once the process is confirmed gone. All seams are injected so this suite
+// runs instantly — no real timers, no live daemon.
+describe('waitForHealthWithBootGrace (verify-health slow-boot fix)', () => {
+  function fakeLock(overrides: Partial<LockInfo> = {}): LockInfo {
+    return { pid: 4242, startedAt: new Date(0).toISOString(), port: 7777, version: '1.0.0', ...overrides };
+  }
+
+  it('resolves healthy on the first chunk without ever consulting daemon.lock', async () => {
+    let nowValue = 1000;
+    const waitForHealthImpl = vi.fn(async (_port: number, timeoutMs: number) => {
+      nowValue += timeoutMs;
+      return true;
+    });
+    const readLockInfoImpl = vi.fn(() => null);
+    const pidAliveImpl = vi.fn(() => true);
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 5_000,
+      hardCapMs: 60_000,
+      waitForHealthImpl,
+      readLockInfoImpl,
+      pidAliveImpl,
+      nowMs: () => nowValue,
+    });
+
+    expect(result).toEqual({ healthy: true, elapsedMs: 5_000 });
+    expect(waitForHealthImpl).toHaveBeenCalledTimes(1);
+    expect(readLockInfoImpl).not.toHaveBeenCalled();
+  });
+
+  it('extends the wait across multiple chunks while the daemon.lock holder stays alive, then succeeds', async () => {
+    let nowValue = 0;
+    let calls = 0;
+    const waitForHealthImpl = vi.fn(async (_port: number, timeoutMs: number) => {
+      calls++;
+      nowValue += timeoutMs;
+      return calls >= 3; // healthy only on the 3rd chunk
+    });
+    const readLockInfoImpl = vi.fn(() => fakeLock());
+    const pidAliveImpl = vi.fn(() => true);
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 10_000,
+      hardCapMs: 120_000,
+      waitForHealthImpl,
+      readLockInfoImpl,
+      pidAliveImpl,
+      nowMs: () => nowValue,
+    });
+
+    expect(result).toEqual({ healthy: true, elapsedMs: 30_000 });
+    expect(waitForHealthImpl).toHaveBeenCalledTimes(3);
+    // consulted only between the two FAILED chunks (1->2, 2->3) — never
+    // after the chunk that finally succeeds.
+    expect(readLockInfoImpl).toHaveBeenCalledTimes(2);
+    expect(pidAliveImpl).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails FAST — before the hard cap — when daemon.lock is gone (process genuinely dead)', async () => {
+    let nowValue = 0;
+    const waitForHealthImpl = vi.fn(async (_port: number, timeoutMs: number) => {
+      nowValue += timeoutMs;
+      return false;
+    });
+    const readLockInfoImpl = vi.fn(() => null); // no lock at all — nothing to wait for
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 10_000,
+      hardCapMs: 1_200_000, // 20 minutes — must NOT be waited out
+      waitForHealthImpl,
+      readLockInfoImpl,
+      pidAliveImpl: () => true,
+      nowMs: () => nowValue,
+    });
+
+    expect(result).toEqual({ healthy: false, elapsedMs: 10_000, gaveUpReason: 'daemon-dead' });
+    expect(waitForHealthImpl).toHaveBeenCalledTimes(1); // gave up after ONE chunk
+  });
+
+  it('fails FAST when the daemon.lock holder pid is no longer alive', async () => {
+    let nowValue = 0;
+    const waitForHealthImpl = vi.fn(async (_port: number, timeoutMs: number) => {
+      nowValue += timeoutMs;
+      return false;
+    });
+    const readLockInfoImpl = vi.fn(() => fakeLock({ pid: 999 }));
+    const pidAliveImpl = vi.fn(() => false); // process has exited
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 10_000,
+      hardCapMs: 1_200_000,
+      waitForHealthImpl,
+      readLockInfoImpl,
+      pidAliveImpl,
+      nowMs: () => nowValue,
+    });
+
+    expect(result).toEqual({ healthy: false, elapsedMs: 10_000, gaveUpReason: 'daemon-dead' });
+    expect(waitForHealthImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up at the hard cap (clamping the final chunk) when the daemon stays alive but never becomes healthy', async () => {
+    let nowValue = 0;
+    const waitForHealthImpl = vi.fn(async (_port: number, timeoutMs: number) => {
+      nowValue += timeoutMs;
+      return false;
+    });
+    const readLockInfoImpl = vi.fn(() => fakeLock());
+    const pidAliveImpl = vi.fn(() => true);
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 30_000,
+      hardCapMs: 100_000, // not an exact multiple of chunkMs — proves clamping
+      waitForHealthImpl,
+      readLockInfoImpl,
+      pidAliveImpl,
+      nowMs: () => nowValue,
+    });
+
+    expect(result).toEqual({ healthy: false, elapsedMs: 100_000, gaveUpReason: 'hard-cap' });
+    // chunks: 30k, 30k, 30k, then remaining=10k -> final chunk clamped to 10k.
+    expect(waitForHealthImpl).toHaveBeenCalledTimes(4);
+    expect(waitForHealthImpl).toHaveBeenNthCalledWith(4, 7777, 10_000);
+    // never consulted daemon.lock after the FINAL (hard-cap-exhausting) chunk.
+    expect(readLockInfoImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('returns immediately with gaveUpReason "hard-cap" when hardCapMs is already exhausted (e.g. 0)', async () => {
+    const waitForHealthImpl = vi.fn(async () => false);
+
+    const result = await waitForHealthWithBootGrace(7777, '/fake/datadir', {
+      chunkMs: 10_000,
+      hardCapMs: 0,
+      waitForHealthImpl,
+      readLockInfoImpl: () => null,
+      pidAliveImpl: () => true,
+      nowMs: () => 0,
+    });
+
+    expect(result).toEqual({ healthy: false, elapsedMs: 0, gaveUpReason: 'hard-cap' });
+    expect(waitForHealthImpl).not.toHaveBeenCalled();
   });
 });
 

@@ -1,8 +1,32 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+// Mocks the shared logger module (same pattern as tests/server/score-contract.test.ts)
+// so the batchSize-clamp WARN (issue #17 severity downgrade — see below) can be
+// asserted directly instead of just inferred from behavior.
+const { warnMock, mockLog } = vi.hoisted(() => {
+  const warnMock = vi.fn();
+  const mockLog: Record<string, unknown> = {
+    info: vi.fn(),
+    warn: warnMock,
+    error: vi.fn(),
+    debug: vi.fn(),
+    trace: vi.fn(),
+    fatal: vi.fn(),
+  };
+  mockLog['child'] = vi.fn(() => mockLog);
+  return { warnMock, mockLog };
+});
+
+vi.mock('../../src/log/logger.js', () => ({
+  logger: mockLog,
+  childLogger: vi.fn(() => mockLog),
+}));
+
 import {
   OnnxCrossEncoderProvider,
   extractSigmoidScores,
   sigmoid,
+  DEFAULT_BATCH_SIZE,
   type OnnxCrossEncoderBackend,
   type OnnxCrossEncoderConfig,
   type OnnxCrossEncoderModelOutput,
@@ -68,6 +92,10 @@ function candidates(pairs: Array<[string, string]>): CrossEncoderCandidate[] {
 }
 
 describe('onnx-cross-encoder', () => {
+  beforeEach(() => {
+    warnMock.mockClear();
+  });
+
   describe('sigmoid', () => {
     it('maps 0 to 0.5', () => {
       expect(sigmoid(0)).toBeCloseTo(0.5, 6);
@@ -218,6 +246,108 @@ describe('onnx-cross-encoder', () => {
       // needing to reach into private fields.
       expect(() => new OnnxCrossEncoderProvider({ model: 'totally-unregistered-model' })).not.toThrow();
       expect(() => new OnnxCrossEncoderProvider({ model: DEFAULT_RERANK_MODEL_LABEL })).not.toThrow();
+    });
+  });
+
+  // Issue #17: the old guard was
+  // `config.batchSize && config.batchSize > 0 ? Math.floor(config.batchSize) : DEFAULT_BATCH_SIZE`.
+  // A fractional 0<batchSize<1 (e.g. 0.5) passes `>0`, then `Math.floor(0.5)`
+  // collapses it to 0 — `score()`'s `for (i=0;i<candidates.length;i+=this.batchSize)`
+  // never advances `i`. Against the fake backend used elsewhere in this file
+  // (no macrotask boundary) that spins forever; against the REAL onnxruntime
+  // backend it doesn't hang (session.run() runs inside a setImmediate
+  // macrotask, and the tokenizer throws on an empty batch), so the actual
+  // observable failure is a SILENT no-op rerank on every call, not a hang —
+  // severity was re-checked and downgraded accordingly. Either way the fix
+  // floors FIRST, then requires the result be >=1 before accepting it, so 0,
+  // negative, and NaN batchSize all fall back to DEFAULT_BATCH_SIZE the same
+  // way a fractional one now does — and, per that re-check, the fallback is
+  // no longer silent: an out-of-range override now logs a WARN (ADR-015 —
+  // silently substituting a default for a bad override makes the misconfig
+  // indistinguishable from a correct one).
+  describe('batchSize normalization (issue #17 — fractional/zero/negative/NaN batchSize falls back to DEFAULT_BATCH_SIZE, loudly)', () => {
+    /** Runs score() over `numCandidates` fake candidates with the given raw
+     *  `batchSize` config and returns how many `run()` batches it took —
+     *  proves both (a) the constructor normalized batchSize to something
+     *  >=1 (otherwise this call never resolves and the test itself times
+     *  out) and (b) exactly which value it normalized to. */
+    async function runBatchCountFor(
+      batchSizeConfig: number | undefined,
+      numCandidates: number,
+    ): Promise<{ runCalls: number; scored: number }> {
+      let runCalls = 0;
+      const backend = makeFakeBackend({
+        async run(inputs) {
+          runCalls++;
+          const { queries } = inputs as unknown as { queries: string[] };
+          return { logits: fakeLogitsTensor(queries.map(() => 1)) };
+        },
+      });
+      const provider = providerWithFakeBackend({ batchSize: batchSizeConfig }, backend);
+      const cands = candidates(
+        Array.from({ length: numCandidates }, (_, i) => [`id${i}`, `text${i}`] as [string, string]),
+      );
+      const scores = await provider.score('q', cands);
+      return { runCalls, scored: scores.size };
+    }
+
+    // 20 candidates over DEFAULT_BATCH_SIZE (16) -> ceil(20/16) = 2 batches.
+    const expectedDefaultRunCalls = Math.ceil(20 / DEFAULT_BATCH_SIZE);
+
+    it('batchSize 0.5 falls back to DEFAULT_BATCH_SIZE instead of flooring to 0, and logs a WARN', async () => {
+      const { runCalls, scored } = await runBatchCountFor(0.5, 20);
+      expect(scored).toBe(20);
+      expect(runCalls).toBe(expectedDefaultRunCalls);
+      expect(warnMock).toHaveBeenCalledTimes(1);
+      expect(warnMock.mock.calls[0]?.[0]).toMatchObject({ configured_batch_size: 0.5, effective_batch_size: DEFAULT_BATCH_SIZE });
+    });
+
+    it('batchSize 0 falls back to DEFAULT_BATCH_SIZE, and logs a WARN', async () => {
+      const { runCalls, scored } = await runBatchCountFor(0, 20);
+      expect(scored).toBe(20);
+      expect(runCalls).toBe(expectedDefaultRunCalls);
+      expect(warnMock).toHaveBeenCalledTimes(1);
+      expect(warnMock.mock.calls[0]?.[0]).toMatchObject({ configured_batch_size: 0, effective_batch_size: DEFAULT_BATCH_SIZE });
+    });
+
+    it('batchSize -1 falls back to DEFAULT_BATCH_SIZE, and logs a WARN', async () => {
+      const { runCalls, scored } = await runBatchCountFor(-1, 20);
+      expect(scored).toBe(20);
+      expect(runCalls).toBe(expectedDefaultRunCalls);
+      expect(warnMock).toHaveBeenCalledTimes(1);
+      expect(warnMock.mock.calls[0]?.[0]).toMatchObject({ configured_batch_size: -1, effective_batch_size: DEFAULT_BATCH_SIZE });
+    });
+
+    it('batchSize NaN falls back to DEFAULT_BATCH_SIZE, and logs a WARN', async () => {
+      const { runCalls, scored } = await runBatchCountFor(Number.NaN, 20);
+      expect(scored).toBe(20);
+      expect(runCalls).toBe(expectedDefaultRunCalls);
+      expect(warnMock).toHaveBeenCalledTimes(1);
+      expect(warnMock.mock.calls[0]?.[0]).toMatchObject({ effective_batch_size: DEFAULT_BATCH_SIZE });
+      expect(Number.isNaN(warnMock.mock.calls[0]?.[0]?.configured_batch_size)).toBe(true);
+    });
+
+    it('a valid batchSize of exactly 1 is honored, not treated as invalid, and logs NO warn', async () => {
+      const { runCalls, scored } = await runBatchCountFor(1, 3);
+      expect(scored).toBe(3);
+      expect(runCalls).toBe(3); // one candidate per batch
+      expect(warnMock).not.toHaveBeenCalled();
+    });
+
+    it('an omitted batchSize (default path) logs NO warn', async () => {
+      const { scored } = await runBatchCountFor(undefined, 3);
+      expect(scored).toBe(3);
+      expect(warnMock).not.toHaveBeenCalled();
+    });
+
+    it('score() terminates instead of spinning forever on a pathological batchSize (direct regression)', async () => {
+      // With the pre-fix guard this call never resolves — this.batchSize
+      // stays 0 and the for-loop's `i` never advances — so the test would
+      // time out instead of completing. Asserting completion IS the
+      // regression check.
+      const provider = providerWithFakeBackend({ batchSize: 0.5 });
+      const scores = await provider.score('q', candidates([['a', 'a'], ['b', 'b'], ['c', 'c']]));
+      expect(scores.size).toBe(3);
     });
   });
 });
