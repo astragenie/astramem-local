@@ -29,6 +29,7 @@ import { createHash } from 'node:crypto';
 import type { DB } from './db.js';
 import { MemoryEventRepo, type CorrectionSource } from './memory-events.js';
 import { safeJsonColumn } from './json-guard.js';
+import { chunkedIn } from './sql-utils.js';
 
 /** issue #190: 'system' covers background/pipeline-originated events (e.g.
  *  `runImplicitPositivePass`'s heuristic grants) — no live request surface
@@ -182,32 +183,26 @@ export function usefulnessScores(
   const scores = new Map<string, number>(atomIds.map(id => [id, 0.5]));
   if (atomIds.length === 0) return scores;
 
-  // Batch the IN() clause. One bound parameter per id overflows SQLite's
-  // SQLITE_MAX_VARIABLE_NUMBER (default 999) the moment a consolidation run
-  // passes the FULL valid-atom set — on a large corpus that is tens of
-  // thousands of ids, which threw "too many SQL variables" and poisoned every
-  // consolidate job (2026-07-15). Chunk well under the limit, leaving headroom
-  // for the leading implicitWeight bound param.
-  const BATCH_SIZE = 900;
-  for (let start = 0; start < atomIds.length; start += BATCH_SIZE) {
-    const batch = atomIds.slice(start, start + BATCH_SIZE);
-    const ph = batch.map(() => '?').join(',');
-    const rows = db.prepare(`
-      SELECT atom_id,
-        SUM(CASE
-          WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
-           AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'heuristic' THEN ?
-          WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1.0
-          ELSE 0 END) AS used,
-        SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
-      FROM memory_events
-      WHERE event_type = 'usefulness' AND atom_id IN (${ph})
-      GROUP BY atom_id
-    `).all(implicitWeight, ...batch) as Array<{ atom_id: string; used: number; corrected: number }>;
+  // chunkedIn (src/storage/sql-utils.ts): one bound parameter per id
+  // overflows SQLite's SQLITE_MAX_VARIABLE_NUMBER (default 999) the moment a
+  // consolidation run passes the FULL valid-atom set — on a large corpus
+  // that is tens of thousands of ids, which threw "too many SQL variables"
+  // and poisoned every consolidate job (2026-07-15).
+  const rows = chunkedIn(atomIds, (batch, ph) => db.prepare(`
+    SELECT atom_id,
+      SUM(CASE
+        WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used'
+         AND json_extract(${safeJsonColumn('payload_json')},'$.signal') = 'heuristic' THEN ?
+        WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_used' THEN 1.0
+        ELSE 0 END) AS used,
+      SUM(CASE WHEN json_extract(${safeJsonColumn('payload_json')},'$.family') = 'memory_corrected' THEN 1 ELSE 0 END) AS corrected
+    FROM memory_events
+    WHERE event_type = 'usefulness' AND atom_id IN (${ph})
+    GROUP BY atom_id
+  `).all(implicitWeight, ...batch) as Array<{ atom_id: string; used: number; corrected: number }>);
 
-    for (const r of rows) {
-      scores.set(r.atom_id, (r.used + 1) / (r.used + r.corrected + 2));
-    }
+  for (const r of rows) {
+    scores.set(r.atom_id, (r.used + 1) / (r.used + r.corrected + 2));
   }
   return scores;
 }
@@ -561,4 +556,87 @@ export function usefulnessByType(db: DB, opts: UsefulnessRateOpts = {}): Usefuln
     const used = usedMap.get(type) ?? 0;
     return { type, served, used, rate: served > 0 ? used / served : null };
   });
+}
+
+export interface PruneRecallServedResult {
+  /** Rows deleted this pass. */
+  pruned: number;
+}
+
+/**
+ * Retention sweep for the 'usefulness'/'recall_served' event subset ONLY
+ * (Wave-3 storage+perf track — real bug: this family is appended once PER
+ * SERVED ATOM PER SEARCH, k=15 -> 15 rows/query via {@link recordRecallServed},
+ * making it by far the highest-volume writer onto memory_events, and unlike
+ * every other event_type nothing has ever pruned it — and unbounded on READ
+ * traffic, not just write traffic, which is exactly the common single-device
+ * case where this needed to be fixed).
+ *
+ * `memory_events` doubles as the sync queue (src/sync/shipper.ts: "the log
+ * IS the queue" — unsynced rows are `synced_at IS NULL`), so an unqualified
+ * age-based delete risks eating a row the shipper hasn't shipped yet. HARD
+ * INVARIANT: a row is only ever deleted when ALL of —
+ *   - `event_type = 'usefulness'` (never create/invalidate/supersede/
+ *     promote_scope/erase_request — those event_types are excluded by this
+ *     predicate alone, not by an extra guard)
+ *   - `payload_json.family = 'recall_served'` (never `recall_used` or
+ *     `memory_corrected` — those lower-volume families feed
+ *     {@link usefulnessScores}'s all-time ranking signal and
+ *     {@link feedbackLoopSummary}'s all-time canary; `recall_served` rows
+ *     feed neither)
+ *   - `created_at < now - retentionDays`
+ *   - AND (already shipped, OR structurally can never ship) — see below.
+ *
+ * "Structurally can never ship" widens the original synced-only predicate to
+ * close the common case: shipper.ts's `listUnsynced` only ever selects a
+ * non-erase_request row when `memories.scope IN ('team','org')` (confirmed by
+ * re-reading listUnsynced's own SQL, not assumed) — a `private`-scoped atom's
+ * recall_served rows NEVER enter that result set, so `synced_at` stays NULL
+ * on them forever under the old synced-only predicate, and the sweep pruned
+ * NOTHING for a single-device install that has never paired sync (the common
+ * case this track exists to fix). Same reasoning extends to an atom whose
+ * `memories` row no longer exists at all (hard-erased via `erase()`) — an
+ * erase is permanent (no "unerase"), so that row can never become ship
+ * eligible either. Both are captured in one `NOT EXISTS` clause that is the
+ * direct logical negation of listUnsynced's own scope predicate, so the two
+ * queries are provably consistent by construction rather than by two
+ * independently-hand-written conditions that could drift apart.
+ *
+ * ACCEPTED RESIDUAL RISK (surfaced, not silently swept under): `memories.scope`
+ * is mutable — ADR-009 promotions move private -> team -> org, upward only,
+ * via an explicit `promote_scope` call, and `promoteScope()` places no
+ * `valid_to`/archived guard on which rows are eligible. So "this atom is
+ * private RIGHT NOW" is not the same claim as "this atom will NEVER become
+ * team/org-scoped" — an old recall_served row pruned while its atom was
+ * private could, in principle, have shipped LATER if that specific atom is
+ * promoted after this sweep already deleted it. Accepted because the only
+ * consequence is a gap in the cloud's per-atom recall_served analytics
+ * history starting from the promotion point rather than from the atom's
+ * creation — `recall_served` is pure measurement (ADR-010: "events captured
+ * here do NOT feed ranking"), not lifecycle state, so this can never lose a
+ * memory's content, its create/invalidate/supersede/promote_scope history,
+ * or an erase tombstone — none of those event_types are touched by this
+ * predicate at all. Promotion of an atom old enough for its recall_served
+ * rows to already be past the retention window is also expected to be rare
+ * (scope decisions are made close to creation in practice, not months later).
+ */
+export function pruneOldRecallServedEvents(
+  db: DB,
+  retentionDays: number,
+  now: number = Date.now(),
+): PruneRecallServedResult {
+  const cutoffMs = now - retentionDays * 24 * 60 * 60 * 1000;
+  const result = db.prepare(`
+    DELETE FROM memory_events
+    WHERE event_type = 'usefulness'
+      AND json_extract(${safeJsonColumn('payload_json')},'$.family') = 'recall_served'
+      AND created_at < ?
+      AND (
+        synced_at IS NOT NULL
+        OR NOT EXISTS (
+          SELECT 1 FROM memories WHERE memories.id = memory_events.atom_id AND memories.scope IN ('team', 'org')
+        )
+      )
+  `).run(cutoffMs);
+  return { pruned: result.changes };
 }

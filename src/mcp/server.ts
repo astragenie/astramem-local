@@ -836,9 +836,9 @@ export function buildMcpServer(deps: McpServerDeps): McpServer {
       // GET /entities/:id/memories: a superseded/invalidated/archived
       // memory is retired, not "currently linked", even though the
       // memory_entities row itself still points at it.
-      const memories = Array.from(memoryIds)
-        .map((mid) => memRepo.get(mid))
-        .filter((m): m is NonNullable<typeof m> => m !== null && m.valid_to === null)
+      // getMany (batched IN) replaces a per-id memRepo.get() N+1 here.
+      const memories = memRepo.getMany(Array.from(memoryIds))
+        .filter((m) => m.valid_to === null)
         .filter((m) => args.since === undefined || m.created_at >= args.since)
         .sort((a, b) => b.created_at - a.created_at)
         .slice(0, args.limit)

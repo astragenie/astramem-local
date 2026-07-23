@@ -12,6 +12,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DB } from './db.js';
 import { normalizeEntityName } from '../entity/normalize.js';
+import { chunkedIn } from './sql-utils.js';
 
 export interface EntityRow {
   id: string;
@@ -203,10 +204,15 @@ export class EntityRepo {
    */
   memoryIdsForEntities(entityIds: string[]): Set<string> {
     if (entityIds.length === 0) return new Set();
-    const placeholders = entityIds.map(() => '?').join(',');
-    const rows = this.db
-      .prepare(`SELECT DISTINCT memory_id FROM memory_entities WHERE entity_id IN (${placeholders})`)
-      .all(...entityIds) as { memory_id: string }[];
+    // chunkedIn (src/storage/sql-utils.ts): entityIds is caller-supplied and
+    // unbounded (e.g. a broad autocomplete match) — one bound param per id
+    // can overflow SQLITE_MAX_VARIABLE_NUMBER the same way it did for
+    // usefulness.ts's usefulnessScores() (2026-07-15 incident).
+    const rows = chunkedIn(entityIds, (batch, ph) =>
+      this.db
+        .prepare(`SELECT DISTINCT memory_id FROM memory_entities WHERE entity_id IN (${ph})`)
+        .all(...batch) as { memory_id: string }[],
+    );
     return new Set(rows.map(r => r.memory_id));
   }
 
@@ -222,18 +228,21 @@ export class EntityRepo {
    */
   memoryIdsForEntitiesAsOf(entityIds: string[], asOf: number): Set<string> {
     if (entityIds.length === 0) return new Set();
-    const placeholders = entityIds.map(() => '?').join(',');
-    const rows = this.db
-      .prepare(`
-        SELECT DISTINCT me.memory_id
-        FROM memory_entities me
-        JOIN memories m ON m.id = me.memory_id
-        WHERE me.entity_id IN (${placeholders})
-          AND MAX(COALESCE(me.valid_at, m.valid_from), m.valid_from) <= ?
-          AND MIN(COALESCE(me.invalid_at, 9223372036854775807),
-                  COALESCE(m.valid_to, 9223372036854775807)) > ?
-      `)
-      .all(...entityIds, asOf, asOf) as { memory_id: string }[];
+    // chunkedIn (src/storage/sql-utils.ts) — see memoryIdsForEntities above
+    // for why this list can't be trusted to stay under SQLite's variable cap.
+    const rows = chunkedIn(entityIds, (batch, ph) =>
+      this.db
+        .prepare(`
+          SELECT DISTINCT me.memory_id
+          FROM memory_entities me
+          JOIN memories m ON m.id = me.memory_id
+          WHERE me.entity_id IN (${ph})
+            AND MAX(COALESCE(me.valid_at, m.valid_from), m.valid_from) <= ?
+            AND MIN(COALESCE(me.invalid_at, 9223372036854775807),
+                    COALESCE(m.valid_to, 9223372036854775807)) > ?
+        `)
+        .all(...batch, asOf, asOf) as { memory_id: string }[],
+    );
     return new Set(rows.map(r => r.memory_id));
   }
 }

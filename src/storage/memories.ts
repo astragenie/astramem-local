@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { DB } from './db.js';
 import type { Memory, MemoryScope, MemoryType } from '../contracts/index.js';
 import type { MemoryEventRepo } from './memory-events.js';
+import { chunkedIn } from './sql-utils.js';
 
 export interface InsertInput {
   type: MemoryType;
@@ -288,6 +289,24 @@ export class MemoryRepo {
   get(id: string): Memory | null {
     const row = this.db.prepare('SELECT * FROM memories WHERE id = ?').get(id) as MemoryRow | undefined;
     return row ? MemoryRepo.hydrate(row) : null;
+  }
+
+  /**
+   * Batched sibling of `get()` — one (or, past chunkedIn's batch size, a
+   * few) `IN (...)` query instead of one `SELECT` per id, for callers
+   * resolving a whole id set at once (e.g. MCP `get_entity_timeline`, which
+   * used to `.map(mid => memRepo.get(mid))` over every linked memory id —
+   * an N+1 on a hot read path). Order is NOT guaranteed to match `ids` —
+   * callers that need a specific order (e.g. newest-first) must sort the
+   * result themselves. Rows that don't exist are silently omitted, same as
+   * `get()` returning `null` for a missing id.
+   */
+  getMany(ids: string[]): Memory[] {
+    if (ids.length === 0) return [];
+    const rows = chunkedIn(ids, (batch, ph) =>
+      this.db.prepare(`SELECT * FROM memories WHERE id IN (${ph})`).all(...batch) as MemoryRow[],
+    );
+    return rows.map(MemoryRepo.hydrate);
   }
 
   /** Parse the JSON-stored derived_from column into a string[] | null. */

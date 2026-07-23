@@ -10,8 +10,8 @@ import { logger } from '../../src/log/logger.js';
 /**
  * FEAT-461 AC-1: a fully-populated `Config` built field-by-field with a
  * non-default value for EVERY field (including `archival`,
- * `ingestIdempotency`, `distill`, `memoryHealth`, `ingest`, and
- * `consolidation.contradictionDetection` — the fields the original bug
+ * `ingestIdempotency`, `memoryEvents`, `distill`, `memoryHealth`, `ingest`,
+ * and `consolidation.contradictionDetection` — the fields the original bug
  * silently dropped). Deliberately NOT derived from `defaultConfig()` with
  * fields mutated in place: a still-missing emitter block must not be able to
  * round-trip "successfully" by accident (default in, default out).
@@ -75,6 +75,7 @@ function buildFullyPopulatedConfig(): Config {
       tierScope: { media: ['audio-raw'], lean: ['audio-raw', 'transcript-raw'] },
     },
     ingestIdempotency: { retentionDays: 14 },
+    memoryEvents: { recallServedRetentionDays: 60 },
     pipeline: { concurrency: 4 },
     consolidation: {
       autoAcceptThreshold: 0.95,
