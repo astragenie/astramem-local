@@ -40,11 +40,27 @@ owner instead of fixed here.
 ## LoCoMo / eval — current numbers (verified 2026-07-19, re-verify against the LEDGER — they drift)
 
 Champion **0.6002** / service-day **0.5430** (conv-1, n=199); full-suite best **0.4840** (n=1986).
-The 0.54→0.60 gap is **proven codex day-variance (±6 pts/day)**, not a missing lever — every config
-A/B (chunk-size, sweeper-v1, temperature, maxTokens, compaction) is REJECTED. Canonical tracker:
-`docs/eval-runs/README.md` — read it first; do not quote a number that isn't backed by a folder
-under `docs/eval-runs/`. Do not re-run a rejected lever without new evidence (see the hypothesis
-ledger: `docs/research/20260714-locomo-hypothesis-ledger.md`).
+The 0.54→0.60 gap is **proven codex day-variance (±6 pts/day)**, not a missing lever — every *retrieval/
+extraction* config A/B (chunk-size, sweeper-v1, temperature, maxTokens, compaction, rerank, decompose,
+fusion-norm) is REJECTED. Canonical tracker: `docs/eval-runs/README.md` — read it first; do not quote a
+number that isn't backed by a folder under `docs/eval-runs/`. Do not re-run a rejected lever without new
+evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-ledger.md`).
+
+- **THE lever is the ANSWER PROMPT, not retrieval (updated 2026-07-24).** After a year of rejected
+  retrieval/extraction levers, the Mem0/Zep harness replication proved the gap is the answer prompt:
+  our prompt abstained on 35% of Qs even with PERFECT gold evidence; Mem0's commit-to-answer prompt
+  lifted the SAME evidence/model/judge by +0.204 (0.592→0.796). Fix landed as **answer-prompt-v2**
+  (`buildAnswerPrompt` + `canonical.mts`, commit c66b8133): evidence-sufficiency-aware — answer when notes
+  state OR reasonably imply, abstain only when they truly don't, never fabricate. Same-store: gold-turns
+  0.592→0.803, retrieved-atoms 0.586→**0.678** (> Mem0's published 0.66). **End-to-end confirmed
+  2026-07-24** (fresh full pipeline, `20260724-v2fix-n1-codex`): Mem0 lenient cat1-4 **0.671 = Mem0 parity**,
+  beating champion-old-prompt 0.658 even with weaker (default-prompt) extraction. **TRADEOFF (real):** the
+  fix reduces abstention → HURTS cat5 (adversarial, where abstaining is correct): token-F1 adversarial
+  0.872→0.702, so on the cat5-inclusive token-F1 the fix nets −0.055 (0.588→0.533) even as it wins cat1-4.
+  **The metric picks the winner** — cat1-4-lenient (fix wins, ~0.67) vs cat5-inclusive-token-F1 (fix loses).
+  Full-suite (n=1986) NOT yet run — operator banked at n=1 (codex quota fragility, see [[codex-cli-infra]]-class
+  notes). **Zep's 0.947 is unreproducible marketing** (not in arXiv; their own OSS harness = 0.803). Full
+  detail: LEDGER rows 2026-07-23/24 (★) + `docs/research/20260723-mem0-zep-locomo-harness-extraction.md`.
 
 ## Known open gaps (updated 2026-07-16, re-verify before quoting)
 
