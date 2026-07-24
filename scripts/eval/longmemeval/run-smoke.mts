@@ -16,6 +16,17 @@
  * bun scripts/eval/longmemeval/run-smoke.mts [--dataset <path>] [--n 50]
  *   [--seed 42] [--k 10] [--concurrency 4] [--distill-timeout-ms 900000]
  *   [--shards 1] [--run-dir .eval-data/runs/<timestamp>] [--ollama-url <url>]
+ *   [--extraction-model <model>] [--extraction-provider <provider>]
+ *   [--compaction-model <model>] [--compaction-provider <provider>]
+ *   [--extract-profile engineering|conversational]
+ *
+ * The --extraction / --compaction model+provider flags and --extract-profile
+ * (additive, 2026-07-24) mirror locomo/run.mts — omit to inherit the default
+ * exactly as before these flags existed; pass e.g. `--extraction-provider
+ * codex-subscription --extraction-model gpt-5.4-mini --extract-profile
+ * conversational` for the champion-grade codex extraction path (LongMemEval
+ * haystacks are ~50 sessions/question, so this materially raises both speed
+ * and extraction quality vs the ollama default).
  *
  * Resume a killed run (FEAT-462): re-attach to an existing --run-dir,
  * respawn shard daemons on their existing datadirs, and skip re-ingesting
@@ -39,7 +50,7 @@ import { loadDataset, sampleStratified } from './lib/dataset.js';
 import { QUESTION_TYPES, isAbstention, type LongMemEvalQuestion } from './lib/types.js';
 import {
   spawnEvalDaemon, waitForHealthStatus, killDaemon, makeIsolatedEvalEnv, cleanupIsolatedEvalEnv,
-  type DaemonHandle,
+  type DaemonHandle, type EvalModelOverrides,
 } from '../shared/spawn-daemon.js';
 import { ingestQuestions, type IngestManifest } from './ingest.mts';
 import { waitForQuestionsDistilled, type DistillWaitResult } from './distill-wait.mts';
@@ -67,6 +78,30 @@ const concurrency = Number(get('--concurrency') ?? '4');
 const shards = Number(get('--shards') ?? '1');
 const ollamaBaseUrl = resolveOllamaBaseUrl(get('--ollama-url'));
 const dryRunThroughput = has('--dry-run-throughput');
+
+// Extraction/compaction model + provider overrides, mirroring locomo/run.mts
+// (additive, 2026-07-24): omit any flag to inherit defaultConfig()'s built-in
+// value exactly as before these flags existed. Passing --extraction-provider
+// codex-subscription --extraction-model gpt-5.4-mini points the isolated eval
+// daemon's extraction at the champion codex path instead of the ollama default
+// (LongMemEval haystacks are ~50 sessions/question, so ollama-only extraction
+// is both slow and lower-quality — this unlocks a champion-grade number).
+const extractionModelFlag = get('--extraction-model');
+const compactionModelFlag = get('--compaction-model');
+const extractionProviderFlag = get('--extraction-provider') as EvalModelOverrides['extractionProvider'] | undefined;
+const compactionProviderFlag = get('--compaction-provider') as EvalModelOverrides['compactionProvider'] | undefined;
+const modelOverrides: EvalModelOverrides | undefined =
+  (extractionModelFlag !== undefined || compactionModelFlag !== undefined
+    || extractionProviderFlag !== undefined || compactionProviderFlag !== undefined)
+    ? {
+        extraction: extractionModelFlag, compaction: compactionModelFlag,
+        extractionProvider: extractionProviderFlag, compactionProvider: compactionProviderFlag,
+      }
+    : undefined;
+// Additive — omit to inherit the shipped 'engineering' default. Pass
+// 'conversational' for LongMemEval's chat-style haystacks (the 'engineering'
+// profile starves personal-conversation extraction; see locomo/run.mts).
+const extractProfileFlag = get('--extract-profile') as 'engineering' | 'conversational' | undefined;
 // FEAT-462 AC-1: re-attach to an existing --run-dir instead of starting a
 // fresh one. The sample is deterministically re-derived from the same
 // --dataset/--seed/--n flags (sampleStratified is a pure function), so the
@@ -132,10 +167,16 @@ async function runShard(opts: {
    *  run-status.json. Optional -- every existing call site is unaffected
    *  (AC-7). */
   reportIngestProgress?: (shardIndex: number, done: number, total: number) => void;
+  /** Extraction/compaction model+provider overrides for this shard's isolated
+   *  daemon (2026-07-24, additive). Optional — omitted => inherit defaults,
+   *  every existing call site unaffected. */
+  modelOverrides?: EvalModelOverrides;
+  /** distill.extractProfile override (2026-07-24, additive). Optional. */
+  extractProfile?: 'engineering' | 'conversational';
 }): Promise<ShardResult> {
   const {
     shardIndex, totalShards, questions, runDir, concurrency, distillTimeoutMs, k, azureCfg, resume = false,
-    onDaemonSpawned, reportIngestProgress,
+    onDaemonSpawned, reportIngestProgress, modelOverrides, extractProfile,
   } = opts;
   const label = totalShards > 1 ? `shard-${shardIndex}` : undefined;
   const shardDir = label ? join(runDir, label) : runDir;
@@ -147,7 +188,7 @@ async function runShard(opts: {
   const ledgerPath = join(shardDir, 'ingest-ledger.jsonl');
   const resumeCompleted = resume ? ledgerCompletedMap(ledgerPath) : undefined;
   const token = randomBytes(32).toString('hex');
-  const isolated = makeIsolatedEvalEnv(label ? `lme-${label}` : 'lme-smoke');
+  const isolated = makeIsolatedEvalEnv(label ? `lme-${label}` : 'lme-smoke', { models: modelOverrides, extractProfile });
   const timings: Record<string, number> = {};
   let daemon: DaemonHandle | undefined;
   const tag = label ? `[${label}] ` : '';
@@ -404,6 +445,8 @@ async function runSmoke(): Promise<void> {
       distillTimeoutMs,
       k,
       azureCfg,
+      modelOverrides,
+      extractProfile: extractProfileFlag,
       resume: Boolean(resumeDir),
       onDaemonSpawned,
       reportIngestProgress,
