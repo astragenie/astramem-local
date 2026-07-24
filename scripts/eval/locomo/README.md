@@ -182,6 +182,38 @@ bun scripts/eval/locomo/run.mts --shards 2
 bun run eval:locomo:judge -- --hyp .eval-data/locomo/runs/<timestamp>/hypotheses.jsonl --ref .eval-data/locomo/runs/<timestamp>/sample.json
 ```
 
+### Best-results recipe (the champion config)
+
+Every retrieval/extraction lever in the LEDGER is a wash or wins-one-category-
+taxes-the-rest; the 0.54↔0.60 spread is codex day-variance (±6pt), not a missing
+knob. The one real lever was the **answer prompt** (`buildAnswerPrompt`, landed —
+evidence-sufficiency-aware). So "best results" = the champion recipe below, and
+**which number you cite depends on the judge/ruler, not more config tuning:**
+
+```powershell
+# From a PLAIN terminal you opened yourself — NOT a coding-agent shell (the
+# sandbox reaps heavy background process trees under RAM pressure). ~2-3h,
+# codex-quota-fragile; re-attach with `--resume <run-dir>` if it dies.
+$env:ASTRA_EXTRACT_PROMPT="conv-liberal"   # the density booster: ~329 atoms/conv vs ~250 on the default prompt
+bun scripts/eval/locomo/run.mts --dataset .eval-data/locomo/locomo10.json --n 10 --seed 42 --k 15 `
+  --extraction-provider codex-subscription --extraction-model gpt-5.4-mini `
+  --compaction-provider codex-subscription --compaction-model gpt-5.4-mini `
+  --extract-profile engineering --evidence-bundling `
+  --run-dir .eval-data/locomo/runs/best
+```
+
+**Judge/ruler picks the winner — run the same hypotheses through both:**
+
+| ruler | add | ≈ number | use for |
+|---|---|---|---|
+| **cat1-4 lenient** (Mem0-parity) | `--cross-encoder --cross-encoder-provider onnx` (rerank ON: +0.023 cat1-4) + `oracle/mem0-judge.mts --rubric mem0` | **~0.67** | field-parity / marketing headline |
+| token-F1 all-cat (LEDGER) | rerank **OFF** (default) + `eval:locomo:judge` | ~0.53 | LEDGER continuity |
+
+Rerank is the only lever that flips by ruler: ON helps content categories (cat1-4)
+but tanks adversarial (cat5, where abstaining is correct: −0.149), so it *lowers*
+the cat5-inclusive token-F1 while *raising* the cat1-4-only lenient number. Don't
+expect config to break past champion — the 0.75 ceiling is gold-evidence-only.
+
 ### Multi-run (mean±stdev, FEAT-457 slice 1)
 
 A single `run.mts` invocation is one sample of whatever noise the daemon/
