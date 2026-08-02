@@ -74,6 +74,32 @@ export interface BoundedGetResult {
   errorMessage?: string;
 }
 
+/**
+ * Thrown by `BoundedEntry`/`boundedSetPassword` specifically for the TIMEOUT
+ * case — never for a genuine "not found" or a fast credential-store error.
+ * Load-bearing distinction, not just an ADR-015 nicety: a plain "the read
+ * failed" is safe to treat as "no key exists yet" (the existing, pre-fix
+ * tolerance — see keystore.ts's `getOrCreateCredentialStoreKey`), because a
+ * fast failure genuinely means the store looked and found nothing. A TIMEOUT
+ * means the OPPOSITE — we asked and got no answer in time, so we have NO
+ * IDEA whether a key exists. Treating that as "no key exists" would let
+ * `getOrCreateCredentialStoreKey` fall through to minting a brand-new
+ * random key and OVERWRITING whatever the scoped identity actually holds —
+ * destroying a real, already-in-use encryption key on nothing more than a
+ * slow read, with no way to recover it afterward (the DB it encrypted
+ * becomes permanently unreadable; see serve.ts's `rewrapWrongKeyError` for
+ * how loud/fatal that failure is on the NEXT boot, by which point the
+ * original key is already gone). Callers that must not risk this (the read
+ * paths in keystore.ts) catch this specific type and re-throw it past their
+ * own "swallow a fast failure as not-found" logic instead of proceeding.
+ */
+export class CredentialStoreTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CredentialStoreTimeoutError';
+  }
+}
+
 // Test-only seams — a real credential-store test would either require a
 // genuinely wedged OS keychain (unreproducible) or mutate the developer's
 // real one (unacceptable, see keystore.ts's own EntryCtor seam for the same
@@ -174,7 +200,7 @@ export function boundedSetPassword(
         `[astramem-local] WARNING: OS credential store write timed out after ${timeoutMs}ms ` +
         '(service unresponsive). See keystore-bounded.ts for the 2026-08-02 incident this bound exists to close.',
       );
-      throw new Error(`credential-store write timed out after ${timeoutMs}ms`);
+      throw new CredentialStoreTimeoutError(`credential-store write timed out after ${timeoutMs}ms`);
     }
     throw err instanceof Error ? err : new Error(errMessage(err));
   }
@@ -198,15 +224,19 @@ export interface EntryLike {
  * hang hazard everywhere at once, with no per-call-site changes.
  *
  * getPassword() intentionally mirrors the real Entry's own tolerated
- * contract (return `null` OR throw both mean "no key yet" to every existing
- * caller — see keystore.ts's `getOrCreateCredentialStoreKey` doc comment):
- * 'found' -> the value, 'not-found' -> null, 'timeout'/'error' -> throw.
- * This means a timeout is NOT silently swallowed as "not found" by THIS
- * class — every caller's existing `catch { existing = null }` pattern still
- * ends up treating it that way operationally (by design — see the file
- * header, "reuse the fallback, don't invent one"), but boundedGetPassword
- * has already WARNed loudly before this throws, so the distinction ADR-015
- * rule 4 requires is on record regardless of what the caller does next.
+ * contract for a FAST failure (return `null` OR throw both mean "no key
+ * yet" to every existing caller — see keystore.ts's
+ * `getOrCreateCredentialStoreKey` doc comment): 'found' -> the value,
+ * 'not-found' -> null, 'error' -> a plain Error (safe for a caller to
+ * swallow and treat as "no key yet", exactly like today).
+ *
+ * 'timeout' is DELIBERATELY DIFFERENT: it throws a `CredentialStoreTimeoutError`
+ * specifically (see that class's doc comment for the destructive-overwrite
+ * hazard this distinction exists to prevent) rather than a plain `Error`, so
+ * a caller that must not risk minting-over-an-unreadable-existing-key
+ * (`getOrCreateCredentialStoreKey`'s read paths) can `instanceof`-check and
+ * refuse to swallow it, instead of falling through to a write it has no
+ * business making under genuine uncertainty.
  */
 export class BoundedEntry implements EntryLike {
   constructor(
@@ -218,6 +248,9 @@ export class BoundedEntry implements EntryLike {
     const result = boundedGetPassword(this.service, this.account);
     if (result.status === 'found') return result.value;
     if (result.status === 'not-found') return null;
+    if (result.status === 'timeout') {
+      throw new CredentialStoreTimeoutError(result.errorMessage ?? 'credential-store read timed out');
+    }
     throw new Error(result.errorMessage ?? 'credential-store read failed');
   }
 

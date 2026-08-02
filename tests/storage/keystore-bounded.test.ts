@@ -12,7 +12,7 @@
  * <service> <account>`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -248,15 +248,18 @@ describe('keystore-bounded', () => {
 
     it(
       'getOrCreateKey() falls back to the EXISTING key-file path (with a WARN) instead of hanging forever, when the credential store is genuinely unresponsive — the incident this fix closes, reproduced end-to-end',
-      { timeout: CREDENTIAL_STORE_TIMEOUT_MS * 3 + 15_000 },
+      { timeout: CREDENTIAL_STORE_TIMEOUT_MS + 15_000 },
       async () => {
         const { getOrCreateKey, keyFilePath } = await import('../../src/storage/keystore.js');
-        // Hangs on every call: getOrCreateCredentialStoreKey tries scoped
-        // read, legacy read, then a mint write — all three go through this
-        // same hung fixture, so this genuinely exercises the full ~3x
-        // CREDENTIAL_STORE_TIMEOUT_MS worst case documented in
-        // keystore-bounded.ts, not a shortcut. Slow (~15s) but bounded —
-        // which is the entire point of this fix.
+        // Hangs on every call. getOrCreateCredentialStoreKey's SCOPED read
+        // times out first and now (keystore-read-timeout follow-up: a
+        // timeout must never be swallowed into "proceed to mint") re-throws
+        // CredentialStoreTimeoutError immediately instead of falling through
+        // to a legacy read + mint attempt — so this exercises ONE
+        // CREDENTIAL_STORE_TIMEOUT_MS wait, not the full chain. Still slow
+        // (~5s) but bounded, and now faster than the original 3x-chained
+        // design — see the dedicated "existing key + timed-out read must
+        // not be minted over" test below for why that short-circuit exists.
         const script = fixture('e2e-hangs.mjs', 'setTimeout(() => process.exit(0), 120_000);');
         __setChildScriptPathForTests(script);
         const configDir = mkdtempSync(join(tmpdir(), 'astra-keystore-e2e-hang-'));
@@ -269,13 +272,68 @@ describe('keystore-bounded', () => {
           expect(result.source).toBe('key-file');
           expect(result.key).toMatch(/^[0-9a-f]{64}$/);
           expect(readFileSync(keyFilePath(configDir), 'utf8').trim()).toBe(result.key);
-          // Bounded: comfortably under what "hangs forever" would look like,
-          // and specifically under the documented worst case.
-          expect(elapsedMs).toBeLessThan(CREDENTIAL_STORE_TIMEOUT_MS * 3 + 10_000);
+          // Bounded: comfortably under what "hangs forever" would look like.
+          // One timeout (the scoped read's short-circuit), not three chained
+          // — see the comment above.
+          expect(elapsedMs).toBeLessThan(CREDENTIAL_STORE_TIMEOUT_MS + 10_000);
           // NOTE: assert on the spy BEFORE restoring it — mockRestore()
           // clears recorded calls as part of restoring the original
           // implementation, so checking afterward would always see zero.
           expect(warnSpy).toHaveBeenCalled();
+        } finally {
+          warnSpy.mockRestore();
+          rmSync(configDir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    it(
+      'a read that TIMES OUT must NEVER cascade into minting a new key and overwriting the credential store — a genuinely existing key would be destroyed and the DB it encrypted permanently locked out',
+      { timeout: CREDENTIAL_STORE_TIMEOUT_MS + 15_000 },
+      async () => {
+        const { getOrCreateKey, keyFilePath } = await import('../../src/storage/keystore.js');
+        // Simulates "vault is slow but alive, and a real key genuinely
+        // exists server-side, we just can't read it in time": every 'get'
+        // hangs past the timeout; every 'set' succeeds FAST and records
+        // what it was called with to a marker file. Before the
+        // keystore-read-timeout follow-up fix, getOrCreateCredentialStoreKey
+        // swallowed the scoped read's timeout as "no key found", fell
+        // through the (also-timing-out) legacy read the same way, and then
+        // called the fast-succeeding 'set' — MINTING a brand-new random key
+        // and OVERWRITING whatever the real credential-store entry actually
+        // held. This test proves that no longer happens: the mint/set path
+        // must never be reached when a read timed out.
+        const setMarkerPath = join(dir, 'set-calls.jsonl');
+        const script = fixture(
+          'timeout-cascade.cjs',
+          [
+            "const fs = require('node:fs');",
+            "const [, , mode, service, account] = process.argv;",
+            "if (mode === 'get') { setTimeout(() => process.exit(0), 120_000); }",
+            'else if (mode === \'set\') {',
+            "  const secret = fs.readFileSync(0, 'utf8');",
+            `  fs.appendFileSync(${JSON.stringify(setMarkerPath)}, JSON.stringify({ service, account, secret }) + '\\n');`,
+            '  process.exit(0);',
+            '}',
+          ].join('\n'),
+        );
+        __setChildScriptPathForTests(script);
+        const configDir = mkdtempSync(join(tmpdir(), 'astra-keystore-timeout-cascade-'));
+        const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        try {
+          const result = getOrCreateKey(configDir);
+
+          // The safe outcome: fell back to key-file, exactly like a fully
+          // unresponsive store would (see the test above) — NOT a
+          // credential-store mint.
+          expect(result.source).toBe('key-file');
+          expect(readFileSync(keyFilePath(configDir), 'utf8').trim()).toBe(result.key);
+
+          // The critical assertion: the destructive 'set' (mint) call was
+          // NEVER made. If this fails, a read timeout is once again capable
+          // of silently overwriting a real, already-in-use credential-store
+          // entry.
+          expect(existsSync(setMarkerPath)).toBe(false);
         } finally {
           warnSpy.mockRestore();
           rmSync(configDir, { recursive: true, force: true });

@@ -50,7 +50,7 @@ import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { BoundedEntry, type EntryLike } from './keystore-bounded.js';
+import { BoundedEntry, CredentialStoreTimeoutError, type EntryLike } from './keystore-bounded.js';
 
 const SERVICE = 'astramem-local';
 const ACCOUNT = 'db-key';
@@ -229,10 +229,27 @@ function getOrCreateCredentialStoreKey(configDir: string): KeyResult {
   // NoEntry error on others (per @napi-rs/keyring docs) — treat both as
   // "no key yet", not as "credential store broken". Only the constructor
   // and setPassword() throwing should trigger the key-file fallback.
+  //
+  // CredentialStoreTimeoutError is the one throw we must NOT swallow this
+  // way (keystore-read-timeout, 2026-08-02 follow-up): a fast NoEntry-style
+  // throw genuinely means "looked, found nothing" — safe to treat as
+  // not-found and continue toward minting a fresh key. A TIMEOUT means we
+  // asked and got no answer, which tells us NOTHING about whether a key
+  // exists. If a scoped key already exists but this read specifically timed
+  // out (a "vault is slow but alive" scenario — plausibly still able to
+  // accept the WRITE below even though the READ didn't answer in time),
+  // swallowing it here and falling through to the mint step would
+  // OVERWRITE the real, already-in-use key with a fresh random one — and
+  // since the DB was encrypted with the ORIGINAL key, that overwrite is
+  // effectively irreversible data loss (see CredentialStoreTimeoutError's
+  // doc comment, keystore-bounded.ts). Re-throwing here sends this straight
+  // to getOrCreateKey's outer catch — the key-file fallback — WITHOUT ever
+  // attempting the destructive write.
   let existing: string | null;
   try {
     existing = entry.getPassword();
-  } catch {
+  } catch (err) {
+    if (err instanceof CredentialStoreTimeoutError) throw err;
     existing = null;
   }
   if (existing) {
@@ -242,21 +259,25 @@ function getOrCreateCredentialStoreKey(configDir: string): KeyResult {
   // Read-fallback (AC-2): a pre-FEAT-466 install wrote its key under the
   // legacy unscoped identity. Read-only — never write here, so this never
   // silently duplicates or migrates the secret; the install just keeps
-  // reading the same entry it always has.
+  // reading the same entry it always has. Same timeout-must-not-be-swallowed
+  // reasoning as the scoped read above — a slow legacy read is not evidence
+  // the legacy key is absent.
   let legacyExisting: string | null;
   try {
     const legacyEntry = new EntryCtor(SERVICE, ACCOUNT);
     legacyExisting = legacyEntry.getPassword();
-  } catch {
+  } catch (err) {
+    if (err instanceof CredentialStoreTimeoutError) throw err;
     legacyExisting = null;
   }
   if (legacyExisting) {
     return { key: legacyExisting, source: 'credential-store', identity: 'legacy' };
   }
 
-  // Neither identity has a key yet — mint one under the scoped identity.
-  // New installs (and upgraded ones that never had a legacy key) never
-  // write to the legacy identity again.
+  // Only reached when NEITHER read timed out — both genuinely reported "no
+  // key" (a fast NoEntry-style outcome, not silence). Safe to mint one under
+  // the scoped identity: new installs (and upgraded ones that never had a
+  // legacy key) never write to the legacy identity again.
   const key = generateKeyHex();
   entry.setPassword(key);
   return { key, source: 'credential-store', identity: 'scoped' };
