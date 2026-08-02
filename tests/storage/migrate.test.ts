@@ -974,6 +974,61 @@ describe('migration 040-drop-dead-tables', () => {
   });
 });
 
+describe('migration 061-erase-hash-index', () => {
+  it('creates a partial index scoped to event_type = \'erase_request\'', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memory_events'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_memory_events_erase_hash');
+    const eraseIdx = idx.find(i => i.name === 'idx_memory_events_erase_hash')!;
+    expect(eraseIdx.sql).toContain('content_hash');
+    expect(eraseIdx.sql).toContain("WHERE event_type = 'erase_request'");
+  });
+
+  it('the index actually serves MemoryEventRepo.isErasedHash() — EXPLAIN QUERY PLAN shows a SEARCH, not a SCAN', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, content_hash, created_at) VALUES ('erase_request', 'a1', '{}', 'erased-hash-1', 1)"
+    ).run();
+    // A different event_type sharing the same content_hash column value must
+    // not be required for the match — proves the query is scoped correctly
+    // and isn't accidentally satisfied by a non-erase row.
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, content_hash, created_at) VALUES ('create', 'a2', '{}', 'other-hash', 2)"
+    ).run();
+
+    // Exact query text from MemoryEventRepo.isErasedHash() (src/storage/memory-events.ts).
+    const found = db
+      .prepare(`SELECT 1 AS x FROM memory_events WHERE event_type = 'erase_request' AND content_hash = ? LIMIT 1`)
+      .get('erased-hash-1');
+    expect(found).toBeDefined();
+    const notFound = db
+      .prepare(`SELECT 1 AS x FROM memory_events WHERE event_type = 'erase_request' AND content_hash = ? LIMIT 1`)
+      .get('other-hash');
+    expect(notFound).toBeUndefined();
+
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT 1 AS x FROM memory_events WHERE event_type = 'erase_request' AND content_hash = ? LIMIT 1
+    `).all('erased-hash-1') as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memory_events_erase_hash'))).toBe(true);
+    expect(plan.some(p => /SCAN memory_events/.test(p.detail))).toBe(false);
+  });
+
+  it('is idempotent — re-running after 061 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 61').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
