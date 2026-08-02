@@ -1051,36 +1051,60 @@ describe('migration 062-consolidate-scan-index', () => {
     const db = openDb(':memory:');
     migrate(db);
 
-    // Minimal fixture proving the query (not just the plan) still works,
-    // including the memories_vec JOIN the real query performs.
-    const insert = (id: string, repo: string, type: string, createdAt: number) => {
+    // Minimal fixture proving the query (not just the plan) still works.
+    // Includes one memory with NO memories_vec row (a3) — the page query
+    // itself no longer filters on embedding-existence (that moved to a
+    // separate batched query, see the 2026-08-02 incident fix below), so
+    // a3 must still come back from THIS query.
+    const insert = (id: string, repo: string, type: string, createdAt: number, withVec = true) => {
       db.prepare(
         `INSERT INTO memories (id, type, text, normalized_text, repo, importance, confidence, hash, valid_to, archived, created_at, updated_at)
          VALUES (?, ?, 'x', 'x', ?, 0.5, 0.5, ?, NULL, 0, ?, ?)`
       ).run(id, type, repo, id, createdAt, createdAt);
-      const rowid = (db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number }).rowid;
-      db.prepare('INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)')
-        .run(BigInt(rowid), Buffer.from(makeFakeVec(id).buffer));
+      if (withVec) {
+        const rowid = (db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number }).rowid;
+        db.prepare('INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)')
+          .run(BigInt(rowid), Buffer.from(makeFakeVec(id).buffer));
+      }
     };
     insert('a1', 'repo-a', 'fact', 100);
     insert('a2', 'repo-a', 'lesson', 50);
-    insert('a3', 'repo-b', 'fact', 10);
+    insert('a3', 'repo-b', 'fact', 10, false); // no embedding yet
 
-    // Exact query text from loadAtomsSetupBounded (src/consolidate/consolidate.ts:1096-1103).
+    // Exact query text from loadAtomsSetupBounded (src/consolidate/consolidate.ts).
+    //
+    // 2026-08-02 live-incident fix: this used to be
+    // `FROM memories m JOIN memories_vec v ON v.rowid = m.rowid` — an
+    // existence-only join with no `v.*` column selected. Measured on a
+    // 90k-row production-shaped corpus, that plan was
+    // `SCAN v VIRTUAL TABLE INDEX 1:2!___` PER OUTER ROW (page 1: 66ms,
+    // offset 25,000: 3,448ms, offset 60,000: 13,297ms — one synchronous
+    // call per page, wedging the daemon's event loop for minutes). The
+    // fix pages `memories` alone and checks embedding-existence via a
+    // separate batched `memories_vec` point-lookup query
+    // (`filterEmbeddedRowids`) — see that function's doc comment for the
+    // full measurement writeup. This test's job is now narrower: prove
+    // the covering index still serves the ORDER BY with no temp b-tree
+    // and no vec table appears in the paged statement's plan at all.
     const query = `
-      SELECT m.id, m.rowid, m.repo, m.type, m.text, m.importance, m.created_at, m.derived_from
-      FROM memories m
-      JOIN memories_vec v ON v.rowid = m.rowid
-      WHERE m.valid_to IS NULL
-      ORDER BY m.repo, m.type, m.created_at, m.rowid
+      SELECT id, rowid, repo, type, text, importance, created_at, derived_from
+      FROM memories
+      WHERE valid_to IS NULL
+      ORDER BY repo, type, created_at, rowid
       LIMIT ? OFFSET ?
     `;
     const rows = db.prepare(query).all(10, 0) as { id: string }[];
-    expect(rows.map(r => r.id)).toEqual(['a1', 'a2', 'a3']); // repo-a/fact, repo-a/lesson, repo-b/fact
+    // repo-a/fact, repo-a/lesson, repo-b/fact — a3 (no vec row) is
+    // present; embedding-existence is no longer this query's concern.
+    expect(rows.map(r => r.id)).toEqual(['a1', 'a2', 'a3']);
 
     const plan = db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(10, 0) as { detail: string }[];
     expect(plan.some(p => p.detail.includes('idx_memories_consolidate_scan'))).toBe(true);
     expect(plan.some(p => /USE TEMP B-TREE FOR ORDER BY/.test(p.detail))).toBe(false);
+    // The vec table must not appear in the paged statement's plan at all
+    // — that's the whole point of the fix (regression guard for the join
+    // ever creeping back in).
+    expect(plan.some(p => /\bv\b|memories_vec/.test(p.detail))).toBe(false);
   });
 
   it('is idempotent — re-running after 062 already applied does not error', () => {
@@ -1088,6 +1112,76 @@ describe('migration 062-consolidate-scan-index', () => {
     migrate(db);
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 62').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
+describe('migration 063-usefulness-feedback-loop-index', () => {
+  it('creates a partial index scoped to family = memory_corrected', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memory_events'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_memory_events_usefulness_corrected');
+    const corrected = idx.find(i => i.name === 'idx_memory_events_usefulness_corrected')!;
+    expect(corrected.sql).toContain('atom_id');
+    expect(corrected.sql).toContain("event_type = 'usefulness'");
+    expect(corrected.sql).toContain("'$.family'");
+    expect(corrected.sql).toContain("'memory_corrected'");
+  });
+
+  it('the index actually serves feedbackLoopSummary()\'s memory_corrected sub-query — EXPLAIN QUERY PLAN shows the index, not a full scan', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'memory_corrected', source: 'external' }), 100);
+    // A different family sharing the same event_type must not be picked up
+    // by this index's partial predicate.
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'recall_served' }), 200);
+
+    const query = `
+      SELECT atom_id, json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END),'$.source') AS source
+      FROM memory_events
+      WHERE event_type = 'usefulness'
+        AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'memory_corrected'
+    `;
+    const rows = db.prepare(query).all() as { atom_id: string; source: string }[];
+    expect(rows).toEqual([{ atom_id: 'm1', source: 'external' }]);
+
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_corrected'))).toBe(true);
+    expect(plan.some(p => /SCAN memory_events USING INDEX idx_memory_events_atom_seq/.test(p.detail))).toBe(false);
+  });
+
+  it('does NOT get picked for usefulnessRate()\'s unrelated recall_served query — the regression a first draft introduced', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'recall_served' }), 100);
+
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT COUNT(DISTINCT atom_id) AS n
+      FROM memory_events
+      WHERE event_type = 'usefulness'
+        AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served'
+        AND created_at >= ?
+    `).all(0) as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_corrected'))).toBe(false);
+  });
+
+  it('is idempotent — re-running after 063 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 63').get() as { n: number };
     expect(versions.n).toBe(1);
   });
 });

@@ -3,7 +3,7 @@ import { writeFileSync, unlinkSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { buildTaskXml, buildDailyTaskXml } from './task-xml.js';
-import { shimPaths, buildHiddenVbs } from './shim.js';
+import { shimPaths, buildHiddenVbs, buildWatchdogProbeWrapperCmd, watchdogProbeLogPath } from './shim.js';
 import type { ServiceAdapter, ServiceStatus, InstallResult } from './types.js';
 
 // Exported (not just local consts) so the "Task repetition dormancy" doctor
@@ -445,7 +445,28 @@ export class SchtasksAdapter implements ServiceAdapter {
     // hidden-launch VBS (distinct file from the daemon's/backup's) so the
     // recurring hang-probe never flashes a console either. Rewritten every
     // call — see installHiddenWrapper's doc comment on why.
-    const { command, args } = installHiddenWrapper('astramemd-watchdog-hidden.vbs', `${execPath} service watchdog-probe`);
+    //
+    // Observability fix (watchdog-probe-output-capture, 2026-08-02): the VBS
+    // used to wrap the RAW `<execPath> service watchdog-probe` command line
+    // directly, so `WScript.Shell.Run`'s zero output capture discarded every
+    // line the probe printed (cli/service.ts's `[watchdog-probe]
+    // healthy/UNHEALTHY — action: detail` summary, stopLockHolder's own
+    // fail-closed reasons) — exactly what made a live stuck-kill incident
+    // undiagnosable (consecutiveFailures hit threshold, kill attempts failed
+    // for 45 minutes, no on-disk trace of why). Route the probe through a
+    // small generated batch wrapper instead, redirecting into
+    // watchdogProbeLogPath() — see buildWatchdogProbeWrapperCmd's doc
+    // comment (shim.ts) for why a `.cmd` indirection rather than embedding
+    // shell redirection straight into the VBS string.
+    const { binDir } = shimPaths();
+    mkdirSync(binDir, { recursive: true });
+    const wrapperCmdPath = join(binDir, 'astramemd-watchdog-wrapper.cmd');
+    writeFileSync(
+      wrapperCmdPath,
+      buildWatchdogProbeWrapperCmd(`${execPath} service watchdog-probe`, watchdogProbeLogPath()),
+      'utf8',
+    );
+    const { command, args } = installHiddenWrapper('astramemd-watchdog-hidden.vbs', `"${wrapperCmdPath}"`);
     try {
       const userId = await resolveUserId();
       const xml = buildTaskXml({
