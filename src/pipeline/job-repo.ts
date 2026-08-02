@@ -85,6 +85,23 @@ export const AGING_STEP_MS = 120_000;
 const EFFECTIVE_PRIORITY_SQL = `(priority - ((? - created_at) / ?))`;
 
 /**
+ * Poison-job retention TTL, in days (2026-08-02 poison-metric-window fix).
+ * Deliberately kept longer than the completed-job default (7d, purgeOld's
+ * `completedDays`): a poison job is the forensic record of a genuine
+ * extraction failure — the ONLY surviving evidence of what a broken
+ * model/config actually did (`queue`, `astramem-local doctor`'s LLM chat
+ * probe both read it) — and an operator investigating an incident days
+ * later still needs it on disk. 90d comfortably covers a
+ * billing-cycle-scale investigation window (e.g. the 2026-07-31 codex
+ * quota-exhaustion burst that poisoned 55 sessions) without keeping poison
+ * rows around indefinitely. This is the single source both purge call
+ * sites (this file's own boot-time `purgeOld` default, and the 24h
+ * `cleanup` job handler — src/pipeline/handlers/cleanup.ts) share; do not
+ * hand-roll a second retention-days literal for poison jobs elsewhere.
+ */
+export const POISON_JOB_RETENTION_DAYS = 90;
+
+/**
  * Data-access object for the jobs table.
  * All methods are synchronous (better-sqlite3 is sync).
  */
@@ -298,14 +315,14 @@ export class JobRepo {
 
   /**
    * Retention purge: completed jobs are transient bookkeeping (7d), poison
-   * jobs are kept longer (30d) for `queue` command forensics. Other states
-   * are never touched.
+   * jobs are kept longer (POISON_JOB_RETENTION_DAYS) for `queue` command
+   * forensics. Other states are never touched.
    */
   purgeOld(opts: { completedDays?: number; poisonDays?: number } = {}): { completed: number; poison: number } {
     const now = Date.now();
     const dayMs = 24 * 60 * 60 * 1000;
     const completedCutoff = now - (opts.completedDays ?? 7) * dayMs;
-    const poisonCutoff = now - (opts.poisonDays ?? 30) * dayMs;
+    const poisonCutoff = now - (opts.poisonDays ?? POISON_JOB_RETENTION_DAYS) * dayMs;
     const completed = this.db.prepare(
       `DELETE FROM jobs WHERE state = 'completed' AND updated_at < ?`,
     ).run(completedCutoff).changes;

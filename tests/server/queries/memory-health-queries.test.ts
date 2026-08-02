@@ -9,6 +9,8 @@ import { recordRecallServed, recordRecallUsed } from '../../../src/storage/usefu
 import {
   buildMemoryHealthCheap,
   buildMemoryHealthFull,
+  distillSessionStats,
+  DISTILL_POISON_RATE_WINDOW_DAYS,
 } from '../../../src/server/queries/memory-health.js';
 import {
   estimateNearDuplicates,
@@ -56,11 +58,12 @@ async function seedMemory(
   return id;
 }
 
-function insertDistillJob(db: DB, opts: { state: string; sessionId: string }) {
+function insertDistillJob(db: DB, opts: { state: string; sessionId: string; updatedAt?: number }) {
+  const ts = opts.updatedAt ?? Date.now();
   db.prepare(`
     INSERT INTO jobs (id, kind, payload_json, state, attempts, created_at, updated_at)
     VALUES (?, 'distill', ?, ?, 0, ?, ?)
-  `).run(randomUUID(), JSON.stringify({ session_id: opts.sessionId }), opts.state, Date.now(), Date.now());
+  `).run(randomUUID(), JSON.stringify({ session_id: opts.sessionId }), opts.state, ts, ts);
 }
 
 describe('memory-health: contract shape + fail-safe (AC-4)', () => {
@@ -161,6 +164,78 @@ describe('memory-health: cheap tier — counts, usefulness, corrections, poison 
   });
 });
 
+describe('distillSessionStats: rolling window (2026-08-02 poison-metric-window fix)', () => {
+  let db: DB;
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+  });
+
+  it('default window (7d) excludes a poison burst that concluded outside it, even though it still counts lifetime', () => {
+    const now = Date.now();
+    // The exact production shape (2026-08-02 evidence): a burst of poison
+    // jobs 10 days ago, well outside the default 7-day window, with nothing
+    // since.
+    for (let i = 0; i < 5; i++) {
+      insertDistillJob(db, { state: 'poison', sessionId: `old-s${i}`, updatedAt: now - 10 * DAY_MS });
+    }
+
+    const stats = distillSessionStats(db);
+    expect(stats.windowDays).toBe(DISTILL_POISON_RATE_WINDOW_DAYS);
+    expect(stats.terminal).toBe(0);
+    expect(stats.poison).toBe(0);
+    expect(stats.poisonRate).toBeNull();
+
+    // The lifetime, unwindowed count used for informational display stays
+    // unaffected — this is a DIFFERENT metric (buildMemoryHealthCheap's
+    // poisonDistillSessions), not silently broken by the windowing above.
+    const cheap = buildMemoryHealthCheap(db);
+    expect(cheap.poisonDistillSessions).toBe(5);
+  });
+
+  it('a poison session within the window is counted; an old one outside it is not — mixed burst', () => {
+    const now = Date.now();
+    insertDistillJob(db, { state: 'poison', sessionId: 'old-poisoned', updatedAt: now - 10 * DAY_MS });
+    insertDistillJob(db, { state: 'poison', sessionId: 'recent-poisoned', updatedAt: now - 1 * DAY_MS });
+    insertDistillJob(db, { state: 'completed', sessionId: 'recent-completed', updatedAt: now - 1 * DAY_MS });
+
+    const stats = distillSessionStats(db);
+    expect(stats.terminal).toBe(2); // recent-poisoned + recent-completed; old-poisoned excluded
+    expect(stats.poison).toBe(1); // only recent-poisoned
+    expect(stats.poisonRate).toBeCloseTo(0.5, 5);
+  });
+
+  it('non-terminal states (pending/running/failed) are still excluded regardless of window', () => {
+    const now = Date.now();
+    insertDistillJob(db, { state: 'pending', sessionId: 's-pending', updatedAt: now });
+    insertDistillJob(db, { state: 'running', sessionId: 's-running', updatedAt: now });
+    insertDistillJob(db, { state: 'failed', sessionId: 's-failed', updatedAt: now });
+    insertDistillJob(db, { state: 'poison', sessionId: 's-poison', updatedAt: now });
+
+    const stats = distillSessionStats(db);
+    expect(stats.terminal).toBe(1);
+    expect(stats.poison).toBe(1);
+  });
+
+  it('accepts a custom windowDays override', () => {
+    const now = Date.now();
+    insertDistillJob(db, { state: 'poison', sessionId: 's1', updatedAt: now - 20 * DAY_MS });
+
+    expect(distillSessionStats(db).terminal).toBe(0); // outside the default 7d window
+    const wide = distillSessionStats(db, { windowDays: 30 });
+    expect(wide.windowDays).toBe(30);
+    expect(wide.terminal).toBe(1);
+    expect(wide.poison).toBe(1);
+  });
+
+  it('empty DB — zeros, null rate, no throw', () => {
+    expect(() => distillSessionStats(db)).not.toThrow();
+    const stats = distillSessionStats(db);
+    expect(stats).toEqual({ windowDays: DISTILL_POISON_RATE_WINDOW_DAYS, terminal: 0, poison: 0, poisonRate: null });
+  });
+});
+
 describe('memory-health: full tier — byType/byScope + staleness (doctor/CLI only)', () => {
   let db: DB;
   beforeEach(() => {
@@ -242,13 +317,46 @@ describe('memory-health: EXPLAIN QUERY PLAN — cheap tier rides existing indexe
     expect(plan.some(p => p.detail.includes('idx_memory_events_correction_type'))).toBe(true);
   });
 
-  it('poison-distill-session count uses idx_jobs_state (state as the equality prefix)', () => {
+  it('poison-distill-session count uses an index, never a full table scan', () => {
+    // Migration 060 (2026-08-02 poison-metric-window fix) added a tighter
+    // partial index (idx_jobs_distill_terminal_window) that also matches
+    // this query's shape — SQLite's planner now prefers it over the older
+    // idx_jobs_state, which is still a correct, index-backed outcome. Assert
+    // "some index, not a scan" rather than pinning the exact index name, so
+    // this test doesn't churn every time the planner's preference shifts
+    // between two equally-valid covering indexes.
     const plan = db.prepare(`
       EXPLAIN QUERY PLAN
       SELECT COUNT(DISTINCT json_extract(payload_json, '$.session_id')) AS n
       FROM jobs WHERE state = 'poison' AND kind = 'distill'
     `).all() as { detail: string }[];
-    expect(plan.some(p => p.detail.includes('idx_jobs_state'))).toBe(true);
+    expect(plan.some(p => p.detail.includes('idx_jobs_state') || p.detail.includes('idx_jobs_distill_terminal_window'))).toBe(true);
+    expect(plan.some(p => p.detail.startsWith('SCAN jobs'))).toBe(false);
+  });
+
+  // migration 060 (2026-08-02 poison-metric-window fix): both windowed
+  // distillSessionStats() queries must ride idx_jobs_distill_terminal_window,
+  // not a full scan of every distill job ever enqueued — the whole point of
+  // this check is to run safely on the doctor 'full' tier / /health's 30s
+  // refresh without becoming a new O(N) hot spot.
+  it('distillSessionStats terminal query (state IN (...)) uses idx_jobs_distill_terminal_window', () => {
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT COUNT(DISTINCT json_extract(payload_json, '$.session_id')) AS n
+      FROM jobs
+      WHERE kind = 'distill' AND state IN ('completed', 'poison') AND updated_at >= ?
+    `).all(0) as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_jobs_distill_terminal_window'))).toBe(true);
+  });
+
+  it('distillSessionStats poison-only query uses idx_jobs_distill_terminal_window', () => {
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT COUNT(DISTINCT json_extract(payload_json, '$.session_id')) AS n
+      FROM jobs
+      WHERE kind = 'distill' AND state = 'poison' AND updated_at >= ?
+    `).all(0) as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_jobs_distill_terminal_window'))).toBe(true);
   });
 });
 
