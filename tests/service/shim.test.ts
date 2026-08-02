@@ -12,6 +12,7 @@ import {
   watchdogProbeLogPath,
   buildWatchdogProbeWrapperCmd,
   WATCHDOG_PROBE_LOG_MAX_BYTES,
+  WATCHDOG_PROBE_SCRATCH_WRITE_FAILURE_EXIT,
 } from '../../src/service/shim.js';
 import { buildTaskXml } from '../../src/service/task-xml.js';
 
@@ -565,6 +566,30 @@ describe('watchdog probe output capture (2026-08-02)', () => {
     expect(cmd.trim().endsWith('exit /b %PROBE_EXIT%')).toBe(true);
   });
 
+  it('buildWatchdogProbeWrapperCmd guards against a false-success report when %TEMP% is unwritable (PR #471 round 3)', () => {
+    const logPath = 'C:\\data\\logs\\watchdog-probe.log';
+    const commandLine = '"C:\\nodejs\\node.exe" "C:\\app\\dist\\cli\\index.js" service watchdog-probe';
+    const cmd = buildWatchdogProbeWrapperCmd(commandLine, logPath);
+
+    // Guard #1: self-heals the common "%TEMP% just doesn't exist yet, its
+    // parent does" sub-case before ever trying to write there.
+    expect(cmd).toContain('if not exist "%TEMP%" mkdir "%TEMP%"');
+    // Guard #1 runs BEFORE the probe line, not after.
+    expect(cmd.indexOf('mkdir "%TEMP%"')).toBeLessThan(cmd.indexOf(commandLine));
+    // Guard #2 (the real backstop): if SCRATCH was never created, the probe
+    // never ran — cmd.exe leaves %ERRORLEVEL% stale in that case, so this
+    // check must run BEFORE `set "PROBE_EXIT=%ERRORLEVEL%"`, not after.
+    const scratchCheckIdx = cmd.indexOf('if not exist "%SCRATCH%"');
+    const probeExitCaptureIdx = cmd.indexOf('set "PROBE_EXIT=%ERRORLEVEL%"');
+    expect(scratchCheckIdx).toBeGreaterThan(-1);
+    expect(scratchCheckIdx).toBeLessThan(probeExitCaptureIdx);
+    expect(cmd).toContain(`exit /b ${WATCHDOG_PROBE_SCRATCH_WRITE_FAILURE_EXIT}`);
+    // The distinguishable code must differ from both "healthy" (0) and any
+    // ordinary probe-reported failure code space starting at 1.
+    expect(WATCHDOG_PROBE_SCRATCH_WRITE_FAILURE_EXIT).not.toBe(0);
+    expect(WATCHDOG_PROBE_SCRATCH_WRITE_FAILURE_EXIT).not.toBe(1);
+  });
+
   it('buildWatchdogProbeWrapperCmd honors a custom maxBytes override', () => {
     const cmd = buildWatchdogProbeWrapperCmd('probe-cmd', 'C:\\data\\logs\\watchdog-probe.log', 1024);
     expect(cmd).toContain('GTR 1024');
@@ -713,7 +738,24 @@ describe('watchdog probe output capture (2026-08-02)', () => {
             /* best effort — release the lock so cleanup below can proceed */
           }
         }
-        rmSync(dir, { recursive: true, force: true });
+        // taskkill returning doesn't guarantee the OS has finished releasing
+        // the file handle the locker held — under box contention (observed:
+        // concurrent test suites) that race widened enough to intermittently
+        // EPERM the directory removal below. Retry with a short backoff
+        // rather than letting a slow handle-release flake this test's own
+        // CLEANUP (the assertions above already ran and already passed).
+        let cleanupErr: unknown;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          try {
+            rmSync(dir, { recursive: true, force: true });
+            cleanupErr = undefined;
+            break;
+          } catch (err) {
+            cleanupErr = err;
+            execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 200"');
+          }
+        }
+        if (cleanupErr) throw cleanupErr;
       }
     },
   );
@@ -736,6 +778,95 @@ describe('watchdog probe output capture (2026-08-02)', () => {
 
         expect(res.status).toBe(0);
         expect(readFileSync(logPath, 'utf8')).toContain('PROBE_MARKER_PARENS');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // ---------------------------------------------------------------------
+  // PR #471 round 3: the round-2 fix above closed "log write breaks the
+  // probe" but introduced a narrower, worse-in-kind bug — a FALSE SUCCESS.
+  // When %TEMP% points at a directory that doesn't exist, cmd.exe leaves
+  // %ERRORLEVEL% untouched (stale 0) when a redirect target can't be
+  // opened for an external program, so the probe silently never runs while
+  // the wrapper still reports exit 0. Two live tests below: one proving
+  // the mkdir("%TEMP%") guard self-heals the common sub-case (probe still
+  // runs, real exit code), and one proving the existence-check backstop
+  // catches the sub-case the guard can't fix (probe never runs, exit code
+  // is the distinguishable WATCHDOG_PROBE_SCRATCH_WRITE_FAILURE_EXIT, never
+  // a false 0).
+  // ---------------------------------------------------------------------
+
+  it.skipIf(process.platform !== 'win32')(
+    'the mkdir("%TEMP%") guard self-heals the common case — the probe still runs normally when %TEMP% is simply missing (parent exists)',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'astra-watchdog-wrapper-notemp-selfheal-'));
+      try {
+        const logPath = join(dir, 'watchdog-probe.log');
+        const markerPath = join(dir, 'marker.txt');
+        const fakeProbe = join(dir, 'fake-probe.cjs');
+        writeFileSync(
+          fakeProbe,
+          `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran'); console.log('PROBE_MARKER_SELFHEAL'); process.exit(0);`,
+          'utf8',
+        );
+        const cmd = buildWatchdogProbeWrapperCmd(`"${process.execPath}" "${fakeProbe}"`, logPath);
+        const cmdPath = join(dir, 'wrapper.cmd');
+        writeFileSync(cmdPath, cmd, 'utf8');
+
+        // %TEMP%'s parent (dir) exists; %TEMP% itself does not yet.
+        const missingTemp = join(dir, 'temp-does-not-exist-yet');
+        const res = spawnSync('cmd.exe', ['/c', cmdPath], {
+          encoding: 'utf8',
+          env: { ...process.env, TEMP: missingTemp, TMP: missingTemp },
+        });
+
+        expect(existsSync(markerPath)).toBe(true);
+        expect(res.status).toBe(0);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'exits with the distinguishable scratch-write-failure code — never a false 0 — when %TEMP% can never be created (a file sits where a parent path component should be)',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'astra-watchdog-wrapper-notemp-backstop-'));
+      try {
+        const logPath = join(dir, 'watchdog-probe.log');
+        const markerPath = join(dir, 'marker.txt');
+        const fakeProbe = join(dir, 'fake-probe.cjs');
+        writeFileSync(
+          fakeProbe,
+          `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran'); console.log('PROBE_MARKER_NOTEMP'); process.exit(0);`,
+          'utf8',
+        );
+        const cmd = buildWatchdogProbeWrapperCmd(`"${process.execPath}" "${fakeProbe}"`, logPath);
+        const cmdPath = join(dir, 'wrapper.cmd');
+        writeFileSync(cmdPath, cmd, 'utf8');
+
+        // %TEMP% points at a path whose PARENT is a plain file — the
+        // wrapper's own `mkdir "%TEMP%"` guard cannot fix this (there is no
+        // valid parent directory to create it under), so this exercises the
+        // post-hoc existence-check backstop specifically, not the guard.
+        const blockerFile = join(dir, 'temp-blocker');
+        writeFileSync(blockerFile, 'not a directory', 'utf8');
+        const missingTemp = join(blockerFile, 'sub');
+
+        const res = spawnSync('cmd.exe', ['/c', cmdPath], {
+          encoding: 'utf8',
+          env: { ...process.env, TEMP: missingTemp, TMP: missingTemp },
+        });
+
+        // The bug this closes: without the existence-check backstop, this
+        // exact scenario reported exit 0 (a STALE %ERRORLEVEL%) with the
+        // probe never having run at all — a false success, worse in kind
+        // than the round-2 bug because it's indistinguishable from a
+        // genuine healthy run by reading schtasks' Last Result alone.
+        expect(existsSync(markerPath)).toBe(false);
+        expect(res.status).toBe(WATCHDOG_PROBE_SCRATCH_WRITE_FAILURE_EXIT);
       } finally {
         rmSync(dir, { recursive: true, force: true });
       }
