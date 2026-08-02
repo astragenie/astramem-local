@@ -45,11 +45,12 @@
  * the real daemon. Never set by real serving; no config.yaml/CLI surface
  * exposes it.
  */
-import { Entry } from '@napi-rs/keyring';
+import type { Entry } from '@napi-rs/keyring';
 import { randomBytes, createHash } from 'node:crypto';
 import { existsSync, readFileSync, writeFileSync, chmodSync, mkdirSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { execFileSync } from 'node:child_process';
+import { BoundedEntry, type EntryLike } from './keystore-bounded.js';
 
 const SERVICE = 'astramem-local';
 const ACCOUNT = 'db-key';
@@ -101,17 +102,75 @@ function scopedService(configDir: string): string {
 // (e.g. headless-Linux fallback) without needing an actual broken OS
 // keychain, and so keystore tests don't have to mutate the developer's
 // real OS credential store as a side effect of `npm test`.
-let EntryCtor: typeof Entry = Entry;
+//
+// DEFAULT is `BoundedEntry` (keystore-bounded.ts), NOT the raw `@napi-rs/keyring`
+// `Entry` (keystore-read-timeout, 2026-08-02 incident): `Entry.getPassword()`/
+// `.setPassword()` are synchronous N-API calls into the OS credential store
+// with no timeout anywhere in the chain — see keystore-bounded.ts's file
+// header for the incident this closes. `BoundedEntry` runs the real call in
+// a killable child process with a hard wall-clock bound, then throws (same
+// as a real `Entry` failure) on timeout — every credential-store touchpoint
+// below (scoped + legacy identities, db-key, bearer, sync-device-token) and
+// everything built on top (doctor checks, CLI commands, serve.ts's boot
+// path) already funnels through `EntryCtor`, so this one swap closes the
+// hang hazard everywhere at once with no other code path changes.
+// `undefined` restores this bounded default, not the raw unbounded `Entry`.
+//
+// Typed as a narrow structural constructor (service, account) => EntryLike
+// rather than `typeof Entry` — `Entry`'s full class type also requires the
+// static `withTarget` method, which `BoundedEntry` deliberately does not
+// implement (nothing in this repo calls it). The EXPORTED test hook below
+// keeps accepting `typeof Entry | undefined` unchanged (every existing
+// test-fake call site already passes `as unknown as typeof Entry`), so this
+// narrowing is invisible to callers.
+type EntryCtorType = new (service: string, account: string) => EntryLike;
+let EntryCtor: EntryCtorType = BoundedEntry;
 
 /** Test-only hook: override (or restore) the credential-store Entry constructor. */
 export function __setEntryCtorForTests(ctor: typeof Entry | undefined): void {
-  EntryCtor = ctor ?? Entry;
+  EntryCtor = (ctor as unknown as EntryCtorType | undefined) ?? BoundedEntry;
+}
+
+// Process-lifetime cache, keyed by normalized configDir (keystore-read-timeout,
+// 2026-08-02 incident follow-up). getOrCreateKey() was ALREADY documented as
+// "idempotent" — same key every call — but had no actual memoization: every
+// call re-attempted the credential store from scratch, which cost nothing
+// when that attempt was a same-thread synchronous throw. Once the bounded
+// child-process boundary (keystore-bounded.ts) went in, a repeat call became
+// genuinely expensive: a live count showed a SINGLE daemon boot calling
+// getOrCreateKey() a dozen-plus times (`openBootDb` once, then every 'cheap'
+// doctor check that touches `openProductionDbReadonly` — ~30 call sites,
+// several on the frequent/boot-immediate tier — each independently re-deriving
+// the same key). Against a genuinely WEDGED (not just erroring) credential
+// store, each of those calls could cost the full ~3x CREDENTIAL_STORE_TIMEOUT_MS
+// worst case — multiplied across a dozen callers, that is minutes of
+// cumulative event-loop-blocking delay, which would have defeated the whole
+// point of bounding any SINGLE call. Caching the resolved result turns every
+// call after the first into a free in-memory lookup, regardless of caller
+// count. Scoped per-process (a fresh `astramem-local` CLI invocation or test
+// process gets its own empty cache) — the underlying credential SOURCE
+// (credential-store vs key-file) is an install-time property that does not
+// legitimately change mid-run, so caching it for a long-lived daemon's
+// lifetime is not a behavior change, only a performance one.
+const keyCache = new Map<string, KeyResult>();
+
+/** Test-only hook: clears the process-lifetime key cache. Real callers never
+ *  need this — a fresh process starts with an empty cache — but a test
+ *  process that calls getOrCreateKey() against the SAME configDir twice,
+ *  expecting the SECOND call to re-derive against mutated stub state (rather
+ *  than reuse the first call's cached result), needs to clear it between
+ *  arrangements. */
+export function __resetKeyCacheForTests(): void {
+  keyCache.clear();
 }
 
 /**
  * Returns the encryption key for this machine/user, creating one on first
  * use. Tries the OS credential store first; falls back to a 0600 key file
  * under `configDir` (with a WARN log) when the credential store throws.
+ * Memoized per (normalized) configDir for the lifetime of this process — see
+ * `keyCache`'s doc comment above for why repeat calls must be free, not just
+ * bounded.
  *
  * NOTE: deviates slightly from the originally-sketched `(configDir) => string`
  * signature — returns `{ key, source }` instead of a bare string so callers
@@ -119,6 +178,10 @@ export function __setEntryCtorForTests(ctor: typeof Entry | undefined): void {
  * duplicate resolution pass. `.key` is what openDb()/migrate-encrypt need.
  */
 export function getOrCreateKey(configDir: string): KeyResult {
+  // ASTRA_MEMORY_TEST_FORCE_KEYFILE bypasses caching entirely — it is
+  // already a fast, deterministic fs read (no credential-store round trip to
+  // amortize), and sandboxed tests using it may legitimately expect a fresh
+  // disk read on every call.
   if (process.env.ASTRA_MEMORY_TEST_FORCE_KEYFILE === '1') {
     console.warn(
       '[astramem-local] WARNING: TEST-ONLY key-file bypass active ' +
@@ -127,16 +190,24 @@ export function getOrCreateKey(configDir: string): KeyResult {
     );
     return getOrCreateKeyFile(configDir);
   }
+
+  const cacheKey = normalizeConfigDir(configDir);
+  const cached = keyCache.get(cacheKey);
+  if (cached) return cached;
+
+  let result: KeyResult;
   try {
-    return getOrCreateCredentialStoreKey(configDir);
+    result = getOrCreateCredentialStoreKey(configDir);
   } catch (err) {
     console.warn(
       `[astramem-local] WARNING: OS credential store unavailable (${errMessage(err)}); ` +
       `falling back to a key file with 0600 permissions. This is a weaker guarantee than ` +
       `an OS credential store — see docs/specs/2026-07-02-encryption-and-secret-redaction.md OQ-1.`,
     );
-    return getOrCreateKeyFile(configDir);
+    result = getOrCreateKeyFile(configDir);
   }
+  keyCache.set(cacheKey, result);
+  return result;
 }
 
 function errMessage(err: unknown): string {
