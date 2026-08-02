@@ -357,6 +357,46 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
     expect(signalCalls).toBe(0);
   });
 
+  // Reinstall stale-lock false-fail (repro'd 2/2 on this box): a dead-PID
+  // lock left on disk after stop is read by reinstall's verify-health gate
+  // (waitForHealthWithBootGrace, cli/reinstall.ts) while polling the FRESH
+  // daemon — finding the OLD dead pid still there, it correctly concludes
+  // "daemon-dead" and rolls back, even when the real problem was upstream
+  // (the new daemon never got a chance to write its own lock). Deleting a
+  // CONFIRMED-dead lock here closes that misdiagnosis at the source.
+  it('deletes daemon.lock once the holder is confirmed dead', async () => {
+    writeFileSync(lockPath(dir), JSON.stringify({ pid: 2 ** 30, port: 7777, startedAt: '2026-01-01T00:00:00.000Z', version: '0.9.0' }));
+    const result = await stopLockHolder(dir, 7777);
+    expect(result.ok).toBe(true);
+    expect(existsSync(lockPath(dir))).toBe(false);
+  });
+
+  it('does NOT delete daemon.lock when a DIFFERENT holder has since claimed it (race: a sibling restart won in between)', async () => {
+    writeFileSync(
+      lockPath(dir),
+      JSON.stringify({ pid: process.ppid, port: 9010, startedAt: FIXED_STARTED_AT, version: '0.9.0' }),
+    );
+    // Simulate a sibling process (e.g. a watchdog-triggered restart) winning
+    // the race and claiming the lock for itself DURING our post-signal
+    // health-probe wait — by the time our cleanup re-reads the file, it must
+    // see this new holder and leave it alone.
+    let probeCalls = 0;
+    const result = await stopLockHolder(dir, 9010, {
+      signal: () => { /* no-op */ },
+      processStartTime: matchingStartTime,
+      healthProbe: async () => {
+        probeCalls++;
+        if (probeCalls === 1) {
+          writeFileSync(lockPath(dir), JSON.stringify({ pid: 2 ** 29, port: 7778, startedAt: '2026-02-02T00:00:00.000Z', version: '0.9.1' }));
+        }
+        return false; // unhealthy -> stopLockHolder concludes "stopped" and tries cleanup
+      },
+    });
+    expect(result.ok).toBe(true);
+    expect(existsSync(lockPath(dir))).toBe(true);
+    expect(JSON.parse(readFileSync(lockPath(dir), 'utf8')).pid).toBe(2 ** 29);
+  });
+
   it('treats EPERM (process exists but not signalable) as ALIVE and still stops it', async () => {
     // Regression: process.kill(pid,0) throwing EPERM means the process EXISTS
     // but we lack permission to signal — it must NOT be misread as "already dead"
@@ -381,7 +421,7 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
     expect(result).toEqual({ ok: true, detail: `stopped pid ${process.ppid}` });
   });
 
-  it('signals the live holder PID and reports stopped once the health probe goes unhealthy', async () => {
+  it('signals the live holder PID, reports stopped once the health probe goes unhealthy, and deletes daemon.lock', async () => {
     writeFileSync(lockPath(dir), JSON.stringify({ pid: process.ppid, port: 9001, startedAt: FIXED_STARTED_AT, version: '0.9.0' }));
     const signaled: Array<{ pid: number; signal: NodeJS.Signals | number }> = [];
     let probeCalls = 0;
@@ -393,9 +433,10 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
     expect(signaled).toEqual([{ pid: process.ppid, signal: 'SIGTERM' }]);
     expect(probeCalls).toBeGreaterThanOrEqual(1);
     expect(result).toEqual({ ok: true, detail: `stopped pid ${process.ppid}` });
+    expect(existsSync(lockPath(dir))).toBe(false);
   });
 
-  it('reports failure when the holder keeps answering /health past the wait budget', async () => {
+  it('reports failure when the holder keeps answering /health past the wait budget, and leaves daemon.lock in place (never delete while the holder might still be alive)', async () => {
     writeFileSync(lockPath(dir), JSON.stringify({ pid: process.ppid, port: 9002, startedAt: FIXED_STARTED_AT, version: '0.9.0' }));
     const result = await stopLockHolder(dir, 9002, {
       signal: () => { /* no-op */ },
@@ -405,6 +446,7 @@ describe('stopLockHolder (bug #2/#3 fix: kill the actual lock-holding daemon by 
     });
     expect(result.ok).toBe(false);
     expect(result.detail).toContain('still serving after');
+    expect(existsSync(lockPath(dir))).toBe(true);
   });
 
   it('surfaces a signal failure without hanging', async () => {
