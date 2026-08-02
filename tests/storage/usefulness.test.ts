@@ -456,6 +456,229 @@ describe('runImplicitPositivePass', () => {
   });
 });
 
+describe('feedbackLoopSummary — single-pass rewrite (2026-08-02) matches the old 8-query behavior exactly', () => {
+  let db: DB;
+  let repo: MemoryRepo;
+  let events: MemoryEventRepo;
+
+  beforeEach(() => {
+    db = openDb(':memory:');
+    migrate(db);
+    repo = new MemoryRepo(db);
+    events = new MemoryEventRepo(db);
+  });
+
+  /**
+   * Byte-for-byte copy of the pre-fix implementation (eight separate
+   * `COUNT(DISTINCT atom_id)` queries) — kept ONLY as an equivalence
+   * oracle for these tests, never imported by production code. If the
+   * live `feedbackLoopSummary()` (src/storage/usefulness.ts) and this
+   * function ever disagree, the single-pass rewrite changed doctor-canary
+   * alarm behavior, which is exactly what this suite exists to catch.
+   */
+  function oldFeedbackLoopSummary(db: DB): ReturnType<typeof feedbackLoopSummary> {
+    const J = `(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END)`;
+    const count = (sql: string, ...params: unknown[]): number =>
+      (db.prepare(sql).get(...params) as { n: number }).n;
+
+    const servedDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_served'
+    `);
+    const usedDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_used'
+    `);
+    const usedExplicitDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_used'
+        AND json_extract(${J},'$.signal') = 'explicit'
+    `);
+    const usedHeuristicDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_used'
+        AND json_extract(${J},'$.signal') = 'heuristic'
+    `);
+    const correctedDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'memory_corrected'
+    `);
+    const correctedConsolidationDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'memory_corrected'
+        AND json_extract(${J},'$.source') = 'consolidation_auto'
+    `);
+    const correctedExternalDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'memory_corrected'
+        AND json_extract(${J},'$.source') = 'external'
+    `);
+    const correctedUnknownDistinct = count(`
+      SELECT COUNT(DISTINCT atom_id) AS n FROM memory_events
+      WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'memory_corrected'
+        AND json_extract(${J},'$.source') IS NULL
+        AND atom_id NOT IN (
+          SELECT atom_id FROM memory_events
+          WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'memory_corrected'
+            AND json_extract(${J},'$.source') IS NOT NULL
+        )
+    `);
+
+    return {
+      servedDistinct, usedDistinct, usedExplicitDistinct, usedHeuristicDistinct, correctedDistinct,
+      correctedConsolidationDistinct, correctedExternalDistinct, correctedUnknownDistinct,
+    };
+  }
+
+  function expectEquivalent(): void {
+    expect(feedbackLoopSummary(db)).toEqual(oldFeedbackLoopSummary(db));
+  }
+
+  it('empty table', () => {
+    expectEquivalent();
+    expect(feedbackLoopSummary(db)).toEqual({
+      servedDistinct: 0, usedDistinct: 0, usedExplicitDistinct: 0, usedHeuristicDistinct: 0,
+      correctedDistinct: 0, correctedConsolidationDistinct: 0, correctedExternalDistinct: 0,
+      correctedUnknownDistinct: 0,
+    });
+  });
+
+  it('one family present, others entirely absent', () => {
+    const a = insertMem(repo, 'eq-served-only');
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'recall_served' } });
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'recall_served' } }); // dup event, same atom -> still 1 distinct
+    expectEquivalent();
+    expect(feedbackLoopSummary(db).servedDistinct).toBe(1);
+    expect(feedbackLoopSummary(db).usedDistinct).toBe(0);
+    expect(feedbackLoopSummary(db).correctedDistinct).toBe(0);
+  });
+
+  it('an atom appears across all three families', () => {
+    const a = insertMem(repo, 'eq-multi-family');
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'recall_served' } });
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'recall_used', signal: 'explicit' } });
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'memory_corrected', source: 'external' } });
+    expectEquivalent();
+    const s = feedbackLoopSummary(db);
+    expect(s.servedDistinct).toBe(1);
+    expect(s.usedDistinct).toBe(1);
+    expect(s.correctedDistinct).toBe(1);
+  });
+
+  it('an atom with BOTH explicit and heuristic recall_used events counts in both buckets (not mutually exclusive)', () => {
+    const a = insertMem(repo, 'eq-both-signals');
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'recall_used', signal: 'explicit' } });
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'recall_used', signal: 'heuristic' } });
+    expectEquivalent();
+    const s = feedbackLoopSummary(db);
+    expect(s.usedDistinct).toBe(1);
+    expect(s.usedExplicitDistinct).toBe(1);
+    expect(s.usedHeuristicDistinct).toBe(1);
+  });
+
+  it('an atom with BOTH consolidation_auto and external corrections counts in both source buckets', () => {
+    const a = insertMem(repo, 'eq-both-sources');
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'memory_corrected', source: 'consolidation_auto' } });
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'memory_corrected', source: 'external' } });
+    expectEquivalent();
+    const s = feedbackLoopSummary(db);
+    expect(s.correctedDistinct).toBe(1);
+    expect(s.correctedConsolidationDistinct).toBe(1);
+    expect(s.correctedExternalDistinct).toBe(1);
+    expect(s.correctedUnknownDistinct).toBe(0);
+  });
+
+  it('an atom with ONLY an unsourced (null source) correction counts as unknown', () => {
+    const a = insertMem(repo, 'eq-unsourced-only');
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'memory_corrected', action: 'demoted' } }); // no source key
+    expectEquivalent();
+    const s = feedbackLoopSummary(db);
+    expect(s.correctedDistinct).toBe(1);
+    expect(s.correctedConsolidationDistinct).toBe(0);
+    expect(s.correctedExternalDistinct).toBe(0);
+    expect(s.correctedUnknownDistinct).toBe(1);
+  });
+
+  it('the anti-join case: an atom with BOTH an unsourced AND a sourced correction is NOT counted as unknown', () => {
+    const a = insertMem(repo, 'eq-mixed-source');
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'memory_corrected', action: 'demoted' } }); // unsourced (pre-fix-shaped event)
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'memory_corrected', source: 'external' } }); // later, sourced
+    expectEquivalent();
+    const s = feedbackLoopSummary(db);
+    expect(s.correctedDistinct).toBe(1);
+    expect(s.correctedExternalDistinct).toBe(1);
+    // The atom has a sourced event too, so it must NOT count in "unknown" —
+    // this is the exact NOT IN / anti-join semantic the rewrite has to
+    // preserve without a second subquery.
+    expect(s.correctedUnknownDistinct).toBe(0);
+  });
+
+  it('an unrecognized family value matches none of the buckets, in either implementation', () => {
+    const a = insertMem(repo, 'eq-unknown-family');
+    events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'some_future_family' } });
+    expectEquivalent();
+    const s = feedbackLoopSummary(db);
+    expect(s).toEqual({
+      servedDistinct: 0, usedDistinct: 0, usedExplicitDistinct: 0, usedHeuristicDistinct: 0,
+      correctedDistinct: 0, correctedConsolidationDistinct: 0, correctedExternalDistinct: 0,
+      correctedUnknownDistinct: 0,
+    });
+  });
+
+  it('a mixed population of many atoms across all families/signals/sources stays equivalent', () => {
+    for (let i = 0; i < 25; i++) {
+      const a = insertMem(repo, `eq-bulk-${i}`);
+      if (i % 3 === 0) events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'recall_served' } });
+      if (i % 4 === 0) {
+        events.append({
+          event_type: 'usefulness', atom_id: a,
+          payload: { family: 'recall_used', signal: i % 2 === 0 ? 'explicit' : 'heuristic' },
+        });
+      }
+      if (i % 5 === 0) {
+        const source = i % 15 === 0 ? undefined : (i % 2 === 0 ? 'consolidation_auto' : 'external');
+        events.append({ event_type: 'usefulness', atom_id: a, payload: { family: 'memory_corrected', source } });
+      }
+    }
+    expectEquivalent();
+  });
+
+  it('EXPLAIN QUERY PLAN: each of the three sub-queries hits its own dedicated index, never a full scan', () => {
+    const J = `(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END)`;
+    const servedPlan = db.prepare(`EXPLAIN QUERY PLAN SELECT atom_id FROM memory_events WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_served'`).all() as { detail: string }[];
+    const usedPlan = db.prepare(`EXPLAIN QUERY PLAN SELECT atom_id FROM memory_events WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'recall_used'`).all() as { detail: string }[];
+    const correctedPlan = db.prepare(`EXPLAIN QUERY PLAN SELECT atom_id FROM memory_events WHERE event_type = 'usefulness' AND json_extract(${J},'$.family') = 'memory_corrected'`).all() as { detail: string }[];
+
+    expect(servedPlan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);
+    expect(usedPlan.some(p => p.detail.includes('idx_memory_events_usefulness_used'))).toBe(true);
+    expect(correctedPlan.some(p => p.detail.includes('idx_memory_events_usefulness_corrected'))).toBe(true);
+
+    for (const plan of [servedPlan, usedPlan, correctedPlan]) {
+      expect(plan.some(p => /SCAN memory_events USING INDEX idx_memory_events_atom_seq/.test(p.detail))).toBe(false);
+      expect(plan.some(p => /^SCAN memory_events$/.test(p.detail))).toBe(false);
+    }
+  });
+
+  it('does not regress usefulnessRate()\'s served query plan (the bug a first draft of this fix introduced)', () => {
+    // A broader index (WHERE event_type = 'usefulness' alone, covering all
+    // three families) was tried first and reverted because SQLite started
+    // preferring it over migration 019's idx_memory_events_usefulness_served
+    // for THIS query, discarding a targeted created_at range SEARCH for a
+    // full 'usefulness'-slice SCAN. This test locks in that the final,
+    // narrower (memory_corrected-only) index does not reintroduce that.
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT COUNT(DISTINCT atom_id) AS n
+      FROM memory_events
+      WHERE event_type = 'usefulness'
+        AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served'
+        AND created_at >= ?
+    `).all(0) as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_corrected'))).toBe(false);
+  });
+});
+
 describe('usefulnessScores (weighted, issue #190)', () => {
   let db: DB;
   let repo: MemoryRepo;

@@ -1116,6 +1116,76 @@ describe('migration 062-consolidate-scan-index', () => {
   });
 });
 
+describe('migration 063-usefulness-feedback-loop-index', () => {
+  it('creates a partial index scoped to family = memory_corrected', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memory_events'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_memory_events_usefulness_corrected');
+    const corrected = idx.find(i => i.name === 'idx_memory_events_usefulness_corrected')!;
+    expect(corrected.sql).toContain('atom_id');
+    expect(corrected.sql).toContain("event_type = 'usefulness'");
+    expect(corrected.sql).toContain("'$.family'");
+    expect(corrected.sql).toContain("'memory_corrected'");
+  });
+
+  it('the index actually serves feedbackLoopSummary()\'s memory_corrected sub-query — EXPLAIN QUERY PLAN shows the index, not a full scan', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'memory_corrected', source: 'external' }), 100);
+    // A different family sharing the same event_type must not be picked up
+    // by this index's partial predicate.
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'recall_served' }), 200);
+
+    const query = `
+      SELECT atom_id, json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END),'$.source') AS source
+      FROM memory_events
+      WHERE event_type = 'usefulness'
+        AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'memory_corrected'
+    `;
+    const rows = db.prepare(query).all() as { atom_id: string; source: string }[];
+    expect(rows).toEqual([{ atom_id: 'm1', source: 'external' }]);
+
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${query}`).all() as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_corrected'))).toBe(true);
+    expect(plan.some(p => /SCAN memory_events USING INDEX idx_memory_events_atom_seq/.test(p.detail))).toBe(false);
+  });
+
+  it('does NOT get picked for usefulnessRate()\'s unrelated recall_served query — the regression a first draft introduced', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    db.prepare(
+      "INSERT INTO memory_events (event_type, atom_id, payload_json, created_at) VALUES ('usefulness', ?, ?, ?)"
+    ).run('m1', JSON.stringify({ family: 'recall_served' }), 100);
+
+    const plan = db.prepare(`
+      EXPLAIN QUERY PLAN
+      SELECT COUNT(DISTINCT atom_id) AS n
+      FROM memory_events
+      WHERE event_type = 'usefulness'
+        AND json_extract((CASE WHEN json_valid(payload_json) THEN payload_json ELSE '[]' END), '$.family') = 'recall_served'
+        AND created_at >= ?
+    `).all(0) as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_served'))).toBe(true);
+    expect(plan.some(p => p.detail.includes('idx_memory_events_usefulness_corrected'))).toBe(false);
+  });
+
+  it('is idempotent — re-running after 063 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 63').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Schema-version drift guard (D-R2)
 // migrate() must throw when SCHEMA_VERSION constant and DB max diverge.
