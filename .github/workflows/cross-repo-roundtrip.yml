@@ -36,6 +36,15 @@ jobs:
     # at zero and native-module prebuilts on a known-good OS).
     runs-on: [self-hosted, astragenie, aws]
     timeout-minutes: 15
+    env:
+      # Single source of truth for the pinned SQLCipher prebuilt — drives both
+      # the cache key and the fetch/verify step below. Job-level so the cache
+      # restore/save steps can read them too; see the fetch step's own comment
+      # for why these three coordinates + the SHA move together.
+      PKG_VERSION: '12.11.1'
+      NODE_ABI: 'v127'
+      PLATFORM: 'linux-x64'
+      SHA256: '46a4933d6962aa75cee61657b99931dd23cc040fc81094a3ec33b3b09328cdea'
     steps:
       - name: Checkout daemon (this repo)
         uses: actions/checkout@v7
@@ -152,13 +161,25 @@ jobs:
       # will not match and this step fails LOUDLY, forcing an intentional re-pin
       # (recompute: curl -fsSL "$URL" | sha256sum). Do not "fix" a hash mismatch
       # by relaxing the check -- verify the new asset first.
+      # 2026-08-02 (3 same-day failures, all here): the CDN fetch below hit
+      # GitHub-releases 503s that outlasted the old `curl --retry 3
+      # --retry-delay 2` budget (~14s total) — a multi-minute CDN blip just
+      # fails the job. Cache the verified tarball keyed on the exact pinned
+      # coordinates so a healthy run never re-hits the CDN at all, and harden
+      # the curl fallback for the cache-miss path. `--retry-all-errors` matters
+      # on its own: plain `--retry` does NOT retry HTTP 503 by default (only a
+      # transport-level failure), so it was silently not retrying the actual
+      # failure mode observed.
+      - name: Restore cached SQLCipher addon tarball
+        id: cipher-cache
+        uses: actions/cache/restore@v6
+        with:
+          path: ${{ runner.temp }}/sqlcipher-addon.tar.gz
+          key: sqlcipher-addon-${{ env.PKG_VERSION }}-${{ env.NODE_ABI }}-${{ env.PLATFORM }}-${{ env.SHA256 }}
+
       - name: Fetch + verify prebuilt SQLCipher addon for the smoke's node ABI
         env:
           NODE_ENV: development
-          PKG_VERSION: '12.11.1'
-          NODE_ABI: 'v127'
-          PLATFORM: 'linux-x64'
-          SHA256: '46a4933d6962aa75cee61657b99931dd23cc040fc81094a3ec33b3b09328cdea'
         run: |
           set -euo pipefail
           # Fail early if the runner's actual node ABI drifts from the pinned one.
@@ -169,18 +190,36 @@ jobs:
           fi
           pkg_dir="$(node -e "process.stdout.write(require('path').dirname(require.resolve('better-sqlite3-multiple-ciphers/package.json')))")"
           echo "cipher package resolves to: $pkg_dir"
-          asset="better-sqlite3-multiple-ciphers-v${PKG_VERSION}-node-${NODE_ABI}-${PLATFORM}.tar.gz"
-          url="https://github.com/m4heshd/better-sqlite3-multiple-ciphers/releases/download/v${PKG_VERSION}/${asset}"
-          tmp="$(mktemp)"
-          echo "downloading $url"
-          curl -fsSL --retry 3 --retry-delay 2 "$url" -o "$tmp"
-          echo "${SHA256}  ${tmp}" | sha256sum -c -
+          tarball="${RUNNER_TEMP}/sqlcipher-addon.tar.gz"
+          if [ -f "$tarball" ]; then
+            echo "cache hit (key matched pinned PKG_VERSION/NODE_ABI/PLATFORM/SHA256) — reusing $tarball, skipping CDN fetch"
+          else
+            asset="better-sqlite3-multiple-ciphers-v${PKG_VERSION}-node-${NODE_ABI}-${PLATFORM}.tar.gz"
+            url="https://github.com/m4heshd/better-sqlite3-multiple-ciphers/releases/download/v${PKG_VERSION}/${asset}"
+            echo "cache miss — downloading $url"
+            curl -fsSL --retry 6 --retry-delay 10 --retry-all-errors "$url" -o "$tarball"
+          fi
+          # Mandatory on BOTH paths — a cache hit is not a trust boundary. A
+          # corrupted or tampered cache entry must fail exactly like a bad
+          # download would, never silently extract.
+          echo "${SHA256}  ${tarball}" | sha256sum -c -
           # Prebuilt tarball layout is build/Release/better_sqlite3.node — extract
           # straight into the resolved package dir (no node-gyp, no compile race).
-          tar -xzf "$tmp" -C "$pkg_dir"
-          rm -f "$tmp"
+          tar -xzf "$tarball" -C "$pkg_dir"
           # Verify under node -- the runtime the spawned daemon actually uses.
           node -e "require('better-sqlite3-multiple-ciphers'); console.log('verified prebuilt addon loads under node ABI', process.versions.modules)"
+
+      # Only runs on an actual cache miss (skip re-saving an unchanged key —
+      # actions/cache/save would just warn and no-op anyway, but this avoids
+      # the wasted upload). Placed after the fetch/verify step with no
+      # `always()`: only a tarball that passed SHA256 verification and loaded
+      # under node gets cached, matching the "verify before trust" rule above.
+      - name: Save SQLCipher addon tarball cache
+        if: steps.cipher-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v6
+        with:
+          path: ${{ runner.temp }}/sqlcipher-addon.tar.gz
+          key: sqlcipher-addon-${{ env.PKG_VERSION }}-${{ env.NODE_ABI }}-${{ env.PLATFORM }}-${{ env.SHA256 }}
 
       # AC-1/AC-2: ASTRAMEM_LOCAL_DIST_PATH must be the daemon REPO ROOT
       # (containing dist/cli/index.js after build), not the dist/ dir itself —
