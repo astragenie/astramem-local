@@ -22,7 +22,7 @@ the 2026-07-21 agentic-setup rebuild.
   `qwen3:8b`-as-default references to `qwen2.5:7b` (~4.7GB), fixed the provider matrix to show
   `codex-subscription` as the default LLM + ONNX as the default embed provider, and documented
   `MEMORY_API_URL` as the **daemon's** env var (distinct from `MEMORY_MCP_URL`, which is
-  plugin-side). Supersedes the 2026-07-21 README pass above, which only fixed the version badge.
+  plugin-side).
 - **Local clone dir on this box is `C:\work\mega\astramem-local`** — folder renamed from the
   GitHub repo name `astramemory-local` (same rename pattern as `hero-crew`→`dev-team` elsewhere in
   the ecosystem). `CLAUDE.md`'s install snippet previously hardcoded `cd
@@ -108,11 +108,15 @@ evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-l
 
 ## Known bugs — fixes in flight (verified 2026-08-02, re-verify before assuming these are still open)
 
-- **`auto-merge.yml` is silently broken.** Classic branch protection was replaced by ruleset
-  `18464801`, and `enablePullRequestAutoMerge` now fails to arm on every PR — the failure is caught
-  as a warning so the workflow job still PASSes, `autoMergeRequest` stays `null`, and nothing
-  actually auto-merges. All 6 PRs merged today (2026-08-02) were hand-merged. Fix in flight; don't
-  assume a PR merged itself just because the workflow went green.
+- **`auto-merge.yml` is silently broken.** The `enablePullRequestAutoMerge` GraphQL call fails to
+  arm on every PR — the failure is caught as a warning so the workflow job still PASSes,
+  `autoMergeRequest` stays `null`, and nothing actually auto-merges. **Root cause (CI run
+  `30754930112`, PR #465's auto-merge job): `"##[warning]enable auto-merge failed: Bad
+  credentials"`** — the `AUTOMERGE_PAT` secret is expired/revoked. (Not a branch-protection/ruleset
+  issue — `allow_auto_merge=true` on the repo, ruleset unrelated.) Fix: operator rotates
+  `AUTOMERGE_PAT`; PR #467 (in flight) makes the failure loud instead of a silently-swallowed
+  warning. 5 PRs merged today (2026-08-02) — #461, #462, #463, #464, #465 — were all hand-merged
+  because of this.
 - **`reinstall` stale-lock false-fail, reproduced 2×.** `reinstall`'s stop step leaves
   `daemon.lock` behind holding the dead PID; the fresh daemon refuses to reclaim it and exits
   instead of starting, which fails the health gate and triggers an automatic rollback. Remedy until
@@ -194,8 +198,8 @@ evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-l
   jobs age out at 90 days (`POISON_JOB_RETENTION_DAYS`, previously never purged; completed jobs
   still age out at 30 days).
 - **Issues #396/#398 (boot-to-listen race), closed 2026-08-02 as already-shipped.** Verified the
-  fix landed 2026-07-17: PR #420 (early port-bind) + PR #397 (`StillBootingError`). Evidence is in
-  the issues' own closing comments — no new code needed.
+  fix landed earlier: PR #420 (early port-bind, 2026-07-17) + PR #397 (`StillBootingError`,
+  2026-07-19). Evidence is in the issues' own closing comments — no new code needed.
 - **Image-name process kills (2026-07-10):** `taskkill /F /IM node.exe` killed a 40-min LongMemEval
   run + the prod daemon in one shot — this box runs prod + eval shards + Ollama + sibling agents.
   Standing rule now in `AGENTS.md`'s Never-do.
