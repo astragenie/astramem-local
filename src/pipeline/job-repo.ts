@@ -108,6 +108,25 @@ export const POISON_JOB_RETENTION_DAYS = 90;
 export class JobRepo {
   constructor(private readonly db: DB) {}
 
+  /**
+   * FEAT-482 (worker-starvation wave, item 2/3): true if at least one
+   * PENDING job has a strictly lower (= more urgent) stored `priority`
+   * than `belowPriority`. Uses the STORED tier, not the aging-adjusted
+   * effective one `claimPending()` sorts by — existence of higher-priority
+   * pending work is what matters here, not claim order, and aging only
+   * ever moves a job's effective priority further from its stored value
+   * (never past a genuinely higher tier's own base), so this can't
+   * under-report. Consumed by `consolidateHandler` as the production
+   * implementation of `ConsolidateOpts.preemptIfHigherPriorityPending` —
+   * see that field's doc comment for the full mechanism.
+   */
+  hasPendingAbovePriority(belowPriority: number): boolean {
+    const row = this.db.prepare(
+      "SELECT 1 FROM jobs WHERE state = 'pending' AND priority < ? LIMIT 1",
+    ).get(belowPriority);
+    return row !== undefined;
+  }
+
   /** Insert a new job in pending state, return its generated id. */
   enqueue(kind: JobKind, payload: unknown): string {
     const id = randomUUID();
