@@ -1063,17 +1063,84 @@ function annotateCommandGuardBlocked(
 /** issue #387 defaults — see `ConsolidateOpts.setupBudgetMs`/`setupYieldEveryNAtoms`. */
 const DEFAULT_SETUP_BUDGET_MS = 60_000;
 const DEFAULT_SETUP_YIELD_EVERY_N_ATOMS = 500;
+/**
+ * Cap on rowids per `memories_vec` existence-check IN-clause (see
+ * `filterEmbeddedRowids` below) — independent of `pageSize`/
+ * `setupYieldEveryNAtoms`, which is a cooperative-yield cadence knob, not a
+ * bound on statement parameter count. Keeps each existence-check statement
+ * small and fast regardless of how a caller tunes the yield cadence.
+ */
+const VEC_EXISTENCE_CHECK_BATCH_SIZE = 500;
 
 /**
- * issue #387: page through `memories`/`memories_vec` instead of one giant
- * `.all()` call, yielding to the event loop (same `setImmediate` pattern
- * `yieldEveryNPairs` uses) every `pageSize` rows and checking the wall-clock
- * budget between pages. `ORDER BY ... m.rowid` adds a stable tiebreaker the
- * pre-#387 single-query version didn't need (LIMIT/OFFSET pagination is
- * only correct over a deterministically-ordered result set) — `m.rowid` is
- * unique and orthogonal to (repo, type, created_at), so it only disambiguates
- * ties the old query left unspecified anyway; it does not change which rows
- * are returned, only the tie order among rows that already sorted equal.
+ * 2026-08-02 live-incident fix: `filterEmbeddedRowids` used to be folded
+ * into `loadAtomsSetupBounded`'s own page query as `JOIN memories_vec v ON
+ * v.rowid = m.rowid` — an existence filter only (no `v.*` column was ever
+ * selected). Measured on a 90k-row production-shaped corpus, that join
+ * plan is `SCAN m USING INDEX idx_memories_consolidate_scan` +
+ * `SCAN v VIRTUAL TABLE INDEX 1:2!___` **per outer row** — the sqlite-vec
+ * vec0 virtual table does not get an efficient pushed-down rowid-equality
+ * probe in this join shape. Page 1 (offset 0) measured 66ms; page ~50
+ * (offset 25,000) measured 3,448ms; a deep page (offset 60,000) measured
+ * 13,297ms — one synchronous `stmt.all()` call per page, so the daemon's
+ * event loop was blocked for the full duration. This is what wedged the
+ * daemon at boot.
+ *
+ * Fix: page `memories` ALONE (migration 062's covering index then drives a
+ * pure index walk — measured 53–92ms per page regardless of offset, no
+ * join at all) and check embedding-existence per page via a batched
+ * `SELECT rowid FROM memories_vec WHERE rowid IN (...)` — a BATCH of the
+ * same rowid-equality shape `SqliteVecStore.upsert` already uses in
+ * production (`src/vector/sqlite-vec.ts`), not a loop of 500 individual
+ * calls of it. That distinction matters: an independent measurement (a
+ * second 90k-row disk-resident corpus, built separately from the one
+ * above) found a per-rowid point-probe LOOP over 500 rowids — even
+ * selecting nothing but `rowid`, no `embedding` column — took 1.7–2.8s per
+ * page; the SAME 500 rowids in ONE batched `IN (...)` statement took
+ * 27–38ms, ~50–100x faster. Per-statement execution overhead against the
+ * vec0 virtual table, not column selection, dominates — batching amortizes
+ * it, a discrete loop pays it 500 times. (A smaller, fully page-cached
+ * synthetic DB used during initial development understated this gap at
+ * ~153ms for the same loop shape — too small and too cache-friendly to
+ * surface the real per-statement cost; do not trust a tiny in-memory
+ * benchmark for this class of virtual-table-cost question again.) Full
+ * 90k-row corpus walk through the REAL `runConsolidation` code path (not a
+ * hand-copied query), on that same disk-resident DB: 180 pages, max single
+ * page 41ms, 5.06s total. Never re-add a per-rowid loop here.
+ */
+function filterEmbeddedRowids(db: DB, rowids: readonly number[]): Set<number> {
+  const found = new Set<number>();
+  for (let i = 0; i < rowids.length; i += VEC_EXISTENCE_CHECK_BATCH_SIZE) {
+    const batch = rowids.slice(i, i + VEC_EXISTENCE_CHECK_BATCH_SIZE);
+    if (batch.length === 0) continue;
+    const placeholders = batch.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT rowid FROM memories_vec WHERE rowid IN (${placeholders})`)
+      .all(...batch.map(r => BigInt(r))) as { rowid: bigint }[];
+    for (const row of rows) found.add(Number(row.rowid));
+  }
+  return found;
+}
+
+/**
+ * issue #387: page through `memories` instead of one giant `.all()` call,
+ * yielding to the event loop (same `setImmediate` pattern `yieldEveryNPairs`
+ * uses) every `pageSize` rows and checking the wall-clock budget between
+ * pages. `ORDER BY ... rowid` adds a stable tiebreaker the pre-#387
+ * single-query version didn't need (LIMIT/OFFSET pagination is only correct
+ * over a deterministically-ordered result set) — `rowid` is unique and
+ * orthogonal to (repo, type, created_at), so it only disambiguates ties the
+ * old query left unspecified anyway; it does not change which rows are
+ * returned, only the tie order among rows that already sorted equal.
+ *
+ * Valid atoms only, embedded only (no vector row → nothing to compare) —
+ * see `filterEmbeddedRowids` above for why the embedding-existence check is
+ * a separate batched query rather than a SQL join. Filtering happens AFTER
+ * the page is fetched, so a page can come back with fewer than `pageSize`
+ * atoms even when more pages remain (some rows in that page lacked an
+ * embedding) — "last page" is decided from the RAW (unfiltered) page size,
+ * never the post-filter atom count, so a short filtered page is never
+ * mistaken for the end of the corpus. Only a raw page shorter than
+ * `pageSize` means the underlying `memories` scan is actually exhausted.
  *
  * On budget exhaustion, stops fetching further pages and returns what was
  * loaded so far (`budgetExceeded: true`) rather than either hanging or
@@ -1094,19 +1161,20 @@ async function loadAtomsSetupBounded(
   shouldPreempt?: () => boolean,
 ): Promise<{ atoms: AtomRow[]; budgetExceeded: boolean; preempted: boolean }> {
   const stmt = db.prepare(`
-    SELECT m.id, m.rowid, m.repo, m.type, m.text, m.importance, m.created_at, m.derived_from
-    FROM memories m
-    JOIN memories_vec v ON v.rowid = m.rowid
-    WHERE m.valid_to IS NULL
-    ORDER BY m.repo, m.type, m.created_at, m.rowid
+    SELECT id, rowid, repo, type, text, importance, created_at, derived_from
+    FROM memories
+    WHERE valid_to IS NULL
+    ORDER BY repo, type, created_at, rowid
     LIMIT ? OFFSET ?
   `);
   const atoms: AtomRow[] = [];
   let offset = 0;
   for (;;) {
     const page = stmt.all(pageSize, offset) as AtomRow[];
-    atoms.push(...page);
-    if (page.length < pageSize) return { atoms, budgetExceeded: false, preempted: false }; // last page
+    const embedded = filterEmbeddedRowids(db, page.map(a => a.rowid));
+    atoms.push(...page.filter(a => embedded.has(a.rowid)));
+    const isLastPage = page.length < pageSize; // decided from the RAW page, before filtering
+    if (isLastPage) return { atoms, budgetExceeded: false, preempted: false };
     offset += pageSize;
     if (Date.now() >= deadline) return { atoms, budgetExceeded: true, preempted: false };
     if (shouldPreempt?.()) return { atoms, budgetExceeded: true, preempted: true };
