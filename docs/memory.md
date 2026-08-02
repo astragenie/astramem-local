@@ -9,13 +9,20 @@ Volatile, dated facts agents keep rediscovering. **Supersede entries by editing 
 into it (dated corrections, incident narratives, current eval numbers) now lives, extracted during
 the 2026-07-21 agentic-setup rebuild.
 
-## Version / build status (verified 2026-07-21)
+## Version / build status (verified 2026-08-02)
 
-- **Current release: v0.20.0** (2026-07-20, `CHANGELOG.md` top entry) — 32 migrations, MCP tool
-  count CI-enforced against `contracts/manifests/mcp-tools.v1.json`. `README.md` previously stated
-  "v0.15.1" in two places (top badge line + Status section) — six releases stale; fixed this run.
+- **Current release: v0.21.0** (2026-07-23, `CHANGELOG.md` top entry) — 61 migrations (was 32 at
+  the 2026-07-21 check). npm `latest` dist-tag is 0.21.0; local prod daemon on this box is running
+  main tip (`358ad6d8`) at package version 0.21.0, `schema_version` 61. v0.22.0 cut is planned for
+  2026-08-03, pending the second event-loop-stall blocker verdict (see below) — do not cut it early
+  on the assumption the stall class is fully closed.
   Re-verify against `CHANGELOG.md`'s top entry before quoting a version anywhere, it will drift
   again on the next release.
+- **README/providers.md truth pass** (PR #461, merged 2026-08-02): corrected the remaining
+  `qwen3:8b`-as-default references to `qwen2.5:7b` (~4.7GB), fixed the provider matrix to show
+  `codex-subscription` as the default LLM + ONNX as the default embed provider, and documented
+  `MEMORY_API_URL` as the **daemon's** env var (distinct from `MEMORY_MCP_URL`, which is
+  plugin-side).
 - **Local clone dir on this box is `C:\work\mega\astramem-local`** — folder renamed from the
   GitHub repo name `astramemory-local` (same rename pattern as `hero-crew`→`dev-team` elsewhere in
   the ecosystem). `CLAUDE.md`'s install snippet previously hardcoded `cd
@@ -36,6 +43,21 @@ automatically. Do NOT run a manual `npm publish` afterward"*) but the runbook ha
 the wrong instruction. Fixed in the runbook this run. **`kb/deployments/astramem-local-npm-publish.md`
 mirrors the same stale instruction** — kb is out of this repo's edit scope, reported to the kb
 owner instead of fixed here.
+
+## Daemon stability — event-loop stalls & watchdog restarts (verified 2026-08-02)
+
+- **Event-loop stall root cause found, partially fixed.** `MemoryEventRepo.isErasedHash()` was an
+  unindexed full-table scan of the ever-growing `memory_events` log, called per-atom from distill
+  stage `08-embed-index` — measured 6-21s synchronous stalls per distill batch, the driver behind
+  weeks of watchdog hang-kills. Fixed by a partial index in migration 061 (PR #465, merged,
+  `358ad6d8`). **CAVEAT — do not record this stall class as closed:** stalls >5s are still observed
+  post-fix (`el_max` hit 9s within minutes of boot on 0.21.0+`056f2aeb`), so a second blocker
+  exists and is under active investigation.
+- **"Crash loop" decoded — not spontaneous crashes.** Every recorded daemon exit this past week (10
+  restarts through 2026-08-02) was a watchdog SIGTERM after `/health` missed 2 consecutive 180s
+  probes (hang-kill-restart), not an unhandled exception. **Exception, still open:** one unexplained
+  silent `exit=1` at 2026-08-02T15:49Z with no stack trace and no watchdog record — not yet
+  root-caused.
 
 ## LoCoMo / eval — current numbers (verified 2026-07-19, re-verify against the LEDGER — they drift)
 
@@ -79,6 +101,30 @@ evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-l
     push; "dormant-canary" caveat applies to every RESOLVED item below.
 - `ContentPrompts`-equivalent product-copy decisions, EF-style re-baselines, etc.: none currently
   open for this repo (astramem-local has no equivalent copy-decision backlog as of this writing).
+- **Sync shipping has been dead since ~2026-07-29** (confirmed 2026-08-02): the sync token to
+  `api.astramemory.com` expired, producing HTTP 401 `invalid_expired_credentials` ×160 and backing
+  up 2131 consolidation proposals. Awaiting the operator to run a claim-code re-pair — not a code
+  bug, don't debug the sync client for this.
+
+## Known bugs — fixes in flight (verified 2026-08-02, re-verify before assuming these are still open)
+
+- **`auto-merge.yml` is silently broken.** The `enablePullRequestAutoMerge` GraphQL call fails to
+  arm on every PR — the failure is caught as a warning so the workflow job still PASSes,
+  `autoMergeRequest` stays `null`, and nothing actually auto-merges. **Root cause (CI run
+  `30754930112`, PR #465's auto-merge job): `"##[warning]enable auto-merge failed: Bad
+  credentials"`** — the `AUTOMERGE_PAT` secret is expired/revoked. (Not a branch-protection/ruleset
+  issue — `allow_auto_merge=true` on the repo, ruleset unrelated.) Fix: operator rotates
+  `AUTOMERGE_PAT`; PR #467 (in flight) makes the failure loud instead of a silently-swallowed
+  warning. 5 PRs merged today (2026-08-02) — #461, #462, #463, #464, #465 — were all hand-merged
+  because of this.
+- **`reinstall` stale-lock false-fail, reproduced 2×.** `reinstall`'s stop step leaves
+  `daemon.lock` behind holding the dead PID; the fresh daemon refuses to reclaim it and exits
+  instead of starting, which fails the health gate and triggers an automatic rollback. Remedy until
+  fixed: verify the PID is actually dead, delete the stale lock file, rerun `reinstall`. Fix in
+  flight.
+- **`cross-repo-roundtrip` CI flake root-caused.** 3 CI failures on 2026-08-02 traced to the GitHub
+  releases CDN returning 503 on the SQLCipher prebuilt binary fetch — `curl --retry` alone does not
+  cover 503 without `--retry-all-errors`. Fix in flight.
 
 ## Durable architecture facts (verified on the date shown — re-verify before trusting)
 
@@ -112,6 +158,11 @@ evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-l
   provider spread `{ options: {...} }` twice — the second spread replaced the first, silently
   dropping `temperature` on every real extraction/compaction/entity call. Both are fixed; the
   standing rules this created live in `AGENTS.md`'s Never-do.
+- **Thinking-mode guard superseded (verified 2026-08-02).** `src/providers/llm/ollama.ts` no
+  longer name-matches a `KNOWN_THINKING_MODEL_PREFIXES` list to decide thinking mode — verified
+  against live source and git history, that prefix-list approach is gone. It now sets
+  `think = config.think ?? false` unconditionally for every model. Supersede any entry describing
+  the prefix-list as the current mechanism.
 - **Temporal reasoning measurement** (corrected 2026-07-14): `AtomSchema` DOES have atom-level
   `valid_at`/`invalid_at` (issue #205 AC-1, PR #216); `InsertInput` DOES have `valid_to`; the embed
   stage maps them behind a validity guard. Measured on 2499 real atoms: `valid_to NOT NULL: 0`
@@ -135,6 +186,20 @@ evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-l
   `0b6b3f8`) because every shipped LLM provider hardcodes `usage.usd: 0` — a budget check can never
   trip. Live guards: `maxPerRun: 200` + `maxWallClockMs: 300_000` (`config.ts:623-635`). If these
   ever need tightening, that's the lever — never `mode`.
+  **Residual item 2/3 shipped 2026-08-02** (PR #463, `8c55d8fc`): a running consolidate job now
+  self-preempts at its existing yield checkpoints when a higher-priority job pends
+  (`JobRepo.hasPendingAbovePriority`), and the resume cursor persists on ANY early abort (not just
+  ceiling hits) — so the no-ceiling default config now makes monotonic progress instead of
+  restarting from scratch. New telemetry: `summary.resumeCursorUpdated`.
+- **Distill poison-rate metric was lying (closed 2026-08-02, PR #462, `a1368240`).** The alarmed
+  47.6% poison rate was lifetime-unwindowed residue of a single codex quota-exhaustion burst
+  (2026-07-31: HTTP 429 `usage_limit_reached` ×322, 55 jobs poisoned) — current extraction is
+  healthy. Fix: the rate is now a rolling 7-day window (migration 060 partial index), and poisoned
+  jobs age out at 90 days (`POISON_JOB_RETENTION_DAYS`, previously never purged; completed jobs
+  still age out at 30 days).
+- **Issues #396/#398 (boot-to-listen race), closed 2026-08-02 as already-shipped.** Verified the
+  fix landed earlier: PR #420 (early port-bind, 2026-07-17) + PR #397 (`StillBootingError`,
+  2026-07-19). Evidence is in the issues' own closing comments — no new code needed.
 - **Image-name process kills (2026-07-10):** `taskkill /F /IM node.exe` killed a 40-min LongMemEval
   run + the prod daemon in one shot — this box runs prod + eval shards + Ollama + sibling agents.
   Standing rule now in `AGENTS.md`'s Never-do.
@@ -186,8 +251,8 @@ evidence (see the hypothesis ledger: `docs/research/20260714-locomo-hypothesis-l
 
 ## Known debt (flagged, not blocking)
 
-- **`docs/todo/v0.1.2.md`** — the sole file in `docs/todo/`, at a version 19+ releases behind
-  current (`0.20.0`). Likely fully superseded; owner should confirm and delete.
+- **`docs/todo/v0.1.2.md`** — the sole file in `docs/todo/`, at a version 20+ releases behind
+  current (`0.21.0`). Likely fully superseded; owner should confirm and delete.
 - **`docs/HANDOFF.md`** — a 2026-07-02 point-in-time snapshot (v0.6.0 state, 859 tests, SCHEMA_VERSION
   8). Not referenced by any current instruction file. Kept for archival value; superseded going
   forward by this file for anything still relevant.
