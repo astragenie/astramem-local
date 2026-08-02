@@ -40,6 +40,7 @@ import {
   bootHardCapMs,
   waitForHealthWithBootGrace,
   finish,
+  stopRunningDaemon,
   type StepResult,
 } from '../../src/cli/reinstall.js';
 import { shimPaths, writePointer, type ShimPointer } from '../../src/service/shim.js';
@@ -167,6 +168,69 @@ describe('restorePriorPointer (FEAT-438 SLICE-417 review HIGH fix)', () => {
 
     expect(detail).toContain('restore FAILED');
     expect(detail).toContain('fix manually');
+  });
+});
+
+describe('stopRunningDaemon (reinstall stale-lock false-fail fix)', () => {
+  // Root cause (repro'd 2/2 on this box): the win32 daemon task is
+  // registered with MultipleInstancesPolicy=IgnoreNew (task-xml.ts). Task
+  // Scheduler decides "is this task still running" by watching whether the
+  // process IT directly launched has exited — not by asking us — so
+  // stopLockHolder's direct PID-kill of the daemon can leave Task
+  // Scheduler's own bookkeeping lagging behind the real process-tree death.
+  // If reinstall's later adapter.start() (schtasks /run) races ahead of that
+  // detection, IgnoreNew silently no-ops it: no new daemon is ever spawned,
+  // daemon.lock is never rewritten, and verify-health times out pointing at
+  // the pre-existing dead PID. The fix mirrors `service stop` (cli/service.ts):
+  // end the scheduler's task/unit FIRST, then PID-kill via stopLockHolder.
+  // These tests assert that ORDERING directly, with both collaborators
+  // injected — no real OS scheduler or process signal is ever touched.
+
+  it('calls adapter.stop() BEFORE stopLockHolder (ordering is load-bearing, not incidental)', async () => {
+    const calls: string[] = [];
+    const stopResult = await stopRunningDaemon('C:\\fake-datadir', 7777, {
+      adapterStopImpl: async () => { calls.push('adapter.stop'); },
+      stopLockHolderImpl: async () => { calls.push('stopLockHolder'); return { ok: true, detail: 'stopped pid 123' }; },
+    });
+    expect(calls).toEqual(['adapter.stop', 'stopLockHolder']);
+    expect(stopResult).toEqual({ step: 'stop-daemon', ok: true, detail: 'stopped pid 123' });
+  });
+
+  it('still calls stopLockHolder when adapter.stop() throws (best-effort — e.g. no task registered yet, or "not currently running")', async () => {
+    const calls: string[] = [];
+    const stopResult = await stopRunningDaemon('C:\\fake-datadir', 7777, {
+      adapterStopImpl: async () => { throw new Error('ERROR: The task is not currently running.'); },
+      stopLockHolderImpl: async () => { calls.push('stopLockHolder'); return { ok: true, detail: 'no daemon.lock — nothing to stop' }; },
+    });
+    expect(calls).toEqual(['stopLockHolder']);
+    expect(stopResult.ok).toBe(true);
+  });
+
+  it('propagates a stopLockHolder failure (e.g. identity-mismatch refusal) as ok:false, unaffected by adapter.stop() succeeding', async () => {
+    const stopResult = await stopRunningDaemon('C:\\fake-datadir', 7777, {
+      adapterStopImpl: async () => { /* scheduler task ended cleanly */ },
+      stopLockHolderImpl: async () => ({ ok: false, detail: 'refusing to signal pid 999: process start time mismatch', reason: 'identity-mismatch' }),
+    });
+    expect(stopResult).toEqual({
+      step: 'stop-daemon',
+      ok: false,
+      detail: 'refusing to signal pid 999: process start time mismatch',
+    });
+  });
+
+  it('defaults to the real getServiceAdapter()/stopLockHolder when no overrides are given (smoke — does not require a real scheduler)', async () => {
+    // No adapter/task exists for this fake dataDir/port; stopLockHolder finds
+    // no daemon.lock at all and reports success without ever touching the OS
+    // scheduler in a way that could throw past the best-effort catch.
+    const dir = mkdtempSync(join(tmpdir(), 'astra-reinstall-stop-'));
+    try {
+      const stopResult = await stopRunningDaemon(dir, 7777);
+      expect(stopResult.step).toBe('stop-daemon');
+      expect(stopResult.ok).toBe(true);
+      expect(stopResult.detail).toContain('nothing to stop');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
