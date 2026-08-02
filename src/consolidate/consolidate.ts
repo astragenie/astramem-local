@@ -284,6 +284,17 @@ export interface ConsolidateSummary {
    */
   preemptedForHigherPriority: boolean;
   /**
+   * FEAT-482 review fix (PR #463): true when this run persisted a resume
+   * cursor because it stopped early (ceiling hit, setup budget exceeded,
+   * or preemption) — regardless of whether `maxCandidatePairsPerRun` was
+   * configured. Lets a caller/test distinguish "stopped early, but the
+   * next pass resumes further into the corpus" from "stopped early at the
+   * identical spot every time" (previously unobservable — see PR #463
+   * review finding 1). `false` on a run that either completed in full or
+   * never stopped early at all.
+   */
+  resumeCursorUpdated: boolean;
+  /**
    * FEAT-482: true when `contradictionDetection.maxWallClockMs` elapsed
    * before the scan finished — a SEPARATE guard from `contradictionCapReached`
    * because a slow/rate-limited judge provider can blow the wall-clock
@@ -1119,6 +1130,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
       contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
       judgeCallsNearThreshold: 0, setupBudgetExceeded: false, preemptedForHigherPriority: false,
+      resumeCursorUpdated: false,
       dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
       dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
       commandGuardBlocked: [], dupJudgeCommandGuardBlocked: 0,
@@ -1159,6 +1171,7 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     contradictionsPreviewed: [], contradictionsProposed: [], contradictionCapReached: false,
     contradictionWallClockCapReached: false, judgeCallsExecuted: 0, judgeSweepElapsedMs: 0,
     judgeCallsNearThreshold: 0, setupBudgetExceeded: false, preemptedForHigherPriority: false,
+    resumeCursorUpdated: false,
     dupJudgeVerdictsPreviewed: [], dupJudgeResolved: [], dupJudgeCallsExecuted: 0,
     dupJudgeCapReached: false, dupJudgeWallClockCapReached: false,
     commandGuardBlocked: [], dupJudgeCommandGuardBlocked: 0,
@@ -1423,9 +1436,28 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     allGroups.push({ key, atoms: groupAtoms });
   }
 
+  // FEAT-482 review fix (PR #463): read any persisted resume cursor
+  // UNCONDITIONALLY, not just when a ceiling is configured. A cursor is
+  // only ever non-null after some EARLIER pass persisted one (see the
+  // write side below, also now decoupled from `ceilingActive`) — so for
+  // the common case where no early-abort pass has ever happened, this
+  // stays `null` and changes nothing: `cursorGroupKey === null` below
+  // preserves the exact byte-identical-to-pre-P2.1 natural (repo, type,
+  // created_at) scan order. It only starts mattering once SOME pass
+  // (ceiling hit, setup budget exceeded, or preemption) has left a cursor
+  // behind — which is precisely the case this fix closes.
+  const cursor = getConsolidationCursor(db);
+  const cursorGroupKey = cursor?.groupKey ?? null;
+
   let groupOrder: GroupEntry[] = allGroups;
   const ceilingActive = maxCandidatePairsPerRun !== null;
-  if (ceilingActive) {
+  // Sort/rotate whenever EITHER a ceiling is configured (original P2.1
+  // trigger, unchanged) OR a cursor is already in play from a prior
+  // early-abort pass (FEAT-482 review fix) — without a cursor to rotate
+  // to, sorting alone would silently reorder scans for no benefit, so this
+  // deliberately does NOT sort/rotate on preemption/budget alone; it only
+  // activates once a cursor actually exists to resume from.
+  if (ceilingActive || cursorGroupKey !== null) {
     // `atoms` is already created_at ASC per group (SQL ORDER BY), so a
     // group's own first element is its oldest atom — sort groups by that.
     const sorted = [...allGroups].sort((x, y) => {
@@ -1433,8 +1465,6 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
       if (dx !== dy) return dx - dy;
       return x.key < y.key ? -1 : x.key > y.key ? 1 : 0;
     });
-    const cursor = getConsolidationCursor(db);
-    const cursorGroupKey = cursor?.groupKey ?? null;
     const startIdx = cursorGroupKey ? sorted.findIndex(g => g.key === cursorGroupKey) : -1;
     // Rotate so scanning resumes at the persisted cursor; a missing/stale
     // cursor (group merged away since, or never persisted) falls back to
@@ -1576,20 +1606,51 @@ export async function runConsolidation(db: DB, opts: ConsolidateOpts = {}): Prom
     }
   }
 
-  if (ceilingActive) {
-    if (ceilingHitAtGroupIndex >= 0) {
-      // Persist where to resume — the NEXT group in this run's rotated
-      // order, or `null` (start from the natural oldest-first order) if we
-      // stopped on the very last group.
-      const nextKey = groupOrder[ceilingHitAtGroupIndex + 1]?.key ?? null;
-      setConsolidationCursor(db, { groupKey: nextKey });
-    } else {
-      // Finished every group in groupOrder within budget this run — a full
-      // sweep cycle completed; reset so the next run starts from the
-      // natural oldest-first order again instead of drifting off a cursor
-      // group that may no longer exist.
-      setConsolidationCursor(db, { groupKey: null });
-    }
+  // FEAT-482 review fix (PR #463): persist (or clear) the resume cursor
+  // no longer gated on `if (ceilingActive)` alone. Every early-abort path
+  // (ceiling hit, setupAbortedMidScan, pairScanPreempted) already sets
+  // `ceilingHitAtGroupIndex` regardless of `ceilingActive`; gating only the
+  // WRITE behind `ceilingActive` meant that under the shipped default
+  // config (`maxCandidatePairsPerRun: null`), a preempted run — which can
+  // fire at the very first yield checkpoint, far more easily than the old
+  // 60s `setupBudgetExceeded` floor — would silently re-scan the exact same
+  // deterministic (repo, type, created_at) prefix every single pass,
+  // permanently starving whichever groups sort last under sustained
+  // higher-priority (distill) inflow. The early-abort branch below writes
+  // UNCONDITIONALLY (no `ceilingActive`/`cursorGroupKey` gate) specifically
+  // to bootstrap the read side above: the FIRST early-abort pass under the
+  // default config has no pre-existing cursor to read, so the write must
+  // not wait for `ceilingActive` to ever fire. The full-completion branch
+  // stays conditional — see its own comment.
+  if (ceilingHitAtGroupIndex >= 0) {
+    // Persist where to resume — the NEXT group in this run's rotated
+    // order, or `null` (start from the natural oldest-first order) if we
+    // stopped on the very last group.
+    const nextKey = groupOrder[ceilingHitAtGroupIndex + 1]?.key ?? null;
+    setConsolidationCursor(db, { groupKey: nextKey });
+    summary.resumeCursorUpdated = true;
+    // Observability (PR #463 review, optional-if-cheap ask): makes forward
+    // progress across passes visible in logs — without this, "preempted,
+    // resumed further along" and "preempted at the identical spot again"
+    // were indistinguishable.
+    log(
+      `[consolidate] resume cursor persisted: next pass starts at group ` +
+      `${nextKey ?? '(wrapped to the top of the rotation — every group was reached)'} ` +
+      `— not restarting from the same prefix (FEAT-482).`,
+    );
+  } else if (ceilingActive || cursorGroupKey !== null) {
+    // Finished every group in groupOrder within budget this run — a full
+    // sweep cycle completed. Reset so the next run starts from the natural
+    // oldest-first order again instead of drifting off a cursor group that
+    // may no longer exist. Gated on `ceilingActive || cursorGroupKey !==
+    // null` (mirrors the read-side condition above) rather than writing
+    // unconditionally: this run's ordering was only EVER cursor-influenced
+    // when one of those held, so there is nothing to clear otherwise — and
+    // it keeps the common untouched case (no ceiling, no early-abort ever)
+    // from creating a `consolidation_cursor` row at all, preserving
+    // `getConsolidationCursor()`'s strict `null` ("never persisted")
+    // return for that case.
+    setConsolidationCursor(db, { groupKey: null });
   }
 
   // P2.1: run-summary telemetry (migration 050,

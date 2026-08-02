@@ -13,6 +13,13 @@
  * — same "degraded coverage this pass, remainder picked up next scheduled
  * pass" contract issue #387 already established for `setupBudgetMs` —
  * instead of running to completion.
+ *
+ * PR #463 review fix: the original version of this PR gated resume-cursor
+ * persistence on `maxCandidatePairsPerRun` being configured. Under the
+ * shipped default (no ceiling), a preempted run would silently re-scan the
+ * exact same deterministic (repo, type, created_at) prefix every pass,
+ * permanently starving whichever groups sort last. The tests below also
+ * cover that fix directly.
  */
 import { describe, it, expect } from 'vitest';
 import { openDb, type DB } from '../../src/storage/db.js';
@@ -21,6 +28,22 @@ import { MemoryRepo } from '../../src/storage/memories.js';
 import { SqliteVecStore } from '../../src/vector/sqlite-vec.js';
 import { runConsolidation } from '../../src/consolidate/consolidate.js';
 import { JobRepo, JOB_PRIORITY } from '../../src/pipeline/job-repo.js';
+import { getConsolidationCursor } from '../../src/storage/consolidation-cursor.js';
+
+/**
+ * consolidate.ts builds each (repo, type) group's Map key by joining the
+ * two fields with a literal NUL character (U+0000), not a space. Building
+ * it via `String.fromCharCode(0)` here — rather than typing the character
+ * directly into this source file — is deliberate: a raw NUL byte embedded
+ * in a `.ts` file is invisible in most editors/diffs and is trivially
+ * miscopied as a plain space (which happened while drafting this test).
+ * Use `groupKey(repo, type)` wherever a test needs to assert against a
+ * persisted resume-cursor value.
+ */
+const GROUP_KEY_SEPARATOR = String.fromCharCode(0);
+function groupKey(repo: string, type = 'fact'): string {
+  return `${repo}${GROUP_KEY_SEPARATOR}${type}`;
+}
 
 /** Unit vector with all mass on one axis — orthogonal atoms never merge or
  *  propose, isolating the preemption/coverage assertions from any
@@ -73,6 +96,10 @@ describe('runConsolidation preemption — pair-scan phase', () => {
     expect(summary.setupBudgetExceeded).toBe(false); // distinct reason, not conflated
     expect(summary.groupsScanned).toBe(1); // group B never reached
     expect(checks).toBeGreaterThanOrEqual(2);
+    // PR #463 review fix: a resume cursor is now persisted even though no
+    // maxCandidatePairsPerRun ceiling is configured — group B is next.
+    expect(summary.resumeCursorUpdated).toBe(true);
+    expect(getConsolidationCursor(db)?.groupKey).toBe(groupKey('r2'));
   });
 
   it('never preempts when the callback always returns false — byte-identical to omitting it', async () => {
@@ -91,6 +118,62 @@ describe('runConsolidation preemption — pair-scan phase', () => {
 
     expect(summary.preemptedForHigherPriority).toBe(false);
     expect(summary.groupsScanned).toBe(2); // both groups scanned, nothing skipped
+    // A run that never stops early, with no ceiling and no pre-existing
+    // cursor, never touches the cursor table at all — stays fully untouched
+    // (a bare `null`, not even a `{groupKey: null}` row), matching the
+    // byte-identical-to-pre-P2.1 contract.
+    expect(summary.resumeCursorUpdated).toBe(false);
+    expect(getConsolidationCursor(db)).toBeNull();
+  });
+
+  it('PR #463 review fix: resume cursor rotates monotonically across repeated preempted runs with NO ceiling configured', async () => {
+    db = openDb(':memory:');
+    migrate(db);
+    // Group A ('r1'/'fact'): 6 orthogonal atoms -> C(6,2) = 15 pairs.
+    for (let k = 0; k < 6; k++) {
+      await seedEmbedded(db, `a ${k}`, `h-monotonic-a-${k}`, vecAt(k), { repo: 'r1' });
+    }
+    // Group B ('r2'/'fact'): same shape, sorts after A both by repo name
+    // and by created_at (seeded strictly later).
+    for (let k = 0; k < 6; k++) {
+      await seedEmbedded(db, `b ${k}`, `h-monotonic-b-${k}`, vecAt(20 + k), { repo: 'r2' });
+    }
+    expect(getConsolidationCursor(db)).toBeNull();
+
+    // Run 1: preempt at the very first checkpoint, no ceiling configured —
+    // exactly the shipped default (`maxCandidatePairsPerRun: null`) the
+    // review flagged. Before the fix, the cursor write was gated behind
+    // `ceilingActive` and this would be silently skipped.
+    const summary1 = await runConsolidation(db, {
+      yieldEveryNPairs: 3,
+      preemptIfHigherPriorityPending: () => true,
+    });
+    expect(summary1.preemptedForHigherPriority).toBe(true);
+    expect(summary1.resumeCursorUpdated).toBe(true);
+    expect(summary1.groupsScanned).toBe(1); // only group A reached
+
+    const cursorAfterRun1 = getConsolidationCursor(db);
+    expect(cursorAfterRun1?.groupKey).toBe(groupKey('r2')); // group B is next
+
+    // Run 2: preempt at the first checkpoint again. Before the fix, this
+    // would restart from the SAME natural-order prefix (group A) every
+    // time — the cursor would never be read without a ceiling — leaving
+    // group B (and anything sorting after it) permanently unreached. With
+    // the fix, run 2's group order is rotated to start at the persisted
+    // cursor (group B), so THIS run reaches B instead of re-scanning A.
+    const summary2 = await runConsolidation(db, {
+      yieldEveryNPairs: 3,
+      preemptIfHigherPriorityPending: () => true,
+    });
+    expect(summary2.preemptedForHigherPriority).toBe(true);
+    expect(summary2.resumeCursorUpdated).toBe(true);
+    expect(summary2.groupsScanned).toBe(1); // only group B reached this time
+
+    const cursorAfterRun2 = getConsolidationCursor(db);
+    // The rotation genuinely moved forward — NOT stuck re-persisting the
+    // same group key pass after pass (the exact bug this fix closes).
+    expect(cursorAfterRun2?.groupKey).not.toBe(cursorAfterRun1?.groupKey);
+    expect(cursorAfterRun2?.groupKey).toBe(groupKey('r1')); // wrapped back to the only other group
   });
 
   it('a real JobRepo-backed callback preempts once a distill job is actually enqueued mid-run', async () => {
@@ -151,5 +234,11 @@ describe('runConsolidation preemption — setup phase (atom load)', () => {
     // reuses that same short-circuit, so no group gets scanned either.
     expect(summary.groupsScanned).toBe(0);
     expect(summary.setupBudgetExceeded).toBe(false); // distinct reason, not conflated
+    // No group was ever reached, so there's no meaningful group-level
+    // resume point to persist — resumeCursorUpdated correctly stays false
+    // (distinct from the pair-scan-phase preemption case, which always has
+    // at least one fully-scanned or partially-scanned group to resume from).
+    expect(summary.resumeCursorUpdated).toBe(false);
+    expect(getConsolidationCursor(db)).toBeNull();
   });
 });
