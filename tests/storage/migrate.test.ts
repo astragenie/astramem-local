@@ -4,6 +4,7 @@ import { openDb } from '../../src/storage/db.js';
 import { migrate, getVecSchemaDim, SchemaNewerThanDaemonError } from '../../src/storage/migrate.js';
 import { embedProbe } from '../../src/doctor/probes/embed-probe.js';
 import { SCHEMA_VERSION } from '../../src/server/lib/wire-meta.js';
+import { makeFakeVec } from '../../src/search/search.js';
 import type { EmbedProvider, EmbedHealth } from '../../src/contracts/embed.js';
 
 describe('migrate', () => {
@@ -1025,6 +1026,68 @@ describe('migration 061-erase-hash-index', () => {
     migrate(db);
     expect(() => migrate(db)).not.toThrow();
     const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 61').get() as { n: number };
+    expect(versions.n).toBe(1);
+  });
+});
+
+describe('migration 062-consolidate-scan-index', () => {
+  it('creates a covering index scoped to valid_to IS NULL', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    const idx = db
+      .prepare("SELECT name, sql FROM sqlite_master WHERE type = 'index' AND tbl_name = 'memories'")
+      .all() as { name: string; sql: string }[];
+    const names = idx.map(i => i.name);
+    expect(names).toContain('idx_memories_consolidate_scan');
+    const scanIdx = idx.find(i => i.name === 'idx_memories_consolidate_scan')!;
+    expect(scanIdx.sql).toContain('repo');
+    expect(scanIdx.sql).toContain('type');
+    expect(scanIdx.sql).toContain('created_at');
+    expect(scanIdx.sql).toContain('WHERE valid_to IS NULL');
+  });
+
+  it('the index actually serves loadAtomsSetupBounded\'s page query — EXPLAIN QUERY PLAN ' +
+     'shows the index name and drops "USE TEMP B-TREE FOR ORDER BY"', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+
+    // Minimal fixture proving the query (not just the plan) still works,
+    // including the memories_vec JOIN the real query performs.
+    const insert = (id: string, repo: string, type: string, createdAt: number) => {
+      db.prepare(
+        `INSERT INTO memories (id, type, text, normalized_text, repo, importance, confidence, hash, valid_to, archived, created_at, updated_at)
+         VALUES (?, ?, 'x', 'x', ?, 0.5, 0.5, ?, NULL, 0, ?, ?)`
+      ).run(id, type, repo, id, createdAt, createdAt);
+      const rowid = (db.prepare('SELECT rowid FROM memories WHERE id = ?').get(id) as { rowid: number }).rowid;
+      db.prepare('INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)')
+        .run(BigInt(rowid), Buffer.from(makeFakeVec(id).buffer));
+    };
+    insert('a1', 'repo-a', 'fact', 100);
+    insert('a2', 'repo-a', 'lesson', 50);
+    insert('a3', 'repo-b', 'fact', 10);
+
+    // Exact query text from loadAtomsSetupBounded (src/consolidate/consolidate.ts:1096-1103).
+    const query = `
+      SELECT m.id, m.rowid, m.repo, m.type, m.text, m.importance, m.created_at, m.derived_from
+      FROM memories m
+      JOIN memories_vec v ON v.rowid = m.rowid
+      WHERE m.valid_to IS NULL
+      ORDER BY m.repo, m.type, m.created_at, m.rowid
+      LIMIT ? OFFSET ?
+    `;
+    const rows = db.prepare(query).all(10, 0) as { id: string }[];
+    expect(rows.map(r => r.id)).toEqual(['a1', 'a2', 'a3']); // repo-a/fact, repo-a/lesson, repo-b/fact
+
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(10, 0) as { detail: string }[];
+    expect(plan.some(p => p.detail.includes('idx_memories_consolidate_scan'))).toBe(true);
+    expect(plan.some(p => /USE TEMP B-TREE FOR ORDER BY/.test(p.detail))).toBe(false);
+  });
+
+  it('is idempotent — re-running after 062 already applied does not error', () => {
+    const db = openDb(':memory:');
+    migrate(db);
+    expect(() => migrate(db)).not.toThrow();
+    const versions = db.prepare('SELECT COUNT(*) AS n FROM schema_version WHERE version = 62').get() as { n: number };
     expect(versions.n).toBe(1);
   });
 });
