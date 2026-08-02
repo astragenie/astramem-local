@@ -1,0 +1,23 @@
+-- 061: partial index for MemoryEventRepo.isErasedHash() (src/storage/memory-events.ts).
+--
+-- isErasedHash() runs:
+--
+--   SELECT 1 FROM memory_events WHERE event_type = 'erase_request' AND content_hash = ? LIMIT 1
+--
+-- once per atom in distill stage 08-embed-index.ts, synchronous better-sqlite3
+-- on the daemon's main thread (no way to yield mid-query). With no index
+-- covering this predicate, SQLite falls back to "SCAN memory_events" --
+-- memory_events is the append-only event log, the largest table in the DB
+-- (954MB in production as of 2026-08-02) and only grows. Measured in
+-- production on v0.21.0: 6-21s event-loop stalls per distill batch, one scan
+-- per atom.
+--
+-- Mitigation, mirroring migration 020's partial-index precedent: a partial
+-- index restricted to event_type = 'erase_request' rows (a small minority of
+-- the table -- erasure is rare relative to every other event type logged)
+-- keyed on content_hash, so the planner can SEARCH instead of SCAN. Partial
+-- (not a full covering index on all event_types) because indexing every row
+-- would double-write on every single event append for a lookup only
+-- erase-replay filtering needs.
+CREATE INDEX idx_memory_events_erase_hash ON memory_events(content_hash)
+  WHERE event_type = 'erase_request';
