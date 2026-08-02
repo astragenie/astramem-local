@@ -23,8 +23,9 @@
 
 - Old JOIN query on a 90k-row synthetic corpus: page 1 = 66ms, offset 25,000 = 3,448ms, offset 60,000 = **13,297ms** (one sync call per page — this is what wedged the daemon).
 - New query alone: 53–92ms per page regardless of offset.
-- IN-batch existence filter (500 rowids): 21ms. Per-rowid point-probe loop: 153ms (~7x slower) — IN-batch shipped.
-- Validated against the REAL shipped code (not a hand-copied query): `runConsolidation` over a 90k-row DB, single-atom groups to isolate the setup phase from the unrelated O(n²) pairwise scan — 180 pages, max single page 42ms, 4.8s total, zero pages over 250ms or 1000ms.
+- IN-batch existence filter (500 rowids), initial small-DB measurement: 21ms. Per-rowid point-probe loop, same small DB: 153ms (~7x slower) — IN-batch shipped.
+- **Reconciled against an independent measurement** (a teammate's investigator agent, same 90k-row scale but a second, larger, disk-resident corpus built separately): the small DB above understated the real gap. On that corpus, a per-rowid point-probe loop — even `SELECT rowid` only, matching `SqliteVecStore.upsert`'s own shape — cost **1.7–2.8s per 500-row page**; the same 500 rowids via IN-batch cost **27–38ms**, a **~50–100x** margin, not ~7x. Root cause: per-statement execution overhead against the vec0 virtual table dominates, not column selection (a `SELECT embedding` per-row variant was also checked and was similarly slow, 2.0–3.5s/page). Doc comment in `consolidate.ts` updated with both measurements and an explicit warning against re-adding a per-row loop or trusting a small in-memory benchmark for this class of question.
+- Validated against the REAL shipped code (not a hand-copied query) TWICE, independently: (1) `runConsolidation` over a 90k-row DB built via the repo's own `migrate()`, single-atom groups to isolate the setup phase from the unrelated O(n²) pairwise scan — 180 pages, max single page 42ms, 4.8s total; (2) the same isolation technique replayed against the teammate-investigator's real disk-resident corpus — 180 pages, max single page 41ms, 5.06s total. Both zero pages over 250ms or 1000ms. Consistent across two independently-built datasets.
 
 ## Test evidence
 
