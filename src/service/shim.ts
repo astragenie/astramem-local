@@ -104,6 +104,90 @@ export function exitHistoryPaths(dataDirOverride?: string): ExitHistoryPaths {
 }
 
 /**
+ * Captured stdout+stderr of the win32 hang-watchdog probe
+ * (`astramem-local service watchdog-probe`, watchdog-probe.ts). Lives
+ * alongside the shim's own exit-history/crash-log artifacts under the same
+ * `<dataDir>/logs` directory (see exitHistoryPaths above) rather than a new
+ * top-level location.
+ *
+ * Root cause this closes (watchdog-probe-output-capture, 2026-08-02): the
+ * probe's scheduled task (schtasks.ts's `installWatchdogTimer`) runs hidden
+ * via a `WScript.Shell.Run(cmd, 0, True)` VBS wrapper (`buildHiddenVbs`
+ * below) with ZERO output capture — every diagnostic line the probe prints
+ * (cli/service.ts's `[watchdog-probe] healthy/UNHEALTHY — action: detail`,
+ * and stopLockHolder's own fail-closed reasons) was discarded outright. That
+ * is exactly what made a live incident undiagnosable: the probe detected a
+ * wedged daemon and its kill attempts failed for 45 minutes with no
+ * on-disk trace of why. `schtasks.ts`'s `buildWatchdogProbeWrapperCmd`
+ * redirects the probe's real invocation into this file via a generated
+ * batch wrapper — the plain-shell equivalent of what `launch.cjs` already
+ * does for the daemon itself via real fds (see LAUNCHER_SOURCE's stdio
+ * comment above).
+ *
+ * systemd/launchd never had this gap: a systemd `Type=oneshot` unit's
+ * stdout/stderr default to the journal, and launchd's watchdog agent plist
+ * already sets `StandardOutPath`/`StandardErrorPath` (launchd.ts's
+ * `buildWatchdogPlist`) — so this path is win32-only.
+ */
+export function watchdogProbeLogPath(dataDirOverride?: string): string {
+  return join(exitHistoryPaths(dataDirOverride).logsDir, 'watchdog-probe.log');
+}
+
+/** Size cap for watchdogProbeLogPath — mirrors the repo-standard rotation
+ *  size (`LOG_ROTATE_MAX_BYTES`, log/logger.ts; also what ingest.log
+ *  rotates at). The probe fires every `WATCHDOG_PROBE_INTERVAL_SEC` (3 min)
+ *  and prints one short line per run, so growth is slow — this is a
+ *  cheap truncate-if-over-size guard, not a real rotation scheme. Checked
+ *  and enforced by the generated wrapper itself (buildWatchdogProbeWrapperCmd)
+ *  since there is no live process to run a rotation sweep between scheduled
+ *  runs. */
+export const WATCHDOG_PROBE_LOG_MAX_BYTES = 10 * 1024 * 1024;
+
+/**
+ * Batch-file body for the win32 watchdog probe's hidden-launch wrapper
+ * (watchdog-probe-output-capture, 2026-08-02). `schtasks.ts`'s
+ * `installWatchdogTimer` writes this to a stable `.cmd` file and points the
+ * hidden-launch VBS (`buildHiddenVbs`) at THAT file instead of at the raw
+ * probe command line directly — the daemon's own VBS already proves
+ * `WScript.Shell.Run` can hidden-launch a `.cmd` file this way (see
+ * `buildWindowsCmd`/`writeShim` above), so this reuses the same indirection
+ * rather than trying to embed shell-redirection syntax straight into a VBS
+ * string literal.
+ *
+ * Truncates the log up front when it exceeds `maxBytes` (simpler and cheap
+ * enough at this write volume than an in-place rotate — see
+ * WATCHDOG_PROBE_LOG_MAX_BYTES's doc comment), (re)creates the log
+ * directory if it's missing, then appends one timestamped run to the log via
+ * plain `>>`/`2>&1` shell redirection — no in-process buffering, so an
+ * unbounded-uptime concern like LAUNCHER_SOURCE's stdout capture doesn't
+ * apply here (each probe run is a short-lived process that exits on its
+ * own).
+ *
+ * @param commandLine  The real `<execPath> service watchdog-probe` command,
+ *   already quoted the same way schtasks.ts's other wrapped commands are.
+ * @param logPath      Absolute path to the captured-output log file
+ *   (watchdogProbeLogPath()).
+ */
+export function buildWatchdogProbeWrapperCmd(
+  commandLine: string,
+  logPath: string,
+  maxBytes: number = WATCHDOG_PROBE_LOG_MAX_BYTES,
+): string {
+  const logDir = dirname(logPath);
+  return (
+    '@echo off\r\n' +
+    `if not exist "${logDir}" mkdir "${logDir}" >nul 2>&1\r\n` +
+    `if exist "${logPath}" (\r\n` +
+    `  for %%A in ("${logPath}") do if %%~zA GTR ${maxBytes} del /f /q "${logPath}" >nul 2>&1\r\n` +
+    ')\r\n' +
+    '(\r\n' +
+    '  echo [%date% %time%] watchdog-probe run\r\n' +
+    `  ${commandLine}\r\n` +
+    `) >> "${logPath}" 2>&1\r\n`
+  );
+}
+
+/**
  * Stable bin dir: <defaultDataDir()>/bin (same root as the data dir; on
  * win32 this is byte-identical to the pre-FEAT-443 `%LOCALAPPDATA%\Astramem\bin`
  * since `defaultDataDir()` already resolves to `%LOCALAPPDATA%\Astramem`).

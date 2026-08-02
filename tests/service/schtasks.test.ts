@@ -532,7 +532,60 @@ describe('SchtasksAdapter', () => {
       const content = vbsWrite![1] as string;
       expect(content).toContain('CreateObject("WScript.Shell").Run');
       expect(content).toMatch(/,\s*0,\s*True/);
+    });
+
+    // ---------------------------------------------------------------------
+    // watchdog-probe-output-capture (2026-08-02): the VBS used to wrap the
+    // RAW probe command directly, so WScript.Shell.Run discarded every line
+    // the probe printed — undiagnosable during a live 45-minute stuck-kill
+    // incident. It now wraps a generated batch file that redirects the
+    // probe's real output into watchdogProbeLogPath() instead.
+    // ---------------------------------------------------------------------
+
+    it('routes the hidden-launch VBS through a generated wrapper .cmd, not the raw probe command', async () => {
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      const vbsWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/astramemd-watchdog-hidden\.vbs$/i),
+      );
+      expect(vbsWrite).toBeTruthy();
+      const content = vbsWrite![1] as string;
+      // The raw probe command must NOT leak straight into the VBS anymore —
+      // it now only ever runs indirectly, via the wrapper .cmd.
+      expect(content).not.toContain('node C:\\app\\dist\\cli\\index.js service watchdog-probe');
+      expect(content).toMatch(/astramemd-watchdog-wrapper\.cmd/i);
+    });
+
+    it('writes a wrapper .cmd that redirects the real probe command into watchdogProbeLogPath(), with a size-cap truncate', async () => {
+      const { watchdogProbeLogPath, WATCHDOG_PROBE_LOG_MAX_BYTES } = await import('../../src/service/shim.js');
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      const wrapperWrite = fsMock.writeFileSync.mock.calls.find(
+        ([p]) => String(p).match(/astramemd-watchdog-wrapper\.cmd$/i),
+      );
+      expect(wrapperWrite).toBeTruthy();
+      const content = wrapperWrite![1] as string;
+      const logPath = watchdogProbeLogPath();
+      expect(content).toContain('@echo off');
+      // Real command still runs, now inside the redirected block.
       expect(content).toContain('node C:\\app\\dist\\cli\\index.js service watchdog-probe');
+      // Appends (>>) both stdout and stderr (2>&1) to the log file.
+      expect(content).toContain(`>> "${logPath}" 2>&1`);
+      // Size-cap truncate-if-over-size guard, using the shared 10MB constant.
+      expect(content).toContain(String(WATCHDOG_PROBE_LOG_MAX_BYTES));
+      expect(content).toMatch(/GTR\s+\d+.*del\s+\/f\s+\/q/i);
+      // Ensures the logs directory exists before ever redirecting into it.
+      expect(content).toMatch(/if not exist ".*" mkdir/i);
+    });
+
+    it('rewrites the wrapper .cmd on every call (idempotent, tracks the current execPath)', async () => {
+      await adapter.installWatchdogTimer('node C:\\app\\dist\\cli\\index.js', 180);
+      await adapter.installWatchdogTimer('node C:\\newapp\\dist\\cli\\index.js', 180);
+      const wrapperWrites = fsMock.writeFileSync.mock.calls.filter(
+        ([p]) => String(p).match(/astramemd-watchdog-wrapper\.cmd$/i),
+      );
+      expect(wrapperWrites.length).toBeGreaterThanOrEqual(2);
+      const last = wrapperWrites[wrapperWrites.length - 1]![1] as string;
+      expect(last).toContain('node C:\\newapp\\dist\\cli\\index.js service watchdog-probe');
+      expect(last).not.toContain('node C:\\app\\dist\\cli\\index.js service watchdog-probe');
     });
 
     it('issue #370: also registers a TimeTrigger so the probe repetition arms without waiting for the next logon', async () => {

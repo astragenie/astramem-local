@@ -3,7 +3,16 @@ import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
-import { writeShim, shimPaths, writePointer, exitHistoryPaths, buildHiddenVbs } from '../../src/service/shim.js';
+import {
+  writeShim,
+  shimPaths,
+  writePointer,
+  exitHistoryPaths,
+  buildHiddenVbs,
+  watchdogProbeLogPath,
+  buildWatchdogProbeWrapperCmd,
+  WATCHDOG_PROBE_LOG_MAX_BYTES,
+} from '../../src/service/shim.js';
 import { buildTaskXml } from '../../src/service/task-xml.js';
 
 describe('service shim', () => {
@@ -517,6 +526,83 @@ describe('service shim — crash-loop visibility (FEAT-440)', () => {
     const res = spawnSync(process.execPath, [paths.launcherPath], { encoding: 'utf8' });
     expect(res.status).toBe(0);
     expect(existsSync(ranMarker)).toBe(true);
+  });
+});
+
+describe('watchdog probe output capture (2026-08-02)', () => {
+  it('watchdogProbeLogPath() lives under the same <dataDir>/logs directory as exitHistoryPaths()', () => {
+    const dir = 'C:\\fake\\datadir';
+    expect(watchdogProbeLogPath(dir)).toBe(join(exitHistoryPaths(dir).logsDir, 'watchdog-probe.log'));
+    expect(watchdogProbeLogPath(dir).endsWith('watchdog-probe.log')).toBe(true);
+  });
+
+  it('buildWatchdogProbeWrapperCmd emits a batch file that mkdirs the log dir, truncates over the size cap, and appends the real command with 2>&1', () => {
+    const logPath = 'C:\\data\\logs\\watchdog-probe.log';
+    const commandLine = '"C:\\nodejs\\node.exe" "C:\\app\\dist\\cli\\index.js" service watchdog-probe';
+    const cmd = buildWatchdogProbeWrapperCmd(commandLine, logPath);
+
+    expect(cmd.startsWith('@echo off\r\n')).toBe(true);
+    // Ensures the logs dir exists before ever redirecting into it.
+    expect(cmd).toContain(`if not exist "${dirname(logPath)}" mkdir "${dirname(logPath)}"`);
+    // Size-cap truncate-if-over-size guard using the default (10MB) cap.
+    expect(cmd).toContain(`GTR ${WATCHDOG_PROBE_LOG_MAX_BYTES}`);
+    expect(cmd).toMatch(/del \/f \/q "C:\\data\\logs\\watchdog-probe\.log"/);
+    // The real probe command runs, appended (stdout+stderr) to the log file.
+    expect(cmd).toContain(commandLine);
+    expect(cmd).toContain(`) >> "${logPath}" 2>&1`);
+  });
+
+  it('buildWatchdogProbeWrapperCmd honors a custom maxBytes override', () => {
+    const cmd = buildWatchdogProbeWrapperCmd('probe-cmd', 'C:\\data\\logs\\watchdog-probe.log', 1024);
+    expect(cmd).toContain('GTR 1024');
+    expect(cmd).not.toContain(String(WATCHDOG_PROBE_LOG_MAX_BYTES));
+  });
+
+  it('WATCHDOG_PROBE_LOG_MAX_BYTES mirrors the repo-standard 10MB rotation size (log/logger.ts, ingest.log)', () => {
+    expect(WATCHDOG_PROBE_LOG_MAX_BYTES).toBe(10 * 1024 * 1024);
+  });
+
+  // CI runs on a Linux self-hosted runner (test.yml) — cmd.exe only exists on
+  // win32, so this is a real-execution test guarded to run there only. The
+  // string-content assertions above already cover the generated shape on
+  // every platform; this one additionally proves the batch actually behaves
+  // as written when a real cmd.exe interprets it.
+  it.skipIf(process.platform !== 'win32')('a real invocation of the generated wrapper actually appends probe output to the log file, truncating it once over the cap', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'astra-watchdog-wrapper-'));
+    try {
+      const logPath = join(dir, 'watchdog-probe.log');
+      // Fake "probe command": prints a marker line to stdout. Real callers
+      // (schtasks.ts's installWatchdogTimer) always pass a pre-quoted
+      // execPath (e.g. `"C:\...\node.exe" "C:\...\index.js"` — see
+      // build.rawExecPath) — quote the node binary here too, since an
+      // unquoted path containing a space (a real "Program Files" install)
+      // would otherwise break the batch file's own command parsing, not
+      // just this test's.
+      const fakeProbe = join(dir, 'fake-probe.cjs');
+      writeFileSync(fakeProbe, "console.log('PROBE_MARKER_1');", 'utf8');
+      const cmd = buildWatchdogProbeWrapperCmd(`"${process.execPath}" "${fakeProbe}"`, logPath, 50);
+      const cmdPath = join(dir, 'wrapper.cmd');
+      writeFileSync(cmdPath, cmd, 'utf8');
+
+      const res1 = spawnSync('cmd.exe', ['/c', cmdPath], { encoding: 'utf8' });
+      expect(res1.status).toBe(0);
+      expect(existsSync(logPath)).toBe(true);
+      expect(readFileSync(logPath, 'utf8')).toContain('PROBE_MARKER_1');
+
+      // Second run appends rather than replacing (below the tiny 50-byte cap
+      // would already have tripped, but a fresh run past the cap must
+      // truncate before appending its own marker, not accumulate forever).
+      const res2 = spawnSync('cmd.exe', ['/c', cmdPath], { encoding: 'utf8' });
+      expect(res2.status).toBe(0);
+      const finalContent = readFileSync(logPath, 'utf8');
+      expect(finalContent).toContain('PROBE_MARKER_1');
+      // The 50-byte cap means the file was truncated before this run's
+      // append — it should not contain BOTH the first run's full output AND
+      // grow unbounded across many runs.
+      expect(Buffer.byteLength(finalContent, 'utf8')).toBeLessThan(500);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 
