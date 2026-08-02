@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readFileSync, existsSync, mkdirSync, writeFileSync, readdirSync } from 'node:fs';
-import { spawnSync } from 'node:child_process';
+import { spawnSync, spawn, execSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import {
@@ -547,9 +547,22 @@ describe('watchdog probe output capture (2026-08-02)', () => {
     // Size-cap truncate-if-over-size guard using the default (10MB) cap.
     expect(cmd).toContain(`GTR ${WATCHDOG_PROBE_LOG_MAX_BYTES}`);
     expect(cmd).toMatch(/del \/f \/q "C:\\data\\logs\\watchdog-probe\.log"/);
-    // The real probe command runs, appended (stdout+stderr) to the log file.
+    // The real probe command runs, redirected to the private %TEMP% scratch
+    // file, NOT nested inside any block that also redirects to logPath —
+    // that nesting was PR #471's original defect (see doc comment): a
+    // logPath redirect failure would skip the whole parenthesized block and
+    // the probe would never run at all.
     expect(cmd).toContain(commandLine);
-    expect(cmd).toContain(`) >> "${logPath}" 2>&1`);
+    expect(cmd).toContain(`${commandLine} >> "%SCRATCH%" 2>&1`);
+    expect(cmd).not.toContain(`) >> "${logPath}"`);
+    // The scratch capture is copied into the shared log as a SEPARATE step
+    // whose own failure cannot un-run the probe above it.
+    expect(cmd).toContain(`type "%SCRATCH%" >> "${logPath}" 2>&1`);
+    // The probe's real exit code — captured immediately after step 1, before
+    // any of the log-copy commands below it can touch %ERRORLEVEL% — is what
+    // ultimately propagates, not whatever the log-copy step leaves behind.
+    expect(cmd).toContain('set "PROBE_EXIT=%ERRORLEVEL%"');
+    expect(cmd.trim().endsWith('exit /b %PROBE_EXIT%')).toBe(true);
   });
 
   it('buildWatchdogProbeWrapperCmd honors a custom maxBytes override', () => {
@@ -604,6 +617,130 @@ describe('watchdog probe output capture (2026-08-02)', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // ---------------------------------------------------------------------
+  // PR #471 review fix: the FIRST version of this wrapper nested the real
+  // probe invocation inside the log-append block — `( echo ... & probe ) >>
+  // logPath 2>&1`. When logPath's redirect target can't be opened,
+  // cmd.exe skips the WHOLE parenthesized block, so the probe never runs.
+  // These two tests live-reproduce the reviewer's exact failure modes
+  // (verified against real cmd.exe, not string assertions) and prove the
+  // rewritten wrapper's probe step is now independent of the log step.
+  // ---------------------------------------------------------------------
+
+  it.skipIf(process.platform !== 'win32')(
+    'the probe still runs and its exit code still propagates when a file sits where the logs directory should be (mkdir fails)',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'astra-watchdog-wrapper-blockeddir-'));
+      try {
+        const blockedLogsDir = join(dir, 'logs');
+        // Reviewer scenario (a): something already occupies the path where
+        // the logs directory should live, so `mkdir` is skipped/fails.
+        writeFileSync(blockedLogsDir, 'not a directory', 'utf8');
+        const logPath = join(blockedLogsDir, 'watchdog-probe.log');
+        const markerPath = join(dir, 'marker.txt');
+        const fakeProbe = join(dir, 'fake-probe.cjs');
+        writeFileSync(
+          fakeProbe,
+          `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran'); console.log('PROBE_MARKER_BLOCKEDDIR'); process.exit(3);`,
+          'utf8',
+        );
+        const cmd = buildWatchdogProbeWrapperCmd(`"${process.execPath}" "${fakeProbe}"`, logPath);
+        const cmdPath = join(dir, 'wrapper.cmd');
+        writeFileSync(cmdPath, cmd, 'utf8');
+
+        const res = spawnSync('cmd.exe', ['/c', cmdPath], { encoding: 'utf8' });
+
+        // The probe ran to completion (marker file exists) and its own exit
+        // code (3) propagated to the scheduled task, even though the log
+        // directory could never be created.
+        expect(existsSync(markerPath)).toBe(true);
+        expect(res.status).toBe(3);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'the probe still runs and its exit code still propagates when the shared log file is held open exclusively by another process',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'astra-watchdog-wrapper-locked-'));
+      let locker: ReturnType<typeof spawn> | undefined;
+      try {
+        const logPath = join(dir, 'watchdog-probe.log');
+        writeFileSync(logPath, 'preexisting\r\n', 'utf8');
+        const markerPath = join(dir, 'marker.txt');
+        const fakeProbe = join(dir, 'fake-probe.cjs');
+        writeFileSync(
+          fakeProbe,
+          `require('node:fs').writeFileSync(${JSON.stringify(markerPath)}, 'ran'); console.log('PROBE_MARKER_LOCKED'); process.exit(7);`,
+          'utf8',
+        );
+        const cmd = buildWatchdogProbeWrapperCmd(`"${process.execPath}" "${fakeProbe}"`, logPath);
+        const cmdPath = join(dir, 'wrapper.cmd');
+        writeFileSync(cmdPath, cmd, 'utf8');
+
+        // Reviewer scenario (b): a realistic AV/backup/operator-tailing-the-
+        // log-mid-incident hold on the log file. Reproduce it with a
+        // separate PowerShell process that opens the file with
+        // FileShare.None for the duration of the wrapper run.
+        const lockPs1 = join(dir, 'lock.ps1');
+        writeFileSync(
+          lockPs1,
+          `$fs = [System.IO.File]::Open('${logPath}', 'Open', 'ReadWrite', 'None')\r\nStart-Sleep -Seconds 6\r\n$fs.Close()\r\n`,
+          'utf8',
+        );
+        locker = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', lockPs1], {
+          stdio: 'ignore',
+        });
+        // Give the locker a beat to actually acquire the handle before we
+        // race it with the wrapper below.
+        execSync('powershell -NoProfile -Command "Start-Sleep -Milliseconds 500"');
+
+        const res = spawnSync('cmd.exe', ['/c', cmdPath], { encoding: 'utf8' });
+
+        // The probe ran to completion (marker file exists) and its own exit
+        // code (7) propagated to the scheduled task, even though the shared
+        // log file could never be opened for append.
+        expect(existsSync(markerPath)).toBe(true);
+        expect(res.status).toBe(7);
+      } finally {
+        if (locker?.pid) {
+          try {
+            spawnSync('taskkill', ['/PID', String(locker.pid), '/F', '/T']);
+          } catch {
+            /* best effort — release the lock so cleanup below can proceed */
+          }
+        }
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform !== 'win32')(
+    'a probe command whose quoted execPath contains parens (a real "Program Files (x86)" install) still parses and runs',
+    () => {
+      const dir = mkdtempSync(join(tmpdir(), 'astra-watchdog-wrapper-parens-'));
+      try {
+        const parensDir = join(dir, 'Program Files (x86)', 'Astramem');
+        mkdirSync(parensDir, { recursive: true });
+        const fakeProbe = join(parensDir, 'fake-probe.cjs');
+        writeFileSync(fakeProbe, "console.log('PROBE_MARKER_PARENS');", 'utf8');
+        const logPath = join(dir, 'logs', 'watchdog-probe.log');
+        const cmd = buildWatchdogProbeWrapperCmd(`"${process.execPath}" "${fakeProbe}"`, logPath);
+        const cmdPath = join(dir, 'wrapper.cmd');
+        writeFileSync(cmdPath, cmd, 'utf8');
+
+        const res = spawnSync('cmd.exe', ['/c', cmdPath], { encoding: 'utf8' });
+
+        expect(res.status).toBe(0);
+        expect(readFileSync(logPath, 'utf8')).toContain('PROBE_MARKER_PARENS');
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
 });
 
 describe('task XML', () => {

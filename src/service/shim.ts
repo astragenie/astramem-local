@@ -145,23 +145,50 @@ export const WATCHDOG_PROBE_LOG_MAX_BYTES = 10 * 1024 * 1024;
 
 /**
  * Batch-file body for the win32 watchdog probe's hidden-launch wrapper
- * (watchdog-probe-output-capture, 2026-08-02). `schtasks.ts`'s
- * `installWatchdogTimer` writes this to a stable `.cmd` file and points the
- * hidden-launch VBS (`buildHiddenVbs`) at THAT file instead of at the raw
- * probe command line directly — the daemon's own VBS already proves
- * `WScript.Shell.Run` can hidden-launch a `.cmd` file this way (see
- * `buildWindowsCmd`/`writeShim` above), so this reuses the same indirection
- * rather than trying to embed shell-redirection syntax straight into a VBS
- * string literal.
+ * (watchdog-probe-output-capture, 2026-08-02; log-write isolation fixed same
+ * day after review — PR #471). `schtasks.ts`'s `installWatchdogTimer` writes
+ * this to a stable `.cmd` file and points the hidden-launch VBS
+ * (`buildHiddenVbs`) at THAT file instead of at the raw probe command line
+ * directly — the daemon's own VBS already proves `WScript.Shell.Run` can
+ * hidden-launch a `.cmd` file this way (see `buildWindowsCmd`/`writeShim`
+ * above), so this reuses the same indirection rather than trying to embed
+ * shell-redirection syntax straight into a VBS string literal.
  *
- * Truncates the log up front when it exceeds `maxBytes` (simpler and cheap
- * enough at this write volume than an in-place rotate — see
- * WATCHDOG_PROBE_LOG_MAX_BYTES's doc comment), (re)creates the log
- * directory if it's missing, then appends one timestamped run to the log via
- * plain `>>`/`2>&1` shell redirection — no in-process buffering, so an
- * unbounded-uptime concern like LAUNCHER_SOURCE's stdout capture doesn't
- * apply here (each probe run is a short-lived process that exits on its
- * own).
+ * The FIRST version of this wrapper nested the real probe invocation
+ * directly inside the log-append block: `( echo ... & <probe> ) >> logPath
+ * 2>&1`. Review caught (and live-reproduced through real cmd.exe, twice)
+ * that when the redirect target can't be opened — a file sitting where the
+ * `logs` directory should be, or the log file held open exclusively by
+ * another process (AV, backup, an operator tailing the log mid-incident) —
+ * **cmd.exe skips the entire parenthesized block**, so the probe command
+ * itself never runs. A logging hiccup could silently disable the watchdog
+ * entirely: the exact silent-failure class this file exists to close.
+ *
+ * Fixed by decoupling the probe's execution from the log write, the same
+ * way `LAUNCHER_SOURCE` above never lets its own log/history writes block
+ * the daemon's spawn (there it's a JS try/catch around fs calls; here,
+ * batch has no try/catch, so the equivalent is TWO INDEPENDENT STEPS):
+ *   1. Run the real probe command with its stdout+stderr redirected to a
+ *      private SCRATCH file under `%TEMP%` — deliberately NOT under
+ *      `logDir`, so a `logDir` failure can never stop this step from
+ *      succeeding — and capture `%ERRORLEVEL%` immediately after, before
+ *      any other command can overwrite it.
+ *   2. Best-effort copy that scratch file into the shared `logPath`
+ *      (mkdir the log dir if missing, truncate over `maxBytes`, `type ...
+ *      >> logPath`) — every one of these can fail (blocked dir, locked
+ *      file, full disk, read-only path) without affecting step 1, since
+ *      step 1 already ran and its exit code is already saved.
+ * The wrapper's own `exit /b %PROBE_EXIT%` at the end always propagates the
+ * PROBE's exit code (not the log-copy step's), regardless of what happened
+ * to the shared log — schtasks' "Last Result" column is a diagnostic this
+ * repo relies on, so that propagation is the actual invariant here, not
+ * just "the log gets written when possible."
+ *
+ * Running the probe command as a plain (non-parenthesized) line also
+ * sidesteps a second hazard the parenthesized form had: a probe command
+ * whose quoted `execPath` contains literal parens (a real "Program Files
+ * (x86)" install) no longer has to round-trip through `(...)` block
+ * parsing at all.
  *
  * @param commandLine  The real `<execPath> service watchdog-probe` command,
  *   already quoted the same way schtasks.ts's other wrapped commands are.
@@ -176,14 +203,28 @@ export function buildWatchdogProbeWrapperCmd(
   const logDir = dirname(logPath);
   return (
     '@echo off\r\n' +
+    'setlocal\r\n' +
+    // Scratch capture target lives under %TEMP%, independent of logDir on
+    // purpose (see doc comment) — a per-run pseudo-unique name is enough
+    // since the task's own MultipleInstancesPolicy is IgnoreNew (task-xml.ts),
+    // so overlapping runs of this exact wrapper are not expected.
+    'set "SCRATCH=%TEMP%\\astramemd-watchdog-probe-%RANDOM%%RANDOM%.tmp"\r\n' +
+    `echo [%date% %time%] watchdog-probe run > "%SCRATCH%" 2>&1\r\n` +
+    // Step 1: run the real probe, unconditionally, output captured to the
+    // private scratch file. Not nested in any redirected block — nothing
+    // about logPath can prevent this line from running.
+    `${commandLine} >> "%SCRATCH%" 2>&1\r\n` +
+    'set "PROBE_EXIT=%ERRORLEVEL%"\r\n' +
+    // Step 2: best-effort copy into the shared log. Every command below can
+    // fail independently (blocked dir, locked file) without touching
+    // PROBE_EXIT, which was already captured above.
     `if not exist "${logDir}" mkdir "${logDir}" >nul 2>&1\r\n` +
     `if exist "${logPath}" (\r\n` +
     `  for %%A in ("${logPath}") do if %%~zA GTR ${maxBytes} del /f /q "${logPath}" >nul 2>&1\r\n` +
     ')\r\n' +
-    '(\r\n' +
-    '  echo [%date% %time%] watchdog-probe run\r\n' +
-    `  ${commandLine}\r\n` +
-    `) >> "${logPath}" 2>&1\r\n`
+    `type "%SCRATCH%" >> "${logPath}" 2>&1\r\n` +
+    'del /f /q "%SCRATCH%" >nul 2>&1\r\n' +
+    'exit /b %PROBE_EXIT%\r\n'
   );
 }
 
