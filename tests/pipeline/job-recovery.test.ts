@@ -138,13 +138,17 @@ describe('JobRepo boot recovery + retention', () => {
     expect(repo.requeuePaused()).toBe(0);
   });
 
-  it('purgeOld deletes old completed (7d) and old poison (30d), keeps recent', () => {
+  // 2026-08-02 poison-metric-window fix: default poisonDays bumped 30 -> 90
+  // (POISON_JOB_RETENTION_DAYS) so a poison job survives long enough for an
+  // operator to investigate an incident days later — see job-repo.ts's doc
+  // comment on the constant for the forensic-retention rationale.
+  it('purgeOld deletes old completed (7d) and old poison (90d, POISON_JOB_RETENTION_DAYS), keeps recent', () => {
     const oldCompleted = repo.enqueue('distill', {});
     setJob(db, oldCompleted, 'completed', 1, Date.now() - 8 * DAY_MS);
     const newCompleted = repo.enqueue('distill', {});
     setJob(db, newCompleted, 'completed', 1, Date.now() - 1 * DAY_MS);
     const oldPoison = repo.enqueue('distill', {});
-    setJob(db, oldPoison, 'poison', 3, Date.now() - 31 * DAY_MS);
+    setJob(db, oldPoison, 'poison', 3, Date.now() - 91 * DAY_MS);
     const newPoison = repo.enqueue('distill', {});
     setJob(db, newPoison, 'poison', 3, Date.now() - 10 * DAY_MS);
 
@@ -155,6 +159,27 @@ describe('JobRepo boot recovery + retention', () => {
     expect(repo.get(newCompleted)).not.toBeNull();
     expect(repo.get(oldPoison)).toBeNull();
     expect(repo.get(newPoison)).not.toBeNull();
+  });
+
+  // Regression guard for the intentional 30d -> 90d TTL bump: a poison job
+  // that WOULD have been purged under the old 30-day default must now
+  // survive a default-options purgeOld() call.
+  it('purgeOld keeps a poison job older than the old 30d TTL but within the new 90d TTL', () => {
+    const midAgePoison = repo.enqueue('distill', {});
+    setJob(db, midAgePoison, 'poison', 3, Date.now() - 45 * DAY_MS);
+
+    const r = repo.purgeOld();
+    expect(r.poison).toBe(0);
+    expect(repo.get(midAgePoison)).not.toBeNull();
+  });
+
+  it('purgeOld still honors an explicit poisonDays override (e.g. a caller wanting the old 30d behavior)', () => {
+    const midAgePoison = repo.enqueue('distill', {});
+    setJob(db, midAgePoison, 'poison', 3, Date.now() - 45 * DAY_MS);
+
+    const r = repo.purgeOld({ poisonDays: 30 });
+    expect(r.poison).toBe(1);
+    expect(repo.get(midAgePoison)).toBeNull();
   });
 
   it('stateCounts groups by state', () => {

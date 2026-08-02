@@ -190,4 +190,42 @@ describe('doctor "Memory health" check (FEAT-444 AC-1)', () => {
     expect(result.ok).toBe(true);
     expect(result.message).toContain('no data yet');
   });
+
+  // 2026-08-02 poison-metric-window fix: production evidence — a 90-minute
+  // codex quota-exhaustion burst on 2026-07-31 poisoned 55 sessions, then
+  // stopped; two days later /health still reported distill_poison_rate
+  // ALARMED at 47.6% with zero new poison jobs and six successful distills
+  // in between, because distillSessionStats() was an unwindowed lifetime
+  // COUNT. This proves the fix: a poison burst that concluded outside the
+  // rolling window no longer keeps the alarm stuck red once the underlying
+  // cause has cleared.
+  it('an old poison burst (outside the rolling window) does not keep the alarm stuck red once activity resumes cleanly', async () => {
+    const dbPath = join(dir, 'memory.sqlite');
+    const db = openDb(dbPath);
+    migrate(db);
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const now = Date.now();
+
+    // The old burst: 20 poisoned sessions, all 10 days ago (outside the
+    // default 7-day window) — would have been a 100% poison rate under the
+    // old lifetime-count logic.
+    const jobRepo = new JobRepo(db);
+    for (let i = 0; i < 20; i++) {
+      const id = jobRepo.enqueue('distill', { session_id: `old-s${i}` });
+      db.prepare(`UPDATE jobs SET updated_at = ? WHERE id = ?`).run(now - 10 * DAY_MS, id);
+      jobRepo.markPoison(id);
+      db.prepare(`UPDATE jobs SET updated_at = ? WHERE id = ?`).run(now - 10 * DAY_MS, id);
+    }
+    // Recent, healthy activity: 25 completed sessions in the last day —
+    // enough to clear MEANINGFUL_USAGE_THRESHOLD with a 0% poison rate
+    // inside the window.
+    for (let i = 0; i < 25; i++) {
+      const id = jobRepo.enqueue('distill', { session_id: `new-s${i}` });
+      jobRepo.complete(id);
+    }
+    db.close();
+
+    const result = await checkFor().run();
+    expect(result.ok).toBe(true);
+  });
 });

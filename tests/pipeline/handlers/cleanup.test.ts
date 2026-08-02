@@ -27,6 +27,13 @@ function insertPendingJob(db: DB, id: string, updatedAt: number): void {
   `).run(id, updatedAt, updatedAt);
 }
 
+function insertPoisonJob(db: DB, id: string, updatedAt: number): void {
+  db.prepare(`
+    INSERT INTO jobs (id, kind, payload_json, state, attempts, last_error, created_at, updated_at)
+    VALUES (?, 'distill', '{"kind":"distill","transcript_id":"t1","session_id":"s1"}', 'poison', 3, 'boom', ?, ?)
+  `).run(id, updatedAt, updatedAt);
+}
+
 describe('cleanupHandler', () => {
   let db: DB;
   let ctx: HandlerCtx;
@@ -102,6 +109,57 @@ describe('cleanupHandler', () => {
     const ids = remaining.map(r => r.id);
     expect(ids).toContain('three-days-old');
     expect(ids).not.toContain('eight-days-old');
+  });
+
+  // 2026-08-02 poison-metric-window fix: cleanupHandler now purges poison
+  // jobs too, via the shared JobRepo.purgeOld() (POISON_JOB_RETENTION_DAYS =
+  // 90d) rather than a second independent DELETE — these lock in that the
+  // consolidation didn't drop the behavior, and that the TTL genuinely moved
+  // to 90d (a job that would have survived the OLD hand-rolled 30d literal
+  // is unaffected either way; the important case is a job that would have
+  // been WRONGLY purged under the old 30d literal and must now survive).
+  describe('poison job retention (2026-08-02 poison-metric-window fix)', () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    it('removes poison jobs older than POISON_JOB_RETENTION_DAYS (90d)', async () => {
+      const now = Date.now();
+      insertPoisonJob(db, 'old-poison', now - 91 * DAY_MS);
+      insertPoisonJob(db, 'recent-poison', now - 10 * DAY_MS);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const remaining = db.prepare("SELECT id FROM jobs WHERE state = 'poison'").all() as { id: string }[];
+      const ids = remaining.map(r => r.id);
+      expect(ids).not.toContain('old-poison');
+      expect(ids).toContain('recent-poison');
+    });
+
+    it('keeps a poison job older than the OLD 30d TTL but within the new 90d TTL (regression guard for the intentional bump)', async () => {
+      const now = Date.now();
+      insertPoisonJob(db, 'mid-age-poison', now - 45 * DAY_MS);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 30 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const remaining = db.prepare("SELECT id FROM jobs WHERE state = 'poison'").all() as { id: string }[];
+      expect(remaining.map(r => r.id)).toContain('mid-age-poison');
+    });
+
+    it('poison purge TTL is independent of the payload-configurable older_than_days (which only governs completed jobs)', async () => {
+      const now = Date.now();
+      // A 45d-old poison job: well past a tiny older_than_days=1, but well
+      // within POISON_JOB_RETENTION_DAYS (90d). If poison purge ever
+      // accidentally inherited `older_than_days` instead of the dedicated
+      // poison constant, this job would be wrongly deleted here.
+      insertPoisonJob(db, 'mid-age-poison', now - 45 * DAY_MS);
+
+      const payload: CleanupPayload = { kind: 'cleanup', older_than_days: 1 };
+      await cleanupHandler.handle(payload, ctx);
+
+      const remaining = db.prepare("SELECT id FROM jobs WHERE state = 'poison'").all() as { id: string }[];
+      expect(remaining.map(r => r.id)).toContain('mid-age-poison');
+    });
   });
 
   describe('ingest_idempotency retention (FEAT-432)', () => {
