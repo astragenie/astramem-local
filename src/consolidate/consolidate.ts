@@ -1089,13 +1089,24 @@ const VEC_EXISTENCE_CHECK_BATCH_SIZE = 500;
  * Fix: page `memories` ALONE (migration 062's covering index then drives a
  * pure index walk — measured 53–92ms per page regardless of offset, no
  * join at all) and check embedding-existence per page via a batched
- * `SELECT rowid FROM memories_vec WHERE rowid IN (...)` against the exact
- * point-lookup shape `SqliteVecStore.upsert` already uses in production
- * (`src/vector/sqlite-vec.ts`). Measured: an IN-batch of 500 rowids takes
- * ~21ms (plan: `SCAN memories_vec VIRTUAL TABLE INDEX 0:1`) — a per-rowid
- * point-probe loop over the same 500 rowids was measured at ~153ms, ~7x
- * slower, so IN-batch is what ships. Full 90k-row corpus walk (181 pages):
- * 6,025ms total, max single page 99ms.
+ * `SELECT rowid FROM memories_vec WHERE rowid IN (...)` — a BATCH of the
+ * same rowid-equality shape `SqliteVecStore.upsert` already uses in
+ * production (`src/vector/sqlite-vec.ts`), not a loop of 500 individual
+ * calls of it. That distinction matters: an independent measurement (a
+ * second 90k-row disk-resident corpus, built separately from the one
+ * above) found a per-rowid point-probe LOOP over 500 rowids — even
+ * selecting nothing but `rowid`, no `embedding` column — took 1.7–2.8s per
+ * page; the SAME 500 rowids in ONE batched `IN (...)` statement took
+ * 27–38ms, ~50–100x faster. Per-statement execution overhead against the
+ * vec0 virtual table, not column selection, dominates — batching amortizes
+ * it, a discrete loop pays it 500 times. (A smaller, fully page-cached
+ * synthetic DB used during initial development understated this gap at
+ * ~153ms for the same loop shape — too small and too cache-friendly to
+ * surface the real per-statement cost; do not trust a tiny in-memory
+ * benchmark for this class of virtual-table-cost question again.) Full
+ * 90k-row corpus walk through the REAL `runConsolidation` code path (not a
+ * hand-copied query), on that same disk-resident DB: 180 pages, max single
+ * page 41ms, 5.06s total. Never re-add a per-rowid loop here.
  */
 function filterEmbeddedRowids(db: DB, rowids: readonly number[]): Set<number> {
   const found = new Set<number>();
