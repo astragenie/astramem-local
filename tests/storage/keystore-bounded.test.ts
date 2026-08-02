@@ -229,6 +229,41 @@ describe('keystore-bounded', () => {
   // ─────────────────────────────────────────────────────────────────────
 
   describe('end-to-end: getOrCreateKey() through the real BoundedEntry default', () => {
+    // Helper: a fixture that tracks every 'set' (mint/write) call to a
+    // marker file, so tests can assert on WHETHER the destructive write was
+    // attempted, not just on the returned value — the whole point of this
+    // suite is that a wrong "safe" answer must never be reachable via an
+    // actual write, not merely absent from the return value by coincidence.
+    // `getBehavior` receives the NAME of the generated fixture's own
+    // `isLegacy` boolean variable (always the literal string 'isLegacy') to
+    // splice into the returned JS snippet — not the boolean value itself,
+    // since the snippet is generated once but evaluated per-invocation
+    // inside the fixture process, where the real isLegacy value differs
+    // between the scoped and legacy identity calls.
+    function fixtureWithSetTracking(
+      name: string,
+      getBehavior: (isLegacyVarName: string) => string,
+    ): { scriptPath: string; setMarkerPath: string } {
+      const setMarkerPath = join(dir, `${name}-set-calls.jsonl`);
+      const scriptPath = fixture(
+        `${name}.cjs`,
+        [
+          "const fs = require('node:fs');",
+          "const [, , mode, service, account] = process.argv;",
+          "const isLegacy = service === 'astramem-local';",
+          "if (mode === 'get') {",
+          `  ${getBehavior('isLegacy')}`,
+          '}',
+          "else if (mode === 'set') {",
+          "  const secret = fs.readFileSync(0, 'utf8');",
+          `  fs.appendFileSync(${JSON.stringify(setMarkerPath)}, JSON.stringify({ service, account, secret }) + '\\n');`,
+          '  process.exit(0);',
+          '}',
+        ].join('\n'),
+      );
+      return { scriptPath, setMarkerPath };
+    }
+
     it('a fast credential-store response flows all the way through getOrCreateKey() without EntryCtor being stubbed', async () => {
       const { getOrCreateKey } = await import('../../src/storage/keystore.js');
       const script = fixture(
@@ -246,22 +281,50 @@ describe('keystore-bounded', () => {
       }
     });
 
+    // ─── Scenario 3 (team-lead required list): genuine fast not-found on ───
+    // BOTH identities → mint-and-write still works exactly as before. Not
+    // over-corrected into "never mint on a fresh install".
+    it('scenario 3 — a genuinely fresh install (both reads fast not-found) still mints and writes a new key via the credential store', async () => {
+      const { getOrCreateKey } = await import('../../src/storage/keystore.js');
+      const { scriptPath, setMarkerPath } = fixtureWithSetTracking(
+        'fresh-install',
+        () => "process.stdout.write(JSON.stringify({ found: false, value: null }));",
+      );
+      __setChildScriptPathForTests(scriptPath);
+      const configDir = mkdtempSync(join(tmpdir(), 'astra-keystore-fresh-install-'));
+      try {
+        const result = getOrCreateKey(configDir);
+        expect(result.source).toBe('credential-store');
+        expect(result.key).toMatch(/^[0-9a-f]{64}$/);
+        // The mint DID happen — this is the one scenario where a 'set' call
+        // is not just acceptable but required.
+        expect(existsSync(setMarkerPath)).toBe(true);
+        const written = readFileSync(setMarkerPath, 'utf8').trim();
+        expect(written).toContain(result.key);
+      } finally {
+        rmSync(configDir, { recursive: true, force: true });
+      }
+    });
+
+    // ─── Scenario 4 (team-lead required list): everything times out → ───
+    // existing key-file fallback + WARNs, as today.
     it(
-      'getOrCreateKey() falls back to the EXISTING key-file path (with a WARN) instead of hanging forever, when the credential store is genuinely unresponsive — the incident this fix closes, reproduced end-to-end',
-      { timeout: CREDENTIAL_STORE_TIMEOUT_MS + 15_000 },
+      'scenario 4 — getOrCreateKey() falls back to the EXISTING key-file path (with a WARN) instead of hanging forever, when the credential store is genuinely unresponsive on BOTH identities — the incident this fix closes, reproduced end-to-end',
+      { timeout: CREDENTIAL_STORE_TIMEOUT_MS * 2 + 15_000 },
       async () => {
         const { getOrCreateKey, keyFilePath } = await import('../../src/storage/keystore.js');
-        // Hangs on every call. getOrCreateCredentialStoreKey's SCOPED read
-        // times out first and now (keystore-read-timeout follow-up: a
-        // timeout must never be swallowed into "proceed to mint") re-throws
-        // CredentialStoreTimeoutError immediately instead of falling through
-        // to a legacy read + mint attempt — so this exercises ONE
-        // CREDENTIAL_STORE_TIMEOUT_MS wait, not the full chain. Still slow
-        // (~5s) but bounded, and now faster than the original 3x-chained
-        // design — see the dedicated "existing key + timed-out read must
-        // not be minted over" test below for why that short-circuit exists.
-        const script = fixture('e2e-hangs.mjs', 'setTimeout(() => process.exit(0), 120_000);');
-        __setChildScriptPathForTests(script);
+        // Hangs on every 'get' call regardless of identity. Both the scoped
+        // AND legacy reads are independently attempted (see
+        // getOrCreateCredentialStoreKey's doc comment — a scoped timeout no
+        // longer short-circuits past giving legacy its own fair chance), so
+        // this exercises two chained CREDENTIAL_STORE_TIMEOUT_MS waits
+        // (~10s), not one — slower than an earlier iteration of this fix,
+        // but correctness (see scenario 2 below) requires it.
+        const { scriptPath, setMarkerPath } = fixtureWithSetTracking(
+          'fully-unresponsive',
+          () => 'setTimeout(() => process.exit(0), 120_000);',
+        );
+        __setChildScriptPathForTests(scriptPath);
         const configDir = mkdtempSync(join(tmpdir(), 'astra-keystore-e2e-hang-'));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         try {
@@ -272,14 +335,15 @@ describe('keystore-bounded', () => {
           expect(result.source).toBe('key-file');
           expect(result.key).toMatch(/^[0-9a-f]{64}$/);
           expect(readFileSync(keyFilePath(configDir), 'utf8').trim()).toBe(result.key);
-          // Bounded: comfortably under what "hangs forever" would look like.
-          // One timeout (the scoped read's short-circuit), not three chained
-          // — see the comment above.
-          expect(elapsedMs).toBeLessThan(CREDENTIAL_STORE_TIMEOUT_MS + 10_000);
+          // Bounded: comfortably under what "hangs forever" would look
+          // like, and specifically under the two-chained-timeouts worst case.
+          expect(elapsedMs).toBeLessThan(CREDENTIAL_STORE_TIMEOUT_MS * 2 + 10_000);
           // NOTE: assert on the spy BEFORE restoring it — mockRestore()
           // clears recorded calls as part of restoring the original
           // implementation, so checking afterward would always see zero.
           expect(warnSpy).toHaveBeenCalled();
+          // The destructive write must never have been attempted either.
+          expect(existsSync(setMarkerPath)).toBe(false);
         } finally {
           warnSpy.mockRestore();
           rmSync(configDir, { recursive: true, force: true });
@@ -287,44 +351,37 @@ describe('keystore-bounded', () => {
       },
     );
 
+    // ─── Scenario 1 (team-lead required list): get times out + set would ───
+    // succeed fast + no pre-existing key anywhere → must NOT mint, must NOT
+    // write, must fall back with a loud WARN. This is the reviewer's proven
+    // repro shape verbatim.
     it(
-      'a read that TIMES OUT must NEVER cascade into minting a new key and overwriting the credential store — a genuinely existing key would be destroyed and the DB it encrypted permanently locked out',
-      { timeout: CREDENTIAL_STORE_TIMEOUT_MS + 15_000 },
+      'scenario 1 — a read that TIMES OUT must NEVER cascade into minting a new key and overwriting the credential store, even though the WRITE would have succeeded fast — a genuinely existing key would be destroyed and the DB it encrypted permanently locked out',
+      { timeout: CREDENTIAL_STORE_TIMEOUT_MS * 2 + 15_000 },
       async () => {
         const { getOrCreateKey, keyFilePath } = await import('../../src/storage/keystore.js');
         // Simulates "vault is slow but alive, and a real key genuinely
         // exists server-side, we just can't read it in time": every 'get'
         // hangs past the timeout; every 'set' succeeds FAST and records
-        // what it was called with to a marker file. Before the
-        // keystore-read-timeout follow-up fix, getOrCreateCredentialStoreKey
-        // swallowed the scoped read's timeout as "no key found", fell
-        // through the (also-timing-out) legacy read the same way, and then
-        // called the fast-succeeding 'set' — MINTING a brand-new random key
-        // and OVERWRITING whatever the real credential-store entry actually
+        // what it was called with to a marker file. Before this fix,
+        // getOrCreateCredentialStoreKey swallowed a read timeout as "no key
+        // found" and, once both reads had been exhausted this way, called
+        // the fast-succeeding 'set' — MINTING a brand-new random key and
+        // OVERWRITING whatever the real credential-store entry actually
         // held. This test proves that no longer happens: the mint/set path
-        // must never be reached when a read timed out.
-        const setMarkerPath = join(dir, 'set-calls.jsonl');
-        const script = fixture(
-          'timeout-cascade.cjs',
-          [
-            "const fs = require('node:fs');",
-            "const [, , mode, service, account] = process.argv;",
-            "if (mode === 'get') { setTimeout(() => process.exit(0), 120_000); }",
-            'else if (mode === \'set\') {',
-            "  const secret = fs.readFileSync(0, 'utf8');",
-            `  fs.appendFileSync(${JSON.stringify(setMarkerPath)}, JSON.stringify({ service, account, secret }) + '\\n');`,
-            '  process.exit(0);',
-            '}',
-          ].join('\n'),
+        // must never be reached when EITHER read timed out.
+        const { scriptPath, setMarkerPath } = fixtureWithSetTracking(
+          'timeout-cascade',
+          () => 'setTimeout(() => process.exit(0), 120_000);',
         );
-        __setChildScriptPathForTests(script);
+        __setChildScriptPathForTests(scriptPath);
         const configDir = mkdtempSync(join(tmpdir(), 'astra-keystore-timeout-cascade-'));
         const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
         try {
           const result = getOrCreateKey(configDir);
 
           // The safe outcome: fell back to key-file, exactly like a fully
-          // unresponsive store would (see the test above) — NOT a
+          // unresponsive store would (see scenario 4 above) — NOT a
           // credential-store mint.
           expect(result.source).toBe('key-file');
           expect(readFileSync(keyFilePath(configDir), 'utf8').trim()).toBe(result.key);
@@ -334,8 +391,41 @@ describe('keystore-bounded', () => {
           // of silently overwriting a real, already-in-use credential-store
           // entry.
           expect(existsSync(setMarkerPath)).toBe(false);
+          // Loud, not silent (ADR-015 rule 4) — assert before mockRestore().
+          expect(warnSpy).toHaveBeenCalled();
         } finally {
           warnSpy.mockRestore();
+          rmSync(configDir, { recursive: true, force: true });
+        }
+      },
+    );
+
+    // ─── Scenario 2 (team-lead required list): get times out on scoped ───
+    // but legacy returns a real key → must use the legacy key, not mint.
+    // The gap the redesign closes: an earlier iteration of this fix
+    // short-circuited on the FIRST timeout, which would have skipped the
+    // legacy read entirely and fallen back to key-file even when a
+    // perfectly good legacy key was one fast read away.
+    it(
+      'scenario 2 — scoped read TIMES OUT but the legacy identity answers fast with a real key: must use the legacy key, must NOT mint, must NOT write',
+      { timeout: CREDENTIAL_STORE_TIMEOUT_MS + 15_000 },
+      async () => {
+        const { getOrCreateKey } = await import('../../src/storage/keystore.js');
+        const { scriptPath, setMarkerPath } = fixtureWithSetTracking(
+          'scoped-timeout-legacy-hit',
+          (isLegacy) =>
+            `if (${isLegacy}) { process.stdout.write(JSON.stringify({ found: true, value: 'REAL-LEGACY-KEY-VALUE' })); } ` +
+            'else { setTimeout(() => process.exit(0), 120_000); }',
+        );
+        __setChildScriptPathForTests(scriptPath);
+        const configDir = mkdtempSync(join(tmpdir(), 'astra-keystore-scoped-timeout-legacy-hit-'));
+        try {
+          const result = getOrCreateKey(configDir);
+          expect(result).toEqual({ key: 'REAL-LEGACY-KEY-VALUE', source: 'credential-store', identity: 'legacy' });
+          // The destructive write must never have been attempted — the
+          // legacy read alone was sufficient.
+          expect(existsSync(setMarkerPath)).toBe(false);
+        } finally {
           rmSync(configDir, { recursive: true, force: true });
         }
       },
